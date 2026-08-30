@@ -40,7 +40,6 @@ from typing import Literal
 import torch
 
 from algan.environment import env_float
-from algan.errors import UnsupportedFeatureError
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -122,7 +121,6 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     sca_width,
     wavefront_generate_rays,
     wavefront_shade,
-    wavefront_traverse,
     wavefront_traverse_events,
     wf_composite_accum,
     wf_composite_accum_aa,
@@ -585,7 +583,6 @@ def analytic_raster_route_active(
         or not rt_settings.raster_covered_shade
         or (transparent_background and environment_map is not None)
         or merged.get("tri_frame_valid") is None
-        or merged.get("textured_active")
         or float(near_clip) > 0.0
     ):
         return False
@@ -614,20 +611,6 @@ def analytic_raster_route_active(
     )
     custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
     if custom_scatter:
-        return False
-
-    extended = (
-        lights_extended
-        or has_environment
-        or float(near_clip) > 0.0
-        or float(far_clip) > 0.0
-    )
-    if (
-        frag
-        and rt_settings.wavefront_sort_materials is True
-        and not extended
-        and not merged.get("bez_has_reflective", False)
-    ):
         return False
 
     analytic_split = _secondary_split_needed(merged, True)
@@ -1034,17 +1017,6 @@ def _validate_render_capabilities(
             "set_unsupported_feature_policy('warn'/'ignore') explicitly."
         )
 
-    # Keep direct mutation of the legacy globals from bypassing the guarded
-    # public setters. These backends are known-broken and must not render a
-    # misleading result.
-    if bool(getattr(rt_settings, "wf_textured", False)):
-        raise UnsupportedFeatureError(
-            "The legacy textured wavefront renderer is unsupported."
-        )
-    if getattr(rt_settings, "wavefront_sort_materials", "auto") is True:
-        raise UnsupportedFeatureError(
-            "The legacy sorted-material wavefront renderer is unsupported."
-        )
     return plan
 
 
@@ -2278,17 +2250,13 @@ def raytrace_render_wavefront(
     (``pix_accum``) on termination, so a pixel's reflected and refracted branches
     sum.
 
-    When fragment shading is active, ``settings.wavefront_sort_materials``
-    selects the shade architecture: the monolithic ``wavefront_shade`` kernel
-    below (the default, and the only supported path -- it handles custom
-    scatter and normal-mapped lighting, and on the built-in materials it is
-    faster because it drains up to kbuf hits per launch while sorting pays
-    per-event kernel round trips and host syncs), or the UNSUPPORTED legacy
-    Cycles-style *sorted* pipeline (rays suspended at their material events,
-    bucketed by (geometry type, material pipeline id) and shaded by dedicated
-    per-material kernels -- see ``wavefront_sorted_kernels_taichi``), routed
-    only when explicitly forced (``set_wavefront_sort_materials(True)``) and kept for
-    reference only. The vertex-shaded path below is unaffected either way.
+    When fragment shading is active, the monolithic ``wavefront_shade`` kernel
+    below is the shade architecture: it handles custom scatter and
+    normal-mapped lighting, and on the built-in materials it drains up to kbuf
+    hits per launch. (A Cycles-style *sorted* alternative -- rays suspended at
+    their material events and shaded by one kernel per material bucket -- was
+    measured slower for exactly that reason and has been removed.) The
+    vertex-shaded path below is unaffected.
     """
     rt_settings = SETTINGS.raytracing
     # Opt-in inline stages for this function's loops (the profiler's pipeline
@@ -2303,88 +2271,6 @@ def raytrace_render_wavefront(
     # the FUNCTION, not a width (that mistake allocated ray state with a
     # function object as its column count).
     state_sca_width = sca_width(ior_stack_flag)
-    # UNSUPPORTED legacy textured-surface shader (Surface / flat-triangle
-    # scenes): shades from three per-triangle texture lookups instead of
-    # per-vertex arrays. Only reachable via the opt-in wf_textured toggle;
-    # kept for reference. Extended lights, environment maps and near/far
-    # clipping live in the monolithic general shade kernel below; a scene
-    # using any of them skips the textured / sorted variants.
-    uses_extended_features = (
-        bool(lights_extended)
-        or env_meta is not None
-        or near_clip > 0.0
-        or far_clip > 0.0
-    )
-    if merged.get("textured_active") and not uses_extended_features:
-        return _raytrace_render_wavefront_textured(
-            tri_bvh,
-            bez_bvh,
-            merged,
-            cam_origin,
-            screen_point,
-            pixel_basis_x,
-            pixel_basis_y,
-            pixel_world_scale,
-            time_start,
-            time_end,
-            width,
-            height,
-            half_screen_w,
-            half_screen_h,
-            layer_offset_triangles,
-            has_tri,
-            has_bez,
-            max_bounces,
-            light_pos,
-            light_col,
-            num_lights,
-            refraction_flag,
-            transparent,
-            memory,
-            out,
-            aa_level,
-        )
-    sort_mode = rt_settings.wavefront_sort_materials
-    # The monolith handles custom scatter + normal maps, so it is the default
-    # for every fragment-shaded scene; the UNSUPPORTED legacy sorted pipeline
-    # runs only when explicitly forced (kept for reference -- see settings).
-    use_sorted = (
-        bool(frag_flag)
-        and (sort_mode is True)
-        and not uses_extended_features
-        and not merged.get("bez_has_reflective", False)
-    )
-    if use_sorted:
-        return _raytrace_render_wavefront_sorted(
-            tri_bvh,
-            bez_bvh,
-            merged,
-            cam_origin,
-            screen_point,
-            pixel_basis_x,
-            pixel_basis_y,
-            pixel_world_scale,
-            time_start,
-            time_end,
-            width,
-            height,
-            half_screen_w,
-            half_screen_h,
-            layer_offset_triangles,
-            has_tri,
-            has_bez,
-            max_bounces,
-            light_pos,
-            light_col,
-            num_lights,
-            frag_pipelines,
-            shadow_flag,
-            refraction_flag,
-            transparent,
-            memory,
-            out,
-            aa_level,
-        )
     i32 = torch.int32
     f32 = torch.float32
     max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
@@ -2451,7 +2337,6 @@ def raytrace_render_wavefront(
         and not refraction_flag
         and len(frag_scatters) == 0
         and not mem_trim
-        and not merged.get("textured_active", False)
     )
     opaque_prepass = int(
         rt_settings.wf_opaque_prepass
@@ -2462,7 +2347,6 @@ def raytrace_render_wavefront(
         and not refraction_flag
         and len(frag_scatters) == 0
         and not mem_trim
-        and not merged.get("textured_active", False)
     )
     # Compile-time material gating of the shade kernels: the pipeline ids this
     # batch's triangles / PN patches carry, as a bitmask template, so the
@@ -2485,7 +2369,6 @@ def raytrace_render_wavefront(
         and analytic_raster
         and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
-        and not merged.get("textured_active")
         and mem_trim == 0
         and len(frag_scatters) == 0
         and near_clip <= 0.0
@@ -3468,238 +3351,6 @@ def raytrace_render_wavefront(
     )
 
 
-def _raytrace_render_wavefront_textured(
-    tri_bvh,
-    bez_bvh,
-    merged,
-    cam_origin,
-    screen_point,
-    pixel_basis_x,
-    pixel_basis_y,
-    pixel_world_scale,
-    time_start,
-    time_end,
-    width,
-    height,
-    half_screen_w,
-    half_screen_h,
-    layer_offset_triangles,
-    has_tri,
-    has_bez,
-    max_bounces,
-    light_pos,
-    light_col,
-    num_lights,
-    refraction_flag,
-    transparent,
-    memory,
-    out,
-    aa_level=1,
-):
-    """UNSUPPORTED legacy textured-surface wavefront orchestration (Surface /
-    flat-triangle scenes only; no longer maintained, kept for reference --
-    see ``settings.wf_textured``). Same generate -> traverse -> shade ->
-    composite tile loop as the monolithic :func:`raytrace_render_wavefront`,
-    but the shade stage is ``wf_shade_textured`` reading the three
-    per-triangle texture banks built by
-    ``scene_builder._build_textured_scene``. PN and bezier traversals gate out
-    (the scene is all flat triangles).
-    """
-    from algan.rendering.raytracing.wavefront_textured_kernels_taichi import (
-        wf_shade_textured,
-    )
-
-    rt_settings = SETTINGS.raytracing
-
-    i32 = torch.int32
-    f32 = torch.float32
-    max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
-    n = (time_end - time_start) * width * height
-
-    # Feature templates (compiled into the shade kernel one at a time to measure
-    # each feature's cost -- see settings.wf_textured_features).
-    feat = int(rt_settings.wf_textured_features)
-    feat_bez = 1 if (feat & rt_settings.WF_TEX_BEZ) else 0
-    feat_scatter = 1 if (feat & rt_settings.WF_TEX_SCATTER) else 0
-    feat_shadows = 1 if (feat & rt_settings.WF_TEX_SHADOWS) else 0
-    feat_normalmap = 1 if (feat & rt_settings.WF_TEX_NORMALMAP) else 0
-    # Compile the bezier traversal into the (shared) traverse kernel when the
-    # bezier feature is on, so its cost is included even on a bezier-free scene.
-    has_bez_eff = 1 if (feat_bez or has_bez) else 0
-
-    pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1
-    primary_per_tile = max(1, rt_settings.wavefront_tile_rays // pool_ratio)
-    # The gen block compiles out on this path (the classic generate kernel is
-    # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
-    # primary ray for the perpendicular-depth conversion (see _axis_cos), so
-    # these carry the real screen half-extents rather than zeros.
-    gen_meta = _arena_values(
-        memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
-    )
-
-    def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
-        (
-            rs_ro,
-            rs_rd,
-            rs_acc,
-            rs_sca,
-            rs_int,
-            rs_kt,
-            rs_kl,
-            rs_ka,
-            rs_kb,
-            rs_kp,
-            rs_kf,
-        ) = state
-        compactor = _ArenaRayCompactor(memory, pool, i32)
-        active = compactor.initial(tn_primary)
-        it = 0
-        while active.numel() > 0 and it < max_iters:
-            na = int(active.numel())
-            wavefront_traverse(
-                active,
-                na,
-                tri_bvh.blocks,
-                tri_bvh.node_miss,
-                tri_bvh.leaf_prim,
-                tri_bvh.leaf_tspan,
-                int(tri_bvh.first_leaf),
-                merged["tri_pos"],
-                bez_bvh.blocks,
-                bez_bvh.node_miss,
-                bez_bvh.leaf_prim,
-                bez_bvh.leaf_tspan,
-                int(bez_bvh.first_leaf),
-                merged["circuit_meta"],
-                merged["edges_2d"],
-                merged["edge_accel"],
-                merged["tri_opaque_bvh"].blocks,
-                merged["tri_opaque_bvh"].node_miss,
-                merged["tri_opaque_bvh"].leaf_prim,
-                merged["tri_opaque_bvh"].leaf_tspan,
-                int(merged["tri_opaque_bvh"].first_leaf),
-                merged["bez_opaque_bvh"].blocks,
-                merged["bez_opaque_bvh"].node_miss,
-                merged["bez_opaque_bvh"].leaf_prim,
-                merged["bez_opaque_bvh"].leaf_tspan,
-                int(merged["bez_opaque_bvh"].first_leaf),
-                pixel_world_scale,
-                float(layer_offset_triangles),
-                0,
-                int(has_tri),
-                int(has_bez_eff),
-                0,
-                0,
-                int(time_start),
-                int(width),
-                int(height),
-                int(tile_start),
-                rs_ro,
-                rs_rd,
-                rs_sca,
-                rs_int,
-                rs_kt,
-                rs_kl,
-                rs_ka,
-                rs_kb,
-                rs_kp,
-                rs_kf,
-                rs_pix,
-                0,
-                cam_origin,
-                screen_point,
-                pixel_basis_x,
-                pixel_basis_y,
-                gen_meta,
-            )
-            wf_shade_textured(
-                active,
-                na,
-                merged["tri_pos"],
-                merged["tri_norm"],
-                merged["tx_uv"],
-                merged["tx_color_idx"],
-                merged["tx_mat_idx"],
-                merged["tx_surf_idx"],
-                merged["tx_color_bank"],
-                merged["tx_color_meta"],
-                merged["tx_mat_bank"],
-                merged["tx_mat_meta"],
-                merged["tx_surf_bank"],
-                merged["tx_surf_meta"],
-                merged["tx_nmap_idx"],
-                merged["tx_nmap_bank"],
-                merged["tx_nmap_meta"],
-                merged["circuit_meta"],
-                merged["circuit_colors"],
-                merged["circuit_border_colors"],
-                tri_bvh.blocks,
-                tri_bvh.node_miss,
-                tri_bvh.leaf_prim,
-                tri_bvh.leaf_tspan,
-                int(tri_bvh.first_leaf),
-                pixel_world_scale,
-                float(layer_offset_triangles),
-                light_pos,
-                light_col,
-                int(num_lights),
-                int(refraction_flag),
-                int(feat_bez),
-                int(feat_scatter),
-                int(feat_shadows),
-                int(feat_normalmap),
-                int(time_start),
-                int(width),
-                int(height),
-                int(tile_start),
-                rs_ro,
-                rs_rd,
-                rs_acc,
-                rs_sca,
-                rs_int,
-                rs_kt,
-                rs_kl,
-                rs_ka,
-                rs_kb,
-                rs_kp,
-                rs_kf,
-                rs_pix,
-                pix_accum,
-                rs_alloc,
-            )
-            active = compactor.select(
-                rs_int,
-                0,
-                source=active,
-                scan_pool=(pool_ratio != 1 or not rt_settings.wf_compact_active_only),
-            )
-            it += 1
-
-    _run_wavefront_tiles(
-        memory,
-        out,
-        n=n,
-        width=width,
-        height=height,
-        time_start=time_start,
-        transparent=transparent,
-        aa_level=aa_level,
-        pool_ratio=pool_ratio,
-        primary_per_tile=primary_per_tile,
-        cam_origin=cam_origin,
-        screen_point=screen_point,
-        pixel_basis_x=pixel_basis_x,
-        pixel_basis_y=pixel_basis_y,
-        half_screen_w=half_screen_w,
-        half_screen_h=half_screen_h,
-        max_bounces=max_bounces,
-        near_clip=0.0,
-        run_tile=run_tile,
-        # Compactor output-count word.
-        auto_fixed_bytes=torch.int32.itemsize,
-    )
-
-
 def _scene_has_custom_scatter(merged):
     """True if any merged primitive's material pipeline carries a custom
     scatter func (user-controlled ray bouncing). The monolithic wavefront
@@ -3790,369 +3441,6 @@ def _frag_pid_mask(merged, prefix, active, _record=True):
     if _record:
         _FRAG_PID_LAST[prefix] = mask
     return mask
-
-
-def _raytrace_render_wavefront_sorted(
-    tri_bvh,
-    bez_bvh,
-    merged,
-    cam_origin,
-    screen_point,
-    pixel_basis_x,
-    pixel_basis_y,
-    pixel_world_scale,
-    time_start,
-    time_end,
-    width,
-    height,
-    half_screen_w,
-    half_screen_h,
-    layer_offset_triangles,
-    has_tri,
-    has_bez,
-    max_bounces,
-    light_pos,
-    light_col,
-    num_lights,
-    frag_pipelines,
-    shadow_flag,
-    refraction_flag,
-    transparent,
-    memory,
-    out,
-    aa_level=1,
-):
-    """UNSUPPORTED legacy Cycles-style sorted-material orchestration of the
-    fragment-shading wavefront (no longer maintained, kept for reference; only
-    reachable via ``set_wavefront_sort_materials(True)`` -- see
-    ``wavefront_sorted_kernels_taichi`` for the kernel split).
-
-    Per host iteration: rays needing a K-buffer refill are traversed
-    (``wavefront_traverse``, unchanged), ``wf_peel`` advances every ray with
-    unconsumed hits to its next material event (compositing bezier hits and
-    background escapes inline), the pending events get their shadow bits from
-    one ``wf_shadow_event`` launch, and each material bucket -- rays whose
-    event key ``(geometry type << 8) | pipeline id`` matches -- is shaded by a
-    dedicated ``wf_shade_event`` instantiation with that material's pipeline
-    and scatter funcs as compile-time templates. The bucket table is built
-    once per chunk from the merged scene's material ids, so only materials
-    actually present cost a kernel instantiation.
-    """
-    from algan.rendering.raytracing.shading_taichi import (
-        _USER_PIPELINE_BASE,
-        builtin_pipeline_fn,
-    )
-    from algan.rendering.raytracing.wavefront_sorted_kernels_taichi import (
-        ST_PEEL,
-        ST_SHADE,
-        ST_TRAVERSE,
-        default_scatter,
-        wf_peel,
-        wf_shade_event,
-        wf_shadow_event,
-    )
-    from algan.rendering.shaders.fragment_shaders import build_frag_scatters
-
-    i32 = torch.int32
-    f32 = torch.float32
-    n = (time_end - time_start) * width * height
-
-    # Material bucket table: one entry per (geometry type, pipeline id) pair
-    # present in the merged scene. Each bucket carries the composed pipeline
-    # func + scatter func to inject and the geometry type's parameter block.
-    # Narrowed by the SAME ids the caller narrowed ``frag_pipelines`` with, so
-    # the two tuples share one indexing -- the merge renumbers a batch's
-    # pipeline ids, so a scatter list built from the whole registry would be
-    # indexed by global ids while the pipelines beside it are dense.
-    scatters = build_frag_scatters(_batch_user_pipeline_ids(merged))
-
-    def _resolve(pid):
-        if pid < _USER_PIPELINE_BASE:
-            return builtin_pipeline_fn(pid), default_scatter
-        i = pid - _USER_PIPELINE_BASE
-        fn = frag_pipelines[i]
-        # A pipeline past the end of the scatter list is simply scatterless.
-        sc = scatters[i] if i < len(scatters) else None
-        return fn, (sc if sc is not None else default_scatter)
-
-    buckets = []
-    has_custom_scatter = False
-    if merged["num_triangles"] > 0:
-        tri_material_ids = merged.get("tri_material_ids")
-        if tri_material_ids is None:
-            tri_material_ids = torch.unique(
-                merged["tri_mat_id"].detach().cpu()
-            ).tolist()
-        for pid in tri_material_ids:
-            fn, sc = _resolve(int(pid))
-            has_custom_scatter |= sc is not default_scatter
-            buckets.append(((1 << 8) | int(pid), fn, sc, merged["tri_mat"]))
-    # A custom scatter may spawn transmitted branches, which need the glass
-    # split pool (and the peel's IOR sampling) even in a scene with no
-    # refractive surface.
-    refraction_flag = 1 if (refraction_flag or has_custom_scatter) else 0
-
-    # Worst case: every one of max_surfaces_per_ray hits is a material event
-    # (one peel+shade pass each) plus a traverse per K-buffer refill / bounce.
-    max_iters = (
-        max_surfaces_per_ray + max_surfaces_per_ray // kbuf + max_bounces * 2 + 8
-    )
-
-    pool_ratio = rt_settings.refract_initial_pool_ratio if refraction_flag else 1
-    # The sorted path carries ~1.5x the classic per-ray state (the event
-    # record + keys), so tiles hold fewer rays for the same memory envelope.
-    primary_per_tile = max(1, (rt_settings.wavefront_tile_rays * 2) // (3 * pool_ratio))
-    # The gen block compiles out on this path (the classic generate kernel is
-    # kept), but traverse still reads gen_meta[2:] to rebuild each pixel's
-    # primary ray for the perpendicular-depth conversion (see _axis_cos), so
-    # these carry the real screen half-extents rather than zeros.
-    gen_meta = _arena_values(
-        memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
-    )
-
-    def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
-        (
-            rs_ro,
-            rs_rd,
-            rs_acc,
-            rs_sca,
-            rs_int,
-            rs_kt,
-            rs_kl,
-            rs_ka,
-            rs_kb,
-            rs_kp,
-            rs_kf,
-        ) = state
-        # Event state: hit record, sort key, event primitive index and
-        # per-event shadow visibility bits (placeholder when unused).
-        rs_hit = memory.get_tensor((pool, 16), f32)
-        rs_key = memory.get_tensor((pool,), i32)
-        rs_eprim = memory.get_tensor((pool,), i32)
-        rs_vis = memory.get_tensor((pool,) if shadow_flag else (1,), i32)
-        compactor = _ArenaRayCompactor(memory, pool, i32)
-        # The drained counter (rs_int col 4, pool garbage after
-        # allocation) must be 0 for every ray entering ST_TRAVERSE;
-        # the kernels maintain that invariant from here on.
-        rs_int[:, 4].zero_()
-
-        it = 0
-        while it < max_iters:
-            # Build every work list directly in the arena. Pending SHADE
-            # events never survive an iteration, so TRAVERSE then PEEL scans
-            # are sufficient to decide termination.
-            trav = compactor.select(rs_int, ST_TRAVERSE, scan_pool=True)
-            if trav.numel():
-                wavefront_traverse(
-                    trav,
-                    int(trav.numel()),
-                    tri_bvh.blocks,
-                    tri_bvh.node_miss,
-                    tri_bvh.leaf_prim,
-                    tri_bvh.leaf_tspan,
-                    int(tri_bvh.first_leaf),
-                    merged["tri_pos"],
-                    bez_bvh.blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    merged["tri_opaque_bvh"].blocks,
-                    merged["tri_opaque_bvh"].node_miss,
-                    merged["tri_opaque_bvh"].leaf_prim,
-                    merged["tri_opaque_bvh"].leaf_tspan,
-                    int(merged["tri_opaque_bvh"].first_leaf),
-                    merged["bez_opaque_bvh"].blocks,
-                    merged["bez_opaque_bvh"].node_miss,
-                    merged["bez_opaque_bvh"].leaf_prim,
-                    merged["bez_opaque_bvh"].leaf_tspan,
-                    int(merged["bez_opaque_bvh"].first_leaf),
-                    pixel_world_scale,
-                    float(layer_offset_triangles),
-                    0,
-                    int(has_tri),
-                    int(has_bez),
-                    0,
-                    0,
-                    int(time_start),
-                    int(width),
-                    int(height),
-                    int(tile_start),
-                    rs_ro,
-                    rs_rd,
-                    rs_sca,
-                    rs_int,
-                    rs_kt,
-                    rs_kl,
-                    rs_ka,
-                    rs_kb,
-                    rs_kp,
-                    rs_kf,
-                    rs_pix,
-                    0,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    gen_meta,
-                )
-            # Traversal transitions its rays to PEEL, so one post-traverse
-            # scan naturally includes both those rays and previously-peeling
-            # rays without a temporary torch.cat.
-            peel_idx = compactor.select(rs_int, ST_PEEL, scan_pool=True)
-            if trav.numel() == 0 and peel_idx.numel() == 0:
-                break
-            if peel_idx.numel():
-                wf_peel(
-                    peel_idx,
-                    int(peel_idx.numel()),
-                    merged["tri_pos"],
-                    merged["tri_norm"],
-                    merged["tri_extra"],
-                    merged["tri_colors"],
-                    merged["tri_uvs"],
-                    merged["tri_tex_meta"],
-                    merged["textures"],
-                    int(merged["num_colored_triangles"]),
-                    merged["circuit_meta"],
-                    merged["circuit_colors"],
-                    merged["circuit_border_colors"],
-                    merged["tri_mat_id"],
-                    int(refraction_flag),
-                    int(has_tri),
-                    int(has_bez),
-                    int(time_start),
-                    int(width),
-                    int(height),
-                    int(tile_start),
-                    rs_acc,
-                    rs_sca,
-                    rs_int,
-                    rs_kt,
-                    rs_kl,
-                    rs_ka,
-                    rs_kb,
-                    rs_kp,
-                    rs_kf,
-                    rs_pix,
-                    rs_hit,
-                    rs_key,
-                    rs_eprim,
-                    pix_accum,
-                )
-            shade_all = compactor.select(rs_int, ST_SHADE, scan_pool=True)
-            if shade_all.numel():
-                if shadow_flag:
-                    wf_shadow_event(
-                        shade_all,
-                        int(shade_all.numel()),
-                        tri_bvh.blocks,
-                        tri_bvh.node_miss,
-                        tri_bvh.leaf_prim,
-                        tri_bvh.leaf_tspan,
-                        int(tri_bvh.first_leaf),
-                        merged["tri_pos"],
-                        merged["tri_colors"],
-                        merged["tri_uvs"],
-                        merged["tri_tex_meta"],
-                        merged["textures"],
-                        int(merged["num_colored_triangles"]),
-                        bez_bvh.blocks,
-                        bez_bvh.node_miss,
-                        bez_bvh.leaf_prim,
-                        bez_bvh.leaf_tspan,
-                        int(bez_bvh.first_leaf),
-                        merged["circuit_meta"],
-                        merged["circuit_colors"],
-                        merged["circuit_border_colors"],
-                        merged["edges_2d"],
-                        merged["edge_accel"],
-                        pixel_world_scale,
-                        float(layer_offset_triangles),
-                        int(has_tri),
-                        int(has_bez),
-                        light_pos,
-                        int(num_lights),
-                        int(time_start),
-                        int(width),
-                        int(height),
-                        int(tile_start),
-                        rs_ro,
-                        rs_rd,
-                        rs_sca,
-                        rs_hit,
-                        rs_pix,
-                        rs_vis,
-                    )
-                for key_val, fn, sc, mat in buckets:
-                    bidx = compactor.select(
-                        rs_int,
-                        ST_SHADE,
-                        scan_pool=True,
-                        rs_key=rs_key,
-                        desired_key=key_val,
-                    )
-                    cnt = int(bidx.numel())
-                    if cnt == 0:
-                        continue
-                    wf_shade_event(
-                        bidx,
-                        cnt,
-                        mat,
-                        light_pos,
-                        light_col,
-                        int(num_lights),
-                        fn,
-                        sc,
-                        int(shadow_flag),
-                        int(refraction_flag),
-                        int(time_start),
-                        int(width),
-                        int(height),
-                        int(tile_start),
-                        rs_ro,
-                        rs_rd,
-                        rs_acc,
-                        rs_sca,
-                        rs_int,
-                        rs_hit,
-                        rs_eprim,
-                        rs_pix,
-                        pix_accum,
-                        rs_alloc,
-                        rs_vis,
-                    )
-            it += 1
-
-    _run_wavefront_tiles(
-        memory,
-        out,
-        n=n,
-        width=width,
-        height=height,
-        time_start=time_start,
-        transparent=transparent,
-        aa_level=aa_level,
-        pool_ratio=pool_ratio,
-        primary_per_tile=primary_per_tile,
-        cam_origin=cam_origin,
-        screen_point=screen_point,
-        pixel_basis_x=pixel_basis_x,
-        pixel_basis_y=pixel_basis_y,
-        half_screen_w=half_screen_w,
-        half_screen_h=half_screen_h,
-        max_bounces=max_bounces,
-        near_clip=0.0,
-        run_tile=run_tile,
-        # rs_hit(16 f32) + rs_key + rs_eprim (+ rs_vis with shadows) per slot.
-        auto_extra_slot_bytes=16 * 4 + 4 + 4 + (4 if shadow_flag else 0),
-        # Compactor output-count word, plus the one-word rs_vis placeholder
-        # when shadow visibility is not a per-slot array.
-        auto_fixed_bytes=(torch.int32.itemsize * (1 if shadow_flag else 2)),
-    )
 
 
 _originals = {}

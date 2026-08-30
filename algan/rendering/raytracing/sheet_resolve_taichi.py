@@ -35,6 +35,10 @@ old design's hand-maintained walk/shadow-walk lockstep.
 
 import taichi as ti
 
+from algan.rendering.raytracing.arena_args_taichi import (
+    ArenaView,
+    arena_packed,
+)
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DP,
     GL_ROW_SIGMA_SCALE,
@@ -108,23 +112,10 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 
 
 @ti.kernel
-def sheet_resolve_shade(
+def sheet_resolve_shade_arena(
         num_covered: int,
-        sheet_offsets: ti.types.ndarray(),
-        sheet_key: ti.types.ndarray(), sheet_ref: ti.types.ndarray(),
-        sheet_ab: ti.types.ndarray(), sheet_cov: ti.types.ndarray(),
-        sheet_msk: ti.types.ndarray(), sheet_cap: ti.types.ndarray(),
-        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
-        tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
-        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
-        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        col_row: ti.types.ndarray(),
-        tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
-        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
-        circuit_border_colors: ti.types.ndarray(),
-        light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
+        num_colored_triangles: ti.i32,
         num_lights: int,
-        layer_offsets: ti.types.ndarray(),
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_pids: ti.template(),
         refraction: ti.template(),
@@ -179,27 +170,16 @@ def sheet_resolve_shade(
         # for the same reason. So a row read in mode 2 was written in mode 1.
         # Values are copied verbatim through f32, hence byte-identical.
         memo: ti.template(),
-        sheet_memo: ti.types.ndarray(),
-        sheet_accept: ti.types.ndarray(),
-        event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
-        event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
-        event_msk: ti.types.ndarray(), event_dp: ti.types.ndarray(),
-        # Per-event shadow-terminator displacement (vec3), written by the
-        # mode-1 build exactly when ``sheet_accept`` is set; uninitialised
-        # arena memory otherwise, so nothing may read a row that was not
-        # written this frame.
-        event_toff: ti.types.ndarray(),
-        sheet_event_id: ti.types.ndarray(), shadow_vis: ti.types.ndarray(),
-        covered_idx: ti.types.ndarray(),
         time_start: int, width: int, height: int,
-        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
-        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        gen_meta: ti.types.ndarray(),
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
-        pix_accum: ti.types.ndarray(), rs_alloc: ti.types.ndarray(),
-        dump: ti.template(), dump_out: ti.types.ndarray()):
+        pix_accum: ti.types.ndarray(), dump: ti.template(), dump_out: ti.types.ndarray(),
+        arena_f32: ti.types.ndarray(),
+        arena_i32: ti.types.ndarray(),
+        arena_i64: ti.types.ndarray(),
+        aoff: ti.types.ndarray(),
+        ashp: ti.types.ndarray()):
     """Composite + shade each covered pixel's depth-sorted sheet list.
 
     Everything is indexed by covered ordinal ``t`` (the walk's ``compact``
@@ -208,6 +188,60 @@ def sheet_resolve_shade(
     host zeroes ``pix_accum`` and pre-marks pool slots DONE, so retirement
     accumulates and only bounced pixels write ray state.
     """
+    # Arena-bound parameters (arena_args_taichi): each name is
+    # rebound to a window into its dtype's buffer, at the offset
+    # the host wrote into aoff. Order is _SHEET_RESOLVE_SHADE_ARENA's.
+    sheet_offsets = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    sheet_key = ti.static(ArenaView(arena_i64, aoff[1], (ashp[1],)))
+    sheet_ref = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    sheet_ab = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4])))
+    sheet_cov = ti.static(ArenaView(arena_f32, aoff[4], (ashp[5],)))
+    sheet_msk = ti.static(ArenaView(arena_i32, aoff[5], (ashp[6],)))
+    sheet_cap = ti.static(ArenaView(arena_f32, aoff[6], (ashp[7],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[7], (ashp[8], ashp[9], ashp[10])))
+    tri_norm = ti.static(ArenaView(arena_f32, aoff[8], (ashp[11], ashp[12], ashp[13])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[9], (ashp[14], ashp[15], ashp[16])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[10], (ashp[17], ashp[18], ashp[19], ashp[20])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[11], (ashp[21], ashp[22], ashp[23])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[12], (ashp[24], ashp[25])))
+    textures = ti.static(ArenaView(arena_f32, aoff[13], (ashp[26], ashp[27], ashp[28])))
+    col_row = ti.static(ArenaView(arena_i32, aoff[14], (ashp[29],)))
+    tri_mat_id = ti.static(ArenaView(arena_i32, aoff[15], (ashp[30], ashp[31])))
+    tri_mat = ti.static(ArenaView(arena_f32, aoff[16], (ashp[32], ashp[33], ashp[34])))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[17], (ashp[35], ashp[36], ashp[37])))
+    circuit_colors = ti.static(ArenaView(
+        arena_f32, aoff[18], (ashp[38], ashp[39], ashp[40], ashp[41])))
+    circuit_border_colors = ti.static(ArenaView(
+        arena_f32, aoff[19], (ashp[42], ashp[43], ashp[44], ashp[45])))
+    light_pos = ti.static(ArenaView(
+        arena_f32, aoff[20], (ashp[46], ashp[47], ashp[48])))
+    light_col = ti.static(ArenaView(
+        arena_f32, aoff[21], (ashp[49], ashp[50], ashp[51])))
+    layer_offsets = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
+    sheet_memo = ti.static(ArenaView(arena_f32, aoff[23], (ashp[53], ashp[54])))
+    sheet_accept = ti.static(ArenaView(arena_i32, aoff[24], (ashp[55],)))
+    event_pos = ti.static(ArenaView(arena_f32, aoff[25], (ashp[56], ashp[57])))
+    event_snrm = ti.static(ArenaView(arena_f32, aoff[26], (ashp[58], ashp[59])))
+    event_fnrm = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60], ashp[61])))
+    event_frame = ti.static(ArenaView(arena_i32, aoff[28], (ashp[62],)))
+    event_msk = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63],)))
+    event_dp = ti.static(ArenaView(arena_f32, aoff[30], (ashp[64], ashp[65])))
+    # Per-event shadow-terminator displacement (vec3), written by the mode-1
+    # build exactly when ``sheet_accept`` is set; uninitialised arena memory
+    # otherwise, so nothing may read a row that was not written this frame.
+    event_toff = ti.static(ArenaView(arena_f32, aoff[31], (ashp[66], ashp[67])))
+    sheet_event_id = ti.static(ArenaView(arena_i32, aoff[32], (ashp[68],)))
+    shadow_vis = ti.static(ArenaView(
+        arena_f32, aoff[33], (ashp[69], ashp[70], ashp[71])))
+    covered_idx = ti.static(ArenaView(arena_i32, aoff[34], (ashp[72],)))
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[35], (ashp[73], ashp[74])))
+    screen_point = ti.static(ArenaView(arena_f32, aoff[36], (ashp[75], ashp[76])))
+    pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
+    pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
+    gen_meta = ti.static(ArenaView(arena_f32, aoff[39], (ashp[81],)))
+    rs_alloc = ti.static(ArenaView(arena_i32, aoff[40], (ashp[82],)))
     pixels_per_frame = width * height
     env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
     env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
@@ -1174,6 +1208,91 @@ def sheet_resolve_shade(
                 ti.atomic_add(pix_accum[r, k], acc[k])
             for k in ti.static(range(3)):
                 ti.atomic_add(pix_accum[r, 4 + k], weight[k])
+
+
+#: What ``sheet_resolve_shade`` binds through the arena, in offset-table order:
+#: ``aoff[i]`` is the i-th entry's element offset into its dtype's
+#: buffer and ``ashp`` holds their shapes end to end. The kernel's
+#: binding prologue reads those slots by literal index, so the two
+#: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
+#: fails if they stop agreeing.
+_SHEET_RESOLVE_SHADE_ARENA = (
+    ("sheet_offsets", "i32", 1),
+    ("sheet_key", "i64", 1),
+    ("sheet_ref", "i32", 1),
+    ("sheet_ab", "f32", 2),
+    ("sheet_cov", "f32", 1),
+    ("sheet_msk", "i32", 1),
+    ("sheet_cap", "f32", 1),
+    ("tri_pos", "f32", 3),
+    ("tri_norm", "f32", 3),
+    ("tri_extra", "f32", 3),
+    ("tri_colors", "f32", 4),
+    ("tri_uvs", "f32", 3),
+    ("tri_tex_meta", "i32", 2),
+    ("textures", "f32", 3),
+    ("col_row", "i32", 1),
+    ("tri_mat_id", "i32", 2),
+    ("tri_mat", "f32", 3),
+    ("circuit_meta", "f32", 3),
+    ("circuit_colors", "f32", 4),
+    ("circuit_border_colors", "f32", 4),
+    ("light_pos", "f32", 3),
+    ("light_col", "f32", 3),
+    ("layer_offsets", "f32", 1),
+    ("sheet_memo", "f32", 2),
+    ("sheet_accept", "i32", 1),
+    ("event_pos", "f32", 2),
+    ("event_snrm", "f32", 2),
+    ("event_fnrm", "f32", 2),
+    ("event_frame", "i32", 1),
+    ("event_msk", "i32", 1),
+    ("event_dp", "f32", 2),
+    ("event_toff", "f32", 2),
+    ("sheet_event_id", "i32", 1),
+    ("shadow_vis", "f32", 3),
+    ("covered_idx", "i32", 1),
+    ("cam_origin", "f32", 2),
+    ("screen_point", "f32", 2),
+    ("pixel_basis_x", "f32", 2),
+    ("pixel_basis_y", "f32", 2),
+    ("gen_meta", "f32", 1),
+    ("rs_alloc", "i32", 1),
+)
+
+#: The argument list every launch site passes. Unchanged by the
+#: conversion -- that is the point of the wrapper below.
+_SHEET_RESOLVE_SHADE_PARAMS = (
+    "num_covered", "sheet_offsets", "sheet_key", "sheet_ref", "sheet_ab",
+    "sheet_cov", "sheet_msk", "sheet_cap", "tri_pos", "tri_norm", "tri_extra",
+    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
+    "num_colored_triangles", "col_row", "tri_mat_id", "tri_mat",
+    "circuit_meta", "circuit_colors", "circuit_border_colors", "light_pos",
+    "light_col", "num_lights", "layer_offsets", "frag_shading",
+    "frag_pipelines", "tri_pids", "refraction", "ior_stack",
+    "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
+    "env_in_composite", "direct_spec", "mode", "shadow_term", "memo",
+    "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
+    "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",
+    "shadow_vis", "covered_idx", "time_start", "width", "height",
+    "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
+    "gen_meta", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
+    "pix_accum", "rs_alloc", "dump", "dump_out",
+)
+
+_sheet_resolve_shade_launch = arena_packed(
+    __name__, "sheet_resolve_shade_arena",
+    _SHEET_RESOLVE_SHADE_PARAMS, _SHEET_RESOLVE_SHADE_ARENA)
+
+
+def sheet_resolve_shade(*args):
+    """Pack the arena-bound arguments, then launch ``sheet_resolve_shade_arena``.
+
+    Takes the argument list this kernel had before it was converted to
+    the arena calling convention, so no launch site changed; see
+    `arena_args_taichi`.
+    """
+    return _sheet_resolve_shade_launch(*args)
 
 
 @ti.kernel

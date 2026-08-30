@@ -13,9 +13,9 @@ by per-ray state in global memory, driven by a host-side iteration loop
 * :func:`wavefront_shade` -- immediately drain that event batch: built-in /
   custom fragment shading, shadows, and reflection / refraction continuations.
 
-The supported general path does not attach hit arrays to every continuation
-pool slot. The legacy textured/material-sorted paths retain
-:func:`wavefront_traverse` and its pool-wide K-buffer ABI for reference.
+The general path does not attach hit arrays to every continuation pool slot.
+(A ``wavefront_traverse`` variant that did, writing a pool-wide K-buffer, was
+removed with the legacy textured / material-sorted renderers it served.)
 * :func:`wf_composite_accum` (and the AA variants) -- composite each pixel's
   accumulator over the background.
 
@@ -26,6 +26,10 @@ still have work -- warps refill as rays drop out, which is the divergence fix.
 """
 import taichi as ti
 
+from algan.rendering.raytracing.arena_args_taichi import (
+    ArenaView,
+    arena_packed,
+)
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DIST as _GL_ROW_DIST,
 )
@@ -67,7 +71,6 @@ from algan.rendering.raytracing.shading_taichi import (
     _orient_hit_normals,
     _reflect_frame,
     _shadow_terminator_delta,
-    _vis_max_component,
     direct_specular_lobe,
     light_vis_index,
 )
@@ -1825,213 +1828,15 @@ def wavefront_generate_rays(
 
 
 @ti.kernel
-def wavefront_traverse(
+def wavefront_traverse_events_arena(
         active: ti.types.ndarray(), num_active: int,
-        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
-        b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
-        b_first_leaf: int, circuit_meta: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_first_leaf: int,
+        b_nodes: NODE_ARG, b_first_leaf: int,
         # Opaque-only STBVHs used by the optional mixed-scene prepass. They
         # retain the normal primitive index space and are ignored when the
         # compile-time feature is disabled.
-        ot_nodes: NODE_ARG, ot_node_miss: ti.types.ndarray(),
-        ot_leaf_prim: ti.types.ndarray(), ot_leaf_tspan: ti.types.ndarray(),
-        ot_first_leaf: int,
-        ob_nodes: NODE_ARG, ob_node_miss: ti.types.ndarray(),
-        ob_leaf_prim: ti.types.ndarray(), ob_leaf_tspan: ti.types.ndarray(),
-        ob_first_leaf: int,
-        pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float,
-        refit: ti.template(),
-        has_tri: ti.template(), has_bez: ti.template(),
-        opaque_closest: ti.template(),
-        opaque_prepass: ti.template(),
-        time_start: int, width: int, height: int, ray_offset: int,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
-        rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
-        rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
-        rs_kp: ti.types.ndarray(),
-        rs_kf: ti.types.ndarray(),
-        rs_pix: ti.types.ndarray(),
-        # Fused primary-ray generation (compile-time; see wf_gen_fused). When
-        # ``gen_first`` is on this launch IS the tile's first iteration on a
-        # split-free, near-clip-free render: every ray is primary and owns
-        # pixel ``r``, so the ray is generated here (writing only ro/rd back)
-        # and the standalone wavefront_generate_rays pass is skipped. The
-        # remaining initial state is implicit in the matching ``first_iter``
-        # shade. ``gen_meta`` packs [jitter_x, jitter_y, half_w, half_h].
-        gen_first: ti.template(),
-        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
-        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        gen_meta: ti.types.ndarray()):
-    """Gather kbuf nearest hits across all three BVHs for each active ray
-    (reuses the unchanged general ``_collect_hits``, Matrix Pencil solver
-    included). The frame is taken from the ray's *pixel* (``rs_pix``), not its
-    slot index -- a spawned (split) ray lives in a spare slot whose index is not
-    its pixel; the global cell is ``ray_offset + rs_pix[r]``.
-    """
-    pixels_per_frame = width * height
-    for i in range(num_active):
-        r = active[i]
-        ro = ti.math.vec3(0.0, 0.0, 0.0)
-        rd = ti.math.vec3(0.0, 0.0, 0.0)
-        t_prev = 0.0
-        layer_prev = 1e30
-        base_dist = 0.0
-        f = 0
-        px = 0
-        py = 0
-        if ti.static(gen_first != 0):
-            g = ray_offset + r
-            f_rel = g // pixels_per_frame
-            p = g - f_rel * pixels_per_frame
-            f = time_start + f_rel
-            py = p // width
-            px = p - py * width
-            ro, rd = _generate_ray(f, px, py, gen_meta[0], gen_meta[1],
-                                   gen_meta[2], gen_meta[3],
-                                   cam_origin, screen_point,
-                                   pixel_basis_x, pixel_basis_y)
-            # Persist for the shade stage + later K-buffer refills; the other
-            # initial state (t_prev = 0, layer_prev = 1e30, base_dist = 0,
-            # pix = r) stays implicit.
-            for k in ti.static(range(3)):
-                rs_ro[r, k] = ro[k]
-                rs_rd[r, k] = rd[k]
-        else:
-            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            t_prev = rs_sca[r, 1]
-            layer_prev = rs_sca[r, 2]
-            base_dist = rs_sca[r, 4]
-            g = ray_offset + rs_pix[r]
-            f_rel = g // pixels_per_frame
-            p = g - f_rel * pixels_per_frame
-            f = time_start + f_rel
-            py = p // width
-            px = p - py * width
-        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
-                              _safe_inverse(rd[2]))
-        ff = ti.cast(f, ti.f32)
-        # Distances handed to pixel_size_per_t are slant ranges along THIS
-        # pixel's primary ray, but pixel_world_scale is per unit perpendicular
-        # depth (see _axis_cos). The cosine is a property of the pixel, not of
-        # the current ray, so it is rebuilt from the pixel: a continuation ray
-        # carries a bounce direction for which the camera axis means nothing,
-        # yet the primary segment already folded into its base_dist still
-        # needs converting.
-        pro, prd = _generate_ray(f, px, py, 0.5, 0.5, gen_meta[2], gen_meta[3],
-                                 cam_origin, screen_point,
-                                 pixel_basis_x, pixel_basis_y)
-        pixel_size_per_t = pixel_world_scale[f] * _axis_cos(f, pro, prd,
-                                                            screen_point)
-
-        kb_t = ti.Vector([0.0] * kbuf)
-        kb_layer = ti.Vector([0.0] * kbuf)
-        kb_prim = ti.Vector([0] * kbuf)
-        kb_flags = ti.Vector([0] * kbuf)
-        kb_a = ti.Vector([0.0] * kbuf)
-        kb_b = ti.Vector([0.0] * kbuf)
-        num_hits = 0
-        if ti.static(opaque_closest):
-            (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
-             hit_border, edge_hit) = _nearest_surface_g(
-                refit, has_tri, has_bez,
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                t_first_leaf, tri_pos,
-                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_accel,
-                # Camera rays carry no source identity: (-1, _, 0) compiles
-                # the identity-aware acceptance floor out entirely. The
-                # forwarded tri_pos is never read.
-                -1, -1, 0.0, 0.0, tri_pos, 0,
-                # Not a shadow ray, so a non-casting primitive stays
-                # visible to it and the leaf test compiles out.
-                0)
-            num_hits = found
-            if found != 0:
-                kb_t[0] = t_hit
-                kb_layer[0] = hit_layer
-                kb_prim[0] = hit_prim
-                kb_flags[0] = hit_type | (edge_hit << 2) | (hit_border << 3)
-                kb_a[0] = hit_a
-                kb_b[0] = hit_b
-        else:
-            initial_opq_t = 1e30
-            initial_opq_layer = -1e30
-            if ti.static(opaque_prepass):
-                (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
-                 opq_type, opq_a, opq_b, opq_border, opq_edge) = \
-                    _nearest_surface_g(
-                        refit, has_tri, has_bez,
-                        ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
-                        pixel_size_per_t, base_dist, layer_offset_triangles,
-                        ot_nodes, ot_node_miss, ot_leaf_prim,
-                        ot_leaf_tspan, ot_first_leaf, tri_pos,
-                        ob_nodes, ob_node_miss, ob_leaf_prim,
-                        ob_leaf_tspan, ob_first_leaf, circuit_meta,
-                        edges_2d, edge_accel,
-                        -1, -1, 0.0, 0.0, tri_pos, 0,
-                        # Not a shadow ray, so a non-casting primitive stays
-                        # visible to it and the leaf test compiles out.
-                        0)
-                if opq_found == 0:
-                    initial_opq_t = 1e30
-                    initial_opq_layer = -1e30
-            num_hits = _collect_hits(
-                refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
-                kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-                tri_pos,
-                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, edges_2d, edge_accel, has_tri, has_bez,
-                initial_opq_t, initial_opq_layer,
-                -1, -1, 0.0, 0.0, tri_pos, 0,
-                # Not a shadow ray, so a non-casting primitive stays
-                # visible to it and the leaf test compiles out.
-                0)
-        rs_int[r, 3] = num_hits
-        # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
-        # commits its accumulated color + leftover (background) throughput to
-        # the per-pixel accumulator before retiring it -- a split branch's
-        # background contribution must be summed, not dropped.
-        if num_hits > 0:
-            for q in ti.static(range(kbuf)):
-                rs_kt[r, q] = kb_t[q]
-                rs_kl[r, q] = kb_layer[q]
-                rs_kp[r, q] = kb_prim[q]
-                rs_kf[r, q] = kb_flags[q]
-                rs_ka[r, q] = kb_a[q]
-                rs_kb[r, q] = kb_b[q]
-
-
-@ti.kernel
-def wavefront_traverse_events(
-        active: ti.types.ndarray(), num_active: int,
-        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
-        b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
-        b_first_leaf: int, circuit_meta: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
-        # Opaque-only STBVHs used by the optional mixed-scene prepass. They
-        # retain the normal primitive index space and are ignored when the
-        # compile-time feature is disabled.
-        ot_nodes: NODE_ARG, ot_node_miss: ti.types.ndarray(),
-        ot_leaf_prim: ti.types.ndarray(), ot_leaf_tspan: ti.types.ndarray(),
-        ot_first_leaf: int,
-        ob_nodes: NODE_ARG, ob_node_miss: ti.types.ndarray(),
-        ob_leaf_prim: ti.types.ndarray(), ob_leaf_tspan: ti.types.ndarray(),
-        ob_first_leaf: int,
-        pixel_world_scale: ti.types.ndarray(),
+        ot_nodes: NODE_ARG, ot_first_leaf: int,
+        ob_nodes: NODE_ARG, ob_first_leaf: int,
         layer_offset_triangles: float,
         refit: ti.template(),
         has_tri: ti.template(), has_bez: ti.template(),
@@ -2050,9 +1855,10 @@ def wavefront_traverse_events(
         # remaining initial state is implicit in the matching ``first_iter``
         # shade. ``gen_meta`` packs [jitter_x, jitter_y, half_w, half_h].
         gen_first: ti.template(),
-        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
-        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        gen_meta: ti.types.ndarray()):
+        arena_f32: ti.types.ndarray(),
+        arena_i32: ti.types.ndarray(),
+        aoff: ti.types.ndarray(),
+        ashp: ti.types.ndarray()):
     """Gather kbuf nearest hits into a transient compact event batch.
 
     This reuses the general ``_collect_hits`` path, including the Matrix Pencil
@@ -2062,6 +1868,32 @@ def wavefront_traverse_events(
     whose index is not its pixel; the global cell is
     ``ray_offset + rs_pix[r]``.
     """
+    # Arena-bound parameters (arena_args_taichi): each name is
+    # rebound to a window into its dtype's buffer, at the offset
+    # the host wrote into aoff. Order is _WAVEFRONT_TRAVERSE_EVENTS_ARENA's.
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    b_node_miss = ti.static(ArenaView(arena_i32, aoff[4], (ashp[6],)))
+    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[5], (ashp[7],)))
+    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[6], (ashp[8],)))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[7], (ashp[9], ashp[10], ashp[11])))
+    edges_2d = ti.static(ArenaView(arena_f32, aoff[8], (ashp[12], ashp[13], ashp[14])))
+    edge_accel = ti.static(ArenaView(arena_i32, aoff[9], (ashp[15],)))
+    ot_node_miss = ti.static(ArenaView(arena_i32, aoff[10], (ashp[16],)))
+    ot_leaf_prim = ti.static(ArenaView(arena_i32, aoff[11], (ashp[17],)))
+    ot_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[12], (ashp[18],)))
+    ob_node_miss = ti.static(ArenaView(arena_i32, aoff[13], (ashp[19],)))
+    ob_leaf_prim = ti.static(ArenaView(arena_i32, aoff[14], (ashp[20],)))
+    ob_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[15], (ashp[21],)))
+    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[16], (ashp[22],)))
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[17], (ashp[23], ashp[24])))
+    screen_point = ti.static(ArenaView(arena_f32, aoff[18], (ashp[25], ashp[26])))
+    pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[19], (ashp[27], ashp[28])))
+    pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[20], (ashp[29], ashp[30])))
+    gen_meta = ti.static(ArenaView(arena_f32, aoff[21], (ashp[31],)))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -2199,210 +2031,76 @@ def wavefront_traverse_events(
                 hit_i[i, q, 1] = kb_flags[q]
 
 
-@ti.kernel
-def wavefront_shadow(
-        active: ti.types.ndarray(), num_active: int,
-        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int,
-        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
-        tri_colors: ti.types.ndarray(), tri_uvs: ti.types.ndarray(),
-        tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
-        tri_extra: ti.types.ndarray(),
-        num_colored_triangles: ti.i32,
-        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
-        b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
-        b_first_leaf: int,
-        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
-        circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
-        pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float,
-        refit: ti.template(),
-        # Shadow-terminator gate (rt_settings.shadow_terminator_mode()), same
-        # semantics as raster_shadow_trace's.
-        shadow_term: ti.template(),
-        has_tri: ti.template(), has_bez: ti.template(),
-        light_pos: ti.types.ndarray(), num_lights: int,
-        time_start: int, width: int, height: int, ray_offset: int,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
-        hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
-        rs_pix: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
-    """Legacy deferred binary shadow stage for the general wavefront (currently
-    unused: the tracer always compiles ``wavefront_shade`` with
-    ``deferred_shadows == 0`` -- the split measured slower than inline
-    shadows; kept for a future occupancy-bound workload): for each active ray,
-    precompute per-(K-buffer hit, light) occlusion into a packed int32 (bit
-    ``q * max_shadow_lights + li``). Run between traverse and shade so the
-    shade kernel reads visibility bits instead of inlining the heavy
-    ``_shadow_occluded`` -> ``_nearest_surface_g`` -> PN-solver call graph
-    (register-pressure relief -> higher shade-kernel occupancy). The per-hit
-    shadow geometry mirrors ``wavefront_shade``'s inline block. Before shadows
-    accumulated opacity, the bits drove byte-identical shading. Because
-    ``_collect_hits`` stops gathering at the first opaque hit, the K-buffer
-    holds (almost) exactly the hits shade consumes, so few bits are computed
-    and never read.
+#: What ``wavefront_traverse_events`` binds through the arena, in offset-table order:
+#: ``aoff[i]`` is the i-th entry's element offset into its dtype's
+#: buffer and ``ashp`` holds their shapes end to end. The kernel's
+#: binding prologue reads those slots by literal index, so the two
+#: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
+#: fails if they stop agreeing.
+_WAVEFRONT_TRAVERSE_EVENTS_ARENA = (
+    ("t_node_miss", "i32", 1),
+    ("t_leaf_prim", "i32", 1),
+    ("t_leaf_tspan", "i32", 1),
+    ("tri_pos", "f32", 3),
+    ("b_node_miss", "i32", 1),
+    ("b_leaf_prim", "i32", 1),
+    ("b_leaf_tspan", "i32", 1),
+    ("circuit_meta", "f32", 3),
+    ("edges_2d", "f32", 3),
+    ("edge_accel", "i32", 1),
+    ("ot_node_miss", "i32", 1),
+    ("ot_leaf_prim", "i32", 1),
+    ("ot_leaf_tspan", "i32", 1),
+    ("ob_node_miss", "i32", 1),
+    ("ob_leaf_prim", "i32", 1),
+    ("ob_leaf_tspan", "i32", 1),
+    ("pixel_world_scale", "f32", 1),
+    ("cam_origin", "f32", 2),
+    ("screen_point", "f32", 2),
+    ("pixel_basis_x", "f32", 2),
+    ("pixel_basis_y", "f32", 2),
+    ("gen_meta", "f32", 1),
+)
 
-    Opacity-weighted shadows no longer fit in these bits, so this stage must be
-    converted to a floating-point visibility buffer before it can be revived.
+#: The argument list every launch site passes. Unchanged by the
+#: conversion -- that is the point of the wrapper below.
+_WAVEFRONT_TRAVERSE_EVENTS_PARAMS = (
+    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
+    "t_leaf_tspan", "t_first_leaf", "tri_pos", "b_nodes", "b_node_miss",
+    "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta", "edges_2d",
+    "edge_accel", "ot_nodes", "ot_node_miss", "ot_leaf_prim", "ot_leaf_tspan",
+    "ot_first_leaf", "ob_nodes", "ob_node_miss", "ob_leaf_prim",
+    "ob_leaf_tspan", "ob_first_leaf", "pixel_world_scale",
+    "layer_offset_triangles", "refit", "has_tri", "has_bez", "opaque_closest",
+    "opaque_prepass", "time_start", "width", "height", "ray_offset", "rs_ro",
+    "rs_rd", "rs_sca", "rs_int", "hit_f", "hit_i", "rs_pix", "gen_first",
+    "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
+    "gen_meta",
+)
 
-    HOST CONTRACT if this kernel is ever revived: like ``hit_f``/``hit_i``,
-    ``rs_vis`` is indexed by *active-queue ordinal* (``rs_vis[i]``, not the
-    sparse pool slot), so the host must allocate it with ``num_active``
-    elements per iteration and launch this kernel inside the same temporary
-    arena scope as the surface-event batch, between traverse and shade. The
-    tracer's current 1-element ``rs_vis`` placeholder is only valid while
-    ``wavefront_shade`` is compiled with ``deferred_shadows == 0``.
+_wavefront_traverse_events_launch = arena_packed(
+    __name__, "wavefront_traverse_events_arena",
+    _WAVEFRONT_TRAVERSE_EVENTS_PARAMS, _WAVEFRONT_TRAVERSE_EVENTS_ARENA)
+
+
+def wavefront_traverse_events(*args):
+    """Pack the arena-bound arguments, then launch ``wavefront_traverse_events_arena``.
+
+    Takes the argument list this kernel had before it was converted to
+    the arena calling convention, so no launch site changed; see
+    `arena_args_taichi`.
     """
-    pixels_per_frame = width * height
-    for i in range(num_active):
-        r = active[i]
-        num_hits = rs_int[r, 3]
-        bits = 0
-        if num_hits > 0:
-            pix = rs_pix[r]
-            f = time_start + (ray_offset + pix) // pixels_per_frame
-            ff = ti.cast(f, ti.f32)
-            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            base_dist = rs_sca[r, 4]
-            pixel_size_per_t = pixel_world_scale[f]
-            tl = f % light_pos.shape[0]
-            for q in ti.static(range(kbuf)):
-                if q < num_hits:
-                    prim = hit_i[i, q, 0]
-                    if prim >= 0:
-                        htype = hit_i[i, q, 1] & 3
-                        if htype == 1:
-                            a = hit_f[i, q, 2]
-                            b = hit_f[i, q, 3]
-                            t_hit = hit_f[i, q, 0]
-                            snrm = _flat_triangle_normal(
-                                f, prim, 1.0 - a - b, a, b, tri_norm,
-                                tri_pos, tri_uvs, tri_tex_meta, textures,
-                                num_colored_triangles)
-                            tp = f % tri_pos.shape[0]
-                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                              tri_pos[tp, prim, 1],
-                                              tri_pos[tp, prim, 2])
-                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                              tri_pos[tp, prim, 4],
-                                              tri_pos[tp, prim, 5])
-                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                              tri_pos[tp, prim, 7],
-                                              tri_pos[tp, prim, 8])
-                            fnrm = (v1 - v0).cross(v2 - v0)
-                            snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
-                            spos = ro + t_hit * rd
-                            # Shadow-terminator origin (Hanika; RTGems II ch.
-                            # 4), identical to raster_shadow_trace's: the
-                            # face-normal lift stays, the stored/computed
-                            # displacement onto the smooth surface rides on
-                            # top of it, and ``lifted`` records whether the
-                            # origin genuinely moved (a flat facet's delta is
-                            # exactly zero by construction:
-                            # _shadow_terminator_delta short-circuits a
-                            # constant normal field) to license the
-                            # horizon-cull relaxation below.
-                            # RENDERER_WORK_QUEUE.md item 20.
-                            sorigin = spos + fnrm * (10.0 * min_hit_distance)
-                            lifted = 0
-                            if ti.static(shadow_term != 0):
-                                if ti.static(shadow_term == 1):
-                                    delta = _shadow_terminator_delta(
-                                        f, prim, 1.0 - a - b, a, b, spos,
-                                        snrm, tri_pos, tri_norm)
-                                    if (delta[0] != 0.0) or (delta[1] != 0.0) \
-                                            or (delta[2] != 0.0):
-                                        sorigin = sorigin + delta
-                                        lifted = 1
-                                else:
-                                    lifted = 1
-                            for li in range(num_lights):
-                                if li < _DEFERRED_SHADOW_LIGHTS:
-                                    lp = ti.math.vec3(light_pos[tl, li, 0],
-                                                      light_pos[tl, li, 1],
-                                                      light_pos[tl, li, 2])
-                                    to_light = lp - spos
-                                    ldist = to_light.norm()
-                                    if ldist > 1e-5:
-                                        wi = to_light / ldist
-                                        # Horizon cull, relaxed only where the
-                                        # origin moved onto the smooth surface
-                                        # (see raster_shadow_trace).
-                                        horizon_ok = (fnrm.dot(wi) > 1e-3) \
-                                            and (snrm.dot(wi) > 1e-4)
-                                        if ti.static(shadow_term != 0):
-                                            if lifted == 1:
-                                                horizon_ok = \
-                                                    snrm.dot(wi) > 1e-4
-                                        if horizon_ok:
-                                            occ = _shadow_occluded(
-                                                refit, 1, sorigin, wi, f, ff,
-                                                ldist - 20.0 * min_hit_distance,
-                                                pixel_size_per_t, base_dist,
-                                                layer_offset_triangles,
-                                                has_tri, has_bez,
-                                                t_nodes, t_node_miss,
-                                                t_leaf_prim, t_leaf_tspan,
-                                                t_first_leaf, tri_pos,
-                                                tri_colors, tri_uvs,
-                                                tri_tex_meta, textures,
-                                                tri_extra,
-                                                num_colored_triangles,
-                                                b_nodes, b_node_miss,
-                                                b_leaf_prim, b_leaf_tspan,
-                                                b_first_leaf, circuit_meta,
-                                                circuit_colors,
-                                                circuit_border_colors,
-                                                edges_2d, edge_accel,
-                                                # No source identity on this
-                                                # path (see wavefront_traverse).
-                                                -1, -1, 0.0, 0.0, tri_pos, 0)
-                                            if _vis_max_component(occ) > 0.5:
-                                                # Binary by necessity: the
-                                                # bit pack cannot carry color
-                                                # (this mode is documented as
-                                                # never enabled above, and is
-                                                # now also color-blind -- the
-                                                # max-component reduction is
-                                                # what a bit test means for an
-                                                # RGB payload).
-                                                bits |= (
-                                                    1 << (q
-                                                          * _DEFERRED_SHADOW_LIGHTS
-                                                          + li))
-        rs_vis[i] = bits
+    return _wavefront_traverse_events_launch(*args)
 
 
 @ti.kernel
-def wavefront_shade(
+def wavefront_shade_arena(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH (for shadow rays) + geometry/shading data.
-        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int,
-        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
-        tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
-        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
-        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        # Family A+B memory-trim: reordered/compacted triangle arrays + the
-        # per-prim color/extra remap ``col_row`` (see scene_builder._build_mem_
-        # _trim). Unused when ``mem_trim == 0`` (col_row is a 1-elem stub).
-        col_row: ti.types.ndarray(),
-        # PN patch STBVH + geometry/shading data.
-        # Bezier STBVH + geometry/shading data.
-        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
-        b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
-        b_first_leaf: int,
-        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
-        circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
-        pixel_world_scale: ti.types.ndarray(),
-        # Two floats packed into one ndarray to free an arg slot for ``col_row``
-        # (this kernel is at Taichi's 64 runtime-arg ceiling): [tri, pn].
-        layer_offsets: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_first_leaf: int,
+        num_colored_triangles: ti.i32,
+        # Bezier STBVH.
+        b_nodes: NODE_ARG, b_first_leaf: int,
         # Fragment shading + deterministic hard shadows (compile-time
         # templates, both 0 on the default vertex-shaded path so the whole
         # block below compiles out) and their data.
@@ -2440,8 +2138,7 @@ def wavefront_shade(
         direct_spec: ti.template(),
         mem_trim: ti.template(),
         opaque_closest: ti.template(),
-        # Fused generation's first host iteration (see wavefront_traverse's
-        # ``gen_first``): the initial per-ray state was never materialised, so
+        # Fused generation's first host iteration (``gen_first``): the initial per-ray state was never materialised, so
         # it is used as compile-time constants here (acc = 0, weight = 1,
         # t_prev = 0, layer_prev = 1e30, seam_t = -1e30, base_dist = 0,
         # processed = 0, pix = r) instead of read from global state;
@@ -2466,8 +2163,6 @@ def wavefront_shade(
         # truncation: the commit block below deposits its accumulated color
         # + leftover throughput exactly as for any other retirement.
         weight_floor_exit: ti.template(),
-        tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
-        light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
@@ -2476,10 +2171,10 @@ def wavefront_shade(
         hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
         rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray(),
-        # Per-frame camera world position, handed on to the material stages
-        # (``cam_pos``): depth-style shading measures from the CAMERA, and a
-        # bounced ray's own origin is not it.
-        cam_origin: ti.types.ndarray()):
+        arena_f32: ti.types.ndarray(),
+        arena_i32: ti.types.ndarray(),
+        aoff: ti.types.ndarray(),
+        ashp: ti.types.ndarray()):
     """Drain the compact event batch front-to-back.
 
     Alpha-composite each surface with per-geometry-type shading and mirror
@@ -2504,6 +2199,48 @@ def wavefront_shade(
     the ``compact`` template selects that representation without consuming
     another runtime argument.
     """
+    # Arena-bound parameters (arena_args_taichi): each name is
+    # rebound to a window into its dtype's buffer, at the offset
+    # the host wrote into aoff. Order is _WAVEFRONT_SHADE_ARENA's.
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    tri_norm = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[5], (ashp[9], ashp[10], ashp[11])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[7], (ashp[16], ashp[17], ashp[18])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[8], (ashp[19], ashp[20])))
+    textures = ti.static(ArenaView(arena_f32, aoff[9], (ashp[21], ashp[22], ashp[23])))
+    # Family A+B memory-trim: the per-prim color/extra remap that goes with
+    # the reordered/compacted triangle arrays (see scene_builder._build_mem_
+    # _trim). Unused when ``mem_trim == 0``, where it is a 1-elem stub.
+    col_row = ti.static(ArenaView(arena_i32, aoff[10], (ashp[24],)))
+    b_node_miss = ti.static(ArenaView(arena_i32, aoff[11], (ashp[25],)))
+    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[12], (ashp[26],)))
+    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[13], (ashp[27],)))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[14], (ashp[28], ashp[29], ashp[30])))
+    circuit_colors = ti.static(ArenaView(
+        arena_f32, aoff[15], (ashp[31], ashp[32], ashp[33], ashp[34])))
+    circuit_border_colors = ti.static(ArenaView(
+        arena_f32, aoff[16], (ashp[35], ashp[36], ashp[37], ashp[38])))
+    edges_2d = ti.static(ArenaView(arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
+    edge_accel = ti.static(ArenaView(arena_i32, aoff[18], (ashp[42],)))
+    # Two floats in one array: [tri, pn].
+    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[43],)))
+    layer_offsets = ti.static(ArenaView(arena_f32, aoff[20], (ashp[44],)))
+    tri_mat_id = ti.static(ArenaView(arena_i32, aoff[21], (ashp[45], ashp[46])))
+    tri_mat = ti.static(ArenaView(arena_f32, aoff[22], (ashp[47], ashp[48], ashp[49])))
+    light_pos = ti.static(ArenaView(
+        arena_f32, aoff[23], (ashp[50], ashp[51], ashp[52])))
+    light_col = ti.static(ArenaView(
+        arena_f32, aoff[24], (ashp[53], ashp[54], ashp[55])))
+    # Per-frame camera world position, handed on to the material stages
+    # (``cam_pos``): depth-style shading measures from the CAMERA, and a
+    # bounced ray's own origin is not it.
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[25], (ashp[56], ashp[57])))
     pixels_per_frame = width * height
     # Unpack the layer offset (packed into one ndarray to stay within the
     # 64-arg ceiling); the body below references this name unchanged.
@@ -2707,14 +2444,15 @@ def wavefront_shade(
                 if ti.static(frag_shading != 0):
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
                         # Legacy deferred shadows: read the per-(hit, light)
-                        # binary occlusion bits precomputed by
-                        # ``wavefront_shadow`` for this hit's K-buffer slot
-                        # (``sel``). This mode is currently never enabled and
-                        # must use floats before it can support the active
-                        # opacity-weighted shadow contract -- and its bits
-                        # cannot carry color, so it is now also color-blind:
-                        # a blocked light sets all three channels to 0, an
-                        # unblocked one keeps them at 1.
+                        # binary occlusion bits for this hit's K-buffer slot
+                        # (``sel``). DEAD: the prepass kernel that wrote those
+                        # bits was removed (it measured slower than inline
+                        # shadows and was never launched), and every call site
+                        # compiles ``deferred_shadows == 0``, so this arm is
+                        # never instantiated. Reviving it needs a new producer,
+                        # floats rather than bits (the active shadow contract
+                        # is opacity-weighted) and per-channel values (bits
+                        # cannot carry color).
                         sbits = rs_vis[i]
                         for li in range(num_lights):
                             if li < _DEFERRED_SHADOW_LIGHTS:
@@ -3011,8 +2749,7 @@ def wavefront_shade(
                                                     # No source identity on
                                                     # this path (the shade
                                                     # kernel does not receive
-                                                    # tri_obj; see
-                                                    # wavefront_traverse).
+                                                    # tri_obj).
                                                     -1, -1, 0.0, 0.0, tri_pos, 0)
                                         if n_valid > 0.0:
                                             # The soft-shadow fan still
@@ -3718,3 +3455,71 @@ def wavefront_shade(
             for k in ti.static(range(3)):
                 ti.atomic_add(pix_accum[accum_pix, 4 + k], w_bg[k])
             rs_int[r, 2] = _DONE
+
+
+#: What ``wavefront_shade`` binds through the arena, in offset-table order:
+#: ``aoff[i]`` is the i-th entry's element offset into its dtype's
+#: buffer and ``ashp`` holds their shapes end to end. The kernel's
+#: binding prologue reads those slots by literal index, so the two
+#: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
+#: fails if they stop agreeing.
+_WAVEFRONT_SHADE_ARENA = (
+    ("t_node_miss", "i32", 1),
+    ("t_leaf_prim", "i32", 1),
+    ("t_leaf_tspan", "i32", 1),
+    ("tri_pos", "f32", 3),
+    ("tri_norm", "f32", 3),
+    ("tri_extra", "f32", 3),
+    ("tri_colors", "f32", 4),
+    ("tri_uvs", "f32", 3),
+    ("tri_tex_meta", "i32", 2),
+    ("textures", "f32", 3),
+    ("col_row", "i32", 1),
+    ("b_node_miss", "i32", 1),
+    ("b_leaf_prim", "i32", 1),
+    ("b_leaf_tspan", "i32", 1),
+    ("circuit_meta", "f32", 3),
+    ("circuit_colors", "f32", 4),
+    ("circuit_border_colors", "f32", 4),
+    ("edges_2d", "f32", 3),
+    ("edge_accel", "i32", 1),
+    ("pixel_world_scale", "f32", 1),
+    ("layer_offsets", "f32", 1),
+    ("tri_mat_id", "i32", 2),
+    ("tri_mat", "f32", 3),
+    ("light_pos", "f32", 3),
+    ("light_col", "f32", 3),
+    ("cam_origin", "f32", 2),
+)
+
+#: The argument list every launch site passes. Unchanged by the
+#: conversion -- that is the point of the wrapper below.
+_WAVEFRONT_SHADE_PARAMS = (
+    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
+    "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_norm", "tri_extra",
+    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
+    "num_colored_triangles", "col_row", "b_nodes", "b_node_miss",
+    "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta",
+    "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel",
+    "pixel_world_scale", "layer_offsets", "frag_shading", "frag_pipelines",
+    "frag_scatters", "tri_pids", "shadows", "refraction", "ior_stack",
+    "refit", "has_tri", "has_bez", "deferred_shadows", "shadow_term",
+    "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
+    "first_iter", "compact", "weight_floor_exit", "tri_mat_id", "tri_mat",
+    "light_pos", "light_col", "num_lights", "time_start", "width", "height",
+    "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
+    "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin",
+)
+
+_wavefront_shade_launch = arena_packed(
+    __name__, "wavefront_shade_arena", _WAVEFRONT_SHADE_PARAMS, _WAVEFRONT_SHADE_ARENA)
+
+
+def wavefront_shade(*args):
+    """Pack the arena-bound arguments, then launch ``wavefront_shade_arena``.
+
+    Takes the argument list this kernel had before it was converted to
+    the arena calling convention, so no launch site changed; see
+    `arena_args_taichi`.
+    """
+    return _wavefront_shade_launch(*args)

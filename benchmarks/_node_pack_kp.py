@@ -1,7 +1,7 @@
 """Traverse-isolated perf benchmark for STBVH node-layout changes.
 
 Renders the same animated flat-triangle scene as ``_node_pack_parity.py``
-(PREVIEW video, ray-traced shadows) with ``wavefront_traverse`` and
+(PREVIEW video, ray-traced shadows) with ``wavefront_traverse_events`` and
 ``wavefront_shade`` monkeypatched behind ``_sync_devices()`` timing
 fences, and reports per-kernel totals (median over reps, after a warm-up
 render that absorbs compile + cold GPU clocks). Run once before and once
@@ -53,7 +53,7 @@ def _timed(name, orig):
     return wrapper
 
 
-_HOOKED = ("wavefront_traverse", "wavefront_shade")
+_HOOKED = ("wavefront_traverse_events", "wavefront_shade")
 for _name in _HOOKED:
     setattr(tracer_mod, _name, _timed(_name, getattr(tracer_mod, _name)))
 

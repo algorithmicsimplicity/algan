@@ -452,11 +452,8 @@ the scatter contract documented in
 .. note::
 
     Custom scatter and normal-mapped lighting run inside the deterministic ray
-    tracer's monolithic shade kernel, which is the only supported deterministic
-    shade path. An older *sorted* material-dispatch pipeline (one GPU kernel per
-    material, as in Blender Cycles) is no longer maintained and no longer works:
-    ``SETTINGS.raytracing.experimental.set(wavefront_sort_materials=True)`` raises
-    :class:`~algan.errors.UnsupportedFeatureError`.
+    tracer's monolithic shade kernel, which is the only deterministic shade
+    path.
 
     Custom fragment-shader pipelines are also a deterministic-renderer feature --
     see :ref:`renderer-capabilities`.

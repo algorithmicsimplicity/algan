@@ -614,13 +614,13 @@ batch can never overrun the arena. In the hybrid renderer the primary pass
 never allocates a hit batch at all, and unused continuation reserve no longer
 carries six K-buffer arrays.
 
-The unsupported legacy textured and material-sorted orchestrators keep
-`wavefront_traverse` and pool-wide K-buffers (`_alloc_wavefront_state
-(global_hits=True)`); they are isolated from the maintained path. The
-deferred `wavefront_shadow` kernel (never launched; measured slower than
-inline) was retargeted to the event-batch ABI — its docstring carries the
-host contract (ordinal-indexed `rs_vis[num_active]`) should it ever be
-revived.
+The legacy textured and material-sorted orchestrators kept `wavefront_traverse`
+and pool-wide K-buffers (`_alloc_wavefront_state(global_hits=True)`) alive after
+the maintained path stopped using them. Both orchestrators have since been
+deleted along with `wavefront_traverse`, and so has the deferred
+`wavefront_shadow` kernel (never launched; measured slower than inline). The
+shade kernel's `deferred_shadows` template — the consumer of that kernel's bits
+— survives but is compiled to 0 at every call site, so nothing instantiates it.
 
 
 ================================================================================
@@ -888,8 +888,8 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
                           surface-event batches (§7).
   wavefront_kernels_taichi.py
                           wavefront_traverse_events + event-batch
-                          wavefront_shade (§7); legacy wavefront_traverse
-                          retained for the unsupported orchestrators.
+                          wavefront_shade (§7). (The legacy wavefront_traverse
+                          this line also named went with its orchestrators.)
   scene_builder.py        tri/bez_frame_valid, tri/bez_frame_opaque,
                           tri_alpha_uncertain (per-primitive), bez_frame_lo/hi
                           masks next to the BVH build.

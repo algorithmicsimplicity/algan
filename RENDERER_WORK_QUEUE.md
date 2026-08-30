@@ -631,7 +631,28 @@ measure on a card with headroom before spending anything on the CUDA end.
 
 ## 14. Delete the dead render paths
 
-**Status: ~1,600 lines, and two of them import modules that do not exist.**
+**Status: PARTLY DONE (2026-08-30). The two wavefront variants are gone; the
+rest of the list below still stands.**
+
+**Done.** `wavefront_traverse` and `wavefront_shadow` (neither had a reachable
+launch site), `_raytrace_render_wavefront_textured`,
+`_raytrace_render_wavefront_sorted`, `_build_textured_scene` /
+`_promote_property_group` / every `textured_active` branch, the
+`wf_textured` / `wf_textured_features` / `WF_TEX_*` /
+`wavefront_sort_materials` settings **and their setters** (no rejecting stub
+was kept — the names are simply gone), the `_validate_render_capabilities`
+guards, `ALGAN_WF_TEXTURED_FEATURES`, and seven `benchmarks/_wf_*` scripts that
+could no longer run. Verified inert: `tests/full_renders` 6/7 with the seventh
+the pre-existing `solids_and_camera` failure, `--fast` 397 pass.
+
+The audit that found them, kept because the method generalises: two of these
+paths imported modules that **did not exist** (deleted in `415fac70` without
+their callers), so they would have raised `ImportError` at their first
+statement even with every settings gate removed. A path advertised as "gated
+off, kept for reference" is worth an import check before you believe it is
+revivable.
+
+**Still outstanding**, from the original audit:
 
 An import audit over the package (excluding `external_libraries`) found six
 unresolvable intra-package imports. One was the missing compaction kernel, fixed
@@ -639,22 +660,16 @@ at `2016a26`. The rest are dead:
 
 | Reference | Module | Guarded? |
 | --- | --- | --- |
-| `tracer.py:2867` | `wavefront_textured_kernels_taichi` | Yes — `set_textured_wavefront(True)` raises, `WF_TEXTURED` is a hard `False`, and `_validate_render_capabilities` raises on direct mutation. |
-| `tracer.py:3180` | `wavefront_sorted_kernels_taichi` | Yes — same pattern via `set_material_sorting`. |
 | `profiling_utils.py:694` | `ray_trace_taichi` | Yes — wrapped in `try/except Exception: pass`. |
 
 What that costs to keep:
 
-* `_raytrace_render_wavefront_textured` — 232 lines (`tracer.py:2830-3061`).
-* `_raytrace_render_wavefront_sorted` — 360 lines (`tracer.py:3130-3489`).
-* `_build_textured_scene` and its call site (`scene_builder.py:1072`, ~120
-  lines), reachable only when `WF_TEXTURED`, which cannot be set.
 * `path_trace_physical_stbvh` — ~370 lines (item 7).
-* `WF_TEXTURED`, `WF_TEXTURED_FEATURES`, `WF_TEX_*`, `WAVEFRONT_SORT_MATERIALS`
-  and their guarded setters, plus every `merged.get("textured_active")` and
-  `WAVEFRONT_SORT_MATERIALS is True` branch scattered through the live route
-  decisions — including two inside `analytic_raster_route_active`, the single
-  most load-bearing function in the renderer.
+* `wavefront_shade`'s `deferred_shadows` template arm and the `rs_vis` argument
+  it reads. The kernel that wrote those bits is deleted, so nothing can produce
+  them, and every call site compiles `deferred_shadows == 0` — but removing the
+  arm means editing the live shade megakernel's parameter list, its arena spec
+  and both call sites, so it was left out of the 2026-08-30 pass.
 * `post_processing/anti_aliasing/smaa.py` — 532 lines, plus `AreaTex.png` and
   `SearchTex.png`. **Never imported by anything**; `post_process_frames` wires
   up FXAA only. The module's own `__init__.py` advertises "anti-aliasing" as a
@@ -1056,8 +1071,8 @@ surface's, so keeping it would refuse rays the corrected origin can now trace
 honestly.
 
 **Not covered.** The Monte Carlo megakernel (`samples_per_pixel > 1`) keeps the
-old origin; so does every reflection/refraction continuation. `wavefront_shadow`
-carries the change but has no caller, so it is compiled by nothing.
+old origin; so does every reflection/refraction continuation. (`wavefront_shadow`
+also carried the change, but it had no caller and has since been deleted.)
 
 ---
 

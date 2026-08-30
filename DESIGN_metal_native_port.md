@@ -92,17 +92,17 @@ already exists.
 ### 1.2 The ~24-buffer argument limit — mostly dissolves, because of the arena
 
 `DESIGN_mps_support.md` §1.1 calls this "the blocker", and on the numbers it is:
-8 kernels bind more than 24 ndarrays, and they are all the ones that matter.
-Measured afresh from the AST:
+6 kernels bind more than 24 ndarrays, and they are all the ones that matter.
+Measured afresh from the AST (the two rows this survey originally carried for
+`wavefront_traverse` and `wavefront_shadow` are gone: both kernels were
+unreachable and have since been deleted):
 
 | kernel | ndarrays | template gates | scalars | body lines |
 | --- | --- | --- | --- | --- |
 | `sheet_resolve_shade` | 49 | 15 | 7 | 1065 |
 | `wavefront_shade` | 38 | 19 | 11 | 1340 |
-| `wavefront_traverse` | 34 | 6 | 14 | 184 |
 | `raster_shadow_trace` | 30 | 7 | 10 | 300 |
 | `wavefront_traverse_events` | 30 | 6 | 14 | 183 |
-| `wavefront_shadow` | 29 | 4 | 12 | 173 |
 
 The doc's read is that clearing this means splitting the megakernels — cutting
 across the fusion they exist for — or "packing many arrays into single buffers
@@ -156,8 +156,10 @@ re-checks on every run. The other three rows come from running the same
 instrumentation over `tests/fast/scene.py` and
 `tests/full_renders/scenes/materials_and_lighting.py`, which reach kernels that
 scene does not; the guard skips a kernel it never launches rather than
-pretending to cover it. `wavefront_traverse`, `wavefront_shadow` and the two
-path tracers remain unobserved — no scene run so far reaches them.
+pretending to cover it. The two path tracers remain unobserved — no scene run
+so far reaches them. (`wavefront_traverse` and `wavefront_shadow` were also
+unobserved, and that turned out to be the finding rather than a gap in the
+scenes: neither had a reachable caller, and both have been deleted.)
 
 The number that decides this is not how many arguments a kernel takes but how
 many are **not** arena-backed, because those keep their own binding however well
@@ -198,6 +200,31 @@ untouched. Torch's shim honours `storage_offset`, so arena views can be passed
 as ordinary tensor arguments where a kernel stays under 31 bindings, and the
 explicit offset table is needed only to get *under* that count — not to address
 the memory correctly.
+
+**Done, on the Taichi side, ahead of the port.** Every kernel in the table above
+now takes its cold arrays through the arena
+(`algan/rendering/raytracing/arena_args_taichi.py`). The widest kernel in the
+package asks for 20 ndarray arguments; nothing is over 24, and
+`tests/unit_tests/test_arena_args.py` fails if a new one appears.
+
+Three things about how it landed are worth carrying into the port:
+
+* **The hot arrays stay ordinary parameters.** Binding *everything* costs 18% of
+  `sheet_resolve_shade`'s device time; binding everything except the seven
+  slot-indexed ray-state arrays costs 1.7–3.0%, and keeping thirteen more on top
+  of those bought nothing further. The cost is per *access*, so the split that
+  matters is per-thread state (parameters) against scene tables (arena).
+* **The aliasing caveat above did not materialise.** Giving each ray-state array
+  its own arena is +19% against one shared arena's +18%; splitting stores from
+  loads buys about a point. What the cost actually is —Taichi re-loading base
+  pointers and shapes from a global-memory argument buffer at every use site —
+  is in `DESIGN_taichi_argument_loads.md`, along with the Taichi fork that would
+  remove it. An MSL kernel taking a `device uchar*` and a `setBytes` offset
+  struct pays none of it: the offsets arrive in registers.
+* **No launch site changed.** `arena_packed` wraps each converted kernel and
+  splits the original positional argument list, so the ~12 call sites in
+  `tracer.py`, `raster_pipeline.py` and `path_tracer.py` are untouched. The
+  dispatch layer can do the same.
 
 ---
 

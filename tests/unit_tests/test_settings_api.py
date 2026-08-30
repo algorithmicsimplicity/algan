@@ -526,7 +526,7 @@ def test_an_unsupported_feature_is_not_flattened_into_a_configuration_error():
     from algan.errors import UnsupportedFeatureError
 
     with pytest.raises(UnsupportedFeatureError):
-        SETTINGS.raytracing.experimental.set(wf_textured=True)
+        SETTINGS.raytracing.set(unsupported_feature_policy="not-a-policy")
 
 
 def test_the_very_first_write_in_a_process_is_validated_too():

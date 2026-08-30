@@ -41,13 +41,13 @@ circuits it splits by what sets the drawn boundary:
 
 THE FIX (``_axis_cos`` in ``raytrace_kernels_taichi``): multiply by the cosine
 between the pixel's PRIMARY ray and the optical axis, which converts the slant
-range into perpendicular depth. It is applied on all five paths that set a
+range into perpendicular depth. It is applied on all four paths that set a
 circuit's width from a primary ray -- the hybrid raster path (which also covers
-the supersampled aa=2 fallback), both wavefront traversals and both path
+the supersampled aa=2 fallback), the wavefront traversal and both path
 tracers -- and this script reports 0.000 px spread on every one of them.
 
-``wavefront_shadow`` and ``wavefront_shade`` keep the accumulated-path
-heuristic on purpose: their ``pixel_size_per_t`` reaches only
+``wavefront_shade`` keeps the accumulated-path heuristic on purpose: its
+``pixel_size_per_t`` reaches only
 ``_shadow_occluded``, so it never sets a drawn width, and growth with path
 length is defensible for a secondary ray. In the traversals the cosine is
 rebuilt from the PIXEL rather than from the current ray, because ``gen_first``

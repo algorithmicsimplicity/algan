@@ -12,15 +12,19 @@ tensor it hands out is a slice view of it, so those 49 arguments are one
 allocation at 49 offsets. Bind the arena once, pass the offsets alongside, and
 a kernel reconstitutes its arrays inside the shader.
 
-**This module is the marshalling half of that, and the marshalling half is the
-part worth building now.** The kernel bodies do not survive the port — MSL
-replaces them, it does not translate them — so converting the Taichi bodies to
-offset indexing would carry nothing forward. Working out which arguments are
-arena-backed, at what offset, and whether what is left still fits in 31 slots is
-the same problem for both backends, and it can be answered and regression-tested
-on CPU and CUDA today.
+**This module is the planning half of that.** It works out which arguments are
+arena-backed, at what offset, and whether what is left still fits in 31 slots --
+the same problem for both backends, answerable and regression-testable on CPU
+and CUDA today.
 
-What a live render says (``test_arena_binding_live.py`` keeps it true):
+The half that *runs* is `algan/rendering/raytracing/arena_args_taichi.py`. Every
+kernel that was over Taichi's 24-buffer Metal budget has since been converted to
+take its cold arrays through the arena, so the table below is now history rather
+than a gap: no kernel asks for more than 20 ndarray arguments
+(`tests/unit_tests/test_arena_args.py`).
+
+What a live render said before the conversion, and what those kernels still hand
+their launch wrapper (``test_arena_binding_live.py`` keeps it true):
 
 | kernel | ndarray args | arena-backed | bindings after packing |
 | --- | --- | --- | --- |
@@ -29,9 +33,13 @@ What a live render says (``test_arena_binding_live.py`` keeps it true):
 | ``wavefront_traverse_events`` | 34 | 34 | 2 |
 | ``raster_shadow_trace`` | 32 | 24 | 10 |
 
-Nothing here runs during a render. It is a library the Metal dispatch layer will
-call and that the tests drive; production launch paths do not import it, so it
-costs a shipped render nothing.
+``raster_shadow_trace``'s eight non-arena arguments are its ``event_*`` tables,
+which are allocated outside the arena on every path measured; they are why it
+keeps them as ordinary parameters rather than binding them.
+
+Nothing here runs during a render. It is a planning library the tests drive;
+production launch paths use `arena_args_taichi` instead, so this module costs a
+shipped render nothing.
 """
 
 from __future__ import annotations

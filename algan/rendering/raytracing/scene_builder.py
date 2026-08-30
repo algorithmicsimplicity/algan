@@ -28,7 +28,7 @@ from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
 )
-from algan.rendering.raytracing.shading_taichi import _MID_UNLIT, MAT_W
+from algan.rendering.raytracing.shading_taichi import MAT_W
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import (
     _cat_collections,
@@ -806,8 +806,6 @@ def _bvh_deferral_eligible(scene):
         return False
     if int(_rts.samples_per_pixel) > 1 or _rts.shadows or _rts.inplace_aa:
         return False
-    if _rts.wf_textured or scene.get("textured_active"):
-        return False
     if scene.get("mem_trim_active"):
         return False
     # Custom fragment pipelines may override scattering; conservatively keep
@@ -1119,167 +1117,6 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     scene["tri_col_row"] = col_row
     scene["tri_bvh_t"] = tri_bvh_t
     scene["mem_trim_active"] = True
-
-
-def _promote_property_group(cv, present, num_frames, device):
-    """Promote one per-corner property group of a flat-triangle batch to a
-    texture bank, for the UNSUPPORTED legacy textured wavefront (see
-    settings.wf_textured; kept for reference).
-
-    ``cv`` is the per-corner value tensor ``[T, N, 3, C]`` (T frames, N
-    triangles, 3 corners, C channels) and ``present`` a ``[N]`` bool mask of the
-    triangles that actually carry this group (others get index -1 and sample
-    nothing). A triangle whose three corners are equal in every frame is
-    *constant across the surface* and is promoted to a shared 1x1 texture
-    (grouped by value, so identical surfaces share one texel); one that varies
-    per vertex gets its own 2x2 texture laid out ``[[v0, v1], [v2, v0]]`` so a
-    bilinear lookup at the canonical corner UVs ``(0,0)/(1,0)/(0,1)``
-    reproduces the corner values exactly and blends between them in the
-    interior (an approximation of true barycentric interpolation).
-
-    Returns ``(bank, meta, idx)``: ``bank`` is the flat texel buffer
-    ``[Tb, num_texels, C]``, ``meta`` the ``[num_textures, 3]`` int32
-    ``(offset, width, height)`` per texture and ``idx`` the ``[N]`` int32
-    per-triangle texture index (-1 = absent).
-    """
-    T = num_frames
-    cv = _expand_frames(cv, T).contiguous()
-    N, C = cv.shape[1], cv.shape[3]
-    idx = torch.full((N,), -1, dtype=torch.int32, device=device)
-    tri_ids = torch.arange(N, device=device)
-    # Constant across the surface: all three corners equal in every frame.
-    const_mask = (cv == cv[:, :, :1, :]).all(3).all(2).all(0)  # [N]
-
-    banks, metas = [], []
-    texel_off = 0
-    meta_base = 0
-
-    def _emit(sel, texels_flat, per_tex_texels, w, h, inv):
-        # texels_flat: [T, G * per_tex_texels, C]; inv: [len(sel)] group id.
-        nonlocal texel_off, meta_base
-        G = texels_flat.shape[1] // per_tex_texels
-        banks.append(texels_flat)
-        offs = (
-            texel_off
-            + torch.arange(G, device=device, dtype=torch.int32) * per_tex_texels
-        )
-        wv = torch.full((G,), w, dtype=torch.int32, device=device)
-        hv = torch.full((G,), h, dtype=torch.int32, device=device)
-        metas.append(torch.stack([offs, wv, hv], -1))
-        idx[sel] = inv.to(torch.int32) + meta_base
-        texel_off += G * per_tex_texels
-        meta_base += G
-
-    # Constant group -> one 1x1 texel per distinct value-over-time.
-    cc = present & const_mask
-    if bool(cc.any()):
-        sel = tri_ids[cc]
-        vals = cv[:, sel, 0, :]  # [T, nc, C]
-        key = vals.permute(1, 0, 2).reshape(sel.numel(), T * C)
-        uniq, inv = torch.unique(key, dim=0, return_inverse=True)
-        G = uniq.shape[0]
-        texels = uniq.reshape(G, T, C).permute(1, 0, 2).contiguous()  # [T,G,C]
-        _emit(sel, texels, 1, 1, 1, inv)
-
-    # Per-vertex group -> one 2x2 texture per distinct (v0, v1, v2)-over-time.
-    cvary = present & ~const_mask
-    if bool(cvary.any()):
-        sel = tri_ids[cvary]
-        vals = cv[:, sel, :, :]  # [T, nv, 3, C]
-        key = vals.permute(1, 0, 2, 3).reshape(sel.numel(), T * 3 * C)
-        uniq, inv = torch.unique(key, dim=0, return_inverse=True)
-        G = uniq.shape[0]
-        u = uniq.reshape(G, T, 3, C)
-        v0, v1, v2 = u[:, :, 0, :], u[:, :, 1, :], u[:, :, 2, :]  # [G,T,C]
-        # Column-major texel order (offset + cx*h + cy, h=2): texel(0,0)=v0,
-        # texel(0,1)=v2, texel(1,0)=v1, texel(1,1)=v0 -> [[v0,v1],[v2,v0]].
-        texs = torch.stack([v0, v2, v1, v0], 2)  # [G,T,4,C]
-        texels = texs.permute(1, 0, 2, 3).reshape(T, G * 4, C).contiguous()
-        _emit(sel, texels, 4, 2, 2, inv)
-
-    if banks:
-        bank = _dedup_time(torch.cat(banks, 1).contiguous())
-        meta = torch.cat(metas, 0).contiguous()
-    else:  # nothing in this group carries a texture
-        bank = torch.zeros((1, 1, C), device=device)
-        meta = torch.zeros((1, 3), dtype=torch.int32, device=device)
-    return bank, meta, idx
-
-
-def _build_textured_scene(scene, num_frames, device):
-    """Build the three per-triangle texture banks the UNSUPPORTED legacy
-    textured wavefront shades from (see settings.wf_textured; kept for
-    reference), from the full per-vertex merged arrays (constant-promotion is
-    disabled for this path so they span every triangle).
-
-    Groups, each promoted independently by :func:`_promote_property_group`:
-
-    * **color** -- RGBA + glow (``tri_colors`` 5 channels, per vertex).
-    * **surface** -- reflectivity / roughness / index-of-refraction (from
-      ``tri_extra``, per vertex) used for scatter; index -1 for a matte surface
-      (no reflectivity, no refraction) so the kernel skips the lookup.
-    * **material** -- the shading parameter block prefixed with the pipeline id
-      (``tri_mat_id`` + ``tri_mat``, per primitive, hence always 1x1); index -1
-      for an unlit surface (no shading, color passes through).
-
-    Every triangle is assigned the canonical corner UVs ``(0,0)/(1,0)/(0,1)``.
-    """
-    T = num_frames
-    tc = _expand_frames(scene["tri_colors"].to(device), T)  # [T,N,3,5]
-    te = _expand_frames(scene["tri_extra"].to(device), T)  # [T,N,_EXTRA_W]
-    tm = _expand_frames(scene["tri_mat"].to(device), T)[..., :MAT_W]  # [T,N,MAT_W]
-    tmi = _expand_frames(scene["tri_mat_id"].to(device), T)  # [T,N]
-    N = tc.shape[1]
-
-    # Color: every triangle carries a color.
-    present = torch.ones(N, dtype=torch.bool, device=device)
-    col_bank, col_meta, col_idx = _promote_property_group(tc, present, T, device)
-
-    # Surface (scatter): per-corner (metalness, roughness, IOR, transmission)
-    # gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}/{9,10,11}.
-    c0 = torch.stack([te[..., 0], te[..., 1], te[..., 6], te[..., 9]], -1)
-    c1 = torch.stack([te[..., 2], te[..., 3], te[..., 7], te[..., 10]], -1)
-    c2 = torch.stack([te[..., 4], te[..., 5], te[..., 8], te[..., 11]], -1)
-    surf_corner = torch.stack([c0, c1, c2], 2)  # [T,N,3,4]
-    refl = surf_corner[..., 0]
-    transmission = surf_corner[..., 3]
-    surf_present = (refl >= 0.0).any(0).any(-1) | (transmission > 1e-6).any(0).any(
-        -1
-    )  # [N]
-    surf_bank, surf_meta, surf_idx = _promote_property_group(
-        surf_corner, surf_present, T, device
-    )
-
-    # Material (shading): [pipeline id | 12-slot param block], per primitive so
-    # always constant across the corners -> promotes to 1x1. Fed as a degenerate
-    # per-corner tensor (all three corners equal) so it shares the promoter.
-    mat_vec = torch.cat([tmi.unsqueeze(-1).float(), tm], -1)  # [T,N,13]
-    lit = (tmi != _MID_UNLIT).any(0)  # [N]
-    mat_corner = mat_vec.unsqueeze(2).expand(T, N, 3, 13)
-    mat_bank, mat_meta, mat_idx = _promote_property_group(mat_corner, lit, T, device)
-
-    scene["tx_color_bank"] = col_bank
-    scene["tx_color_meta"] = col_meta
-    scene["tx_color_idx"] = col_idx
-    scene["tx_surf_bank"] = surf_bank
-    scene["tx_surf_meta"] = surf_meta
-    scene["tx_surf_idx"] = surf_idx
-    scene["tx_mat_bank"] = mat_bank
-    scene["tx_mat_meta"] = mat_meta
-    scene["tx_mat_idx"] = mat_idx
-    # Normal-map bank (feature): placeholder / index -1 for every triangle until
-    # a Surface carries a normal map (the normal-map feature measures the
-    # compiled-in cost; real maps would be promoted here like the color bank).
-    scene["tx_nmap_bank"] = torch.zeros((1, 1, 3), device=device)
-    scene["tx_nmap_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
-    scene["tx_nmap_idx"] = torch.full((N,), -1, dtype=torch.int32, device=device)
-    # Canonical per-triangle corner UVs (shared, constant across frames).
-    scene["tx_uv"] = (
-        torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0, 1.0], device=device)
-        .view(1, 1, 6)
-        .expand(1, N, 6)
-        .contiguous()
-    )
 
 
 def _densify_frag_pipeline_ids(scene):
@@ -1679,12 +1516,7 @@ def _merge_scene(primitives, *, track_peak=None):
         # every triangle is kept and this reduces byte-identically to the plain
         # per-vertex merge (see _sel: an all-keep selection returns the original
         # tensor, uncopied).
-        _rts = SETTINGS.raytracing
-        # The textured wavefront does its own (three-group) constant/per-vertex
-        # promotion from the full per-vertex arrays, so the built-in single-map
-        # promotion is turned off for it (it would shrink tri_colors/tri_extra
-        # out from under the texture builder).
-        promote = _constant_promotion_active() and not _rts.wf_textured
+        promote = _constant_promotion_active()
         plain_triangles = [
             p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None
         ]
@@ -2297,16 +2129,6 @@ def _merge_scene(primitives, *, track_peak=None):
     scene["all_visible_opaque"] = (
         scene["has_any_visible"] and not scene["has_any_translucent"]
     )
-
-    # UNSUPPORTED legacy texture-lookup shading (Surface / flat-triangle
-    # scenes only: no bezier circuits; opt-in via wf_textured,
-    # kept for reference). Builds the three per-triangle texture banks +
-    # indexes the textured wavefront kernel consumes.
-    scene["textured_active"] = False
-    _rts = SETTINGS.raytracing
-    if _rts.wf_textured and scene["num_triangles"] > 0 and scene["num_circuits"] == 0:
-        _build_textured_scene(scene, num_frames, device)
-        scene["textured_active"] = True
 
     # Build the per-geometry STBVHs -- or, for batches that provably never
     # traverse one (hybrid-raster primaries, no shadows, no reflective /

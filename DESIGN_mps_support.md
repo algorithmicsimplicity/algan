@@ -53,10 +53,8 @@ the line:
 | --- | --- | --- |
 | `sheet_resolve_shade` | 49 | no |
 | `wavefront_shade` | 38 | no |
-| `wavefront_traverse` | 34 | no |
 | `raster_shadow_trace` | 30 | no |
 | `wavefront_traverse_events` | 30 | no |
-| `wavefront_shadow` | 29 | no |
 | `raster_tri_write` | 20 | yes |
 | `raster_bez_write` | 18 | yes |
 | `raster_tri_count` | 15 | yes |

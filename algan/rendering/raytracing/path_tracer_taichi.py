@@ -87,6 +87,10 @@ pair                         use
 
 import taichi as ti
 
+from algan.rendering.raytracing.arena_args_taichi import (
+    ArenaView,
+    arena_packed,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -1013,28 +1017,12 @@ def _pt_direct_response(pid, params: ti.template(), f, prim, albedo,
 
 
 @ti.kernel
-def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
-             t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
-             t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-             t_first_leaf: ti.i32,
-             tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
-             tri_extra: ti.types.ndarray(),
-             tri_colors: ti.types.ndarray(), tri_uvs: ti.types.ndarray(),
-             tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
+def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
+             t_nodes: NODE_ARG, t_first_leaf: ti.i32,
              num_colored_triangles: ti.i32,
-             b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
-             b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
-             b_first_leaf: ti.i32,
-             circuit_meta: ti.types.ndarray(),
-             circuit_colors: ti.types.ndarray(),
-             circuit_border_colors: ti.types.ndarray(),
-             edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
-             tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
-             light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
+             b_nodes: NODE_ARG, b_first_leaf: ti.i32,
              num_lights: ti.i32,
-             pixel_world_scale: ti.types.ndarray(),
              layer_offset_triangles: ti.f32,
-             cam_origin: ti.types.ndarray(),
              refit: ti.template(), has_tri: ti.template(),
              has_bez: ti.template(), shadows: ti.template(),
              frag_pipelines: ti.template(), tri_pids: ti.template(),
@@ -1048,12 +1036,11 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
              hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
              pt_thru: ti.types.ndarray(), pt_acc: ti.types.ndarray(),
              pt_stats: ti.types.ndarray(),
-             nee_cdf: ti.types.ndarray(), nee_ref: ti.types.ndarray(),
-             nee_meta: ti.types.ndarray(),
-             tri_emit_prob: ti.types.ndarray(),
-             env_cdf: ti.types.ndarray(),
-             tri_shell: ti.types.ndarray(),
-             pt_aov: ti.types.ndarray()):
+             pt_aov: ti.types.ndarray(),
+             arena_f32: ti.types.ndarray(),
+             arena_i32: ti.types.ndarray(),
+             aoff: ti.types.ndarray(),
+             ashp: ti.types.ndarray()):
     """Consume one traverse's hit-event batch (see the module docstring).
 
     Deterministic alpha compositing carries every crossed surface's local
@@ -1078,6 +1065,45 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
     Escaping rays sample the environment map in their own direction, so
     mirrors and GI see the sky the deterministic renderer shows.
     """
+    # Arena-bound parameters (arena_args_taichi): each name is
+    # rebound to a window into its dtype's buffer, at the offset
+    # the host wrote into aoff. Order is _PT_SHADE_ARENA's.
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    tri_norm = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[5], (ashp[9], ashp[10], ashp[11])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[7], (ashp[16], ashp[17], ashp[18])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[8], (ashp[19], ashp[20])))
+    textures = ti.static(ArenaView(arena_f32, aoff[9], (ashp[21], ashp[22], ashp[23])))
+    b_node_miss = ti.static(ArenaView(arena_i32, aoff[10], (ashp[24],)))
+    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[11], (ashp[25],)))
+    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[12], (ashp[26],)))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29])))
+    circuit_colors = ti.static(ArenaView(
+        arena_f32, aoff[14], (ashp[30], ashp[31], ashp[32], ashp[33])))
+    circuit_border_colors = ti.static(ArenaView(
+        arena_f32, aoff[15], (ashp[34], ashp[35], ashp[36], ashp[37])))
+    edges_2d = ti.static(ArenaView(arena_f32, aoff[16], (ashp[38], ashp[39], ashp[40])))
+    edge_accel = ti.static(ArenaView(arena_i32, aoff[17], (ashp[41],)))
+    tri_mat_id = ti.static(ArenaView(arena_i32, aoff[18], (ashp[42], ashp[43])))
+    tri_mat = ti.static(ArenaView(arena_f32, aoff[19], (ashp[44], ashp[45], ashp[46])))
+    light_pos = ti.static(ArenaView(
+        arena_f32, aoff[20], (ashp[47], ashp[48], ashp[49])))
+    light_col = ti.static(ArenaView(
+        arena_f32, aoff[21], (ashp[50], ashp[51], ashp[52])))
+    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[22], (ashp[53],)))
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[23], (ashp[54], ashp[55])))
+    nee_cdf = ti.static(ArenaView(arena_f32, aoff[24], (ashp[56],)))
+    nee_ref = ti.static(ArenaView(arena_i32, aoff[25], (ashp[57], ashp[58])))
+    nee_meta = ti.static(ArenaView(arena_f32, aoff[26], (ashp[59],)))
+    tri_emit_prob = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60],)))
+    env_cdf = ti.static(ArenaView(arena_f32, aoff[28], (ashp[61], ashp[62])))
+    tri_shell = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63], ashp[64])))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -1988,6 +2014,77 @@ def pt_shade(active: ti.types.ndarray(), num_active: ti.i32,
                 for k in ti.static(range(3)):
                     pt_aov[r, _AOV_BGW + k] += leftover_e[k]
             rs_int[r, 2] = _DONE
+
+
+#: What ``pt_shade`` binds through the arena, in offset-table order:
+#: ``aoff[i]`` is the i-th entry's element offset into its dtype's
+#: buffer and ``ashp`` holds their shapes end to end. The kernel's
+#: binding prologue reads those slots by literal index, so the two
+#: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
+#: fails if they stop agreeing.
+_PT_SHADE_ARENA = (
+    ("t_node_miss", "i32", 1),
+    ("t_leaf_prim", "i32", 1),
+    ("t_leaf_tspan", "i32", 1),
+    ("tri_pos", "f32", 3),
+    ("tri_norm", "f32", 3),
+    ("tri_extra", "f32", 3),
+    ("tri_colors", "f32", 4),
+    ("tri_uvs", "f32", 3),
+    ("tri_tex_meta", "i32", 2),
+    ("textures", "f32", 3),
+    ("b_node_miss", "i32", 1),
+    ("b_leaf_prim", "i32", 1),
+    ("b_leaf_tspan", "i32", 1),
+    ("circuit_meta", "f32", 3),
+    ("circuit_colors", "f32", 4),
+    ("circuit_border_colors", "f32", 4),
+    ("edges_2d", "f32", 3),
+    ("edge_accel", "i32", 1),
+    ("tri_mat_id", "i32", 2),
+    ("tri_mat", "f32", 3),
+    ("light_pos", "f32", 3),
+    ("light_col", "f32", 3),
+    ("pixel_world_scale", "f32", 1),
+    ("cam_origin", "f32", 2),
+    ("nee_cdf", "f32", 1),
+    ("nee_ref", "i32", 2),
+    ("nee_meta", "f32", 1),
+    ("tri_emit_prob", "f32", 1),
+    ("env_cdf", "f32", 2),
+    ("tri_shell", "i32", 2),
+)
+
+#: The argument list every launch site passes. Unchanged by the
+#: conversion -- that is the point of the wrapper below.
+_PT_SHADE_PARAMS = (
+    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
+    "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_norm", "tri_extra",
+    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
+    "num_colored_triangles", "b_nodes", "b_node_miss", "b_leaf_prim",
+    "b_leaf_tspan", "b_first_leaf", "circuit_meta", "circuit_colors",
+    "circuit_border_colors", "edges_2d", "edge_accel", "tri_mat_id",
+    "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
+    "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
+    "shadows", "frag_pipelines", "tri_pids", "seed_root", "sample_base",
+    "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
+    "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",
+    "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
+    "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
+)
+
+_pt_shade_launch = arena_packed(
+    __name__, "pt_shade_arena", _PT_SHADE_PARAMS, _PT_SHADE_ARENA)
+
+
+def pt_shade(*args):
+    """Pack the arena-bound arguments, then launch ``pt_shade_arena``.
+
+    Takes the argument list this kernel had before it was converted to
+    the arena calling convention, so no launch site changed; see
+    `arena_args_taichi`.
+    """
+    return _pt_shade_launch(*args)
 
 
 @ti.kernel

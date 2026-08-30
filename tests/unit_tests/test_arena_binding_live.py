@@ -47,9 +47,7 @@ WIDE_KERNELS = {
     "algan.rendering.raytracing.sheet_resolve_taichi": ("sheet_resolve_shade",),
     "algan.rendering.raytracing.wavefront_kernels_taichi": (
         "wavefront_shade",
-        "wavefront_traverse",
         "wavefront_traverse_events",
-        "wavefront_shadow",
     ),
     "algan.rendering.raytracing.raster_taichi": (
         "raster_shadow_trace",

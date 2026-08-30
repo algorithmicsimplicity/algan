@@ -44,12 +44,8 @@ from algan.utils import algan_utils
 def reset_global_authoring_state():
     SceneManager.reset()
     previous_policy = rt_settings.unsupported_feature_policy
-    previous_textured = rt_settings.wf_textured
-    previous_sorted = rt_settings.wavefront_sort_materials
     yield
     rt_settings.unsupported_feature_policy = previous_policy
-    rt_settings.wf_textured = previous_textured
-    rt_settings.wavefront_sort_materials = previous_sorted
     SceneManager.reset()
 
 
@@ -744,15 +740,6 @@ def test_render_plan_describes_supported_deterministic_route():
     assert plan.requested_features == ("refractive materials",)
     assert plan.is_supported
     assert plan.as_dict()["unsupported_features"] == []
-
-
-def test_known_broken_renderer_switches_are_hard_disabled():
-    with pytest.raises(UnsupportedFeatureError):
-        rt_settings.set_wf_textured(True)
-    with pytest.raises(UnsupportedFeatureError):
-        rt_settings.set_wf_textured_features(1)
-    with pytest.raises(UnsupportedFeatureError):
-        rt_settings.set_wavefront_sort_materials(True)
 
 
 def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):

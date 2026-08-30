@@ -31,7 +31,7 @@ from algan.scene_manager import SceneManager
 
 HERE = Path(__file__).resolve().parent
 SCENES_DIR = HERE / "scenes"
-OUTPUT_DIR = HERE / "algan_outputs2"
+OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
 ERRORS_DIR = HERE / "output_errors"
 # The device the renders will actually run on, and -- on macOS -- the platform

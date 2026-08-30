@@ -667,9 +667,8 @@ def set_texture_window_collapse(enabled):
 # kernel), which reorders f32 rounding by up to an ulp -- the same class of
 # qualified exception as ALGAN_WIDE_ATTR_RENDER_DEVICE. With opacity == 1
 # (no fade anywhere) the multiply is exact and the flip IS byte-identical.
-# Requires texture_time_flat and is disabled under the legacy wf_textured
-# path (which consumes premultiplied maps); see
-# ``texture_opacity_in_kernel_active``. ALGAN_TEXTURE_OPACITY_IN_KERNEL=0
+# Requires texture_time_flat; see ``texture_opacity_in_kernel_active``.
+# ALGAN_TEXTURE_OPACITY_IN_KERNEL=0
 # restores the host premultiply byte-identically.
 texture_opacity_in_kernel = env_flag("ALGAN_TEXTURE_OPACITY_IN_KERNEL", True)
 
@@ -689,11 +688,9 @@ def texture_opacity_in_kernel_active():
     the estimators) so a build cannot half-flip. The merge itself keys off
     the PRIMITIVE (``texture_opacity is not None``), so a setting change
     between a build and its merge stays coherent. Requires texture_time_flat
-    (the opacity region rides the flattened bank's row addressing) and is
-    off under wf_textured, whose legacy bank builder consumes premultiplied
-    maps.
+    (the opacity region rides the flattened bank's row addressing).
     """
-    return texture_opacity_in_kernel and texture_time_flat and not wf_textured
+    return texture_opacity_in_kernel and texture_time_flat
 
 
 # Store u8-provenance color maps as RGBA bytes instead of five f32 channels:
@@ -1165,10 +1162,8 @@ def set_opaque_bvh_skip_dead(enabled):
 
 
 def refit_bvh_active():
-    """Live effective value of the refit-BVH toggle: the legacy textured /
-    sorted-material orchestrators walk the classic tree only.
-    """
-    return bvh_refit and not wf_textured and wavefront_sort_materials is not True
+    """Live effective value of the refit-BVH toggle."""
+    return bvh_refit
 
 
 # Hybrid raster front-end for deterministic primary visibility.
@@ -2693,31 +2688,6 @@ def analytic_aa_tri_active():
     return analytic_aa and analytic_aa_tri
 
 
-# UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
-# scenes only). This variant is no longer maintained and no longer works; the
-# monolithic general wavefront is the only supported deterministic tracer.
-# When on, the deterministic wavefront shaded from three per-triangle texture
-# lookups instead of per-vertex arrays: a color texture (RGBA+glow), a
-# material texture (the shading parameter block) and a surface texture
-# (reflectivity/roughness/index-of-refraction used for scatter); see
-# scene_builder._build_textured_scene + wavefront_textured_kernels_taichi. It
-# was a proof-of-concept built to benchmark the texture-lookup shading
-# architecture, kept for reference only. Default OFF; do not enable.
-wf_textured = False
-
-
-def set_wf_textured(enabled):
-    """Reject the removed legacy texture-lookup wavefront renderer."""
-    global wf_textured
-    if bool(enabled):
-        wf_textured = False
-        raise UnsupportedFeatureError(
-            "The legacy textured wavefront renderer is unsupported and cannot "
-            "be enabled. Use the general deterministic wavefront renderer."
-        )
-    wf_textured = False
-
-
 # --- Scene merge + STBVH build device --------------------------------------
 # The per-batch scene prep -- merging every primitive's packed ``_rt_*``
 # geometry into one contiguous array per geometry type and building one STBVH
@@ -2941,76 +2911,6 @@ pn_geometry_slack = env_flag("ALGAN_PN_GEOMETRY_SLACK", True)
 pn_anisotropic_dice = env_flag("ALGAN_PN_ANISOTROPIC_DICE", True)
 
 
-# Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
-# wf_textured): each bit compiled one of the monolith's features back into the
-# (otherwise lean) textured shade kernel, so the marginal occupancy /
-# performance cost of each could be measured one at a time (see
-# benchmarks/_wf_textured_features_ab.py). The features are added in the order
-# beziers -> custom scatter -> shadows -> normal maps.
-WF_TEX_BEZ = 1  # bezier-circuit traversal + shading
-WF_TEX_SCATTER = 2  # per-material custom scatter dispatch (ray bouncing)
-WF_TEX_SHADOWS = 4  # binary hard shadow rays (triangle occluders)
-WF_TEX_NORMALMAP = 8  # tangent-space normal-map perturbation of the shading normal
-wf_textured_features = env_int("ALGAN_WF_TEXTURED_FEATURES", 0)
-
-
-def set_wf_textured_features(mask):
-    """Reject feature configuration for the removed textured renderer."""
-    global wf_textured_features
-    if int(mask) != 0:
-        wf_textured_features = 0
-        raise UnsupportedFeatureError(
-            "Textured-wavefront feature masks are unsupported because that "
-            "legacy renderer has been removed from the public execution path."
-        )
-    wf_textured_features = 0
-
-
-# UNSUPPORTED legacy Cycles-style sorted material dispatch for the
-# deterministic wavefront's *fragment-shading* path. The sorted pipeline is no
-# longer maintained and no longer works; the monolithic shade kernel is the
-# only supported deterministic shade path. When active, the monolith was
-# replaced by a peel (surface-eval) kernel that suspends each ray at its next
-# material event, a host-side sort of the pending events by (geometry type,
-# material pipeline id), and one small geometry-free shade kernel *per
-# material bucket* with the material's pipeline + scatter funcs injected at
-# compile time -- so a warp never mixes materials and no kernel carries
-# another material's code (see wavefront_sorted_kernels_taichi).
-#
-# Values: "auto" (default) and False/"0" both use the monolithic shade kernel,
-# which supports *everything* the sorted path did -- custom ray-bouncing
-# (scatter) and normal-mapped lighting -- while staying faster on the built-in
-# materials (it drains up to kbuf hits per launch, whereas sorting pays
-# per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py
-# and _wf_monolith_scatter_ab.py). True/"1" still routes to the sorted
-# pipeline, but that route is unsupported (kept for reference only). "auto" is
-# kept as a distinct label so the engine can revisit this heuristic later
-# without an API change.
-def _parse_sort_mode(v):
-    v = str(v).strip().lower()
-    if v in ("1", "true", "on"):
-        return True
-    if v in ("0", "false", "off"):
-        return False
-    return "auto"
-
-
-wavefront_sort_materials = "0"  # auto"
-
-
-def set_wavefront_sort_materials(enabled):
-    """Reject the removed legacy sorted-material renderer when forced on."""
-    global wavefront_sort_materials
-    parsed = _parse_sort_mode(enabled)
-    if parsed is True:
-        wavefront_sort_materials = "auto"
-        raise UnsupportedFeatureError(
-            "The legacy sorted-material wavefront renderer is unsupported. "
-            "Use the monolithic deterministic shade kernel."
-        )
-    wavefront_sort_materials = parsed
-
-
 def set_fragment_shading(enabled):
     """Toggle per-fragment shading of the *deterministic* ray tracer.
 
@@ -3051,11 +2951,10 @@ def set_fragment_shading(enabled):
 # light has K rows, so its shadow cost goes from K rays to K * 8.
 # ``samples`` stays the user's dial for both quality and cost.
 #
-# KNOWN LIMIT, a deliberate exclusion. The deferred shadow prepass
-# (``wavefront_shadow``) reads neither light type nor radius and treats every
-# row as a hard point light; it is dead code today (the tracer always
-# compiles ``deferred_shadows == 0``) and must learn these columns before it
-# is ever revived. The path tracer (``samples_per_pixel > 1``) reads the same
+# The deferred-shadow prepass that would have needed these columns has been
+# removed (it measured slower than inline shadows and was never launched); the
+# shade kernel's ``deferred_shadows`` template, which consumed its bits, is
+# compiled to 0 at every call site and reads nothing. The path tracer (``samples_per_pixel > 1``) reads the same
 # packed cells but does NOT read this flag at render time: it takes the cell
 # extents as the emitter geometry for its own next-event estimation (one
 # random point per sample instead of the fan), so with the flag off its rows

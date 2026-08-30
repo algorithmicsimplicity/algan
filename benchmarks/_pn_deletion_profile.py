@@ -33,7 +33,7 @@ The scene is deliberately PN-heavy -- ``Sphere``/``Cylinder``/``Cone``/``Torus``
 all reach the renderer as diced logical PN -- with shadows on and everything
 moving, because a static fast path is off-limits and because the deleted code
 sat in the traverse/shade signatures these exercise. ``ss4.3`` names the kernels
-to read: ``wavefront_shade``, ``wavefront_traverse``, both MC megakernels,
+to read: ``wavefront_shade``, ``wavefront_traverse_events``, both MC megakernels,
 ``raster_first_shade``, and the per-batch BVH build.
 """
 

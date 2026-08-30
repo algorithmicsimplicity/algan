@@ -48,6 +48,17 @@ Feature toggles live in `raytracing/settings.py` as module globals with env-var 
 
 Post-processing (`post_processing/`): bloom/glow, FXAA/SMAA, tonemapping. `Camera` (`camera.py`): perspective/orthographic projection, fov/near/far; render code consumes an immutable camera/light snapshot per batch so batch prep for frame batch N+1 can run on a worker thread while N renders (`ALGAN_PREFETCH_BATCHES=0` disables).
 
+## The seven widest kernels take most of their arrays through the arena
+
+Metal binds 31 buffers and Taichi manages 24 of them, so `sheet_resolve_shade` (49 ndarray arguments), `wavefront_shade`, `wavefront_traverse_events`, `raster_shadow_trace` and `pt_shade` were all over. They now take their cold arrays as offsets into the `ManualMemory` arena — `algan/rendering/raytracing/arena_args_taichi.py` — and the widest kernel in the package asks for 20.
+
+What this means when you edit one of those kernels:
+
+- **A new array is three edits, not one.** Add it to the `_<KERNEL>_ARENA` spec, add its binding line to the prologue (the prologue reads `aoff[i]`/`ashp[j]` by *literal* index, so inserting in the middle renumbers everything after it), and add its name to `_<KERNEL>_PARAMS` at the position callers pass it. `tests/unit_tests/test_arena_args.py` parses the prologue back out and fails if they disagree — a mismatch is wrong pixels, not a crash.
+- **Launch sites did not change and should not.** `arena_packed` wraps the kernel under its original public name and splits the original positional argument list. `sheet_resolve_shade` is the wrapper; `sheet_resolve_shade_arena` is the kernel.
+- **What stays an ordinary parameter**: arrays indexed by the per-thread ray slot (measured — binding everything costs 18% of device time, keeping the seven ray-state arrays costs 1.7–3.0%, keeping more than that buys nothing), the `NODE_ARG` BVH arrays (vector-element ndarrays; a view yields a scalar), and anything not allocated from the arena on some path (`raster_shadow_trace`'s `event_*` tables, `sheet_resolve_shade`'s `dump_out`). `benchmarks/_arena_param_membership.py` reports which is which from a real render.
+- The cost is Taichi re-loading base pointers and shapes from a global-memory argument buffer at every use site; `DESIGN_taichi_argument_loads.md` has the PTX and the fork that would remove it.
+
 ## The default for a Mob that sets no material is a *material*
 
 `SETTINGS.style.default_material` is a `Material` instance — `DiffuseMaterial()` at import; `Scene.use_manim_defaults()` swaps in `ManimMaterial()`, which reproduces Manim's `get_shaded_rgb` (offset added in display-referred sRGB, so the stage encodes, adds, clamps and decodes). `TrianglePrimitive` takes both the shader *and* the material's parameter values off it, so a configured default is honoured rather than silently rendering at `_MAT_DEFAULTS`.

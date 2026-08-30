@@ -229,7 +229,6 @@ _IMPORT_TIME_VARIABLES = (
     "ALGAN_WF_OPAQUE_PREPASS",
     "ALGAN_WF_REVALIDATE_PENDING",
     "ALGAN_WF_SKIP_UNLIT_NORMAL",
-    "ALGAN_WF_TEXTURED_FEATURES",
 )
 
 #: Variables read live, at the point of use. A script may set one at any

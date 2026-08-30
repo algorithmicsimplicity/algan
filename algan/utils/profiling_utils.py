@@ -345,7 +345,10 @@ KERNEL_RAY_EXTRACTORS = {
     "render_triangles_knots_stbvh": _det_extractor,
     "render_no_pn_stbvh": _det_extractor,
     "pt_generate": _pt_extractor,
-    "pt_shade": _pt_extractor,
+    # The kernel this hook sees is the arena-bound one (arena_args_taichi):
+    # the public ``pt_shade`` is the launch wrapper, and the wrapper keeps the
+    # (queue, count, ...) prefix, so the same extractor reads the same slot.
+    "pt_shade_arena": _pt_extractor,
 }
 
 

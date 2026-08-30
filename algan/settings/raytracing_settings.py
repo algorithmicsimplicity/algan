@@ -317,7 +317,6 @@ _POLYMORPHIC_FIELDS = frozenset(
     {
         "shadow_terminator",  # bool, plus "relax" for the third state
         "shadow_anyhit",  # bool, plus "gather" for the kbuf gather-march
-        "wavefront_sort_materials",  # str, plus True meaning "auto"
         "wf_gen_fused",  # str "auto", plus True/False forcing the mode
     }
 )
@@ -354,7 +353,6 @@ _MINIMUMS = {
     "analytic_aa_secondary_min_energy": (0, False),
     "wf_gen_fused_gain": (0, False),
     "wf_gen_fused_min_win": (0, False),
-    "wf_textured_features": (0, False),
     # multipliers the memory model scales an estimate by, and a flattening
     # tolerance: zero is degenerate, not merely small -- it under-estimates a
     # transient peak to nothing, or asks for infinite subdivision
