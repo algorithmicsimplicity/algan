@@ -506,15 +506,24 @@ jobs:
         continue-on-error: true
         env:
           ALGAN_LOG_TAICHI_COMPILES: "1"
+          # Without this the compile lines sit in Python's block buffer when
+          # the abort lands and are lost with the process -- which is exactly
+          # the tail that names the kernel.
+          PYTHONUNBUFFERED: "1"
         run: |
           # These three run the failing render IN-PROCESS, so the compile log
           # lands in this step's own output. test_glossy_prefilter is
           # deliberately NOT here: it renders each arm in a subprocess and
           # keeps only `proc.stderr`, so its compile lines -- which go to
-          # stdout -- are discarded before pytest ever sees them, and the first
-          # run of this step got the assertion and nothing else. No `-x`, for
-          # the same reason: one abort must not hide the rest.
-          uv run pytest -q \
+          # stdout -- are discarded before pytest ever sees them. No `-x`, so
+          # one abort cannot hide the rest.
+          #
+          # `-s` is the part that took two rounds to get right: pytest captures
+          # stdout per test and replays it only when the test FAILS, and a
+          # SIGABRT is not a failure -- the process is gone and the buffer with
+          # it. Both earlier attempts got Metal's assertion (stderr, unbuffered)
+          # and not one compile line.
+          uv run pytest -q -s \
             tests/unit_tests/test_deterministic_shadow_opacity.py \
             tests/unit_tests/test_render_truncations.py \
             tests/unit_tests/test_area_light_soft_shadow.py \
