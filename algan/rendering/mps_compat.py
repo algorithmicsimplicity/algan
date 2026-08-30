@@ -22,6 +22,13 @@ int64 amin/amax reduction    int32 (:func:`reduction_index_dtype`, and
                              refusing to compile)
 ``cummax`` / ``cummin``      a log-step scan of ``maximum`` / ``minimum``
                              (:func:`cummax_values`, :func:`cummin_values`)
+an i64 index array a kernel  the array, already int32 (:func:`kernel_index`).
+narrows per element          Not a Metal limit but a Taichi **codegen** bug
+                             (§1.2b): the narrowing cast comes out of the
+                             SPIR-V-to-MSL step as ``int(long(x))``, which C++
+                             reads as a function type, and the shader does not
+                             compile. Narrowing at the boundary removes the
+                             cast rather than working around the parse.
 ============================ ==================================================
 
 The narrowings are safe as *values* and lossy as *reproducibility*, which are
