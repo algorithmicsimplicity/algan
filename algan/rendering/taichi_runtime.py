@@ -726,6 +726,17 @@ def render_job_holding_the_arch():
         yield
     finally:
         _RENDER_JOBS_ACTIVE -= 1
+        if _RENDER_JOBS_ACTIVE == 0:
+            # Release the MPS zero-copy import cache with the job that filled
+            # it. Each entry holds a torch storage alive so Taichi cannot be
+            # reading a buffer the caching allocator has recycled, and the
+            # biggest of those storages is the render arena -- which the render
+            # loop drops on purpose. A cache that outlived the job would pin
+            # it. A no-op on every device but MPS, and on MPS without the
+            # patched Taichi build.
+            from algan.rendering.mps_zero_copy import clear_import_cache
+
+            clear_import_cache()
 
 
 def render_is_active():

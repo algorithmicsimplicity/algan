@@ -319,10 +319,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 3.11, where every other job here is on 3.10, and the reason is the
+      # wheel. `taichi_build.yaml` produces a cp311 wheel -- `ti_build` picks
+      # the image's framework Python rather than setup-python's, which
+      # `DESIGN_mps_zero_copy.md` §4.1 measured and warns about -- and a
+      # CPython extension only installs on the ABI it was built for. Matching
+      # the wheel here is one line; making the build produce cp310 is a
+      # 12-minute experiment with its own failure modes, and nothing this job
+      # proves depends on the interpreter. test.yaml's 3.10 is unaffected.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       # The same system dependencies test.yaml installs, for the same reasons
       # its comments give: the Pango stack needs a fontconfig to resolve the

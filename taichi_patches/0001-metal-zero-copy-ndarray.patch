@@ -96,11 +96,24 @@ index 48a657f..bc8012b 100644
    std::unordered_map<std::vector<int>,
                       const ArgPack *,
                       hashing::Hasher<std::vector<int>>>
+diff --git a/taichi/program/ndarray.cpp b/taichi/program/ndarray.cpp
+index 54702d5..5e84154 100644
+--- a/taichi/program/ndarray.cpp
++++ b/taichi/program/ndarray.cpp
+@@ -118,7 +118,7 @@ Ndarray::Ndarray(DeviceAllocation &devalloc,
+ }
+ 
+ Ndarray::~Ndarray() {
+-  if (prog_) {
++  if (prog_ || owns_imported_allocation) {
+     // prog_->flush();
+     ndarray_alloc_.device->dealloc_memory(ndarray_alloc_);
+   }
 diff --git a/taichi/program/ndarray.h b/taichi/program/ndarray.h
-index b5eeb5a..ab1d0ee 100644
+index b5eeb5a..e5e4117 100644
 --- a/taichi/program/ndarray.h
 +++ b/taichi/program/ndarray.h
-@@ -48,6 +48,16 @@ class TI_DLL_EXPORT Ndarray {
+@@ -48,6 +48,27 @@ class TI_DLL_EXPORT Ndarray {
                     const DebugInfo &dbg_info = DebugInfo());
  
    DeviceAllocation ndarray_alloc_{kDeviceNullAllocation};
@@ -114,11 +127,22 @@ index b5eeb5a..ab1d0ee 100644
 +  // that cannot take an offset should refuse a non-zero one rather than
 +  // silently bind the wrong bytes.
 +  std::size_t buffer_offset{0};
++  // Whether ~Ndarray should release `ndarray_alloc_` even though no Program
++  // allocated it.
++  //
++  // The DeviceAllocation constructor exists for arrays Taichi does not own, so
++  // the destructor leaves them alone -- but an *imported* buffer is a third
++  // case: Taichi does not own the MTLBuffer (import_mtl_buffer marks it
++  // `dont_destroy`, so releasing the allocation cannot free it) and it does
++  // own the MetalMemory record wrapping it. Without this the record leaks, one
++  // per imported slice, which for an arena handed out as hundreds of views is
++  // not a rounding error.
++  bool owns_imported_allocation{false};
    DataType dtype;
    // Invariant: Since ndarray indices are flattened for vector/matrix, this is
    // always true:
 diff --git a/taichi/program/program.cpp b/taichi/program/program.cpp
-index 52a6b51..9e6ebda 100644
+index 52a6b51..6484f9c 100644
 --- a/taichi/program/program.cpp
 +++ b/taichi/program/program.cpp
 @@ -40,6 +40,7 @@
@@ -129,7 +153,7 @@ index 52a6b51..9e6ebda 100644
  #endif  // TI_WITH_METAL
  
  #if defined(_M_X64) || defined(__x86_64)
-@@ -400,6 +401,30 @@ Ndarray *Program::create_ndarray(const DataType type,
+@@ -400,6 +401,31 @@ Ndarray *Program::create_ndarray(const DataType type,
    return arr_ptr;
  }
  
@@ -149,6 +173,7 @@ index 52a6b51..9e6ebda 100644
 +              "was null: cannot import a Metal buffer");
 +  auto arr = std::make_unique<Ndarray>(devalloc, type, shape);
 +  arr->buffer_offset = byte_offset;
++  arr->owns_imported_allocation = true;
 +  auto arr_ptr = arr.get();
 +  ndarrays_.insert({arr_ptr, std::move(arr)});
 +  return arr_ptr;
