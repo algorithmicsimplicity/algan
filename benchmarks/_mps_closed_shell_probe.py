@@ -22,7 +22,7 @@ So this prints the frames over a window WIDER than the assertion's, plus every
 column of the frame that disagrees within the window's own rows, and says which
 route sits at the authored ``0.6 * 255`` and which one moved.
 
-It renders the deterministic route **twice**, once through each arm of the
+It renders the deterministic route through **each arm** of the
 solid-shell opacity ceiling: the fused Taichi kernel
 (``sheet_compact_taichi.solid_shell_ceiling``) and the torch block it replaced.
 The two are meant to be bit-identical and they share every input, so they split
@@ -30,6 +30,13 @@ the remaining question in half -- an arm that agrees with the path tracer while
 the other does not puts the defect in that kernel; two arms that agree with each
 other put it in what the ceiling was handed (the segment key, the facing bit,
 the exclusive prefix).
+
+And it renders one of those arms **twice**, which is the question that comes
+first: MPS-friendly mode is documented non-deterministic, and §1.2's amendment
+predicts this symptom in as many words -- "a ceiling that wobbles in its low
+bits flipping borderline fragments in and out of being clipped". Two renders of
+one configuration that disagree are that prediction; two that agree bit for bit
+mean there is a fixed wrong answer to find.
 
     uv run python benchmarks/_mps_closed_shell_probe.py
 
@@ -147,6 +154,18 @@ def main():
         out_dir = Path(tmp)
         pt, pt_trunc = _render(out_dir, "shell_pt.png", 8)
         det, det_trunc = _render(out_dir, "shell_det.png", 1, shell_ceiling_kernel=True)
+        # The same arm again, same process, same settings. MPS-friendly mode is
+        # documented non-deterministic -- f32 atomics replace the f64
+        # accumulator, and DESIGN_mps_support.md 1.2's amendment predicts the
+        # symptom as "a ceiling that wobbles in its low bits flipping
+        # borderline fragments in and out of being clipped". If two renders of
+        # ONE configuration disagree at the offending column, that prediction
+        # is what this is and no amount of looking at the kernel will find a
+        # bug; if they agree bit for bit, it is a real defect with a fixed
+        # answer.
+        det_again, _ = _render(
+            out_dir, "shell_det_again.png", 1, shell_ceiling_kernel=True
+        )
         torch_det, torch_trunc = _render(
             out_dir, "shell_det_torch.png", 1, shell_ceiling_kernel=False
         )
@@ -187,6 +206,17 @@ def main():
     )
     err = summarize("det, ceiling kernel", det)
     summarize("det, ceiling torch", torch_det)
+
+    # Reproducibility, which decides whether there is a defect to find at all.
+    repeat = (det[..., :3] - det_again[..., :3]).abs().amax(-1).float()
+    repeat_hot = [
+        int(c) for c in torch.nonzero(repeat[lo:hi].amax(0) > 0).flatten().tolist()
+    ]
+    print(
+        f"{'det vs det again':22s}: max |diff| whole frame "
+        f"{float(repeat.max()):3.0f}; columns differing at all across the "
+        f"window's rows {repeat_hot}"
+    )
 
     for label, trunc in (
         ("path traced", pt_trunc),
