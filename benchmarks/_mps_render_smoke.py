@@ -186,30 +186,29 @@ def _install_pipeline_report():
         pixels = key >> 32
         low = (key & 0xFFFFFFFF).to(torch.int32)
         depth = low.view(torch.float32)
-        lines = [
-            f"  [compact-in] key n={n} "
-            f"distinct_pixels={int(torch.unique(pixels).numel())} "
-            f"pixel_min={int(pixels.min())} pixel_max={int(pixels.max())}",
-            f"  [compact-in] depth min={float(depth.min()):.6f} "
-            f"max={float(depth.max()):.6f} "
-            f"distinct={int(torch.unique(depth).numel())} "
-            f"low_word_hex_first={int(low[0]) & 0xFFFFFFFF:08x}",
+        # Compact on purpose: these lines have to survive the log tail, and
+        # every line spent here is one the report loses at the far end.
+        parts = [
+            f"  [compact-in] n={n} pix[{int(pixels.min())}..{int(pixels.max())}]"
+            f"x{int(torch.unique(pixels).numel())}"
+            f" depth[{float(depth.min()):.4f}..{float(depth.max()):.4f}]"
+            f"x{int(torch.unique(depth).numel())}"
+            f" lo0={int(low[0]) & 0xFFFFFFFF:08x}"
         ]
+        stats = []
         for name in ("frag_ref", "frag_msk", "frag_cap"):
             sibling = coverage.get(name)
             if sibling is None:
                 continue
             sibling = sibling[:n].cpu()
-            lines.append(
-                f"  [compact-in] {name} min={int(sibling.min())} "
-                f"max={int(sibling.max())} "
-                f"distinct={int(torch.unique(sibling).numel())}"
-                if not sibling.is_floating_point()
-                else f"  [compact-in] {name} min={float(sibling.min()):.6f} "
-                f"max={float(sibling.max()):.6f} "
-                f"distinct={int(torch.unique(sibling).numel())}"
+            lo_v, hi_v = sibling.min().item(), sibling.max().item()
+            fmt = "{:.4f}" if sibling.is_floating_point() else "{:.0f}"
+            stats.append(
+                f"{name.removeprefix('frag_')}[{fmt.format(lo_v)}..{fmt.format(hi_v)}]"
+                f"x{int(torch.unique(sibling).numel())}"
             )
-        return "\n".join(lines)
+        parts.append("  [compact-in] " + " ".join(stats))
+        return "\n".join(parts)
 
     def group_line(stream):
         # ``num_groups`` counts (pixel, mesh, facing) triples -- the banding
@@ -226,11 +225,32 @@ def _install_pipeline_report():
             f"sheets={int(stream['num_sheets'])}"
         )
 
+    def split_line(coverage, args, kwargs, real):
+        # The SAME inputs compacted with the shading-class split off. That
+        # split is the one step that builds a key wide enough to be at risk --
+        # ``band * 2**25 + cls`` reaches ~2**40, where MPS int64 stops being
+        # exact -- and the two counts separate the cases without needing to see
+        # inside the function: a re-run that finds the CPU's ~17065-plus bands
+        # puts the collapse in the split, and one that finds 128 again puts it
+        # before, in the sort and the group detection.
+        #
+        # Advisory rather than authoritative: the compaction writes through
+        # some of what it is handed, so this second pass sees inputs the first
+        # may have touched. It runs after the real call for that reason.
+        kwargs = {**kwargs, "shade_split": False}
+        again = original_compact(coverage, *args, **kwargs)
+        return (
+            f"  [compact-alt] shade_split=False -> "
+            f"sheets={0 if again is None else int(again['num_sheets'])} "
+            f"(with the split: {0 if real is None else int(real['num_sheets'])})"
+        )
+
     def reporting_compact(coverage, *args, **kwargs):
         _say(key_lines, coverage)
         stream = original_compact(coverage, *args, **kwargs)
         if stream is not None:
             _say(group_line, stream)
+        _say(split_line, coverage, args, kwargs, stream)
         return stream
 
     # The module attribute is the only binding to patch: ``raster_pipeline``
