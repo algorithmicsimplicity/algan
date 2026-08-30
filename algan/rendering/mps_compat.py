@@ -125,6 +125,38 @@ def reduction_index_sentinel() -> int:
     return (1 << 40) if reduction_index_dtype() is torch.int64 else 2147483647
 
 
+def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
+    """An index array on its way into a kernel, narrowed in MPS-friendly mode.
+
+    Not a dtype choice about the *value* -- these are stream positions, CSR
+    starts and counts, and permutations, all bounded by the fragment count --
+    but a way around a **Metal codegen bug**, which is why it is its own
+    function rather than a use of :func:`reduction_index_dtype`.
+
+    Taichi's SPIR-V-to-MSL step renders a narrowing cast of a 64-bit ndarray
+    load as a nested functional cast, and when the result is bound to a
+    temporary the generated line reads::
+
+        int tmp16_i32 = (int(long(_76))) * 8;
+
+    which is C++'s most vexing parse: ``int(long(_76))`` is the function type
+    ``int(long)`` with a parameter named ``_76``, so the ``* 8`` after it
+    parses as a dereference and the shader does not compile. Metal reports
+    that by handing Taichi a nil function, and Taichi builds a pipeline from
+    it without checking -- ``failed assertion 'computeFunction must not be
+    nil'``, a SIGABRT rather than an exception (``DESIGN_mps_support.md``
+    §1.1 saw the same abort from the argument limit).
+
+    The kernels all narrow such a load immediately (``b = ti.cast(band[i],
+    ti.i32)``), so passing the array already narrowed removes the cast
+    entirely: Taichi emits nothing for a cast to the type a value already
+    has, and the same kernel source serves both widths. Off the mode this is
+    the identity, down to the object -- ``.to`` returns ``self`` when the
+    dtype already matches.
+    """
+    return tensor.to(torch.int32) if mps_friendly() else tensor
+
+
 def taichi_accumulate_dtype():
     """:func:`accumulate_dtype`'s Taichi twin, for a kernel's ``acc_t``.
 

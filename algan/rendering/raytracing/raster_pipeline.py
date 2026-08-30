@@ -24,6 +24,7 @@ import torch
 from algan.environment import env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
+    kernel_index,
     reduction_index_dtype,
     reduction_index_sentinel,
     taichi_accumulate_dtype,
@@ -978,7 +979,7 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
         x1f,
         y0f,
         y1f,
-        f_abs.contiguous(),
+        kernel_index(f_abs.contiguous()),
         offs,
         numel,
         ncirc,
@@ -1185,7 +1186,7 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     out_opq = torch.empty(m, dtype=opq.dtype, device=opq.device)
     # Taichi has no bool ndarray, so the flags ride as the bytes they are.
     gather_fragment_arrays(
-        idx,
+        kernel_index(idx),
         m,
         key,
         ref,
@@ -1247,8 +1248,8 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
     opaque_prefix_keep(
         opaque_s.contiguous().view(torch.uint8),
-        counts,
-        starts,
+        kernel_index(counts),
+        kernel_index(starts),
         int(counts.numel()),
         keep_u8,
     )
@@ -1297,8 +1298,8 @@ def _one_mesh_pixel_caps(
             mat_opaque_s.contiguous().view(torch.uint8),
             msk_s,
             cov_s,
-            counts,
-            starts,
+            kernel_index(counts),
+            kernel_index(starts),
             num_covered,
             int(ppf),
             int(time_start),
@@ -1318,8 +1319,8 @@ def _one_mesh_pixel_caps(
         del front, back, lo, hi
         cap_s = torch.empty_like(cov_s)
         one_mesh_pixel_apply(
-            counts,
-            starts,
+            kernel_index(counts),
+            kernel_index(starts),
             num_covered,
             one_mesh.view(torch.uint8),
             cap_pix,

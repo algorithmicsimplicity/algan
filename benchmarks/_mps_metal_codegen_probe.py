@@ -200,6 +200,71 @@ def case_i64_index_direct():
     assert int(out.sum()) == N, out
 
 
+def case_named_cast_mul_temp():
+    """The narrowed cast bound to a NAME and read more than once.
+
+    ``i64_cast_mul`` uses it once, so spirv-cross can fold it into the index
+    expression. Reading it twice forces the temporary declaration the failing
+    line actually is -- ``int tmp16_i32 = (int(long(_76))) * 8;`` -- which is
+    where the parse goes wrong, because an ambiguous ``(int(long(x)))`` is
+    resolved as a declaration.
+    """
+
+    @ti.kernel
+    def k(x: ti.types.ndarray(), out: ti.types.ndarray(), n: ti.i32):
+        for i in range(n):
+            b = ti.cast(x[i], ti.i32)
+            base = b * STRIDE
+            out[base] = 1
+            out[base + 1] = 2
+
+    x = torch.arange(N, dtype=torch.int64)
+    out = torch.zeros(N * STRIDE, dtype=torch.int32)
+    k(x, out, N)
+    assert int((out == 1).sum()) == N, out
+    assert int((out == 2).sum()) == N, out
+
+
+def case_lane_owner_real_i64():
+    """The kernel that actually aborted the first Apple-GPU render, verbatim.
+
+    ``sheet_lane_first_owner``, launched with the int64 ``band_id`` the
+    compaction hands it. Reproducing the abort here rather than five minutes
+    into a render is the point: if this fails and the case below passes, the
+    fix is the argument dtype and nothing in the kernel needs touching.
+    """
+    from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL, _AA_NUM_SAMPLES
+    from algan.rendering.raytracing.sheet_compact_taichi import sheet_lane_first_owner
+
+    nb = 4
+    band = torch.arange(N, dtype=torch.int64) % nb
+    msk = torch.full((N,), _AA_MASK_ALL, dtype=torch.int32)
+    first_lane = torch.full((nb * _AA_NUM_SAMPLES,), N, dtype=torch.int32)
+    sheet_lane_first_owner(band, msk, N, int(_AA_MASK_ALL), first_lane)
+    # Every lane of every band is claimed, earliest fragment wins.
+    want = torch.arange(nb, dtype=torch.int32).repeat_interleave(_AA_NUM_SAMPLES)
+    assert torch.equal(first_lane, want), first_lane
+
+
+def case_lane_owner_real_i32():
+    """The same kernel with ``band`` already narrowed -- the candidate fix.
+
+    ``mps_compat.kernel_index`` is what does this in the renderer, and the
+    kernel's own ``ti.cast(band[i], ti.i32)`` becomes a cast to the type the
+    value already has, which Taichi emits nothing for.
+    """
+    from algan.rendering.raytracing.raster_taichi import _AA_MASK_ALL, _AA_NUM_SAMPLES
+    from algan.rendering.raytracing.sheet_compact_taichi import sheet_lane_first_owner
+
+    nb = 4
+    band = (torch.arange(N, dtype=torch.int64) % nb).to(torch.int32)
+    msk = torch.full((N,), _AA_MASK_ALL, dtype=torch.int32)
+    first_lane = torch.full((nb * _AA_NUM_SAMPLES,), N, dtype=torch.int32)
+    sheet_lane_first_owner(band, msk, N, int(_AA_MASK_ALL), first_lane)
+    want = torch.arange(nb, dtype=torch.int32).repeat_interleave(_AA_NUM_SAMPLES)
+    assert torch.equal(first_lane, want), first_lane
+
+
 def case_i64_atomic_min():
     """§1.2's other Metal abort, re-asked now that the mode avoids it."""
 
@@ -256,6 +321,9 @@ CASES = {
     "i32_array_mul": case_i32_array_mul,
     "i64_cast_2d_index": case_i64_cast_2d_index,
     "i64_index_direct": case_i64_index_direct,
+    "named_cast_mul_temp": case_named_cast_mul_temp,
+    "lane_owner_real_i64": case_lane_owner_real_i64,
+    "lane_owner_real_i32": case_lane_owner_real_i32,
     "i64_atomic_min": case_i64_atomic_min,
     "i32_atomic_min": case_i32_atomic_min,
     "f32_accumulate": case_f32_accumulate,

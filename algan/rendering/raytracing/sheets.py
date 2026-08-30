@@ -66,6 +66,7 @@ from algan.environment import env_float
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     cummax_values,
+    kernel_index,
     reduction_index_dtype,
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
@@ -439,7 +440,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
             nbands if want_sliver else 1, dtype=torch.int32, device=device
         )
         sheet_band_reduce(
-            band_id.contiguous(),
+            kernel_index(band_id.contiguous()),
             msk.contiguous(),
             cov.contiguous(),
             n,
@@ -541,7 +542,7 @@ def _conflict_rank(band_start, order, msk, positions):
     # Taichi has no bool ndarray, so the flags ride as the bytes they are.
     sheet_conflict_rank(
         band_start.contiguous().view(torch.uint8),
-        order.contiguous(),
+        kernel_index(order.contiguous()),
         msk.contiguous(),
         n,
         int(AA_MASK_ALL),
@@ -771,7 +772,11 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
             (nb * AA_NUM_SAMPLES,), n, dtype=torch.int32, device=device
         )
         sheet_lane_first_owner(
-            band_id.contiguous(), msk_o.contiguous(), n, int(AA_MASK_ALL), first_lane
+            kernel_index(band_id.contiguous()),
+            msk_o.contiguous(),
+            n,
+            int(AA_MASK_ALL),
+            first_lane,
         )
         has = first_lane < n
         d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
@@ -1182,7 +1187,7 @@ def compact_sheets(
             # build ``excl`` either way.
             solid_shell_ceiling(
                 key.contiguous(),
-                o2.contiguous(),
+                kernel_index(o2.contiguous()),
                 shell_back.contiguous().view(torch.uint8),
                 excl_global,
                 cov64,
@@ -1308,7 +1313,7 @@ def compact_sheets(
         cmax = torch.zeros(nb, dtype=torch.float32, device=device)
         nfrag = torch.zeros(nb, dtype=idx_dtype, device=device)
         band_stats_reduce(
-            band_id.contiguous(),
+            kernel_index(band_id.contiguous()),
             msk_o.contiguous(),
             pos_o.contiguous(),
             cov_o.contiguous(),
@@ -1422,7 +1427,7 @@ def compact_sheets(
         idx_dtype = reduction_index_dtype()
         rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
         band_stats_rep_orig(
-            band_id.contiguous(),
+            kernel_index(band_id.contiguous()),
             pos_o,
             cov_o,
             cmax,
