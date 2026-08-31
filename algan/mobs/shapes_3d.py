@@ -2271,9 +2271,13 @@ class ConvexHull3D(Polyhedron):
         # differently -- and the face order reaches the renderer as triangle
         # order, which moves pixels at the seams between coplanar faces. Each
         # face is rotated to start at its lowest index (winding preserved;
-        # ``orient_faces_outward`` settles the direction) and the list sorted.
-        faces = sorted(
+        # ``orient_faces_outward`` settles the direction), and the list is
+        # ordered by each face's vertex SET rather than by the rotated tuple:
+        # mirroring a hull reverses every face's winding, which would otherwise
+        # move faces past each other in the sort and undo the canonicalisation.
+        faces = [
             face[face.index(min(face)) :] + face[: face.index(min(face))]
             for face in faces
-        )
+        ]
+        faces.sort(key=sorted)
         super().__init__(vertices, faces, **kwargs)
