@@ -632,6 +632,11 @@ jobs:
             echo "== closed shell: where the routes disagree, and which arm =="
             grep -E 'assertion window|interior mean|truncations' \
               closed-shell-probe.txt || true
+            echo "== closed shell: the ceiling against its host oracle =="
+            grep -E 'kernel vs host oracle|^  segments=|^  cov in sum|^    row ' \
+              closed-shell-probe.txt | head -8 || true
+            echo "== closed shell: sheets of the offending column =="
+            grep -E 'px= *3[678] ' closed-shell-probe.txt | head -8 || true
           fi
 
       - name: Upload what was rendered
