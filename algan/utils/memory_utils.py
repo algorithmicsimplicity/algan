@@ -605,6 +605,44 @@ class TempMemoryContext:
         return False
 
 
+#: Byte boundary every arena slice is made to start on, or 1 for "whatever the
+#: element needs", which is what every backend but one wants.
+#:
+#: The exception is the Apple GPU's zero-copy path. There a kernel binds torch's
+#: own ``MTLBuffer`` at the slice's byte offset, and a vector-element array --
+#: the BVH sibling blocks, ``ndarray(dtype=vector(4, f16))`` -- is loaded as one
+#: 8-byte vector. Aligning to the SCALAR element (2 bytes for f16) is not enough
+#: for that, and it is not hypothetical: the triangle BVH's blocks landed at
+#: byte 799066188, a multiple of 4 and not of 8, so ``mps_zero_copy`` refused to
+#: import them and they went back on Taichi's host-staging path -- four copies
+#: and a stream sync per launch, on the widest array the tracer reads.
+#: ``DESIGN_mps_zero_copy.md`` §3.3 asks for exactly this.
+#:
+#: 16 covers every vector element Metal binds as one (up to 4 x f32). A wider
+#: one -- ``ALGAN_BVH_ARITY=8`` with f32 blocks would be 32 bytes -- is not
+#: silently mis-bound: the import checks the offset against the element size
+#: itself and declines, which costs speed and says so in the bus report.
+#:
+#: Resolved once. Whether the zero-copy conversion is installed is decided
+#: while ``algan`` is still importing, long before an arena exists, and this
+#: runs per allocation.
+_SLICE_ALIGNMENT = None
+
+
+def _slice_alignment():
+    global _SLICE_ALIGNMENT
+    if _SLICE_ALIGNMENT is None:
+        _SLICE_ALIGNMENT = 1
+        try:
+            from algan.rendering.mps_zero_copy import installed
+
+            if installed():
+                _SLICE_ALIGNMENT = 16
+        except Exception:
+            _SLICE_ALIGNMENT = 1
+    return _SLICE_ALIGNMENT
+
+
 class ManualMemory:
     def __init__(
         self,
@@ -704,10 +742,15 @@ class ManualMemory:
 
         pointer = self.current_pointer if not reverse else self.current_reverse_pointer
 
+        align = num_bytes
+        floor = _slice_alignment()
+        if floor > align:
+            align = floor
+
         def get_bap():
-            remainder = pointer % num_bytes
+            remainder = pointer % align
             if not reverse:
-                byte_align_offset = (num_bytes - remainder) if (remainder > 0) else 0
+                byte_align_offset = (align - remainder) if (remainder > 0) else 0
             else:
                 byte_align_offset = -remainder
             return byte_align_offset

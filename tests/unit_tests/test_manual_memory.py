@@ -101,3 +101,53 @@ def test_cuda_available_bytes_clears_the_requested_device(monkeypatch):
         ("info", torch.device("cuda:2")),
         ("exit", torch.device("cuda:2")),
     ]
+
+
+def test_the_alignment_floor_is_off_unless_zero_copy_is_installed():
+    """Every backend but the Apple GPU's zero-copy path pays nothing for this.
+
+    ``_slice_alignment`` is resolved once and reads
+    ``mps_zero_copy.installed()``, which is False everywhere the patched Taichi
+    is absent -- so the arena keeps aligning to the element and no offset
+    moves. Asserted rather than assumed: a floor that crept on by default would
+    change every arena's layout, and with it the chunk sizes the memory model
+    derives from it.
+    """
+    from algan.utils import memory_utils
+
+    memory_utils._SLICE_ALIGNMENT = None
+    try:
+        assert memory_utils._slice_alignment() == 1
+    finally:
+        memory_utils._SLICE_ALIGNMENT = None
+
+
+def test_the_alignment_floor_starts_every_slice_on_a_vector_boundary(monkeypatch):
+    """With the floor on, a vector-element array can be bound at its offset.
+
+    The case that made this necessary, at its real shape: the triangle BVH's
+    sibling blocks are ``[n, 8, 4]`` float16, so Metal loads each element as
+    one 8-byte vector, and aligning to the f16 element (2 bytes) put them at a
+    byte offset that was a multiple of 4 and not of 8. The import then declined
+    them and they went back on Taichi's host-staging path
+    (``DESIGN_mps_zero_copy.md`` §3.3).
+
+    The odd-sized allocations in between are the point: they are what pushes
+    the pointer off a vector boundary in the first place.
+    """
+    from algan.utils import memory_utils
+
+    monkeypatch.setattr(memory_utils, "_SLICE_ALIGNMENT", 16)
+    memory = _arena(num_bytes=4096)
+    offsets = []
+    for shape, dtype in (
+        ((3,), torch.uint8),
+        (((5,), torch.float16)),
+        ((7,), torch.int32),
+        ((2, 8, 4), torch.float16),
+        ((1,), torch.uint8),
+        ((2, 8, 4), torch.float16),
+    ):
+        tensor = memory.get_tensor(shape, dtype)
+        offsets.append(tensor.storage_offset() * tensor.element_size())
+    assert all(offset % 16 == 0 for offset in offsets), offsets

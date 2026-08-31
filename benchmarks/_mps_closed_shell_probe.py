@@ -166,9 +166,18 @@ def main():
         det_again, _ = _render(
             out_dir, "shell_det_again.png", 1, shell_ceiling_kernel=True
         )
-        torch_det, torch_trunc = _render(
-            out_dir, "shell_det_torch.png", 1, shell_ceiling_kernel=False
-        )
+        # LAST, and allowed to fail. The torch arm of the ceiling calls
+        # ``index_copy_``, which torch has not implemented for MPS
+        # (`aten::index_copy.out`), so on an Apple GPU this arm raises and
+        # takes every reading above with it if it runs first. It is the least
+        # important of the three and it is the only one that can die.
+        torch_det = torch_trunc = None
+        try:
+            torch_det, torch_trunc = _render(
+                out_dir, "shell_det_torch.png", 1, shell_ceiling_kernel=False
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"det, ceiling torch    : unavailable -- {type(exc).__name__}: {exc}")
 
     h, w = pt.shape[0], pt.shape[1]
     expected = OPACITY * 255.0
@@ -205,7 +214,8 @@ def main():
         "-- the oracle"
     )
     err = summarize("det, ceiling kernel", det)
-    summarize("det, ceiling torch", torch_det)
+    if torch_det is not None:
+        summarize("det, ceiling torch", torch_det)
 
     # Reproducibility, which decides whether there is a defect to find at all.
     repeat = (det[..., :3] - det_again[..., :3]).abs().amax(-1).float()
@@ -240,8 +250,11 @@ def main():
     print(_grid(pt[lo:hi, wlo:whi, green], "path traced (8 spp)", wlo))
     print()
     print(_grid(det[lo:hi, wlo:whi, green], "deterministic, ceiling kernel", wlo))
-    print()
-    print(_grid(torch_det[lo:hi, wlo:whi, green], "deterministic, ceiling torch", wlo))
+    if torch_det is not None:
+        print()
+        print(
+            _grid(torch_det[lo:hi, wlo:whi, green], "deterministic, ceiling torch", wlo)
+        )
     print()
     print(_grid(err[lo:hi, wlo:whi], "|pt - det(kernel)|", wlo))
     return 0

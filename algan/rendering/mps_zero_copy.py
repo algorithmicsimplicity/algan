@@ -323,7 +323,47 @@ def _ndarray_positions(kernel):
     return positions
 
 
-def _note_left_on_the_bus(kernel, index, tensor):
+def _decline_reason(tensor, element_shape):
+    """Which of :func:`import_tensor`'s conditions turned this argument down.
+
+    Mirrors the checks rather than sharing them, because the import runs in
+    front of every launch and must not carry a diagnostic; this runs once per
+    (kernel, argument) pair, off the set that records them.
+
+    It is worth the duplication. The first version of the report printed the
+    dtype and left the reason to inference, and the one argument it caught --
+    the triangle BVH's blocks -- took a separate run to attribute: it was the
+    offset, at byte 799066188 against an 8-byte vector element.
+    """
+    if not tensor.is_contiguous():
+        return "not contiguous"
+    if tensor.requires_grad or tensor.grad is not None:
+        return "carries a gradient"
+    if _taichi_dtype(tensor.dtype) is None:
+        return f"{tensor.dtype} has no Taichi ndarray element type"
+    element_shape = tuple(int(d) for d in element_shape)
+    if element_shape:
+        if tensor.dim() <= len(element_shape):
+            return (
+                f"shape {tuple(tensor.shape)} has no room for the "
+                f"{element_shape} element the kernel declares"
+            )
+        trailing = tuple(int(d) for d in tensor.shape[-len(element_shape) :])
+        if trailing != element_shape:
+            return f"trailing dims {trailing}, kernel declares {element_shape}"
+        element_bytes = tensor.element_size()
+        for extent in element_shape:
+            element_bytes *= extent
+        offset = tensor.storage_offset() * tensor.element_size()
+        if offset % element_bytes:
+            return (
+                f"byte offset {offset} is not a multiple of the "
+                f"{element_bytes}-byte {element_shape} element"
+            )
+    return f"{tensor.dtype}, reason unclassified"
+
+
+def _note_left_on_the_bus(kernel, index, tensor, element_shape):
     """Record an ndarray argument that still crosses the bus, and why.
 
     Called only for arguments the import declined, which is the whole point:
@@ -336,7 +376,7 @@ def _note_left_on_the_bus(kernel, index, tensor):
     if not isinstance(tensor, torch.Tensor):
         return
     if tensor.device.type == "mps":
-        why = "not contiguous" if not tensor.is_contiguous() else str(tensor.dtype)
+        why = _decline_reason(tensor, element_shape)
         STATS["staged_arguments"] += 1
     else:
         why = f"on {tensor.device.type}"
@@ -394,7 +434,7 @@ def install_zero_copy_launch():
                 continue
             array = import_tensor(argument, element_shape)
             if array is None:
-                _note_left_on_the_bus(self, index, argument)
+                _note_left_on_the_bus(self, index, argument, element_shape)
                 continue
             if converted is None:
                 converted = list(args)
