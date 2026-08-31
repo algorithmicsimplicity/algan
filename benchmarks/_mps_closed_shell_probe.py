@@ -135,6 +135,191 @@ def _render(out_dir, name, samples_per_pixel, shell_ceiling_kernel=None, ceiling
     return torch.from_numpy(frame.astype(np.int32)), truncations
 
 
+#: Set while the arm whose sheets are worth dumping is rendering.
+_DUMP_SHEETS = {"on": False, "lines": []}
+#: Image columns to report, and the rows of the assertion window. 37 is the
+#: column that disagrees, 36/38 bracket it, 32 is a control from the middle of
+#: the same interior.
+_DUMP_COLUMNS = (32, 36, 37, 38)
+_DUMP_ROWS = range(26, 38)
+
+
+def _install_sheet_dump(width, height):
+    """Report the sheet list of a few named pixels, once per render.
+
+    The composite a pixel shows IS its sheet list -- each sheet attenuates
+    once, by its own coverage against the shell cap -- so an interior pixel
+    reading `1 - 0.4**3` instead of `0.6` has three sheets where its
+    neighbours have two, or two whose coverages are wrong. Which of those it is
+    cannot be inferred from the frame, and it is the whole remaining question
+    (``DESIGN_mps_support.md`` §1.2c).
+
+    Read off the coverage dict the resolve is about to be handed, on the host,
+    for the same reason the smoke render's diagnostics are: a reading taken on
+    the device under investigation lets the defect shape the evidence.
+    """
+    from algan.rendering.raytracing import raster_pipeline
+
+    original = raster_pipeline.prepare_sparse_raster_coverage
+
+    def reporting(*args, **kwargs):
+        coverage = original(*args, **kwargs)
+        if not _DUMP_SHEETS["on"] or not coverage or not coverage.get("sheets"):
+            return coverage
+        _DUMP_SHEETS["on"] = False  # first chunk only; the frame is one chunk
+        try:
+            covered = coverage["covered_idx"][: coverage["num_covered"]].cpu()
+            offsets = coverage["sheet_offsets"].cpu()
+            cov = coverage["sheet_cov"].cpu()
+            cap = coverage["sheet_cap"].cpu()
+            msk = coverage["sheet_msk"].cpu()
+            wanted = {
+                int(py) * width + int(px): (int(py), int(px))
+                for py in _DUMP_ROWS
+                for px in _DUMP_COLUMNS
+            }
+            for t in range(covered.numel()):
+                pixel = int(covered[t])
+                if pixel not in wanted:
+                    continue
+                py, px = wanted[pixel]
+                lo, hi = int(offsets[t]), int(offsets[t + 1])
+                covs = " ".join(f"{float(cov[s]):+.5f}" for s in range(lo, hi))
+                caps = " ".join(f"{float(cap[s]):.5f}" for s in range(lo, hi))
+                masks = " ".join(f"{int(msk[s]):#06x}" for s in range(lo, hi))
+                _DUMP_SHEETS["lines"].append(
+                    f"  py={py:3d} px={px:3d} sheets={hi - lo}  cov[{covs}]"
+                    f"  cap[{caps}]  msk[{masks}]"
+                )
+        except Exception as exc:  # noqa: BLE001
+            _DUMP_SHEETS["lines"].append(f"  (sheet dump failed: {exc!r})")
+        return coverage
+
+    raster_pipeline.prepare_sparse_raster_coverage = reporting
+
+
+#: Lines from :func:`_install_ceiling_check`.
+_CEILING_CHECK: list = []
+
+
+def _reference_ceiling(key, o2, back, excl, cov):
+    """The solid-shell ceiling, in float64 on the host, from the same inputs.
+
+    A transcription of ``sheet_compact_taichi.solid_shell_ceiling``: segments
+    are runs of equal ``key`` along ``o2``, each segment's cap is
+    ``float32(max(front sum, back sum))``, and each fragment keeps
+    ``min(max(cap - spent, 0) / denom, 1)`` of its own area, where ``spent`` is
+    the global exclusive prefix differenced at the segment's own base.
+
+    Its purpose is to be the ORACLE the device's answer is checked against, so
+    it is deliberately the slow, obvious form: float64 throughout, one Python
+    loop per segment, no reassociation to argue about.
+    """
+    import numpy as np
+
+    order = o2.astype(np.int64)
+    ki = key[order]
+    out = cov.astype(np.float64).copy()
+    n = order.size
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < n and ki[j] == ki[i]:
+            j += 1
+        rows = order[i:j]
+        c = cov[rows].astype(np.float64)
+        is_back = back[rows] != 0
+        cap = np.float64(np.float32(max(c[~is_back].sum(), c[is_back].sum())))
+        base = np.float64(excl[i])
+        spent = excl[i:j].astype(np.float64) - base
+        denom = np.maximum(c, 1e-12)
+        scale = np.minimum(np.maximum(cap - spent, 0.0) / denom, 1.0)
+        out[rows] = denom * scale
+        i = j
+    return out
+
+
+def _install_ceiling_check():
+    """Check ``solid_shell_ceiling``'s output against the host oracle, in situ.
+
+    The named next measurement of ``DESIGN_mps_support.md`` §1.2c. It runs the
+    kernel on its real inputs and then recomputes the answer from **those same
+    inputs** on the host, which is the only comparison that separates the two
+    remaining possibilities without a second machine: a kernel that computes
+    the wrong thing from correct inputs disagrees with the oracle, and inputs
+    that were already wrong agree with it perfectly while still producing the
+    wrong picture.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing import sheet_compact_taichi as sc
+
+    original = sc.solid_shell_ceiling
+
+    def checked(key, o2, back, excl, scratch, n, cov, acc_t):
+        try:
+            before = (
+                key[:n].detach().cpu().numpy(),
+                o2[:n].detach().cpu().numpy(),
+                back[:n].detach().cpu().numpy(),
+                excl[:n].detach().cpu().to(torch.float64).numpy(),
+                cov[:n].detach().cpu().to(torch.float64).numpy(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _CEILING_CHECK.append(f"  (could not read the inputs: {exc!r})")
+            return original(key, o2, back, excl, scratch, n, cov, acc_t)
+        result = original(key, o2, back, excl, scratch, n, cov, acc_t)
+        try:
+            after = cov[:n].detach().cpu().to(torch.float64).numpy()
+            oracle = _reference_ceiling(*before)
+            delta = np.abs(after - oracle)
+            bad = int((delta > 1e-6).sum())
+            _CEILING_CHECK.append(
+                f"  n={n} fragments; kernel vs host oracle: {bad} differ by "
+                f"> 1e-6, worst {float(delta.max()) if delta.size else 0.0:.6g}"
+            )
+            k_before, o2_before, back_before, excl_before, cov_before = before
+            worst = np.argsort(-delta)[:6]
+            for row in worst:
+                if delta[row] <= 1e-6:
+                    break
+                _CEILING_CHECK.append(
+                    f"    row {int(row)}: key {int(k_before[row])} "
+                    f"back {int(back_before[row])} cov in {cov_before[row]:.6f} "
+                    f"kernel {after[row]:.6f} oracle {oracle[row]:.6f}"
+                )
+            # And what the oracle itself says about the shape of the data,
+            # which is what an input defect shows up in: how many segments,
+            # and how many hold more than the two crossings a closed shell has.
+            ki = k_before[o2_before.astype(np.int64)]
+            starts = np.flatnonzero(np.r_[True, ki[1:] != ki[:-1]])
+            sizes = np.diff(np.r_[starts, n])
+            _CEILING_CHECK.append(
+                f"  segments={starts.size} (negative-key pass-throughs="
+                f"{int((k_before < 0).sum())}); sizes 1:{int((sizes == 1).sum())} "
+                f"2:{int((sizes == 2).sum())} 3:{int((sizes == 3).sum())} "
+                f">3:{int((sizes > 3).sum())}"
+            )
+            # A fingerprint of what went in and what the clamp did with it,
+            # comparable across devices by eye. If the kernel matches its
+            # oracle on both and these differ, the inputs are what moved; if
+            # neither differs, nothing here is the defect.
+            kept = int((np.abs(after - cov_before) <= 1e-6).sum())
+            zeroed = int((np.abs(after) <= 1e-6).sum())
+            _CEILING_CHECK.append(
+                f"  cov in sum {cov_before.sum():.6f} out sum {after.sum():.6f}; "
+                f"back-facing {int((back_before != 0).sum())}; "
+                f"excl last {excl_before[-1]:.6f}; "
+                f"unchanged {kept} clamped-to-zero {zeroed} "
+                f"partly {n - kept - zeroed}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _CEILING_CHECK.append(f"  (check failed: {exc!r})")
+        return result
+
+    sc.solid_shell_ceiling = checked
+
+
 def _grid(values, label, first_col):
     """A numbered grid of one channel, so a column can be pointed at."""
     lines = [f"{label} (columns {first_col}..{first_col + values.shape[1] - 1}):"]
@@ -155,7 +340,11 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         pt, pt_trunc = _render(out_dir, "shell_pt.png", 8)
+        _install_sheet_dump(*SHELL_SETTINGS.resolution)
+        _install_ceiling_check()
+        _DUMP_SHEETS["on"] = True
         det, det_trunc = _render(out_dir, "shell_det.png", 1, shell_ceiling_kernel=True)
+        _DUMP_SHEETS["on"] = False
         # The same arm again, same process, same settings. MPS-friendly mode is
         # documented non-deterministic -- f32 atomics replace the f64
         # accumulator, and DESIGN_mps_support.md 1.2's amendment predicts the
@@ -273,6 +462,19 @@ def main():
         }
         hits = {k: v for k, v in hits.items() if v}
         print(f"truncations {label:12s}: {hits or 'none'}")
+
+    if _CEILING_CHECK:
+        print("\nsolid_shell_ceiling against a float64 host oracle on its own inputs:")
+        for line in _CEILING_CHECK[:18]:
+            print(line)
+
+    if _DUMP_SHEETS["lines"]:
+        print(
+            "\nsheets of a few pixels, deterministic arm with the ceiling on "
+            f"(columns {_DUMP_COLUMNS}, rows {_DUMP_ROWS.start}..{_DUMP_ROWS.stop - 1}):"
+        )
+        for line in _DUMP_SHEETS["lines"]:
+            print(line)
 
     # Four columns either side of the window, so an edge shows as a run.
     wlo, whi = max(0, clo - 4), min(w, chi + 4)
