@@ -123,8 +123,8 @@ far you push the camera in.
             lambda t: np.array([1.8 * np.cos(t), 1.8 * np.sin(t), t / 3 - 3.1]),
             t_range=[0, 6 * np.pi], stroke_width=8,
         ))
-        # Manim builds both around its own z axis, which points away from the
-        # camera in Algan; stand them upright before animating.
+        # Manim builds both around its own z axis, which is Algan's OUT --
+        # straight at the camera; stand them upright before animating.
         Group(ball, coil).rotate(-75, RIGHT).spawn()
 
     with Sync(duration=4):
@@ -177,10 +177,9 @@ The two libraries use different conventions, and the boundary is the
 
 * **Colors.** Inside Manim code use Manim's colors (``mn.YELLOW``); once the
   Mob is an Algan Mob, use Algan's (``YELLOW``).
-* **Coordinates.** Manim's ``UP``/``RIGHT`` and Algan's agree in direction, but
-  Manim's z axis points the other way. Constructing in Manim and animating in
-  Algan keeps each side self-consistent, which is another reason to do all the
-  construction on one side of the line.
+* **Coordinates.** The two agree throughout: ``UP``, ``RIGHT`` and ``OUT`` mean
+  the same directions and the same signs on both sides, so an imported point
+  keeps the coordinates it was written with.
 * **Sizes.** Manim's default frame is 8 units tall; Algan's visible area at the
   origin plane is about 7. Imported diagrams usually want a modest
   :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen`.
@@ -192,8 +191,8 @@ Rather than rescaling each import, you can point the whole Scene at Manim's own
 defaults with :meth:`Scene.use_manim_defaults() <algan.scene.Scene.use_manim_defaults>`.
 Call it once, before you build anything, and imported geometry lands on the
 pixels Manim would have put it on: same 8-unit frame height, same perspective,
-same light position, same black background, and the z mirror that keeps a
-converted 3-D scene from rendering back-to-front.
+same light position, same black background. The two engines' axes already
+agree, so nothing is converted on the way in.
 
 .. code-block:: python
 

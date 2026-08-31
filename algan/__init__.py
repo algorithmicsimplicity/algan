@@ -110,11 +110,7 @@ _install_render_arch_guard()
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
 from algan.animation_timeline.animation_contexts import *
-from algan.manim_defaults import (
-    from_manim_coordinates,
-    manim_fov,
-    to_manim_coordinates,
-)
+from algan.manim_defaults import manim_fov
 from algan.mobs.bezier_circuit import *
 from algan.mobs.group import *
 from algan.mobs.image_mob import *

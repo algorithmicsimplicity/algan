@@ -316,13 +316,23 @@ def get_grid_to_triangle_indices(
         idx10 = vertex_id(i_next, j_indices)
         idx11 = vertex_id(i_next, j_next)
 
+        # The index order is the original one, and it is a SCREEN-space
+        # contract: the renderer's backface bit is the projected winding, and
+        # mirroring the world and the camera together (which is what moving
+        # OUTWARD to +z did) leaves that projection unchanged. The world-space
+        # cross of these three did flip with everything else, which is why the
+        # outward normal is -cross here -- see ``_flat_corner_normals`` and
+        # ``test_normal_orientation.py``.
         t1 = torch.stack((idx00, idx01, idx10), dim=-1)
         t2 = torch.stack((idx10, idx01, idx11), dim=-1)
         stacked = torch.stack((t1, t2), dim=-2)
         if pole_lo or pole_hi:
             # Collapsing a pole makes exactly one triangle of each adjacent
-            # cell degenerate: at the low pole t1 is (P, ring, P), at the high
-            # pole t2 is (ring, P, P). Dropping them is what turns the fan into
+            # cell degenerate: t1 at the low pole and t2 at the high one, each
+            # left with the pole vertex twice (which of the three slots it lands
+            # in follows the winding above, and does not matter here -- the
+            # degeneracy is a property of the vertex SET). Dropping them is what
+            # turns the fan into
             # a proper cone of triangles, and it is why welding a pole changes
             # the triangle COUNT while welding the seam does not.
             keep = torch.ones((W - 1, H - 1, 2), dtype=torch.bool, device=device)
@@ -792,7 +802,10 @@ def compute_grid_vertex_normals(grid):
         for pole_index, merged in merged_poles:
             unnormalized_normals[..., :, pole_index, :] = merged
 
-    return -F.normalize(unnormalized_normals, p=2, dim=-1)
+    # Unnegated: a mirror reverses a grid's orientation, so cross(du, dv) comes
+    # out along the surface's outward normal now that OUTWARD is +z. The
+    # negation this used to carry was the compensation for the old -z world.
+    return F.normalize(unnormalized_normals, p=2, dim=-1)
 
 
 def get_render_primitives_batched(surfaces):

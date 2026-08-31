@@ -81,3 +81,62 @@ A body's ring count is only adequate because the body's PN patches curve back on
 
 Index a pack (`pack[3]`) for a view sharing the pack's rows and lifespan; members therefore cannot spawn or despawn
 independently. `Text` packs its glyphs this way and a point cloud packs its dots.
+
+## The z convention, and the one rule that follows from it
+
+`OUTWARD` is **+z** — out of the screen, towards the viewer — matching Manim, Three.js and
+glTF. `(RIGHT, UP, OUTWARD)` is therefore right-handed, and `rotate(90, OUTWARD)` turns
+anti-clockwise on screen. `DEFAULT_BASIS` is `(RIGHT, UP, INWARD)`: a Mob's *forward* axis
+faces the way the camera looks, into the scene, which is why it is not the identity.
+
+Everything else follows from one fact: **a cross product is a pseudovector.** Mirror a scene
+in z and every ordinary vector mirrors with it, but `cross(a, b)` comes out *negated* as well
+as mirrored. So each site that derives a direction from a cross product carries an explicit
+sign, and each one is commented where it sits:
+
+| Site | What it derives |
+| :--- | :--- |
+| `surface.py: compute_grid_vertex_normals` | grid vertex normals — returns `+cross`, not `-cross` |
+| `mesh.py: TriangleMesh` grid | the identity basis, not `DEFAULT_BASIS` (see below) |
+| `shapes_3d.py: Cylinder._move_between_points` | `forward = -(right x up)`, the frame every Mob is built with |
+| `neural_net.py` (batched idle) | the same frame again, batched — the two must agree, and `test_neural_net_idle.py` is what says so |
+| `shapes_3d.py: _CapDisc._sweep_faces` | which way a cap's fan winds to face `direction` |
+| `geometry.py: get_rotation_around_axis` | returns the **transpose** of Rodrigues, because every call site applies it to row vectors |
+| `geometry.py: get_rotation_between_3d_vectors` | pairs with that: `+cross(v1, v2)`, unnegated |
+| `geometry.py: get_orthonormal_vector` | seeds from `RIGHT, UP, INWARD`, not the raw identity rows |
+
+Anything that writes **world-space z as a literal** carries the convention too, and the
+built-in shapes are where that lives: `Sphere`/`Cone`/`Torus`'s `coord_function` (a surface's
+grid is world space — it is never mapped through the Mob's basis), and the vertex tables of
+`Prism`, `Tetrahedron`, `Octahedron`, `Icosahedron` and `Dodecahedron`. `Cylinder` needs
+none of it because it builds from `basis_rows`.
+
+A polygon is triangulated as a fan from `face[0]`, so re-winding a face must hold its first
+vertex in place — that is `_rewound`, and it is why the tables can be written outward-wound
+without moving a single triangle. `ConvexHull3D` sorts Qhull's simplices into a canonical
+order for the same reason: the order the hull comes back in is a function of the input
+coordinates, and it reaches the renderer as triangle order.
+
+`TriangleMesh`'s grid takes the **identity** basis, not `DEFAULT_BASIS`: its corner positions
+are already baked into world space by the loader, so its basis is the transform applied from
+there on, and that starts as none. Authored normals are rotated by it while the positions are
+not, so a rotation there would light baked geometry by normals turned away from it.
+
+### One thing the flip left inconsistent
+
+A **polyhedron's** faces are re-wound by `orient_faces_outward`, whose signed-volume test is
+the ordinary right-hand-rule one, so `cross(v1-v0, v2-v0)` on a polyhedron triangle points
+**out** of the solid. A **surface's** grid triangles keep the index order they always had,
+because that order is a *screen-space* contract — the renderer's backface bit is the
+projected winding — and their world-space cross therefore points **in**.
+
+`tests/unit_tests/test_normal_orientation.py::test_revolved_solid_normals_face_outward` is
+the test that says so: it fails on the revolved family and passes on the flat one. Reversing
+the grid triangulation to agree (`t1 = (idx10, idx01, idx00)`) makes it pass and **regresses
+three pixel baselines** — measured: `complex_hierarchy_become` max 1 → 93,
+`shapes_and_timeline` 0 → 66, `solids_and_camera` 9 → 163 — so the two consumers want
+opposite orders and one of them needs an explicit sign instead. The kernels that read a
+geometric face normal mostly pass it straight to `_orient_hit_normals`, which turns it
+against the ray, which is why nothing visible depends on it today; the exposure is the
+fallback path for a mesh whose vertex normals are degenerate. **Unresolved** — it needs
+whoever owns the analytic-AA run rule.

@@ -36,8 +36,13 @@ def test_the_short_names_are_the_long_ones():
     assert spatial.IN is spatial.INWARD
     assert spatial.OUT is spatial.OUTWARD
     assert torch.equal(spatial.OUTWARD, -spatial.INWARD)
-    # +z runs away from the viewer, so OUTWARD -- towards them -- is -z.
-    assert torch.equal(spatial.OUTWARD, torch.tensor((0.0, 0.0, -1.0)))
+    # +z runs towards the viewer -- Manim's, Three.js's and glTF's convention --
+    # so OUTWARD is +z and the world basis (RIGHT, UP, OUTWARD) is right-handed.
+    assert torch.equal(spatial.OUTWARD, torch.tensor((0.0, 0.0, 1.0)))
+    assert torch.equal(torch.linalg.cross(spatial.RIGHT, spatial.UP), spatial.OUTWARD)
+    # A Mob's default orientation faces the way the camera looks, into the
+    # scene, so its forward axis is INWARD rather than OUTWARD.
+    assert torch.equal(spatial.DEFAULT_BASIS[2], spatial.INWARD)
 
 
 def test_all_four_names_are_star_exported():

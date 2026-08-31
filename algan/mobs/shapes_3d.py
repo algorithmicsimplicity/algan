@@ -40,6 +40,19 @@ from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
+def _rewound(face):
+    """``face`` traversed the other way round, keeping its first vertex first.
+
+    ``Polyhedron`` triangulates a polygon as a fan from ``face[0]``, so which
+    vertex comes first decides which diagonals the face is cut along. A plain
+    ``reversed`` moves the last vertex to the front and re-cuts the polygon;
+    holding index 0 in place reverses the winding and nothing else, which is
+    what makes a solid's triangulation independent of the winding its table
+    happened to be written with.
+    """
+    return [face[0], *face[:0:-1]]
+
+
 def orient_faces_outward(vertex_coords, faces_list):
     """Rewind a closed polyhedron's faces so every one of them faces outward.
 
@@ -115,7 +128,7 @@ def orient_faces_outward(vertex_coords, faces_list):
     if seen_count != len(faces):
         return faces_list  # more than one shell
 
-    oriented = [list(reversed(f)) if flip[i] else f for i, f in enumerate(faces)]
+    oriented = [_rewound(f) if flip[i] else f for i, f in enumerate(faces)]
 
     # Global sign, from the signed volume of the triangulated shell. The fan
     # matches Polyhedron's own triangulation, so a polygon face contributes the
@@ -131,7 +144,7 @@ def orient_faces_outward(vertex_coords, faces_list):
     if volume == 0.0:
         return faces_list
     if volume < 0.0:
-        oriented = [list(reversed(f)) for f in oriented]
+        oriented = [_rewound(f) for f in oriented]
     return oriented
 
 
@@ -352,8 +365,11 @@ class _CapDisc(Surface):
         outward = F.normalize(cast_to_tensor(direction).reshape(1, 3), p=2, dim=-1)
         first = self._rim_function(torch.zeros(1, 1))
         quarter = self._rim_function(torch.full((1, 1), 0.25))
+        # ``turn`` is a cross product, so it points along -normal in Algan's
+        # right-handed world (OUTWARD is +z): a fan swept first -> quarter faces
+        # ``direction`` when the two point OPPOSITE ways.
         turn = torch.cross(first.reshape(1, 3), quarter.reshape(1, 3), dim=-1)
-        return bool((turn * outward).sum() > 0)
+        return bool((turn * outward).sum() < 0)
 
     def coord_function(self, uv):
         azimuth = uv[..., :1]
@@ -497,7 +513,12 @@ class Sphere(Surface):
             (
                 torch.cos(latitude) * torch.cos(longitude),
                 torch.sin(latitude),
-                torch.cos(latitude) * torch.sin(longitude),
+                # Negated against the longitude's sine so that the grid runs the
+                # same way round the sphere as it did when OUTWARD was -z. A
+                # coord_function writes world coordinates directly (the grid is
+                # never mapped through the Mob's basis), so this is where a
+                # built-in shape carries the z convention.
+                -torch.cos(latitude) * torch.sin(longitude),
             ),
             dim=-1,
         )
@@ -677,7 +698,8 @@ class Cone(Surface):
             (
                 torch.sin(phi) * radius,
                 (u - 0.5) * self.height,
-                torch.cos(phi) * radius,
+                # See Sphere.coord_function: a built-in shape's world-space z.
+                -torch.cos(phi) * radius,
             ),
             -1,
         )
@@ -1038,15 +1060,17 @@ class Cylinder(Surface):
         with Sync(animation_manager=self.animation_manager):
             up_b = F.normalize(end - start, p=2, dim=-1)
             right_b = get_orthonormal_vector(up_b)
-            # forward = right x up is the basis convention every other Mob is
-            # built with (look(), the default basis). get_orthonormal_vector
-            # promises orthogonality and determinism but says nothing about
-            # handedness, and the vector it returned here was the other one --
-            # a mirrored frame, which turned the tessellated tube inside out:
-            # a Line3D's vertex normals and winding faced INWARD, so its lit
-            # side was its inside. Nothing showed while the flip in
-            # _prep_normal covered it; a transparent Line3D showed it plainly.
-            forward_b = torch.cross(right_b, up_b, dim=-1)
+            # forward = -(right x up) is the basis convention every other Mob is
+            # built with (look(), the default basis): DEFAULT_BASIS's forward is
+            # INWARD, and RIGHT x UP is OUTWARD now that OUTWARD is +z.
+            # get_orthonormal_vector promises orthogonality and determinism but
+            # says nothing about handedness, and the vector it returned here was
+            # the other one -- a mirrored frame, which turned the tessellated
+            # tube inside out: a Line3D's vertex normals and winding faced
+            # INWARD, so its lit side was its inside. Nothing showed while the
+            # flip in _prep_normal covered it; a transparent Line3D showed it
+            # plainly.
+            forward_b = -torch.cross(right_b, up_b, dim=-1)
             self.move_to((start + end) * 0.5)
             self._setattr_and_record_modification(
                 "basis",
@@ -1491,7 +1515,8 @@ class Torus(Surface):
             (
                 sweep_radius * torch.cos(u),
                 sweep_radius * torch.sin(u),
-                -self.tube_radius * torch.sin(v),
+                # See Sphere.coord_function: a built-in shape's world-space z.
+                self.tube_radius * torch.sin(v),
             ),
             -1,
         )
@@ -1500,7 +1525,7 @@ class Torus(Surface):
         u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
         v = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
         return torch.cat(
-            (-torch.cos(v) * torch.cos(u), -torch.cos(v) * torch.sin(u), -torch.sin(v)),
+            (-torch.cos(v) * torch.cos(u), -torch.cos(v) * torch.sin(u), torch.sin(v)),
             -1,
         )
 
@@ -1532,7 +1557,8 @@ class Torus(Surface):
             (
                 sweep_radius * torch.cos(u),
                 sweep_radius * torch.sin(u),
-                -self.tube_radius * torch.sin(v),
+                # See Sphere.coord_function: a built-in shape's world-space z.
+                self.tube_radius * torch.sin(v),
             ),
             -1,
         )
@@ -1855,15 +1881,19 @@ class Prism(Polyhedron):
         self.height = height
         self.depth = depth
         x, y, z = cast_to_tensor((width, height, depth)).reshape(-1) / 2
+        # Near face first, far face second: a box is the same solid mirrored in
+        # z, but which pair of corners each quad is split along is not, so the
+        # table is written in Algan's z convention (OUTWARD is +z) to keep the
+        # triangulation the mirror of what it was.
         vertices = [
-            [-x, -y, -z],
-            [x, -y, -z],
-            [x, y, -z],
-            [-x, y, -z],
             [-x, -y, z],
             [x, -y, z],
             [x, y, z],
             [-x, y, z],
+            [-x, -y, -z],
+            [x, -y, -z],
+            [x, y, -z],
+            [-x, y, -z],
         ]
         faces = [
             [0, 3, 2, 1],
@@ -1973,11 +2003,18 @@ class Tetrahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 4
         super().__init__(
+            # The z coordinates are the mirror of the classical table. A
+            # tetrahedron is the one Platonic solid that is *chiral* under
+            # z -> -z (its vertex set is the even-sign-count corners of the
+            # cube, and mirroring lands on the odd ones), so it is the only one
+            # whose table has to carry Algan's z convention: the others mirror
+            # onto themselves and are the same solid either way. Face winding
+            # is not adjusted here because ``orient_faces_outward`` fixes it.
             [
-                [unit, unit, unit],
-                [unit, -unit, -unit],
-                [-unit, unit, -unit],
-                [-unit, -unit, unit],
+                [unit, unit, -unit],
+                [unit, -unit, unit],
+                [-unit, unit, unit],
+                [-unit, -unit, -unit],
             ],
             [[0, 1, 2], [3, 0, 2], [0, 1, 3], [3, 1, 2]],
             **kwargs,
@@ -2009,13 +2046,17 @@ class Octahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 2
         super().__init__(
+            # z negated against the classical table, as in Tetrahedron: the
+            # vertex set is symmetric in z, so this is a permutation that leaves
+            # the solid alone and puts vertex k at the mirror of the point the
+            # classical table calls k -- which keeps triangle ORDER mirrored too.
             [
                 [unit, 0, 0],
                 [-unit, 0, 0],
                 [0, unit, 0],
                 [0, -unit, 0],
-                [0, 0, unit],
                 [0, 0, -unit],
+                [0, 0, unit],
             ],
             [
                 [2, 4, 1],
@@ -2056,19 +2097,20 @@ class Icosahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length / 2
+        # z negated against the classical table, as in Tetrahedron.
         vertices = [
-            [0, b, a],
-            [0, -b, a],
             [0, b, -a],
             [0, -b, -a],
+            [0, b, a],
+            [0, -b, a],
             [b, a, 0],
             [b, -a, 0],
             [-b, a, 0],
             [-b, -a, 0],
-            [a, 0, b],
             [a, 0, -b],
-            [-a, 0, b],
+            [a, 0, b],
             [-a, 0, -b],
+            [-a, 0, b],
         ]
         faces = [
             [1, 8, 0],
@@ -2121,37 +2163,46 @@ class Dodecahedron(Polyhedron):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length * ((3 + math.sqrt(5)) / 4)
         c = edge_length / 2
+        # z negated against the classical table, as in Tetrahedron: a
+        # dodecahedron's vertex SET is symmetric in z, so this is a permutation
+        # and the solid is unchanged, but it puts vertex k at the mirror of the
+        # point the classical table calls k -- which is what makes the fan
+        # triangulation of its pentagons follow Algan's z convention.
         vertices = [
-            [a, a, a],
             [a, a, -a],
-            [a, -a, a],
+            [a, a, a],
             [a, -a, -a],
-            [-a, a, a],
+            [a, -a, a],
             [-a, a, -a],
-            [-a, -a, a],
+            [-a, a, a],
             [-a, -a, -a],
-            [0, c, b],
+            [-a, -a, a],
             [0, c, -b],
-            [0, -c, -b],
+            [0, c, b],
             [0, -c, b],
+            [0, -c, -b],
             [c, b, 0],
             [-c, b, 0],
             [c, -b, 0],
             [-c, -b, 0],
-            [b, 0, c],
-            [-b, 0, c],
             [b, 0, -c],
             [-b, 0, -c],
+            [b, 0, c],
+            [-b, 0, c],
         ]
+        # Already outward-wound for the mirrored table above, and written
+        # starting at the vertex each face's fan is cut from, so the
+        # pentagons keep their diagonals. Manim's own lists are neither
+        # (see orient_faces_outward, which repairs them).
         faces = [
-            [18, 16, 0, 12, 1],
+            [1, 12, 0, 16, 18],
             [3, 18, 16, 2, 14],
             [3, 10, 9, 1, 18],
             [1, 9, 5, 13, 12],
-            [0, 8, 4, 13, 12],
+            [12, 13, 4, 8, 0],
             [2, 16, 0, 8, 11],
             [4, 17, 6, 11, 8],
-            [17, 19, 5, 13, 4],
+            [4, 13, 5, 19, 17],
             [19, 7, 15, 6, 17],
             [6, 15, 14, 2, 11],
             [19, 5, 9, 10, 7],
@@ -2214,4 +2265,15 @@ class ConvexHull3D(Polyhedron):
         remap = {old: new for new, old in enumerate(vertex_ids)}
         vertices = [array[i].tolist() for i in vertex_ids]
         faces = [[remap[int(i)] for i in simplex] for simplex in hull.simplices]
+        # Canonical order, independent of the order Qhull happened to emit its
+        # simplices in. Qhull's ordering is a function of the input coordinates,
+        # so the same hull built from mirrored points comes back listed
+        # differently -- and the face order reaches the renderer as triangle
+        # order, which moves pixels at the seams between coplanar faces. Each
+        # face is rotated to start at its lowest index (winding preserved;
+        # ``orient_faces_outward`` settles the direction) and the list sorted.
+        faces = sorted(
+            face[face.index(min(face)) :] + face[: face.index(min(face))]
+            for face in faces
+        )
         super().__init__(vertices, faces, **kwargs)

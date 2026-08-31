@@ -54,11 +54,8 @@ behaviour outside those parameters still shows through -- ``Title`` positions
 against Manim's 8-unit frame rather than Algan's, as its own docstring warns.
 That is a known limit of delegating rather than reimplementing.
 
-The z axis is not converted here. Manim's ``OUT`` is ``+z`` where Algan's
-``OUTWARD`` is ``-z``, but that is a property of a whole scene's basis rather
-than of a constructor argument -- mirroring one object without its camera and
-lights renders it back-to-front -- so it stays with
-:attr:`Scene.manim_coordinates <algan.scene.Scene.manim_coordinates>`.
+There is no third conversion: Manim's ``OUT`` and Algan's ``OUTWARD`` are both
+``+z``, so an imported point keeps the coordinates it was written with.
 """
 
 from __future__ import annotations

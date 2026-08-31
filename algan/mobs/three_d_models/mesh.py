@@ -31,6 +31,7 @@ from algan.settings.renderer_settings import (
 )
 from algan.utils.tensor_utils import (
     cast_to_tensor,
+    squish,
     texture_u8_provenance,
     unsquish,
 )
@@ -246,6 +247,14 @@ class TriangleMesh(Mob):
         }
         grid_kwargs["location"] = corner_positions
         grid_kwargs["color"] = corner_colors
+        # The IDENTITY, not DEFAULT_BASIS: ``corner_positions`` are already in
+        # world space (the loader bakes each node's transform into them), so the
+        # grid's basis is the transform applied to them from here on, and that
+        # starts as no transform at all. Authored normals are rotated by this
+        # basis in ``_compute_corner_normals`` while the positions are not, so a
+        # basis that is a rotation rather than the identity would light baked
+        # geometry by normals turned away from it.
+        grid_kwargs["basis"] = squish(torch.eye(3, device=device))
         self.grid = Mob(**grid_kwargs)
         # Morphing pairs whole triangles, never individual soup corners.
         self.grid.num_points_per_object = 3

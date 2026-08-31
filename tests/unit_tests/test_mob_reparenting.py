@@ -160,8 +160,10 @@ def test_rotation_pivots_about_whichever_parent_is_current(scene):
     parent_b.add_children(child)
     parent_b.rotate(90, OUTWARD)  # and now about (4, 0, 0)
 
-    # (0, 2) about (0, 0) lands on (2, 0); (2, 0) about (4, 0) lands on (4, 2).
-    _assert_at(scene, [1.0, 2.0], child, [[2.0, 0.0, 0.0], [4.0, 2.0, 0.0]])
+    # A positive angle about OUTWARD turns counter-clockwise on screen, so
+    # (0, 2) about (0, 0) lands on (-2, 0); (-2, 0) is then 6 to the left of
+    # (4, 0), and a quarter turn about that puts it 6 below, at (4, -6).
+    _assert_at(scene, [1.0, 2.0], child, [[-2.0, 0.0, 0.0], [4.0, -6.0, 0.0]])
 
 
 def test_re_parenting_inside_one_sync_applies_both_parents(scene):

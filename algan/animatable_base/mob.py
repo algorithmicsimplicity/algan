@@ -339,7 +339,7 @@ class Mob(
     def __init__(
         self,
         location: torch.Tensor = ORIGIN,
-        basis: torch.Tensor = squish(torch.eye(3)),
+        basis: torch.Tensor = squish(DEFAULT_BASIS),
         color: Color | None = None,
         opacity: float = 1,
         glow: float = 0,

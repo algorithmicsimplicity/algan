@@ -189,7 +189,6 @@ class Scene(RenderLoopMixin):
         # Set by use_manim_defaults(): mirrors imported Manim geometry in z, so
         # Manim's +z-toward-viewer convention lands the right way round in
         # Algan's, where -z faces the viewer. Read by ManimMob at construction.
-        self.manim_coordinates = False
         self.scene_times = [[self.current_time, self.current_time]]
         depth_source = (
             SETTINGS.style.frame if callable(background_frame) else background_frame
@@ -315,7 +314,6 @@ class Scene(RenderLoopMixin):
         camera: bool = True,
         shading: bool = True,
         background: bool = True,
-        coordinates: bool = True,
         video_settings: bool = False,
         shape_defaults: bool = False,
     ):
@@ -334,10 +332,8 @@ class Scene(RenderLoopMixin):
         perspective camera reproduces 2-D scenes exactly and 3-D scenes with
         Manim's own perspective.
 
-        Because Manim's ``OUT`` is ``+z`` where Algan's ``OUTWARD`` is ``-z``, this also
-        turns on :attr:`manim_coordinates`, which makes ``ManimMob`` mirror
-        imported geometry in z. Without it a converted 3-D scene renders
-        back-to-front. It has no effect on flat ``z = 0`` geometry.
+        Manim's ``OUT`` and Algan's ``OUTWARD`` are both ``+z``, so imported
+        geometry needs no coordinate conversion and none is applied.
 
         Animation
         ---------
@@ -361,9 +357,6 @@ class Scene(RenderLoopMixin):
         background
             Whether to set the background to black, Manim's default. Defaults to
             ``True``.
-        coordinates
-            Whether imported Manim geometry is mirrored into Algan's coordinate
-            system. Defaults to ``True``.
         video_settings
             Whether to also switch the output to Manim's default 1920x1080 at 60
             fps. Defaults to ``False``, so an explicitly chosen quality preset
@@ -400,7 +393,6 @@ class Scene(RenderLoopMixin):
             camera=camera,
             shading=shading,
             background=background,
-            coordinates=coordinates,
             video_settings=video_settings,
             shape_defaults=shape_defaults,
         )
@@ -901,7 +893,6 @@ class Scene(RenderLoopMixin):
         self.light_sources = []
         # The initializer below restores Algan's own camera and lighting, so the
         # Manim viewpoint is gone; drop the coordinate convention that went with it.
-        self.manim_coordinates = False
         with (
             SceneManager.instance().activating(self),
             animation_manager_context(self.animation_manager),

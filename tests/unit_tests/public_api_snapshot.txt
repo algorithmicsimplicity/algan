@@ -365,7 +365,6 @@ cosine_color
 depth_shader
 easings
 fresnel_rim
-from_manim_coordinates
 glass_ball
 lambert_shader
 manim_fov
@@ -378,5 +377,4 @@ set_environment_map
 set_log_level
 set_progress_style
 standard_shader
-to_manim_coordinates
 toon_shader

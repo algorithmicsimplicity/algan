@@ -107,13 +107,8 @@ class ManimMob(BezierCircuitCubic):
                 )
             )
 
-        # Manim's OUT is +z and Algan's OUTWARD is -z, so the two screen bases are
-        # mirror
-        # images and imported 3-D geometry renders back-to-front unless it is
-        # mirrored. Scene.use_manim_defaults() turns this on and mirrors the
-        # camera and light to match; flat z == 0 geometry is unaffected either way.
-        mirror_z = bool(getattr(kwargs["scene"], "manim_coordinates", False))
-
+        # No coordinate conversion: Manim's OUT and Algan's OUTWARD are both
+        # +z, so imported points keep the numbers they were built with.
         empty = False
         if len(manim_mob.points) == 0:
             control_points = (
@@ -133,11 +128,6 @@ class ManimMob(BezierCircuitCubic):
                 )
                 empty = True
             control_points = unsquish(control_points.float(), -2, 4)
-
-        if mirror_z:
-            from algan.manim_defaults import from_manim_coordinates
-
-            control_points = from_manim_coordinates(control_points)
 
         def convert_manim_color(manim_color, opacity):
             if manim_color is None:

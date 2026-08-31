@@ -265,12 +265,7 @@ It sets four things, and each can be declined with a keyword:
        comes out byte-identical to Manim's.
    * - ``background``
      - Black, Manim's default.
-   * - ``coordinates``
-     - The z mirror. Manim's ``OUT`` is ``+z`` and Algan's is ``-z``, so
-       imported geometry is mirrored in z; without it a converted 3-D scene
-       renders back-to-front. Flat ``z = 0`` geometry is unaffected either way.
-
-All four default to ``True``. Two extras default to ``False``:
+All three default to ``True``. Two extras default to ``False``:
 ``video_settings=True`` also switches the output to Manim's 1920x1080 at 60 fps,
 and ``shape_defaults=True`` makes Algan's *own* shapes (``Square``, ``Circle``,
 ...) adopt Manim's colors and stroke styling rather than Algan's.

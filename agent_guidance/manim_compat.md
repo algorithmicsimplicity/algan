@@ -2,17 +2,18 @@
 
 `algan.manim` wraps **every** Manim class, natives included, so `mn.Sphere` exists beside
 Algan's `Sphere`. The rule is uniform: **a name in `mn.` follows Manim's conventions; the same
-name at the root follows Algan's.** Three conventions actually differ, and all three are
+name at the root follows Algan's.** Two conventions actually differ, and both are
 converted at that boundary and nowhere else:
 
 | | root (Algan) | `mn.` (Manim) |
 | :--- | :--- | :--- |
 | Angles | degrees — `Arc(angle=90)` | radians — `mn.Arc(angle=PI/2)` |
 | Stroke width | `Arrow(stroke_width=4)` | twice that — `mn.Arrow(stroke_width=8)` |
-| z axis | `OUTWARD` is `-z` | `OUT` is `+z` (`Scene.manim_coordinates`) |
 
-The z row is scene-wide, not per-constructor: mirroring one object without its camera and
-lights renders it back-to-front, so the adapters leave it to `Scene.manim_coordinates`.
+The z axis used to be a third row. It is not any more: Algan's `OUTWARD` is `+z`, the same
+as Manim's `OUT`, so an imported point keeps the numbers it was written with. There is no
+`Scene.manim_coordinates` and no `from_manim_coordinates`/`to_manim_coordinates` — they
+existed only to mirror what no longer needs mirroring. See `mobs_geometry.md`.
 
 ## Everything is adapted unless it says why not
 

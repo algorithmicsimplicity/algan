@@ -424,7 +424,9 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     sep = end_ - start_
     up_b = F.normalize(sep, p=2, dim=-1)
     right_b = get_orthonormal_vector(up_b)
-    forward_b = torch.cross(right_b, up_b, dim=-1)
+    # Negated exactly as in Cylinder._move_between_points, whose frame this
+    # replicates: DEFAULT_BASIS's forward is INWARD and RIGHT x UP is OUTWARD.
+    forward_b = -torch.cross(right_b, up_b, dim=-1)
     mid = (start_ + end_) * 0.5
     d_mid = mid - syn_loc
     new_syn_loc = syn_loc + d_mid
