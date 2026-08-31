@@ -361,6 +361,11 @@ def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight():
     ``test_path_tracer.py::test_closed_shell_attenuates_once_at_authored_opacity``
     came back attenuated twice on the one column where a third sheet sits.
 
+    The floor is now spelled ``where(x < eps, eps, x)``, which is ``clamp_min``
+    bit for bit and does not go through the call that declines. This is the
+    test that says so on hardware; ``benchmarks/_mps_torch_op_probe.py``'s
+    ``probe_epsilon_clamp`` is where the two are compared spelling by spelling.
+
     Two zero-area bands, because the function only takes its sibling path when
     a band holds more than one sheet: a two-sibling band that is entirely empty
     and a three-sibling one, which is the arrangement the cube's near vertical

@@ -561,52 +561,100 @@ def probe_epsilon_clamp(device):
     resolve's ``eff <= min_alpha`` branch, so the sheet composited instead of
     dropping out and an interior column came back 239 instead of 153.
 
-    So this asks the question at every magnitude rather than at the one the
-    renderer happens to use. If the floor is a mantissa width -- a scalar
-    rounded through some narrower type on its way into the kernel -- the sweep
-    says where it is, and that is what decides whether the fix is one call site
-    or all of them. Each spelling is probed separately because they are
-    different dispatches, and a spelling that survives is a drop-in
-    replacement.
+    So this asks the question over two axes rather than at the one point the
+    renderer happens to sit at.
+
+    **The floor's magnitude**, because if the defect is a mantissa width -- a
+    scalar rounded through some narrower type on its way into the kernel --
+    the sweep says where it gives out, and that decides whether the exposure is
+    one call site or all twenty.
+
+    **The input's magnitude**, because "an exact zero is not raised" and "no
+    value below the floor is raised" are different defects with different
+    blast radii, and the render only ever showed the first. A guard that
+    silently declines on 1e-13 is a wrong denominator everywhere, not just a
+    NaN in the one place a coverage sums to nothing.
+
+    Each spelling is probed separately because they are different dispatches,
+    and one that survives is a drop-in replacement. ``where(x < eps, eps, x)``
+    is the one the renderer now uses, and it is ``clamp_min`` bit for bit on
+    every input including NaN -- which is why the comparison is ``<`` and not
+    ``>``: a comparison against a NaN is false either way, and only this order
+    leaves the NaN in the ``x`` arm where ``clamp_min`` leaves it.
     """
     print("\ntiny-scalar clamp, the divide guard (sheets.py:716 and ~20 more)")
+
+    def spellings_of(eps):
+        return {
+            "clamp_min": lambda t: t.clamp_min(eps),
+            "clamp(min=)": lambda t: t.clamp(min=eps),
+            "torch.clamp_min": lambda t: torch.clamp_min(t, eps),
+            "maximum(0-dim)": lambda t: torch.maximum(
+                t, torch.tensor(eps, dtype=t.dtype, device=t.device)
+            ),
+            "maximum(full)": lambda t: torch.maximum(t, torch.full_like(t, eps)),
+            "where(x<eps)": lambda t: torch.where(t < eps, eps, t),
+        }
+
+    def disagreeing(host, eps):
+        """Spellings whose MPS answer is not the host's, bit for bit."""
+        moved = host.to(device)
+        return [
+            name
+            for name, fn in spellings_of(eps).items()
+            if not torch.equal(fn(host), fn(moved).cpu())
+        ]
+
     n = 4096
     zeros_c = torch.zeros(n, dtype=torch.float32)
-    zeros_m = zeros_c.to(device)
     # 1e-12 is the renderer's own floor; the rest bracket the ceilings a
     # narrowing would put it under. 6.1e-5 is float16's smallest NORMAL and
     # 5.96e-8 its smallest subnormal, so a scalar rounded through half would
     # hold above the first, quantize between them, and flush to zero below the
     # second; 1.18e-38 and 1.4e-45 are float32's own two.
+    print("  the FLOOR's magnitude, over an exact zero")
     for eps in (1e-3, 6.1e-5, 1e-6, 5.96e-8, 1e-8, 1e-12, 1.18e-38, 1.4e-45):
-        spellings = {
-            "clamp_min": lambda t, e=eps: t.clamp_min(e),
-            "clamp(min=)": lambda t, e=eps: t.clamp(min=e),
-            "torch.clamp_min": lambda t, e=eps: torch.clamp_min(t, e),
-            "maximum(0-dim)": lambda t, e=eps: torch.maximum(
-                t, torch.tensor(e, dtype=t.dtype, device=t.device)
-            ),
-            "maximum(full)": lambda t, e=eps: torch.maximum(t, torch.full_like(t, e)),
-        }
-        broken = [
-            name
-            for name, fn in spellings.items()
-            if not torch.equal(fn(zeros_c), fn(zeros_m).cpu())
-        ]
-        got = float(zeros_m.clamp_min(eps)[0])
+        broken = disagreeing(zeros_c, eps)
+        got = float(zeros_c.to(device).clamp_min(eps)[0])
         print(
             f"    {eps:g}: {', '.join(broken) if broken else 'every spelling holds'}"
             f"  (clamp_min(0) -> {got:g}, want {eps:g})"
         )
         _report(f"clamp_min({eps:g}) on an exact zero", not broken)
 
+    # And the other axis: the renderer's own floor, over inputs that straddle
+    # it. A defect that only bites an exact zero is one call site; one that
+    # bites 1e-13 is every denominator in the renderer.
+    print("  the INPUT's magnitude, under the renderer's own 1e-12 floor")
+    eps = 1e-12
+    for value in (0.0, -0.0, 1.4e-45, 1e-20, 1e-13, 9.99e-13, 1e-12, 1e-11, 0.5):
+        host = torch.full((n,), value, dtype=torch.float32)
+        broken = disagreeing(host, eps)
+        got = float(host.to(device).clamp_min(eps)[0])
+        want = float(host.clamp_min(eps)[0])
+        print(
+            f"    x={value:<10g}: "
+            f"{', '.join(broken) if broken else 'every spelling holds'}"
+            f"  (clamp_min -> {got:g}, want {want:g})"
+        )
+        _report(f"clamp_min(1e-12) on x={value:g}", not broken)
+
     # The composition the renderer actually performs, so the probe fails on the
-    # thing that reached the frame rather than only on its cause.
+    # thing that reached the frame rather than only on its cause -- and beside
+    # it the form that shipped, which must hold on every backend.
     cov_c = torch.zeros(n, dtype=torch.float32)
     area_c = torch.zeros(n, dtype=torch.float32)
-    share_c = cov_c / area_c.clamp_min(1e-12)
-    share_m = cov_c.to(device) / area_c.to(device).clamp_min(1e-12)
-    _check("share = 0 / area.clamp_min(1e-12)", share_c, share_m)
+    _check(
+        "share = 0 / area.clamp_min(1e-12)",
+        cov_c / area_c.clamp_min(1e-12),
+        cov_c.to(device) / area_c.to(device).clamp_min(1e-12),
+    )
+    area_m = area_c.to(device)
+    _check(
+        "share = 0 / where(area < 1e-12, 1e-12, area)   <- the shipped form",
+        cov_c / torch.where(area_c < 1e-12, 1e-12, area_c),
+        cov_c.to(device) / torch.where(area_m < 1e-12, 1e-12, area_m),
+    )
 
 
 def main() -> int:

@@ -714,19 +714,24 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
 
     acc = accumulate_dtype()
     area_g = band_area.index_select(0, sheet_band).to(acc)
-    # A band of zero area has no share to hand out, and saying so is not the
-    # same as dividing by a floor. The floor alone was what this used to carry,
-    # and on MPS it does not hold: ``clamp_min(1e-12)`` returns the exact zero
-    # unchanged there (``benchmarks/_mps_torch_op_probe.py::probe_epsilon_clamp``
-    # sweeps the magnitudes), so ``0 / 0`` produced a NaN -- and a NaN never
-    # trips the resolve's ``eff <= min_alpha`` branch, so the sheet composited
-    # instead of dropping out and a closed shell's interior edge came back
-    # doubly attenuated. Selecting on the area is exact wherever the clamp
-    # works: coverages are non-negative, so a zero sum means every sibling
-    # contributed zero and the old expression's answer was ``0 / 1e-12`` -- the
-    # zero this writes -- while a positive area still divides by the clamped
-    # value it always did.
-    share = torch.where(area_g > 0, cov.to(acc) / area_g.clamp_min(1e-12), 0.0)
+    # The floor under the divide, spelled with a select rather than as
+    # ``area_g.clamp_min(1e-12)``. **MPS does not honour that call**: it returns
+    # an exact zero unchanged (``benchmarks/_mps_torch_op_probe.py``'s
+    # ``probe_epsilon_clamp`` sweeps the magnitudes and the spellings), and a
+    # band whose siblings were all clamped to zero coverage by the closed-shell
+    # ceiling has exactly zero area, so the guard's one job went undone and the
+    # divide produced a NaN. Nothing downstream catches one -- ``eff <=
+    # min_alpha`` is false against a NaN like every comparison is -- so the
+    # sheet composited instead of dropping out and a closed shell's interior
+    # edge came back attenuated twice (``DESIGN_mps_support.md`` §2.3c).
+    #
+    # ``where(x < eps, eps, x)`` is ``clamp_min`` bit for bit, on every input
+    # including NaN, +-0, +-inf and the subnormals -- the ``<`` rather than a
+    # ``>`` is what keeps the NaN, since a comparison against one is false
+    # either way and only this order leaves it in the ``x`` arm. So this is the
+    # same value on every backend where the clamp works, and the right one on
+    # the backend where it does not.
+    share = cov.to(acc) / torch.where(area_g < 1e-12, 1e-12, area_g)
     del area_g
     p = band_corr.index_select(0, sheet_band).to(acc) * share
 

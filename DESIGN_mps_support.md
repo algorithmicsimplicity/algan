@@ -666,8 +666,18 @@ unlike the two above it does not corrupt a value — it declines to *change* one
 
 `x.clamp_min(eps)` with a small positive `eps` returns `x` unchanged on MPS
 where `x` is an exact zero. `benchmarks/_mps_torch_op_probe.py`'s
-`probe_epsilon_clamp` sweeps the magnitudes and the spellings, since the answer
-decides whether the exposure is one call site or all of them.
+`probe_epsilon_clamp` sweeps it on two axes, because they carry very different
+consequences and the render only ever exhibited the first:
+
+* **the floor's magnitude**, which says whether this is a narrowing — a scalar
+  rounded through some shorter type on its way into the kernel — and if so
+  where it gives out;
+* **the input's magnitude**, because "an exact zero is not raised" is one call
+  site while "nothing below the floor is raised" is every denominator in the
+  renderer. `x = 1e-13` is the case that separates them.
+
+Each spelling is swept separately, since they are different dispatches and one
+that survives is a drop-in replacement.
 
 That call is the renderer's **divide-by-zero guard**, in twenty-odd places
 (`sheets.py`, `raster_pipeline.py`, `stbvh.py`, `primitives.py`, ...). Its whole
@@ -685,27 +695,35 @@ false, so a NaN coverage is neither small enough to drop nor large enough to
 saturate — it simply passes the branch and composites. See the end of §1.2c for
 the chain from the clamp to the pixel.
 
-Fixed at the call site rather than in `mps_compat`, because the fix is not a
-substitution: `share` is selected on the band's area instead of divided through
-a floor,
+Fixed at the call site rather than in `mps_compat`, because it is not a
+substitution — it is the same floor, spelled so that it does not go through the
+call that does not honour it:
 
 ```python
-share = torch.where(area_g > 0, cov.to(acc) / area_g.clamp_min(1e-12), 0.0)
+share = cov.to(acc) / torch.where(area_g < 1e-12, 1e-12, area_g)
 ```
 
-which is right on every backend and byte-identical on the ones where the clamp
-works. Coverages are non-negative, so a zero band area means every sibling
-contributed zero and the old expression's answer was `0 / 1e-12` — the zero this
-writes — while a positive area still divides by the clamped value it always did.
-`test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
+**`where(x < eps, eps, x)` is `clamp_min(eps)` bit for bit**, and that is
+checkable rather than asserted: over `0`, `-0`, `±inf`, `NaN`, the subnormals
+and values either side of the floor, the two agree in every bit of every
+result. The comparison is `<` and not `>` for the one input where the order
+matters: a comparison against a NaN is false either way, so only this order
+leaves the NaN in the `x` arm, which is where `clamp_min` leaves it. (`where(x >
+eps, x, eps)` returns `eps` there instead — the same value everywhere else, and
+a silent NaN swallower.)
+
+So there is nothing to gate on the mode and nothing to argue about byte
+identity: CPU and CUDA compute what they always did, and MPS now computes it
+too. `test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
 guards it on whatever device the machine has, like the gather guard in §2.3b.
 
-**The other sites are exposed and are not fixed**, deliberately: none of them
-has been measured taking a zero, and rewriting twenty divisions against a defect
-whose threshold the sweep will pin is churn ahead of the measurement. What makes
-that safe to leave is that the failure mode is a NaN, which propagates to a
-visibly wrong frame rather than to a plausible one — this defect cost one test,
-not a silent baseline shift.
+**The other sites still say `clamp_min` and are not changed**, pending the
+input-axis sweep above. If the defect is confined to an exact zero they are
+untouched, since none of them has been measured taking one; if it reaches
+`1e-13` they are all wrong denominators and the same one-line respelling
+applies to each. Either way the failure mode is loud — a NaN propagates to a
+visibly wrong frame rather than a plausible one, which is why this cost one
+test rather than a silent baseline shift.
 
 ### 2.4 How non-deterministic MPS actually is
 
