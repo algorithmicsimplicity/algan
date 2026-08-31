@@ -90,20 +90,24 @@ class _Member:
 
 
 def test_a_collection_declaring_nothing_keeps_one_id_per_member():
-    ids, n = _mesh_ids_from_collection([_Member(2), _Member(3)], [2, 3])
+    ids, n, keys = _mesh_ids_from_collection([_Member(2), _Member(3)], [2, 3])
     reason = (
         "a collection where no member declares identity must fall through to "
         "the per-member counts, so the default path stays byte-identical"
     )
     assert ids is None, reason
     assert n is None, reason
+    assert keys is None, reason
 
 
 def test_members_sharing_a_mesh_key_become_one_surface():
     members = [_Member(1, mesh_key="cube") for _ in range(12)]
-    ids, n = _mesh_ids_from_collection(members, [1] * 12)
+    ids, n, keys = _mesh_ids_from_collection(members, [1] * 12)
     assert n == 1
     assert ids.tolist() == [0] * 12
+    # One surface, and it still remembers which mob declared it: that key is
+    # how a tool names the Mob behind a rendered triangle.
+    assert keys == ["cube"]
 
 
 def test_two_keyed_groups_stay_distinct():
@@ -113,9 +117,10 @@ def test_two_keyed_groups_stay_distinct():
         _Member(2, mesh_key="b"),
         _Member(2, mesh_key="b"),
     ]
-    ids, n = _mesh_ids_from_collection(members, [2, 2, 2, 2])
+    ids, n, keys = _mesh_ids_from_collection(members, [2, 2, 2, 2])
     assert n == 2
     assert ids.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert keys == ["a", "b"]
 
 
 def test_an_unkeyed_member_between_two_keyed_ones_does_not_bridge_them():
@@ -127,14 +132,16 @@ def test_an_unkeyed_member_between_two_keyed_ones_does_not_bridge_them():
         _Member(1),
         _Member(1, mesh_key="a"),
     ]
-    ids, n = _mesh_ids_from_collection(members, [1, 1, 1])
+    ids, n, keys = _mesh_ids_from_collection(members, [1, 1, 1])
     assert n == 3
     assert ids.tolist() == [0, 1, 2]
+    # One key per surface, in surface order, including the unkeyed middle one.
+    assert keys == ["a", None, "a"]
 
 
 def test_mesh_ids_subdivide_a_member_into_shells():
     member = _Member(6, mesh_ids=torch.tensor([0, 0, 0, 1, 1, 1], dtype=torch.int32))
-    ids, n = _mesh_ids_from_collection([member], [6])
+    ids, n, keys = _mesh_ids_from_collection([member], [6])
     assert n == 2
     assert ids.tolist() == [0, 0, 0, 1, 1, 1]
 
@@ -143,7 +150,7 @@ def test_shell_ids_are_renumbered_into_the_collections_namespace():
     """Two members' local shell ids must not collide after concatenation."""
     a = _Member(4, mesh_ids=torch.tensor([7, 7, 9, 9], dtype=torch.int32))
     b = _Member(2, mesh_ids=torch.tensor([3, 4], dtype=torch.int32))
-    ids, n = _mesh_ids_from_collection([a, b], [4, 2])
+    ids, n, keys = _mesh_ids_from_collection([a, b], [4, 2])
     assert n == 4
     assert ids.tolist() == [0, 0, 1, 1, 2, 3]
 
@@ -468,7 +475,7 @@ def test_a_packed_grid_declares_one_shell_per_sphere():
     # Contiguous blocks: the flatten keeps each grid's triangles together.
     assert len(set(ids[: len(ids) // 4].tolist())) == 1
 
-    resolved, n = _mesh_ids_from_collection(prims, None)
+    resolved, n, keys = _mesh_ids_from_collection(prims, None)
     assert n == 4
     assert resolved.shape[0] == prims[0].corners.shape[1] // 3
 

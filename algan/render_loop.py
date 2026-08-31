@@ -3363,7 +3363,6 @@ class RenderLoopMixin:
                     current_time_ind = new_time_ind
                     if new_time_ind >= end_time_ind:
                         break
-                self.timeline_manager.clear_buffers()
             finally:
                 # Always drain the worker before leaving (normal completion,
                 # error, or abandoned generator): a prep still running while
@@ -3373,6 +3372,17 @@ class RenderLoopMixin:
                         pending.result()
                 if executor is not None:
                     executor.shutdown(wait=True)
+                # And always put the timeline back. Materializing points every
+                # attribute's ``active_state`` at a buffer holding this window's
+                # frames; leaving one behind makes the next read of any
+                # attribute return a window of values where the caller expects
+                # the authored one, which surfaces far from here as a shape
+                # mismatch while constructing an unrelated Mob. This used to sit
+                # above the ``finally``, so it ran only on normal completion --
+                # and a caller that stops consuming part way through, which the
+                # comment above already contemplates, left the scene
+                # materialized. Clearing is idempotent.
+                self.timeline_manager.clear_buffers()
 
     def _drain_video_writer(self, frame_queue, writer_process, file_writer):
         """Flush the frame queue and wait for the encoder to finish.

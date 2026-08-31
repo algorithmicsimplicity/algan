@@ -89,6 +89,32 @@ every deeper bounce, keeps the existing `_mirror_share` throttle. This is what
 the separation can represent (one `W`, one radius, one `B` per pixel), and it is
 the event that matters.
 
+**CORRECTED 2026-08-31: "later sheet" means a later SURFACE, and the claim is
+shared by the §4.4 band that made it.** A band's siblings are one surface's
+coverage of the pixel, subdivided so each shades with its own normal
+(`DESIGN_sheet_resolve.md` §4.4/§10.5), and §4.4's contract is that the
+subdivision changes nothing the band commits. As first written this rule broke
+it, in the one place the throttle and the split-sum disagree most: at roughness
+0.35 the throttle is ~3% of Schlick where `E` is the lobe's whole directional
+albedo, and §2.1's last sanity check says the local term must use `E` or the
+pixel gains energy. A crease pixel's far sibling therefore kept energy the
+interior of the same facet spends on its reflection — and since `E` is
+per-channel and a metal's F0 is its albedo, a red metal gained it in RED. On
+`tests/fast`'s Icosahedron that was a brighter, redder line down every interior
+edge: the crease row `(207, 106, 94)` between facets at `(181, 103, 91)` and
+`(187, 106, 94)`, i.e. +21 in red against +1 in green, outside the interval a
+blend of the two facets can reach.
+
+The claim is now the band's: every sibling shades with `E`, and their energies
+SUM into the one row they share — one ray, in the claiming sibling's mirror
+direction, at the weight the unsplit band would have spawned. The direction and
+radius stay the claiming sibling's; a lobe wide enough to be worth prefiltering
+spans the crease either way. Pixels with no subdivided band are untouched
+(measured: on the fast scene the change moves 9,122 pixel-frames, all inside
+the Icosahedron's screen box, worst 51, and nothing else in the frame).
+`test_a_creases_siblings_share_the_pixels_prefiltered_claim` pins it: interior
+local maxima on a lit rough-metal Icosahedron, 72 before and 0 after.
+
 ## 3. Blur radius
 
 The lobe's median microfacet half-angle is `atan(alpha)` with `alpha =

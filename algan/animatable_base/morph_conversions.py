@@ -168,7 +168,6 @@ def _grid_to_pn_soup(surface, *, add_to_scene=False):
             name: gather(value)
             for name, value in surface.grid.get_shader_params().items()
         },
-        render_tolerance=surface._render_tolerance,
         render_tolerance_pixels=surface._render_tolerance_pixels,
         # The soup approximates the analytic surface exactly as well as the
         # patches it is made of do, so it inherits their accuracy and dices the
@@ -437,7 +436,6 @@ def _aggregate_to_pn_soup(mob, *, add_to_scene=False):
             name: torch.cat([soup.get_shader_params()[name] for soup in soups], dim=-2)
             for name in shared
         },
-        render_tolerance=min(soup.render_tolerance for soup in soups),
         render_tolerance_pixels=min(soup.render_tolerance_pixels for soup in soups),
         scene=mob.scene,
         add_to_scene=add_to_scene,
@@ -453,7 +451,6 @@ def _pn_soup_identity(mob, *, add_to_scene=False):
         glow=mob.glow.clone(),
         shader=mob.shader,
         shader_params={k: v.clone() for k, v in mob.get_shader_params().items()},
-        render_tolerance=mob.render_tolerance,
         render_tolerance_pixels=mob.render_tolerance_pixels,
         scene=mob.scene,
         add_to_scene=add_to_scene,

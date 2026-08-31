@@ -11,3 +11,7 @@ Scenes
    ~render_loop
    ~project
    ~daemon
+   ~viewer.viewer
+   ~viewer.session
+   ~viewer.hierarchy
+   ~viewer.pixels

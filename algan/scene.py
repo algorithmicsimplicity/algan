@@ -1283,6 +1283,42 @@ class Scene(RenderLoopMixin):
         return result
 
     @active_scene_method
+    def view(
+        self,
+        video_settings: VideoSettings | None = None,
+        *,
+        port: int = 0,
+        open_browser: bool = True,
+        block: bool = True,
+    ):
+        """Open this Scene in the interactive viewer.
+
+        The same call as :func:`algan.view`, reached from the Scene. See that
+        function for what the viewer shows and for every parameter.
+
+        Animation
+        ---------
+        Records nothing and leaves the Scene exactly as authored: frames are
+        rendered on demand and nothing is written to disk, so you can keep
+        adding to the Scene, or call :meth:`save_video`, afterwards.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            Scene.view()
+        """
+        from algan.viewer import view as _view
+
+        return _view(
+            self,
+            video_settings,
+            port=port,
+            open_browser=open_browser,
+            block=block,
+        )
+
+    @active_scene_method
     def set_background(self, background, overwrite: bool = True):
         """Set what the Scene is drawn against.
 

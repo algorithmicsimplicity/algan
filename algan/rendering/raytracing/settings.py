@@ -2810,7 +2810,7 @@ def project_on_gpu_active():
 #
 # NOT byte-identical to the torch path: Taichi initialises with fast_math, so
 # borderline patches round to a neighbouring level. That moves geometry (inside
-# render_tolerance by construction), so a render baseline changes. Crack-
+# render_tolerance_pixels by construction), so a render baseline changes. Crack-
 # freeness is preserved -- shared boundary curves still reach a bit-identical
 # level, and the cross-thread reduction is order-independent ``max`` -- and is
 # regression-tested by benchmarks/_logical_pn_crack_check.py.
@@ -2886,7 +2886,7 @@ def pn_criterion_kernel_active():
 # distant geometry -- where a whole ``geometry_tolerance`` is a fraction of a
 # pixel -- and does its work in the close-ups where the dice would otherwise
 # chase sub-surface-accuracy wiggle. The guarantee becomes: the dice lands
-# within ``render_tolerance`` of the logical surface, plus the accuracy of that
+# within ``render_tolerance_pixels`` of the logical surface, plus the accuracy of that
 # surface itself, which is the bound the render already inherits from
 # construction.
 #

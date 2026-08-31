@@ -228,38 +228,52 @@ def attr_ranges_for_mob(attr_timeline, mob):
 
 
 class Animatable:
-    """Base class for anything that needs animation.
+    """Anything whose state can change over the course of a video.
 
-    All animation state lives on this mob's Scene-owned timeline
-    (:class:`~algan.animation_timeline.timeline.AnimationTimeline`, via
-    :class:`~algan.animation_timeline.timeline.TimelineManager`): each animatable
-    attribute occupies rows of a per-attribute buffer keyed by this object's
-    ``id``, attribute modifications and animated-function applications are
-    recorded as timeline events, and the mob's
-    :class:`~algan.animation_timeline.timeline.Lifespan` (spawn / despawn
-    interval) is likewise owned by the timeline
-    (:attr:`~algan.animatable_base.animatable.Animatable.lifespan`).
+    This is the base every :class:`~algan.animatable_base.mob.Mob` is built on,
+    and what makes Algan's central trick work: an object's *animatable
+    attributes* are ordinary attributes to read and assign, but assigning one
+    records an animation rather than overwriting a value, so ``mob.color =
+    BLUE`` is a one-second cross-fade and not a change to a variable. It also
+    owns the object's lifetime in the video -- :meth:`spawn` and
+    :meth:`despawn` -- and the per-frame hooks, :meth:`add_updater` and the
+    :meth:`animate_function` family.
+
+    You rarely construct one directly; subclass it when you need something that
+    animates but has no position in space, and register its state with
+    :meth:`register_attrs_as_animatable`.
 
     Parameters
     ----------
     scene
-        The Scene to which this animatable should (possibly) be added.
+        The :class:`~algan.scene.Scene` this object belongs to. Defaults to
+        ``None``, meaning the active Scene -- which is what you want unless you
+        are building several Scenes in one script.
     add_to_scene
-        Whether this animatable should be added to the scene.
+        Whether to register the object with the Scene, and so whether it can
+        appear in the render at all. Defaults to True. Pass ``False`` to build a
+        Mob that exists only as raw material -- a morph target, a layout
+        template, geometry you are about to attach to something else -- which
+        keeps it out of the render even if it is spawned. The Scene is still
+        bound either way; only the registration is skipped, and a composite Mob
+        passes the same choice down to the parts it builds.
     name
-        The name of this animatable.
-    init
-        Whether this animatable should be initialized.
+        A label for this object, used to identify it in ``repr()`` and in any
+        warning or error that mentions it -- so ``Square(name="title box")``
+        turns "Square" into "Square 'title box'" wherever Algan reports a
+        problem with it. Defaults to ``None``, meaning the class name alone.
     animation_manager
-        The AnimationManager that will control animations applied to this animatable.
+        The :class:`~.AnimationManager` controlling animations applied to this
+        object. Defaults to ``None``, meaning the Scene's own.
     data_sub_inds
-        Specifies which indexes in the shared attribute rows this animatable will read and write from.
-        Used to implement multiple sub-mobs which all share the same underlying data tensors, for batching purposes.
+        Internal: which rows of the shared attribute buffers this object reads
+        and writes, for sub-mobs that share one parent's tensors.
     parent_batch_sizes
-        If this animatable's parent is batched, parent_batch_sizes specifies how the parent's attribute modifications
-        will be expanded for this animatable's attributes.
+        Internal: how a batched parent's attribute modifications are expanded
+        over this object's rows.
     is_primitive
-        Whether this animatable is a rendering primitive, i.e. needs to be kept around at rendering time.
+        Internal: whether this object carries geometry the renderer must keep
+        at render time.
 
     Attributes
     ----------
@@ -267,14 +281,29 @@ class Animatable:
     animatable_attrs : list[str]
         Attribute names which will be treated as animatable. Whenever an animatable attribute is modified,
         the modification is recorded on this mob's Scene timeline for replay at render time.
+
+    Examples
+    --------
+    A subclass with an animatable attribute of its own:
+
+    .. code-block:: python
+
+        class Countdown(Animatable):
+            def __init__(self, **kwargs):
+                self.register_attrs_as_animatable(["seconds_left"])
+                super().__init__(**kwargs)
+                self.seconds_left = 10
+
+
+        timer = Countdown().spawn()
+        timer.seconds_left = 0  # counts down over one second
     """
 
     def __init__(
         self,
         scene: Scene | None = None,
         add_to_scene: bool = True,
-        name: str = "_",
-        init: bool = True,
+        name: str | None = None,
         animation_manager: AnimationManager | None = None,
         data_sub_inds: torch.Tensor | None = None,
         parent_batch_sizes: torch.Tensor | None = None,
@@ -319,8 +348,24 @@ class Animatable:
         self.previous_retroactive_time = 0
         self.ignore_wave_animations = False
 
-        if init:
-            self.init()
+        self.init()
+
+    def __repr__(self):
+        return f"<{self._describe()}>"
+
+    def _describe(self) -> str:
+        """This Mob as it should appear in a message: its class, plus its
+        ``name`` when it was given one.
+
+        Read straight out of ``__dict__`` rather than with ``getattr``: this is
+        called from error paths, including ones reached before ``name`` is set,
+        and ``Mob.__getattr__`` would otherwise word a second error about the
+        first one.
+        """
+        name = self.__dict__.get("name")
+        if not name or name == "_":
+            return type(self).__name__
+        return f"{type(self).__name__} {name!r}"
 
     def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
         """Make attributes animatable, so writing them animates.
@@ -1488,7 +1533,7 @@ class Animatable:
                 # one ``despawn``'s own docstring gives, said at the call that
                 # cannot do what it looks like it does.
                 warnings.warn(
-                    f"{type(self).__name__}.spawn() did nothing: this Mob has "
+                    f"spawn() on {self._describe()} did nothing: this Mob has "
                     f"already been despawned, and a despawned Mob cannot be "
                     f"brought back -- it keeps the lifespan it was given. To "
                     f"show it again, clone it before despawning and spawn the "
@@ -1695,11 +1740,10 @@ class Animatable:
         self._apply_change("opacity", -current, scope=scope)
 
     def init(self):
-        """Run this Mob's initialization hooks.
+        """Internal: run this Mob's initialization hooks.
 
-        Calls :meth:`~.Animatable.on_init` and lets the current context do its own
-        setup. Constructors call this for you unless they were passed
-        ``init=False``.
+        Calls :meth:`~.Animatable.on_init` and lets the current context do its
+        own setup. Construction always calls it; you never need to.
 
         Returns
         -------

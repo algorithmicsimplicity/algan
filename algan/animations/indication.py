@@ -398,7 +398,7 @@ def passing_flash_step(mob, t, time_width, full_control_points):
     lower = upper - time_width
     upper = torch.clamp(upper, 0.0, 1.0)
     lower = torch.clamp(lower, 0.0, 1.0)
-    mob.set_control_points_to_partial(full_control_points, lower, upper)
+    mob._set_control_points_to_partial(full_control_points, lower, upper)
 
 
 @animated_function(animated_args={"t": 0.0}, unique_args=["full_control_points"])
@@ -417,7 +417,7 @@ def draw_step(mob, t, full_control_points):
         The circuit's complete control points, captured before the animation.
     """
     t = cast_to_tensor(t)
-    mob.set_control_points_to_partial(full_control_points, 0.0, t)
+    mob._set_control_points_to_partial(full_control_points, 0.0, t)
 
 
 @animated_function(animated_args={"t": 0.0}, unique_args=["full_control_points"])
@@ -436,7 +436,7 @@ def undraw_step(mob, t, full_control_points):
         The circuit's complete control points, captured before the animation.
     """
     t = cast_to_tensor(t)
-    mob.set_control_points_to_partial(full_control_points, 0.0, 1.0 - t)
+    mob._set_control_points_to_partial(full_control_points, 0.0, 1.0 - t)
 
 
 def _show_passing_flash_on_bezier(
@@ -453,7 +453,7 @@ def _show_passing_flash_on_bezier(
                 flash.stroke_color = source_color
 
             full_pts = flash.control_points.location.clone()
-            flash.set_control_points_to_partial(full_pts, 0.0, 0.0)
+            flash._set_control_points_to_partial(full_pts, 0.0, 0.0)
             flash.spawn()
             flash.set_non_recursive(opacity=torch.ones_like(flash.opacity))
 
@@ -767,7 +767,6 @@ def Circumscribe(
         with Seq(animation_manager=animation_manager):
             with Off(animation_manager=animation_manager):
                 frame.opacity = 0.0
-                frame.portion_of_curve_drawn = 1.0
                 full_pts = frame.control_points.location.clone()
                 frame.spawn()
             with Seq(duration=duration, animation_manager=animation_manager):
@@ -782,7 +781,7 @@ def Circumscribe(
             with Off(animation_manager=animation_manager):
                 frame.opacity = 1.0
                 full_pts = frame.control_points.location.clone()
-                frame.set_control_points_to_partial(full_pts, 0.0, 0.0)
+                frame._set_control_points_to_partial(full_pts, 0.0, 0.0)
                 frame.spawn()
             with Seq(duration=duration, animation_manager=animation_manager):
                 with Sync(duration=duration / 2, animation_manager=animation_manager):

@@ -73,7 +73,6 @@ if args.tol is not None:
         # geometry_tolerance is deliberately left alone: it sets the
         # construction grid, which moves a mob's centre and so breaks Act 2's
         # move_to's arc path. Only the per-frame dice is tightened.
-        kw["render_tolerance"] = args.tol
         kw["render_tolerance_pixels"] = args.tol
         return _surface_init(self, *a, **kw)
 

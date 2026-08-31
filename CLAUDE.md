@@ -78,10 +78,12 @@ with Sync():  # play simultaneously
 
 Scene.save_video("example")  # -> algan_outputs/example.mp4
 Scene.save_video("example", HD)  # one-off quality override
+view()  # or: open it in the interactive viewer instead
 ```
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
 - **`save_video` and `save_frame` leave the Scene exactly as authored and you can render again.
+- **Viewer**: `view(scene=None, video_settings=None, *, port, open_browser, block)` (also `Scene.view(...)`) serves a local page that plays the Scene, shows its mob hierarchy and attributes at the playhead, and reports the depth-sorted fragment list behind any pixel. Frames render lazily, nothing is written to disk, and the Scene is left as authored. It renders at `PREVIEW`'s resolution but the Scene's own frame rate, so the frame indices it reports are the video's. `block=True` (the default) serves until Ctrl-C — on the warm daemon that occupies it for the duration, since the daemon runs one script at a time.
 - **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
@@ -112,6 +114,7 @@ Some variables are **initialization-only** (set before `import algan`, no runtim
 - `algan/mobs/` — all renderable object classes; `manim_compat` and friends implement the compatibility layer, `manim_adapters` gives a curated subset a native root spelling
 - `algan/manim/` — the public face of that layer, reached as `import algan.manim as mn`
 - `algan/rendering/` — camera, lights, ray tracer + Taichi kernels, shaders, post-processing
+- `algan/viewer/` — `view()`: the interactive GUI (a local web app), its lazy frame service and its per-pixel fragment inspector
 - `algan/rendering/memory_model.py` — runtime chunk-peak model that sizes render batches
 - `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, easing curves (`easings`)
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration

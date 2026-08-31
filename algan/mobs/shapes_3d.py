@@ -12,8 +12,9 @@ defined by explicit vertices and flat polygon faces. Their faces are already
 planar, so they are triangulated once at construction and never refined.
 
 Several constructors accept Manim's argument names (``resolution`` counting
-patches rather than vertices, ``checkerboard_colors``, ``u_range`` / ``v_range``
-in radians) so that ported scripts keep working.
+patches rather than vertices, ``checkerboard_colors``) so that ported scripts
+keep working. ``u_range`` / ``v_range`` keep Manim's *names* but take Algan's
+degrees, not Manim's radians.
 
 Unlike 2-D shapes, these respond to light. See
 :doc:`/new_user_tutorials/three_d_basics`.
@@ -31,9 +32,9 @@ from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import WHITE
-from algan.constants.math import PI
+from algan.constants.math import DEGREES_TO_RADIANS, PI
 from algan.constants.spatial import LEFT, ORIGIN, OUTWARD, RIGHT, UP
-from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
+from algan.geometry.geometry import get_orthonormal_vector
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
@@ -136,14 +137,29 @@ def orient_faces_outward(vertex_coords, faces_list):
 
 
 def _sweep_is_full(range_, span):
-    """True if a parametric ``(start, end)`` sweep covers ``span`` radians.
+    """True if a parametric ``(start, end)`` sweep covers ``span`` degrees.
 
     What a revolved solid's closed-shell declaration hangs on: a partial sweep
     cuts the shell open (the docstrings of ``Sphere``/``Cylinder``/``Torus``
     all promise an open surface for a partial range), and the cut edges are not
     capped, so the inside shows through. Tolerance absorbs float sweep values.
     """
-    return abs(float(range_[1]) - float(range_[0]) - span) < 1e-6
+    return abs(float(range_[1]) - float(range_[0]) - span) < 1e-4
+
+
+def _sweep_radians(range_):
+    """A ``(start, end)`` sweep, given in Algan's degrees, as radians.
+
+    The revolved solids take their ``u_range`` / ``v_range`` in degrees like
+    every other angle in Algan, and store them that way -- so a reader of
+    ``sphere.v_range`` sees what they passed. The trigonometry below is the only
+    thing that wants radians, so the conversion happens here rather than at the
+    boundary.
+    """
+    return (
+        float(range_[0]) * DEGREES_TO_RADIANS,
+        float(range_[1]) * DEGREES_TO_RADIANS,
+    )
 
 
 def _surface_resolution_kwargs(resolution, kwargs):
@@ -362,10 +378,6 @@ class _CapDisc(Surface):
         # Radius on the second component: 0 at the welded centre, 1 at the rim.
         return uv[..., 1:] * self._rim_function(azimuth)
 
-    def normal_function(self, uv):
-        outward = F.normalize(self.direction.reshape(1, 3), p=2, dim=-1)
-        return outward.expand(*uv.shape[:-1], 3)
-
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Zero: the disc's planar interior is exact at any resolution.
 
@@ -399,16 +411,14 @@ class Sphere(Surface):
         is used as ``grid_width``/``grid_height`` plus one. Defaults to ``None``,
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
     u_range
-        Azimuthal sweep around the sphere's own up axis, **in radians** -- a
-        Manim-parity domain, which is why it contradicts Algan's usual degrees.
-        The sweep starts at the sphere's ``LEFT`` and turns through ``OUTWARD``,
-        ``RIGHT`` and ``INWARD``, so ``(0, PI)`` builds the ``OUTWARD`` half -- the one
-        facing the camera. Defaults to ``(0, 2 * PI)``, all the way round.
+        Azimuthal sweep around the sphere's own up axis, in degrees. The sweep
+        starts at the sphere's ``LEFT`` and turns through ``OUTWARD``, ``RIGHT``
+        and ``INWARD``, so ``(0, 180)`` builds the ``OUTWARD`` half -- the one
+        facing the camera. Defaults to ``(0, 360)``, all the way round.
     v_range
-        Pole-to-pole sweep, **in radians** and Manim-parity for the same reason:
-        ``0`` is the ``DOWN`` pole and ``PI`` the ``UP`` one. ``(0, PI / 2)``
-        builds the bottom hemisphere, ``(PI / 4, 3 * PI / 4)`` a band around the
-        equator. Defaults to ``(0, PI)``, pole to pole.
+        Pole-to-pole sweep, in degrees: ``0`` is the ``DOWN`` pole and ``180``
+        the ``UP`` one. ``(0, 90)`` builds the bottom hemisphere, ``(45, 135)``
+        a band around the equator. Defaults to ``(0, 180)``, pole to pole.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
         ``color``, ``checkered_color``, ``grid_width``/``grid_height`` and the
@@ -443,8 +453,8 @@ class Sphere(Surface):
 
         from algan import *
 
-        Sphere(radius=0.7, v_range=(0, PI / 2), color=BLUE).move(LEFT * 0.9).spawn()
-        Sphere(radius=0.7, v_range=(PI / 3, 2 * PI / 3),
+        Sphere(radius=0.7, v_range=(0, 90), color=BLUE).move(LEFT * 0.9).spawn()
+        Sphere(radius=0.7, v_range=(60, 120),
                color=YELLOW).move(RIGHT * 0.9).spawn()
 
         Scene.save_video()
@@ -458,8 +468,8 @@ class Sphere(Surface):
         center=ORIGIN,
         radius=1,
         resolution=None,
-        u_range=(0, 2 * PI),
-        v_range=(0, PI),
+        u_range=(0, 360),
+        v_range=(0, 180),
         *args,
         **kwargs,
     ):
@@ -472,8 +482,8 @@ class Sphere(Surface):
         # A full pole-to-pole sweep tiles the shell exactly once per crossing;
         # a partial range cuts it open (see the Notes above), and an open
         # surface must not claim the closed-solid opacity behaviour.
-        self.closed_shell = _sweep_is_full(u_range, 2 * PI) and _sweep_is_full(
-            v_range, PI
+        self.closed_shell = _sweep_is_full(u_range, 360) and _sweep_is_full(
+            v_range, 180
         )
 
     def coord_function(self, coords_2d):
@@ -487,10 +497,12 @@ class Sphere(Surface):
         # honoured, and only a non-default range moves a vertex.
         x = coords_2d[..., 0]
         y = coords_2d[..., 1]
-        longitude_start = -torch.pi + self.u_range[0]
-        longitude_end = -torch.pi + self.u_range[1]
-        latitude_start = -torch.pi * 0.5 + self.v_range[0]
-        latitude_end = -torch.pi * 0.5 + self.v_range[1]
+        u_start, u_end = _sweep_radians(self.u_range)
+        v_start, v_end = _sweep_radians(self.v_range)
+        longitude_start = -torch.pi + u_start
+        longitude_end = -torch.pi + u_end
+        latitude_start = -torch.pi * 0.5 + v_start
+        latitude_end = -torch.pi * 0.5 + v_end
         longitude = longitude_start * (1 - x) + x * longitude_end
         latitude = latitude_start * (1 - y) + y * latitude_end
         coords_3d = torch.stack(
@@ -502,9 +514,6 @@ class Sphere(Surface):
             dim=-1,
         )
         return coords_3d * self.radius
-
-    def normal_function(self, uv):
-        return self.coord_function(uv)
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Exact distance from each PN sample to this sphere's surface."""
@@ -543,9 +552,8 @@ class Cone(Surface):
         side's is -- so a capped cone carries more triangles than the side
         alone suggests.
     v_range
-        Angular sweep around the axis, in radians -- a Manim-parity domain, which
-        is why it contradicts Algan's usual degrees. ``(0, pi)`` gives a half
-        cone. Defaults to ``(0, 2 * pi)`` (the full cone).
+        Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
+        cone. Defaults to ``(0, 360)`` (the full cone).
     u_min
         Retained for Manim compatibility; stored on the instance and not used by
         :meth:`coord_function`. Defaults to ``0``.
@@ -590,7 +598,7 @@ class Cone(Surface):
         height=1,
         direction=OUTWARD,
         show_base=False,
-        v_range=(0, 2 * PI),
+        v_range=(0, 360),
         u_min=0,
         checkerboard_colors=False,
         radius=None,
@@ -648,7 +656,7 @@ class Cone(Surface):
         # ``_cap_ring_offsets``). Both the side and its cap must carry the
         # declaration: they share one surface id (``_mesh_key``), and the
         # renderer reads it per triangle.
-        self.closed_shell = bool(show_base) and _sweep_is_full(v_range, 2 * PI)
+        self.closed_shell = bool(show_base) and _sweep_is_full(v_range, 360)
         self.base_circle.closed_shell = self.closed_shell
         if show_base:
             self.add_children(self.base_circle)
@@ -671,7 +679,8 @@ class Cone(Surface):
 
     def coord_function(self, uv):
         u = uv[..., :1]
-        phi = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
+        v_start, v_end = _sweep_radians(self.v_range)
+        phi = v_start + uv[..., 1:] * (v_end - v_start)
         radius = self.radius * (1 - u)
         return torch.cat(
             (
@@ -681,12 +690,6 @@ class Cone(Surface):
             ),
             -1,
         )
-
-    def normal_function(self, uv):
-        xyz = self.coord_function(uv)
-        radial = xyz.clone()
-        radial[..., 1] = self.radius / max(float(self.height), 1e-10)
-        return radial
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Exact distance from each PN sample to the finite conical side."""
@@ -749,13 +752,11 @@ class Cylinder(Surface):
         Axis the cylinder runs along, shape ``(*, 3)``; it need not be normalized.
         Defaults to ``UP`` (the +y axis).
     v_range
-        Azimuthal sweep around the cylinder's axis, **in radians** -- a
-        Manim-parity domain, which is why it contradicts Algan's usual degrees.
-        The sweep starts on the side the cylinder's forward direction points at
-        (``INWARD``, for the default ``direction=UP``) and turns toward its left, so
-        ``(0, PI)`` builds the ``LEFT`` half of the tube. Defaults to
-        ``(0, 2 * PI)``, the closed tube. The extent *along* the axis comes from
-        ``height``, which is where Manim also gets its ``u_range`` from.
+        Azimuthal sweep around the cylinder's axis, in degrees. The sweep starts
+        on the side the cylinder's forward direction points at (``INWARD``, for
+        the default ``direction=UP``) and turns toward its left, so ``(0, 180)``
+        builds the ``LEFT`` half of the tube. Defaults to ``(0, 360)``, the
+        closed tube. The extent *along* the axis comes from ``height``.
     show_ends
         Whether to close both ends with flat discs -- lit triangle meshes
         carrying the tube's own mesh identity, so each rim is an interior edge
@@ -821,7 +822,7 @@ class Cylinder(Surface):
         radius=1,
         height=1,
         direction=UP,
-        v_range=(0, 2 * PI),
+        v_range=(0, 360),
         show_ends=False,
         resolution=None,
         closed=None,
@@ -882,7 +883,7 @@ class Cylinder(Surface):
         # half-pipe with whole discs is still open along its cut. The tube and
         # its caps share one surface id (``_mesh_key``), so all three carry the
         # declaration -- the renderer reads it per triangle.
-        self.closed_shell = _sweep_is_full(self.v_range, 2 * PI)
+        self.closed_shell = _sweep_is_full(self.v_range, 360)
         self.bottom_cap.closed_shell = self.closed_shell
         self.top_cap.closed_shell = self.closed_shell
         self.base_bottom = self.bottom_cap
@@ -949,18 +950,13 @@ class Cylinder(Surface):
         # second, so the sweep is applied to ``uv[..., :1]``.  Written as one
         # negated product so that the default (0, 2*pi) reduces to the previous
         # ``-uv * pi * 2`` bit for bit: only a partial sweep moves a vertex.
-        u = -(self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0]))
+        v_start, v_end = _sweep_radians(self.v_range)
+        u = -(v_start + uv[..., :1] * (v_end - v_start))
         v = uv[..., 1:]
         return (
             u.sin() * self.radius * basis_rows[..., 0, :]
             + (v - 0.5) * self.height * basis_rows[..., 1, :]
             + u.cos() * self.radius * basis_rows[..., 2, :]
-        )
-
-    def normal_function(self, uv):
-        xyz = self.coord_function(uv)
-        return project_onto_basis(
-            xyz, [self.get_right_direction(), self.get_forward_direction()]
         )
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
@@ -1417,16 +1413,19 @@ class Torus(Surface):
     tube_radius
         Radius of the tube itself, in world units. Defaults to ``0.5``.
     u_range
-        Sweep around the ring, in radians -- a Manim-parity domain, which is why
-        it contradicts Algan's usual degrees. ``(0, pi)`` gives half a ring.
-        Defaults to ``(0, 2 * pi)``.
+        Sweep around the ring, in degrees. ``(0, 180)`` gives half a ring.
+        Defaults to ``(0, 360)``.
     v_range
-        Sweep around the tube's cross-section, in radians. ``(0, pi)`` opens the
-        tube along its length. Defaults to ``(0, 2 * pi)``.
+        Sweep around the tube's cross-section, in degrees. ``(0, 180)`` opens
+        the tube along its length. Defaults to ``(0, 360)``.
     resolution
-        Manim-style grid resolution as ``(u_vertices, v_vertices)``, or one int
-        for both, used directly as ``grid_width``/``grid_height``. Defaults to
-        ``None``, meaning Algan sizes the grid itself from ``geometry_tolerance``.
+        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int
+        for both. Manim counts patches where Algan's ``grid_width`` /
+        ``grid_height`` count sampled vertices, so this is one *less* than the
+        grid it builds -- ``resolution=(32, 32)`` gives a 33x33 grid, matching
+        :class:`Sphere`, :class:`Cone` and :class:`Cylinder`. Defaults to
+        ``None``, meaning Algan sizes the grid itself from
+        ``geometry_tolerance``.
     **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
 
@@ -1440,7 +1439,7 @@ class Torus(Surface):
         from algan import *
 
         Torus(ring_radius=1.2, tube_radius=0.35, color=BLUE).spawn()
-        Torus(ring_radius=1.2, tube_radius=0.35, u_range=(0, PI),
+        Torus(ring_radius=1.2, tube_radius=0.35, u_range=(0, 180),
               color=YELLOW).move(UP * 0.1).spawn()
 
         Scene.save_video()
@@ -1459,22 +1458,23 @@ class Torus(Surface):
         self,
         ring_radius=1.5,
         tube_radius=0.5,
-        u_range=(0, torch.pi * 2),
-        v_range=(0, torch.pi * 2),
+        u_range=(0, 360),
+        v_range=(0, 360),
         resolution=None,
         **kwargs,
     ):
         self.ring_radius = ring_radius
         self.tube_radius = tube_radius
-        if resolution is not None:
-            if isinstance(resolution, int):
-                resolution = (resolution, resolution)
-            kwargs.setdefault("grid_width", int(resolution[0]))
-            kwargs.setdefault("grid_height", int(resolution[1]))
+        # Through the shared translator, like Sphere/Cone/Cylinder. Torus used
+        # to roll its own, which read ``resolution`` as a vertex count while its
+        # three siblings read it as Manim's patch count -- so the same keyword
+        # built a 32x32 grid here and a 33x33 grid there. It also never
+        # translated the style names those three accept.
+        kwargs = _surface_resolution_kwargs(resolution, kwargs)
         # Both sweeps whole closes the tube into a ring; a partial one cuts it
         # open along the cut (a half-ring shows its inside through the slice).
-        self.closed_shell = _sweep_is_full(u_range, 2 * torch.pi) and _sweep_is_full(
-            v_range, 2 * torch.pi
+        self.closed_shell = _sweep_is_full(u_range, 360) and _sweep_is_full(
+            v_range, 360
         )
         super().__init__(
             coord_function=self.coord_function,
@@ -1484,8 +1484,10 @@ class Torus(Surface):
         )
 
     def coord_function(self, uv):
-        u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
-        v = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
+        u_start, u_end = _sweep_radians(self.u_range)
+        v_start, v_end = _sweep_radians(self.v_range)
+        u = u_start + uv[..., :1] * (u_end - u_start)
+        v = v_start + uv[..., 1:] * (v_end - v_start)
         sweep_radius = self.ring_radius - self.tube_radius * torch.cos(v)
         return torch.cat(
             (
@@ -1493,14 +1495,6 @@ class Torus(Surface):
                 sweep_radius * torch.sin(u),
                 -self.tube_radius * torch.sin(v),
             ),
-            -1,
-        )
-
-    def normal_function(self, uv):
-        u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
-        v = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
-        return torch.cat(
-            (-torch.cos(v) * torch.cos(u), -torch.cos(v) * torch.sin(u), -torch.sin(v)),
             -1,
         )
 

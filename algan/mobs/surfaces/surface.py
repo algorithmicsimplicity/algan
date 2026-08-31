@@ -11,11 +11,11 @@ and the search sizes each parameter axis against its own contribution to that
 error, so an axis the surface is straight along (a cylinder's length, a cone's
 slant) costs the minimum however curved the other axis is. The search is cached
 per subclass and geometry configuration.
-``render_tolerance`` and ``render_tolerance_pixels`` then bound the on-screen
-error when each PN triangle is diced into flat render triangles -- per triangle,
-per frame, so detail is spent only where the surface is near the camera. The
-first is a fraction of the frame height and the second an absolute pixel count;
-whichever is finer at the resolution being rendered is the one that binds.
+``render_tolerance_pixels`` then bounds the on-screen error when each PN
+triangle is diced into flat render triangles -- per triangle, per frame, so
+detail is spent only where the surface is near the camera. It is an absolute
+pixel count at the renderer's reference frame height, scaled down in proportion
+on shorter frames.
 
 Surfaces carry the texture-map API: ``color_texture`` plus per-texel
 reflectivity, roughness, refractive-index, normal and glow maps, all sampled in
@@ -28,7 +28,6 @@ See :doc:`/advanced_user_tutorials/images_and_textures`.
 
 from __future__ import annotations
 
-import inspect
 import threading
 import warnings
 
@@ -44,7 +43,6 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
-from algan.constants.spatial import OUTWARD
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -129,59 +127,11 @@ _PROJECTION_SCALES = (1.0, 0.5, 0.25, 0.1, 0.03, 0.01)
 _TEXTURE_LOCATION_CHUNK_TEXELS = 1 << 18
 
 
-def _call_parametric_function(function, u, v):
-    """Evaluate a Manim-style ``func(u, v)`` on a tensor UV grid.
-
-    Functions written with NumPy/scalar operations are evaluated point by
-    point; torch-vectorized functions stay on the active device.
-    """
-    try:
-        result = function(u, v)
-        if isinstance(result, torch.Tensor):
-            result = result.to(device=u.device, dtype=u.dtype)
-            if result.shape[-1:] == (3,):
-                return result
-            if result.shape[:1] == (3,) and result.shape[1:] == u.shape:
-                return result.movedim(0, -1)
-        array = np.asarray(result)
-        if array.shape[-1:] == (3,) and array.shape[:-1] == tuple(u.shape):
-            return torch.as_tensor(array, device=u.device, dtype=u.dtype)
-    except (TypeError, ValueError, RuntimeError):
-        pass
-
-    flat_u = u.detach().cpu().reshape(-1).numpy()
-    flat_v = v.detach().cpu().reshape(-1).numpy()
-    points = [
-        np.asarray(function(float(uu), float(vv)), dtype=float)
-        for uu, vv in zip(flat_u, flat_v)
-    ]
-    return torch.as_tensor(
-        np.asarray(points).reshape(*u.shape, 3),
-        device=u.device,
-        dtype=u.dtype,
-    )
-
-
-def _looks_like_manim_surface_function(function):
-    if function is None:
-        return False
-    try:
-        signature = inspect.signature(function)
-    except (TypeError, ValueError):
-        return False
-    positional = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        )
-    ]
-    return len(positional) >= 2 or any(
-        parameter.kind == inspect.Parameter.VAR_POSITIONAL
-        for parameter in signature.parameters.values()
-    )
+#: Hysteresis band for the (currently unreachable) runtime resolution search:
+#: a smaller grid is adopted only if it cuts triangle count by more than this.
+#: Was a ``resolution_shrink_margin`` constructor argument, removed because the
+#: search it feeds has been disabled since the logical PN system landed.
+_RESOLUTION_SHRINK_MARGIN = 0.1
 
 
 def _surface_resolution_pair(resolution):
@@ -842,13 +792,23 @@ class Surface(Mob):
     coord_function
         The function mapping 2-D intrinsic coordinates (ranging from [0,1]), to 3-D world coordinates,
         which defines the manifold's shape.
-    normal_function
-        Function mapping 3-D world coordinates to their normal vectors (i.e. vectors pointing directly out
-        of the surface), used for lighting.
     grid_height
-        Height of the grid from which intrinsic coordinates are sampled.
+        Number of sampled points along the ``v`` axis. Defaults to ``None``,
+        meaning the resolution is chosen automatically to meet
+        ``geometry_tolerance``; giving either grid size turns that search off.
     grid_width
-        Width of the grid from which intrinsic coordinates are sampled.
+        Number of sampled points along the ``u`` axis. Defaults to ``None``, as
+        ``grid_height`` does; giving only one of the two uses it for both.
+    checkered_color
+        Second color, applied to alternating vertices of the grid to give the
+        surface a checkerboard. Accepts anything ``color`` does. Defaults to
+        ``None``, meaning the surface is a single flat ``color``.
+    ignore_normals
+        Whether to draw the surface as flat, faceted triangles instead of
+        smoothing it. Defaults to ``False``, meaning smooth vertex normals are
+        computed from the sampled grid and the triangles are curved into PN
+        patches. ``True`` skips both, so each triangle is shaded flat and the
+        surface reads as a low-poly facet mesh.
     geometry_tolerance
         Maximum sampled world-space distance between the analytic surface and its
         PN-triangle approximation at construction time, in world units. It measures
@@ -861,32 +821,42 @@ class Surface(Mob):
         The selected grid is cached per concrete Surface subclass and geometry
         configuration, so constructing the same shape again does not repeat
         the resolution search.
-    render_tolerance
-        Maximum sampled deviation between a PN triangle and the flat render
-        triangles it is dynamically diced into, as a fraction of the output frame
-        height. Defaults to ``0.001``. Every PN triangle is diced only as finely as
-        it itself needs, in every frame, so detail spent where the surface is close
-        to the camera is not spent on the rest of the mesh or on the frames where it
-        is far away.
     render_tolerance_pixels
-        The same maximum deviation, stated as an absolute number of output pixels
-        instead. Defaults to ``1.0``; ``None`` removes the bound. The two render
-        tolerances are both upper bounds on the same error and the finer one at the
-        resolution being rendered is what the dice satisfies. A fraction of the
-        frame height is what a low-resolution render needs -- the analytic-coverage
-        antialiasing computes a pixel's coverage from the microtriangles crossing
-        it, so at ``PREVIEW`` the default ``render_tolerance`` is worth 0.4 px and
-        holds the dice below a pixel -- but the same fraction grows with the frame,
-        and past roughly 1080p it alone would leave triangles several pixels across.
-        This is the bound that takes over there.
+        Maximum sampled deviation between a PN triangle and the flat render
+        triangles it is dynamically diced into, in output pixels. Defaults to
+        ``0.5`` -- half a pixel, so the dice is invisible; ``None`` removes the
+        bound entirely. Lower it for a sharper silhouette on a surface that
+        fills the frame, raise it to buy back the triangles.
+
+        Every PN triangle is diced only as finely as it itself needs, in every
+        frame, so detail spent where the surface is close to the camera is not
+        spent on the rest of the mesh or on the frames where it is far away.
+
+        The budget is stated at the renderer's reference frame height (1000 px)
+        and scaled down in proportion on anything shorter, since a
+        low-resolution frame needs finer dicing than its pixel count alone
+        suggests -- the analytic-coverage antialiasing computes a pixel's
+        coverage from the microtriangles crossing it, and at ``PREVIEW`` each
+        pixel covers far more of the object. So the default is worth 0.5 px from
+        1080p up and 0.2 px at ``PREVIEW``, and halving it halves both.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis. Default
         to ``2`` and ``200``. The floor is two vertices -- one cell -- because a
         surface that is straight along an axis needs no more than that, and the
         search measures rather than assumes it.
-    resolution_shrink_margin
-        Deprecated compatibility argument. Logical PN topology is fixed at
-        construction and is never resized during animation.
+    u_range, v_range
+        The interval of each parameter the surface is built over, as
+        ``(start, end)``. Default to ``(0, 1)``, the whole unit square. These
+        are stored for a subclass's ``coord_function`` to read -- the base class
+        does not itself remap ``(u, v)`` -- which is how
+        :class:`~algan.mobs.shapes_3d.Sphere` and its siblings cut open shells
+        from partial sweeps. Those classes take theirs as angles, in degrees
+        like every other angle in Algan.
+    resolution
+        Grid size as ``(u_patches, v_patches)``, or one int for both. Counts
+        *patches*, one less than the vertices ``grid_width`` / ``grid_height``
+        count, matching Manim. Defaults to ``None``. Ignored if either grid size
+        is given.
     color_texture
         Optional color texture map ``[W, H, 5]`` -- one image, sampled
         bilinearly in-kernel by the ray tracer. It is an ordinary animatable
@@ -914,8 +884,52 @@ class Surface(Mob):
         baked to the surface grid resolution (raise ``grid_width``/
         ``grid_height`` for more detail).
     *args, **kwargs
-        Passed to :class:`~algan.animatable_base.mob.Mob`
+        Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
+        ``opacity`` and ``location``.
 
+    Attributes
+    ----------
+    grid : :class:`~algan.animatable_base.mob.Mob`
+        The surface's vertices, as a child Mob, and the way to reach anything
+        that varies from vertex to vertex. ``grid.location`` holds their 3-D
+        world positions, shape ``(*, grid_width * grid_height, 3)`` row-major
+        over the sample grid, and ``grid.color`` their colors -- both animatable
+        like any other Mob attribute, so writing either records an animation.
+
+        These colors are the surface's albedo, interpolated across each triangle
+        from its corners. Setting a :attr:`color_texture` replaces them as the
+        albedo source, which is then sampled bilinearly from the texture's texels
+        instead; shading itself is per-fragment either way. The grid's resolution
+        is fixed at construction and a texture's is not, which is why the two are
+        kept separate.
+
+        :attr:`vertices` is shorthand for ``grid.location``.
+
+    See Also
+    --------
+    :class:`~algan.mobs.shapes_3d.Sphere` : And ``Cylinder`` / ``Cone`` / ``Torus``, the built-in surfaces.
+    :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function` : Color it by a function of ``(u, v)``.
+    :meth:`~algan.mobs.surfaces.surface.Surface.set_location_by_function` : Reshape it after construction.
+
+    Examples
+    --------
+    A saddle, from its parametric equation. The coordinate function takes the
+    whole ``(u, v)`` grid at once and returns a 3-D point per sample:
+
+    .. algan:: Example1Surface
+        :save_last_frame:
+
+        from algan import *
+        import torch
+
+        def saddle(uv):
+            x = uv[..., :1] * 4 - 2
+            y = uv[..., 1:] * 4 - 2
+            return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
+
+        Surface(saddle, checkered_color=BLUE).rotate(60, RIGHT).spawn()
+
+        Scene.save_video()
     """
 
     _morph_family = "grid"
@@ -981,7 +995,6 @@ class Surface(Mob):
     def __init__(
         self,
         coord_function=None,
-        normal_function=None,
         grid_height=None,
         grid_width=None,
         checkered_color=None,
@@ -993,24 +1006,13 @@ class Surface(Mob):
         glow_texture=None,
         ignore_normals=False,
         geometry_tolerance=0.0005,
-        render_tolerance=0.0005,
         render_tolerance_pixels=0.5,
         min_grid_resolution=2,
         max_grid_resolution=200,
-        resolution_shrink_margin=0.1,
         *args,
-        func=None,
         u_range=None,
         v_range=None,
         resolution=None,
-        surface_piece_config=None,
-        fill_color=None,
-        fill_opacity=None,
-        checkerboard_colors=None,
-        stroke_color=None,
-        stroke_width=None,
-        should_make_jagged=False,
-        pre_function_handle_to_anchor_scale_factor=1e-5,
         **kwargs,
     ):
         # User-defined subclasses conventionally store their geometry
@@ -1019,77 +1021,19 @@ class Surface(Mob):
         # scene/timeline bookkeeping that differs for every instance.
         resolution_cache_state = dict(self.__dict__)
 
-        # ``Surface`` predates this compatibility layer in Algan and accepts a
-        # vectorized ``coord_function(uv)``.  Manim instead accepts
-        # ``func(u, v)``.  Support both forms without weakening the native API.
-        manim_function = func
-        if manim_function is None and _looks_like_manim_surface_function(
-            coord_function
-        ):
-            manim_function = coord_function
-
-        self._func = manim_function
         self.u_range = (0, 1) if u_range is None else tuple(u_range)
         self.v_range = (0, 1) if v_range is None else tuple(v_range)
-        self.surface_piece_config = (
-            {} if surface_piece_config is None else dict(surface_piece_config)
-        )
-        self.should_make_jagged = should_make_jagged
-        self.pre_function_handle_to_anchor_scale_factor = (
-            pre_function_handle_to_anchor_scale_factor
-        )
-        self.stroke_color = stroke_color
-        self.stroke_width = stroke_width
 
-        if manim_function is not None:
-
-            def mapped_coord_function(uv):
-                u = self.u_range[0] + uv[..., 0] * (self.u_range[1] - self.u_range[0])
-                v = self.v_range[0] + uv[..., 1] * (self.v_range[1] - self.v_range[0])
-                return _call_parametric_function(manim_function, u, v)
-
-            coord_function = mapped_coord_function
-            if resolution is not None:
-                u_resolution, v_resolution = _surface_resolution_pair(resolution)
-                grid_width = u_resolution + 1
-                grid_height = v_resolution + 1
-            self.resolution = resolution
-
-            if fill_color is None:
-                fill_color = BLUE_D
-            if fill_opacity is None:
-                fill_opacity = 1.0
-            kwargs.setdefault("color", fill_color)
-            kwargs.setdefault("opacity", fill_opacity)
-
-            if checkerboard_colors is None:
-                checkerboard_colors = [BLUE_D, BLUE_E]
-            self.checkerboard_colors = checkerboard_colors
-            if checkerboard_colors is not False:
-                checkerboard_colors = list(checkerboard_colors)
-                if checkerboard_colors:
-                    kwargs["color"] = checkerboard_colors[0]
-                if len(checkerboard_colors) > 1:
-                    checkered_color = checkerboard_colors[1]
-        else:
-            self.resolution = resolution
-            if resolution is not None and grid_width is None and grid_height is None:
-                u_resolution, v_resolution = _surface_resolution_pair(resolution)
-                grid_width = u_resolution + 1
-                grid_height = v_resolution + 1
-            self.checkerboard_colors = checkerboard_colors
-            if fill_color is not None:
-                kwargs.setdefault("color", fill_color)
-            if fill_opacity is not None:
-                kwargs.setdefault("opacity", fill_opacity)
+        self.resolution = resolution
+        if resolution is not None and grid_width is None and grid_height is None:
+            u_resolution, v_resolution = _surface_resolution_pair(resolution)
+            grid_width = u_resolution + 1
+            grid_height = v_resolution + 1
 
         if coord_function is None:
             coord_function = self.coord_function
-        if normal_function is None:
-            normal_function = self.normal_function
 
         self.coord_function_active = coord_function
-        self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
         self._color_texture_attr = None
 
@@ -1100,24 +1044,18 @@ class Surface(Mob):
         # topology changes are deliberately disabled by the logical PN system.
         self._auto_resolution_enabled = False
         self._geometry_tolerance = float(geometry_tolerance)
-        self._render_tolerance = float(render_tolerance)
         self._render_tolerance_pixels = normalize_pixel_tolerance(
             render_tolerance_pixels
         )
         self._resolution_tolerance = self._geometry_tolerance
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)
-        self._resolution_shrink_margin = float(resolution_shrink_margin)
         self._pending_auto_resolution = None
         self._resolution_update_in_progress = True
         if not np.isfinite(self._geometry_tolerance):
             raise ValueError("geometry_tolerance must be finite")
         if self._geometry_tolerance <= 0:
             raise ValueError("geometry_tolerance must be greater than zero")
-        if not np.isfinite(self._render_tolerance):
-            raise ValueError("render_tolerance must be finite")
-        if self._render_tolerance <= 0:
-            raise ValueError("render_tolerance must be greater than zero")
         if self._min_grid_resolution < 2:
             raise ValueError("min_grid_resolution must be at least 2")
         if self._max_grid_resolution < self._min_grid_resolution:
@@ -1125,13 +1063,11 @@ class Surface(Mob):
                 "max_grid_resolution must be greater than or equal to "
                 "min_grid_resolution"
             )
-        if not 0 <= self._resolution_shrink_margin < 1:
-            raise ValueError("resolution_shrink_margin must be in [0, 1)")
-        # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         # Opt-in Manim shape profile: a mapped shape adopts Manim's
         # constructor fill (and checkerboard pair) unless the caller passed a
         # color of its own -- ``Sphere(checkerboard_colors=[a, b])`` arrives
-        # here already translated to ``color``/``checkered_color``. Injected
+        # here already translated to ``color``/``checkered_color`` by
+        # ``shapes_3d._surface_resolution_kwargs``. Injected
         # here so both the Mob's own color attribute and the grid child built
         # below carry it.
         if "color" not in kwargs:
@@ -1289,14 +1225,24 @@ class Surface(Mob):
     def vertices(self) -> torch.Tensor:
         """The surface's vertex positions, shape ``(*, grid_width * grid_height, 3)``.
 
-        The live tensor the renderer tessellates from, laid out row-major over
-        the ``grid_height`` x ``grid_width`` sample grid. Writing it moves the
-        surface's vertices, and is recorded like any other Mob attribute.
+        Shorthand for ``surface.grid.location``: the live tensor the renderer
+        tessellates from, laid out row-major over the ``grid_height`` x
+        ``grid_width`` sample grid. Writing it moves the surface's vertices,
+        which is the lowest-level way to deform a shape --
+        :meth:`set_location_by_function` is the usual one. Reach for
+        :attr:`grid` itself when you want the vertices' *colors*
+        (``grid.color``) rather than their positions.
+
+        The assigned value must carry the same number of vertices the surface
+        already has: the grid resolution is chosen once, at construction, and
+        nothing here can change it. Positions are absolute, in world units, not
+        offsets from the surface's location.
 
         Animation
         ---------
         Assignment is recorded, so the vertices travel to their new positions
-        over the current context's duration.
+        over the current context's duration (1 second by default). Wrap the
+        write in ``Off()`` to move them instantly.
         """
         return self.grid.location
 
@@ -1434,32 +1380,30 @@ class Surface(Mob):
         return mob
 
     @property
-    def geometry_tolerance(self):
-        """Construction-time absolute world-space PN fitting tolerance."""
+    def geometry_tolerance(self) -> float:
+        """How far this surface's mesh may sit from the exact shape, in world units.
+
+        Fixed when the surface is constructed -- it is what chose the grid
+        resolution -- and read-only thereafter. Set it in the constructor to
+        trade vertices against accuracy.
+
+        See Also
+        --------
+        :attr:`~algan.mobs.surfaces.surface.Surface.render_tolerance_pixels` : The per-frame budget, in screen terms.
+        """
         return self._geometry_tolerance
 
     @property
-    def render_tolerance(self):
-        """Per-frame flat-triangle tessellation tolerance, as a screen fraction."""
-        return self._render_tolerance
+    def render_tolerance_pixels(self) -> float:
+        """How far a drawn triangle may sit from the true surface, in pixels.
 
-    @property
-    def render_tolerance_pixels(self):
-        """Per-frame flat-triangle tessellation tolerance, in output pixels.
-
-        ``inf`` when the surface declares none, in which case
-        :attr:`render_tolerance` alone decides the dice. Whichever of the two
-        is finer at the resolution being rendered is the one that binds.
+        The budget at the renderer's reference frame height, scaled down in
+        proportion on shorter frames. Fixed at construction and read-only.
+        Unlike :attr:`geometry_tolerance` it is spent afresh every frame, on
+        whichever parts of the surface are near the camera. ``inf`` when the
+        surface declares no bound at all.
         """
         return self._render_tolerance_pixels
-
-    def func(self, u, v):
-        """Evaluate the original Manim-style parametric function."""
-        if self._func is None:
-            raise AttributeError(
-                "this Surface was constructed with coord_function, not func"
-            )
-        return self._func(u, v)
 
     @property
     def color_texture(self):
@@ -1697,8 +1641,54 @@ class Surface(Mob):
             normals = normals.flip(-2)
         return normals.reshape(*grid.shape[:-3], -1, 3)
 
-    def set_fill_by_checkerboard(self, *colors, opacity=None):
-        """Apply an alternating vertex-color pattern and return this surface."""
+    def set_checkerboard_colors(self, *colors, opacity=None) -> Surface:
+        """Paint the surface in a checkerboard of alternating colors.
+
+        Colors are assigned to grid vertices in rotation along both axes, so two
+        colors give the usual checkerboard and three or more give diagonal
+        stripes. The pattern is laid over the surface's ``(u, v)`` grid, so it
+        follows the shape as it deforms, and its resolution is the grid's --
+        raise ``grid_width`` / ``grid_height`` for finer squares.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default): the vertices cross-fade to their new colors. Wrap the call
+        in ``Off()`` to apply it instantly.
+
+        Parameters
+        ----------
+        *colors
+            Two or more colors to alternate between. Each is an Algan
+            :class:`~algan.constants.color.Color`, a named constant such as
+            ``BLUE``, or anything ``Color()`` accepts. Passing none leaves the
+            surface unchanged.
+        opacity
+            Opacity to apply to the whole surface alongside the colors, from
+            ``0`` to ``1``. Defaults to ``None``, leaving it as it is.
+
+        Returns
+        -------
+        :class:`~algan.mobs.surfaces.surface.Surface`
+            This surface, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function` : Color it by an arbitrary function of ``(u, v)``.
+
+        Examples
+        --------
+        .. algan:: Example1SurfaceSetCheckerboardColors
+            :save_last_frame:
+
+            from algan import *
+
+            Sphere(grid_width=17, grid_height=17).set_checkerboard_colors(
+                BLUE, YELLOW
+            ).rotate(20, RIGHT).spawn()
+
+            Scene.save_video()
+        """
         if not colors:
             return self
         converted = [
@@ -1714,14 +1704,73 @@ class Surface(Mob):
         self.grid.color = color_grid.reshape(-1, color_grid.shape[-1])
         if opacity is not None:
             self.grid.opacity = opacity
-        self.checkerboard_colors = list(colors)
         return self
 
-    def set_fill_by_value(self, axes, colorscale=None, axis=2, **kwargs):
-        """Color sampled vertices by their coordinate value along an axis.
+    def set_color_by_axis(
+        self, axes=None, colorscale=None, axis: int = 2, **kwargs
+    ) -> Surface:
+        """Color the surface by how far along one axis each point sits.
 
-        This is the renderer-independent counterpart of Manim's per-face
-        coloring. Algan interpolates these vertex colors over its triangle mesh.
+        The classic height map: low points take the first color of the scale,
+        high points the last, and everything between is interpolated. Because
+        the colors are assigned per grid vertex they travel with the surface, so
+        a shape colored by height keeps those colors when it is later moved --
+        recolor it in an updater if the map should stay locked to world space.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default), so the surface cross-fades into the new coloring. Wrap the
+        call in ``Off()`` to apply it instantly.
+
+        Parameters
+        ----------
+        axes
+            A plot axes object supplying the value range to spread the scale
+            over, read from its ``x_range`` / ``y_range`` / ``z_range``.
+            Defaults to ``None``, meaning the range is taken from the surface's
+            own extent along ``axis``.
+        colorscale
+            The colors to interpolate between, either as a plain sequence
+            (spread evenly over the range) or as ``(color, value)`` pairs
+            pinning each color to a coordinate. Defaults to ``None``, which
+            leaves the surface unchanged.
+        axis
+            Which world axis the value is read along: ``0`` for x, ``1`` for y,
+            ``2`` for z. Defaults to ``2``, colouring by height.
+
+        Returns
+        -------
+        :class:`~algan.mobs.surfaces.surface.Surface`
+            This surface, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If an unrecognized keyword argument is passed.
+
+        See Also
+        --------
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function` : Color it by ``(u, v)`` rather than by position.
+
+        Examples
+        --------
+        .. algan:: Example1SurfaceSetColorByAxis
+            :save_last_frame:
+
+            from algan import *
+            import torch
+
+            def saddle(uv):
+                x = uv[..., :1] * 4 - 2
+                y = uv[..., 1:] * 4 - 2
+                return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
+
+            Surface(saddle).set_color_by_axis(
+                colorscale=[BLUE, GREEN, YELLOW]
+            ).rotate(60, RIGHT).spawn()
+
+            Scene.save_video()
         """
         if colorscale is None and "colors" in kwargs:
             colorscale = kwargs.pop("colors")
@@ -1841,8 +1890,13 @@ class Surface(Mob):
 
         Any required growth is retained immediately. A smaller dimension is
         adopted only when the complete required grid would reduce triangle
-        count by more than ``resolution_shrink_margin``; otherwise that
+        count by more than ``_RESOLUTION_SHRINK_MARGIN``; otherwise that
         dimension stays at its current size.
+
+        Unreachable in the current engine: its only caller is gated on
+        ``_can_update_resolution``, and the logical PN system fixes topology at
+        construction, so ``_auto_resolution_enabled`` is always False. Kept
+        against that gate being reopened.
         """
         current_width = self.grid_width
         current_height = self.grid_height
@@ -1856,7 +1910,7 @@ class Surface(Mob):
         target_height = max(current_height, required_height)
         current_work = max(current_width - 1, 1) * max(current_height - 1, 1)
         required_work = max(required_width - 1, 1) * max(required_height - 1, 1)
-        shrink_boundary = current_work * (1.0 - self._resolution_shrink_margin)
+        shrink_boundary = current_work * (1.0 - _RESOLUTION_SHRINK_MARGIN)
         if required_work < shrink_boundary:
             return required_width, required_height
         return target_width, target_height
@@ -3622,7 +3676,6 @@ class Surface(Mob):
             material_texture_map=material_texture_map,
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
-            render_tolerance=self._render_tolerance,
             render_tolerance_pixels=self._render_tolerance_pixels,
             geometry_slack_ratio=self._geometry_slack_ratio,
             **{
@@ -3701,28 +3754,6 @@ class Surface(Mob):
             Positions relative to the surface's location, shape ``(*, 3)``.
         """
         return torch.cat(((uv - 0.5) * 2, torch.zeros_like(uv[..., :1])), -1)
-
-    def normal_function(self, uv):
-        """Map the surface's ``(u, v)`` parameters to shading normals.
-
-        Overridden by the 3-D shape classes alongside
-        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`, so each shape
-        lights correctly. The base
-        implementation returns ``OUTWARD``, the normal of a flat plane facing the
-        viewer.
-
-        Parameters
-        ----------
-        uv
-            Parameter coordinates to map, shape ``(*, 2)``, with both components in
-            ``[0, 1]``.
-
-        Returns
-        -------
-        torch.Tensor
-            Unit normals, shape ``(*, 3)``, or a single vector broadcast over the grid.
-        """
-        return OUTWARD
 
     def get_base_grid(self) -> torch.Tensor:
         """Get the surface's parameter grid, the ``(u, v)`` domain it is built from.
@@ -3959,17 +3990,36 @@ class Surface(Mob):
         # every case but a query made mid-materialization.
         return locations[0] if locations.shape[0] == 1 else locations
 
-    def set_shape_to(self, other_surface: Surface):
-        """Changes this surface's shape to the shape defined by another surface's
-        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`. Any lower-resolution
-        grid axis is
-        refined to match ``other_surface`` before the shape change.
+    def set_shape_to(self, other_surface: Surface) -> Surface:
+        """Reshape this surface into the shape of another one.
+
+        Takes ``other_surface``'s
+        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function` and applies
+        it to this surface's own grid, which is how one parametric shape morphs
+        into another. Any grid axis coarser than ``other_surface``'s is refined
+        to match first, so the target shape is not under-sampled. The other
+        surface is left untouched.
+
+        Animation
+        ---------
+        Recorded as an animation: this surface's vertices travel to their new
+        positions over the current context's duration (1 second by default).
+        Wrap the call in ``Off()`` to reshape instantly.
 
         Parameters
         ----------
         other_surface
-            The surface from which to get coord_function.
+            The surface whose shape to take.
 
+        Returns
+        -------
+        :class:`~algan.mobs.surfaces.surface.Surface`
+            This surface, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_location_by_function` : Shape it by a function you write.
+        :meth:`~algan.animatable_base.mob.Mob.become` : Morph into a Mob of any kind, not just another Surface.
         """
         grid_width = max(self.grid_width, other_surface.grid_width)
         grid_height = max(self.grid_height, other_surface.grid_height)
@@ -3978,8 +4028,9 @@ class Surface(Mob):
 
         with Sync(animation_manager=self.animation_manager):
             self.set_location_by_function(other_surface.coord_function)
-            # TODO setting normals currently doesn't work, implement it.
-            # self.set_normal_by_function(other_surface.normal_function)
+        # Normals need no transfer: they are recomputed from the grid every
+        # render batch, so they follow the new shape on their own.
+        return self
 
     def set_location_by_function(self, function):
         """Shape the surface by a function of its ``(u, v)`` parameters.
