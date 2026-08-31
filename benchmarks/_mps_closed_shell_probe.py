@@ -355,7 +355,7 @@ def _install_nan_trace():
     def wrap(name, function, arg_names, out_names):
         def wrapped(*args, **kwargs):
             result = function(*args, **kwargs)
-            if len(_NAN_TRACE) < 12:
+            if len(_NAN_TRACE) < 24:
                 outs = result if isinstance(result, tuple) else (result,)
                 _NAN_TRACE.append(counts(f"{name} in ", list(zip(arg_names, args))))
                 _NAN_TRACE.append(counts(f"{name} out", list(zip(out_names, outs))))
@@ -363,6 +363,12 @@ def _install_nan_trace():
 
         return wrapped
 
+    sh._band_reduce = wrap(
+        "_band_reduce",
+        sh._band_reduce,
+        ("band_id", "msk", "cov", "nbands"),
+        ("area", "union", "fused", "sliver"),
+    )
     sh._band_composite = wrap(
         "_band_composite",
         sh._band_composite,
@@ -523,7 +529,7 @@ def main():
 
     if _NAN_TRACE:
         print("\nnon-finite values through the band aggregation:")
-        for line in _NAN_TRACE:
+        for line in _NAN_TRACE[:24]:
             print(line)
 
     if _CEILING_CHECK:
