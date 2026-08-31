@@ -739,6 +739,80 @@ def test_the_renderer_reaches_float64_only_through_mps_compat():
     )
 
 
+def _literal(node):
+    """The float a constant expression denotes, or None if it is not one."""
+    import ast
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _literal(node.operand)
+        return None if inner is None else -inner
+    return None
+
+
+@pytest.mark.fast
+def test_the_renderer_floors_a_divide_through_clamp_floor():
+    """A new ``clamp_min(1e-30)`` in the renderer is a wrong denominator on MPS.
+
+    MPS rounds a clamp's scalar bound through float16, so every bound below
+    float16's smallest subnormal comes back as that subnormal instead -- and so
+    does every input below it, including inputs comfortably *above* the bound
+    that was asked for. ``mps_compat.clamp_floor`` has the measurement.
+
+    This is the defect in this file with the quietest failure mode. The other
+    two abort or produce a NaN; this one hands back a plausible number, up to
+    twenty-two orders of magnitude off the intended floor, in a denominator.
+    Nothing downstream can tell. So the guard is structural: no literal bound
+    below the cliff may reach a ``clamp`` in ``algan/rendering`` at all.
+
+    ``*_taichi.py`` is exempt and must be: those bodies compile to MSL through
+    Taichi and never touch torch's MPS dispatch, so ``ti.math.clamp`` there is
+    a different function with a different defect surface.
+    """
+    import ast
+    from pathlib import Path
+
+    import algan
+    from algan.rendering.mps_compat import _MPS_CLAMP_FLOOR
+
+    root = Path(algan.__file__).resolve().parent / "rendering"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name.endswith("_taichi.py") or path.name == "mps_compat.py":
+            continue
+        relative = path.relative_to(root.parent).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            name = (
+                function.attr
+                if isinstance(function, ast.Attribute)
+                else getattr(function, "id", None)
+            )
+            if name not in ("clamp", "clamp_min", "clamp_max", "clip"):
+                continue
+            bounds = [_literal(a) for a in node.args]
+            bounds += [
+                _literal(k.value) for k in node.keywords if k.arg in ("min", "max")
+            ]
+            for bound in bounds:
+                if bound is not None and 0 < abs(bound) < _MPS_CLAMP_FLOOR:
+                    offenders.append(
+                        f"{relative}:{node.lineno}: {name}({bound:g}) -- below "
+                        f"{_MPS_CLAMP_FLOOR:g}, so MPS returns that instead"
+                    )
+    assert not offenders, "\n".join(
+        [
+            "These floors are silently wrong on MPS. Use "
+            "mps_compat.clamp_floor(tensor, bound):",
+            *offenders,
+        ]
+    )
+
+
 # ------------------------------------------------------------ end to end
 
 

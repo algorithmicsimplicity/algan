@@ -132,6 +132,62 @@ def reduction_index_sentinel() -> int:
     return (1 << 40) if reduction_index_dtype() is torch.int64 else 2147483647
 
 
+#: Float16's smallest positive subnormal, and the floor every ``clamp_min``
+#: bound below it collapses to on MPS. ``probe_epsilon_clamp`` in
+#: ``benchmarks/_mps_torch_op_probe.py`` sweeps both sides of it; §2.3c has the
+#: table. Bounds at or above this are honoured exactly, which is why
+#: :func:`clamp_floor` is only needed underneath it.
+_MPS_CLAMP_FLOOR = 5.9604645e-8
+
+
+def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
+    """``tensor.clamp_min(floor)`` for a floor too small for MPS to carry.
+
+    **MPS rounds a clamp's scalar bound through float16.** Every bound at or
+    above float16's smallest subnormal (:data:`_MPS_CLAMP_FLOOR`, 5.96e-8) is
+    honoured exactly; every bound below it comes back as *that* subnormal
+    instead, and so does every input below it. With a 1e-12 floor the Apple GPU
+    returns 5.96e-8 for an input of 0, of 1e-13, and of 1e-11 -- the last of
+    which is above the floor and should have passed through untouched. So the
+    effective floor there is a hard 5.96e-8 whatever was asked for, and the
+    three spellings ``clamp_min``, ``clamp(min=)`` and ``torch.clamp_min`` are
+    equally affected. §2.3c of ``DESIGN_mps_support.md`` has the sweep.
+
+    The renderer guards twenty-odd divisions this way, at floors of 1e-12,
+    1e-20 and 1e-30. On MPS every one of those denominators is silently raised
+    to 5.96e-8 -- up to twenty-two orders of magnitude off -- and unlike the two
+    defects above it this one produces neither a crash nor a NaN, just a
+    plausible wrong number. ``raster_pipeline``'s ``n2.clamp_min(1e-30)`` is a
+    squared normal length, so a thin triangle lands squarely in the gap.
+
+    ``where(x < floor, floor, x)`` is ``clamp_min`` **bit for bit** -- over 0,
+    -0, ±inf, NaN, the subnormals and both sides of the floor, the two agree in
+    every bit of every result. The comparison is ``<`` rather than ``>`` for
+    the one input where the order matters: a comparison against a NaN is false
+    either way, and only this order leaves the NaN in the ``x`` arm, where
+    ``clamp_min`` leaves it. (``where(x > floor, x, floor)`` returns the floor
+    there instead -- identical everywhere else, and a silent NaN swallower.)
+
+    Because the two are bit-identical, gating on the mode costs nothing and
+    keeps this module's rule intact: off the mode this is exactly
+    ``clamp_min``, one op, and CPU and CUDA do not pay a compare and a select
+    for a defect they do not have.
+
+    A ``floor`` at or above the cliff needs none of this and asserts, rather
+    than silently doing nothing: at that magnitude ``clamp_min`` is correct on
+    every backend, and a call here would be a reader's false alarm.
+    """
+    if floor >= _MPS_CLAMP_FLOOR:
+        raise ValueError(
+            f"clamp_floor is for a floor MPS cannot carry; {floor:g} is at or "
+            f"above {_MPS_CLAMP_FLOOR:g}, where clamp_min is exact everywhere. "
+            "Call tensor.clamp_min directly."
+        )
+    if not mps_friendly():
+        return tensor.clamp_min(floor)
+    return torch.where(tensor < floor, floor, tensor)
+
+
 def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
     """An index array on its way into a kernel, narrowed in MPS-friendly mode.
 

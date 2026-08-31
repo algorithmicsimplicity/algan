@@ -66,6 +66,7 @@ from algan.environment import env_float
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     band_class_groups,
+    clamp_floor,
     cummax_values,
     gather_packed_key,
     kernel_index,
@@ -332,7 +333,7 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     mag = nrm.norm(dim=2)
     # In place: the gather is this function's own copy and the normalized
     # vectors are the only thing wanted from it.
-    unit = nrm.div_(mag.unsqueeze(2).clamp_min(1e-12))
+    unit = nrm.div_(clamp_floor(mag.unsqueeze(2), 1e-12))
     del nrm
     # max over vertex j and component c of |unit[j] - unit[0]|. The j = 0 term
     # is identically zero and the terms are non-negative, so dropping it
@@ -357,7 +358,7 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     del p0, rows
     gn = torch.cross(e1, e2, dim=1)
     del e1, e2
-    gn = gn / gn.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    gn = gn / clamp_floor(gn.norm(dim=1, keepdim=True), 1e-12)
     face_n = torch.where(geometric_flat.unsqueeze(1), gn, vertex_n)
     del gn, vertex_n
     q = (
@@ -714,24 +715,16 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
 
     acc = accumulate_dtype()
     area_g = band_area.index_select(0, sheet_band).to(acc)
-    # The floor under the divide, spelled with a select rather than as
-    # ``area_g.clamp_min(1e-12)``. **MPS does not honour that call**: it returns
-    # an exact zero unchanged (``benchmarks/_mps_torch_op_probe.py``'s
-    # ``probe_epsilon_clamp`` sweeps the magnitudes and the spellings), and a
-    # band whose siblings were all clamped to zero coverage by the closed-shell
-    # ceiling has exactly zero area, so the guard's one job went undone and the
-    # divide produced a NaN. Nothing downstream catches one -- ``eff <=
-    # min_alpha`` is false against a NaN like every comparison is -- so the
-    # sheet composited instead of dropping out and a closed shell's interior
-    # edge came back attenuated twice (``DESIGN_mps_support.md`` §2.3c).
-    #
-    # ``where(x < eps, eps, x)`` is ``clamp_min`` bit for bit, on every input
-    # including NaN, +-0, +-inf and the subnormals -- the ``<`` rather than a
-    # ``>`` is what keeps the NaN, since a comparison against one is false
-    # either way and only this order leaves it in the ``x`` arm. So this is the
-    # same value on every backend where the clamp works, and the right one on
-    # the backend where it does not.
-    share = cov.to(acc) / torch.where(area_g < 1e-12, 1e-12, area_g)
+    # ``clamp_floor``, not ``clamp_min``: MPS rounds a clamp's scalar bound
+    # through float16 and cannot carry this floor (``mps_compat.clamp_floor``
+    # has the measurement). This is the call site where that first reached a
+    # frame -- a band whose siblings were all clamped to zero coverage by the
+    # closed-shell ceiling has exactly zero area, the guard did not hold, and
+    # the divide produced a NaN. Nothing downstream catches one: ``eff <=
+    # min_alpha`` is false against a NaN like every comparison is, so the sheet
+    # composited instead of dropping out and a closed shell's interior edge came
+    # back attenuated twice (``DESIGN_mps_support.md`` §2.3c).
+    share = cov.to(acc) / clamp_floor(area_g, 1e-12)
     del area_g
     p = band_corr.index_select(0, sheet_band).to(acc) * share
 

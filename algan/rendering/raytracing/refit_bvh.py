@@ -68,7 +68,7 @@ import warnings
 import torch
 
 from algan.environment import env_int
-from algan.rendering.mps_compat import cummax_values, cummin_values
+from algan.rendering.mps_compat import clamp_floor, cummax_values, cummin_values
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
     EMPTY_LO,
@@ -211,7 +211,7 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
         cmax.index_reduce_(0, seg, pc, "amax")
     ext = cmax - cmin
     nb = bvh_sah_bins
-    t = (pc - cmin[seg]) / ext[seg].clamp_min(1e-30)
+    t = (pc - cmin[seg]) / clamp_floor(ext[seg], 1e-30)
     bins = (t * nb).long().clamp_(0, nb - 1)  # [S, 3]
 
     # Histograms + per-bin box unions, per (range, axis, bin).

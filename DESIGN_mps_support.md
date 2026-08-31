@@ -746,10 +746,29 @@ identity: CPU and CUDA compute what they always did, and MPS now computes it
 too. `test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
 guards it on whatever device the machine has, like the gather guard in §2.3b.
 
-**The other sites still say `clamp_min`.** They are all below the cliff and so
-all wrong on MPS, but wrong by a bounded amount in a denominator that is
-normally nowhere near its floor — where any of them is measured to matter, the
-same one-line respelling applies.
+**All twenty-three render-side sites are converted**, not just the one that was
+caught. `mps_compat.clamp_floor(tensor, floor)` is the single spelling, gated on
+the mode like everything else in that module — off it, it is literally
+`tensor.clamp_min(floor)`, one op, so CPU and CUDA do not pay a compare and a
+select for a defect they do not have, and no rendered frame can move.
+
+Converting all of them rather than the one is a judgement about the failure
+mode, and the judgement is that this defect's silence earns it. The floors run
+1e-12 (`sheets`, `stbvh`, `bezier_acceleration`, `tracer`, `primitives`),
+1e-20 (`primitives`) and 1e-30 (`raster_pipeline`, `refit_bvh`, `logical_pn`),
+and the error is not confined to a denominator that was already degenerate:
+with a 1e-30 floor an ordinary `1e-9` comes back as `5.96e-8`, sixty times
+wrong, because the cliff is in the *input* as well as the bound.
+`raster_pipeline`'s `n2` is a squared normal length, so a thin triangle lands
+squarely in that gap and shades wrongly with nothing to show for it.
+
+A literal bound below the cliff is now banned outright in `algan/rendering`:
+`test_mps_friendly.py::test_the_renderer_floors_a_divide_through_clamp_floor`
+walks the AST and names any that appear, the way the float64 guard beside it
+does. It found one the manual pass had missed — a `torch.clamp(length,
+min=1e-12)` in `primitives.py`, spelled differently from the other twenty-two —
+which is the argument for having written it. `*_taichi.py` is exempt and must
+be: those bodies reach MSL through Taichi and never touch torch's MPS dispatch.
 
 ### 2.4 How non-deterministic MPS actually is
 

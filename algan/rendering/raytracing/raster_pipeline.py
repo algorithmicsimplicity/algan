@@ -24,6 +24,7 @@ import torch
 from algan.environment import env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
+    clamp_floor,
     gather_packed_key,
     kernel_index,
     reduction_index_dtype,
@@ -279,7 +280,7 @@ def precompute_triangle_projection(
         ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
     )
     rel = hit - sp[:, None, None, :]
-    safe_n2 = n2.clamp_min(1e-30)
+    safe_n2 = clamp_floor(n2, 1e-30)
     u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
         -1
     ) / safe_n2[:, None, None]
@@ -303,7 +304,7 @@ def precompute_triangle_projection(
         elen = torch.sqrt(ex * ex + ey * ey)
         inv_len = torch.where(
             valid[..., None] & (elen > 1e-12),
-            1.0 / elen.clamp_min(1e-12),
+            1.0 / clamp_floor(elen, 1e-12),
             torch.zeros_like(elen),
         )
         parts.append(inv_len)
@@ -464,7 +465,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     pby_b = pby[:, None, None, :]
     nvec = torch.linalg.cross(pbx, pby)
     nvec_b = nvec[:, None, None, :]
-    inv_n2 = (1.0 / (nvec * nvec).sum(-1).clamp_min(1e-30))[:, None, None]
+    inv_n2 = (1.0 / clamp_floor((nvec * nvec).sum(-1), 1e-30))[:, None, None]
     big_d = ((sp - ro) * nvec).sum(-1)
     # Depth measured so that "in front of the camera plane" is positive,
     # matching precompute_triangle_projection's front test.
@@ -473,7 +474,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
 
     rel_verts = verts - ro_b
     depth = (rel_verts * nvec_b).sum(-1) * sign[:, None, None]
-    clip_depth = (_CLIP_DEPTH_FRACTION * depth.amax(-1)).clamp_min(1e-30)
+    clip_depth = clamp_floor(_CLIP_DEPTH_FRACTION * depth.amax(-1), 1e-30)
     keep = depth >= clip_depth.unsqueeze(-1)
 
     lo_i, hi_i = _edge_index(edges, verts.device)
@@ -495,7 +496,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     rel = torch.cat((rel_verts, rel_edge), -2)
     scale = torch.cat(
         (
-            front_d[:, None, None] / depth.clamp_min(1e-30),
+            front_d[:, None, None] / clamp_floor(depth, 1e-30),
             (front_d[:, None] / clip_depth).unsqueeze(-1).expand_as(step),
         ),
         -1,
@@ -523,7 +524,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
         (pbx.norm(dim=-1) * (float(half_w) / float(half_h))) ** 2
         + pby.norm(dim=-1) ** 2
     )
-    pad = clip_depth * (1.0 + screen_radius / big_d.abs().clamp_min(1e-30))[:, None]
+    pad = clip_depth * (1.0 + screen_radius / clamp_floor(big_d.abs(), 1e-30))[:, None]
     pad = pad.unsqueeze(-1)
     near_camera = (
         (ro_b.squeeze(-2) >= verts.amin(-2) - pad)
@@ -560,7 +561,7 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
     front = (wpn.abs() >= 1e-12) & (td > 0)
     hit = ro + td.unsqueeze(-1) * d
     rel = hit - sp
-    dsq = (nvec * nvec).sum().clamp_min(1e-30)
+    dsq = clamp_floor((nvec * nvec).sum(), 1e-30)
     u = (torch.linalg.cross(rel, pby.expand_as(rel)) * nvec).sum(-1) / dsq
     v = (torch.linalg.cross(pbx.expand_as(rel), rel) * nvec).sum(-1) / dsq
     return u * half_h + half_w, v * half_h + half_h, front
@@ -755,7 +756,7 @@ def precompute_circuit_screen_bounds(
     front = (wpn.abs() >= 1e-12) & (td > 0)
     hit = ro[:, None, None, :] + td.unsqueeze(-1) * d
     rel = hit - sp[:, None, None, :]
-    dsq = (nvec * nvec).sum(-1).clamp_min(1e-30)  # [F]
+    dsq = clamp_floor((nvec * nvec).sum(-1), 1e-30)  # [F]
     u = (
         torch.linalg.cross(rel, pby[:, None, None, :].expand_as(rel))
         * nvec[:, None, None, :]

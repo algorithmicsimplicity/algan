@@ -20,6 +20,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_int
+from algan.rendering.mps_compat import clamp_floor
 
 # Resolution of the two indices. Both are pure acceleration: a query that a
 # coarser index sends more edges to still exact-tests every one of them, so
@@ -217,8 +218,8 @@ def build_bezier_edge_acceleration(
     max_u = torch.where(empty_circuit, min_u + 1.0, max_u)
     max_v = torch.where(empty_circuit, min_v + 1.0, max_v)
 
-    extent_u = (max_u - min_u).clamp_min(1e-12)
-    extent_v = (max_v - min_v).clamp_min(1e-12)
+    extent_u = clamp_floor(max_u - min_u, 1e-12)
+    extent_v = clamp_floor(max_v - min_v, 1e-12)
     grid_inv_u = bezier_spatial_grid / extent_u
     grid_inv_v = bezier_spatial_grid / extent_v
     scan_inv_v = bezier_scan_bins / extent_v

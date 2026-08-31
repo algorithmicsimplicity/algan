@@ -639,6 +639,29 @@ def probe_epsilon_clamp(device):
         )
         _report(f"clamp_min(1e-12) on x={value:g}", not broken)
 
+    # The replacement, at the four floors the renderer actually writes, over
+    # inputs that straddle each. This is the one that licenses the conversion:
+    # ``mps_compat.clamp_floor`` respells twenty-two call sites at 1e-8, 1e-12,
+    # 1e-20 and 1e-30, and ``where`` has already been seen to FAIL at a
+    # float32-subnormal floor (1.4e-45 above), so "it works at 1e-12 so it works
+    # at 1e-30" is exactly the assumption this file exists to refuse.
+    print("  the shipped replacement at the renderer's own four floors")
+    for eps in (1e-8, 1e-12, 1e-20, 1e-30):
+        bad = []
+        for value in (0.0, -0.0, eps * 0.1, eps, eps * 10.0, 1.0):
+            host = torch.full((n,), value, dtype=torch.float32)
+            want = host.clamp_min(eps)
+            got = torch.where(host.to(device) < eps, eps, host.to(device)).cpu()
+            if not torch.equal(want, got):
+                bad.append(
+                    f"x={value:g} -> {float(got[0]):g} want {float(want[0]):g}"
+                )
+        print(
+            f"    where(x < {eps:g}, {eps:g}, x): "
+            + ("; ".join(bad) if bad else "exact over every input")
+        )
+        _report(f"where-floor at {eps:g}", not bad)
+
     # The render's own shape, because the two readings from this machine do not
     # agree and this is the difference between them. Instrumenting the render
     # showed `clamp_min(1e-12)` returning an exact **zero** (which is what made

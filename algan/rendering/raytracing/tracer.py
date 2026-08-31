@@ -40,6 +40,7 @@ from typing import Literal
 import torch
 
 from algan.environment import env_float
+from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -1253,7 +1254,7 @@ def render_batch_raytraced(
     b1_norm = sb_host[:, 1].norm(p=2, dim=-1)
     screen_dist = (sp_host - cam_origin_host).norm(p=2, dim=-1)
     pixel_world_scale_host = (
-        2.0 / (screen_height * aa * b1_norm * screen_dist).clamp_min(1e-12)
+        2.0 / clamp_floor(screen_height * aa * b1_norm * screen_dist, 1e-12)
     ).contiguous()
     # Camera and packed-light inputs cover the whole prepared batch and are
     # paid once, so they are one calibration scope even though the light copies
