@@ -265,9 +265,6 @@ class BezierCircuitCubic(Mob):
         Color of the border stroke. Defaults to ``WHITE``. The circuit's
         ``color`` is its *fill* color and does not touch the border; see
         :attr:`~.BezierCircuitCubic.stroke_color`.
-    portion_of_curve_drawn
-        How much of the path is drawn, from 0 (nothing) to 1 (all of it).
-        Animating it is what draws a shape on. Defaults to ``1.0``.
     filled
         Whether the interior is painted. Defaults to ``True``; ``False`` leaves
         an outline whose stroke is centred on the path (what
@@ -400,7 +397,6 @@ class BezierCircuitCubic(Mob):
         normals=None,
         stroke_width=5,
         stroke_color=WHITE,
-        portion_of_curve_drawn=1.0,
         filled=True,
         add_texture_grid=True,
         texture_grid_width=1,
@@ -411,7 +407,11 @@ class BezierCircuitCubic(Mob):
     ):
         self.num_bezier_parameters = 4
         self.z_index = z_index
-        control_points = control_points.view(-1, control_points.shape[-1])
+        # Cast first: every other geometry entry point in Algan takes a nested
+        # sequence as happily as a tensor, and a bare ``.view`` here made a list
+        # of points fail with AttributeError instead.
+        control_points = cast_to_tensor(control_points)
+        control_points = control_points.reshape(-1, control_points.shape[-1])
 
         kwargs2 = dict(kwargs.items())
 
@@ -447,7 +447,7 @@ class BezierCircuitCubic(Mob):
         super().__init__(**kwargs2)
         kwargs["scene"] = self.scene
         self.register_attrs_as_animatable(
-            ["stroke_width", "portion_of_curve_drawn"],
+            ["stroke_width"],
             BezierCircuitCubic,
         )
         self.filled = filled
@@ -772,7 +772,25 @@ class BezierCircuitCubic(Mob):
 
     @property
     def stroke_color(self):
-        """Per-vertex colors sampled across the circuit's border texture grid."""
+        """The color of the circuit's border stroke.
+
+        Separate from :attr:`~algan.animatable_base.mob.Mob.color`, which is the
+        *fill*: setting one never changes the other, and on a filled circuit the
+        border is drawn inside the outline. Accepts anything a color attribute
+        does -- a :class:`~algan.constants.color.Color`, a named constant, a hex
+        string.
+
+        Reading it back gives the border's per-texel colors as a ``(N, 5)``
+        tensor (RGB, glow, alpha), one row per texel of the circuit's texture
+        grid, rather than the single value that was assigned -- so compare
+        against ``stroke_color[0]`` rather than against a ``Color`` directly.
+
+        Animation
+        ---------
+        Recorded like any other color attribute: the border cross-fades to the
+        new color over the current context's duration (1 second by default).
+        Wrap the write in ``Off()`` to change it instantly.
+        """
         return self.border_texture_points.color
 
     @stroke_color.setter
@@ -997,6 +1015,13 @@ class BezierCircuitCubic(Mob):
         )
 
     def get_default_color(self):
+        """Get the color a circuit uses when none was given.
+
+        Returns
+        -------
+        :class:`~algan.constants.color.Color`
+            ``PURPLE``.
+        """
         return PURPLE
 
     def _get_memory_used_per_timestep(self):
@@ -1231,7 +1256,45 @@ class BezierCircuitCubic(Mob):
         return prim
 
     @animated_function(animated_args={"t": 0.0})
-    def draw(self, t=1.0):
+    def draw(self, t: float = 1.0) -> BezierCircuitCubic:
+        """Draw the circuit on, as though traced by a pen.
+
+        The path is revealed from its start point to a fraction ``t`` of the way
+        round, so animating it is what makes a shape appear stroke by stroke
+        rather than fading in. A shape drawn this way ends up with exactly the
+        geometry it started with, so it can be moved and morphed afterwards as
+        usual.
+
+        Animation
+        ---------
+        Recorded as an animation: the drawn portion sweeps from 0 to ``t`` over
+        the current context's duration (1 second by default). Wrap the call to
+        change that -- ``with Seq(duration=3): shape.draw()`` -- or in ``Off()``
+        to jump straight to the end state. Applies to this circuit only, not to
+        its descendants, so a composite Mob draws each of its parts separately.
+
+        Parameters
+        ----------
+        t
+            How much of the path is drawn by the end, from ``0`` (nothing) to
+            ``1`` (the whole circuit). Defaults to ``1.0``.
+
+        Returns
+        -------
+        :class:`~.BezierCircuitCubic`
+            This circuit, so calls can be chained.
+
+        Examples
+        --------
+        .. algan:: Example1BezierCircuitCubicDraw
+
+            from algan import *
+
+            square = Square().spawn()
+            square.draw()
+
+            Scene.save_video()
+        """
         self._original_control_points = self.control_points.location.clone()
         num_frames = self.control_points.location.shape[0]
         total_control_points = self._original_control_points.shape[-2]
@@ -1299,7 +1362,7 @@ class BezierCircuitCubic(Mob):
         self.control_points.location = new_points
         return self
 
-    def set_control_points_to_partial(self, full_control_points, start_t, end_t):
+    def _set_control_points_to_partial(self, full_control_points, start_t, end_t):
         full_control_points = cast_to_tensor(full_control_points)
         start_t = cast_to_tensor(start_t).to(full_control_points)
         end_t = cast_to_tensor(end_t).to(full_control_points)
@@ -1393,6 +1456,44 @@ class BezierCircuitCubic(Mob):
 
 
 class BezierCurveCubic(BezierCircuitCubic):
+    """An open path of cubic bezier curves -- a stroke with no interior.
+
+    A :class:`BezierCircuitCubic` with ``filled=False``, which is the whole
+    difference: there is no fill to paint, so ``color`` has nothing to act on
+    and :attr:`~.BezierCircuitCubic.stroke_color` is what you set. The stroke
+    stays centred on the path rather than being laid inward from an outline,
+    which is what :class:`~algan.mobs.shapes_2d.Line` is built on.
+
+    The control points still need not describe a closed loop, but nothing stops
+    them from doing so -- a closed path drawn as a curve is an outline.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`, except ``filled``, which is
+        always ``False``.
+
+    See Also
+    --------
+    :class:`~.BezierCircuitCubic` : The filled counterpart, and where the parameters are documented.
+
+    Examples
+    --------
+    .. algan:: Example1BezierCurveCubic
+        :save_last_frame:
+
+        from algan import *
+        import torch
+
+        BezierCurveCubic(
+            torch.tensor([[-2.0, -1.0, 0.0], [-1.0, 2.0, 0.0],
+                          [1.0, -2.0, 0.0], [2.0, 1.0, 0.0]]),
+            stroke_color=YELLOW,
+        ).spawn()
+
+        Scene.save_video()
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, filled=False, **kwargs)
 

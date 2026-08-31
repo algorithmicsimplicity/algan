@@ -76,8 +76,8 @@ def _animated_boundary_update(boundary, elapsed):
         full_points = source.control_points.location
         if full_points.shape[0] != frame_count:
             full_points = full_points.expand(frame_count, -1, -1)
-        growing.set_control_points_to_partial(full_points, lower, upper)
-        fading.set_control_points_to_partial(
+        growing._set_control_points_to_partial(full_points, lower, upper)
+        fading._set_control_points_to_partial(
             full_points, torch.zeros_like(draw_alpha), torch.ones_like(draw_alpha)
         )
         growing.stroke_color = growing_color

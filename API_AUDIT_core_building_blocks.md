@@ -1,5 +1,10 @@
 # API audit: `Animatable.__init__`, `Mob.__init__`, `Surface`, `BezierCircuitCubic`
 
+> **Status: acted on.** Every finding below has been fixed in the same branch; see
+> [What was done](#what-was-done) at the end for the mapping from finding to change, and for the
+> two decisions that were escalated rather than taken here. The findings are kept in their original
+> wording as the record of what was wrong.
+
 Audit of the four core building blocks, against `DOCSTRINGS.md` and against what the code
 actually does. Every claim below was checked by reading the source and, where marked
 **verified**, by running it.
@@ -339,6 +344,17 @@ reference as a bare name. It also inherits `BezierCircuitCubic`'s class docstrin
    docstring, `name` decided one way or the other, `init` and `add_to_scene` written for users.
 7. **§3.5, §3.6, §4.7, §2.7, §1.6** — annotations, `Examples`, `Animation` sections.
 
+## New finding, turned up while fixing the above
+
+**`normal_function` is dead.** `Surface.__init__` accepted it, stored it as
+`normal_function_active`, and nothing ever called it -- its one call site is commented out at
+`surface.py:1162`. Shading normals are always computed numerically from the sampled grid
+(`compute_grid_vertex_normals`). Verified: a `normal_function` returning a constant `(1, 0, 0)`
+was called zero times, and a flat plane's primitive normals came back `(0, 0, -1)` from the
+geometry. The class docstring described it as "used for lighting", the method's own Tier-1
+docstring said the 3-D shapes override it "so each shape lights correctly", and `Sphere`, `Cone`,
+`Cylinder`, `Torus` and `_CapDisc` all carried overrides that did nothing.
+
 ## Cross-cutting inconsistency found on the way
 
 `Torus.__init__` sets `grid_width = resolution[0]` while `_surface_resolution_kwargs` (used by
@@ -349,3 +365,78 @@ meaning. `Torus` should route through `_surface_resolution_kwargs` like its sibl
 would also give it the `fill_color` / `checkerboard_colors` handling it currently lacks (today it
 falls through to `Surface`'s copies, the ones §0 proposes deleting, so this is a prerequisite
 for that removal).
+
+---
+
+## What was done
+
+All of it, in this branch. Two items needed a decision beyond the audit's own recommendation and
+were escalated before being acted on; both are marked below.
+
+### Behavioural fixes
+
+| Finding | Change |
+| --- | --- |
+| §2.1 `mob.scale = 2` silently does nothing | `Mob.scale` is now a data descriptor (`_GuardedMethod`) whose `__set__` raises with the three spellings that work. Reads still return the bound method, and no `__setattr__` is added, so nothing else pays for it. The class docstring no longer calls `scale` an attribute. |
+| §2.2 sixth positional lands in `scene` | `Mob.__init__`'s `*args` removed; a seventh positional is now a `TypeError` naming the real arity. |
+| §3.1 explicit `color=` overwritten | Manim's *default* checkerboard pair now yields to a colour the caller passed; a checkerboard passed explicitly still wins. Moot after the removals below, but the fix stands for the `_manim_shape_style_for` path. |
+| §3.2 `coord_function` misdetected | Was fixed by counting only *required* positional parameters; then removed outright with the rest of the Manim path. |
+| §4.1 `portion_of_curve_drawn` does not exist | Removed from the signature and from `register_attrs_as_animatable`, and the dead write in `indication.py:770` deleted. Its docstring entry is replaced by a documented `draw()`. |
+| §4.4 `control_points` must be a tensor | `cast_to_tensor` first, then `reshape`; a list of points now works like everywhere else in Algan. |
+| New: `normal_function` is dead | **Escalated; decision: delete.** The parameter, `normal_function_active`, the base method and all five subclass overrides in `shapes_3d.py` are gone. |
+| Cross-cutting: `Torus(resolution=...)` off by one | `Torus` now routes through `_surface_resolution_kwargs` like `Sphere`/`Cone`/`Cylinder`, so `resolution` counts patches everywhere. It also gains the style-name translation it lacked. |
+
+### §0, the Manim aliases
+
+**Escalated; decision: remove all of them.** The audit's recommendation collided with
+`test_native_surface_accepts_manim_parametric_api`, which asserted the opposite as a deliberate
+contract, so the call was put to the owner rather than taken here.
+
+Removed from `Surface.__init__`: `func`, `fill_color`, `fill_opacity`, `checkerboard_colors`,
+`stroke_color`, `stroke_width`, `should_make_jagged`, `surface_piece_config`,
+`pre_function_handle_to_anchor_scale_factor`, `resolution_shrink_margin`, `normal_function`.
+Also deleted: the `if manim_function is not None:` styling branch, the `mapped_coord_function`
+closure, `_looks_like_manim_surface_function`, `_call_parametric_function`, and the `Surface.func`
+method. `resolution_shrink_margin`'s value became the module constant
+`_RESOLUTION_SHRINK_MARGIN`, since the (unreachable) search that reads it is kept.
+
+**Kept**: `u_range`, `v_range`, `resolution` — native plumbing for the curved shapes, now
+documented as such.
+
+`Surface.__init__` goes from **26 parameters to 15**. The parity test was rewritten as
+`test_manim_parametric_surface_api_lives_in_algan_manim`: it asserts Manim's spelling works on
+`algan.manim.Surface`, that the native class takes a vectorized `coord_function`, and that each of
+the eleven removed names now raises `TypeError` rather than being silently ignored.
+
+Two Manim-named methods were renamed to native spellings (§3.8). Neither had a single caller in
+the package, the tests or the docs:
+
+- `set_fill_by_checkerboard` → `set_checkerboard_colors`
+- `set_fill_by_value` → `set_color_by_axis`
+
+Three tests outside the parity suite built a `Surface` with the Manim two-argument form
+incidentally, while testing something else (`Homotopy` over surface geometry, and two `become`
+cases). They now use the native vectorized `coord_function`; what each test asserts is unchanged.
+
+### Documentation
+
+Brought to `DOCSTRINGS.md` standard: the `Animatable` class docstring and all eight constructor
+parameters (§1.1–1.6, with the three internals marked `Internal:` and `add_to_scene` rewritten for
+users); the `Mob` class docstring, with an `Attributes` section and every default, unit and range
+stated (§2.4–2.7); `Surface`'s class docstring — the two wrong defaults corrected (§3.3, and the
+"0.4 px at PREVIEW" figure that went with them), the previously undocumented `checkered_color`,
+`ignore_normals`, `u_range`/`v_range`/`resolution` and grid sizes documented (§3.4), plus a
+`See Also` and a rendered example (§3.6); the three tolerance properties rewritten out of jargon
+(§3.10); `vertices` (§3.11); `set_shape_to`, which now also returns `self` like every other
+`set_*` on the class (§3.7); `BezierCircuitCubic.stroke_color` (§4.3), `get_default_color` (§4.6),
+`draw` (§4.2, from nothing) and `BezierCurveCubic`, which had no docstring at all (§4.5).
+
+`set_control_points_to_partial` is now `_set_control_points_to_partial` (§4.2) — its only callers
+are in `algan/animations/`.
+
+### Not done
+
+`get_render_primitives` / `get_animatable_attrs` / `clear_geometry_resolution_cache` (§3.9, §4.6)
+keep their public names. They are subclass hooks reached by name across the mob and renderer
+packages, so renaming them is a mechanical change with a wide blast radius and belongs in its own
+pass rather than tacked onto this one.

@@ -33,7 +33,7 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import WHITE
 from algan.constants.math import PI
 from algan.constants.spatial import LEFT, ORIGIN, OUTWARD, RIGHT, UP
-from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
+from algan.geometry.geometry import get_orthonormal_vector
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
@@ -362,10 +362,6 @@ class _CapDisc(Surface):
         # Radius on the second component: 0 at the welded centre, 1 at the rim.
         return uv[..., 1:] * self._rim_function(azimuth)
 
-    def normal_function(self, uv):
-        outward = F.normalize(self.direction.reshape(1, 3), p=2, dim=-1)
-        return outward.expand(*uv.shape[:-1], 3)
-
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Zero: the disc's planar interior is exact at any resolution.
 
@@ -502,9 +498,6 @@ class Sphere(Surface):
             dim=-1,
         )
         return coords_3d * self.radius
-
-    def normal_function(self, uv):
-        return self.coord_function(uv)
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Exact distance from each PN sample to this sphere's surface."""
@@ -681,12 +674,6 @@ class Cone(Surface):
             ),
             -1,
         )
-
-    def normal_function(self, uv):
-        xyz = self.coord_function(uv)
-        radial = xyz.clone()
-        radial[..., 1] = self.radius / max(float(self.height), 1e-10)
-        return radial
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
         """Exact distance from each PN sample to the finite conical side."""
@@ -955,12 +942,6 @@ class Cylinder(Surface):
             u.sin() * self.radius * basis_rows[..., 0, :]
             + (v - 0.5) * self.height * basis_rows[..., 1, :]
             + u.cos() * self.radius * basis_rows[..., 2, :]
-        )
-
-    def normal_function(self, uv):
-        xyz = self.coord_function(uv)
-        return project_onto_basis(
-            xyz, [self.get_right_direction(), self.get_forward_direction()]
         )
 
     def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
@@ -1424,9 +1405,13 @@ class Torus(Surface):
         Sweep around the tube's cross-section, in radians. ``(0, pi)`` opens the
         tube along its length. Defaults to ``(0, 2 * pi)``.
     resolution
-        Manim-style grid resolution as ``(u_vertices, v_vertices)``, or one int
-        for both, used directly as ``grid_width``/``grid_height``. Defaults to
-        ``None``, meaning Algan sizes the grid itself from ``geometry_tolerance``.
+        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int
+        for both. Manim counts patches where Algan's ``grid_width`` /
+        ``grid_height`` count sampled vertices, so this is one *less* than the
+        grid it builds -- ``resolution=(32, 32)`` gives a 33x33 grid, matching
+        :class:`Sphere`, :class:`Cone` and :class:`Cylinder`. Defaults to
+        ``None``, meaning Algan sizes the grid itself from
+        ``geometry_tolerance``.
     **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
 
@@ -1466,11 +1451,12 @@ class Torus(Surface):
     ):
         self.ring_radius = ring_radius
         self.tube_radius = tube_radius
-        if resolution is not None:
-            if isinstance(resolution, int):
-                resolution = (resolution, resolution)
-            kwargs.setdefault("grid_width", int(resolution[0]))
-            kwargs.setdefault("grid_height", int(resolution[1]))
+        # Through the shared translator, like Sphere/Cone/Cylinder. Torus used
+        # to roll its own, which read ``resolution`` as a vertex count while its
+        # three siblings read it as Manim's patch count -- so the same keyword
+        # built a 32x32 grid here and a 33x33 grid there. It also never
+        # translated the style names those three accept.
+        kwargs = _surface_resolution_kwargs(resolution, kwargs)
         # Both sweeps whole closes the tube into a ring; a partial one cuts it
         # open along the cut (a half-ring shows its inside through the slice).
         self.closed_shell = _sweep_is_full(u_range, 2 * torch.pi) and _sweep_is_full(
@@ -1493,14 +1479,6 @@ class Torus(Surface):
                 sweep_radius * torch.sin(u),
                 -self.tube_radius * torch.sin(v),
             ),
-            -1,
-        )
-
-    def normal_function(self, uv):
-        u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
-        v = self.v_range[0] + uv[..., 1:] * (self.v_range[1] - self.v_range[0])
-        return torch.cat(
-            (-torch.cos(v) * torch.cos(u), -torch.cos(v) * torch.sin(u), -torch.sin(v)),
             -1,
         )
 

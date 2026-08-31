@@ -287,8 +287,12 @@ def test_an_empty_morph_still_spends_its_duration(scene):
 
 def _wave(grid_width, grid_height):
     return Surface(
-        lambda u, v: torch.stack(
-            (u - 0.5, v - 0.5, 0.25 * torch.sin(6 * u) * torch.cos(6 * v)), -1
+        lambda uv: torch.cat(
+            (
+                uv - 0.5,
+                0.25 * torch.sin(6 * uv[..., :1]) * torch.cos(6 * uv[..., 1:]),
+            ),
+            -1,
         ),
         grid_width=grid_width,
         grid_height=grid_height,
@@ -314,7 +318,7 @@ def test_morphing_into_a_coarser_surface_lands_on_that_surface(scene):
     """
     with Off():
         source = Surface(
-            lambda u, v: torch.stack((u - 0.5, v - 0.5, torch.zeros_like(u)), -1),
+            lambda uv: torch.cat((uv - 0.5, torch.zeros_like(uv[..., :1])), -1),
             grid_width=6,
             grid_height=6,
         ).spawn()
@@ -503,7 +507,7 @@ def test_become_takes_the_targets_colour_texture(scene):
 
     def textured(texture_width, texture_height, tint):
         surface = Surface(
-            lambda u, v: torch.stack((u - 0.5, v - 0.5, torch.zeros_like(u)), -1),
+            lambda uv: torch.cat((uv - 0.5, torch.zeros_like(uv[..., :1])), -1),
             grid_width=6,
             grid_height=6,
         )

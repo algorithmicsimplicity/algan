@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 
 import numpy as np
+import pytest
+import torch
 
 import algan
 import algan.manim as mn
@@ -38,21 +40,51 @@ def test_manim_backed_graphing_and_mutation_api():
         assert graph.rotate(45) is graph
 
 
-def test_native_surface_accepts_manim_parametric_api():
-    surface = algan.Surface(
+def test_manim_parametric_surface_api_lives_in_algan_manim():
+    """Manim's ``Surface`` spelling belongs to ``algan.manim``, not to the native class.
+
+    The native :class:`algan.Surface` used to accept it too -- ``func(u, v)``,
+    ``fill_color``, ``checkerboard_colors``, and five more names that were
+    stored and never read. That second compatibility layer is gone: the shape
+    constructors translate the style names (``shapes_3d._surface_resolution_kwargs``)
+    and ``algan.manim`` carries Manim's own class, so the native constructor
+    takes only native arguments.
+    """
+    surface = mn.Surface(
         lambda u, v: np.array([u, v, u * v]),
         u_range=(-1, 1),
         v_range=(0, 2),
         resolution=(3, 4),
-        checkerboard_colors=False,
         add_to_scene=False,
     )
-    assert (surface.grid_width, surface.grid_height) == (4, 5)
-    assert surface.grid.location.shape[-2:] == (20, 3)
-    assert surface.get_unit_normals().shape[-2:] == (20, 3)
-    u_values, v_values = surface._get_u_values_and_v_values()
-    assert len(u_values) == 4
-    assert len(v_values) == 5
+    assert isinstance(surface, algan.Mob)
+
+    # The native class takes a vectorized coord_function over the (u, v) grid,
+    # and rejects the Manim-only names outright rather than ignoring them.
+    native = algan.Surface(
+        lambda uv: torch.cat((uv, uv[..., :1] * uv[..., 1:]), -1),
+        resolution=(3, 4),
+        add_to_scene=False,
+    )
+    assert (native.grid_width, native.grid_height) == (4, 5)
+    assert native.grid.location.shape[-2:] == (20, 3)
+    assert native.get_unit_normals().shape[-2:] == (20, 3)
+
+    for removed in (
+        "func",
+        "fill_color",
+        "fill_opacity",
+        "checkerboard_colors",
+        "stroke_color",
+        "stroke_width",
+        "should_make_jagged",
+        "surface_piece_config",
+        "pre_function_handle_to_anchor_scale_factor",
+        "resolution_shrink_margin",
+        "normal_function",
+    ):
+        with pytest.raises(TypeError):
+            algan.Surface(add_to_scene=False, **{removed: None})
 
 
 def test_native_3d_geometry_families_build_renderable_meshes():
