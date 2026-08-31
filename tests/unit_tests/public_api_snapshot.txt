@@ -360,3 +360,4 @@ set_progress_style
 standard_shader
 to_manim_coordinates
 toon_shader
+view

@@ -1655,9 +1655,17 @@ def _merge_scene(primitives, *, track_peak=None):
         # unique; a primitive's kept and promoted slices share its offset, so
         # promotion cannot split a surface in two.
         _obj_base = 0
+        # Which block of global ids each primitive owns, and the mesh keys its
+        # surfaces were built from. Plain Python beside the tensor, for tools
+        # that need to name the Mob behind a rendered surface (the GUI viewer's
+        # pixel inspector); no kernel reads it.
+        _obj_sources = []
         for p in plain_triangles + textured_triangles:
             p._rt_tri_obj_global = p._rt_tri_obj + _obj_base
-            _obj_base += int(getattr(p, "_rt_tri_obj_n", 1))
+            _obj_n = int(getattr(p, "_rt_tri_obj_n", 1))
+            _obj_sources.append((_obj_base, _obj_n, getattr(p, "_obj_keys", None)))
+            _obj_base += _obj_n
+        scene["tri_obj_sources"] = _obj_sources
         scene["tri_obj"] = (
             _cat_collections(_geom("_rt_tri_obj_global"), 1, "triangle merge")
             .to(torch.int32)
