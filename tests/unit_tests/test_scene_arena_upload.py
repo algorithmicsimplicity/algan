@@ -241,20 +241,23 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
         rt_settings.set_linear_color_space(previous)
 
 
-def test_the_upload_alignment_floor_is_off_unless_zero_copy_is_installed():
-    """Every backend but the Apple GPU's zero-copy path pays nothing for it.
+def test_the_upload_alignment_floor_follows_the_zero_copy_conversion():
+    """It is on exactly where a kernel binds torch's own buffer, and nowhere else.
 
-    ``_upload_alignment_floor`` reads ``mps_zero_copy.installed()``, which is
-    False wherever the patched Taichi is absent, so the upload keeps aligning
-    to the element and no offset moves. Asserted rather than assumed: a floor
-    that crept on by default would change every scene's arena layout and size,
-    and the memory model derives chunk lengths from that.
+    Not "off", which is what this asserted first and what the Apple GPU then
+    failed: there the conversion IS installed, so the floor is 16 and an
+    unconditional assertion is simply wrong. The invariant is the pairing --
+    a floor that crept on where nothing needs it would change every scene's
+    arena layout and size, and the memory model derives chunk lengths from
+    that; a floor that failed to appear where the conversion is installed
+    would put the BVH's blocks back on the host-staging path.
     """
+    from algan.rendering.mps_zero_copy import installed
     from algan.rendering.raytracing import scene_builder
 
     scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
     try:
-        assert scene_builder._upload_alignment_floor() == 1
+        assert scene_builder._upload_alignment_floor() == (16 if installed() else 1)
     finally:
         scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
 

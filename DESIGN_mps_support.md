@@ -44,7 +44,13 @@ to it is why CPU and CUDA never said so. §1.2c has the mechanism and the
 Linux-only reproduction that found it.
 
 The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) is what
-is left, and it is now localized rather than open: see the end of §1.2c.
+is left, and it is now localized rather than open: the deterministic route
+composites a third shell crossing at one interior column, the path tracer is
+exactly right, two renders of it are bit-identical (so it is not the mode's
+non-determinism), and switching the closed-shell ceiling off removes the
+outlier entirely — which puts the defect inside `solid_shell_ceiling` and its
+in-place clamp of `cov_o`, not upstream of it. See the end of §1.2c for the
+measurements and for the one that comes next.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -374,12 +380,29 @@ Metal-specific rather than an MPS-friendly substitution.
 >   "the kernel" from "what the kernel was handed" raises there. (The probe now
 >   runs it last and tolerates the failure; before that it took every other
 >   reading down with it.)
-> * **The ceiling switched off entirely** does run, and is the next reading:
->   with `solid_shell_alpha=False` both crossings composite by design and the
->   interior reads `0.6 * (2 - 0.6) * 255 = 214`. If column 37 reads 214 like
->   the rest, the third layer is the ceiling's doing; if it still reads 239, the
->   compaction handed the ceiling three sheets where the CPU's handed it two and
->   the ceiling is innocent. The probe takes it.
+> * **The ceiling switched off entirely** does run, and it is the reading that
+>   places the defect. With `solid_shell_alpha=False` the Apple GPU's interior
+>   is `mean 214.00 min 214 max 214`, uniform, **with no outlier at column 37**
+>   — exactly `0.6 * (2 - 0.6) * 255`, which is two crossings compositing at
+>   every pixel in the window. So the compaction hands the ceiling the same two
+>   sheets there as anywhere else, and **the third layer is created by the
+>   ceiling itself**.
+>
+> That last point is sharper than it first reads, and it rules out the obvious
+> shape of the bug. `solid_shell_ceiling` can only ever *reduce* a coverage —
+> it writes `denom * scale` with `scale <= 1` — so no clamp it makes could turn
+> the ceiling-off composite of 214 into a *larger* 239. The extra layer cannot
+> be "the second crossing was under-clamped". It has to be a third sheet, and
+> the ceiling is upstream of sheet formation: the kernel clamps `cov_o` **in
+> place**, and the compaction's band areas, shading-class aggregates and
+> dominant-fragment choice all read that clamped copy afterwards (which is what
+> the block comment above it says it is for). A wrong coverage written at one
+> pixel therefore changes how its fragments group into sheets.
+>
+> **So the next measurement is that kernel's own inputs and outputs at the
+> offending pixel** — the segment key, the facing bit, the cap, the differenced
+> prefix, and the coverage in and out — against the CPU's for the same pixel.
+> Everything above it is now excluded by measurement rather than by argument.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
