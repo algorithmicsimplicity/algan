@@ -632,6 +632,9 @@ jobs:
             echo "== closed shell: where the routes disagree, and which arm =="
             grep -E 'assertion window|interior mean|truncations' \
               closed-shell-probe.txt || true
+            echo "== closed shell: where a non-finite value is born =="
+            grep -E '_band_composite (in|out)|_sibling_weights (in|out)' \
+              closed-shell-probe.txt | head -8 || true
             echo "== closed shell: the ceiling against its host oracle =="
             grep -E 'kernel vs host oracle|^  segments=|^  cov in sum|^    row ' \
               closed-shell-probe.txt | head -8 || true

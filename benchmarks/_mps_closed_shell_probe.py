@@ -320,6 +320,63 @@ def _install_ceiling_check():
     sc.solid_shell_ceiling = checked
 
 
+#: Lines from :func:`_install_nan_trace`.
+_NAN_TRACE: list = []
+
+
+def _install_nan_trace():
+    """Say which step of the band aggregation first produces a non-finite value.
+
+    The Apple GPU's sheet coverages at the offending column are **nan**, and a
+    NaN never trips the resolve's ``eff <= min_alpha`` branch -- comparisons
+    against it are all false -- so the sheet composites instead of dropping
+    out, which is precisely the extra crossing. The ceiling is not where it is
+    made: its output was compared against a float64 oracle over the same
+    inputs and no element differed, and that comparison would have gone
+    non-finite itself had a NaN been in either side.
+
+    So this wraps the two steps between the ceiling and the sheet record and
+    counts non-finite values in every tensor going in and coming out. The
+    first function whose inputs are clean and whose output is not is where the
+    NaN is born.
+    """
+    from algan.rendering.raytracing import sheets as sh
+
+    def counts(label, values):
+        parts = []
+        for name, value in values:
+            if not torch.is_tensor(value) or not value.is_floating_point():
+                continue
+            bad = int((~torch.isfinite(value)).sum())
+            if bad:
+                parts.append(f"{name}={bad}/{value.numel()}")
+        return f"  {label}: " + (", ".join(parts) if parts else "all finite")
+
+    def wrap(name, function, arg_names, out_names):
+        def wrapped(*args, **kwargs):
+            result = function(*args, **kwargs)
+            if len(_NAN_TRACE) < 12:
+                outs = result if isinstance(result, tuple) else (result,)
+                _NAN_TRACE.append(counts(f"{name} in ", list(zip(arg_names, args))))
+                _NAN_TRACE.append(counts(f"{name} out", list(zip(out_names, outs))))
+            return result
+
+        return wrapped
+
+    sh._band_composite = wrap(
+        "_band_composite",
+        sh._band_composite,
+        ("band_of_frag", "nbands", "cov_o", "msk_o"),
+        ("area", "union", "corr", "split"),
+    )
+    sh._sibling_weights = wrap(
+        "_sibling_weights",
+        sh._sibling_weights,
+        ("sheet_band", "cov", "msk", "band_area", "band_union", "band_corr"),
+        ("wgt", "wmsk"),
+    )
+
+
 def _grid(values, label, first_col):
     """A numbered grid of one channel, so a column can be pointed at."""
     lines = [f"{label} (columns {first_col}..{first_col + values.shape[1] - 1}):"]
@@ -342,6 +399,7 @@ def main():
         pt, pt_trunc = _render(out_dir, "shell_pt.png", 8)
         _install_sheet_dump(*SHELL_SETTINGS.resolution)
         _install_ceiling_check()
+        _install_nan_trace()
         _DUMP_SHEETS["on"] = True
         det, det_trunc = _render(out_dir, "shell_det.png", 1, shell_ceiling_kernel=True)
         _DUMP_SHEETS["on"] = False
@@ -462,6 +520,11 @@ def main():
         }
         hits = {k: v for k, v in hits.items() if v}
         print(f"truncations {label:12s}: {hits or 'none'}")
+
+    if _NAN_TRACE:
+        print("\nnon-finite values through the band aggregation:")
+        for line in _NAN_TRACE:
+            print(line)
 
     if _CEILING_CHECK:
         print("\nsolid_shell_ceiling against a float64 host oracle on its own inputs:")
