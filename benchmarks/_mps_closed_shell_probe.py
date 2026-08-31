@@ -324,6 +324,76 @@ def _install_ceiling_check():
 _NAN_TRACE: list = []
 
 
+def _sibling_detail(
+    sh, returned, sheet_band, cov, msk, band_area, band_union, band_corr
+):
+    """Recompute ``_sibling_weights``' intermediates and name the first NaN.
+
+    Its inputs are all finite and its output is not, so the NaN is made by
+    one of four expressions inside it. This walks them in order and reports
+    where non-finite values first appear, with the rows that carry them --
+    which is what says whether it is the divide, the multiply, or a gather
+    reading out of bounds.
+
+    Index ranges are printed too, and deliberately: the integer inputs are
+    the ones the trace above cannot check, and ``index_select`` bounds-checks
+    on the CPU (it would have raised) while an out-of-range read on another
+    backend is silent garbage.
+    """
+    acc = sh.accumulate_dtype()
+    lines = [
+        f"  sheet_band: {sheet_band.dtype} in "
+        f"[{int(sheet_band.min())}, {int(sheet_band.max())}] against "
+        f"band_area[{band_area.numel()}] band_corr[{band_corr.numel()}] "
+        f"band_union[{band_union.numel()}]",
+        f"  acc={acc}, sheets={sheet_band.numel()}",
+    ]
+    area_g = band_area.index_select(0, sheet_band).to(acc)
+    corr_g = band_corr.index_select(0, sheet_band).to(acc)
+    clamped = area_g.clamp_min(1e-12)
+    share = cov.to(acc) / clamped
+    p = corr_g * share
+    union = band_union.index_select(0, sheet_band)
+    pop = sh._popcount_lanes(union).clamp_min(1).to(acc)
+    full = union == sh.AA_MASK_ALL
+    wgt = torch.where(full, p, p * pop / float(sh.AA_NUM_SAMPLES))
+    for name, value in (
+        ("band_area gathered", area_g),
+        ("band_corr gathered", corr_g),
+        ("clamp_min(1e-12)", clamped),
+        ("share = cov / clamped", share),
+        ("p = corr * share", p),
+        ("pop", pop),
+        ("wgt", wgt),
+    ):
+        bad = ~torch.isfinite(value)
+        n_bad = int(bad.sum())
+        lines.append(f"  {name}: {n_bad} non-finite")
+        if n_bad:
+            rows = torch.nonzero(bad).flatten()[:3].tolist()
+            for row in rows:
+                lines.append(
+                    f"    row {row}: band {int(sheet_band[row])} "
+                    f"cov {float(cov[row]):.8g} area {float(area_g[row]):.8g} "
+                    f"clamped {float(clamped[row]):.8g} "
+                    f"corr {float(corr_g[row]):.8g} "
+                    f"share {float(share[row]):.8g} p {float(p[row]):.8g} "
+                    f"pop {float(pop[row]):.8g} union {int(union[row]):#06x}"
+                )
+            break
+    else:
+        # Every stage came out finite while the function's own answer did not,
+        # which leaves the two ``torch.where`` calls after them and nothing
+        # else -- worth saying, because it is the one outcome that would put
+        # the defect in an op rather than in the arithmetic.
+        bad = int((~torch.isfinite(returned)).sum())
+        lines.append(
+            f"  every stage recomputed finite, but the returned wgt has {bad} "
+            "non-finite: it is one of the two torch.where calls that follow"
+        )
+    return lines
+
+
 def _install_nan_trace():
     """Say which step of the band aggregation first produces a non-finite value.
 
@@ -362,6 +432,26 @@ def _install_nan_trace():
             return result
 
         return wrapped
+
+    original_siblings = sh._sibling_weights
+
+    def detailed(*args):
+        result = original_siblings(*args)
+        wgt = result[0]
+        if (
+            len(_NAN_TRACE) < 60
+            and torch.is_tensor(wgt)
+            and wgt.is_floating_point()
+            and bool((~torch.isfinite(wgt)).any())
+            and not any("sheet_band:" in line for line in _NAN_TRACE)
+        ):
+            try:
+                _NAN_TRACE.extend(_sibling_detail(sh, wgt, *args))
+            except Exception as exc:  # noqa: BLE001
+                _NAN_TRACE.append(f"  (sibling detail failed: {exc!r})")
+        return result
+
+    sh._sibling_weights = detailed
 
     sh._band_reduce = wrap(
         "_band_reduce",

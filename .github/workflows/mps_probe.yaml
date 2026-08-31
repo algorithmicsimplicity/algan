@@ -633,8 +633,8 @@ jobs:
             grep -E 'assertion window|interior mean|truncations' \
               closed-shell-probe.txt || true
             echo "== closed shell: where a non-finite value is born =="
-            grep -E '_band_(reduce|composite) (in|out)|_sibling_weights (in|out)' \
-              closed-shell-probe.txt | head -12 || true
+            grep -E '_band_(reduce|composite) (in|out)|_sibling_weights (in|out)|sheet_band:|acc=|gathered:|clamp_min|share = |p = corr|^  pop:|^  wgt:|^    row |every stage recomputed' \
+              closed-shell-probe.txt | head -30 || true
             echo "== closed shell: the ceiling against its host oracle =="
             grep -E 'kernel vs host oracle|^  segments=|^  cov in sum|^    row ' \
               closed-shell-probe.txt | head -8 || true
