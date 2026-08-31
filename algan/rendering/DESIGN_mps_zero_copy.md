@@ -12,7 +12,7 @@ would it cost?*
 `taichi-1.7.4-cp311-cp311-macosx_11_0_arm64.whl`, parsed for the external/local
 split; torch 2.7.1's MPS headers as shipped; and two timed from-source builds of
 Taichi on the free Apple-silicon runner, by
-`.github/workflows/taichi_build.yaml` (§4.1). No Algan render was run on Metal
+`../../.github/workflows/taichi_build.yaml` (§4.1). No Algan render was run on Metal
 for this document — the numbers it reasons about are `DESIGN_mps_support.md`'s.
 
 **Answer in one line.** Yes, and every C++ piece already exists in Taichi — but it
@@ -289,7 +289,7 @@ wavefront loop.
 
 ### 4.1 What a build costs
 
-`.github/workflows/taichi_build.yaml` is the job that took these numbers, and it
+`../../.github/workflows/taichi_build.yaml` is the job that took these numbers, and it
 is the recipe as well as the measurement — it is the seventh attempt, and the
 six before it all failed on the environment. Start from it rather than from
 Taichi's `dev_install` docs, which describe a machine nobody has.

@@ -2,7 +2,7 @@
 
 Two patches against **Taichi v1.7.4**, applied in order onto a pristine
 checkout of that tag. They are the source of truth for the forked wheel
-`DESIGN_mps_zero_copy.md` §4.2 calls `algan-taichi`; nothing here is applied to
+`../algan/rendering/DESIGN_mps_zero_copy.md` §4.2 calls `algan-taichi`; nothing here is applied to
 a stock install, and Algan runs on a stock wheel without them (see "What Algan
 does without them" below).
 
@@ -27,7 +27,7 @@ arch or a CUDA tensor on a CUDA arch (`kernel_impl.py:776`). On Metal that is
 four copies per read/write argument per launch — and, since Algan's converted
 kernels take *two dtype views of one arena*, the second copy-back reverts what
 the kernel wrote through the first, which is why an Apple GPU renders a black
-frame (`DESIGN_mps_support.md` §1.3b). An argument that arrives as a
+frame (`../algan/rendering/DESIGN_mps_support.md` §1.3b). An argument that arrives as a
 `ti.Ndarray` takes `set_arg_ndarray` instead, which registers no copy-back at
 all, so this removes the mechanism rather than working around it.
 
@@ -43,7 +43,7 @@ all, so this removes the mechanism rather than working around it.
 | `python/export_lang.cpp` | one pybind. |
 | `python/taichi/lang/_ndarray.py` | `ExternalMetalNdarray`, a thin `Ndarray` subclass so the existing launch path finds `.arr`. It takes an `element_shape`, so an array a kernel annotates `ndarray(dtype=vector(4, f16))` imports as the vector-element ndarray Taichi type-checks for rather than being rejected as `f16`. The C++ side needed nothing for that: `Ndarray`'s `DeviceAllocation` constructor already reads the element shape off a tensor `DataType`, which is exactly how `VectorNdarray` builds its own. |
 
-**The offset is not optional.** `DESIGN_mps_zero_copy.md` §3.2 predicted that
+**The offset is not optional.** `../algan/rendering/DESIGN_mps_zero_copy.md` §3.2 predicted that
 argument packing would leave one imported buffer at offset 0 and let this row
 be dropped. Packing landed deliberately partial — the seven ray-state arrays of
 `sheet_resolve_shade` stayed parameters because binding them cost +18%, and the
@@ -84,14 +84,14 @@ emitted at all.
 **The diagnostics**, in `rhi/metal/metal_device.mm` and
 `runtime/gfx/runtime.cpp`, because this bug cost more to *find* than to fix.
 Every way of failing to produce a shader — an over-wide kernel
-(`DESIGN_mps_support.md` §1.1), an unsupported atomic (§1.2), a codegen bug
+(`../algan/rendering/DESIGN_mps_support.md` §1.1), an unsupported atomic (§1.2), a codegen bug
 (§1.2b) — ends at `bind_pipeline`'s `assert(p != nullptr)`, which is a
 `SIGABRT` naming a line of `metal_device.mm` and neither the kernel nor the
 reason. So:
 
 * **Name every failure and let none of them be silent.** The first version of
   this patch guarded the nil library and the nil function, and
-  `DESIGN_mps_support.md` §1.2c is what that missed: `sheet_resolve_shade_arena`
+  `../algan/rendering/DESIGN_mps_support.md` §1.2c is what that missed: `sheet_resolve_shade_arena`
   reached `bind_pipeline` null having printed *nothing*, because three of the
   paths to a null pipeline carry no message at all — `newComputePipelineState`
   returning nil with `err` nil, an exception from the `CompilerMSL`

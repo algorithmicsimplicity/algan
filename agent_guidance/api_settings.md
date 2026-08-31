@@ -134,23 +134,18 @@ Initialization-only settings intentionally have no public mutable Python object.
 
 `RENDERER_REGISTRY` and `KERNEL_REGISTRY` are runtime service registries, not user settings, and therefore live outside `SETTINGS` and outside the star-import namespace.
 
-`SETTINGS.computing` accepts `render_device`; it rejects `animation_device` with a message naming the environment variable to use instead, and `render_on_cpu` with one naming `render_device`, rather than a generic "unknown setting".
+`SETTINGS.computing` accepts `render_device`; it rejects `animation_device` with a message naming the environment variable to use instead.
 
-`SETTINGS.computing.mps_friendly` restricts the renderer to operations Apple's Metal backend can run — float32 for every float64 accumulator, int32 for the int64 min/max reductions, a log-step scan for `cummax`/`cummin` (`DESIGN_mps_support.md` §1.2 measured all three gaps). It is a **tri-state**: `'auto'` (the default) turns the mode on exactly when the render device is MPS, and `True`/`False` decide for themselves — which is what makes the mode testable on a machine with no Apple GPU, and is how `tests/unit_tests/test_mps_friendly.py` and the Linux control arm of `mps_probe.yaml` exercise it. `ALGAN_MPS_FRIENDLY` overrides both. The resolution and every substitution live in `algan/rendering/mps_compat.py`, and engine code asks it rather than testing the device: `accumulate_dtype()`, `reduction_index_dtype()`, `reduction_index_sentinel()`, their `taichi_*` twins for the kernels' `ti.template()` dtype arguments, and `cummax_values`/`cummin_values`. **The mode is not deterministic** — the accumulators it narrows are the §6.6.4 ones, widened precisely because a float32 sum is not order-reproducible — so it stays off wherever float64 exists. `test_mps_friendly.py` walks the AST of `algan/rendering/` and fails if any module but `mps_compat` names `torch.float64`, `ti.f64`, `.double()` or `cummax`/`cummin`.
-
-The old `COMPUTING_DEFAULTS`, `DIRECTORY_DEFAULTS`, `STYLE_DEFAULTS` and `RENDERING_DEFAULTS` facades and the `algan.settings.render_settings` / `algan.settings.style_defaults` modules have been **deleted**. Do not reintroduce them.
+`SETTINGS.computing.mps_friendly` restricts the renderer to operations Apple's Metal backend can run — float32 for every float64 accumulator, int32 for the int64 min/max reductions, a log-step scan for `cummax`/`cummin` (`../algan/rendering/DESIGN_mps_support.md` §1.2 measured all three gaps). It is a **tri-state**: `'auto'` (the default) turns the mode on exactly when the render device is MPS, and `True`/`False` decide for themselves — which is what makes the mode testable on a machine with no Apple GPU, and is how `tests/unit_tests/test_mps_friendly.py` and the Linux control arm of `mps_probe.yaml` exercise it. `ALGAN_MPS_FRIENDLY` overrides both. The resolution and every substitution live in `algan/rendering/mps_compat.py`, and engine code asks it rather than testing the device: `accumulate_dtype()`, `reduction_index_dtype()`, `reduction_index_sentinel()`, their `taichi_*` twins for the kernels' `ti.template()` dtype arguments, and `cummax_values`/`cummin_values`. **The mode is not deterministic** — the accumulators it narrows are the §6.6.4 ones, widened precisely because a float32 sum is not order-reproducible — so it stays off wherever float64 exists. `test_mps_friendly.py` walks the AST of `algan/rendering/` and fails if any module but `mps_compat` names `torch.float64`, `ti.f64`, `.double()` or `cummax`/`cummin`.
 
 ## API-change discipline
 
-Algan has removed its transitional aliases ahead of public release. The canonical forms are the only forms:
-
-- `Scene.save_video` / `scene.save_video` — there is no module-level `render_to_file` or `render`, and no `Scene.render_to_file`/`Scene.render`;
+- `Scene.save_video` / `scene.save_video`
 - `Scene.save_frame` for stills, with `at` rather than `time_stamps`;
 - `video_settings` / `VideoSettings` — `render_settings`, `RenderSettings` and `set_render_settings` are gone;
 - one `file_path` rather than separate filename/directory arguments;
 - `SETTINGS` sections rather than the old defaults globals;
 - Scene-owned managers rather than singleton managers;
-- `@algan_scene` rather than `@scene`;
 - `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand;
 - `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `CLAUDE.md`, "The `algan.manim` boundary");
 - `duration` rather than `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;

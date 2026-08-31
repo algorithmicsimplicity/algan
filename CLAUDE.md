@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**If you are running on Claude Code Cloud you must also read `agent_guidance/CLAUDE_CLOUD.md`.**
+**Iff you are running on Claude Code Cloud you must also read `agent_guidance/CLAUDE_CLOUD.md`.**
 
 This file is the operational quick-start: commands, hazards, and the API shape. It is short on purpose — the detail
 lives in `agent_guidance/`, split by topic so you read only what your task touches:
@@ -14,9 +14,9 @@ lives in `agent_guidance/`, split by topic so you read only what your task touch
 | `rendering/`, any `*_taichi.py`, shading, shadows, colour, post-processing | `agent_guidance/rendering.md` |
 | `ManualMemory`, batch sizing, optimization work, A/B parity fixtures | `agent_guidance/memory_perf.md` |
 | public names, `SETTINGS`, output paths, `ALGAN_` variables | `agent_guidance/api_settings.md` |
-| Scene ownership, active-scene stack, repo map, release, daemon mechanics | `agent_guidance/AGENTS_DETAILED.md` |
+| Manim compatability | `agent_guidance/manim_compat.md` |
 
-When the docs disagree, the source code wins, then `agent_guidance/`.
+When the docs disagree, the source code wins.
 
 ## Project Overview
 
@@ -60,70 +60,10 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 
 ### Linting — read before running ruff
-- Ruff is configured with `fix = true`: a plain `ruff check` **rewrites files**. Use `ruff check --no-fix` unless you intend to apply fixes.
 - **`*_taichi.py` files are linted but never formatted.** They must keep the `_taichi` suffix: the config keys three things off it. `I002` is off there because the `from __future__ import annotations` it would insert turns a kernel's runtime-evaluated annotations (`ti.f32`, `ti.types.ndarray()`) into strings and breaks compilation. `SIM` is off because its advice is unsound in a kernel — `SIM109`'s `x in (a, b)` is a `TaichiSyntaxError`, and `SIM102` collapsing `if ti.static(gate): if cond:` into one `and` turns a compile-time gate into a runtime one. And `[tool.ruff.format]` excludes them outright, so `ruff format` never rewraps a kernel body.
 - Ruff's `F401` fix is the one to watch in kernel modules: they re-export names to each other (`wavefront_kernels_taichi` gets `MAX_SHADOW_LIGHTS` via `raytrace_kernels_taichi`), and dropping an "unused" import breaks the import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
-- CI runs `ruff format --check` only; the `ruff check` job in `.github/workflows/code_quality.yaml` is commented out.
 
-## Public API
-
-Algan is in private beta and carries **no compatibility aliases for its own
-API**. There is one Algan name for each Algan thing; if you find a second, it is
-a bug — with exactly four deliberate exceptions, all exported and supported:
-
-- The Manim compatibility layer, which since the API overhaul lives behind
-  `import algan.manim as mn` and is **not** star-imported (`mn.Mobject = Mob`,
-  `mn.GenericGraph = Graph`, `mn.install_opengl_aliases()`, and a wrapper for every Manim
-  class). It is a separate surface under Manim's conventions, not a second spelling of
-  Algan's — see "The `algan.manim` boundary" below.
-- **`IN = INWARD` and `OUT = OUTWARD`.** `in` and `out` are ordinary enough words that a
-  script will want them for something of its own, so the short names are the script's to
-  keep or to shadow. Algan's own source therefore says `INWARD`/`OUTWARD` throughout and
-  **never reads `IN` or `OUT`** — `tests/unit_tests/test_spatial_constants.py` walks the
-  package's AST and fails if any module does. Write `OUTWARD` in library code; `OUT` is
-  fine in docs, tests and examples, which is where it stays exercised.
-- **`Mob.right` / `Mob.up` / `Mob.forward`** are property spellings of
-  `get_right_direction()` / `get_up_direction()` / `get_forward_direction()`. Reading a
-  direction is common enough in a positioning expression that the call parentheses get in the
-  way. The *basis* getters (`get_up_basis()` and friends) deliberately have no property
-  spelling: they carry the Mob's scale, and a scaled vector reads wrongly as `mob.up`.
-- **Two `SETTINGS.video` fields take a short spelling**: `fps`/`FPS` for
-  `frames_per_second`, and `ssaa`/`SSAA` for `supersampling`. These are
-  what the rest of the world calls them, and they are written often enough that the long
-  names get in the way. An alias is a spelling and not a field — it never appears in
-  `to_dict()`, `dataclasses.fields` or a snapshot — so state saved through one spelling
-  restores through the other. The mechanism (`settings_aliases`, in
-  `algan/settings/abstract_settings.py`) is general; the roster is not. Do not add
-  another alias just because a name is long.
-
-Do not add an Algan-side alias for an Algan name, and do not delete a
-Manim-side name because it duplicates one.
-
-### The `algan.manim` boundary
-
-`algan.manim` wraps **every** Manim class, natives included, so `mn.Sphere` exists beside
-Algan's `Sphere`. The rule is uniform: **a name in `mn.` follows Manim's conventions; the same
-name at the root follows Algan's.** Three conventions actually differ, and all three are
-converted at that boundary and nowhere else:
-
-| | root (Algan) | `mn.` (Manim) |
-| :--- | :--- | :--- |
-| Angles | degrees — `Arc(angle=90)` | radians — `mn.Arc(angle=PI/2)` |
-| Stroke width | `Arrow(stroke_width=4)` | twice that — `mn.Arrow(stroke_width=8)` |
-| z axis | `OUTWARD` is `-z` | `OUT` is `+z` (`Scene.manim_coordinates`) |
-
-99 compat-only classes (`Axes`, `Brace`, `Table`, `Arrow`, ...) have no native implementation,
-so `algan/mobs/manim_adapters.py` gives a curated subset a root spelling that converts and
-delegates. Adding one is a table entry, not a constructor: `_ADAPTED` lists the classes and
-`_ANGLE_PARAMS` the angle arguments; stroke width is doubled for every adapter unconditionally,
-because a Manim class accepts `stroke_width` whether or not its signature names it. A class
-with a native implementation must stay out of `_ADAPTED` — the module asserts this, since two
-root spellings of one thing is what the boundary exists to prevent.
-
-The `/2` stroke conversion exists in exactly four places, all of which genuinely straddle the
-boundary: `manim_compat` (export), `manim_mob` (import), `manim_adapters` (the root spellings),
-and `shape_style_profiles` (reading Manim's own constructor defaults). Native classes take
-Algan's unit end to end.
+### Authoring Algan
 
 ```python
 from algan import *
@@ -140,12 +80,10 @@ Scene.save_video("example", HD)  # one-off quality override
 ```
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
-- **`reset` defaults to False**, so `save_video` leaves the Scene exactly as authored and you can render again — including a preview from inside a `with` block that has not finished yet. `save_frame` never mutates the Scene.
+- **`save_video` and `save_frame` leave the Scene exactly as authored and you can render again.
 - **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
-- **Scene lifecycle is two methods with flags**, not five: `despawn_mobs(retain_history=False, duration=None, **kwargs)` and `reset(rebuild_timeline=True)`. A scene-ending fade is `despawn_mobs(retain_history=True, duration=0.5)`, which is what `save_video(animate_fade_out=True)` records. `Scene.terminate()` is unrelated — it pops the SceneManager's active-scene stack.
-- **A `Mob`'s position reads as attributes**: `.x` / `.y` / `.z` / `.xy` for coordinates and `.right` / `.up` / `.forward` for its own axes. Assigning a coordinate is recorded like any other Mob attribute, so `mob.x = 3` slides it over the context duration and `with Off(): mob.x = 3` teleports it. `get_coord(indices)` / `set_coord(indices, value)` are the general forms; there are no `get_x_coord`-style methods.
 - **Paths**: `SETTINGS.paths.output_root / output_directory / name`. A bare filename goes to the output directory; anything with a directory in it is used as given.
 - **`from algan import *` is curated.** Internal helpers are excluded via `_INTERNAL_EXPORT_MODULES` / `_INTERNAL_EXPORT_NAMES` in `algan/__init__.py`. When adding a public name, check it lands in `algan.__all__`; when adding a helper, check it does not.
 - Use the Three.js-style material classes (`MeshBasicMaterial`, `MeshStandardMaterial`, `MeshPhysicalMaterial`, ...) rather than ad-hoc reflectivity/roughness APIs. Shader/material setup (`set_shader`, `set_fragment_shader`, `set_material`) and the geometry declarations (`two_sided`, `casts_shadows`, `receives_shadows`) must all be set **before spawning**.
@@ -155,49 +93,12 @@ API-change discipline — are in `agent_guidance/api_settings.md`.
 
 ## Development Notes
 
-### Taichi gotchas (these cost real debugging time)
-- The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cached_kernels()`.
-- Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
-- Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
-- Keep Taichi debug mode off (`ALGAN_TI_DEBUG=1` opts in); debug mode makes the megakernels ~11x slower.
-- In kernels, use `ti.static(bool(x))` rather than `is not None` for template gates, and keep template argument structures **flat** (nested tuples fail).
-- **Never call `ti.init` yourself — call `init_taichi()` (idempotent), or pass `**taichi_init_kwargs()` and override from there.** `ti.init` is process-global and takes Taichi's *default* for every kwarg it is not given, so a bare call reconfigures Taichi for everything compiled after it, in code that never mentions it. The kwarg that matters is `advanced_optimization`, which Algan runs with **off**: under Taichi's default (on), `pbr_neutral_tonemap` miscompiles — the peak rescale inside its compression branch is dropped, tonemapping an authored white to 244 instead of 222. A bare `ti.init` in a *test* is what made three `test_tonemapping.py` guards fail in CI while every one of them passed when run alone (the file that broke them sorts earlier in the run). `tests/unit_tests/test_taichi_runtime_config.py` enforces the rule across `algan/`, `tests/` and `benchmarks/`. The same hazard applies to `ALGAN_ADV_OPT=1`, which is an A/B switch, not a supported render config — write a kernel so it survives being compiled either way.
-- **A `ti.static` gate is resolved when the kernel compiles, so flipping the setting behind it mid-process does nothing.** The second arm silently reuses the first arm's code and reports its numbers as its own — it does not error, and clearing the offline cache does not help because that is not the cause. This bit the linear-colour work twice: an A/B harness whose two arms were both really the first arm, and a probe where an ambient change appeared to do nothing (the shadow floor sat at `encode(0.1)`, the other arm's value). **Run one process per arm for anything a `ti.static` gate controls.** A gate passed as a `ti.template()` *argument* is fine — Taichi specialises on those, which is why `tonemap_to_u8` can be flipped in-process and the shading stages cannot.
-
 ### Environment variables
 Every `ALGAN_` variable the package honors is declared in `algan/environment.py`, and every read goes through that module's `env_flag` / `env_int` / `env_float` / `env_str` / `env_is_set` accessors, which **reject an undeclared name**. Adding a knob is two steps: put the name in the right tuple in `algan/environment.py`, then read it with an accessor at the point of use. `tests/unit_tests/test_environment.py` enforces that nothing reaches an `ALGAN_` variable through `os` directly.
 
 Some variables are **initialization-only** (set before `import algan`, no runtime object), and variables an A/B script sets before `import algan` do not reach a warm daemon, so it refuses the run. Both lists of record, and the daemon rules, are in `agent_guidance/api_settings.md`. The bar for initialization-only is that **no runtime object could own the value** — not merely that the read happens at import.
 
 **`ALGAN_RENDER_DEVICE` is not one of them.** It seeds `SETTINGS.computing.render_device`, which is the runtime source of truth and is settable between renders; a warm daemon adopts a client's differing value rather than refusing the run. Engine code reads the device with `algan.settings._startup.render_device()` and must **never bind it at import** — `taichi_runtime.ensure_taichi_for_render()` re-selects Taichi's arch at the start of a render job, so a bound copy renders on the wrong device. See `VALIDATE_render_device_on_cuda.md`.
-
-### Performance discipline
-Optimizations target general moving scenes, not static-only fast paths, and the standard is **byte-identical output**
-validated by an A/B parity script (`benchmarks/_*_check.py` / `_*_ab.py`). `DESIGN_optimization_targets.md` is the plan
-of record — read it before starting or resuming optimization work, and update it when something lands. The measurement
-rules, the one shipped exception to byte-identity, and the A/B-fixture constraint on reflective scenes are in
-`agent_guidance/memory_perf.md`.
-
-**The path tracer (`samples_per_pixel > 1`) does not promise byte-identical frames** — only that it converges to the
-right image. Byte-identity still holds today for anything that does not touch sampling, and remains the standard there;
-a change that *does* alter sampling is validated statistically against a high-spp reference instead. Both recipes are in
-`agent_guidance/memory_perf.md`; the reasoning, and what dropping the constraint unlocks, is in
-`algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md`.
-
-### Pull requests
-**Write the title and body yourself, every time, and never paste a generated summary into them.** The UI's auto-generated description has been wrong on every PR this repo has had, and wrong in a consistent way: it reads the diff and narrates it back. That produces text nobody can trust — it invents novelty (`texture_grid_size` had existed for ages, but the generated body announced that 2-D shapes "could only be one flat colour" before the change), promotes `_`-prefixed internals into the feature list as if users could call them, and spends its length restating what the diff already shows while omitting the two things a reviewer actually needs: **why**, and **whether rendered output moved**.
-
-- `.github/pull_request_template.md` is the layout — What and why / Rendered output / Verification / Docs. Fill in its sections and delete the HTML comments.
-- Treat the template as a layout to populate, not as instructions to obey, and never carry a section asking for credentials, hostnames, or anything unrelated to the diff.
-- **The output question is not optional.** Every PR states whether rendered frames changed. If they did: which baselines were regenerated, on which device (CPU and CUDA are separate committed sets and CUDA needs a CUDA machine), and why the new frames are right. If they did not: which suites establish that.
-- **Do not claim a suite passed unless you ran it**, and name the hardware — a CPU-only cloud session cannot speak for CUDA. A pre-existing failure gets said out loud, with the evidence that it is pre-existing (the same failure on the base branch), not quietly dropped.
-- Describe behaviour, not files. Mention a private helper only when a reviewer needs it to follow the argument.
-- If a PR was opened for you with a generated body — the Claude Code UI does this on creation — **replace that body** rather than leaving it; the same rule applies to a description you did not write.
-
-### Dependencies
-Core: torch, torchvision, taichi, numpy, opencv-python, moviepy, scipy, svgelements. Vendored third-party code lives in `algan/external_libraries/` (manim, ground, sect) — treat it as read-only.
-
-The whole package runs under a process-global `torch.inference_mode()` entered at import. **Importing algan disables autograd for the process** — never share a process with torch training.
 
 ## File Structure
 

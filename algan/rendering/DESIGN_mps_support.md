@@ -2,7 +2,7 @@
 
 Status: **NO-GO on the port as such.** Measured on GitHub's `macos-latest` runner
 (Apple Silicon, macOS 26.5.2 arm64, torch 2.7.1, taichi 1.7.4) by
-`benchmarks/_mps_capability_probe.py`, run from `.github/workflows/mps_probe.yaml`.
+`benchmarks/_mps_capability_probe.py`, run from `../../.github/workflows/mps_probe.yaml`.
 
 The macOS CI job is pinned to `ALGAN_RENDER_DEVICE=cpu` because MPS renders fail.
 The workflow comment attributes that to `float64` and says supporting MPS "means
@@ -15,7 +15,7 @@ Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do inst
 
 **Status, added later.** All three blockers are cleared and *measured cleared on
 the hardware*: §1.1 by packing kernel arguments into arena offsets, §1.2 by
-MPS-friendly mode, and §1.3/§1.3b by the forked Taichi in `taichi_patches/`,
+MPS-friendly mode, and §1.3/§1.3b by the forked Taichi in `../../taichi_patches`,
 which lets a kernel bind torch's own `MTLBuffer` instead of staging it through
 the host. Every kernel in the renderer compiles on Metal, the zero-copy path is
 engaged (40 converted launches, 244 arguments, nothing left on the staging
@@ -159,7 +159,7 @@ non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 > **Addressed — MPS-friendly mode.** The floor is what shipped.
 > `SETTINGS.computing.mps_friendly` (`'auto'`, on exactly when the render
 > device is MPS) narrows every renderer path this section names, in one place:
-> `algan/rendering/mps_compat.py`. f64 accumulators become f32 —
+> `mps_compat.py`. f64 accumulators become f32 —
 > `accumulate_dtype()` on the torch side, `taichi_accumulate_dtype()` for the
 > kernels, passed as a `ti.template()` dtype argument so Taichi compiles a
 > variant per width rather than resolving a `ti.static` gate once. The int64
@@ -181,7 +181,7 @@ non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 > The mode is settable on any device, and that is deliberate: it is what lets a
 > machine with no Apple GPU run the substitutions. `tests/unit_tests/
 > test_mps_friendly.py` does, including both compiled kernel variants against
-> each other, and it walks the AST of `algan/rendering/` so a new f64
+> each other, and it walks the AST of `` so a new f64
 > accumulator fails a test rather than a Mac.
 >
 > **Confirmed on the machine.** `benchmarks/_mps_metal_codegen_probe.py`, run
@@ -524,7 +524,7 @@ third is what shipped:
 2. **Per-dtype arenas in `ManualMemory`**, so the views are disjoint by
    construction. Deeper, and it changes the allocator every backend uses.
 3. **Taichi-owned ndarrays** (§3.3 step 1) — **done**, as `taichi_patches/0001`
-   plus `algan/rendering/mps_zero_copy.py`. It removes staging altogether and is
+   plus `mps_zero_copy.py`. It removes staging altogether and is
    the only one of the three that also fixes §1.3's bandwidth verdict.
 
 ### 1.3 Taichi stages every torch tensor through host memory
@@ -773,7 +773,7 @@ wrong, because the cliff is in the *input* as well as the bound.
 `raster_pipeline`'s `n2` is a squared normal length, so a thin triangle lands
 squarely in that gap and shades wrongly with nothing to show for it.
 
-A literal bound below the cliff is now banned outright in `algan/rendering`:
+A literal bound below the cliff is now banned outright in ``:
 `test_mps_friendly.py::test_the_renderer_floors_a_divide_through_clamp_floor`
 walks the AST and names any that appear, the way the float64 guard beside it
 does. It found one the manual pass had missed — a `torch.clamp(length,
@@ -816,7 +816,7 @@ supported. `auto` currently selects a device that fails 88 tests.
 ### 3.2 Two engine bugs this turned up — **fixed**
 
 Both are corrected in `taichi_runtime.py`, with the truth tables pinned by
-`tests/unit_tests/test_taichi_launch_pairing.py`. Neither fix moves CPU or CUDA
+`../../tests/unit_tests/test_taichi_launch_pairing.py`. Neither fix moves CPU or CUDA
 behaviour: on those the new answers are the old ones for every reachable
 pairing, and they differ only where the old rule was wrong.
 
@@ -870,7 +870,7 @@ Not a port. In dependency order:
 Steps 2 and 3 are therefore code, and both are now **verified on an Apple GPU**:
 with MPS-friendly mode on, every kernel in the renderer compiles on Metal and a
 render runs end to end, 53-66 s for one 864x486 frame. The `render` job in
-`.github/workflows/mps_probe.yaml` is what asks —
+`../../.github/workflows/mps_probe.yaml` is what asks —
 `ALGAN_RENDER_DEVICE=mps` on `macos-latest`, the codegen probe, one smoke frame
 and then `tests/unit_tests tests/fast`, beside a Linux control arm that forces
 the mode on over a CPU device so that a two-arm failure separates "the mode is
