@@ -310,6 +310,21 @@ band, because pulling a sibling forward past a nearer sheet of another
 surface flips which face paints the pixel (measured, 90 channel values on
 `tests/fast`).
 
+**The split-independence claim is about every per-pixel resource the walk hands
+out, not only the occlusion write (2026-08-31).** The prefiltered glossy event
+(`DESIGN_glossy_prefilter.md` §2.2) is one row per pixel and was claimed by the
+FIRST qualifying sheet, so a subdivided band claimed it with its near sibling
+and its far sibling -- the one carrying most of the coverage -- fell back to the
+`_mirror_share` throttle, ~3% of Schlick at roughness 0.35 against a split-sum
+`E` that is the lobe's whole directional albedo. The local term is
+`alpha * (1 - R)`, so the far sibling kept energy the same facet's interior
+spends on its reflection, and `E` being per-channel over a metal's albedo F0 put
+the gain in RED: a brighter, redder line down every interior edge of
+`tests/fast`'s Icosahedron -- §10.5's seam signature again, arriving by a
+different route. The claim is now the BAND's: every sibling shades with `E` and
+their energies sum into the one row they share, which is this section's rule
+applied to that resource.
+
 4.5 The background is the final sheet
 --------------------------------------
 Area 1, depth infinity, claim = residual `T`. The resolve emits, per pixel,
