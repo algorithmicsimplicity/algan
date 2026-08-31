@@ -639,6 +639,41 @@ def probe_epsilon_clamp(device):
         )
         _report(f"clamp_min(1e-12) on x={value:g}", not broken)
 
+    # The render's own shape, because the two readings from this machine do not
+    # agree and this is the difference between them. Instrumenting the render
+    # showed `clamp_min(1e-12)` returning an exact **zero** (which is what made
+    # the NaN), while every synthetic case above returns 5.96e-8 -- and 0 /
+    # 5.96e-8 is 0, not a NaN. The one structural difference is that the
+    # render's tensor is the output of an `index_select` computed ON the device
+    # rather than a `full()` moved onto it, and MPS is a backend where that has
+    # been the difference before (§2.3b's whole finding is one gather answering
+    # differently from another). So gather first, exactly as
+    # `_sibling_weights` does, and clamp that.
+    print("  gathered on the device first, which is the render's own shape")
+    src = torch.zeros(1077, dtype=torch.float32)
+    idx = torch.arange(n, dtype=torch.int64) % 1077
+    for label, built in (
+        ("index_select of zeros", lambda t, i: t.index_select(0, i)),
+        ("advanced index of zeros", lambda t, i: t[i]),
+        (
+            "scatter_add_ to zeros",
+            lambda t, i: torch.zeros_like(t).scatter_add_(
+                0, i, torch.zeros(i.numel(), dtype=torch.float32, device=i.device)
+            ),
+        ),
+    ):
+        host = built(src, idx)
+        moved = built(src.to(device), idx.to(device))
+        clamped_c, clamped_m = host.clamp_min(1e-12), moved.clamp_min(1e-12)
+        share_m = torch.zeros_like(clamped_m) / clamped_m
+        nonfinite = int((~torch.isfinite(share_m)).sum())
+        print(
+            f"    {label}: clamp_min -> {float(clamped_m.reshape(-1)[0]):g} "
+            f"(host {float(clamped_c.reshape(-1)[0]):g}); "
+            f"0/clamped non-finite {nonfinite}/{share_m.numel()}"
+        )
+        _report(f"clamp_min after {label}", nonfinite == 0)
+
     # The composition the renderer actually performs, so the probe fails on the
     # thing that reached the frame rather than only on its cause -- and beside
     # it the form that shipped, which must hold on every backend.

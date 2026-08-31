@@ -43,14 +43,22 @@ invalid SPIR-V. It is Algan's kernel rather than Metal's limit, it has been in
 to it is why CPU and CUDA never said so. §1.2c has the mechanism and the
 Linux-only reproduction that found it.
 
-The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) was
-**§2.3c**, and it is the third of these to be torch on MPS answering wrongly
-rather than failing: `clamp_min(1e-12)` returns an exact zero unchanged there.
-That call is the renderer's divide-by-zero guard, so a band of zero area
-computed `0 / 0`, and the NaN it made never trips the resolve's `eff <=
-min_alpha` branch — comparisons against a NaN are all false — so a sheet that
-should have dropped out composited, and one interior column of the closed shell
-came back attenuated twice. §2.3c has the measurement and the fix.
+The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) is
+**cleared, and the macOS suite is green: 2447 passed, 167 skipped, 0 failed.**
+It was the renderer's divide-by-zero guard, `band_area.clamp_min(1e-12)` in
+`sheets._sibling_weights`, handing back a floor the division did not survive: a
+band of zero area produced a NaN, and a NaN never trips the resolve's `eff <=
+min_alpha` branch — comparisons against one are all false — so a sheet that
+should have dropped out composited and one interior column came back attenuated
+twice. Respelling the floor as `where(x < eps, eps, x)`, which is `clamp_min`
+bit for bit and does not go through the call MPS mis-handles, fixes it: the
+closed shell's sheets now read `[+1.00000, -0.00000, +0.00000]`, the CPU's
+values sign included.
+
+**§2.3c is the measurement, and it is only half-explained.** The sweep pins a
+real defect — MPS rounds `clamp_min`'s scalar bound through float16, so every
+floor below 5.96e-8 becomes 5.96e-8 — but that defect alone does not produce
+the NaN the render showed, and §2.3c says so rather than papering over it.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -428,11 +436,18 @@ answer is at the end of it.
 >   row 10: band 8 cov 0 area 0 clamped 0 corr 0 share nan p nan pop 3
 > ```
 >
-> `clamped 0` is the whole defect: `sheets._sibling_weights` guards its divide
-> with `band_area.clamp_min(1e-12)`, and **MPS returns the exact zero
-> unchanged**, so a band whose siblings all contributed zero coverage — which
-> is precisely what the ceiling's 604 clamps create — divides `0 / 0`. See
-> §2.3c for the sweep and the fix.
+> `clamped 0` is the reading the fix was built on: `sheets._sibling_weights`
+> guards its divide with `band_area.clamp_min(1e-12)`, and here that returned
+> the exact zero, so a band whose siblings all contributed zero coverage —
+> which is precisely what the ceiling's 604 clamps create — divided `0 / 0`.
+> Respelling the floor clears it, and the suite is green.
+>
+> **The synthetic sweep does not reproduce that reading**, and §2.3c keeps the
+> discrepancy visible rather than resolving it by assertion: on the same
+> machine `clamp_min(0.0, 1e-12)` returns 5.96e-8, not 0, and `0 / 5.96e-8` is
+> 0. So the fp16 rounding §2.3c measures is a real defect but not, on its own,
+> this NaN's cause. What is established is where the NaN was made and that the
+> respelling removes it.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
@@ -659,45 +674,59 @@ device, so it guards on any Apple machine including one without the patched
 Taichi; on everything else it degenerates to a correctness check of the helper,
 which is why a green Linux run does not clear it.
 
-### 2.3c `clamp_min` does not honour a tiny floor
+### 2.3c `clamp_min` rounds its floor through float16
 
 The third op in this family, and the one that took the longest to find, because
-unlike the two above it does not corrupt a value — it declines to *change* one.
+unlike the two above it does not lose bits of a value — it silently substitutes
+a different floor.
 
-`x.clamp_min(eps)` with a small positive `eps` returns `x` unchanged on MPS
-where `x` is an exact zero. `benchmarks/_mps_torch_op_probe.py`'s
-`probe_epsilon_clamp` sweeps it on two axes, because they carry very different
-consequences and the render only ever exhibited the first:
+`benchmarks/_mps_torch_op_probe.py`'s `probe_epsilon_clamp` sweeps the floor's
+magnitude, and the answer is a clean cliff:
 
-* **the floor's magnitude**, which says whether this is a narrowing — a scalar
-  rounded through some shorter type on its way into the kernel — and if so
-  where it gives out;
-* **the input's magnitude**, because "an exact zero is not raised" is one call
-  site while "nothing below the floor is raised" is every denominator in the
-  renderer. `x = 1e-13` is the case that separates them.
+| floor asked for | MPS `clamp_min(0.0)` returns |
+| --- | --- |
+| 1e-3 | 1e-3 |
+| 6.1e-5 (f16 smallest normal) | 6.1e-5 |
+| 1e-6 | 1e-6 |
+| **5.96e-8 (f16 smallest subnormal)** | **5.96e-8** |
+| 1e-8 | **5.96e-8** |
+| 1e-12 | **5.96e-8** |
+| 1.18e-38 (f32 smallest normal) | **5.96e-8** |
+| 1.4e-45 (f32 smallest subnormal) | **5.96e-8** |
 
-Each spelling is swept separately, since they are different dispatches and one
-that survives is a drop-in replacement.
+Every floor at or above float16's smallest subnormal is honoured exactly; every
+floor below it comes back as that subnormal. **The scalar bound is rounded
+through float16 on its way into the kernel** — that is the defect, and stating
+it that way is worth more than "the clamp is wrong", because it says exactly
+which call sites are affected and by how much.
 
-That call is the renderer's **divide-by-zero guard**, in twenty-odd places
-(`sheets.py`, `raster_pipeline.py`, `stbvh.py`, `primitives.py`, ...). Its whole
-job is to turn an exact zero into something a division survives, so a backend on
-which it is a no-op does not raise, does not warn, and produces a NaN one line
-later. Only one of those sites is fed an exact zero by any scene rendered so
-far: `_sibling_weights`' `share = cov / sum(area)`, where a band all of whose
-siblings were clamped to zero coverage by `solid_shell_ceiling` sums to exactly
-zero.
+Only the three `clamp` spellings are hit. `torch.maximum` against a 0-dim or a
+full tensor, and `torch.where(x < eps, eps, x)`, are exact at every magnitude,
+so each is a drop-in replacement.
 
-**A NaN is worse here than a wrong number**, which is why one column of one test
-scene was the whole visible symptom of it. The resolve drops a sheet whose
-effective coverage falls under `min_alpha`; every comparison against a NaN is
-false, so a NaN coverage is neither small enough to drop nor large enough to
-saturate — it simply passes the branch and composites. See the end of §1.2c for
-the chain from the clamp to the pixel.
+**The exposure is every tiny floor in the renderer, and none of them is a NaN.**
+Twenty-odd divisions guard their denominator this way — `sheets.py` at 1e-12,
+`raster_pipeline.py` and `refit_bvh.py` at 1e-30, `primitives.py` at 1e-20 — and
+on MPS all of them clamp to 5.96e-8 instead. That is a wrong denominator, up to
+twenty-two orders of magnitude off the intended floor, and it announces itself
+nowhere: it can only matter where the denominator is genuinely at or below the
+floor, and it is a bounded perturbation rather than a poisoned value when it
+does.
+
+**What is NOT yet explained is the NaN that started this.** The instrumented
+render printed `clamped 0` and `share nan` (§1.2c), which requires the clamp to
+have returned an exact zero — and the synthetic sweep does not reproduce that:
+`0 / clamp_min(0, 1e-12)` is `0 / 5.96e-8` = 0, and the probe's own check of
+that composition **passes** on MPS. So two readings from the same machine
+disagree, and the reconciling fact is not in hand. What is measured is that the
+suite goes green with the respelling below, and that the closed shell's sheets
+come back `[+1.00000, -0.00000, +0.00000]` — the CPU's values, sign included.
+The fix is confirmed; this mechanism is not, and the difference is worth
+keeping visible.
 
 Fixed at the call site rather than in `mps_compat`, because it is not a
 substitution — it is the same floor, spelled so that it does not go through the
-call that does not honour it:
+call that mis-rounds it:
 
 ```python
 share = cov.to(acc) / torch.where(area_g < 1e-12, 1e-12, area_g)
@@ -717,13 +746,10 @@ identity: CPU and CUDA compute what they always did, and MPS now computes it
 too. `test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
 guards it on whatever device the machine has, like the gather guard in §2.3b.
 
-**The other sites still say `clamp_min` and are not changed**, pending the
-input-axis sweep above. If the defect is confined to an exact zero they are
-untouched, since none of them has been measured taking one; if it reaches
-`1e-13` they are all wrong denominators and the same one-line respelling
-applies to each. Either way the failure mode is loud — a NaN propagates to a
-visibly wrong frame rather than a plausible one, which is why this cost one
-test rather than a silent baseline shift.
+**The other sites still say `clamp_min`.** They are all below the cliff and so
+all wrong on MPS, but wrong by a bounded amount in a denominator that is
+normally nowhere near its floor — where any of them is measured to matter, the
+same one-line respelling applies.
 
 ### 2.4 How non-deterministic MPS actually is
 
