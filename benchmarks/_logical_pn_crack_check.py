@@ -58,5 +58,5 @@ if __name__ == "__main__":
     report("torus_coarse", lambda: Torus(**coarse).scale(2.2).rotate(60, RIGHT))  # noqa: F405
     report(
         "sphere_coarse_tight",
-        lambda: Sphere(render_tolerance=0.0002, **coarse).scale(2.2),
+        lambda: Sphere(render_tolerance_pixels=0.2, **coarse).scale(2.2),
     )

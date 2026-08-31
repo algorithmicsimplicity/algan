@@ -109,10 +109,9 @@ STRAIGHTNESS_TOLERANCE = 0.02
 #: dead-straight path is not distorted by any run length.
 MAX_STROKE_RUN_SEGMENTS = 64
 
-#: Render tolerances for the PN patches a filled non-planar circuit becomes: the
-#: defaults a :class:`~algan.mobs.surfaces.surface.Surface` uses, since the
-#: patches are the same primitive judged by the same criteria.
-PATCH_RENDER_TOLERANCE = 0.001
+#: Render tolerance for the PN patches a filled non-planar circuit becomes, in
+#: output pixels at the renderer's reference frame height. Twice a Surface's,
+#: because a circuit's patches carry no curvature of their own to resolve.
 PATCH_RENDER_TOLERANCE_PIXELS = 1.0
 
 #: How far in front of its own patch, in depth-tie bins per world unit of patch
@@ -795,7 +794,6 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
         normals=normals[:, tri_index, :],
         glow=vertex_colors[..., -2:-1].as_subclass(torch.Tensor),
         shader=circuit.shader,
-        render_tolerance=PATCH_RENDER_TOLERANCE,
         render_tolerance_pixels=PATCH_RENDER_TOLERANCE_PIXELS,
         # The patches ARE the surface here: there is no analytic shape behind
         # them whose own accuracy could excuse a coarser dice.

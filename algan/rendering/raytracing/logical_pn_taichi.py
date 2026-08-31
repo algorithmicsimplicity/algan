@@ -30,7 +30,8 @@ patches that share it, or the mesh cracks open along the seam
 These kernels are *not* bit-identical to the torch path they replace: Taichi
 initialises with ``fast_math`` on, so the fused expressions round differently in
 the last bits and borderline patches flip to a neighbouring level.  That moves
-geometry (within ``render_tolerance`` by construction), not just pixel rounding.
+geometry (within ``render_tolerance_pixels`` by construction), not just pixel
+rounding.
 ``ALGAN_PN_CRITERION_KERNEL=0`` restores the torch path for A/B.
 """
 

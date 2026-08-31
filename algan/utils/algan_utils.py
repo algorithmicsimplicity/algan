@@ -313,7 +313,10 @@ def _render_scene_to_file(
         if any(actor.is_spawned() for actor in scene.actors):
             never_spawned = scene._never_spawned_root_mobs()
             if never_spawned:
-                kinds = ", ".join(sorted({type(m).__name__ for m in never_spawned}))
+                # Named Mobs are listed individually -- a name is given
+                # precisely so its owner can be picked out of a crowd -- while
+                # unnamed ones collapse to their class as before.
+                kinds = ", ".join(sorted({m._describe() for m in never_spawned}))
                 warnings.warn(
                     f"{len(never_spawned)} Mob(s) were never spawn()ed and will "
                     f"not appear in the video ({kinds}). Call .spawn() on them, "

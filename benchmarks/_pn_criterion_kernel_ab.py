@@ -262,7 +262,7 @@ if __name__ == "__main__":
         ),
         (
             "Sphere (tight tolerance)",
-            Sphere(render_tolerance=0.05, **coarse),
+            Sphere(render_tolerance_pixels=50.0, **coarse),
             [-2.2, -3.0, -6.0],
             False,
         ),

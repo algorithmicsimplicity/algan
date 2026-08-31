@@ -495,7 +495,7 @@ Everything else about texturing:
   filtered at all. Pre-downsample the image to roughly the size it will occupy
   on screen if this bites.
 * **Bezier circuits carry a color grid, not a UV-mapped image.** A 2-D shape's
-  ``texture_grid_width`` x ``texture_grid_height`` grid of color samples is
+  ``grid_width`` x ``grid_height`` grid of color samples is
   laid over the shape's own frame. It is not an image sampler and it takes no
   normal or material map. :class:`~.ImageMob` is a :class:`~algan.mobs.surfaces.surface.Surface`, so it is
   the way to put a real image on screen.
@@ -902,7 +902,7 @@ Hard limits
      - 8
      - The dice stops refining that patch and **warns**
        (``RuntimeWarning``: "tessellation reached its safety cap before meeting
-       render_tolerance for every patch").
+       render_tolerance_pixels for every patch").
    * - Diced triangles in one frame
      - 2 000 000
      - The level search refuses further promotions and warns, as above. The

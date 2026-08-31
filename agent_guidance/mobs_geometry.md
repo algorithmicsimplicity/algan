@@ -69,7 +69,7 @@ Curved surfaces reach the renderer as *logical PN* patches diced to flat triangl
 
 A patch's dice is **per direction** — `2 ** level` rows fanning from one corner, each cut into at most `2 ** across` columns — so a direction the surface is flat along (a cylinder's length) costs one cell however finely the curved direction is cut. Equal levels are the uniform grid exactly.
 
-Both the construction grid (`geometry_tolerance`, per axis) and the render dice (per patch per frame) are chosen by measurement, and the render criteria stop at the logical surface's own accuracy rather than resolving the PN patch's error. The dice budget is the finer of two tolerances at the frame's resolution: `render_tolerance` (a fraction of frame height) and `render_tolerance_pixels` (an absolute pixel count, default 1.0, which is what binds from roughly 1080p up).
+Both the construction grid (`geometry_tolerance`, per axis) and the render dice (per patch per frame) are chosen by measurement, and the render criteria stop at the logical surface's own accuracy rather than resolving the PN patch's error. The dice budget is `render_tolerance_pixels` (default 0.5 on a Surface), an absolute pixel count at `logical_pn.TOLERANCE_REFERENCE_HEIGHT` (1000 px) and scaled down in proportion on shorter frames. It replaced a pair -- a fraction of frame height plus a pixel cap -- whose `min` this reproduces exactly for both configurations the pair was used with.
 
 ## A flat cap's rim is sized at construction, because nothing downstream can refine it
 

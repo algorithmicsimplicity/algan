@@ -178,7 +178,7 @@ def test_homotopy_accepts_manim_scalar_api_and_surface_geometry():
 
     SceneManager.reset()
     surface = algan.Surface(
-        lambda u, v: (u, v, 0),
+        lambda uv: torch.cat((uv, torch.zeros_like(uv[..., :1])), -1),
         resolution=(2, 2),
         add_to_scene=False,
     ).spawn(False)

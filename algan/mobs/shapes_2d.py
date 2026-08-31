@@ -5,8 +5,8 @@
 :class:`Dot` and :class:`SurroundingRectangle` are all cubic bezier circuits
 (:class:`~algan.mobs.bezier_circuit.BezierCircuitCubic`), so they stay exactly
 smooth at any zoom and morph into one another. They take ``color``,
-``stroke_color`` and ``stroke_width``, plus ``texture_grid_width`` /
-``texture_grid_height`` for shapes that carry a gradient or an image rather than
+``stroke_color`` and ``stroke_width``, plus ``grid_width`` /
+``grid_height`` for shapes that carry a gradient or an image rather than
 one flat color.
 
 A second family -- :class:`~.Arc`, :class:`~.Annulus`, :class:`~.Ellipse`,
@@ -169,7 +169,7 @@ class Line(BezierCircuitCubic):
     line's centre toward** :meth:`~.Line.get_start` -- that is a guarantee, not
     an accident of how the frame is derived. And its second row is synthesized
     perpendicular to the path rather than measured from it, so the texture grid
-    defaults to ``texture_grid_width`` samples along the line and a single row
+    defaults to ``grid_width`` samples along the line and a single row
     across it. Color along the line with
     :meth:`~.Line.set_color_by_function`, which parametrizes it by ``t`` running
     from the start to the end.
@@ -191,7 +191,7 @@ class Line(BezierCircuitCubic):
         to ``0`` (a straight segment).
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``color``,
-        ``stroke_width`` and ``texture_grid_width``.
+        ``stroke_width`` and ``grid_width``.
 
     Examples
     --------
@@ -278,9 +278,9 @@ class Line(BezierCircuitCubic):
 
         A line is unfilled, so this colors its stroke. The resolution is the
         line's texture grid, which is one flat color unless you asked for more:
-        build it with ``texture_grid_width`` (``Line(LEFT, RIGHT,
-        texture_grid_width=64)``). The height defaults to a single row across
-        the line, so ``texture_grid_width`` alone is the number of color
+        build it with ``grid_width`` (``Line(LEFT, RIGHT,
+        grid_width=64)``). The height defaults to a single row across
+        the line, so ``grid_width`` alone is the number of color
         samples along it.
 
         Animation
@@ -318,7 +318,7 @@ class Line(BezierCircuitCubic):
             from algan import *
             import torch
 
-            line = Line(LEFT * 3, RIGHT * 3, stroke_width=20, texture_grid_width=64)
+            line = Line(LEFT * 3, RIGHT * 3, stroke_width=20, grid_width=64)
             line.set_color_by_function(
                 lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
             )

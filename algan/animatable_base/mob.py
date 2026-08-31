@@ -23,6 +23,7 @@ cubic bezier circuits.
 from __future__ import annotations
 
 import difflib
+import functools
 from collections import defaultdict
 from collections.abc import Callable
 
@@ -79,6 +80,33 @@ _SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
 #: ``materials._to_color3``), so a parsed color is trimmed for those instead
 #: of widened -- widening them silently changed the shader parameter layout.
 _FIVE_CHANNEL_COLOR_ATTRS = frozenset({"color", "stroke_color"})
+
+
+class _GuardedMethod:
+    """A method that refuses to be silently replaced by assignment.
+
+    ``mob.scale = 2`` is a natural thing for a user to write: ``scale`` reads
+    like one of the animatable attributes, and every other one of those is set
+    exactly that way. As a plain method it succeeded -- shadowing the method
+    with an ``int`` on the instance, changing nothing about the render, and
+    breaking every later ``mob.scale(...)`` on that object. A data descriptor
+    takes precedence over the instance dict, so the assignment lands here and
+    raises with the spellings that do work, while attribute *reads* still hand
+    back the bound method.
+    """
+
+    def __init__(self, func, message):
+        self._func = func
+        self._message = message
+        functools.update_wrapper(self, func)
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self._func
+        return self._func.__get__(obj, objtype)
+
+    def __set__(self, obj, value):
+        raise AttributeError(self._message)
 
 
 def _coerce_if_color(attr, value):
@@ -146,32 +174,55 @@ class Mob(
     MobMaterialsMixin,
     Animatable,
 ):
-    """
-    A Mob (Moveable Object) is an Animatable that exists at a point in 3-D
-    space. Mobs posses the animatable attributes location, basis (orientation),
-    scale, and color. Mobs can have child Mobs, forming a hierarchy, and when a
-    parent mob is modified it will propagate that change to its descendants.
+    """A Movable Object: an Animatable that exists at a point in 3-D space.
+
+    Mobs carry the animatable attributes :attr:`location`, :attr:`basis`
+    (orientation and scale), :attr:`scale_coefficient`, :attr:`color`,
+    :attr:`opacity` and :attr:`glow` -- assigning to any of them records an
+    animation. Mobs can have child Mobs, forming a hierarchy, and a change to a
+    parent propagates to its descendants.
 
     Parameters
     ----------
     location
-        Initial location in 3-D world space.
+        Initial location in 3-D world space, in world units. Defaults to
+        ``ORIGIN`` (the centre of the scene).
         Shape: `(*, 3)` where `*` denotes zero or more batch dimensions.
     basis
-        Flattened 3x3 matrix specifying the Mob's orientation and scale.
-        The rows represent the right, upwards, and forwards directions, respectively,
-        and the row norms represent the scale in those directions.
-        Defaults to an identity matrix (no rotation, unit scale).
-        Shape: `(*, 9)` representing `(*, 3, 3)` flattened.
+        The Mob's orientation and scale, as a 3x3 matrix. The rows are the
+        right, upwards and forwards directions, and each row's norm is the
+        scale along that direction. Accepts either the ``(*, 3, 3)`` matrix or
+        the ``(*, 9)`` flattened form it is stored in. Defaults to an identity
+        matrix (no rotation, unit scale).
     color
-        The color of the Mob. If None, it uses the default color defined
-        by :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`.
+        The color of the Mob: an Algan :class:`~algan.constants.color.Color`, a
+        named constant such as ``BLUE``, or anything ``Color()`` accepts.
+        Defaults to ``None``, meaning the class's own default from
+        :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`
+        -- ``BLACK`` for a plain Mob, ``PURPLE`` for a 2-D shape, ``GREEN`` for
+        a :class:`~algan.mobs.surfaces.surface.Surface`.
     opacity
-        The opacity of the Mob (0.0 for fully transparent to 1.0 for fully opaque).
+        How opaque the Mob is, from ``0`` (invisible) to ``1`` (fully opaque).
+        Defaults to ``1``.
     glow
-        The glow intensity of the Mob.
-    *args, **kwargs
-        Passed to :class:`~.Animatable` base class.
+        How much light the Mob emits of its own, on top of what it reflects.
+        ``0`` is an ordinary unlit surface and ``1`` a strongly glowing one;
+        larger values keep brightening. Defaults to ``0``.
+    **kwargs
+        Passed to :class:`~.Animatable` -- notably ``scene`` and
+        ``add_to_scene``.
+
+    Attributes
+    ----------
+    scale_coefficient : torch.Tensor
+        The Mob's size along its own right, up and forward axes, shape
+        ``(*, 3)``; ``(1, 1, 1)`` is unscaled. Derived from :attr:`basis`.
+        Note that ``scale`` is a *method*
+        (:meth:`~.Mob.scale`), not an attribute -- assigning to it raises.
+    two_sided, closed_shell, casts_shadows, receives_shadows
+        Plain (non-animatable) geometry declarations, documented individually
+        below. All four are read once when the Mob is spawned, so they must be
+        set before :meth:`~.Animatable.spawn`.
 
     Examples
     --------
@@ -343,7 +394,6 @@ class Mob(
         color: Color | None = None,
         opacity: float = 1,
         glow: float = 0,
-        *args,
         **kwargs,
     ):
         self.register_attrs_as_animatable(
@@ -360,7 +410,7 @@ class Mob(
         self.singleton_batch_indexing = False
         self.exclude_from_boundary = False
         self._prevent_recursive_sets = False
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         # Defines how attributes changes are inherited by children Mobs (e.g., additive for location, multiplicative for scale)
         self.attr_to_relations = defaultdict(lambda: (lambda x, y: y, lambda x, y: y))
         additive_relation = (lambda x, y: x + y, lambda x, y: y - x)
@@ -397,7 +447,14 @@ class Mob(
             color = self.get_default_color()
 
         self._init_default_attr("location", cast_to_tensor(location))
-        self._init_default_attr("basis", cast_to_tensor(basis))
+        # The timeline stores a basis flattened to (*, 9), but a user writing one
+        # out has a 3x3 matrix in hand and should not have to know that. Accept
+        # both spellings; only the trailing two axes are inspected, so a batched
+        # (*, 3, 3) is folded exactly like a lone one.
+        basis = cast_to_tensor(basis)
+        if basis.shape[-2:] == (3, 3):
+            basis = squish(basis, -2, -1)
+        self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
         self._init_default_attr("opacity", cast_to_tensor(opacity))
         self._init_default_attr("glow", cast_to_tensor(glow))
@@ -529,11 +586,9 @@ class Mob(
         # their backing object, which is why the hint lives on the base class.
         hint = _MANIM_METHOD_HINTS.get(name)
         if hint is None:
-            raise AttributeError(
-                f"{type(self).__name__!r} object has no attribute {name!r}"
-            )
+            raise AttributeError(f"{self._describe()} has no attribute {name!r}")
         raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}. "
+            f"{self._describe()} has no attribute {name!r}. "
             f"That is Manim's name for it; in Algan use {hint}. "
             f"See the Manim migration guide for the full table."
         )
@@ -1696,6 +1751,14 @@ class Mob(
             if recursive
             else self.set_non_recursive(scale_coefficient=new_scale)
         )
+
+    scale = _GuardedMethod(
+        scale,
+        "'scale' is a method, not an attribute -- 'mob.scale = 2' would set an "
+        "int on the Mob and change nothing. Use mob.scale(2) to resize relative "
+        "to the current size, mob.set_scale(2) for an absolute size, or assign "
+        "the animatable attribute mob.scale_coefficient directly.",
+    )
 
     def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Set the Mob's absolute scale, ignoring its current size.

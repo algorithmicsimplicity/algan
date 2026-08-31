@@ -61,7 +61,7 @@ def report(name, mob, z_positions):
 
     print(
         f"{name}: {num_patches} patches x {frames} frames, "
-        f"render_tolerance={primitive.render_tolerance}"
+        f"render_tolerance_pixels={primitive.render_tolerance_pixels}"
     )
     print(
         f"  patch levels  min/med/max : {int(levels.amin())} / "

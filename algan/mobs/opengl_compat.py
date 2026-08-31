@@ -100,7 +100,15 @@ class OpenGLSurface(Surface):
         kwargs.setdefault("grid_height", self.resolution[1])
         kwargs.setdefault("color", color)
         kwargs.setdefault("opacity", opacity)
-        super().__init__(coord_function=self._coord_from_unit_uv, **kwargs)
+        # Passed through: Surface owns these, and leaving them out let its
+        # own (0, 1) defaults overwrite the range this constructor was
+        # given a few lines above.
+        super().__init__(
+            coord_function=self._coord_from_unit_uv,
+            u_range=self.u_range,
+            v_range=self.v_range,
+            **kwargs,
+        )
 
     def uv_func(self, u, v):
         if self.passed_uv_func is None:

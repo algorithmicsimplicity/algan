@@ -80,7 +80,7 @@ class MobMaterialsMixin:
             Shade per fragment instead of per vertex.
         """
         if self.is_spawned():
-            mob_name = type(self).__name__
+            mob_name = self._describe()
             raise ModifiedProtectedAttributeError(
                 f"Cannot change shader on {mob_name} because it has already been spawned. "
                 "Shaders and materials must be configured before calling .spawn(). "
@@ -165,7 +165,7 @@ class MobMaterialsMixin:
             If called on a Mob that has already been spawned.
         """
         if self.is_spawned():
-            mob_name = type(self).__name__
+            mob_name = self._describe()
             raise ModifiedProtectedAttributeError(
                 f"Cannot change fragment shader on {mob_name} because it has already been spawned. "
                 "Shaders must be configured before calling .spawn(). "
@@ -293,7 +293,7 @@ class MobMaterialsMixin:
             )
 
         if self.is_spawned():
-            mob_name = type(self).__name__
+            mob_name = self._describe()
             raise ModifiedProtectedAttributeError(
                 f"Cannot set material on {mob_name} because it has already been spawned. "
                 "Materials must be configured before calling .spawn(). "

@@ -7,6 +7,7 @@ from algan.animatable_base.animatable import STRUCTURE_VERSION, attr_ranges_for_
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.easings import delay_fade, identity, pulse_fade
+from algan.constants.math import DEGREES_TO_RADIANS
 from algan.constants.spatial import *  # ORIGIN, OUTWARD, RIGHT
 from algan.environment import env_flag
 from algan.geometry.geometry import (
@@ -315,8 +316,11 @@ def _build_idle_batch_plan(net, neurons):
             raise _IdleBatchUnsupported
     plan.radius = radius
     plan.height = height
-    plan.v_range0 = v_range0
-    plan.v_range1 = v_range1
+    # ``Cylinder.v_range`` is in degrees, like every other angle in Algan;
+    # ``_cylinder_coord_offsets`` is its coord_function verbatim, and that does
+    # its trigonometry in radians.
+    plan.v_range0 = v_range0 * DEGREES_TO_RADIANS
+    plan.v_range1 = v_range1 * DEGREES_TO_RADIANS
     return plan
 
 
@@ -325,6 +329,8 @@ def _cylinder_coord_offsets(uv, radius, height, v_range0, v_range1, right, up, f
 
     ``right``/``up``/``fwd`` are the tube's (scaled) basis rows with shape
     ``[B, S, 1, 3]``; the result is offsets from each tube's centre.
+    ``v_range0``/``v_range1`` arrive in radians, already converted from the
+    Cylinder's degrees by the plan builder.
     """
     uv = uv.clone()
     uv[..., 1:] /= uv[..., 1:].amax()
