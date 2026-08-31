@@ -65,6 +65,10 @@ on:
         description: "Run id of a taichi_build.yaml run whose patched wheel to install (blank = stock Taichi)"
         type: string
         default: ""
+      probes_only:
+        description: "render: skip the test suite and the shader dump, leaving only the probes (~5 min instead of ~17)"
+        type: boolean
+        default: false
 
 # Queue behind an in-flight run rather than cancelling it, which is where this
 # differs from the test and code-quality workflows and why. Those cancel because
@@ -544,7 +548,12 @@ jobs:
         # and skipping it exactly when the render failed is the wrong way
         # round. Same for the suite below: this job is a measurement, and one
         # red step should not cost the whole reading.
-        if: ${{ always() && runner.os == 'macOS' }}
+        #
+        # `probes_only` skips it, and it is one of the two steps that input
+        # exists for: it renders three scenes and dumps every shader they
+        # compile, which is a minute and a half and tens of megabytes of
+        # artifacts that a round iterating on a probe has no use for.
+        if: ${{ always() && runner.os == 'macOS' && !inputs.probes_only }}
         continue-on-error: true
         env:
           ALGAN_LOG_TAICHI_COMPILES: "1"
@@ -591,8 +600,14 @@ jobs:
       # tee cannot swallow pytest's exit code -- GitHub runs this with `bash -e`,
       # where a pipeline reports only its last command, so without it a red
       # suite would report green.
+      #
+      # Eleven of this job's seventeen minutes, and the other step
+      # `probes_only` skips. A round that is asking a probe a question does not
+      # need the suite to answer it, and the suite is what makes the turnaround
+      # long enough to be worth batching guesses into -- which is how a probe
+      # ends up measuring three things badly instead of one well.
       - name: Run the test suite
-        if: always()
+        if: ${{ always() && !inputs.probes_only }}
         run: |
           set -o pipefail
           uv run pytest tests/unit_tests tests/fast -n 1 -rf \
