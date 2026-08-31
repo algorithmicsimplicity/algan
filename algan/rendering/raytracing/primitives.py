@@ -261,10 +261,17 @@ _APEX_OF_EDGE = torch.tensor([OPPOSITE_EDGE.index(edge) for edge in range(3)])
 def _mesh_ids_from_collection(members, counts):
     """Resolve a triangle collection's per-triangle SURFACE ids.
 
-    Returns ``(ids, n)`` where ``ids`` is an int32 ``[Ntri]`` tensor of
-    collection-local surface indices and ``n`` the number of distinct ones, or
-    ``(None, None)`` when no member declares identity -- in which case the
+    Returns ``(ids, n, keys)`` where ``ids`` is an int32 ``[Ntri]`` tensor of
+    collection-local surface indices, ``n`` the number of distinct ones and
+    ``keys`` a list of ``n`` mesh keys naming the mob each surface came from
+    (``None`` for a surface whose member declared no key), or
+    ``(None, None, None)`` when no member declares identity -- in which case the
     caller's per-member ``counts`` already say it and nothing changes.
+
+    ``keys`` is what lets a tool map a rendered surface back to the Mob that
+    authored it: the mobs stamp ``("trimob", mob.id)`` and friends, and without
+    recording them here the renumbering below is the point at which that link
+    is lost.
 
     Two declarations, both optional attributes a mob stamps on the primitive it
     builds:
@@ -289,10 +296,11 @@ def _mesh_ids_from_collection(members, counts):
         or getattr(m, "mesh_ids", None) is not None
         for m in members
     ):
-        return None, None
+        return None, None, None
 
     device = members[0].corners.device
     blocks = []
+    keys = []
     next_id = 0
     prev_key = None
     for i, member in enumerate(members):
@@ -308,6 +316,9 @@ def _mesh_ids_from_collection(members, counts):
             # Renumber into the collection's namespace, preserving distinctness.
             uniq, inverse = torch.unique(local, return_inverse=True)
             blocks.append(inverse.to(torch.int32) + next_id)
+            # Every shell of one member came from the same mob, so they all
+            # carry that member's key (if it declared one).
+            keys.extend([getattr(member, "mesh_key", None)] * int(uniq.shape[0]))
             next_id += int(uniq.shape[0])
             prev_key = None
             continue
@@ -318,9 +329,10 @@ def _mesh_ids_from_collection(members, counts):
         else:
             surface = next_id
             next_id += 1
+            keys.append(key)
         blocks.append(torch.full((n_tri,), surface, dtype=torch.int32, device=device))
         prev_key = key
-    return torch.cat(blocks).contiguous(), next_id
+    return torch.cat(blocks).contiguous(), next_id, keys
 
 
 def _declares_no_shadow_cast(primitive):
@@ -542,9 +554,14 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # into per-triangle shells -- which ``_mesh_ids_from_collection``
             # resolves into explicit per-triangle ids. ``None`` keeps the
             # per-member counts, so a mob that declares nothing is unchanged.
-            self._obj_ids, self._obj_ids_n = _mesh_ids_from_collection(
-                triangle_collection, self._obj_counts
+            self._obj_ids, self._obj_ids_n, self._obj_ids_keys = (
+                _mesh_ids_from_collection(triangle_collection, self._obj_counts)
             )
+            # The fallback table, for a collection that declares nothing and is
+            # therefore identified by ``_obj_counts`` -- one surface per member.
+            self._obj_count_keys = [
+                getattr(t, "mesh_key", None) for t in triangle_collection
+            ]
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
             # line up -- except along time: the references are sliced to a
@@ -598,7 +615,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._obj_counts = None
             # A lone primitive is one surface unless it declares its own shells
             # (a packed-grid Surface, a multi-part glTF mesh).
-            self._obj_ids, self._obj_ids_n = _mesh_ids_from_collection([self], None)
+            self._obj_ids, self._obj_ids_n, self._obj_ids_keys = (
+                _mesh_ids_from_collection([self], None)
+            )
+            self._obj_count_keys = None
             self._derive_material_surface_params()
             # Two-sided until the mob says otherwise, which it does after
             # construction (``declare_one_sided``) -- the same point at which
@@ -1259,9 +1279,13 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._rt_tri_obj_n = getattr(
                 self, "_logical_pn_tri_obj_n", len(counts) if counts else 1
             )
+            # The dice numbers patches in its own space, which nothing maps back
+            # to a declaring member, so this branch names no mobs.
+            self._obj_keys = None
         elif obj_ids is not None:
             self._rt_tri_obj = obj_ids.view(1, -1).to(corners.device).contiguous()
             self._rt_tri_obj_n = int(self._obj_ids_n)
+            self._obj_keys = getattr(self, "_obj_ids_keys", None)
         elif counts:
             self._rt_tri_obj = (
                 torch.repeat_interleave(
@@ -1272,11 +1296,13 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 .contiguous()
             )
             self._rt_tri_obj_n = len(counts)
+            self._obj_keys = getattr(self, "_obj_count_keys", None)
         else:
             self._rt_tri_obj = torch.zeros(
                 (1, corners.shape[1]), dtype=torch.int32, device=corners.device
             )
             self._rt_tri_obj_n = 1
+            self._obj_keys = None
 
         uvs = self._stash_texture_maps()
         self._rt_tri_uvs = uvs.to(corners.device) if uvs is not None else None

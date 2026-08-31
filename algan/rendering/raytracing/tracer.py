@@ -40,6 +40,7 @@ from typing import Literal
 import torch
 
 from algan.environment import env_float
+from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
@@ -2722,6 +2723,12 @@ def raytrace_render_wavefront(
                 layer_offset_triangles,
                 env_in_composite=env_active,
             )
+            # The GUI viewer's per-pixel inspector, when one is waiting for this
+            # chunk. Off, it is a module-global read; on, it copies the coverage
+            # record to the host, which has to happen HERE -- the arrays are
+            # arena tensors and the enclosing ``memory.temp`` reclaims them.
+            if fragment_capture.is_armed():
+                fragment_capture.capture(coverage, merged, time_start, width, height)
             t_val_sparse = _get_tonemap_t_val()
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:

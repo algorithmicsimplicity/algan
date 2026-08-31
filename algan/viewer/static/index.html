@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Algan viewer</title>
+<link rel="stylesheet" href="/static/viewer.css">
+</head>
+<body>
+<header>
+  <span class="brand">Algan viewer</span>
+  <span id="meta" class="meta"></span>
+  <span id="status" class="status"></span>
+</header>
+
+<main>
+  <section class="pane" id="hierarchy-pane">
+    <h2>Hierarchy</h2>
+    <label class="toggle">
+      <input type="checkbox" id="show-components"> show component mobs
+    </label>
+    <ul id="tree" class="tree"></ul>
+  </section>
+
+  <section class="pane" id="stage-pane">
+    <div class="stage">
+      <canvas id="frame" width="16" height="9"></canvas>
+    </div>
+    <div class="transport">
+      <button id="play" type="button">Play</button>
+      <div id="scrub" class="scrub" role="slider" tabindex="0"
+           aria-label="Timeline position">
+        <div id="cached" class="cached"></div>
+        <div id="progress" class="progress"></div>
+        <div id="playhead" class="playhead"></div>
+      </div>
+    </div>
+    <div class="readouts">
+      <label>time <input id="time-input" class="num" size="8" value="0.000"><span
+        class="unit">s</span></label>
+      <label>frame <input id="frame-input" class="num" size="6" value="0"></label>
+      <span class="hint">type a value and press Enter to jump</span>
+    </div>
+  </section>
+
+  <section class="pane" id="inspector-pane">
+    <h2>Pixel</h2>
+    <div class="readouts">
+      <label>x <input id="x-input" class="num" size="5" value="0"></label>
+      <label>y <input id="y-input" class="num" size="5" value="0"></label>
+      <span class="hint">Enter to inspect</span>
+    </div>
+    <div id="swatch-row" class="swatch-row">
+      <span id="swatch" class="swatch"></span>
+      <span id="rgba" class="mono">&mdash;</span>
+    </div>
+    <div id="fragments"></div>
+
+    <h2>Attributes</h2>
+    <div id="attrs"><p class="empty">Select a mob in the hierarchy.</p></div>
+  </section>
+</main>
+
+<script src="/static/viewer.js"></script>
+</body>
+</html>
