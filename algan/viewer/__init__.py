@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from algan.viewer.viewer import ViewerHandle, view
+from algan.viewer.viewer import ViewerHandle, _view
 
-__all__ = ["ViewerHandle", "view"]
+__all__ = ["ViewerHandle", "_view"]

@@ -66,7 +66,7 @@ class ViewerHandle:
         return False
 
 
-def view(
+def _view(
     scene=None,
     video_settings=None,
     *,

@@ -1308,7 +1308,7 @@ class Scene(RenderLoopMixin):
 
             Scene.view()
         """
-        from algan.viewer import view as _view
+        from algan.viewer import _view
 
         return _view(
             self,

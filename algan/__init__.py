@@ -132,7 +132,6 @@ from algan.rendering.lights import *
 from algan.scene import Scene
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.utils.algan_utils import *
-from algan.viewer import view
 
 
 def set_environment_map(*args, **kwargs):
