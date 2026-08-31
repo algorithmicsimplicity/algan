@@ -464,6 +464,107 @@ def test_prefiltered_route_is_deterministic_across_processes(calib_arms):
     assert a.read_bytes() == b.read_bytes()
 
 
+# ---------------------------------------------------------------------------
+# The claim is shared by the band that made it (DESIGN_sheet_resolve.md §4.4)
+# ---------------------------------------------------------------------------
+
+# A lit flat-shaded rough metal, alone on a flat background: the geometry the
+# claim-sharing rule exists for. Every interior edge of a Polyhedron is a hard
+# crease, so its pixels are ONE surface's coverage subdivided into §4.4 sibling
+# sheets -- which is the split that must not change what the band commits.
+#
+# Ambient + one directional light only, deliberately: each facet is then EXACTLY
+# uniform, so the frame is piecewise constant with analytic blends at the facet
+# boundaries and an interior pixel brighter than all four of its neighbours
+# cannot be geometry. It is the seam.
+_SEAM_SCENE = """
+import sys
+from algan import (
+    DARKER_GRAY, ORIGIN, OUT, RED, RIGHT, UP, WHITE,
+    AmbientLight, DirectionalLight, Icosahedron, MeshStandardMaterial,
+    Off, PREVIEW, SETTINGS, Scene,
+)
+
+SETTINGS.paths.set(output_root=sys.argv[1], output_directory=".")
+with Scene() as scene:
+    Scene.set_background(DARKER_GRAY)
+    with Off():
+        AmbientLight(color=WHITE, intensity=0.45).spawn(animate=False)
+        DirectionalLight(
+            location=RIGHT * 5 + UP * 5 + OUT * 4, target=ORIGIN,
+            color=WHITE, intensity=0.85,
+        ).spawn(animate=False)
+        solid = Icosahedron(edge_length=0.85).set_material(
+            MeshStandardMaterial(color=RED, roughness=0.35, metalness=0.4)
+        )
+        solid.rotate(60, RIGHT)
+    solid.spawn(animate=False)
+    scene.save_frame("seam", video_settings=PREVIEW, overwrite=True)
+"""
+
+
+def _interior_local_maxima(png_path, margin):
+    """Pixels strictly brighter than all four 4-neighbours by > ``margin``."""
+    import numpy as np
+    from PIL import Image
+
+    v = np.array(Image.open(png_path).convert("RGB")).astype(np.int32).max(axis=2)
+    centre = v[1:-1, 1:-1]
+    neighbours = np.stack([v[:-2, 1:-1], v[2:, 1:-1], v[1:-1, :-2], v[1:-1, 2:]])
+    return int(((centre[None] - neighbours).min(axis=0) > margin).sum())
+
+
+def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
+    """No bright seam down the interior edges of a rough metal solid.
+
+    The prefiltered glossy event is a per-pixel resource, so the first
+    qualifying sheet claims it and later ones fall back to the
+    ``_mirror_share`` throttle (§2.2). A §4.4 band's siblings are not "later
+    sheets": they are one surface's coverage of the pixel, subdivided so each
+    shades with its own normal, and §4.4's contract is that the subdivision
+    changes nothing the band commits.
+
+    It changed this. The throttle at roughness 0.35 is ~3% of Schlick where the
+    split-sum ``E`` is the lobe's whole directional albedo, and the local term
+    is ``alpha * (1 - R)`` -- so a crease pixel's far sibling kept energy the
+    interior of the same facet gives to its reflection, and the pixel came out
+    brighter than BOTH facets it blends. ``E`` is per-channel and a metal's F0
+    is its albedo, so on a red metal it came out redder too: on ``tests/fast``,
+    whose Icosahedron this scene is, the crease row read ``(207, 106, 94)``
+    against ``(181, 103, 91)`` and ``(187, 106, 94)`` on either side -- +21 in
+    red against +1 in green, outside the interval a blend of the two can reach.
+
+    Interior local maxima on this frame: **72 before the claim was shared, 0
+    after**, so the bound below is nowhere near the measurement on either side.
+    The margin keeps it off the analytic blends themselves, which are exact
+    convex combinations and cannot exceed their own facets.
+    """
+    env = dict(os.environ)
+    for name in (
+        "ALGAN_GLOSSY_REFLECTION",
+        "ALGAN_GLOSSY_PREFILTER",
+        "ALGAN_GLOSSY_INTERLEAVE",
+    ):
+        env.pop(name, None)
+    env["ALGAN_USE_DAEMON"] = "0"
+    proc = subprocess.run(
+        [sys.executable, "-c", _SEAM_SCENE, str(tmp_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+        cwd=str(_REPO_ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+    frame = tmp_path / "seam.png"
+    assert frame.exists(), proc.stdout[-2000:]
+    assert _interior_local_maxima(frame, margin=2) <= 2, (
+        "a bright seam is back on the interior edges: "
+        f"{_interior_local_maxima(frame, margin=2)} interior local maxima"
+    )
+
+
 @_needs_audit_tree
 @_skip_slow_crawl
 def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):

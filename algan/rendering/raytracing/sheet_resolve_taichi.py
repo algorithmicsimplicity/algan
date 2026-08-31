@@ -289,6 +289,31 @@ def sheet_resolve_shade_arena(
         # inside ``layer_offsets``.
         gl_px_per_rad = 0.0
         gl_taken = False
+        # The prefiltered glossy event is a per-PIXEL resource -- one ``W``,
+        # one radius, one reflection row (DESIGN_glossy_prefilter.md §2.2) --
+        # so the first qualifying sheet claims it and every LATER reflective
+        # sheet of the pixel falls back to the ``_mirror_share`` throttle.
+        #
+        # A §4.4 BAND's siblings are not "later sheets". They are ONE surface's
+        # coverage of the pixel, subdivided so each shades with its own normal,
+        # and §4.4's contract is that the subdivision changes nothing the band
+        # commits. It changed this: the throttle at roughness 0.35 is ~3% of
+        # Schlick where the split-sum ``E`` is the lobe's whole directional
+        # albedo, and the local term is ``alpha * (1 - R)`` -- so a crease
+        # pixel's far sibling kept energy the interior of the same facet
+        # spends on its reflection. ``E`` is per-channel and a metal's F0 is its
+        # albedo, so on the fast suite's red Icosahedron that landed as a
+        # brighter, REDDER line down every interior edge (+21 sRGB in red
+        # against +1 in green, measured at PREVIEW).
+        #
+        # So the claim is shared by the band that made it: ``gl_band`` says
+        # that band is still open, each sibling shades with ``E``, and their
+        # energies sum into the one row they share -- one ray, in the claiming
+        # sibling's mirror direction, at the band's total weight, which is the
+        # weight the unsplit band would have spawned.
+        gl_band = False
+        gl_live = False
+        gl_wt = ti.math.vec3(0.0, 0.0, 0.0)
         if ti.static(glossy == 3):
             sp_c = ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
                                 screen_point[f, 2])
@@ -634,10 +659,16 @@ def sheet_resolve_shade_arena(
             # material alpha. A lone sheet writes its own, unchanged.
             w_cfac = cfac
             w_a_s = a_s
-            if defer or band_open:
+            cont_band = band_open
+            if defer or cont_band:
                 w_cfac = band_p
                 w_a_s = mat_alpha
             band_open = defer
+            # This sheet may share the pixel's prefiltered glossy claim only if
+            # it continues the band that made it (see ``gl_band`` above); the
+            # claim moves to whichever band claims next, and dies with its own.
+            gl_share = gl_band and cont_band
+            gl_band = gl_share and defer
             T = ti.math.clamp(T, 0.0, 1.0)
 
             normal = ti.math.vec3(0.0, 0.0, 0.0)
@@ -670,18 +701,20 @@ def sheet_resolve_shade_arena(
             prefilter_take = False
             if ti.static(glossy == 3):
                 # THE SPLIT-SUM SUBSTITUTION. One prefiltered glossy event per
-                # pixel (the first sheet that qualifies); for it, the lobe's
+                # pixel (the first sheet that qualifies, and the rest of ITS
+                # §4.4 band with it -- see ``gl_band``); for it, the lobe's
                 # exact directional albedo replaces both the Schlick mirror
                 # reflectance AND the ``_mirror_share`` throttle that stands in
                 # for a sampled lobe. Everything else on the pixel -- a second
-                # reflective sheet, a mirror below the roughness threshold,
-                # glass -- keeps the throttle, unchanged.
+                # SURFACE's reflective sheet, a mirror below the roughness
+                # threshold, glass -- keeps the throttle, unchanged.
                 #
                 # Made in BOTH shading modes and in the event-build mode: the
                 # three walks have to agree about transport or the shadow
                 # events would be built for a different image than the one
-                # shaded.
-                if (not gl_taken) and (reflectivity >= 0.0) \
+                # shaded. ``gl_band`` and ``gl_share`` are updated outside the
+                # mode gates for the same reason.
+                if ((not gl_taken) or gl_share) and (reflectivity >= 0.0) \
                         and (T <= 1e-4) and (rough > _GLOSSY_MIN_ROUGHNESS) \
                         and (bounces_left > 0):
                     R = _material_env_brdf(surf_rd, normal, reflectivity,
@@ -968,18 +1001,38 @@ def sheet_resolve_shade_arena(
                     # other would build shadow events for a different image
                     # than the one being shaded.
                     gl_taken = True
+                    # The claim now belongs to THIS sheet's band, and survives
+                    # exactly as long as the band does.
+                    gl_band = defer
+                    # A band's siblings share one row, so ``W`` is their SUM --
+                    # the weight the band would have spawned unsplit. Written
+                    # from the accumulator rather than added into the row, so a
+                    # sibling whose own spawn attempt failed (an exhausted pool)
+                    # still has its energy carried by whichever sibling gets a
+                    # slot, instead of being dropped or double counted.
+                    gl_wt += wt
                     refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     if ti.static(mode != 1):
                         gl_row = r + num_covered
-                        if _spawn_pool_ray(
+                        # ``gl_live``: a sibling already spawned this pixel's
+                        # one glossy ray, so this one only adds its energy to
+                        # it. The direction, radius and depth stay the claiming
+                        # sibling's: there is one row, and a lobe wide enough
+                        # to be worth prefiltering at all spans the crease
+                        # either way.
+                        if gl_live:
+                            for k in ti.static(range(3)):
+                                pix_accum[gl_row, GL_ROW_W + k] = gl_wt[k]
+                        elif _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
                                 surf_pos + nref * (10.0 * min_hit_distance),
                                 refl_rd, one3, base_dist + t_hit,
                                 bounces_left - 1, processed, pixel, r, gl_row,
                                 1, ior_stack, 0, 0.0, 0):
+                            gl_live = True
                             for k in ti.static(range(3)):
-                                pix_accum[gl_row, GL_ROW_W + k] = wt[k]
+                                pix_accum[gl_row, GL_ROW_W + k] = gl_wt[k]
                             pix_accum[gl_row, GL_ROW_SIGMA_SCALE] = (
                                 2.0 * rough * rough * gl_px_per_rad)
                             pix_accum[gl_row, GL_ROW_DP] = base_dist + t_hit
