@@ -548,6 +548,67 @@ def probe_int64_arithmetic(device):
         print(f"    2**{bits}: {', '.join(broken) if broken else 'all exact'}")
 
 
+def probe_epsilon_clamp(device):
+    """``clamp_min(tiny)`` -- the renderer's divide-by-zero guard.
+
+    Twenty-odd places guard a division by clamping the denominator to a tiny
+    positive floor (``sheets.py:716``, ``raster_pipeline.py:282``,
+    ``stbvh.py:287``, ...). The guard's whole job is to turn an exact zero into
+    something a division survives, so a backend on which it returns the zero
+    unchanged does not raise, does not warn, and produces a NaN one line later
+    -- which is exactly what the Apple GPU did to the closed-shell scene: a
+    band of zero area gave ``share = 0 / 0 = nan``, and a NaN never trips the
+    resolve's ``eff <= min_alpha`` branch, so the sheet composited instead of
+    dropping out and an interior column came back 239 instead of 153.
+
+    So this asks the question at every magnitude rather than at the one the
+    renderer happens to use. If the floor is a mantissa width -- a scalar
+    rounded through some narrower type on its way into the kernel -- the sweep
+    says where it is, and that is what decides whether the fix is one call site
+    or all of them. Each spelling is probed separately because they are
+    different dispatches, and a spelling that survives is a drop-in
+    replacement.
+    """
+    print("\ntiny-scalar clamp, the divide guard (sheets.py:716 and ~20 more)")
+    n = 4096
+    zeros_c = torch.zeros(n, dtype=torch.float32)
+    zeros_m = zeros_c.to(device)
+    # 1e-12 is the renderer's own floor; the rest bracket the ceilings a
+    # narrowing would put it under. 6.1e-5 is float16's smallest NORMAL and
+    # 5.96e-8 its smallest subnormal, so a scalar rounded through half would
+    # hold above the first, quantize between them, and flush to zero below the
+    # second; 1.18e-38 and 1.4e-45 are float32's own two.
+    for eps in (1e-3, 6.1e-5, 1e-6, 5.96e-8, 1e-8, 1e-12, 1.18e-38, 1.4e-45):
+        spellings = {
+            "clamp_min": lambda t, e=eps: t.clamp_min(e),
+            "clamp(min=)": lambda t, e=eps: t.clamp(min=e),
+            "torch.clamp_min": lambda t, e=eps: torch.clamp_min(t, e),
+            "maximum(0-dim)": lambda t, e=eps: torch.maximum(
+                t, torch.tensor(e, dtype=t.dtype, device=t.device)
+            ),
+            "maximum(full)": lambda t, e=eps: torch.maximum(t, torch.full_like(t, e)),
+        }
+        broken = [
+            name
+            for name, fn in spellings.items()
+            if not torch.equal(fn(zeros_c), fn(zeros_m).cpu())
+        ]
+        got = float(zeros_m.clamp_min(eps)[0])
+        print(
+            f"    {eps:g}: {', '.join(broken) if broken else 'every spelling holds'}"
+            f"  (clamp_min(0) -> {got:g}, want {eps:g})"
+        )
+        _report(f"clamp_min({eps:g}) on an exact zero", not broken)
+
+    # The composition the renderer actually performs, so the probe fails on the
+    # thing that reached the frame rather than only on its cause.
+    cov_c = torch.zeros(n, dtype=torch.float32)
+    area_c = torch.zeros(n, dtype=torch.float32)
+    share_c = cov_c / area_c.clamp_min(1e-12)
+    share_m = cov_c.to(device) / area_c.to(device).clamp_min(1e-12)
+    _check("share = 0 / area.clamp_min(1e-12)", share_c, share_m)
+
+
 def main() -> int:
     print(f"torch {torch.__version__}")
     if not torch.backends.mps.is_available():
@@ -565,6 +626,7 @@ def main() -> int:
         probe_segmented,
         probe_lookup,
         probe_gather_isolated,
+        probe_epsilon_clamp,
     ):
         try:
             probe(device)

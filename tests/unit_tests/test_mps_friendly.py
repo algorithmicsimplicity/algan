@@ -349,6 +349,55 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
 
 
 @pytest.mark.fast
+def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight():
+    """The divide guard in ``_sibling_weights``, on whatever device is here.
+
+    ``share = cov / sum(area)`` is guarded by a tiny floor, and the floor is
+    what MPS does not honour: ``clamp_min(1e-12)`` returns an exact zero
+    unchanged there, so a band whose siblings all contributed zero coverage
+    divided ``0 / 0`` and handed the resolve a NaN. Nothing downstream catches
+    one -- ``eff <= min_alpha`` is false against a NaN, like every comparison --
+    so the sheet composited instead of dropping out, and the closed shell of
+    ``test_path_tracer.py::test_closed_shell_attenuates_once_at_authored_opacity``
+    came back attenuated twice on the one column where a third sheet sits.
+
+    Two zero-area bands, because the function only takes its sibling path when
+    a band holds more than one sheet: a two-sibling band that is entirely empty
+    and a three-sibling one, which is the arrangement the cube's near vertical
+    edge actually produced.
+
+    **It only bites on a Mac**, like the gather guard above, and for the same
+    reason: it runs on ``torch.backends.mps.is_available()``'s device rather
+    than Algan's configured one, so any Apple machine checks the real hardware
+    and everywhere else it pins the arithmetic.
+    """
+    from algan.rendering.raytracing.sheets import AA_MASK_ALL, _sibling_weights
+
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    # Walk order, two bands: sheets 0-1 in band 0, sheets 2-4 in band 1. Every
+    # sheet's own coverage is zero, so both bands sum to zero area.
+    sheet_band = torch.tensor([0, 0, 1, 1, 1], dtype=torch.int64, device=device)
+    cov = torch.zeros(5, dtype=torch.float32, device=device)
+    msk = torch.full((5,), AA_MASK_ALL, dtype=torch.int64, device=device)
+    band_area = torch.zeros(2, dtype=torch.float32, device=device)
+    band_corr = torch.zeros(2, dtype=torch.float32, device=device)
+    band_union = torch.full((2,), AA_MASK_ALL, dtype=torch.int64, device=device)
+
+    wgt, wmsk = _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr)
+
+    assert bool(torch.isfinite(wgt).all()), (
+        f"a zero-area band produced {wgt.cpu().tolist()} on {device}: the "
+        "divide guard in sheets._sibling_weights no longer holds, and a NaN "
+        "coverage composites a sheet the resolve should have dropped"
+    )
+    # Zero area means zero share means zero weight -- the answer the guard was
+    # always meant to give, sign included: every sibling but a band's last
+    # carries the continuation flag as a negative.
+    assert torch.equal(wgt.abs().cpu(), torch.zeros(5))
+    assert torch.equal(wmsk.cpu(), torch.full((5,), AA_MASK_ALL, dtype=torch.int64))
+
+
+@pytest.mark.fast
 def test_the_packed_gather_leaves_narrow_dtypes_alone(computing_settings):
     """Only int64 takes the substituted path; everything else is ``index_select``."""
     computing_settings.set(mps_friendly=True)

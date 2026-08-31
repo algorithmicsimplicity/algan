@@ -43,14 +43,14 @@ invalid SPIR-V. It is Algan's kernel rather than Metal's limit, it has been in
 to it is why CPU and CUDA never said so. §1.2c has the mechanism and the
 Linux-only reproduction that found it.
 
-The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) is what
-is left, and it is now localized rather than open: the deterministic route
-composites a third shell crossing at one interior column, the path tracer is
-exactly right, two renders of it are bit-identical (so it is not the mode's
-non-determinism), and switching the closed-shell ceiling off removes the
-outlier entirely — which puts the defect inside `solid_shell_ceiling` and its
-in-place clamp of `cov_o`, not upstream of it. See the end of §1.2c for the
-measurements and for the one that comes next.
+The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) was
+**§2.3c**, and it is the third of these to be torch on MPS answering wrongly
+rather than failing: `clamp_min(1e-12)` returns an exact zero unchanged there.
+That call is the renderer's divide-by-zero guard, so a band of zero area
+computed `0 / 0`, and the NaN it made never trips the resolve's `eff <=
+min_alpha` branch — comparisons against a NaN are all false — so a sheet that
+should have dropped out composited, and one interior column of the closed shell
+came back attenuated twice. §2.3c has the measurement and the fix.
 
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
@@ -331,11 +331,14 @@ error at library creation, and the patch's guard is on the wrong side of it.
 Moving that check is a wheel rebuild, which is why it is written down rather
 than done.
 
-The seventh failure is unrelated and also open:
-`test_closed_shell_attenuates_once_at_authored_opacity` has the path-traced and
+The seventh failure is unrelated, and it was **§2.3c** — a third torch op that
+answers wrongly on MPS rather than failing.
+`test_closed_shell_attenuates_once_at_authored_opacity` had the path-traced and
 deterministic routes agreeing everywhere except one column of the interior,
-where they differ by 86. It **passes on the CPU in both modes**, so it is
-Metal-specific rather than an MPS-friendly substitution.
+where they differed by 86. It **passes on the CPU in both modes**, so it was
+backend-specific rather than an MPS-friendly substitution. The localization
+below is kept because it is what narrowed a whole frame to one expression; the
+answer is at the end of it.
 
 > **Localized**, by `benchmarks/_mps_closed_shell_probe.py`, which renders both
 > routes and prints them side by side over a window wider than the assertion's:
@@ -399,10 +402,37 @@ Metal-specific rather than an MPS-friendly substitution.
 > the block comment above it says it is for). A wrong coverage written at one
 > pixel therefore changes how its fragments group into sheets.
 >
-> **So the next measurement is that kernel's own inputs and outputs at the
-> offending pixel** — the segment key, the facing bit, the cap, the differenced
-> prefix, and the coverage in and out — against the CPU's for the same pixel.
-> Everything above it is now excluded by measurement rather than by argument.
+> **That measurement cleared the kernel.** The probe recomputes
+> `solid_shell_ceiling`'s output from its own inputs in float64 on the host, and
+> over 1305 fragments **no element differs by more than 1.2e-07** on either
+> device — so the ceiling computes the right answer on MPS. What it also
+> reports is the fact that matters: of those fragments, **604 are clamped to
+> zero**. That is the ceiling's job, and it is the input the code below it was
+> not written for.
+>
+> Dumping the sheets at the offending pixel says the rest. Column 37 carries
+> **three** sheets on both devices — the cube's near vertical edge — and where
+> the CPU has coverages `[+1.00000, -0.00000, +0.00000]`, the Apple GPU has
+> `[+1.00000, nan, nan]`. A NaN coverage never trips the resolve's `eff <=
+> min_alpha` branch, because every comparison against a NaN is false, so the two
+> sheets the CPU drops both composite: `1 - 0.4**3`, the 239 above.
+>
+> Wrapping the three functions between the ceiling and the sheet record named
+> the one that makes it — inputs all finite, output not — and recomputing that
+> function's intermediates named the expression:
+>
+> ```
+> band_area gathered: 0 non-finite
+> clamp_min(1e-12):   0 non-finite
+> share = cov / clamped: 474 non-finite
+>   row 10: band 8 cov 0 area 0 clamped 0 corr 0 share nan p nan pop 3
+> ```
+>
+> `clamped 0` is the whole defect: `sheets._sibling_weights` guards its divide
+> with `band_area.clamp_min(1e-12)`, and **MPS returns the exact zero
+> unchanged**, so a band whose siblings all contributed zero coverage — which
+> is precisely what the ceiling's 604 clamps create — divides `0 / 0`. See
+> §2.3c for the sweep and the fix.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
@@ -628,6 +658,54 @@ device from `torch.backends.mps.is_available()` rather than from Algan's render
 device, so it guards on any Apple machine including one without the patched
 Taichi; on everything else it degenerates to a correctness check of the helper,
 which is why a green Linux run does not clear it.
+
+### 2.3c `clamp_min` does not honour a tiny floor
+
+The third op in this family, and the one that took the longest to find, because
+unlike the two above it does not corrupt a value — it declines to *change* one.
+
+`x.clamp_min(eps)` with a small positive `eps` returns `x` unchanged on MPS
+where `x` is an exact zero. `benchmarks/_mps_torch_op_probe.py`'s
+`probe_epsilon_clamp` sweeps the magnitudes and the spellings, since the answer
+decides whether the exposure is one call site or all of them.
+
+That call is the renderer's **divide-by-zero guard**, in twenty-odd places
+(`sheets.py`, `raster_pipeline.py`, `stbvh.py`, `primitives.py`, ...). Its whole
+job is to turn an exact zero into something a division survives, so a backend on
+which it is a no-op does not raise, does not warn, and produces a NaN one line
+later. Only one of those sites is fed an exact zero by any scene rendered so
+far: `_sibling_weights`' `share = cov / sum(area)`, where a band all of whose
+siblings were clamped to zero coverage by `solid_shell_ceiling` sums to exactly
+zero.
+
+**A NaN is worse here than a wrong number**, which is why one column of one test
+scene was the whole visible symptom of it. The resolve drops a sheet whose
+effective coverage falls under `min_alpha`; every comparison against a NaN is
+false, so a NaN coverage is neither small enough to drop nor large enough to
+saturate — it simply passes the branch and composites. See the end of §1.2c for
+the chain from the clamp to the pixel.
+
+Fixed at the call site rather than in `mps_compat`, because the fix is not a
+substitution: `share` is selected on the band's area instead of divided through
+a floor,
+
+```python
+share = torch.where(area_g > 0, cov.to(acc) / area_g.clamp_min(1e-12), 0.0)
+```
+
+which is right on every backend and byte-identical on the ones where the clamp
+works. Coverages are non-negative, so a zero band area means every sibling
+contributed zero and the old expression's answer was `0 / 1e-12` — the zero this
+writes — while a positive area still divides by the clamped value it always did.
+`test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
+guards it on whatever device the machine has, like the gather guard in §2.3b.
+
+**The other sites are exposed and are not fixed**, deliberately: none of them
+has been measured taking a zero, and rewriting twenty divisions against a defect
+whose threshold the sweep will pin is churn ahead of the measurement. What makes
+that safe to leave is that the failure mode is a NaN, which propagates to a
+visibly wrong frame rather than to a plausible one — this defect cost one test,
+not a silent baseline shift.
 
 ### 2.4 How non-deterministic MPS actually is
 

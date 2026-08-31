@@ -713,7 +713,21 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
         return cov, msk
 
     acc = accumulate_dtype()
-    share = cov.to(acc) / band_area.index_select(0, sheet_band).to(acc).clamp_min(1e-12)
+    area_g = band_area.index_select(0, sheet_band).to(acc)
+    # A band of zero area has no share to hand out, and saying so is not the
+    # same as dividing by a floor. The floor alone was what this used to carry,
+    # and on MPS it does not hold: ``clamp_min(1e-12)`` returns the exact zero
+    # unchanged there (``benchmarks/_mps_torch_op_probe.py::probe_epsilon_clamp``
+    # sweeps the magnitudes), so ``0 / 0`` produced a NaN -- and a NaN never
+    # trips the resolve's ``eff <= min_alpha`` branch, so the sheet composited
+    # instead of dropping out and a closed shell's interior edge came back
+    # doubly attenuated. Selecting on the area is exact wherever the clamp
+    # works: coverages are non-negative, so a zero sum means every sibling
+    # contributed zero and the old expression's answer was ``0 / 1e-12`` -- the
+    # zero this writes -- while a positive area still divides by the clamped
+    # value it always did.
+    share = torch.where(area_g > 0, cov.to(acc) / area_g.clamp_min(1e-12), 0.0)
+    del area_g
     p = band_corr.index_select(0, sheet_band).to(acc) * share
 
     union = band_union.index_select(0, sheet_band)

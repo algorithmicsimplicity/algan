@@ -615,6 +615,8 @@ jobs:
           fi
           echo "== torch op probe: exactness ladder =="
           sed -n '/where int64 exactness ends/,/^$/p' torch-op-probe.txt
+          echo "== torch op probe: the divide guard, by magnitude =="
+          sed -n '/tiny-scalar clamp/,/^$/p' torch-op-probe.txt
           echo "== torch op probe: disagreements =="
           sed -n '/op(s) disagree with the CPU/,$p' torch-op-probe.txt \
             || echo "(none)"
@@ -633,7 +635,7 @@ jobs:
             grep -E 'assertion window|interior mean|truncations' \
               closed-shell-probe.txt || true
             echo "== closed shell: where a non-finite value is born =="
-            grep -E '_band_(reduce|composite) (in|out)|_sibling_weights (in|out)|sheet_band:|acc=|gathered:|clamp_min|share = |p = corr|^  pop:|^  wgt:|^    row |every stage recomputed' \
+            grep -E '_band_(reduce|composite) (in|out)|_sibling_weights (in|out)|sheet_band:|acc=|gathered:|clamp_min|zero area|shipped form|share = |p = corr|^  pop:|^  wgt:|^    row |every stage recomputed' \
               closed-shell-probe.txt | head -30 || true
             echo "== closed shell: the ceiling against its host oracle =="
             grep -E 'kernel vs host oracle|^  segments=|^  cov in sum|^    row ' \

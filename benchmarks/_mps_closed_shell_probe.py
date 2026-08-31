@@ -351,7 +351,25 @@ def _sibling_detail(
     area_g = band_area.index_select(0, sheet_band).to(acc)
     corr_g = band_corr.index_select(0, sheet_band).to(acc)
     clamped = area_g.clamp_min(1e-12)
+    # The unguarded form, kept deliberately: this is the expression that made
+    # the NaN, and it is the reading that says whether the backend's
+    # ``clamp_min`` still declines to raise an exact zero off the floor. The
+    # renderer no longer computes it this way -- ``sheets._sibling_weights``
+    # selects on the area (§2.3c) -- so a run where the line below still shows
+    # non-finite values and the frame is right is the expected outcome on MPS,
+    # not a regression.
     share = cov.to(acc) / clamped
+    lines.append(
+        f"  sheets whose band has exactly zero area: {int((area_g == 0).sum())}; "
+        f"clamp_min(1e-12) left {int((clamped == 0).sum())} of them at zero "
+        "(a backend that honours the floor leaves none, and the guard is the "
+        "whole reason a zero-area band is survivable)"
+    )
+    guarded = torch.where(area_g > 0, share, 0.0)
+    lines.append(
+        f"  the shipped form, share selected on the area: "
+        f"{int((~torch.isfinite(guarded)).sum())} non-finite"
+    )
     p = corr_g * share
     union = band_union.index_select(0, sheet_band)
     pop = sh._popcount_lanes(union).clamp_min(1).to(acc)
