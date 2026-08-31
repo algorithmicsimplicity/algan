@@ -37,14 +37,44 @@ import torch.nn.functional as F
 
 from algan.rendering.mps_compat import clamp_floor
 
+#: Frame height, in pixels, at which a ``render_tolerance_pixels`` budget is
+#: spent in full. Below it the budget is scaled down in proportion, so a small
+#: frame is diced finer than its pixel count alone would ask for.
+#:
+#: The analytic-coverage antialiasing computes a pixel's coverage from the
+#: microtriangles crossing it, so it wants several of them per pixel, and at a
+#: low resolution each pixel covers much more of the object -- a flat budget in
+#: pixels would leave a PREVIEW render visibly blocky. This is the property of
+#: the renderer that used to be spelled as a second, fraction-of-frame-height
+#: tolerance on every Mob that carries one; it is the same for every scene, so
+#: it belongs here rather than in a constructor.
+#:
+#: 1000 reproduces both configurations the old pair was ever used with: a
+#: Surface's ``0.0005`` fraction against its ``0.5`` px cap, and a non-planar
+#: circuit patch's ``0.001`` against ``1.0``, both crossed over at exactly this
+#: height.
+TOLERANCE_REFERENCE_HEIGHT = 1000.0
+
+
+def dice_pixel_threshold(tolerance_pixels, screen_height):
+    """A frame's error budget for the dice criteria, in output pixels.
+
+    ``tolerance_pixels`` is the budget at :data:`TOLERANCE_REFERENCE_HEIGHT` and
+    above; a shorter frame gets a proportionally smaller one. ``inf`` in gives
+    ``inf`` out -- no bound at any resolution.
+    """
+    return tolerance_pixels * min(
+        float(screen_height) / TOLERANCE_REFERENCE_HEIGHT, 1.0
+    )
+
 
 def normalize_pixel_tolerance(value):
-    """Normalize an absolute-pixel render tolerance to a positive float.
+    """Normalize a render tolerance in output pixels to a positive float.
 
-    ``None`` means "no absolute bound", which the level searches spell as
-    ``inf`` so that the two render tolerances combine by a plain ``min`` with
-    no branch. Anything else must be a positive number of output pixels;
-    ``inf`` itself is accepted and means the same as ``None``.
+    ``None`` means "no bound at all", spelled ``inf`` so the level searches can
+    compare against it without a branch. Anything else must be a positive
+    number of output pixels; ``inf`` itself is accepted and means the same as
+    ``None``.
     """
     if value is None:
         return float("inf")

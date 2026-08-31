@@ -902,7 +902,7 @@ Hard limits
      - 8
      - The dice stops refining that patch and **warns**
        (``RuntimeWarning``: "tessellation reached its safety cap before meeting
-       render_tolerance for every patch").
+       render_tolerance_pixels for every patch").
    * - Diced triangles in one frame
      - 2 000 000
      - The level search refuses further promotions and warns, as above. The

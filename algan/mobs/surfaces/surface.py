@@ -11,11 +11,11 @@ and the search sizes each parameter axis against its own contribution to that
 error, so an axis the surface is straight along (a cylinder's length, a cone's
 slant) costs the minimum however curved the other axis is. The search is cached
 per subclass and geometry configuration.
-``render_tolerance`` and ``render_tolerance_pixels`` then bound the on-screen
-error when each PN triangle is diced into flat render triangles -- per triangle,
-per frame, so detail is spent only where the surface is near the camera. The
-first is a fraction of the frame height and the second an absolute pixel count;
-whichever is finer at the resolution being rendered is the one that binds.
+``render_tolerance_pixels`` then bounds the on-screen error when each PN
+triangle is diced into flat render triangles -- per triangle, per frame, so
+detail is spent only where the surface is near the camera. It is an absolute
+pixel count at the renderer's reference frame height, scaled down in proportion
+on shorter frames.
 
 Surfaces carry the texture-map API: ``color_texture`` plus per-texel
 reflectivity, roughness, refractive-index, normal and glow maps, all sampled in
@@ -821,25 +821,24 @@ class Surface(Mob):
         The selected grid is cached per concrete Surface subclass and geometry
         configuration, so constructing the same shape again does not repeat
         the resolution search.
-    render_tolerance
-        Maximum sampled deviation between a PN triangle and the flat render
-        triangles it is dynamically diced into, as a fraction of the output frame
-        height. Defaults to ``0.0005``. Every PN triangle is diced only as finely as
-        it itself needs, in every frame, so detail spent where the surface is close
-        to the camera is not spent on the rest of the mesh or on the frames where it
-        is far away.
     render_tolerance_pixels
-        The same maximum deviation, stated as an absolute number of output pixels
-        instead. Defaults to ``0.5``; ``None`` removes the bound. The two render
-        tolerances are both upper bounds on the same error and the finer one at the
-        resolution being rendered is what the dice satisfies. A fraction of the
-        frame height is what a low-resolution render needs -- the analytic-coverage
-        antialiasing computes a pixel's coverage from the microtriangles crossing
-        it, so at ``PREVIEW`` (a 396-pixel-tall frame) the default
-        ``render_tolerance`` is worth 0.2 px and
-        holds the dice below a pixel -- but the same fraction grows with the frame,
-        and past roughly 1080p it alone would leave triangles several pixels across.
-        This is the bound that takes over there.
+        Maximum sampled deviation between a PN triangle and the flat render
+        triangles it is dynamically diced into, in output pixels. Defaults to
+        ``0.5`` -- half a pixel, so the dice is invisible; ``None`` removes the
+        bound entirely. Lower it for a sharper silhouette on a surface that
+        fills the frame, raise it to buy back the triangles.
+
+        Every PN triangle is diced only as finely as it itself needs, in every
+        frame, so detail spent where the surface is close to the camera is not
+        spent on the rest of the mesh or on the frames where it is far away.
+
+        The budget is stated at the renderer's reference frame height (1000 px)
+        and scaled down in proportion on anything shorter, since a
+        low-resolution frame needs finer dicing than its pixel count alone
+        suggests -- the analytic-coverage antialiasing computes a pixel's
+        coverage from the microtriangles crossing it, and at ``PREVIEW`` each
+        pixel covers far more of the object. So the default is worth 0.5 px from
+        1080p up and 0.2 px at ``PREVIEW``, and halving it halves both.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis. Default
         to ``2`` and ``200``. The floor is two vertices -- one cell -- because a
@@ -1007,7 +1006,6 @@ class Surface(Mob):
         glow_texture=None,
         ignore_normals=False,
         geometry_tolerance=0.0005,
-        render_tolerance=0.0005,
         render_tolerance_pixels=0.5,
         min_grid_resolution=2,
         max_grid_resolution=200,
@@ -1046,7 +1044,6 @@ class Surface(Mob):
         # topology changes are deliberately disabled by the logical PN system.
         self._auto_resolution_enabled = False
         self._geometry_tolerance = float(geometry_tolerance)
-        self._render_tolerance = float(render_tolerance)
         self._render_tolerance_pixels = normalize_pixel_tolerance(
             render_tolerance_pixels
         )
@@ -1059,10 +1056,6 @@ class Surface(Mob):
             raise ValueError("geometry_tolerance must be finite")
         if self._geometry_tolerance <= 0:
             raise ValueError("geometry_tolerance must be greater than zero")
-        if not np.isfinite(self._render_tolerance):
-            raise ValueError("render_tolerance must be finite")
-        if self._render_tolerance <= 0:
-            raise ValueError("render_tolerance must be greater than zero")
         if self._min_grid_resolution < 2:
             raise ValueError("min_grid_resolution must be at least 2")
         if self._max_grid_resolution < self._min_grid_resolution:
@@ -1396,34 +1389,19 @@ class Surface(Mob):
 
         See Also
         --------
-        :attr:`~algan.mobs.surfaces.surface.Surface.render_tolerance` : The per-frame budget, in screen terms.
+        :attr:`~algan.mobs.surfaces.surface.Surface.render_tolerance_pixels` : The per-frame budget, in screen terms.
         """
         return self._geometry_tolerance
 
     @property
-    def render_tolerance(self) -> float:
-        """How far a drawn triangle may sit from the true surface, per frame.
-
-        A fraction of the output frame's height, so it means the same thing at
-        every resolution. Fixed at construction and read-only. Unlike
-        :attr:`geometry_tolerance` this is spent afresh every frame, on
-        whichever parts of the surface are near the camera.
-
-        See Also
-        --------
-        :attr:`~algan.mobs.surfaces.surface.Surface.render_tolerance_pixels` : The same budget as an absolute pixel count.
-        """
-        return self._render_tolerance
-
-    @property
     def render_tolerance_pixels(self) -> float:
-        """The same per-frame budget as :attr:`render_tolerance`, in output pixels.
+        """How far a drawn triangle may sit from the true surface, in pixels.
 
-        Both are upper bounds on one error, and whichever is finer at the
-        resolution being rendered is the one that binds -- the fraction governs
-        low-resolution renders, this one takes over past roughly 1080p. ``inf``
-        when the surface declares none, leaving :attr:`render_tolerance` alone
-        in charge.
+        The budget at the renderer's reference frame height, scaled down in
+        proportion on shorter frames. Fixed at construction and read-only.
+        Unlike :attr:`geometry_tolerance` it is spent afresh every frame, on
+        whichever parts of the surface are near the camera. ``inf`` when the
+        surface declares no bound at all.
         """
         return self._render_tolerance_pixels
 
@@ -3698,7 +3676,6 @@ class Surface(Mob):
             material_texture_map=material_texture_map,
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
-            render_tolerance=self._render_tolerance,
             render_tolerance_pixels=self._render_tolerance_pixels,
             geometry_slack_ratio=self._geometry_slack_ratio,
             **{

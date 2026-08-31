@@ -52,13 +52,13 @@ def render(guard, tag):
     LogicalPNTrianglePrimitive.screen_guard_factor = guard
     _levels.clear()
     SETTINGS.video.set(LD)
-    # A tight render_tolerance and a subject large enough to reach the frame
+    # A tight render_tolerance_pixels and a subject large enough to reach the frame
     # edges: the level must land above 0, and geometry must sit right up
     # against the guard box, or the comparison proves nothing.
     with Off():
         Group(
             [
-                Sphere(color=BLUE, render_tolerance=0.0008, max_grid_resolution=24)
+                Sphere(color=BLUE, render_tolerance_pixels=0.8, max_grid_resolution=24)
                 .scale(1.7)
                 .move(RIGHT * 2.2 * i)
                 for i in (-1, 0, 1)

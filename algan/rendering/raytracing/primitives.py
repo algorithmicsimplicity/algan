@@ -11,6 +11,7 @@ from algan.environment import env_float
 from algan.rendering.logical_pn import (
     OPPOSITE_EDGE,
     dice_pattern,
+    dice_pixel_threshold,
     dice_triangle_count,
     evaluate_cubic_curve,
     evaluate_logical_pn,
@@ -1370,10 +1371,8 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     and the diced interior within it of the true patch, both in output pixels.
     In the band of microtriangles touching a snapped boundary the two
     displacements can add, for a worst case of twice the budget.  The budget
-    itself is the finer of the two tolerances at this frame's resolution --
-    ``render_tolerance`` as a fraction of the frame height, and
-    ``render_tolerance_pixels`` as an absolute pixel count -- see
-    :meth:`_pixel_threshold`.
+    itself is ``render_tolerance_pixels``, scaled down on frames shorter than
+    the renderer's reference height -- see :meth:`_pixel_threshold`.
 
     Both criteria measure against the *logical PN patch*, which is itself only
     an approximation of the surface the author asked for.  Where the mesh
@@ -1441,21 +1440,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     def __init__(
         self,
         *args,
-        render_tolerance=0.5,
         render_tolerance_pixels=None,
         geometry_slack_ratio=0.0,
         **kwargs,
     ):
         collection = kwargs.get("triangle_collection")
         if collection is not None:
-            tolerances = [
-                float(getattr(p, "render_tolerance", render_tolerance))
-                for p in collection
-            ]
-            render_tolerance = min(tolerances)
-            # Both tolerances merge the same way and for the same reason: the
-            # merged primitive is judged by one criterion, so the finest value
-            # any member declares is the only one that cannot over-relax
+            # The merged primitive is judged by one criterion, so the finest
+            # value any member declares is the only one that cannot over-relax
             # another.
             render_tolerance_pixels = min(
                 normalize_pixel_tolerance(
@@ -1469,15 +1461,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 float(getattr(p, "geometry_slack_ratio", 0.0)) for p in collection
             )
         super().__init__(*args, **kwargs)
-        self.render_tolerance = float(render_tolerance)
         self.render_tolerance_pixels = normalize_pixel_tolerance(
             render_tolerance_pixels
         )
         self.geometry_slack_ratio = float(geometry_slack_ratio)
-        if not torch.isfinite(torch.tensor(self.render_tolerance)):
-            raise ValueError("render_tolerance must be finite")
-        if self.render_tolerance <= 0:
-            raise ValueError("render_tolerance must be greater than zero")
 
     def get_batch_identifier(self):
         # The shadow-casting declaration joins the key, and ONLY here: the BVH
@@ -1498,7 +1485,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # rides is itself per frame.
         return (
             f"{super().get_batch_identifier()}"
-            f"_logical_pn_render_tolerance={self.render_tolerance}"
             f"_logical_pn_render_tolerance_pixels={self.render_tolerance_pixels}"
             f"_casts_shadows={_declares_no_shadow_cast(self)}"
         )
@@ -1506,21 +1492,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     def _pixel_threshold(self, screen_height):
         """This frame's error budget for the dice criteria, in output pixels.
 
-        Both tolerances bound the same quantity and the finer one wins.
-        ``render_tolerance`` is a fraction of the frame height, so it holds the
-        error to a constant share of the picture however large the picture is;
-        ``render_tolerance_pixels`` is an absolute count, so it holds the error
-        to a constant number of pixels however small the picture is. A
-        low-resolution render is therefore still diced well below a pixel --
-        which the analytic-coverage antialiasing needs, since a microtriangle
-        wider than a pixel is what its coverage is computed from -- while a
-        high-resolution one no longer inherits triangles several pixels across
-        from a tolerance that only ever scaled with the frame.
+        ``render_tolerance_pixels`` is the budget at
+        :data:`~algan.rendering.logical_pn.TOLERANCE_REFERENCE_HEIGHT` and
+        above; on a shorter frame it shrinks in proportion, so a
+        low-resolution render is still diced well below a pixel -- which the
+        analytic-coverage antialiasing needs, since a microtriangle wider than
+        a pixel is what its coverage is computed from.
         """
-        return min(
-            self.render_tolerance * float(screen_height),
-            self.render_tolerance_pixels,
-        )
+        return dice_pixel_threshold(self.render_tolerance_pixels, screen_height)
 
     @staticmethod
     def _project_to_output_pixels(points, cam_o, sp, sb, screen_height):
@@ -1575,7 +1554,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         The stopping criterion these errors feed is a *primary visibility* one:
         keep subdividing until the flat stand-in lands within
-        ``render_tolerance`` of the true surface, measured in output pixels.
+        ``render_tolerance_pixels`` of the true surface, in output pixels.
         Projected pixel coordinates are unbounded, though -- geometry off to the
         side of the view axis, or approaching the camera plane, projects
         arbitrarily far outside the frame -- so the raw error is not usable as a
@@ -1694,7 +1673,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         if edge_capped or patch_capped:
             warnings.warn(
                 "Logical PN render tessellation reached its safety cap before "
-                "meeting render_tolerance for every patch.",
+                "meeting render_tolerance_pixels for every patch.",
                 RuntimeWarning,
                 stacklevel=3,
             )

@@ -1181,11 +1181,8 @@ class MobMorphMixin:
         target_conversion = get_morph_conversion(target._morph_family)
         source_soup = convert_to_pn_soup(source, add_to_scene=False)
         target_soup = convert_to_pn_soup(target, add_to_scene=False)
-        tolerance = min(source_soup.render_tolerance, target_soup.render_tolerance)
-        source_soup.render_tolerance = tolerance
-        target_soup.render_tolerance = tolerance
-        # The two soups are diced as one primitive, so the pixel bound has to
-        # agree the same way the screen-fraction one does.
+        # The two soups are diced as one primitive, so they have to agree on
+        # the bound: the finer of the two, which cannot over-relax either.
         pixel_tolerance = min(
             source_soup.render_tolerance_pixels, target_soup.render_tolerance_pixels
         )
