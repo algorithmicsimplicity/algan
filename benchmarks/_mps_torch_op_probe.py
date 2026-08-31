@@ -653,9 +653,7 @@ def probe_epsilon_clamp(device):
             want = host.clamp_min(eps)
             got = torch.where(host.to(device) < eps, eps, host.to(device)).cpu()
             if not torch.equal(want, got):
-                bad.append(
-                    f"x={value:g} -> {float(got[0]):g} want {float(want[0]):g}"
-                )
+                bad.append(f"x={value:g} -> {float(got[0]):g} want {float(want[0]):g}")
         print(
             f"    where(x < {eps:g}, {eps:g}, x): "
             + ("; ".join(bad) if bad else "exact over every input")

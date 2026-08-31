@@ -101,4 +101,3 @@ def test_cuda_available_bytes_clears_the_requested_device(monkeypatch):
         ("info", torch.device("cuda:2")),
         ("exit", torch.device("cuda:2")),
     ]
-
