@@ -9,6 +9,7 @@ Animatable
 AnimatedBoundary
 AnimationContext
 AnimationManager
+AnnotationDot
 AnnularSector
 Annulus
 ApplyComplexFunction
@@ -18,9 +19,18 @@ ApplyWave
 ApproximationWarning
 Arc
 ArcBetweenPoints
+ArcBrace
 ArcPolygon
+ArcPolygonFromArcs
 Arrow
 Arrow3D
+ArrowCircleFilledTip
+ArrowCircleTip
+ArrowSquareFilledTip
+ArrowSquareTip
+ArrowTriangleFilledTip
+ArrowTriangleTip
+ArrowVectorField
 Audio
 AudioEffect
 AudioManager
@@ -34,6 +44,7 @@ BLUE_C
 BLUE_D
 BLUE_E
 BRUSHED_METAL
+BackgroundRectangle
 BarChart
 BezierCircuitCubic
 BezierCurveCubic
@@ -67,6 +78,7 @@ Cube
 CubicBezier
 CurvedArrow
 CurvedDoubleArrow
+CurvesAsSubmobjects
 Cutout
 Cylinder
 DARKER_GRAY
@@ -82,6 +94,7 @@ DEGREES_TO_RADIANS
 DIELECTRIC_IOR
 DOWN
 DashedLine
+DashedVMobject
 DecimalMatrix
 DecimalNumber
 DecimalTable
@@ -101,6 +114,7 @@ Exclusion
 Flash
 FocusOn
 FragmentStage
+FullScreenRectangle
 FunctionGraph
 GIGABYTES
 GLASS
@@ -272,8 +286,10 @@ STAGE_STANDARD
 STAGE_UNLIT
 STONE
 SVGMobject
+SampleSpace
 Scene
 SceneManager
+ScreenRectangle
 Sector
 Seq
 Settings
@@ -287,6 +303,8 @@ Sphere
 SpotLight
 Square
 Star
+StealthTip
+StreamLines
 StyleSettings
 Surface
 SurroundingRectangle
@@ -320,11 +338,13 @@ UHD
 UP
 Underline
 Union
+UnitInterval
 UnlitMaterial
 UnsupportedFeatureError
 UnsupportedFeatureWarning
 Variable
 Vector
+VectorField
 VideoSettings
 WHITE
 WOOD
@@ -345,7 +365,6 @@ cosine_color
 depth_shader
 easings
 fresnel_rim
-from_manim_coordinates
 glass_ball
 lambert_shader
 manim_fov
@@ -358,6 +377,5 @@ set_environment_map
 set_log_level
 set_progress_style
 standard_shader
-to_manim_coordinates
 toon_shader
 view

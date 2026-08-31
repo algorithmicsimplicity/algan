@@ -24,17 +24,14 @@ and one Algan perspective camera at distance 20 with
 
 reproduces both: 2-D content exactly, 3-D content with Manim's own perspective.
 
-The z axis points the other way
--------------------------------
-Manim's ``OUT`` is ``+z`` and Algan's ``OUTWARD`` is ``-z``, so the two screen
-bases are
-mirror images: with the same numbers a Manim scene's near objects become Algan's
-far ones. Reproducing Manim's picture therefore means mirroring *both* the
-geometry and the camera in z, which is what
-:func:`from_manim_coordinates` does and why
-:attr:`Scene.manim_coordinates <algan.scene.Scene.manim_coordinates>` exists.
-Mirroring only the camera would render the scene back-to-front; mirroring only
-the geometry would render it from behind.
+The z axis agrees
+-----------------
+Manim's ``OUT`` and Algan's ``OUTWARD`` are both ``+z``, so a point keeps the
+coordinates it was written with and there is nothing to convert. Algan used to
+put ``OUTWARD`` at ``-z``, which made the two screen bases mirror images and
+needed a ``Scene.manim_coordinates`` flag to mirror imported geometry and the
+camera together; that flag and its ``from_manim_coordinates`` /
+``to_manim_coordinates`` helpers are gone with the reason for them.
 """
 
 from __future__ import annotations
@@ -57,9 +54,9 @@ MANIM_FRAME_HEIGHT = 8.0
 #: ``f / (f - z)``, which is a pinhole camera this far from ``z = 0``.
 MANIM_FOCAL_DISTANCE = 20.0
 
-#: Manim's ``ThreeDCamera.light_source_start_point``, in **Manim** coordinates
-#: (``9 * DOWN + 7 * LEFT + 10 * OUTWARD``). Pass it through
-#: :func:`from_manim_coordinates` before handing it to an Algan light.
+#: Manim's ``ThreeDCamera.light_source_start_point``
+#: (``9 * DOWN + 7 * LEFT + 10 * OUT``). Manim's coordinates are Algan's, so it
+#: is usable as an Algan light position directly.
 MANIM_LIGHT_SOURCE = (-7.0, -9.0, 10.0)
 
 #: Manim's default output resolution and frame rate (``manim/_config/default.cfg``).
@@ -104,74 +101,12 @@ def manim_fov(
     return math.degrees(2.0 * math.atan((frame_height * 0.5) / focal_distance))
 
 
-def _mirror_z(points):
-    """Negate the z component of a point, tensor of points, or 3-sequence."""
-    tensor = torch.as_tensor(points, dtype=torch.get_default_dtype())
-    flip = torch.ones_like(tensor)
-    flip[..., 2] = -1.0
-    return tensor * flip
-
-
-def from_manim_coordinates(points):
-    """Convert points from Manim's coordinate system into Algan's.
-
-    Manim's ``OUT`` is ``+z`` and Algan's ``OUTWARD`` is ``-z``, so the conversion
-    is a mirror
-    in z. x and y are untouched: both engines put ``+x`` to the right and ``+y``
-    up.
-
-    The mirror is an involution, so this and :func:`to_manim_coordinates` do the
-    same arithmetic; they are separate names so a call site says which way it is
-    going.
-
-    Parameters
-    ----------
-    points
-        A point or an array of points whose last dimension is 3. Anything
-        ``torch.as_tensor`` accepts -- a tensor, a NumPy array, or a sequence.
-
-    Returns
-    -------
-    :class:`torch.Tensor`
-        The converted points, same shape as the input.
-
-    See Also
-    --------
-    :func:`to_manim_coordinates` : The other direction.
-    """
-    return _mirror_z(points)
-
-
-def to_manim_coordinates(points):
-    """Convert points from Algan's coordinate system into Manim's.
-
-    The inverse of :func:`from_manim_coordinates`, and the same arithmetic -- a
-    mirror in z.
-
-    Parameters
-    ----------
-    points
-        A point or an array of points whose last dimension is 3.
-
-    Returns
-    -------
-    :class:`torch.Tensor`
-        The converted points, same shape as the input.
-
-    See Also
-    --------
-    :func:`from_manim_coordinates` : The other direction.
-    """
-    return _mirror_z(points)
-
-
 def apply_manim_defaults(
     scene,
     *,
     camera: bool = True,
     shading: bool = True,
     background: bool = True,
-    coordinates: bool = True,
     video_settings: bool = False,
     shape_defaults: bool = False,
 ):
@@ -179,9 +114,6 @@ def apply_manim_defaults(
     from algan.rendering.lights import PointLight
     from algan.rendering.shaders.materials import ManimMaterial
     from algan.settings.video_settings import VideoSettings
-
-    if coordinates:
-        scene.manim_coordinates = True
 
     if video_settings:
         scene.set_video_settings(
@@ -198,8 +130,8 @@ def apply_manim_defaults(
         scene_camera = scene.get_camera()
         if scene_camera is not None:
             # Manim's eye sits focal_distance from the frame plane on its +z
-            # side; mirrored into Algan that is OUTWARD * focal_distance, which is
-            # already where an Algan camera looks from.
+            # side, which is OUTWARD * focal_distance -- already where an Algan
+            # camera looks from.
             scene_camera.move_to(ORIGIN + OUTWARD * MANIM_FOCAL_DISTANCE)
             scene_camera.look_at(ORIGIN)
             scene_camera.set_fov(manim_fov())
@@ -208,7 +140,7 @@ def apply_manim_defaults(
         scene.clear_lights()
         PointLight(
             scene=scene,
-            location=from_manim_coordinates(MANIM_LIGHT_SOURCE).view(1, 1, 3),
+            location=torch.tensor(MANIM_LIGHT_SOURCE).view(1, 1, 3),
             color=WHITE,
         ).spawn(animate=False)
         # What the default material reaches, engine by engine. Manim applies

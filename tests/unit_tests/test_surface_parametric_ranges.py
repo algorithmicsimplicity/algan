@@ -28,7 +28,13 @@ def reset_scene():
 
 
 def _legacy_sphere_coords(uv: torch.Tensor, radius: float) -> torch.Tensor:
-    """``Sphere.coord_function`` exactly as it read before ranges were honoured."""
+    """``Sphere.coord_function`` exactly as it read before ranges were honoured.
+
+    The z component is negated against the original line, because Algan's z
+    convention changed with it (OUTWARD is +z now). What this pins is that
+    *honouring the ranges* moved no vertex, so it has to track the convention
+    the shape is built in -- otherwise it would pin the old axis instead.
+    """
     x = uv[..., 0]
     y = uv[..., 1]
     longitude = -math.pi * (1 - x) + x * math.pi
@@ -37,7 +43,7 @@ def _legacy_sphere_coords(uv: torch.Tensor, radius: float) -> torch.Tensor:
         (
             torch.cos(latitude) * torch.cos(longitude),
             torch.sin(latitude),
-            torch.cos(latitude) * torch.sin(longitude),
+            -torch.cos(latitude) * torch.sin(longitude),
         ),
         dim=-1,
     )
@@ -108,11 +114,11 @@ def _extents(mob):
 
 def test_sphere_u_range_restricts_the_azimuth_to_the_out_half():
     # ``u`` starts at LEFT and turns through OUT, so half of it is the half
-    # facing the camera: OUT is -z, and no vertex may cross into +z.
+    # facing the camera: OUT is +z, and no vertex may cross into -z.
     low, high = _extents(Sphere(u_range=(0, 180), add_to_scene=False).spawn())
 
-    assert high[2] <= 1e-6
-    assert low[2] < -0.99
+    assert low[2] >= -1e-6
+    assert high[2] > 0.99
     # The azimuth is cut, not the poles: full height and full width survive.
     assert low[1] == pytest.approx(-1, abs=1e-5)
     assert high[1] == pytest.approx(1, abs=1e-5)
@@ -123,8 +129,8 @@ def test_sphere_u_range_restricts_the_azimuth_to_the_out_half():
 def test_sphere_u_range_second_half_is_the_in_half():
     low, high = _extents(Sphere(u_range=(180, 360), add_to_scene=False).spawn())
 
-    assert low[2] >= -1e-6
-    assert high[2] > 0.99
+    assert high[2] <= 1e-6
+    assert low[2] < -0.99
 
 
 def test_sphere_v_range_runs_pole_to_pole():

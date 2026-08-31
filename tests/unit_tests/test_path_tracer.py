@@ -622,18 +622,18 @@ def test_emissive_quad_matches_the_reference_integral(tmp_path):
 
 def _sun_env_map():
     """A dim sky with one bright rectangular sun centred on the camera side
-    of the scene (``OUT`` is -z: phi = -pi/2 -> u = 0.25, theta = pi/2 ->
+    of the scene (``OUT`` is +z: phi = +pi/2 -> u = 0.75, theta = pi/2 ->
     v = 0.5), so it shines onto the camera-facing floor surface.
     """
     env = torch.full((64, 128, 3), 0.05)
-    env[26:38, 28:36] = 6.0
+    env[26:38, 92:100] = 6.0
     return env
 
 
 def _env_irradiance_on_floor(env, intensity):
     """Torch quadrature of the irradiance the map sends onto the floor's
-    camera-facing (-z) surface, per the kernel's equirect convention
-    (y = cos theta up, phi = atan2(z, x)).
+    camera-facing (+z) surface, per the kernel's equirect convention
+    (y = cos theta up, phi = atan2(z, x)) -- the same one Three.js uses.
     """
     e = env.double()
     h, w = e.shape[0], e.shape[1]
@@ -643,7 +643,7 @@ def _env_irradiance_on_floor(env, intensity):
     phi = 2.0 * np.pi * (u - 0.5)
     sin_t = torch.sin(theta).view(-1, 1)
     dir_z = torch.sin(phi).view(1, -1) * sin_t
-    weight = (-dir_z).clamp_min(0.0) * sin_t * (np.pi / h) * (2.0 * np.pi / w)
+    weight = dir_z.clamp_min(0.0) * sin_t * (np.pi / h) * (2.0 * np.pi / w)
     return float((e.mean(-1) * weight).sum()) * intensity
 
 
@@ -766,10 +766,10 @@ def test_env_cdf_sampling_is_consistent_and_normalized():
     # Sampled pdf == evaluated pdf for the same direction.
     rel = (out[:, 3] - out[:, 4]).abs() / out[:, 3].clamp_min(1e-9)
     assert float(rel.max()) < 1e-3
-    # Importance: the sun (on the -z camera side; see _sun_env_map) subtends
+    # Importance: the sun (on the +z camera side; see _sun_env_map) subtends
     # far less than half the sphere, but with luminance 120x the sky it must
     # draw the majority of the samples.
-    in_sun = dirs[:, 2] < -0.85
+    in_sun = dirs[:, 2] > 0.85
     assert float(in_sun.float().mean()) > 0.5
 
     # The pdf integrates to one over the sphere (quadrature on a (u, v)

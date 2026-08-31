@@ -106,6 +106,20 @@ def intersect_line_with_plane_colinear(
 
 
 def get_rotation_around_axis(num_degrees, axis, dim=0):
+    """Build the rotation of ``num_degrees`` about ``axis``, right-handed.
+
+    Every call site applies the result to **row** vectors -- ``basis @ R``,
+    ``(location - about) @ R`` -- so the matrix returned is the transpose of
+    the Rodrigues form written below, and ``v @ R`` turns ``v`` counter-
+    clockwise seen from the tip of ``axis``.
+
+    That transpose is the whole of Algan's rotation handedness, and it is tied
+    to :data:`~algan.constants.spatial.OUTWARD` being ``+z``: with a
+    right-handed world basis, ``rotate(90, OUTWARD)`` has to take ``RIGHT`` to
+    ``UP``, and a row-vector product against an untransposed Rodrigues matrix
+    takes it to ``DOWN`` instead. :func:`get_rotation_between_3d_vectors` pairs
+    with this -- it returns ``cross(v1, v2)`` unnegated for the same reason.
+    """
     num_radians = num_degrees * DEGREES_TO_RADIANS
 
     def cast_to_tensor(_):
@@ -143,10 +157,8 @@ def get_rotation_around_axis(num_degrees, axis, dim=0):
     if dim < 0:
         dim = dim + R.dim()
     R = R.reshape(*R.shape[:dim], 3, 3, *R.shape[dim + 1 :])
-    # R = R.transpose(dim, dim+1)
-    # R = R.permute(*range(R.dim()-1,-1,-1)).squeeze(0)
-    # TODO change this permute to something that accepts arbitrray number of batch dims
-    return R
+    # Transposed for the row-vector application described above.
+    return R.transpose(dim, dim + 1)
 
 
 def rotate_vector_around_axis(vector, num_degrees, axis, dim=0):
@@ -181,7 +193,10 @@ def rotate_vector_around_axis(vector, num_degrees, axis, dim=0):
 
 
 def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
-    normal_vector = -F.normalize(
+    # cross(v1, v2) unnegated: the axis that carries v1 to v2 under the
+    # right-handed rotation get_rotation_around_axis builds. It was negated
+    # while that rotation ran the other way.
+    normal_vector = F.normalize(
         broadcast_cross_product(vector1, vector2, dim=dim), p=2, dim=dim
     )
     normal_vector_r = get_orthonormal_vector(vector1, vector2)
@@ -528,9 +543,19 @@ def get_orthonormal_vector(*vectors):
     # ops. This is called per animated Cylinder point-move, thousands of times
     # per window in an updater-heavy scene -- dispatch count is its whole cost.
     d = v0.shape[-1]
-    seeds = torch.eye(d, dtype=v0.dtype, device=v0.device).expand(
-        v0.shape[:-1] + (d, d)
-    )
+    seeds = torch.eye(d, dtype=v0.dtype, device=v0.device)
+    if d == 3:
+        # Seed from Algan's own axes -- RIGHT, UP, INWARD -- rather than the raw
+        # identity rows. They differ only in the sign of the third, but that
+        # sign is what makes the choice follow the world's z convention. A +z
+        # seed picks the opposite perpendicular to the one mirrored geometry
+        # wants, which rolls a surface of revolution 180 degrees about its axis:
+        # the silhouette is rotation-symmetric so it looks the same, but which
+        # tessellated facet faces the light changes.
+        seeds = seeds * torch.tensor(
+            (1.0, 1.0, -1.0), dtype=v0.dtype, device=v0.device
+        ).unsqueeze(-1)
+    seeds = seeds.expand(v0.shape[:-1] + (d, d))
     r = seeds
     for vn in vectors:
         vn = vn.unsqueeze(-2)

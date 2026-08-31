@@ -18,9 +18,9 @@ steeply inclined face one pixel spans many times more world distance, and
 sub-byte evaluation detail would swamp the comparison.
 
 - Test 1 places the light BETWEEN two screen-parallel front planes: the
-  centred cube's front face (z = -2) is turned away from it and exercises
+  centred cube's front face (z = 2) is turned away from it and exercises
   the halved negative lobe of ``0.5 * (n . to_light) ** 3``, while a second
-  cube pushed behind the light (front plane z = 4) catches the positive
+  cube pushed behind the light (front plane z = -4) catches the positive
   lobe. The camera looks straight down the axis, so the pixel at the centre
   of the image samples the exact centre of the centred cube's front face.
 - Test 2 renders solids with no material of their own after
@@ -62,7 +62,7 @@ from algan import (
 )
 from algan.constants.color import Color
 from algan.external_libraries.manim.utils.color.core import get_shaded_rgb
-from algan.manim_defaults import MANIM_LIGHT_SOURCE, from_manim_coordinates
+from algan.manim_defaults import MANIM_LIGHT_SOURCE
 from algan.rendering.shaders.material_shaders import manim_shader
 from algan.rendering.shaders.materials import ManimMaterial
 from algan.scene_manager import SceneManager
@@ -86,10 +86,11 @@ _CUBE_SIDE = 4.0
 _ALBEDO_RGB = (0.72, 0.38, 0.13)
 
 #: Test 1's own stated light: off-axis, and sandwiched between the centred
-#: cube's front plane (z = -2, which it is behind, so that face turns away
+#: cube's front plane (z = 2, which it is behind, so that face turns away
 #: and exercises the halved negative lobe) and the forward cube's front plane
-#: (z = 4, which it is in front of, so that face catches the positive lobe).
-_TEST_LIGHT = (4.0, 3.0, 2.0)
+#: (z = -4, which it is in front of, so that face catches the positive lobe).
+#: OUTWARD is +z, so "in front" is the larger z.
+_TEST_LIGHT = (4.0, 3.0, -2.0)
 
 #: Camera distance and the vertical fov that frames 8 world units at the
 #: origin plane. The test states these itself rather than borrowing Algan's
@@ -100,7 +101,7 @@ _FIELD_OF_VIEW_DEGREES = math.degrees(2.0 * math.atan(4.0 / _CAMERA_DISTANCE))
 _CUBE_A_CENTRE = torch.tensor((0.0, 0.0, 0.0))
 # Test 1's second cube sits behind the light, far enough right that its lit
 # front face clears the centred cube's silhouette.
-_CUBE_B_CENTRE_FAR = torch.tensor((4.0, 0.0, 6.0))
+_CUBE_B_CENTRE_FAR = torch.tensor((4.0, 0.0, -6.0))
 # Test 2 hangs it low: Manim's own light sits below the origin (its y is -9),
 # so the top face is visible from underneath while facing away from it.
 _CUBE_B_CENTRE_LOW = torch.tensor((0.0, -4.5, 0.0))
@@ -147,25 +148,26 @@ def _face_descriptors(manim_defaults_rig):
     strictly inside one triangle.
     """
     half = _CUBE_SIDE / 2
+    # OUTWARD is +z, so a cube's camera-facing plane is at bz + half.
     front_face_of = lambda bx, by, bz: {  # noqa: E731
-        "centre": (bx, by, bz - half),
-        "normal": (0.0, 0.0, -1.0),
+        "centre": (bx, by, bz + half),
+        "normal": (0.0, 0.0, 1.0),
         "axis_u": (1.0, 0.0, 0.0),
         "axis_v": (0.0, 1.0, 0.0),
-        "diagonal_from": (bx - half, by - half, bz - half),
-        "diagonal_to": (bx + half, by + half, bz - half),
+        "diagonal_from": (bx - half, by - half, bz + half),
+        "diagonal_to": (bx + half, by + half, bz + half),
     }
     if manim_defaults_rig:
         bx, by, bz = _CUBE_B_CENTRE_LOW.tolist()
         second_face = (
             "top face of the low cube (turned away from Manim's light)",
             {
-                "centre": (bx - 1.0, by + half, bz + 0.5),
+                "centre": (bx - 1.0, by + half, bz - 0.5),
                 "normal": (0.0, 1.0, 0.0),
                 "axis_u": (1.0, 0.0, 0.0),
-                "axis_v": (0.0, 0.0, 1.0),
-                "diagonal_from": (bx - half, by + half, bz - half),
-                "diagonal_to": (bx + half, by + half, bz + half),
+                "axis_v": (0.0, 0.0, -1.0),
+                "diagonal_from": (bx - half, by + half, bz + half),
+                "diagonal_to": (bx + half, by + half, bz - half),
                 "single_triangle": True,
             },
         )
@@ -178,7 +180,7 @@ def _face_descriptors(manim_defaults_rig):
             "front face of the forward cube (in front of the test light)",
             dict(
                 front_face_of(fx, fy, fz),
-                centre=(fx - 1.0, fy + 1.0, fz - half),
+                centre=(fx - 1.0, fy + 1.0, fz + half),
                 single_triangle=True,
             ),
         )
@@ -276,9 +278,7 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
             }
             if manim_defaults_rig:
                 assert isinstance(SETTINGS.style.default_material, ManimMaterial)
-                expected_light = (
-                    from_manim_coordinates(MANIM_LIGHT_SOURCE).reshape(3).double()
-                )
+                expected_light = torch.tensor(MANIM_LIGHT_SOURCE).reshape(3).double()
                 assert shaders == {None}
             else:
                 assert shaders == {manim_shader}

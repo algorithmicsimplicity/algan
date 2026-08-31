@@ -19,9 +19,11 @@ def fresh_scene():
 
 def _screen_rectangle_at_z_zero(scene, bottom_left, top_right):
     camera = scene.camera
-    half_height = camera.screen_half_height * (
-        -camera.location[..., 2:3] / camera.screen_distance
-    )
+    # How far the z == 0 plane is from the camera, along the direction the
+    # camera looks. OUTWARD is +z, so a camera in front of the scene sits at
+    # positive z and its depth to that plane is its z coordinate.
+    depth_to_plane = camera.location[..., 2:3]
+    half_height = camera.screen_half_height * (depth_to_plane / camera.screen_distance)
     half_width = half_height * (
         scene.video_settings.resolution[0] / scene.video_settings.resolution[1]
     )

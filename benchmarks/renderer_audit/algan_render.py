@@ -49,16 +49,16 @@ def _color(spec, default=(1.0, 1.0, 1.0)):
 def _vec(spec):
     """A spec position/direction as an Algan world vector.
 
-    The spec uses Three.js's frame (+Z toward the viewer, right-handed).
-    Algan's is the same frame with **Z negated**: its ``OUT`` -- the direction
-    out of the screen toward the viewer -- is ``(0, 0, -1)``, and a new Scene's
-    camera sits at ``z = -7``. So every position and direction crossing the
-    boundary flips Z. (Nothing else changes: X is right and Y is up in both.)
+    The spec uses Three.js's frame (+Z toward the viewer, right-handed), and so
+    does Algan: its ``OUT`` is ``(0, 0, 1)`` and a new Scene's camera sits at
+    ``z = +7``. Nothing is converted -- this exists so that a call site reads as
+    crossing the boundary, and so there is one place to change if either frame
+    ever moves again.
     """
     import torch
 
     x, y, z = (float(c) for c in spec)
-    return torch.tensor((x, y, -z), dtype=torch.get_default_dtype())
+    return torch.tensor((x, y, z), dtype=torch.get_default_dtype())
 
 
 def _build_material(mat):
@@ -171,9 +171,9 @@ def _build_object(obj):
         # does (Sphere(color=WHITE).set_material(MeshNormalMaterial())).
         mob.color = WHITE
     mob.set_material(material)
-    # Negated with Z (see _vec): conjugating a Y-rotation by the Z flip turns it
-    # into a rotation by the opposite angle.
-    rot = -float(obj.get("rotation_y", 0.0))
+    # Taken as written: the two frames agree, so a Y-rotation carries over
+    # unchanged (it used to be negated, to conjugate it by a Z flip).
+    rot = float(obj.get("rotation_y", 0.0))
     if rot:
         mob.rotate(rot, UP)
     mob.move_to(_vec(obj.get("position", (0, 0, 0))))
@@ -227,7 +227,7 @@ def _build_light(light):
             distance=float(light.get("distance", 0.0)),
         )
     # Every position and target below goes through _vec: they are points in the
-    # spec frame (+Z toward the viewer) and Algan negates Z.
+    # spec frame (+Z toward the viewer), which is Algan's frame too.
     if kind == "spot":
         return SpotLight(
             location=_vec(light["position"]),
@@ -253,7 +253,7 @@ def _build_light(light):
     if kind == "hemisphere":
         # No position to flip: a hemisphere light is defined by its sky/ground
         # colours about `up`, which stays (0, 1, 0) -- Y is up in both frames;
-        # only Z flips.
+        # nothing to convert.
         return HemisphereLight(
             color=color,
             ground_color=_color(light.get("ground_color"), (0.0, 0.0, 0.0)),

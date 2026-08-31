@@ -1,13 +1,17 @@
 """Direction constants and Algan's coordinate conventions.
 
 ``RIGHT``/``LEFT`` run along +x/-x, ``UP``/``DOWN`` along +y/-y, and
-``INWARD``/``OUTWARD`` along **+z/-z**: ``OUTWARD`` points out of the screen
-towards the viewer, so it is ``(0, 0, -1)`` and the +z axis runs *away* from the
-viewer, into the scene. ``CAMERA_ORIGIN`` is correspondingly at negative z. This
-is the opposite of Three.js's and glTF's sign convention, so a scene ported from
-either has every z coordinate (and every z direction) negated. Each constant is
-a unit tensor of shape ``(1, 1, 3)``, so they compose by ordinary arithmetic:
+``OUTWARD``/``INWARD`` along **+z/-z**: ``OUTWARD`` points out of the screen
+towards the viewer, so it is ``(0, 0, 1)`` and the +z axis runs *towards* the
+viewer, out of the scene. ``CAMERA_ORIGIN`` is correspondingly at positive z.
+This is the same sign convention as Manim, Three.js and glTF, so a scene ported
+from any of them keeps its z coordinates as written. Each constant is a unit
+tensor of shape ``(1, 1, 3)``, so they compose by ordinary arithmetic:
 ``UP * 2 + LEFT``.
+
+``(RIGHT, UP, OUTWARD)`` is therefore a right-handed basis, and a rotation of a
+positive angle about an axis is counter-clockwise seen from the tip of that
+axis: ``rotate(90, OUTWARD)`` turns anti-clockwise on screen.
 
 ``IN`` and ``OUT`` are those same two vectors under shorter names -- the same
 objects, not copies -- and are what most scripts write; ``OUT`` is what Manim
@@ -19,8 +23,8 @@ throughout and never reads ``IN`` or ``OUT`` (enforced by
 ``tests/unit_tests/test_spatial_constants.py``), and the short names are the
 script's to keep or to shadow.
 
-``ORIGIN`` is the zero vector, ``DEFAULT_BASIS`` the identity orientation every
-Mob starts with, and ``CAMERA_ORIGIN`` where a new Scene's camera sits.
+``ORIGIN`` is the zero vector, ``DEFAULT_BASIS`` the orientation every Mob
+starts with, and ``CAMERA_ORIGIN`` where a new Scene's camera sits.
 
 Distances are in world units throughout; angles are in **degrees**, which is the
 convention that most often surprises users arriving from Manim.
@@ -34,15 +38,20 @@ RIGHT = torch.tensor((1, 0, 0), dtype=torch.get_default_dtype())
 LEFT = -RIGHT
 UP = torch.tensor((0, 1, 0), dtype=torch.get_default_dtype())
 DOWN = -UP
-INWARD = torch.tensor((0, 0, 1), dtype=torch.get_default_dtype())
-OUTWARD = -INWARD
+OUTWARD = torch.tensor((0, 0, 1), dtype=torch.get_default_dtype())
+INWARD = -OUTWARD
 
 #: Shorthands for the two z directions. See the module docstring: these are the
 #: names to write in a script, and the ones Algan's own source never reads.
 IN = INWARD
 OUT = OUTWARD
 
-DEFAULT_BASIS = torch.stack((RIGHT, UP, OUTWARD))
+#: The orientation every Mob starts with: ``RIGHT``, ``UP`` and a forward axis
+#: that points **away** from the viewer, which is the direction a camera looks
+#: and so the direction a Mob facing the same way as the camera faces. This is
+#: what ``Mob.__init__`` defaults ``basis`` to, and what
+#: ``get_forward_direction()`` returns for an unrotated Mob.
+DEFAULT_BASIS = torch.stack((RIGHT, UP, INWARD))
 
 ORIGIN = torch.zeros_like(OUTWARD)
 CAMERA_ORIGIN = ORIGIN + OUTWARD * 7

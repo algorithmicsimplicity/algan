@@ -363,20 +363,26 @@ def test_shipped_platonic_solids_are_not_consistently_wound():
     """The defect itself, pinned so a face-list edit cannot silently change it.
 
     This is a regression guard on a KNOWN BUG in the shipped index lists (which
-    are Manim's, verbatim), not on desired behaviour. ``Polyhedron`` now orients
-    them at construction, so the test turns that off to observe the raw lists --
-    which is also what makes it a check on the ORIENTATION PASS: if the pass
-    ever silently became a no-op, these counts would still be what the renderer
-    sees, and the sibling test below would be the one to fail.
+    are Manim's, with only their z coordinates mirrored into Algan's convention
+    -- the winding is Manim's own), not on desired behaviour. ``Polyhedron`` now
+    orients them at construction, so the test turns that off to observe the raw
+    lists -- which is also what makes it a check on the ORIENTATION PASS: if the
+    pass ever silently became a no-op, these counts would still be what the
+    renderer sees, and the sibling test below would be the one to fail.
+
+    The counts are higher than Manim's own because mirroring a solid's vertices
+    reverses the winding of every face: a face Manim happened to wind outward
+    is wound inward once its z is mirrored. That is exactly why the orientation
+    pass exists, and the sibling test is what says it works.
     """
     from algan import SETTINGS, Dodecahedron, Octahedron, Tetrahedron
 
     expected = {
         Tetrahedron: (4, 2),
-        Cube: (6, 0),
-        Octahedron: (8, 2),
-        Icosahedron: (20, 12),
-        Dodecahedron: (12, 3),
+        Cube: (6, 6),
+        Octahedron: (8, 6),
+        Icosahedron: (20, 8),
+        Dodecahedron: (12, 12),
     }
     rt = SETTINGS.raytracing
     original = rt.polyhedron_winding
@@ -438,8 +444,21 @@ def test_orienting_faces_is_a_no_op_on_geometry_it_cannot_judge():
 def test_orienting_faces_fixes_a_deliberately_mis_wound_closed_mesh():
     """The case the shipped solids are: closed and orientable, but with some
     faces listed the wrong way round.
+
+    Compared as cycles, not as lists: re-winding a face holds its FIRST vertex
+    in place (``_rewound``) rather than moving the last one to the front, so a
+    face that had to be flipped comes back starting where it started. That is
+    deliberate -- a polygon is triangulated as a fan from ``face[0]``, so a
+    reversal that moved the first vertex would re-cut the polygon along the
+    other diagonals and change what the renderer draws.
     """
     from algan.mobs.shapes_3d import orient_faces_outward
+
+    def cycles(faces):
+        """Each face rotated to start at its lowest index, so only the cyclic
+        order (i.e. the winding) is compared.
+        """
+        return [f[f.index(min(f)) :] + f[: f.index(min(f))] for f in faces]
 
     # Unit tetrahedron, all four faces wound outward.
     points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -448,9 +467,12 @@ def test_orienting_faces_fixes_a_deliberately_mis_wound_closed_mesh():
 
     # Same solid with two faces reversed, and with the whole shell inverted.
     mixed = [good[0], list(reversed(good[1])), good[2], list(reversed(good[3]))]
-    assert orient_faces_outward(points, mixed) == good
+    assert cycles(orient_faces_outward(points, mixed)) == cycles(good)
     inverted = [list(reversed(f)) for f in good]
-    assert orient_faces_outward(points, inverted) == good
+    assert cycles(orient_faces_outward(points, inverted)) == cycles(good)
+
+    # And the first vertex of each face is the one it arrived with.
+    assert [f[0] for f in orient_faces_outward(points, mixed)] == [f[0] for f in mixed]
 
 
 def test_a_packed_grid_declares_one_shell_per_sphere():
