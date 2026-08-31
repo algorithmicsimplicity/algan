@@ -289,7 +289,13 @@ def opaque_prefix_keep(
                 break
             j += 1
         for jj in range(s, e):
-            keep[jj] = 1 if jj <= ke else 0
+            # Cast spelled out because ``keep`` is u8 and the conditional is
+            # typed i32, which Taichi warns about on every cold compile. The
+            # values are 0 and 1, so nothing was ever lost -- but this is the
+            # renderer's only implicit narrowing store, every other u8 write
+            # being an explicit ``ti.cast``, and a warning that fires on a
+            # harmless line is how a real one later reads as more of the same.
+            keep[jj] = ti.cast(1 if jj <= ke else 0, ti.u8)
 
 
 @ti.kernel
