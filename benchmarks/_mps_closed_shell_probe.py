@@ -92,7 +92,7 @@ def _emissive_shell_cube():
     return cube
 
 
-def _render(out_dir, name, samples_per_pixel, shell_ceiling_kernel=None):
+def _render(out_dir, name, samples_per_pixel, shell_ceiling_kernel=None, ceiling=True):
     """One frame, as an int32 HxWxC tensor, plus its truncation counters.
 
     ``shell_ceiling_kernel`` selects which arm applies the solid-shell opacity
@@ -114,6 +114,8 @@ def _render(out_dir, name, samples_per_pixel, shell_ceiling_kernel=None):
             SETTINGS.raytracing.set(**{key: value})
         for key, value in _RAW_EXP.items():
             SETTINGS.raytracing.experimental.set(**{key: value})
+        if not ceiling:
+            SETTINGS.raytracing.experimental.set(solid_shell_alpha=False)
         with Scene(video_settings=SHELL_SETTINGS) as scene:
             with Off():
                 scene.set_background(BLACK)
@@ -166,6 +168,17 @@ def main():
         det_again, _ = _render(
             out_dir, "shell_det_again.png", 1, shell_ceiling_kernel=True
         )
+        # The ceiling off entirely, which says WHEN the extra crossing appears.
+        # With `solid_shell_alpha` off both crossings composite by design, so
+        # the interior reads `a * (2 - a) * 255 = 214`. If the offending column
+        # then reads 214 like the rest, the extra layer is the ceiling's doing;
+        # if it still reads 239 (three crossings) the compaction handed the
+        # ceiling three sheets where the CPU's handed it two, and the ceiling is
+        # innocent. This arm uses no `index_copy_`, so unlike the torch arm
+        # below it runs on MPS.
+        no_ceiling, _ = _render(
+            out_dir, "shell_no_ceiling.png", 1, shell_ceiling_kernel=True, ceiling=False
+        )
         # LAST, and allowed to fail. The torch arm of the ceiling calls
         # ``index_copy_``, which torch has not implemented for MPS
         # (`aten::index_copy.out`), so on an Apple GPU this arm raises and
@@ -214,6 +227,24 @@ def main():
         "-- the oracle"
     )
     err = summarize("det, ceiling kernel", det)
+    # Its own oracle is 214 (`a * (2 - a) * 255`), not the path tracer's 153,
+    # so this one is reported against itself: a uniform interior means every
+    # pixel crossed the shell twice, and an outlier at 239 means one crossed it
+    # three times.
+    nc_core = no_ceiling[lo:hi, clo:chi, :3].float()
+    # Restricted to the assertion window's own columns: outside the cube the
+    # frame is background and deviates from the interior everywhere, which
+    # tells you nothing.
+    nc_dev = (nc_core - float(nc_core.median())).abs().amax(-1)
+    nc_hot = [
+        clo + int(c) for c in torch.nonzero(nc_dev.amax(0) > 2).flatten().tolist()
+    ]
+    print(
+        f"{'det, ceiling OFF':22s}: interior mean {float(nc_core.mean()):7.2f} "
+        f"min {float(nc_core.min()):5.0f} max {float(nc_core.max()):5.0f} "
+        f"(both crossings composite: expect {OPACITY * (2 - OPACITY) * 255:.0f}); "
+        f"columns off its own median inside the window {nc_hot}"
+    )
     if torch_det is not None:
         summarize("det, ceiling torch", torch_det)
 

@@ -359,10 +359,27 @@ Metal-specific rather than an MPS-friendly substitution.
 > rather than f64 (the kernel's own docstring says the exactness argument
 > lapses there).
 >
-> The probe renders the deterministic route through **both** arms of that
-> ceiling — the fused kernel and the torch block it replaced, which share every
-> input — so the next run says whether the defect is in the kernel or in what
-> the kernel was handed. That is the measurement to take next.
+> **It is not the mode's non-determinism**, which was the first thing to rule
+> out and the cheapest: §1.2's amendment predicts this symptom in as many words
+> ("a ceiling that wobbles in its low bits flipping borderline fragments in and
+> out of being clipped"), so the probe renders the deterministic arm twice in
+> one process and compares. On the Apple GPU the two frames are **bit-identical
+> over the whole frame**. There is a fixed wrong answer here, not a wobble.
+>
+> Two more discriminators, one of which does not exist:
+>
+> * **The ceiling's other arm cannot run on MPS.** `solid_shell_ceiling`'s
+>   torch fallback calls `index_copy_`, and torch has not implemented
+>   `aten::index_copy.out` for the MPS device, so the A/B that would separate
+>   "the kernel" from "what the kernel was handed" raises there. (The probe now
+>   runs it last and tolerates the failure; before that it took every other
+>   reading down with it.)
+> * **The ceiling switched off entirely** does run, and is the next reading:
+>   with `solid_shell_alpha=False` both crossings composite by design and the
+>   interior reads `0.6 * (2 - 0.6) * 255 = 214`. If column 37 reads 214 like
+>   the rest, the third layer is the ceiling's doing; if it still reads 239, the
+>   compaction handed the ceiling three sheets where the CPU's handed it two and
+>   the ceiling is innocent. The probe takes it.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
