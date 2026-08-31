@@ -54,11 +54,38 @@ def _cuda_is_usable() -> bool:
     return _CUDA_USABLE
 
 
+def _mps_is_usable() -> bool:
+    """Whether MPS can render, which is not the same as whether it exists.
+
+    An Apple GPU is only a render device on the patched Taichi build. Stock
+    Taichi stages every kernel argument through the host, and that is not
+    merely slow: Algan hands its converted kernels two dtype views of one
+    arena, and the second whole-tensor copy-back reverts what the kernel wrote
+    through the first, so the render completes and draws a black frame
+    (``DESIGN_mps_support.md`` §1.3b). Answering False here is what keeps
+    ``auto`` on the CPU -- the supported Mac path -- rather than selecting a
+    device that produces a wrong picture without saying so.
+
+    The import is function-local and tolerant: this runs while Algan is still
+    importing, and a probe that could raise here would be a hard failure at
+    ``import algan`` on a machine that was only ever going to render on the
+    CPU.
+    """
+    mps = getattr(torch, "mps", None)
+    if mps is None or not mps.is_available():
+        return False
+    try:
+        from algan.rendering.mps_zero_copy import zero_copy_available
+
+        return zero_copy_available()
+    except Exception:
+        return False
+
+
 def _auto_render_device() -> torch.device:
     if _cuda_is_usable():
         return torch.device("cuda")
-    mps = getattr(torch, "mps", None)
-    if mps is not None and mps.is_available():
+    if _mps_is_usable():
         return torch.device("mps")
     return torch.device("cpu")
 
@@ -94,6 +121,12 @@ def coerce_device(value: str | torch.device, source: str) -> torch.device:
         if mps is None or not mps.is_available():
             raise AlganConfigurationError(
                 f"{source} requests MPS, but MPS is unavailable"
+            )
+        if not _mps_is_usable():
+            from algan.rendering.mps_zero_copy import unavailable_reason
+
+            raise AlganConfigurationError(
+                f"{source} requests MPS, but {unavailable_reason()}"
             )
     return device
 

@@ -42,6 +42,7 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_flag, env_float, env_int, env_str
+from algan.rendering.mps_compat import clamp_floor
 
 # Bounds used to mark an empty/invisible AABB. Unions and costs are computed
 # with clamping so that empty boxes behave as the identity element. The
@@ -284,7 +285,7 @@ def morton_code_4d(x, y, z, t):
 
 
 def _quantize(c, lo, hi):
-    scale = (2**_QUANT_BITS - 1) / (hi - lo).clamp_min(1e-12)
+    scale = (2**_QUANT_BITS - 1) / clamp_floor(hi - lo, 1e-12)
     q = ((c - lo) * scale).long()
     return q.clamp_(min=0, max=2**_QUANT_BITS - 1)
 
@@ -794,7 +795,7 @@ def build_stbvh(
         t_center = (t0 + t1).float() * 0.5
         smin = inst_lo.amin(0)
         smax = inst_hi.amax(0)
-        cn = (center - smin) / (smax - smin).clamp_min(1e-12)
+        cn = (center - smin) / clamp_floor(smax - smin, 1e-12)
         tn = (t_center / float(max(num_frames - 1, 1))).unsqueeze(-1)
         tn = tn * bvh_split_time_weight
         slot_src = _median_split_slots(torch.cat((cn, tn), -1), P)  # [P]

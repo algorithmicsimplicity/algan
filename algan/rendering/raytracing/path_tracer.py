@@ -43,6 +43,7 @@ import math
 
 import torch
 
+from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.path_tracer_taichi import (
     _NEE_EMISSIVE_TRI,
@@ -175,12 +176,13 @@ def _build_env_cdf(env_rgb, max_h=128, max_w=256):
     w = int(env_rgb.shape[1])
     ch = max(1, min(int(max_h), h))
     cw = max(1, min(int(max_w), w))
-    lum = env_rgb.amax(-1).clamp_min(0).double()
+    acc = accumulate_dtype()
+    lum = env_rgb.amax(-1).clamp_min(0).to(acc)
     if (h, w) != (ch, cw):
         lum = torch.nn.functional.adaptive_avg_pool2d(
             lum.unsqueeze(0).unsqueeze(0), (ch, cw)
         )[0, 0]
-    v = (torch.arange(ch, dtype=torch.float64, device=lum.device) + 0.5) / ch
+    v = (torch.arange(ch, dtype=acc, device=lum.device) + 0.5) / ch
     sin_t = torch.sin(math.pi * v).unsqueeze(1)
     w_bin = (lum + 0.01 * lum.mean() + 1e-12) * sin_t
     row = w_bin.sum(1)
@@ -188,7 +190,7 @@ def _build_env_cdf(env_rgb, max_h=128, max_w=256):
     cond[:, -1] = 1.0
     marg = row.cumsum(0) / row.sum()
     marg[-1] = 1.0
-    env_cdf = torch.empty((ch, cw + 1), dtype=torch.float64, device=lum.device)
+    env_cdf = torch.empty((ch, cw + 1), dtype=acc, device=lum.device)
     env_cdf[:, :cw] = cond
     env_cdf[:, cw] = marg
     power = float((lum * sin_t).sum() * (math.pi / ch) * (2.0 * math.pi / cw))
@@ -218,11 +220,12 @@ def _build_nee_tables(
 
     device = memory.data.device
     i64 = torch.int64
+    acc = accumulate_dtype()
     powers = []
     kinds = []
     refs = []
     if num_lights > 0:
-        row_power = light_col[..., :3].amax(0).amax(-1).double()
+        row_power = light_col[..., :3].amax(0).amax(-1).to(acc)
         if light_col.shape[2] > 3:
             ltypes = (light_col[0, :, 3] + 0.5).to(i64)
         else:
@@ -245,11 +248,11 @@ def _build_nee_tables(
         pid = merged["tri_mat_id"][0].to(i64)
         lit = (pid >= _MID_LAMBERT) & (pid <= _MID_PHYSICAL)
         em = tri_mat[0, :, 0:3].amax(-1).clamp_min(0) * tri_mat[0, :, 3].clamp_min(0)
-        p9 = merged["tri_pos"][0].double()
+        p9 = merged["tri_pos"][0].to(acc)
         area = 0.5 * torch.linalg.cross(
             p9[:, 3:6] - p9[:, 0:3], p9[:, 6:9] - p9[:, 0:3], dim=-1
         ).norm(dim=-1)
-        p_e = torch.where(lit, em.double() * area * math.pi, torch.zeros_like(area))
+        p_e = torch.where(lit, em.to(acc) * area * math.pi, torch.zeros_like(area))
         e_idx = (p_e > 0).nonzero(as_tuple=False).flatten()
         if e_idx.numel():
             powers.append(p_e[e_idx])
@@ -273,7 +276,7 @@ def _build_nee_tables(
         env_cdf_host, env_power = _build_env_cdf(env_rgb)
         env_power *= max(env_intensity, 0.0)
         if env_power > 0:
-            powers.append(torch.tensor([env_power], dtype=torch.float64, device=device))
+            powers.append(torch.tensor([env_power], dtype=acc, device=device))
             kinds.append(torch.tensor([_NEE_ENV], dtype=i64, device=device))
             refs.append(torch.tensor([0], dtype=i64, device=device))
 

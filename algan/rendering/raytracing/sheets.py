@@ -63,6 +63,17 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_float
+from algan.rendering.mps_compat import (
+    accumulate_dtype,
+    band_class_groups,
+    clamp_floor,
+    cummax_values,
+    gather_packed_key,
+    kernel_index,
+    reduction_index_dtype,
+    taichi_accumulate_dtype,
+    taichi_reduction_index_dtype,
+)
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
@@ -322,7 +333,7 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     mag = nrm.norm(dim=2)
     # In place: the gather is this function's own copy and the normalized
     # vectors are the only thing wanted from it.
-    unit = nrm.div_(mag.unsqueeze(2).clamp_min(1e-12))
+    unit = nrm.div_(clamp_floor(mag.unsqueeze(2), 1e-12))
     del nrm
     # max over vertex j and component c of |unit[j] - unit[0]|. The j = 0 term
     # is identically zero and the terms are non-negative, so dropping it
@@ -347,7 +358,7 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     del p0, rows
     gn = torch.cross(e1, e2, dim=1)
     del e1, e2
-    gn = gn / gn.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    gn = gn / clamp_floor(gn.norm(dim=1, keepdim=True), 1e-12)
     face_n = torch.where(geometric_flat.unsqueeze(1), gn, vertex_n)
     del gn, vertex_n
     q = (
@@ -419,7 +430,8 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
     """
     device = msk.device
     n = int(msk.numel())
-    area64 = torch.zeros(nbands, dtype=torch.float64, device=device)
+    acc = accumulate_dtype()
+    area64 = torch.zeros(nbands, dtype=acc, device=device)
     if rt_settings.sheet_mask_kernel and n:
         from algan.rendering.raytracing.sheet_compact_taichi import (
             sheet_band_reduce,
@@ -431,7 +443,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
             nbands if want_sliver else 1, dtype=torch.int32, device=device
         )
         sheet_band_reduce(
-            band_id.contiguous(),
+            kernel_index(band_id.contiguous()),
             msk.contiguous(),
             cov.contiguous(),
             n,
@@ -442,6 +454,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
             dup,
             sliver,
             bool(want_sliver),
+            taichi_accumulate_dtype(),
         )
         fused = dup != 0
         del dup
@@ -449,7 +462,7 @@ def _band_reduce(band_id, msk, cov, nbands, *, want_sliver):
         del area64
         return area, union, fused, (sliver if want_sliver else None)
 
-    area64.scatter_add_(0, band_id, cov.to(torch.float64))
+    area64.scatter_add_(0, band_id, cov.to(acc))
     area = area64.to(torch.float32)
     del area64
     bits = (msk & AA_MASK_ALL).to(torch.int64)
@@ -509,7 +522,7 @@ def _conflict_rank(band_start, order, msk, positions):
     n = int(order.numel())
     if not rt_settings.sheet_rank_kernel or n == 0:
         band_first = torch.where(band_start, positions, torch.zeros_like(positions))
-        band_first = torch.cummax(band_first, 0)[0]
+        band_first = cummax_values(band_first, 0)
         bits_pre = (msk.index_select(0, order) & AA_MASK_ALL).to(torch.int32)
         rank = torch.zeros(n, dtype=torch.int32, device=device)
         for b in range(AA_NUM_SAMPLES):
@@ -532,7 +545,7 @@ def _conflict_rank(band_start, order, msk, positions):
     # Taichi has no bool ndarray, so the flags ride as the bytes they are.
     sheet_conflict_rank(
         band_start.contiguous().view(torch.uint8),
-        order.contiguous(),
+        kernel_index(order.contiguous()),
         msk.contiguous(),
         n,
         int(AA_MASK_ALL),
@@ -700,13 +713,23 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     if not bool(multi.any()):
         return cov, msk
 
-    share = cov.to(torch.float64) / band_area.index_select(0, sheet_band).to(
-        torch.float64
-    ).clamp_min(1e-12)
-    p = band_corr.index_select(0, sheet_band).to(torch.float64) * share
+    acc = accumulate_dtype()
+    area_g = band_area.index_select(0, sheet_band).to(acc)
+    # ``clamp_floor``, not ``clamp_min``: MPS rounds a clamp's scalar bound
+    # through float16 and cannot carry this floor (``mps_compat.clamp_floor``
+    # has the measurement). This is the call site where that first reached a
+    # frame -- a band whose siblings were all clamped to zero coverage by the
+    # closed-shell ceiling has exactly zero area, the guard did not hold, and
+    # the divide produced a NaN. Nothing downstream catches one: ``eff <=
+    # min_alpha`` is false against a NaN like every comparison is, so the sheet
+    # composited instead of dropping out and a closed shell's interior edge came
+    # back attenuated twice (``DESIGN_mps_support.md`` §2.3c).
+    share = cov.to(acc) / clamp_floor(area_g, 1e-12)
+    del area_g
+    p = band_corr.index_select(0, sheet_band).to(acc) * share
 
     union = band_union.index_select(0, sheet_band)
-    pop = _popcount_lanes(union).clamp_min(1).to(torch.float64)
+    pop = _popcount_lanes(union).clamp_min(1).to(acc)
     full = union == AA_MASK_ALL
     # The resolve reads the coverage through its own branch, so hand it the
     # value that branch turns back into p: the factor itself on a full union,
@@ -763,14 +786,19 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
             (nb * AA_NUM_SAMPLES,), n, dtype=torch.int32, device=device
         )
         sheet_lane_first_owner(
-            band_id.contiguous(), msk_o.contiguous(), n, int(AA_MASK_ALL), first_lane
+            kernel_index(band_id.contiguous()),
+            msk_o.contiguous(),
+            n,
+            int(AA_MASK_ALL),
+            first_lane,
         )
         has = first_lane < n
         d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
         return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
 
-    big = torch.full((), n, dtype=torch.int64, device=device)
-    positions = torch.arange(n, dtype=torch.int64, device=device)
+    idx_dtype = reduction_index_dtype()
+    big = torch.full((), n, dtype=idx_dtype, device=device)
+    positions = torch.arange(n, dtype=idx_dtype, device=device)
     sample_depths = torch.full(
         (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
     )
@@ -778,10 +806,11 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
         owns = ((msk_o >> lane) & 1) != 0
         masked = torch.where(owns, positions, big)
         del owns
-        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+        first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
         first_sorted.scatter_reduce_(
             0, band_id, masked, reduce="amin", include_self=True
         )
+        first_sorted = first_sorted.to(torch.int64)
         del masked
         has = first_sorted < n
         d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
@@ -1151,7 +1180,14 @@ def compact_sheets(
         # byte-identity contract). The kernel takes the prefix as input and
         # does everything else per segment in registers; the torch arm below
         # stays as the A/B arm.
-        cov64 = cov_o.to(torch.float64)
+        # ``copy=True`` because ``cov_o`` is already float32: at
+        # ``accumulate_dtype() is torch.float32`` -- MPS-friendly mode --
+        # ``.to`` is the identity, and the kernel arm below hands this same
+        # buffer to the kernel as its reassociation-barrier ``scratch`` while
+        # ``cov_o`` is its INOUT coverage. Aliased, the barrier store
+        # overwrites the coverage mid-walk and the stream comes back with
+        # negative areas in it.
+        cov64 = cov_o.to(accumulate_dtype(), copy=True)
         c2 = cov64.index_select(0, o2)
         csum = torch.cumsum(c2, 0)
         excl_global = csum.sub_(c2)
@@ -1165,12 +1201,13 @@ def compact_sheets(
             # build ``excl`` either way.
             solid_shell_ceiling(
                 key.contiguous(),
-                o2.contiguous(),
+                kernel_index(o2.contiguous()),
                 shell_back.contiguous().view(torch.uint8),
                 excl_global,
                 cov64,
                 n,
                 cov_o,
+                taichi_accumulate_dtype(),
             )
             del key, o2, shell_back, excl_global, c2, cov64
         else:
@@ -1201,13 +1238,14 @@ def compact_sheets(
             # and out of being clipped.
             backf2 = shell_back.index_select(0, o2)
             del shell_back
-            z64 = torch.zeros((), dtype=torch.float64, device=device)
-            front = torch.zeros(nseg, dtype=torch.float64, device=device)
-            back = torch.zeros(nseg, dtype=torch.float64, device=device)
+            acc = accumulate_dtype()
+            z64 = torch.zeros((), dtype=acc, device=device)
+            front = torch.zeros(nseg, dtype=acc, device=device)
+            back = torch.zeros(nseg, dtype=acc, device=device)
             front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
             back.scatter_add_(0, seg, torch.where(backf2, c2, z64))
             del backf2, z64
-            cap = torch.maximum(front, back).to(torch.float32).to(torch.float64)
+            cap = torch.maximum(front, back).to(torch.float32).to(acc)
             del front, back
             scale = (
                 cap.index_select(0, seg)
@@ -1240,13 +1278,10 @@ def compact_sheets(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
         )
         del cls_o, band_split
-        skey = band_of_frag * _SHADE_CLASS_BASE + cls_eff
+        nb, band_id, sheet_band = band_class_groups(
+            band_of_frag, cls_eff, _SHADE_CLASS_BASE
+        )
         del cls_eff, band_of_frag
-        uniq_skey, band_id = torch.unique(skey, sorted=True, return_inverse=True)
-        del skey
-        nb = int(uniq_skey.numel())
-        sheet_band = uniq_skey // _SHADE_CLASS_BASE
-        del uniq_skey
 
     # The band's aggregates in one walk of the sorted stream: exact area
     # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,
@@ -1275,14 +1310,21 @@ def compact_sheets(
             band_stats_reduce,
         )
 
-        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
-        min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
-        first_sorted_p = torch.full((nb,), n, dtype=torch.int64, device=device)
-        min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+        # The five reduction outputs take ``reduction_index_dtype`` -- int64
+        # here, int32 in MPS-friendly mode, where Taichi's int64 atomics abort
+        # on Metal -- and widen straight back, so everything downstream sees
+        # the same int64 positions either way. ``.to`` is the identity when the
+        # dtype already matches, so the default path allocates and copies
+        # exactly what it did.
+        idx_dtype = reduction_index_dtype()
+        first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        first_sorted_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        min_pos_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
         cmax = torch.zeros(nb, dtype=torch.float32, device=device)
-        nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
+        nfrag = torch.zeros(nb, dtype=idx_dtype, device=device)
         band_stats_reduce(
-            band_id.contiguous(),
+            kernel_index(band_id.contiguous()),
             msk_o.contiguous(),
             pos_o.contiguous(),
             cov_o.contiguous(),
@@ -1295,7 +1337,13 @@ def compact_sheets(
             cmax,
             nfrag,
             bool(positioned_depth),
+            taichi_reduction_index_dtype(),
         )
+        first_sorted = first_sorted.to(torch.int64)
+        min_pos = min_pos.to(torch.int64)
+        first_sorted_p = first_sorted_p.to(torch.int64)
+        min_pos_p = min_pos_p.to(torch.int64)
+        nfrag = nfrag.to(torch.int64)
         nearest_orig = pos_o.index_select(0, first_sorted)
         sheet_pix = pix_o.index_select(0, first_sorted)
         if positioned_depth:
@@ -1310,14 +1358,22 @@ def compact_sheets(
         else:
             del first_sorted_p, min_pos_p
     else:
-        first_sorted = torch.full((nb,), n, dtype=torch.int64, device=device)
+        # Same narrowing as the kernel arm, and for the same reason: MPS has no
+        # int64 ``scatter_reduce_(reduce='amin')`` either (§2.3). The reduced
+        # values are stream positions, so int32 holds every one of them.
+        idx_dtype = reduction_index_dtype()
+        pos_src = pos_o.to(idx_dtype)
+        positions_src = positions.to(idx_dtype)
+        first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
         first_sorted.scatter_reduce_(
-            0, band_id, positions, reduce="amin", include_self=True
+            0, band_id, positions_src, reduce="amin", include_self=True
         )
+        first_sorted = first_sorted.to(torch.int64)
         nearest_orig = pos_o.index_select(0, first_sorted)
         sheet_pix = pix_o.index_select(0, first_sorted)
-        min_pos = torch.full((nb,), n, dtype=torch.int64, device=device)
-        min_pos.scatter_reduce_(0, band_id, pos_o, reduce="amin", include_self=True)
+        min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        min_pos.scatter_reduce_(0, band_id, pos_src, reduce="amin", include_self=True)
+        min_pos = min_pos.to(torch.int64)
 
         # Under ``positioned_depth`` the same two quantities, restricted to the
         # POSITIONED fragments -- the ones that own at least one sub-pixel sample.
@@ -1332,13 +1388,14 @@ def compact_sheets(
         # [n] array, and each masked copy is freed before the next is built: this
         # is the function's memory peak and a per-fragment array is 28 MB at 4K.
         if positioned_depth:
-            big = torch.full((), n, dtype=torch.int64, device=device)
+            big = torch.full((), n, dtype=idx_dtype, device=device)
             posn = (msk_o & AA_MASK_ALL) != 0
-            masked = torch.where(posn, positions, big)
-            first_sorted_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+            masked = torch.where(posn, positions_src, big)
+            first_sorted_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
             first_sorted_p.scatter_reduce_(
                 0, band_id, masked, reduce="amin", include_self=True
             )
+            first_sorted_p = first_sorted_p.to(torch.int64)
             del masked
             has_pos = first_sorted_p < n
             nearest_orig = torch.where(
@@ -1347,15 +1404,17 @@ def compact_sheets(
                 nearest_orig,
             )
             del first_sorted_p
-            masked = torch.where(posn, pos_o, big)
+            masked = torch.where(posn, pos_src, big)
             del posn, big
-            min_pos_p = torch.full((nb,), n, dtype=torch.int64, device=device)
+            min_pos_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
             min_pos_p.scatter_reduce_(
                 0, band_id, masked, reduce="amin", include_self=True
             )
+            min_pos_p = min_pos_p.to(torch.int64)
             del masked
             min_pos = torch.where(has_pos, min_pos_p, min_pos)
             del min_pos_p, has_pos
+        del pos_src, positions_src
 
     # ---- sheet_sample_depth: per-sample nearest-owner depths ---------------
     # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
@@ -1376,19 +1435,31 @@ def compact_sheets(
             band_stats_rep_orig,
         )
 
-        rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
-        band_stats_rep_orig(band_id.contiguous(), pos_o, cov_o, cmax, n, rep_orig)
+        idx_dtype = reduction_index_dtype()
+        rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        band_stats_rep_orig(
+            kernel_index(band_id.contiguous()),
+            pos_o,
+            cov_o,
+            cmax,
+            n,
+            rep_orig,
+            taichi_reduction_index_dtype(),
+        )
+        rep_orig = rep_orig.to(torch.int64)
         del cmax, cov_o
     else:
+        idx_dtype = reduction_index_dtype()
         cmax = torch.zeros(nb, dtype=torch.float32, device=device)
         cmax.scatter_reduce_(0, band_id, cov_o, reduce="amax", include_self=True)
         is_max = cov_o >= cmax.index_select(0, band_id)
         del cmax, cov_o
-        big = torch.full((n,), n, dtype=torch.int64, device=device)
-        cand_pos = torch.where(is_max, pos_o, big)
+        big = torch.full((n,), n, dtype=idx_dtype, device=device)
+        cand_pos = torch.where(is_max, pos_o.to(idx_dtype), big)
         del is_max, big
-        rep_orig = torch.full((nb,), n, dtype=torch.int64, device=device)
+        rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
         rep_orig.scatter_reduce_(0, band_id, cand_pos, reduce="amin", include_self=True)
+        rep_orig = rep_orig.to(torch.int64)
         del cand_pos
 
         nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
@@ -1459,7 +1530,11 @@ def compact_sheets(
             band_corr,
         )
 
-    sheet_key = frag_key.index_select(0, nearest_orig).index_select(0, final)
+    # Two gathers of the PACKED key, so both take the split form under
+    # MPS-friendly mode (``gather_packed_key``): a full-width int64 gather on
+    # MPS keeps only ~25 significant bits, which would leave every sheet
+    # carrying the same depth.
+    sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
 

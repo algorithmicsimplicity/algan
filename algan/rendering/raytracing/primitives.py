@@ -23,6 +23,7 @@ from algan.rendering.logical_pn import (
     normalize_pixel_tolerance,
     snap_boundary_values,
 )
+from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
     batch_arange,
@@ -2612,7 +2613,7 @@ def _packed_uniform_cubic_parameters(chord_counts, dtype, vertex_counts=None):
 def _point_to_segment_distance_squared(point, start, delta, length_squared):
     """Squared distance from ``point`` to the finite segment ``start+delta``."""
     along = ((point - start) * delta).sum(-1, keepdim=True)
-    along = along / length_squared.clamp_min(1e-20)
+    along = along / clamp_floor(length_squared, 1e-20)
     closest = start + along.clamp_(0.0, 1.0) * delta
     return (point - closest).square().sum(-1)
 
@@ -2691,7 +2692,7 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     dy = ey1 - ey0
     length = torch.sqrt(dx * dx + dy * dy)
     degen = (length < 1e-12) | (edges[..., :4].abs() >= 1e8).any(-1)
-    inv_len = 1.0 / torch.clamp(length, min=1e-12)
+    inv_len = 1.0 / clamp_floor(length, 1e-12)
     # Leftward perpendicular of the edge direction, unit length.
     lnx = -dy * inv_len
     lny = dx * inv_len
@@ -2705,8 +2706,13 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     edge_count = counts_all[circ]  # [V] own circuit's edge count
     # Power-of-two size class per edge: within a bucket the gather width is
     # at most 2x any member's circuit size, keeping total work within 2x of
-    # sum_c Vc^2.
-    size_class = torch.ceil(torch.log2(edge_count.to(torch.float64))).to(torch.long)
+    # sum_c Vc^2. Purely a BUCKETING key -- the loop below takes each bucket's
+    # own ``max`` as its gather width -- so the narrower log of MPS-friendly
+    # mode can round an exact power of two into the neighbouring bucket
+    # without changing a single result, only the work split.
+    size_class = torch.ceil(torch.log2(edge_count.to(accumulate_dtype()))).to(
+        torch.long
+    )
 
     sigma = torch.zeros((T, V), device=device)
     unresolved = ~degen
@@ -3265,8 +3271,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # mob-basis coordinates used by the texture lookup.
         def scaled(basis):
             basis = basis.float()
-            return basis / basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(
-                1e-12
+            return basis / clamp_floor(
+                basis.norm(p=2, dim=-1, keepdim=True).square(), 1e-12
             )
 
         basis1, basis2 = scaled(self.basis1), scaled(self.basis2)
@@ -3454,7 +3460,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # centred on the path, so half its width reaches out as well.
         b1_norm = sb[:, 1].norm(p=2, dim=-1)
         screen_dist = (sp - cam_o).norm(p=2, dim=-1)
-        pixel_world_scale = 2.0 / (screen_h * b1_norm * screen_dist).clamp_min(1e-12)
+        pixel_world_scale = 2.0 / clamp_floor(screen_h * b1_norm * screen_dist, 1e-12)
         centers = self._rt_circuit_meta[..., :3]
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
         world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)

@@ -68,6 +68,7 @@ import warnings
 import torch
 
 from algan.environment import env_int
+from algan.rendering.mps_compat import clamp_floor, cummax_values, cummin_values
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
     EMPTY_LO,
@@ -210,7 +211,7 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
         cmax.index_reduce_(0, seg, pc, "amax")
     ext = cmax - cmin
     nb = bvh_sah_bins
-    t = (pc - cmin[seg]) / ext[seg].clamp_min(1e-30)
+    t = (pc - cmin[seg]) / clamp_floor(ext[seg], 1e-30)
     bins = (t * nb).long().clamp_(0, nb - 1)  # [S, 3]
 
     # Histograms + per-bin box unions, per (range, axis, bin).
@@ -241,10 +242,10 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     # bins [0, s] left and (s, nb) right, s in [0, nb - 2].
     lcnt = cnt.cumsum(-1)[..., :-1]  # [K, 3, nb-1]
     rcnt = counts.view(K, 1, 1) - lcnt
-    llo = blo.cummin(2).values[:, :, :-1]
-    lhi = bhi.cummax(2).values[:, :, :-1]
-    rlo = blo.flip(2).cummin(2).values.flip(2)[:, :, 1:]
-    rhi = bhi.flip(2).cummax(2).values.flip(2)[:, :, 1:]
+    llo = cummin_values(blo, 2)[:, :, :-1]
+    lhi = cummax_values(bhi, 2)[:, :, :-1]
+    rlo = cummin_values(blo.flip(2), 2).flip(2)[:, :, 1:]
+    rhi = cummax_values(bhi.flip(2), 2).flip(2)[:, :, 1:]
     cost = _half_area(llo, lhi) * lcnt + _half_area(rlo, rhi) * rcnt
     invalid = (lcnt == 0) | (rcnt == 0)
     cost = torch.where(invalid, torch.full_like(cost, float("inf")), cost)

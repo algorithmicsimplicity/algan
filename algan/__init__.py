@@ -90,6 +90,16 @@ from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
 
 _apply_taichi_warmstart()
 _apply_taichi_fast_launch()
+# The MPS zero-copy conversion, which turns torch MPS tensors into ndarrays
+# over their own MTLBuffer so Taichi binds them instead of copying them through
+# the host (see rendering/mps_zero_copy.py). A no-op on every machine but a Mac
+# running the patched Taichi build, and it goes on before the arch guard so the
+# guard stays the outermost wrapper.
+from algan.rendering.mps_zero_copy import (  # noqa: E402
+    install_zero_copy_launch as _install_zero_copy_launch,
+)
+
+_install_zero_copy_launch()
 # Last, so it is the outermost wrapper on Kernel.__call__: the fast launcher
 # bypasses whatever it wrapped on a plan hit, and the arch guard must see those
 # launches too. It is what brings Taichi up, since no kernel module does that
@@ -291,6 +301,8 @@ _INTERNAL_EXPORT_MODULES = (
     "algan.animation_timeline.timeline",
     "algan.mobs.nonplanar_circuit",
     "algan.rendering.logical_pn",
+    "algan.rendering.mps_compat",
+    "algan.rendering.mps_zero_copy",
     "algan.utils.file_utils",
     "algan.utils.lazy_import",
     "algan.utils.python_utils",

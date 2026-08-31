@@ -35,6 +35,8 @@ from typing import NamedTuple
 import torch
 import torch.nn.functional as F
 
+from algan.rendering.mps_compat import clamp_floor
+
 
 def normalize_pixel_tolerance(value):
     """Normalize an absolute-pixel render tolerance to a positive float.
@@ -725,7 +727,7 @@ def _build_anisotropic_pattern(along, across, apex, device, dtype):
     edge_vertex_ids = _edge_vertex_ids(
         counts, offsets, n, apex, others, apex_edges, opposite_edge
     )
-    uv = (weights[:, 1:] / weights.sum(-1, keepdim=True).clamp_min(1e-30)).to(dtype)
+    uv = (weights[:, 1:] / clamp_floor(weights.sum(-1, keepdim=True), 1e-30)).to(dtype)
     return DicePattern(
         along,
         across,

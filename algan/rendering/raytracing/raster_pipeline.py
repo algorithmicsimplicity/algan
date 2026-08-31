@@ -22,6 +22,15 @@ import math
 import torch
 
 from algan.environment import env_str
+from algan.rendering.mps_compat import (
+    accumulate_dtype,
+    clamp_floor,
+    gather_packed_key,
+    kernel_index,
+    reduction_index_dtype,
+    reduction_index_sentinel,
+    taichi_accumulate_dtype,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
@@ -271,7 +280,7 @@ def precompute_triangle_projection(
         ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
     )
     rel = hit - sp[:, None, None, :]
-    safe_n2 = n2.clamp_min(1e-30)
+    safe_n2 = clamp_floor(n2, 1e-30)
     u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
         -1
     ) / safe_n2[:, None, None]
@@ -295,7 +304,7 @@ def precompute_triangle_projection(
         elen = torch.sqrt(ex * ex + ey * ey)
         inv_len = torch.where(
             valid[..., None] & (elen > 1e-12),
-            1.0 / elen.clamp_min(1e-12),
+            1.0 / clamp_floor(elen, 1e-12),
             torch.zeros_like(elen),
         )
         parts.append(inv_len)
@@ -456,7 +465,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     pby_b = pby[:, None, None, :]
     nvec = torch.linalg.cross(pbx, pby)
     nvec_b = nvec[:, None, None, :]
-    inv_n2 = (1.0 / (nvec * nvec).sum(-1).clamp_min(1e-30))[:, None, None]
+    inv_n2 = (1.0 / clamp_floor((nvec * nvec).sum(-1), 1e-30))[:, None, None]
     big_d = ((sp - ro) * nvec).sum(-1)
     # Depth measured so that "in front of the camera plane" is positive,
     # matching precompute_triangle_projection's front test.
@@ -465,7 +474,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
 
     rel_verts = verts - ro_b
     depth = (rel_verts * nvec_b).sum(-1) * sign[:, None, None]
-    clip_depth = (_CLIP_DEPTH_FRACTION * depth.amax(-1)).clamp_min(1e-30)
+    clip_depth = clamp_floor(_CLIP_DEPTH_FRACTION * depth.amax(-1), 1e-30)
     keep = depth >= clip_depth.unsqueeze(-1)
 
     lo_i, hi_i = _edge_index(edges, verts.device)
@@ -487,7 +496,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
     rel = torch.cat((rel_verts, rel_edge), -2)
     scale = torch.cat(
         (
-            front_d[:, None, None] / depth.clamp_min(1e-30),
+            front_d[:, None, None] / clamp_floor(depth, 1e-30),
             (front_d[:, None] / clip_depth).unsqueeze(-1).expand_as(step),
         ),
         -1,
@@ -515,7 +524,7 @@ def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
         (pbx.norm(dim=-1) * (float(half_w) / float(half_h))) ** 2
         + pby.norm(dim=-1) ** 2
     )
-    pad = clip_depth * (1.0 + screen_radius / big_d.abs().clamp_min(1e-30))[:, None]
+    pad = clip_depth * (1.0 + screen_radius / clamp_floor(big_d.abs(), 1e-30))[:, None]
     pad = pad.unsqueeze(-1)
     near_camera = (
         (ro_b.squeeze(-2) >= verts.amin(-2) - pad)
@@ -552,7 +561,7 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
     front = (wpn.abs() >= 1e-12) & (td > 0)
     hit = ro + td.unsqueeze(-1) * d
     rel = hit - sp
-    dsq = (nvec * nvec).sum().clamp_min(1e-30)
+    dsq = clamp_floor((nvec * nvec).sum(), 1e-30)
     u = (torch.linalg.cross(rel, pby.expand_as(rel)) * nvec).sum(-1) / dsq
     v = (torch.linalg.cross(pbx.expand_as(rel), rel) * nvec).sum(-1) / dsq
     return u * half_h + half_w, v * half_h + half_h, front
@@ -747,7 +756,7 @@ def precompute_circuit_screen_bounds(
     front = (wpn.abs() >= 1e-12) & (td > 0)
     hit = ro[:, None, None, :] + td.unsqueeze(-1) * d
     rel = hit - sp[:, None, None, :]
-    dsq = (nvec * nvec).sum(-1).clamp_min(1e-30)  # [F]
+    dsq = clamp_floor((nvec * nvec).sum(-1), 1e-30)  # [F]
     u = (
         torch.linalg.cross(rel, pby[:, None, None, :].expand_as(rel))
         * nvec[:, None, None, :]
@@ -972,7 +981,7 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
         x1f,
         y0f,
         y1f,
-        f_abs.contiguous(),
+        kernel_index(f_abs.contiguous()),
         offs,
         numel,
         ncirc,
@@ -1128,7 +1137,7 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     layer_order = torch.argsort(layer, descending=True, stable=True)
     del layer
 
-    key_l = frag_key.index_select(0, layer_order)
+    key_l = gather_packed_key(frag_key, layer_order)
     pixel = key_l >> 32
     t_bits = (key_l & 0xFFFFFFFF).to(torch.int32)
     del key_l
@@ -1166,7 +1175,14 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     """
     m = int(idx.shape[0])
     if not rt_settings.raster_fused_gather or m == 0:
-        return tuple(t.index_select(0, idx) for t in (key, ref, ab, cov, msk, opq))
+        # ``key`` is the packed 64-bit fragment key and takes the split gather
+        # (see ``gather_packed_key``); the other five are 32 bits or narrower
+        # and go straight through. Off MPS-friendly mode both are
+        # ``index_select``.
+        return (
+            gather_packed_key(key, idx),
+            *(t.index_select(0, idx) for t in (ref, ab, cov, msk, opq)),
+        )
     from algan.rendering.raytracing.sheet_compact_taichi import (
         gather_fragment_arrays,
     )
@@ -1179,7 +1195,7 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     out_opq = torch.empty(m, dtype=opq.dtype, device=opq.device)
     # Taichi has no bool ndarray, so the flags ride as the bytes they are.
     gather_fragment_arrays(
-        idx,
+        kernel_index(idx),
         m,
         key,
         ref,
@@ -1217,17 +1233,19 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         )
         starts = torch.cumsum(counts, 0) - counts
         ends = starts + counts - 1
+        idx_dtype = reduction_index_dtype()
         first_opaque = torch.full(
-            (counts.numel(),), num_frags, dtype=torch.int64, device=device
+            (counts.numel(),), num_frags, dtype=idx_dtype, device=device
         )
         opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
         first_opaque.scatter_reduce_(
             0,
             segments.index_select(0, opaque_pos),
-            opaque_pos,
+            opaque_pos.to(idx_dtype),
             reduce="amin",
             include_self=True,
         )
+        first_opaque = first_opaque.to(torch.int64)
         del opaque_pos, starts
         keep_end = torch.minimum(first_opaque, ends)
         del first_opaque, ends
@@ -1239,8 +1257,8 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
     opaque_prefix_keep(
         opaque_s.contiguous().view(torch.uint8),
-        counts,
-        starts,
+        kernel_index(counts),
+        kernel_index(starts),
         int(counts.numel()),
         keep_u8,
     )
@@ -1280,16 +1298,17 @@ def _one_mesh_pixel_caps(
         starts = torch.cumsum(counts, 0) - counts
         lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
         hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
-        front = torch.zeros(num_covered, dtype=torch.float64, device=device)
-        back = torch.zeros(num_covered, dtype=torch.float64, device=device)
+        acc = accumulate_dtype()
+        front = torch.zeros(num_covered, dtype=acc, device=device)
+        back = torch.zeros(num_covered, dtype=acc, device=device)
         one_mesh_pixel_reduce(
             key_s,
             ref_s,
             mat_opaque_s.contiguous().view(torch.uint8),
             msk_s,
             cov_s,
-            counts,
-            starts,
+            kernel_index(counts),
+            kernel_index(starts),
             num_covered,
             int(ppf),
             int(time_start),
@@ -1300,6 +1319,7 @@ def _one_mesh_pixel_caps(
             hi,
             front,
             back,
+            taichi_accumulate_dtype(),
         )
         # The i32 fill differs from the torch arm's 1<<40 only on a pixel with
         # no fragment at all, which cannot happen; see the kernel docstring.
@@ -1308,8 +1328,8 @@ def _one_mesh_pixel_caps(
         del front, back, lo, hi
         cap_s = torch.empty_like(cov_s)
         one_mesh_pixel_apply(
-            counts,
-            starts,
+            kernel_index(counts),
+            kernel_index(starts),
             num_covered,
             one_mesh.view(torch.uint8),
             cap_pix,
@@ -1321,7 +1341,13 @@ def _one_mesh_pixel_caps(
 
     frame_of = _tri_obj_row(key_s >> 32, ppf, time_start, tri_obj.shape[0])
     safe_ref = ref_s.clamp_min(0).to(torch.int64)
-    sid = tri_obj[frame_of, safe_ref].to(torch.int64)
+    # ``reduction_index_dtype`` is int64 here and int32 in MPS-friendly mode,
+    # where int64 amin/amax ``scatter_reduce_`` is unimplemented (§2.3). A
+    # surface id is bounded by the batch's surface count, so the narrow answer
+    # is the wide one -- exactly the argument the kernel arm above already
+    # makes for its own int32 spread.
+    idx_dtype = reduction_index_dtype()
+    sid = tri_obj[frame_of, safe_ref].to(idx_dtype)
     # A bezier fragment has ref < 0 and no surface id; a pixel holding
     # one is never single-mesh. Same for a non-opaque fragment, whose
     # far sheet is legitimately visible THROUGH the near one.
@@ -1331,8 +1357,10 @@ def _one_mesh_pixel_caps(
     seg = torch.repeat_interleave(
         torch.arange(num_covered, dtype=torch.int64, device=device), counts
     )
-    lo = torch.full((num_covered,), 1 << 40, dtype=torch.int64, device=device)
-    hi = torch.full((num_covered,), -1, dtype=torch.int64, device=device)
+    lo = torch.full(
+        (num_covered,), reduction_index_sentinel(), dtype=idx_dtype, device=device
+    )
+    hi = torch.full((num_covered,), -1, dtype=idx_dtype, device=device)
     lo.scatter_reduce_(0, seg, sid, reduce="amin", include_self=True)
     hi.scatter_reduce_(0, seg, sid, reduce="amax", include_self=True)
     one_mesh = (lo == hi) & (lo >= 0)
@@ -1364,7 +1392,7 @@ def _one_mesh_pixel_caps(
     # nothing measurable -- it is one pass over the fragments, against a
     # render this sits at ~1% of.
     is_back = (msk_s & AA_BACKFACE_BIT) != 0
-    acc = torch.float64
+    acc = accumulate_dtype()
     cov_acc = cov_s.to(acc)
     front = torch.zeros(num_covered, dtype=acc, device=device)
     back = torch.zeros_like(front)
@@ -1861,7 +1889,7 @@ def prepare_sparse_raster_coverage(
                 # rebinding frees the array it replaces, which is worth more
                 # here than the fused gather's traffic saving (see its
                 # docstring).
-                key_s = key_s.index_select(0, keep_idx)
+                key_s = gather_packed_key(key_s, keep_idx)
                 ref_s = ref_s.index_select(0, keep_idx)
                 ab_s = ab_s.index_select(0, keep_idx)
                 cov_s = cov_s.index_select(0, keep_idx)

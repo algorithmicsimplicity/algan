@@ -312,8 +312,55 @@ def _storage_is_arena(storage, memory):
     return storage._cdata == memory.data.untyped_storage()._cdata
 
 
+#: Byte boundary the Apple GPU's zero-copy path needs an uploaded storage to
+#: start on, or 1 for "whatever the element needs" -- which is what every other
+#: backend wants and what this used to be unconditionally.
+#:
+#: A kernel there binds torch's own ``MTLBuffer`` at the storage's byte offset,
+#: and a **vector-element** array is loaded as one vector: the BVH's sibling
+#: blocks are ``ndarray(dtype=vector(4, f16))``, an 8-byte element. Aligning to
+#: the scalar element (2 bytes for f16) is not enough for that, and it is not
+#: hypothetical -- the triangle BVH's blocks landed at byte 799066188, a
+#: multiple of 4 and not of 8, so ``mps_zero_copy`` refused to import them and
+#: they went back on Taichi's host-staging path: four copies and a stream sync
+#: per launch, on the widest array the tracer reads.
+#: (``DESIGN_mps_zero_copy.md`` §3.3 asks for this.)
+#:
+#: 16 covers every vector element Metal binds as one (up to 4 x f32). A wider
+#: one -- ``ALGAN_BVH_ARITY=8`` with f32 blocks would be 32 bytes -- is not
+#: silently mis-bound: the import checks the offset against the element size
+#: itself, declines, and the bus report names it.
+#:
+#: Applied HERE rather than in ``ManualMemory``, which was the first attempt and
+#: was too broad by half: a floor on every arena slice changes every arena's
+#: layout and size, which the memory model derives chunk lengths from, and it
+#: broke six tests that assert exact byte accounting. This is the only path that
+#: places a vector-element array, and its two halves -- the copy and
+#: ``get_merged_scene_arena_nbytes``, which predicts the cost -- share this
+#: function, so the accounting stays exact.
+#:
+#: Resolved once: whether the conversion is installed is decided while ``algan``
+#: is still importing, long before a scene is uploaded.
+_UPLOAD_ALIGNMENT_FLOOR = None
+
+
+def _upload_alignment_floor():
+    global _UPLOAD_ALIGNMENT_FLOOR
+    if _UPLOAD_ALIGNMENT_FLOOR is None:
+        _UPLOAD_ALIGNMENT_FLOOR = 1
+        try:
+            from algan.rendering.mps_zero_copy import installed
+
+            if installed():
+                _UPLOAD_ALIGNMENT_FLOOR = 16
+        except Exception:
+            _UPLOAD_ALIGNMENT_FLOOR = 1
+    return _UPLOAD_ALIGNMENT_FLOOR
+
+
 def _storage_alignment(group):
-    return max((tensor.element_size() for tensor in group["tensors"]), default=1)
+    element = max((tensor.element_size() for tensor in group["tensors"]), default=1)
+    return max(element, _upload_alignment_floor())
 
 
 def _group_needs_arena_copy(group, memory):
@@ -347,8 +394,14 @@ def get_merged_scene_arena_nbytes(scene, memory, *, persist=True):
             continue
         alignment = _storage_alignment(group)
         if persist:
-            pointer -= pointer % alignment
+            # The START of the block is what a kernel binds, and the reverse
+            # arena grows downward, so subtract first and align that. While the
+            # alignment was the element size this was the same thing -- a
+            # storage is always a whole number of elements, so aligning the end
+            # aligned the start too -- and it stops being the same as soon as
+            # `_upload_alignment_floor` exceeds the element.
             pointer -= nbytes
+            pointer -= pointer % alignment
         else:
             pointer += (-pointer) % alignment
             pointer += nbytes
@@ -367,7 +420,10 @@ def _arena_storage_copy(group, memory, persist):
 
     alignment = _storage_alignment(group)
     pointer = memory.current_reverse_pointer if persist else memory.current_pointer
-    padding = pointer % alignment if persist else (-pointer) % alignment
+    # Reverse allocations grow downward, so the block's START is
+    # ``pointer - nbytes`` and that is what has to land on the boundary (see
+    # get_merged_scene_arena_nbytes, which predicts the same padding).
+    padding = (pointer - nbytes) % alignment if persist else (-pointer) % alignment
     if padding:
         memory.get_tensor((padding,), dtype=torch.uint8, persist=persist)
     destination = memory.get_tensor((nbytes,), dtype=torch.uint8, persist=persist)

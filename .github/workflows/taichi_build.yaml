@@ -1,17 +1,18 @@
 name: Taichi from source (macOS)
 
-# Times a from-source build of Taichi on the free Apple-silicon runner. That
-# number is the cost of the zero-copy MPS patch in `DESIGN_mps_zero_copy.md`:
-# the Metal import the patch needs is a local symbol, so nothing outside
-# `taichi_python` can link to it and the patch has to be compiled in -- which
-# means a forked wheel, built here, because this runner is the only Mac the
-# project has.
+# Builds the forked Taichi wheel Algan's Apple-GPU path needs, on the free
+# Apple-silicon runner -- the only Mac the project has.
 #
-# Two numbers matter and this job takes both: a cold build, which is what a
-# release costs per Python version, and a rebuild after one `.cpp` changes,
-# which is what iterating on the patch costs. It builds stock v1.7.4,
-# unpatched -- the measurement is of the build, and a patch that failed to
-# compile would only confuse the timing.
+# It began as a measurement of what such a build costs (`DESIGN_mps_zero_copy.md`
+# §4.1, and the timings below are still taken) and became the build itself once
+# the patches existed. `taichi_patches/` is what it applies and its README is
+# what they are; in one line, the Metal buffer import Taichi already carries is
+# a *local* symbol, so nothing outside `taichi_python` can link to it and the
+# patch has to be compiled in.
+#
+# `apply_patches` (default true) is the switch between the two jobs this is.
+# Turn it off to build stock v1.7.4 -- which is what to do when a build breaks
+# and the question is whether the patches are at fault or the toolchain is.
 #
 # It is not a check and guards no regression, so like the MPS probe it runs
 # only on hand dispatch (which needs the file on the default branch first;
@@ -22,6 +23,11 @@ name: Taichi from source (macOS)
 # toolchain rather than on Taichi.
 on:
   workflow_dispatch:
+    inputs:
+      apply_patches:
+        description: "Apply taichi_patches/ (off = stock v1.7.4)"
+        type: boolean
+        default: true
 
 # Queue behind an in-flight run rather than cancelling it, for the same reason
 # the MPS probe does: this is a measurement, not a check, and a half-finished
@@ -65,6 +71,10 @@ jobs:
         -DTI_BUILD_TESTS:BOOL=OFF
 
     steps:
+      # Algan itself, for `taichi_patches/`. The job did not need a checkout
+      # while it only timed a stock build, which is why it never had one.
+      - uses: actions/checkout@v4
+
       # Which machine produced the number. A build time is meaningless without
       # the core count, and the free runner's is not the 8-10 of a laptop.
       - name: Runner facts
@@ -94,6 +104,33 @@ jobs:
             --shallow-submodules https://github.com/taichi-dev/taichi.git taichi-src
           echo "CLONE_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
           du -sh taichi-src
+
+      # The patches, and the one place their application is verified. `git
+      # apply` is deliberately strict -- no fuzz, no 3-way merge -- so a patch
+      # that has drifted from the tag fails here, loudly, rather than half
+      # applying and producing a wheel whose behaviour nobody can account for.
+      - name: Apply the Algan patches
+        if: ${{ inputs.apply_patches == null || inputs.apply_patches }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=("$GITHUB_WORKSPACE"/taichi_patches/[0-9]*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no patches found in taichi_patches/ -- refusing to build a"
+            echo "wheel that would look patched and not be"
+            exit 1
+          fi
+          cd taichi-src
+          for patch in "${patches[@]}"; do
+            echo "--- applying $(basename "$patch")"
+            git apply --verbose "$patch"
+          done
+          echo "PATCHED=1" >> "$GITHUB_ENV"
+          git -c core.pager=cat diff --stat
+
+      - name: Note that this is a stock build
+        if: ${{ inputs.apply_patches != null && !inputs.apply_patches }}
+        run: echo "PATCHED=0" >> "$GITHUB_ENV"
 
       # `ti_build` hard-wires Homebrew's llvm@15 as the compiler -- it emits
       # `-DCLANG_EXECUTABLE=/opt/homebrew/opt/llvm@15/bin/clang` whether or not
@@ -168,7 +205,7 @@ jobs:
         run: |
           set -o pipefail
           cd taichi-src
-          touch taichi/program/program.cpp
+          touch taichi/program/program.cpp  # a file the patches change
           start=$(date +%s)
           python3 build.py --python=native 2>&1 | tee ../build-incremental.log
           echo "INCREMENTAL_BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
@@ -197,6 +234,27 @@ jobs:
             echo "import_mtl_buffer: $(nm "$so" 2>/dev/null | grep -c 'import_mtl_buffer') symbol(s)"
             echo "Ndarray(DeviceAllocation&) external: $(nm -g "$so" 2>/dev/null | grep -c 'NdarrayC1ERNS0_16DeviceAllocation')"
           } 2>&1 | tee module-symbols.txt
+
+      # Whether the wheel that came out is the patched one. Cheap, and it is
+      # the difference between "the build succeeded" and "the build succeeded
+      # and carries the thing it was built for" -- a patch that applied and
+      # then got compiled out by an #ifdef would look identical without it.
+      - name: Check the patched entry points are in the wheel
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          {
+            echo "PATCHED=${PATCHED:-unknown}"
+            so=$(find taichi-src wheel-unpacked -name 'taichi_python*.so' 2>/dev/null | head -1)
+            echo "module: ${so:-(none)}"
+            if [ -n "${so:-}" ]; then
+              echo "create_ndarray_from_metal_buffer: $(nm "$so" 2>/dev/null | grep -c 'create_ndarray_from_metal_buffer')"
+              echo "import_external_mtl_buffer: $(nm "$so" 2>/dev/null | grep -c 'import_external_mtl_buffer')"
+            fi
+            py=$(find taichi-src/python -name '_ndarray.py' 2>/dev/null | head -1)
+            echo "ExternalMetalNdarray in _ndarray.py: $(grep -c 'class ExternalMetalNdarray' "${py:-/dev/null}" 2>/dev/null || echo 0)"
+          } 2>&1 | tee patch-check.txt
 
       # This job deliberately runs nothing on the GPU. An earlier version also
       # asked the built wheel whether Metal comes up and whether a kernel with
@@ -237,8 +295,12 @@ jobs:
           path: |
             taichi-src/dist/*.whl
             build-incremental.log
+            patch-check.txt
           if-no-files-found: warn
-          retention-days: 14
+          # Longer than a measurement needs, because the wheel is now the
+          # deliverable: it is what a Mac has to `pip install` to get the
+          # zero-copy path, until the fork has a real distribution.
+          retention-days: 60
 
       # Deliberately the last step in the job, and it reports on success too.
       # The Actions API serves a fixed window at the end of a job log whatever
@@ -257,6 +319,8 @@ jobs:
           ls -la taichi-src/dist/ 2>/dev/null || echo "(no wheel produced)"
           echo "=== built module ==="
           cat module-symbols.txt 2>/dev/null || echo "(not inspected)"
+          echo "=== patches ==="
+          cat patch-check.txt 2>/dev/null || echo "(not checked)"
           if [ "${{ job.status }}" != "success" ]; then
             echo "=== Xcode, SDKs, clang, disk ==="
             ls /Applications | grep -i '^Xcode' | tr '\n' ' '; echo

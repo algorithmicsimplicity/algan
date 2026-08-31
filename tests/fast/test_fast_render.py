@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from algan import PREVIEW, SETTINGS, Scene
+from algan.rendering.mps_compat import mps_friendly
 from algan.scene_manager import SceneManager
 
 HERE = Path(__file__).resolve().parent
@@ -60,7 +61,20 @@ DEVICE = SETTINGS.computing.render_device.type
 # LaTeX, the fonts and the encoder -- just not the pixels. To gate pixels on a
 # Mac, render with ALGAN_UPDATE_FAST_BASELINE=1 there, look at the result, and
 # commit it; the comparison turns itself back on, for machines like that one.
-BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+#
+# MPS-friendly mode is keyed apart for a different and simpler reason: it is
+# documented as NOT bit-identical (DESIGN_mps_support.md §1.2), because the
+# accumulators it narrows to float32 are the ones §6.6.4 widened precisely
+# because a float32 sum is not order-reproducible. Measured against the CPU
+# baseline on the same machine: 99.94% of channels identical, 0.019% past a
+# difference of 2, worst 34 -- a silhouette pattern, and exactly what the mode
+# says it costs. Comparing it to a float64-path baseline therefore asks a
+# question with no right answer, so it gets a key of its own; nothing is
+# committed under it, so the render happens and the comparison skips.
+# `tests/unit_tests/test_mps_friendly.py` is what guards the mode's pixels,
+# by rendering one scene BOTH ways in one process.
+_MODE = "_mpsfriendly" if mps_friendly() else ""
+BASELINE_KEY = (f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE) + _MODE
 EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINE = os.getenv("ALGAN_UPDATE_FAST_BASELINE") == "1"
 

@@ -24,6 +24,7 @@ from algan.logging.logger import get_logger
 from algan.rendering.denoise.oidn_unet import ALIGNMENT, OidnUNet
 from algan.rendering.denoise.tza import parse_tza
 from algan.rendering.denoise.weights import weights_path
+from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.raytracing import settings as rt_settings
 
 logger = get_logger("raytracing")
@@ -65,7 +66,7 @@ def _pu_inverse(x):
         x / _PU_A,
         torch.where(
             x <= _PU_X1,
-            torch.pow(((x - _PU_D) / _PU_B).clamp_min(1e-12), 1.0 / _PU_C),
+            torch.pow(clamp_floor((x - _PU_D) / _PU_B, 1e-12), 1.0 / _PU_C),
             torch.exp((x - _PU_G) / _PU_E) - _PU_F,
         ),
     )

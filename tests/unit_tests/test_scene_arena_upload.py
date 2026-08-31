@@ -239,3 +239,66 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
         )
     finally:
         rt_settings.set_linear_color_space(previous)
+
+
+def test_the_upload_alignment_floor_follows_the_zero_copy_conversion():
+    """It is on exactly where a kernel binds torch's own buffer, and nowhere else.
+
+    Not "off", which is what this asserted first and what the Apple GPU then
+    failed: there the conversion IS installed, so the floor is 16 and an
+    unconditional assertion is simply wrong. The invariant is the pairing --
+    a floor that crept on where nothing needs it would change every scene's
+    arena layout and size, and the memory model derives chunk lengths from
+    that; a floor that failed to appear where the conversion is installed
+    would put the BVH's blocks back on the host-staging path.
+    """
+    from algan.rendering.mps_zero_copy import installed
+    from algan.rendering.raytracing import scene_builder
+
+    scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
+    try:
+        assert scene_builder._upload_alignment_floor() == (16 if installed() else 1)
+    finally:
+        scene_builder._UPLOAD_ALIGNMENT_FLOOR = None
+
+
+def test_the_alignment_floor_starts_a_vector_element_storage_on_its_boundary(
+    monkeypatch,
+):
+    """With the floor on, the BVH blocks can be bound at their own offset.
+
+    ``blocks`` is ``[n, 8, bvh_arity]`` float16, which a Metal kernel reads as
+    one ``vector(bvh_arity, f16)`` per element -- 8 bytes at the default arity.
+    Aligning the storage to the f16 element put it at a byte offset that was a
+    multiple of 4 and not of 8, and the zero-copy import then declined it and
+    left it on Taichi's host-staging path (``DESIGN_mps_zero_copy.md`` §3.3).
+
+    Both halves are asserted, because they are what makes the floor safe: every
+    uploaded storage lands on the boundary, AND
+    ``get_merged_scene_arena_nbytes`` still predicts the cost exactly -- the
+    memory model sizes chunks from that prediction, so a floor the predictor
+    did not share would over-commit the arena.
+    """
+    from algan.rendering.raytracing import scene_builder
+
+    monkeypatch.setattr(scene_builder, "_UPLOAD_ALIGNMENT_FLOOR", 16)
+    bvh = _prebuilt_bvh()
+    scene = {"tri_bvh": bvh, "odd": torch.arange(3, dtype=torch.uint8)}
+
+    memory = _cpu_arena()
+    # An odd starting pointer, so the padding is exercised rather than skipped.
+    memory.get_tensor((1,), dtype=torch.uint8, persist=True)
+    before = memory.get_pointers()
+    expected = get_merged_scene_arena_nbytes(scene, memory)
+    uploaded = copy_merged_scene_to_arena(scene, memory)
+    after = memory.get_pointers()
+
+    assert before[1] - after[1] == expected
+    for tensor in (
+        uploaded["tri_bvh"].blocks,
+        uploaded["tri_bvh"].nodes,
+        uploaded["tri_bvh"].node_miss,
+        uploaded["odd"],
+    ):
+        byte_offset = tensor.storage_offset() * tensor.element_size()
+        assert byte_offset % 16 == 0, (tensor.dtype, byte_offset)

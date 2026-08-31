@@ -17,6 +17,7 @@ convention in ``test_sheet_compaction.py``).
 from __future__ import annotations
 
 import pytest
+import taichi as ti
 import torch
 
 from algan.rendering.raytracing.raster_pipeline import (
@@ -100,7 +101,7 @@ def _torch_shell_ceiling(key, o2, back, excl, c2, cov_src):
 
 
 @pytest.mark.parametrize("zero_areas", [False, True])
-def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas):
+def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas, wide_kernel_arms):
     n = 4096
     key, o2, back, cov = _shell_stream(n, seed=11, zero_areas=zero_areas)
     cov64 = cov.to(torch.float64)
@@ -112,7 +113,7 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas):
     got = cov.clone()
     scratch = cov.to(torch.float64)
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got, ti.f64
     )
     assert _bits_equal(want, got), (
         f"max abs diff {(want - got).abs().max().item()}, "
@@ -121,12 +122,14 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas):
 
     again = cov.clone()
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again, ti.f64
     )
     assert _bits_equal(got, again), "kernel is not deterministic across runs"
 
 
-def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments():
+def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments(
+    wide_kernel_arms,
+):
     for n, key_val in ((1, 0), (257, 0)):
         key = torch.full((n,), key_val, dtype=torch.int64)
         o2 = torch.arange(n, dtype=torch.int64)
@@ -147,6 +150,7 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments():
             cov.to(torch.float64),
             n,
             got,
+            ti.f64,
         )
         assert _bits_equal(want, got), f"n={n}"
 
@@ -191,7 +195,7 @@ def _band_torch_arms(band, msk, pos_o, cov, nb, positioned):
 
 
 @pytest.mark.parametrize("positioned", [False, True])
-def test_band_stats_kernels_match_the_five_scatters(positioned):
+def test_band_stats_kernels_match_the_five_scatters(positioned, wide_kernel_arms):
     g = torch.Generator().manual_seed(23)
     n, nb = 30_000, 4_001
     band = torch.randint(0, nb, (n,), generator=g)
@@ -224,10 +228,11 @@ def test_band_stats_kernels_match_the_five_scatters(positioned):
         cm,
         nf,
         bool(positioned),
+        ti.i64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
     )
 
     assert _bits_equal(w_fs, fs), "first_sorted"
@@ -239,7 +244,7 @@ def test_band_stats_kernels_match_the_five_scatters(positioned):
     assert _bits_equal(w_rp, rp), "rep_orig"
 
 
-def test_band_stats_leaves_unused_band_rows_at_sentinel():
+def test_band_stats_leaves_unused_band_rows_at_sentinel(wide_kernel_arms):
     g = torch.Generator().manual_seed(29)
     n, nb = 512, 128
     band = torch.randint(0, nb // 2, (n,), generator=g)  # upper half unused
@@ -270,10 +275,11 @@ def test_band_stats_leaves_unused_band_rows_at_sentinel():
         cm,
         nf,
         True,
+        ti.i64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
     )
     assert _bits_equal(w_fs, fs), "first_sorted"
     assert _bits_equal(w_mp, mp), "min_pos"

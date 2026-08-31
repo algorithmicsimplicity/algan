@@ -13,6 +13,53 @@ which nobody had looked at.
 
 Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
 
+**Status, added later.** All three blockers are cleared and *measured cleared on
+the hardware*: §1.1 by packing kernel arguments into arena offsets, §1.2 by
+MPS-friendly mode, and §1.3/§1.3b by the forked Taichi in `taichi_patches/`,
+which lets a kernel bind torch's own `MTLBuffer` instead of staging it through
+the host. Every kernel in the renderer compiles on Metal, the zero-copy path is
+engaged (40 converted launches, 244 arguments, nothing left on the staging
+path), and **`benchmarks/_mps_render_smoke.py` draws a real frame** — the
+fragment stream matching the CPU's to the unit: 59790 fragments, pixels
+`[137724..282179]` over 30929 distinct, `frag_cov` summing to 40133.251 against
+40133.251.
+
+Getting from "black" to that took two defects nobody had looked for, both of
+them **torch on MPS answering wrongly rather than failing**, and both in the
+same place: §2.3b. MPS gathers an integer through 24 bits of mantissa, and
+Algan's two wide int64s are composite keys — the packed fragment key at 2**50
+and the shading-class key at 2**40 — so both lost the low bits that carry their
+meaning. The verdict below is no longer NO-GO on any of the three counts.
+
+**What is not yet clear** — §1.2c below. The macOS suite is at **1 failed, 2425
+passed, 167 skipped**; the Linux control arm, running the same suite with
+MPS-friendly mode forced on over a CPU render device, is **fully green**, which
+is what says the mode itself is sound and the remainder is Metal.
+
+The six that were §1.2c are fixed, and they were one defect: a `continue` under
+a `ti.static` gate, which emits a block Taichi never reopens and so produces
+invalid SPIR-V. It is Algan's kernel rather than Metal's limit, it has been in
+`sheet_resolve_shade`'s shadow variant the whole time, and LLVM's indifference
+to it is why CPU and CUDA never said so. §1.2c has the mechanism and the
+Linux-only reproduction that found it.
+
+The seventh (`test_closed_shell_attenuates_once_at_authored_opacity`) is
+**cleared, and the macOS suite is green: 2447 passed, 167 skipped, 0 failed.**
+It was the renderer's divide-by-zero guard, `band_area.clamp_min(1e-12)` in
+`sheets._sibling_weights`, handing back a floor the division did not survive: a
+band of zero area produced a NaN, and a NaN never trips the resolve's `eff <=
+min_alpha` branch — comparisons against one are all false — so a sheet that
+should have dropped out composited and one interior column came back attenuated
+twice. Respelling the floor as `where(x < eps, eps, x)`, which is `clamp_min`
+bit for bit and does not go through the call MPS mis-handles, fixes it: the
+closed shell's sheets now read `[+1.00000, -0.00000, +0.00000]`, the CPU's
+values sign included.
+
+**§2.3c is the measurement, and it is only half-explained.** The sweep pins a
+real defect — MPS rounds `clamp_min`'s scalar bound through float16, so every
+floor below 5.96e-8 becomes 5.96e-8 — but that defect alone does not produce
+the NaN the render showed, and §2.3c says so rather than papering over it.
+
 **Scope, added later.** Everything below measures **Taichi on the Metal
 backend**. Two of the three blockers (§1.1, §1.3) turn out to be properties of
 Taichi's interop and codegen rather than of Metal, and they do not survive
@@ -109,6 +156,377 @@ bit-identical run to run on MPS — but only through torch. As a Taichi kernel o
 Metal it aborts with the above. f32 `ti.atomic_add` does work, so a
 non-deterministic mode has a floor; a deterministic one does not, in a kernel.
 
+> **Addressed — MPS-friendly mode.** The floor is what shipped.
+> `SETTINGS.computing.mps_friendly` (`'auto'`, on exactly when the render
+> device is MPS) narrows every renderer path this section names, in one place:
+> `algan/rendering/mps_compat.py`. f64 accumulators become f32 —
+> `accumulate_dtype()` on the torch side, `taichi_accumulate_dtype()` for the
+> kernels, passed as a `ti.template()` dtype argument so Taichi compiles a
+> variant per width rather than resolving a `ti.static` gate once. The int64
+> atomics and the int64 amin/amax `scatter_reduce_`s of §2.3 become int32
+> (`reduction_index_dtype()`); every value they reduce is a position, a count
+> or a surface id, all bounded by the fragment count, so **that** narrowing
+> costs nothing at all. `cummax`/`cummin` become a log-step scan of
+> `maximum`/`minimum`, which is exact because both ops are idempotent and
+> neither reassociates.
+>
+> The float narrowing does cost what this section says it costs, and the mode
+> says so rather than pretending otherwise: **MPS-friendly mode is not
+> deterministic**. Measured on the fast suite's own scene, CPU, mode off
+> against mode on: 99.94% of channels identical, 0.019% differing by more than
+> 2, worst 34 — concentrated on silhouettes, which is the signature of a
+> ceiling that wobbles in its low bits flipping borderline fragments in and out
+> of being clipped, exactly as §2.4 predicts.
+>
+> The mode is settable on any device, and that is deliberate: it is what lets a
+> machine with no Apple GPU run the substitutions. `tests/unit_tests/
+> test_mps_friendly.py` does, including both compiled kernel variants against
+> each other, and it walks the AST of `algan/rendering/` so a new f64
+> accumulator fails a test rather than a Mac.
+>
+> **Confirmed on the machine.** `benchmarks/_mps_metal_codegen_probe.py`, run
+> from the `render` job, puts `i64_atomic_min` at
+>
+> ```
+> RHI Error: (spirv-cross compiler) MSL currently does not support 64-bit atomics.
+> ```
+>
+> — this section's abort, now with a diagnostic instead of an assertion failure
+> — while the mode's `i32_atomic_min` and `f32_accumulate` replacements both
+> pass. Everything §1.2 said is Metal's limit is Metal's limit, and the mode
+> clears all of it: with it on, **every kernel in the renderer compiles and the
+> whole pipeline runs to completion on an Apple GPU**, including
+> `sheet_resolve_shade_arena`, the 49-argument megakernel §1.1 called blocked.
+
+### 1.2b Taichi's MSL generator writes a cast C++ parses as a declaration
+
+Not Metal's limit and not Algan's code: a **Taichi codegen bug**, found by the
+first render that got far enough to hit it, and cleared by narrowing an
+argument. It is here because anyone re-treading this path meets it.
+
+A narrowing cast of a 64-bit ndarray load, bound to a name and read more than
+once, comes out of Taichi's SPIR-V-to-MSL step as a nested functional cast:
+
+```
+program_source:67:42: error: indirection requires pointer operand ('int' invalid)
+        int tmp16_i32 = (int(long(_76))) * 8;
+                                         ^ ~
+program_source:67:13: error: cannot initialize a variable of type 'int' with an
+        rvalue of type 'int (long)'
+```
+
+C++'s most vexing parse: `int(long(_76))` is the function type `int(long)` with
+a parameter named `_76`, so the `* 8` after it parses as a dereference. Metal
+hands Taichi a nil function; Taichi builds a pipeline from it without checking;
+the process aborts with §1.1's `computeFunction must not be nil`, which is why
+the two look identical from outside and why the probe was needed to tell them
+apart.
+
+The probe's ladder is what makes the shape of it exact, and it is narrower than
+it first looks:
+
+| spelling | on Metal |
+| --- | --- |
+| `ti.cast(i64[i], ti.i32)`, used once (`i64_cast_mul`) | **compiles** |
+| the same **bound to a name and read twice** (`named_cast_mul_temp`) | **aborts** |
+| `sheet_lane_first_owner` with an i64 `band` (`lane_owner_real_i64`) | **aborts**, same source line |
+| the same kernel with `band` already i32 (`lane_owner_real_i32`) | **compiles** |
+
+So the fix is the argument dtype, not the kernel: `mps_compat.kernel_index`
+narrows an index array on its way into a kernel when the mode is on, and the
+kernel's own `ti.cast(..., ti.i32)` becomes a cast to the type the value
+already has, which Taichi emits nothing for. The same kernel source serves both
+widths and no kernel changed. It is applied to every array the kernels narrow
+per element — the CSR counts/starts pairs, the gather and depth-order
+permutations, the band ids, the sorted order.
+
+### 1.2c `sheet_resolve_shade_arena` will not compile for some scenes — FOUND
+
+> **Resolved, and neither hypothesis below was right.** It is not a size limit
+> and not §1.2b's cast: `sheet_resolve_shade_arena`'s **shadow variant is
+> invalid SPIR-V**, and the invalid instruction is one Algan's own kernel asks
+> for.
+>
+> ```
+> error: line 301768: Load must appear in a block
+>   %tmp112365_u1 = OpLoad %bool %tmp670_unknown
+> ```
+>
+> `if ti.static(mode == 1): continue` (`sheet_resolve_taichi.py`, the end of
+> the sheet walk) is the source. `ti.static` is resolved by Taichi's AST
+> transformer, which emits the branch's statements inline and leaves **no
+> IfStmt at all** — so what reaches the SPIR-V codegen is a bare `ContinueStmt`
+> in the loop body followed by the whole rest of that body.
+> `visit(ContinueStmt)` emits an `OpBranch` and sets `gen_label_`, relying on
+> the *next IfStmt boundary* to open a new `OpLabel`; with no boundary left to
+> reach, every statement after it is emitted into a block that has already been
+> terminated.
+>
+> That is why it is scene-dependent: only `mode == 1`, the shadow event build,
+> takes that gate, so only a render with shadows on compiles the broken
+> variant. All six failures are shadow renders (the audit's `algan_render.py`
+> defaults `shadows=True`, which is what put the three glossy-prefilter arms in
+> the list).
+>
+> And it is why nothing said so. LLVM does not mind, so CPU and CUDA have been
+> rendering it correctly for as long as it existed; spirv-opt declines to
+> optimize (`SPIRV optimization failed`) and Taichi carries on with the
+> unoptimized module; Metal's `spirv_cross::CompilerMSL` **constructor** throws
+> while parsing it, which lands in `MetalDevice::create_pipeline`'s catch — the
+> one path that discarded the exception text and returned `success` with a null
+> pipeline (fixed in `taichi_patches/0002`).
+>
+> **Both halves are fixed.** The kernel gates the rest of the walk with
+> `if ti.static(mode != 1):` instead of skipping it with a `continue`, which is
+> the shape it wanted anyway; and `0002` opens a new block after every
+> `continue` rather than only after one that ends an if-branch, so a stray
+> `ti.static`-gated `continue` anywhere else cannot do this again.
+>
+> **Measured on Linux**, which is the other half of the finding: Taichi's
+> Metal and Vulkan backends share the SPIR-V codegen, so a software Vulkan
+> (`mesa-vulkan-drivers`' llvmpipe) reproduces it on a machine with no Apple
+> GPU — `TI_ARCH=vulkan` on the same test gives the same warning, at the same
+> launch site, and `vkCreateComputePipelines failed` where Metal gives a nil
+> pipeline. Extracting the module from Taichi's offline cache and running
+> `spirv-val` on it is what produced the error above; after the fix `spirv-val`
+> reports nothing. **That is the loop to use for the next codegen question**,
+> not a 30-minute round trip through the Apple runner.
+
+What follows is how the section read while it was open. Kept, because the two
+readings it got wrong are the ones anyone re-treading this path will get wrong
+in the same order.
+
+The one blocker still standing, and the only thing between the Apple GPU and a
+green suite. Seven tests fail with
+
+```
+Assertion failed: (p != nullptr), function bind_pipeline, file metal_device.mm, line 409.
+```
+
+which is a SIGABRT with no kernel name and no Python traceback — Metal's answer
+to a pipeline built from a shader that did not compile. The compile log names
+it, and the trace has to be taken with `pytest -s` and `PYTHONUNBUFFERED=1`,
+because pytest captures stdout per test and replays it only when a test *fails*
+— a SIGABRT is not a failure, so the buffer dies with the process and two
+earlier attempts got the assertion and nothing else:
+
+```
+[Taichi compile] started ...sheet_resolve_taichi.sheet_resolve_shade_arena[specialization=0] at 14:27:36.312
+Assertion failed: (p != nullptr), function bind_pipeline, ...
+```
+
+A `started` with **no matching `completed`** — which was itself a misreading,
+and the first thing the next trace corrected: the compile *does* complete
+(`frontend=2.371s, backend=5.510s`), and the abort lands after it, at the
+pipeline creation a launch does. So it is §1.1's 49-argument
+megakernel — and the interesting part is that the *same kernel compiles fine* in
+`benchmarks/_mps_render_smoke.py`, which logs `completed ... total=5.765s` for
+it. Whatever fails is scene-dependent, and every failing test is about **lights
+and shadows**: the glossy prefilter (3), the area-light soft shadow, the
+deterministic shadow opacity, and the shadow-cap truncation.
+
+Two hypotheses, neither tested:
+
+* the shader grows with the shadow-light count (`MAX_SHADOW_LIGHTS` unrolling)
+  until Metal's compiler refuses it — a size limit rather than a feature one;
+* a code path taken only with shadows enabled hits the §1.2b MSL codegen bug in
+  a form patch 0002 does not cover.
+
+The next measurement is the MSL error text, which patch 0002's
+`log_msl_source_context` exists to print and did **not** print here — so the
+failure is arriving as a nil pipeline at *bind* rather than as a Metal compile
+error at library creation, and the patch's guard is on the wrong side of it.
+Moving that check is a wheel rebuild, which is why it is written down rather
+than done.
+
+The seventh failure is unrelated, and it was **§2.3c** — a third torch op that
+answers wrongly on MPS rather than failing.
+`test_closed_shell_attenuates_once_at_authored_opacity` had the path-traced and
+deterministic routes agreeing everywhere except one column of the interior,
+where they differed by 86. It **passes on the CPU in both modes**, so it was
+backend-specific rather than an MPS-friendly substitution. The localization
+below is kept because it is what narrowed a whole frame to one expression; the
+answer is at the end of it.
+
+> **Localized**, by `benchmarks/_mps_closed_shell_probe.py`, which renders both
+> routes and prints them side by side over a window wider than the assertion's:
+>
+> ```
+> path traced (8 spp)   : interior mean  153.00 min 153 max 153   -- the oracle
+> det, ceiling kernel   : interior mean  159.57 min 153 max 239
+> columns > 2 across the window's rows: [21, 37, 44]   (CPU: [21, 44])
+> ```
+>
+> Three facts fall out. **The path tracer is exactly right** — 153 is
+> `0.6 * 255`, the authored opacity, uniform. **It is the deterministic route
+> that moved**, which the assertion's wording hides. And the disagreement is at
+> **column 37 only**: 21 and 44 are the cube's two silhouette edges and are
+> there on the CPU too, while 37 is inside the window and its neighbours 38..43
+> are clean — so this is not an edge the window clips, it is an isolated
+> interior column.
+>
+> 239 is not a wobble, it is a specific composite: `1 - 0.4**3 = 0.936`, and
+> `0.936 * 255 = 238.7`. That is **three** shell crossings each compositing at
+> full coverage, where the closed-shell ceiling should have collapsed them to
+> one attenuation of 0.6. So the question is why the ceiling
+> (`sheet_compact_taichi.solid_shell_ceiling`) does not group those fragments
+> into one segment on this backend — its segment key is
+> `pix * K + shell_sid`, the arm that spends the allowance differences a global
+> exclusive prefix, and in MPS-friendly mode that prefix is an **f32** cumsum
+> rather than f64 (the kernel's own docstring says the exactness argument
+> lapses there).
+>
+> **It is not the mode's non-determinism**, which was the first thing to rule
+> out and the cheapest: §1.2's amendment predicts this symptom in as many words
+> ("a ceiling that wobbles in its low bits flipping borderline fragments in and
+> out of being clipped"), so the probe renders the deterministic arm twice in
+> one process and compares. On the Apple GPU the two frames are **bit-identical
+> over the whole frame**. There is a fixed wrong answer here, not a wobble.
+>
+> Two more discriminators, one of which does not exist:
+>
+> * **The ceiling's other arm cannot run on MPS.** `solid_shell_ceiling`'s
+>   torch fallback calls `index_copy_`, and torch has not implemented
+>   `aten::index_copy.out` for the MPS device, so the A/B that would separate
+>   "the kernel" from "what the kernel was handed" raises there. (The probe now
+>   runs it last and tolerates the failure; before that it took every other
+>   reading down with it.)
+> * **The ceiling switched off entirely** does run, and it is the reading that
+>   places the defect. With `solid_shell_alpha=False` the Apple GPU's interior
+>   is `mean 214.00 min 214 max 214`, uniform, **with no outlier at column 37**
+>   — exactly `0.6 * (2 - 0.6) * 255`, which is two crossings compositing at
+>   every pixel in the window. So the compaction hands the ceiling the same two
+>   sheets there as anywhere else, and **the third layer is created by the
+>   ceiling itself**.
+>
+> That last point is sharper than it first reads, and it rules out the obvious
+> shape of the bug. `solid_shell_ceiling` can only ever *reduce* a coverage —
+> it writes `denom * scale` with `scale <= 1` — so no clamp it makes could turn
+> the ceiling-off composite of 214 into a *larger* 239. The extra layer cannot
+> be "the second crossing was under-clamped". It has to be a third sheet, and
+> the ceiling is upstream of sheet formation: the kernel clamps `cov_o` **in
+> place**, and the compaction's band areas, shading-class aggregates and
+> dominant-fragment choice all read that clamped copy afterwards (which is what
+> the block comment above it says it is for). A wrong coverage written at one
+> pixel therefore changes how its fragments group into sheets.
+>
+> **That measurement cleared the kernel.** The probe recomputes
+> `solid_shell_ceiling`'s output from its own inputs in float64 on the host, and
+> over 1305 fragments **no element differs by more than 1.2e-07** on either
+> device — so the ceiling computes the right answer on MPS. What it also
+> reports is the fact that matters: of those fragments, **604 are clamped to
+> zero**. That is the ceiling's job, and it is the input the code below it was
+> not written for.
+>
+> Dumping the sheets at the offending pixel says the rest. Column 37 carries
+> **three** sheets on both devices — the cube's near vertical edge — and where
+> the CPU has coverages `[+1.00000, -0.00000, +0.00000]`, the Apple GPU has
+> `[+1.00000, nan, nan]`. A NaN coverage never trips the resolve's `eff <=
+> min_alpha` branch, because every comparison against a NaN is false, so the two
+> sheets the CPU drops both composite: `1 - 0.4**3`, the 239 above.
+>
+> Wrapping the three functions between the ceiling and the sheet record named
+> the one that makes it — inputs all finite, output not — and recomputing that
+> function's intermediates named the expression:
+>
+> ```
+> band_area gathered: 0 non-finite
+> clamp_min(1e-12):   0 non-finite
+> share = cov / clamped: 474 non-finite
+>   row 10: band 8 cov 0 area 0 clamped 0 corr 0 share nan p nan pop 3
+> ```
+>
+> `clamped 0` is the reading the fix was built on: `sheets._sibling_weights`
+> guards its divide with `band_area.clamp_min(1e-12)`, and here that returned
+> the exact zero, so a band whose siblings all contributed zero coverage —
+> which is precisely what the ceiling's 604 clamps create — divided `0 / 0`.
+> Respelling the floor clears it, and the suite is green.
+>
+> **The synthetic sweep does not reproduce that reading**, and §2.3c keeps the
+> discrepancy visible rather than resolving it by assertion: on the same
+> machine `clamp_min(0.0, 1e-12)` returns 5.96e-8, not 0, and `0 / 5.96e-8` is
+> 0. So the fp16 rounding §2.3c measures is a real defect but not, on its own,
+> this NaN's cause. What is established is where the NaN was made and that the
+> respelling removes it.
+>
+> The obvious candidate for the difference has been tested and is **not** it:
+> the render's tensor is the output of an `index_select` computed on the device
+> rather than a `full()` moved onto it, and §2.3b's whole finding was one gather
+> answering differently from another, so the probe clamps a gathered tensor too.
+> It still returns 5.96e-8, and its `0 / clamped` is finite. What that round
+> *did* turn up is that the defect is **dispatch-dependent**: clamping a tensor
+> a `scatter_add_` produced returns the honest `1e-12`, where `index_select` and
+> advanced indexing both return 5.96e-8. So no single measurement of this op
+> generalises, which is a reason to route every call site through one helper
+> rather than to reason about which of them is safe.
+
+### 1.3b Two dtype views of one buffer cannot both be written — the arena
+
+**Cleared** by the forked Taichi (`taichi_patches/0001`), which removes the
+mechanism rather than working around it: a kernel binds torch's own `MTLBuffer`,
+so there is no copy-back to revert anything. What follows is the measurement
+that identified it, kept because it is the argument for the fork.
+
+It is §1.3's staging meeting §1.1's fix, and it was not visible before, because
+until both of the blockers above were cleared nothing got far enough to render
+at all.
+
+`arena_args_taichi.pack` binds a converted kernel's cold arrays as offsets into
+the arena, which means the kernel takes `arena_f32` and `arena_i32` — **the same
+allocation, reinterpreted**. Direct binding does not care: CPU and CUDA hand the
+kernel one pointer twice. A backend that *stages* copies each argument to the
+host, runs, and copies each back, and the second copy-back then reverts
+everything the kernel wrote through the first. Measured, by the probe's
+`device_two_typed_views`:
+
+```
+device_two_typed_views   FAIL -- AssertionError: tensor([0., 0., 0., ..., 0.])
+```
+
+The kernel wrote 1.5 through the f32 view and 9 through the i32 view of a
+disjoint half of the same buffer; the f32 half came back **zero**. The plain
+cases either side of it pass — `device_tensor_roundtrip` and
+`device_view_roundtrip` — so staging is correct for an ordinary argument and
+for a slice, and wrong exactly for the aliasing pair the arena convention
+creates.
+
+A render on the machine bears that out and adds a second symptom the same
+staging could explain, in a stage that runs *before* any shading:
+
+| | CPU | Metal |
+| --- | --- | --- |
+| fragments | 59790 | 69738 |
+| covered pixels | 30929 | 10876 |
+| sheets | 40956 | **128** |
+| `frag_cov` min | 0.001000 | 0.000000 |
+
+The frame is uniformly black. 128 sheets out of 69738 fragments is not a
+rounding difference; something between the raster emission and the compaction
+is reading data that is not there.
+
+**Resolved, and it was two things, not one.** The fork fixed the aliasing and
+the coverage column with it — `covered pixels` and `frag_cov min` came back
+equal to the CPU's on the next run. The sheet count did not, and it was never
+this section's defect: it was **§2.3b**, torch's own gather losing the low bits
+of a composite key, which had been corrupting the fragment key underneath all
+of this. Both are fixed; the render draws. The row this table should be read
+for now is `sheets`, which is the one that outlived the staging fix and pointed
+somewhere else entirely.
+
+Three ways out were on the table, in increasing order of what they buy, and the
+third is what shipped:
+
+1. **Pack the arena arguments into a per-dtype staging buffer** at launch,
+   rewriting the offset table to match. The aliasing goes away because the
+   buffers are separate allocations, and the launch stops staging the *whole*
+   arena twice — which is also most of §1.3's cost on the converted kernels.
+   Contained in `pack`, and gated on the mode.
+2. **Per-dtype arenas in `ManualMemory`**, so the views are disjoint by
+   construction. Deeper, and it changes the allocator every backend uses.
+3. **Taichi-owned ndarrays** (§3.3 step 1) — **done**, as `taichi_patches/0001`
+   plus `algan/rendering/mps_zero_copy.py`. It removes staging altogether and is
+   the only one of the three that also fixes §1.3's bandwidth verdict.
+
 ### 1.3 Taichi stages every torch tensor through host memory
 
 `kernel_impl.py` copies any ndarray argument that is neither a host tensor nor a
@@ -175,8 +593,193 @@ cleared so a gap is loud:
 
 The amin/amax gap is not incidental: `_one_mesh_pixel_caps`
 (`raster_pipeline.py:1330-1332`) uses exactly those two for the per-pixel surface
-id spread. Everything else passed, including int64 `scatter_add_`, 64-bit shifts,
-`view(torch.uint8)`, `argsort`/`sort` on int64, `unique_consecutive`, `bincount`.
+id spread. Everything else **ran without raising**, including int64
+`scatter_add_`, 64-bit shifts, `view(torch.uint8)`, `argsort`/`sort` on int64,
+`unique_consecutive`, `bincount` — which is a weaker statement than it looks, and
+§2.3b is what the difference cost.
+
+### 2.3b Some int64 ops do not raise, they answer wrongly
+
+The table above asks whether an op is *implemented*. It is not the same question
+as whether it is *right*, and the ops that answer wrongly are worse than the ones
+that fail: a `RuntimeError` names itself, and a silently truncated integer key
+arrives as a picture nobody can explain.
+
+`benchmarks/_mps_torch_op_probe.py` asks the second question — every op the
+compaction uses, run on MPS and on the CPU over the same input in one process, at
+the pipeline's real dtypes and magnitudes. Two ops disagree: `index_select` (and
+`torch.gather`) over integer **values**, and `//` on int64.
+
+**The gather round-trips integers through a float32.** That is not an
+impression, it is what the returned values are. The probe builds the values on
+the host, proves the move to the device is bit-exact, and only then gathers, so
+what it catches is the gather alone:
+
+| width | int32 | int64 |
+| --- | --- | --- |
+| 2**16 … 2**24 | exact | exact |
+| 2**25 | **wrong** | **wrong** |
+| 2**30 / 2**40 / 2**62 | **wrong** | **wrong** |
+
+The boundary is 2**24 and it is *the same for both widths*, which already says
+this is not about int64. And every value that comes back is exactly
+`float32(correct_value)`, round-to-nearest:
+
+| correct | MPS returned | `float32(correct)` |
+| --- | --- | --- |
+| 18271053 | 18271052 | 18271052 |
+| 756440460 | 756440448 | 756440448 |
+| 976314890686 | 976314892288 | 976314892288 |
+| 3314435950399956755 | 3314436020488896512 | 3314436020488896512 |
+
+**It is a torch dispatch defect, not a Metal limit.** In the same run, over the
+same values at 2**40, `index_select` and `torch.gather` are wrong while
+**advanced indexing `v[i]` is exact**, and so is a `repeat_interleave` slice
+(`torch.take` is not implemented on MPS at all). The hardware moves those bits
+correctly through one aten path and not through another. Nothing here appears
+in any documentation we found; it was located by measurement, and it is worth an
+upstream report.
+
+Storing, moving, comparing, shifting, masking and multiply-add are exact at
+every width. The index dtype is fine too: `index_select` over **float32 values**
+with an int64 *index* is exact.
+
+Both of Algan's wide int64s are composite keys, so both were hit:
+
+* **The fragment key**, `pixel << 32 | bit_cast(depth)` (`raster_taichi.py:2039`),
+  about 2**50 at 1080p. A 25-bit gather destroys bits 25..0, which masks the low
+  word with `0xFC000000` — and every float32 in `[4, 8)` then decodes as
+  **exactly 2.0**. That is not a story told after the fact: the arithmetic gives
+  2.0 for 5.317023, 6.0 and 7.723102 alike, and the Apple GPU reported `depth
+  min=2.000000 max=2.000000 distinct=1` where the CPU has `5.317023 .. 7.723102,
+  distinct=37899`. Fixed by `mps_compat.gather_packed_key`, which gathers the two
+  32-bit words and repacks.
+* **The shading-class key**, `band * _SHADE_CLASS_BASE + cls` with a base of
+  `1 << 25` (`sheets.py` §4.4), about 2**40 for a frame with 40956 bands. Here it
+  is `unique` that merges rows differing only below the ceiling. Isolated by
+  re-running the same compaction with the split off — 40956 sheets without it,
+  128 with it — and fixed by `mps_compat.band_class_groups`, which groups the
+  pairs by a two-pass stable sort instead of forming the product.
+
+The general rule this leaves: **on MPS, do not put a value above 2**24 through a
+gather, a division or a `unique`, at any integer width.** Composite keys are
+where a renderer builds such values, and they are exactly the values whose low
+bits carry the meaning.
+
+`mps_compat.gather_packed_key` gathers with `v[i]`, which is one operation and
+exact. Two earlier forms are worth knowing about because they bound the problem:
+splitting the key into two 32-bit halves does **not** work (a half still reaches
+2\*\*32, and the render that shipped it came back with the low word rounded from
+`40e68475` to `40e68480` and its distinct depths down from 37899 to 22292), while
+four 16-bit lanes does work at four gathers instead of one.
+
+What `v[i]` costs is a **dependency on a dispatch**: nothing in torch's API
+promises it keeps routing to a kernel that is exact here, and if it stops, every
+Algan render on an Apple GPU goes quietly wrong. So the dependency is guarded
+rather than assumed —
+`test_mps_friendly.py::test_advanced_indexing_is_exact_above_the_mps_ceiling`
+gathers past the ceiling on MPS whenever the machine has one, and fails loudly
+if the answer changes, naming the lane split as the fallback. It selects its
+device from `torch.backends.mps.is_available()` rather than from Algan's render
+device, so it guards on any Apple machine including one without the patched
+Taichi; on everything else it degenerates to a correctness check of the helper,
+which is why a green Linux run does not clear it.
+
+### 2.3c `clamp_min` rounds its floor through float16
+
+The third op in this family, and the one that took the longest to find, because
+unlike the two above it does not lose bits of a value — it silently substitutes
+a different floor.
+
+`benchmarks/_mps_torch_op_probe.py`'s `probe_epsilon_clamp` sweeps the floor's
+magnitude, and the answer is a clean cliff:
+
+| floor asked for | MPS `clamp_min(0.0)` returns |
+| --- | --- |
+| 1e-3 | 1e-3 |
+| 6.1e-5 (f16 smallest normal) | 6.1e-5 |
+| 1e-6 | 1e-6 |
+| **5.96e-8 (f16 smallest subnormal)** | **5.96e-8** |
+| 1e-8 | **5.96e-8** |
+| 1e-12 | **5.96e-8** |
+| 1.18e-38 (f32 smallest normal) | **5.96e-8** |
+| 1.4e-45 (f32 smallest subnormal) | **5.96e-8** |
+
+Every floor at or above float16's smallest subnormal is honoured exactly; every
+floor below it comes back as that subnormal. **The scalar bound is rounded
+through float16 on its way into the kernel** — that is the defect, and stating
+it that way is worth more than "the clamp is wrong", because it says exactly
+which call sites are affected and by how much.
+
+Only the three `clamp` spellings are hit. `torch.maximum` against a 0-dim or a
+full tensor, and `torch.where(x < eps, eps, x)`, are exact at every magnitude,
+so each is a drop-in replacement.
+
+**The exposure is every tiny floor in the renderer, and none of them is a NaN.**
+Twenty-odd divisions guard their denominator this way — `sheets.py` at 1e-12,
+`raster_pipeline.py` and `refit_bvh.py` at 1e-30, `primitives.py` at 1e-20 — and
+on MPS all of them clamp to 5.96e-8 instead. That is a wrong denominator, up to
+twenty-two orders of magnitude off the intended floor, and it announces itself
+nowhere: it can only matter where the denominator is genuinely at or below the
+floor, and it is a bounded perturbation rather than a poisoned value when it
+does.
+
+**What is NOT yet explained is the NaN that started this.** The instrumented
+render printed `clamped 0` and `share nan` (§1.2c), which requires the clamp to
+have returned an exact zero — and the synthetic sweep does not reproduce that:
+`0 / clamp_min(0, 1e-12)` is `0 / 5.96e-8` = 0, and the probe's own check of
+that composition **passes** on MPS. So two readings from the same machine
+disagree, and the reconciling fact is not in hand. What is measured is that the
+suite goes green with the respelling below, and that the closed shell's sheets
+come back `[+1.00000, -0.00000, +0.00000]` — the CPU's values, sign included.
+The fix is confirmed; this mechanism is not, and the difference is worth
+keeping visible.
+
+Fixed at the call site rather than in `mps_compat`, because it is not a
+substitution — it is the same floor, spelled so that it does not go through the
+call that mis-rounds it:
+
+```python
+share = cov.to(acc) / torch.where(area_g < 1e-12, 1e-12, area_g)
+```
+
+**`where(x < eps, eps, x)` is `clamp_min(eps)` bit for bit**, and that is
+checkable rather than asserted: over `0`, `-0`, `±inf`, `NaN`, the subnormals
+and values either side of the floor, the two agree in every bit of every
+result. The comparison is `<` and not `>` for the one input where the order
+matters: a comparison against a NaN is false either way, so only this order
+leaves the NaN in the `x` arm, which is where `clamp_min` leaves it. (`where(x >
+eps, x, eps)` returns `eps` there instead — the same value everywhere else, and
+a silent NaN swallower.)
+
+So there is nothing to gate on the mode and nothing to argue about byte
+identity: CPU and CUDA compute what they always did, and MPS now computes it
+too. `test_mps_friendly.py::test_a_band_of_zero_area_hands_its_siblings_a_finite_weight`
+guards it on whatever device the machine has, like the gather guard in §2.3b.
+
+**All twenty-three render-side sites are converted**, not just the one that was
+caught. `mps_compat.clamp_floor(tensor, floor)` is the single spelling, gated on
+the mode like everything else in that module — off it, it is literally
+`tensor.clamp_min(floor)`, one op, so CPU and CUDA do not pay a compare and a
+select for a defect they do not have, and no rendered frame can move.
+
+Converting all of them rather than the one is a judgement about the failure
+mode, and the judgement is that this defect's silence earns it. The floors run
+1e-12 (`sheets`, `stbvh`, `bezier_acceleration`, `tracer`, `primitives`),
+1e-20 (`primitives`) and 1e-30 (`raster_pipeline`, `refit_bvh`, `logical_pn`),
+and the error is not confined to a denominator that was already degenerate:
+with a 1e-30 floor an ordinary `1e-9` comes back as `5.96e-8`, sixty times
+wrong, because the cliff is in the *input* as well as the bound.
+`raster_pipeline`'s `n2` is a squared normal length, so a thin triangle lands
+squarely in that gap and shades wrongly with nothing to show for it.
+
+A literal bound below the cliff is now banned outright in `algan/rendering`:
+`test_mps_friendly.py::test_the_renderer_floors_a_divide_through_clamp_floor`
+walks the AST and names any that appear, the way the float64 guard beside it
+does. It found one the manual pass had missed — a `torch.clamp(length,
+min=1e-12)` in `primitives.py`, spelled differently from the other twenty-two —
+which is the argument for having written it. `*_taichi.py` is exempt and must
+be: those bodies reach MSL through Taichi and never touch torch's MPS dispatch.
 
 ### 2.4 How non-deterministic MPS actually is
 
@@ -257,10 +860,32 @@ Not a port. In dependency order:
    `DESIGN_mps_zero_copy.md`. It needs a forked wheel and it is worth doing
    *after* step 2, not before: packing is what shrinks the patch.)
 2. **Kernel argument packing** so no kernel binds more than ~24 buffers. This is
-   the large one and there is no way around it (§1.1).
+   the large one and there is no way around it (§1.1). **Done**: every kernel
+   now takes its buffers as views of the render arena, and none binds more than
+   24. Written against the table in §1.1 rather than against a machine.
 3. **f64 and i64 atomics out of the kernels**, replaced by f32 with a documented
    non-deterministic mode, since the deterministic fixed-point form cannot run in
-   a Metal kernel (§1.2).
+   a Metal kernel (§1.2). **Done**: MPS-friendly mode, per §1.2's amendment.
+
+Steps 2 and 3 are therefore code, and both are now **verified on an Apple GPU**:
+with MPS-friendly mode on, every kernel in the renderer compiles on Metal and a
+render runs end to end, 53-66 s for one 864x486 frame. The `render` job in
+`.github/workflows/mps_probe.yaml` is what asks —
+`ALGAN_RENDER_DEVICE=mps` on `macos-latest`, the codegen probe, one smoke frame
+and then `tests/unit_tests tests/fast`, beside a Linux control arm that forces
+the mode on over a CPU device so that a two-arm failure separates "the mode is
+broken" from "what is left is Metal".
+
+**Step 1 is now the blocker rather than the optimization**, which is the one
+thing this document had the wrong way round. §1.3 was written up as a
+performance finding with a fix worth doing "on its own merits"; §1.3b is the
+same staging producing a *wrong answer*, and the frame is black until it is
+addressed. Its option 1 -- packing each kernel's arena arguments into a
+per-dtype staging buffer -- is the small end of step 1 and is where to start.
+
+`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` stays until the render job
+is green, which it is not: it gets through kernel compilation and dies on the
+smoke frame's blackness check.
 
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.

@@ -19,6 +19,24 @@ for this document — the numbers it reasons about are `DESIGN_mps_support.md`'s
 has to be compiled into `taichi_python`, which means shipping a forked wheel, and
 it unblocks nothing on its own.
 
+> **Amended, and the last clause is now wrong.** "It unblocks nothing on its own"
+> was true when the argument limit (§1.1) was what decided the port. Both of the
+> other blockers have since been cleared and *measured cleared on an Apple GPU*
+> — §1.1 by packing kernel arguments into arena offsets, §1.2 by MPS-friendly
+> mode — and with them gone the staging this document removes turns out not to
+> be merely a cost. It is **incorrect** for the calling convention §1.1's fix
+> introduced: `DESIGN_mps_support.md` §1.3b measures a converted kernel's
+> `arena_f32` / `arena_i32` pair, two dtype views of one allocation, coming back
+> with one of them reverted. A render on Metal now runs end to end and draws a
+> black frame.
+>
+> So this patch is no longer the cheapest of three items to do last. It is the
+> one standing between an Apple GPU and a correct frame, and §5's
+> recommendation inverts accordingly. §3.4's "what it does not fix" list is
+> also shorter by two: f64 and i64 atomics are handled, and only Taichi's MSL
+> codegen bug (`DESIGN_mps_support.md` §1.2b, worked around by narrowing the
+> argument) is untouched by it.
+
 ---
 
 ## 1. Correction to `DESIGN_mps_support.md` §1.3
@@ -85,7 +103,43 @@ if (str(v.device) != "cpu") and not (
 
 — and everything else round-trips through the host, **per ndarray argument, per
 launch, in both directions, unconditionally**, even for an argument the kernel
-only reads or only writes. That branch is not an oversight: it was added as a
+only reads or only writes.
+
+**And that round trip is what corrupts the arena**, which is the finding this
+document did not have. Read the two halves together, in the installed 1.7.4
+wheel (`kernel_impl.py:756-785`):
+
+```python
+host_v = v.to(device="cpu", copy=True)      # out: the WHOLE argument
+callbacks.append(get_call_back(v, host_v))  # back: u.copy_(v), the WHOLE argument
+```
+
+The copy-back is a whole-tensor `copy_`, not a merge. Two arguments that cover
+the same bytes therefore do not both survive: the second callback writes its own
+pre-launch snapshot over everything the kernel wrote through the first. That is
+exactly the shape of a converted kernel's arena pair — `arena_f32` and
+`arena_i32` are both `_whole_storage(...)`, offset 0, spanning the entire arena
+(`arena_args_taichi.py:148-159`) — and it is measured failing in
+`DESIGN_mps_support.md` §1.3b.
+
+**The patch removes the mechanism rather than working around it.** An argument
+that arrives as a `ti.Ndarray` takes `set_arg_ndarray` (`kernel_impl.py:695`),
+which appends **no callback at all**; the staging and the copy-back live only in
+`set_arg_ext_array`'s torch branch. So once the arena is an imported
+`MTLBuffer`, both views bind the same buffer, both write to the real memory, and
+aliasing behaves as it already does on CPU and CUDA — which is the semantics the
+arena convention was designed against and the renderer relies on.
+
+Two corollaries worth having in advance:
+
+* **The staged bytes are the whole arena, twice, per launch of a converted
+  kernel.** Not a slice of it — `_whole_storage` is the entire allocation. So
+  §1.3's 53x is measured on the wrong scale for these kernels; the real figure
+  is worse and scales with the arena rather than with the arrays a kernel reads.
+* **A whole-arena copy-back reverts anything else written during the launch**,
+  which makes the batch-prep worker (`prefetch_gpu_prep`) unsafe on this backend
+  for as long as staging is in the path. Nothing depends on that today — it is
+  off by default — but it should not be turned on for MPS before this lands. That branch is not an oversight: it was added as a
 correctness fix for [taichi#6861](https://github.com/taichi-dev/taichi/issues/6861),
 where MPS tensors previously produced silent garbage. It is also the only thing it
 *could* do, because `mps_tensor.data_ptr()` is not an address: torch bit-casts the
@@ -161,6 +215,24 @@ as integers — then there is exactly one imported buffer, at offset 0, and the
 patch shrinks to rows 1, 4 and 5, about 60 lines. The two problems have one
 solution, and it is the one the ~24-argument limit forces anyway.
 
+> **Amended: half of that came true, and it is the wrong half to plan on.**
+> Argument packing has landed, and the *arena* arguments are indeed offset 0 —
+> `_whole_storage` binds the entire allocation, so rows 1/4/5 serve them. But
+> packing was deliberately partial, and measurement is why: binding **all** of
+> `sheet_resolve_shade`'s arrays cost +18%, so the seven slot-indexed ray-state
+> arrays stayed ordinary parameters (`arena_args_taichi`'s "Why the hot arrays
+> stay parameters"), and every kernel that already fitted the budget — the whole
+> raster and compaction set — was never converted at all. All of those are
+> `ManualMemory` slices with a nonzero `storage_offset()`.
+>
+> So **row 3 stays**, and the patch is the 150-line version rather than the
+> 60-line one. This is not a setback: it also means every arena-backed argument
+> in the process, packed or not, imports the *same* `MTLBuffer` and differs only
+> by offset, so the import cache §3.3 asks for has exactly one live entry per
+> arena and the offset is the only thing that varies. Plumbing an offset through
+> three layers once is cheaper than converting thirteen more kernels and paying
+> +18% on the widest one to avoid it.
+
 ### 3.3 Algan side
 
 No fork involvement, roughly 100 lines:
@@ -178,6 +250,29 @@ No fork involvement, roughly 100 lines:
 * align arena slices to 16 bytes;
 * fall back to the stock copying path whenever the patched build is absent, so a
   stock wheel keeps working.
+
+> **One thing this list missed, found by running it: the element type.** Taichi
+> type-checks an ndarray argument against the *annotation's* element type, so an
+> array a kernel declares as `ndarray(dtype=vector(bvh_arity, f16))` — every
+> BVH-taking kernel's node array, and the widest arrays in the renderer — is
+> refused outright when it arrives as plain `f16` (`required element type:
+> VectorType[4, f16], but f16 is provided`). The first version of the glue
+> excluded them and left them on the staging path, which is not an error and not
+> visible in a frame: it is four copies and an MPS stream sync per launch, on a
+> render that looks exactly right.
+>
+> The C++ side never needed anything for this. `Ndarray`'s `DeviceAllocation`
+> constructor reads the element shape off a tensor `DataType`, which is how
+> `VectorNdarray` builds its own, so `ExternalMetalNdarray` takes an
+> `element_shape` and `mps_zero_copy` reads it off the annotation — the only
+> place it exists, since nothing about a torch tensor says which of its
+> dimensions Taichi considers element dimensions.
+>
+> And the fallback stops being silent, which is the more durable half:
+> `mps_zero_copy.STATS` counts every ndarray argument still crossing the bus,
+> `LEFT_ON_THE_BUS` names the kernel and position, and
+> `benchmarks/_mps_render_smoke.py` **fails** a frame that drew correctly while
+> paying for one.
 
 ### 3.4 What it does not fix
 
@@ -328,6 +423,25 @@ release job has to get right:
   upstream's own CI would then be carrying it.
 
 ## 5. Recommendation
+
+> **Superseded.** What follows was written while the argument limit was the
+> blocker and this was a speedup on a device that could not render a frame.
+> Both premises are gone: argument packing landed, MPS-friendly mode landed, and
+> a Metal render now runs end to end and comes out black *because of the staging
+> this patch removes* (§1, §1.3b). The trigger the last paragraph names has
+> effectively fired from the other direction — not upstream exposing the import,
+> but Algan reaching the point where nothing else is in the way.
+>
+> **Build it.** The sequencing advice was right and has been followed; this is
+> now the next step, not a project of its own. Two things changed in the
+> estimate: it is the 150-line patch rather than the 60-line one (§3.2's
+> amendment), and it is a correctness fix rather than an optimization, which
+> means the fallback §3.3 asks for — "fall back to the stock copying path
+> whenever the patched build is absent" — **cannot simply be today's path**.
+> Today's path is wrong, not slow. Either the fallback packs each kernel's arena
+> arguments into a per-dtype staging buffer so no two arguments alias, or a
+> stock-wheel Mac has to refuse to render rather than draw a black frame.
+> That choice is the one piece of this design that is still open.
 
 Do not build this yet. It is the cheapest of the three items in
 `DESIGN_mps_support.md` §3.3 and the only one with a finished design, which makes

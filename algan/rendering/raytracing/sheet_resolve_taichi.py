@@ -1160,54 +1160,71 @@ def sheet_resolve_shade_arena(
                                   d_vis * _AA_SAMPLE_WEIGHT, acc, weight,
                                   svis)
 
-        if ti.static(mode == 1):
-            # The event pass owns no ray state and commits no pixels; its
-            # writes were the per-sheet event tables above.
-            continue
-        if bounced and not done:
-            for k in ti.static(range(3)):
-                rs_ro[r, k] = ro[k]
-                rs_rd[r, k] = rd[k]
-            for k in ti.static(range(4)):
-                rs_acc[r, k] = acc[k]
-            # Columns 7+ (nested-IOR stack) stay untouched: a bounced PRIMARY
-            # reflected off this hit and primaries start in air, so its stack
-            # is still the host-zeroed empty one.
-            rs_sca[r, 0] = weight[0]
-            rs_sca[r, 1] = 0.0
-            rs_sca[r, 2] = 1e30
-            rs_sca[r, 3] = -1e30
-            rs_sca[r, 4] = base_dist
-            rs_sca[r, 5] = weight[1]
-            rs_sca[r, 6] = weight[2]
-            rs_int[r, 0] = bounces_left
-            rs_int[r, 1] = processed
-            rs_int[r, 2] = _ACTIVE
-            rs_int[r, 3] = 0
-            rs_pix[r] = pixel
-            rs_int[r, 4] = r
-        else:
-            # Background-as-final-sheet (§4.5): on the sparse route the frame
-            # buffer is prefilled with the background — env map included, via
-            # env_background_prefill — and the composite multiplies the
-            # leftover weight by it. The primary retire direction IS the
-            # prefill direction, so folding the env here as well would count
-            # it twice; env_in_composite skips the fold and hands the weight
-            # through. Bounced rays retire in wavefront_shade, which still
-            # samples the env with THEIR direction (the pixel's background
-            # would be the wrong ray).
-            if ti.static(not env_in_composite):
-                if (env_w > 0) and (ti.max(weight[0], ti.max(
-                        weight[1], weight[2])) > 0.0):
-                    ec = _sample_env_map(f, rd, env_off, env_w, env_h,
-                                         env_intensity, textures)
-                    for k in ti.static(range(3)):
-                        acc[k] += weight[k] * ec[k]
-                    weight = ti.math.vec3(0.0, 0.0, 0.0)
-            for k in ti.static(range(4)):
-                ti.atomic_add(pix_accum[r, k], acc[k])
-            for k in ti.static(range(3)):
-                ti.atomic_add(pix_accum[r, 4 + k], weight[k])
+        # The event pass owns no ray state and commits no pixels; its
+        # writes were the per-sheet event tables above, so mode 1 ends
+        # the sheet walk here.
+        #
+        # Gated rather than skipped with a ``continue``, and the
+        # difference is not style: ``ti.static`` resolves at compile
+        # time, so ``if ti.static(mode == 1): continue`` leaves a BARE
+        # ContinueStmt in the loop body followed by every statement
+        # below it. Taichi's SPIR-V codegen emits a ``continue`` as an
+        # OpBranch and relies on the next IfStmt boundary to open a new
+        # OpLabel; with no boundary to reach, everything after it lands
+        # in a block that has already been terminated, and the module is
+        # invalid SPIR-V (``Load must appear in a block``). LLVM does not
+        # care, so CPU and CUDA rendered it correctly for as long as it
+        # existed; Metal answers with a nil pipeline and Vulkan with
+        # ``vkCreateComputePipelines failed``, which is what took six
+        # shadow tests down on the Apple GPU (DESIGN_mps_support.md
+        # 1.2c). taichi_patches/0002 fixes the codegen too, so a stray
+        # ``continue`` cannot do this again; this shape is what the
+        # kernel wants regardless.
+        if ti.static(mode != 1):
+            if bounced and not done:
+                for k in ti.static(range(3)):
+                    rs_ro[r, k] = ro[k]
+                    rs_rd[r, k] = rd[k]
+                for k in ti.static(range(4)):
+                    rs_acc[r, k] = acc[k]
+                # Columns 7+ (nested-IOR stack) stay untouched: a bounced PRIMARY
+                # reflected off this hit and primaries start in air, so its stack
+                # is still the host-zeroed empty one.
+                rs_sca[r, 0] = weight[0]
+                rs_sca[r, 1] = 0.0
+                rs_sca[r, 2] = 1e30
+                rs_sca[r, 3] = -1e30
+                rs_sca[r, 4] = base_dist
+                rs_sca[r, 5] = weight[1]
+                rs_sca[r, 6] = weight[2]
+                rs_int[r, 0] = bounces_left
+                rs_int[r, 1] = processed
+                rs_int[r, 2] = _ACTIVE
+                rs_int[r, 3] = 0
+                rs_pix[r] = pixel
+                rs_int[r, 4] = r
+            else:
+                # Background-as-final-sheet (§4.5): on the sparse route the frame
+                # buffer is prefilled with the background — env map included, via
+                # env_background_prefill — and the composite multiplies the
+                # leftover weight by it. The primary retire direction IS the
+                # prefill direction, so folding the env here as well would count
+                # it twice; env_in_composite skips the fold and hands the weight
+                # through. Bounced rays retire in wavefront_shade, which still
+                # samples the env with THEIR direction (the pixel's background
+                # would be the wrong ray).
+                if ti.static(not env_in_composite):
+                    if (env_w > 0) and (ti.max(weight[0], ti.max(
+                            weight[1], weight[2])) > 0.0):
+                        ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                             env_intensity, textures)
+                        for k in ti.static(range(3)):
+                            acc[k] += weight[k] * ec[k]
+                        weight = ti.math.vec3(0.0, 0.0, 0.0)
+                for k in ti.static(range(4)):
+                    ti.atomic_add(pix_accum[r, k], acc[k])
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[r, 4 + k], weight[k])
 
 
 #: What ``sheet_resolve_shade`` binds through the arena, in offset-table order:

@@ -72,6 +72,17 @@ with each other bitwise. Do not narrow it to f32: a real frame's sheets are
 81% one fragment and 17% two (both order-independent whatever the width), but
 the remaining 1.6% run to eleven, and ``sheet_cov`` feeds thresholds.
 
+The one exception is not a loophole in that rule, it is the absence of the
+alternative: **Metal has no f64 at all**, so MPS-friendly mode passes
+``ti.f32`` for every ``acc_t`` here and accepts what the paragraph above says
+it costs (``mps_compat``; ``DESIGN_mps_support.md`` §1.2). It is a
+``ti.template()`` argument rather than a ``ti.static`` gate so that Taichi
+compiles a variant per width -- a static gate resolves once, at the first
+compile, and the second arm would silently reuse the first arm's code. The
+same argument carries ``idx_t`` for ``band_stats_reduce``'s atomics, which
+Metal aborts on at i64 and which lose nothing at i32 because every value they
+reduce is a position or a count.
+
 The one-mesh reduction (``one_mesh_pixel_reduce``) carries the same-shaped
 float contract one stage earlier in the pipeline: its ``front``/``back``
 per-pixel coverage sums accumulate in f64 registers and are rounded through
@@ -145,11 +156,12 @@ def sheet_band_reduce(
     n: ti.i32,
     mask_all: ti.i32,  # _AA_MASK_ALL
     sliver_bit: ti.i32,  # _AA_SLIVER_BIT
-    area: ti.types.ndarray(),  # [nb] f64, PRE-ZEROED
+    area: ti.types.ndarray(),  # [nb] `acc_t`, PRE-ZEROED
     union: ti.types.ndarray(),  # [nb] i32, PRE-ZEROED
     dup: ti.types.ndarray(),  # [nb] i32, PRE-ZEROED
     sliver: ti.types.ndarray(),  # [nb] i32 PRE-ZEROED, or a [1] dummy
     want_sliver: ti.template(),  # compile-time: is `sliver` real?
+    acc_t: ti.template(),  # compile-time: `area`'s element type
 ):
     """One pass: per-band exact area, sample union, doubly-claimed lanes, sliver.
 
@@ -164,6 +176,11 @@ def sheet_band_reduce(
     torch form needed an f64 copy of the whole fragment stream just to give
     ``scatter_add_`` matching dtypes, 29 MB on a 4K frame for a value that is
     read once.
+
+    ``acc_t`` is that width, and it is ``ti.f32`` in MPS-friendly mode because
+    Metal has no f64 to widen into (``mps_compat``). It must match ``area``'s
+    own dtype: a narrower array with a wider add warns and silently rounds
+    every atomic.
     """
     for i in range(n):
         b = ti.cast(band[i], ti.i32)
@@ -172,7 +189,7 @@ def sheet_band_reduce(
         shared = ti.atomic_or(union[b], bits) & bits
         if shared != 0:
             ti.atomic_or(dup[b], shared)
-        ti.atomic_add(area[b], ti.cast(cov[i], ti.f64))
+        ti.atomic_add(area[b], ti.cast(cov[i], acc_t))
         if ti.static(want_sliver):
             if (word & sliver_bit) != 0:
                 ti.atomic_or(sliver[b], 1)
@@ -272,7 +289,13 @@ def opaque_prefix_keep(
                 break
             j += 1
         for jj in range(s, e):
-            keep[jj] = 1 if jj <= ke else 0
+            # Cast spelled out because ``keep`` is u8 and the conditional is
+            # typed i32, which Taichi warns about on every cold compile. The
+            # values are 0 and 1, so nothing was ever lost -- but this is the
+            # renderer's only implicit narrowing store, every other u8 write
+            # being an explicit ``ti.cast``, and a warning that fires on a
+            # harmless line is how a real one later reads as more of the same.
+            keep[jj] = ti.cast(1 if jj <= ke else 0, ti.u8)
 
 
 @ti.kernel
@@ -292,8 +315,9 @@ def one_mesh_pixel_reduce(
     tri_obj: ti.types.ndarray(),  # [obj_rows, N] -- fragment row -> surface id
     lo: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with 2**31 - 1
     hi: ti.types.ndarray(),  # [num_cov] i32 OUT, PRE-FILLED with -1
-    front: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
-    back: ti.types.ndarray(),  # [num_cov] f64 OUT, PRE-ZEROED
+    front: ti.types.ndarray(),  # [num_cov] `acc_t` OUT, PRE-ZEROED
+    back: ti.types.ndarray(),  # [num_cov] `acc_t` OUT, PRE-ZEROED
+    acc_t: ti.template(),  # compile-time: `front`/`back`'s element type
 ):
     """One pass: per-pixel surface-id spread + facing-split coverage sums.
 
@@ -312,17 +336,20 @@ def one_mesh_pixel_reduce(
 
     ``front``/``back`` carry the module-docstring float contract: f64
     accumulation rounded through f32 by the caller, bitwise-equal to the torch
-    ``scatter_add_`` pair by measurement rather than by construction.
+    ``scatter_add_`` pair by measurement rather than by construction. ``acc_t``
+    is that width and must match the two arrays' dtype; MPS-friendly mode
+    passes ``ti.f32``, which makes the caller's round a no-op and gives up the
+    contract, because Metal has no f64 to keep it in (``mps_compat``).
     """
     for p in range(num_cov):
         s = ti.cast(starts[p], ti.i32)
         e = s + ti.cast(counts[p], ti.i32)
         lo_v = 2147483647
         hi_v = -1
-        # f64 explicitly: a bare 0.0 infers f32 and the sum would silently
-        # narrow (Taichi warns "atomic add may lose precision").
-        fr = ti.f64(0.0)
-        bk = ti.f64(0.0)
+        # Typed explicitly: a bare 0.0 infers f32 and the f64 sum would
+        # silently narrow (Taichi warns "atomic add may lose precision").
+        fr = ti.cast(0.0, acc_t)
+        bk = ti.cast(0.0, acc_t)
         for j in range(s, e):
             r = ref[j]
             sid = -1
@@ -333,7 +360,7 @@ def one_mesh_pixel_reduce(
                 lo_v = sid
             if sid > hi_v:
                 hi_v = sid
-            c = ti.cast(cov[j], ti.f64)
+            c = ti.cast(cov[j], acc_t)
             if (msk[j] & backface_bit) != 0:
                 bk += c
             else:
@@ -409,10 +436,11 @@ def solid_shell_ceiling(
     key: ti.types.ndarray(),  # [n] i64 -- (pixel, surface) segment keys, sorted order
     o2: ti.types.ndarray(),  # [n] i64 -- permutation key order -> depth order
     back: ti.types.ndarray(),  # [n] u8 (a bool tensor viewed as bytes)
-    excl: ti.types.ndarray(),  # [n] f64 -- GLOBAL exclusive prefix of the f64 areas
-    scratch: ti.types.ndarray(),  # [n] f64 -- caller's spare [n] f64 buffer
+    excl: ti.types.ndarray(),  # [n] `acc_t` -- GLOBAL exclusive prefix of the areas
+    scratch: ti.types.ndarray(),  # [n] `acc_t` -- caller's spare [n] buffer
     n: ti.i32,
     cov: ti.types.ndarray(),  # [n] f32 INOUT -- clamped in place
+    acc_t: ti.template(),  # compile-time: `excl`/`scratch`'s element type
 ):
     """One pass: the solid-shell opacity ceiling, applied to the fragments.
 
@@ -460,19 +488,25 @@ def solid_shell_ceiling(
 
     A fragment count never approaches 2**31, so rows narrow to i32 for
     indexing.
+
+    ``acc_t`` is the accumulator width and must match ``excl``/``scratch``'s
+    dtype. MPS-friendly mode passes ``ti.f32``, where the whole exactness
+    argument above lapses -- the cap's round through f32 becomes a no-op and
+    the prefix it differences is an f32 cumsum -- because Metal has no f64
+    (``mps_compat``).
     """
     for i in range(n):
         ii = ti.cast(o2[i], ti.i32)
         ki = key[ii]
         if i == 0 or ki != key[ti.cast(o2[i - 1], ti.i32)]:
-            front = ti.f64(0.0)
-            bk = ti.f64(0.0)
+            front = ti.cast(0.0, acc_t)
+            bk = ti.cast(0.0, acc_t)
             j = i
             while j < n:
                 jj = ti.cast(o2[j], ti.i32)
                 if j > i and key[jj] != key[ti.cast(o2[j - 1], ti.i32)]:
                     break
-                c = ti.cast(cov[jj], ti.f64)
+                c = ti.cast(cov[jj], acc_t)
                 if back[jj] != 0:
                     bk += c
                 else:
@@ -482,7 +516,7 @@ def solid_shell_ceiling(
             # its low bits flips borderline fragments in and out of being
             # clipped. The f64 value came from an f32 array, but the SUM did
             # not -- only the round makes it well-defined.
-            cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), ti.f64)
+            cap = ti.cast(ti.cast(ti.max(front, bk), ti.f32), acc_t)
             # ``excl`` is indexed by position along ``o2`` -- the space the
             # cumsum ran in -- not by the main-order rows the other arrays
             # use.
@@ -498,14 +532,14 @@ def solid_shell_ceiling(
                 # wherever an area exceeds the floor, which is everywhere the
                 # emission produces; below it both sides write ~zero ink, and
                 # byte identity still demands they write the SAME zero.
-                c = ti.cast(cov[jj], ti.f64)
-                denom = ti.max(c, ti.f64(1e-12))
+                c = ti.cast(cov[jj], acc_t)
+                denom = ti.max(c, ti.cast(1e-12, acc_t))
                 # Store-and-reload: the barrier documented above. Do not
                 # "simplify" it back into register arithmetic.
                 scratch[j] = excl[j] - base
-                scale = ti.max(cap - scratch[j], ti.f64(0.0))
+                scale = ti.max(cap - scratch[j], ti.cast(0.0, acc_t))
                 scale = scale / denom
-                scale = ti.min(scale, ti.f64(1.0))
+                scale = ti.min(scale, ti.cast(1.0, acc_t))
                 cov[jj] = ti.cast(denom * scale, ti.f32)
                 j += 1
 
@@ -518,13 +552,14 @@ def band_stats_reduce(
     cov: ti.types.ndarray(),  # [n] f32 -- exact areas
     n: ti.i32,
     mask_all: ti.i32,  # _AA_MASK_ALL
-    first_sorted: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
-    min_pos: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
-    first_sorted_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
-    min_pos_p: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    first_sorted: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-FILLED n
+    min_pos: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-FILLED n
+    first_sorted_p: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-FILLED n
+    min_pos_p: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-FILLED n
     cmax: ti.types.ndarray(),  # [nb] f32 OUT, PRE-ZEROED
-    nfrag: ti.types.ndarray(),  # [nb] i64 OUT, PRE-ZEROED
+    nfrag: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-ZEROED
     positioned: ti.template(),  # compile-time: sheet_positioned_depth
+    idx_t: ti.template(),  # compile-time: the five OUT arrays' element type
 ):
     """One pass: the compaction's five per-band scatters, fused.
 
@@ -540,18 +575,26 @@ def band_stats_reduce(
 
     ``band_stats_rep_orig`` runs AFTER this one: it compares each fragment
     against its band's completed maximum.
+
+    Every value reduced here is a position or a count, so ``idx_t`` may be
+    ``ti.i32`` without changing an answer -- a fragment count never approaches
+    2**31. MPS-friendly mode passes exactly that, because Metal's int64
+    atomics abort the process rather than declining to compile (§1.2); the
+    operands are cast to ``idx_t`` here rather than left to the atomic, so a
+    narrowed run is a narrowed *compare*, not a rounded one. ``pos_o`` itself
+    stays i64 either way -- Metal reads and packs 64-bit integers fine.
     """
     for i in range(n):
         b = ti.cast(band[i], ti.i32)
-        p = pos_o[i]
-        ti.atomic_min(first_sorted[b], ti.cast(i, ti.i64))
+        p = ti.cast(pos_o[i], idx_t)
+        ti.atomic_min(first_sorted[b], ti.cast(i, idx_t))
         ti.atomic_min(min_pos[b], p)
         if ti.static(positioned):
             if (msk[i] & mask_all) != 0:
-                ti.atomic_min(first_sorted_p[b], ti.cast(i, ti.i64))
+                ti.atomic_min(first_sorted_p[b], ti.cast(i, idx_t))
                 ti.atomic_min(min_pos_p[b], p)
         ti.atomic_max(cmax[b], cov[i])
-        ti.atomic_add(nfrag[b], ti.cast(1, ti.i64))
+        ti.atomic_add(nfrag[b], ti.cast(1, idx_t))
 
 
 @ti.kernel
@@ -561,7 +604,8 @@ def band_stats_rep_orig(
     cov: ti.types.ndarray(),  # [n] f32
     cmax: ti.types.ndarray(),  # [nb] f32 -- completed by band_stats_reduce
     n: ti.i32,
-    rep_orig: ti.types.ndarray(),  # [nb] i64 OUT, PRE-FILLED n
+    rep_orig: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-FILLED n
+    idx_t: ti.template(),  # compile-time: `rep_orig`'s element type
 ):
     """One pass: the dominant fragment's original position, per band.
 
@@ -569,12 +613,13 @@ def band_stats_rep_orig(
     (``cand_pos``/amin in the torch arm). Comparing against the completed
     ``cmax`` needs the previous kernel's finish, which is the only reason
     this is a second launch. Integer min over identical candidates, so the
-    result is the torch arm's whatever order the atomics land in.
+    result is the torch arm's whatever order the atomics land in. ``idx_t`` is
+    ``band_stats_reduce``'s, and narrows for the same reason.
     """
     for i in range(n):
         b = ti.cast(band[i], ti.i32)
         if cov[i] >= cmax[b]:
-            ti.atomic_min(rep_orig[b], pos_o[i])
+            ti.atomic_min(rep_orig[b], ti.cast(pos_o[i], idx_t))
 
 
 @ti.kernel

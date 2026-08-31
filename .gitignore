@@ -18,6 +18,11 @@ probe-output.txt
 benchmarks/mps_vs_cpu_speed.json
 speed-output.txt
 
+# The frame benchmarks/_mps_render_smoke.py draws. It is what the run produced
+# on the machine it ran on -- a CI artifact, not a baseline: nothing compares
+# against it, and the two devices legitimately tessellate differently.
+mps_render_smoke/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -181,3 +186,9 @@ third_party/*
 benchmarks/renderer_audit/node_modules/
 benchmarks/renderer_audit/package.json
 benchmarks/renderer_audit/package-lock.json
+
+# What benchmarks/_mps_torch_op_probe.py writes in CI, for the artifact and
+# for the end-of-job replay. A measurement of the machine it ran on.
+torch-op-probe.txt
+pytest-output.txt
+compile-trace.txt

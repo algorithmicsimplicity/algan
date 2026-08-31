@@ -41,6 +41,31 @@ _RENAMED = {
 }
 
 
+def _coerce_mps_friendly(value):
+    """Validate ``mps_friendly`` as ``True``, ``False`` or ``'auto'``.
+
+    A string is accepted so the field can be written the way its environment
+    variable is, and so ``'auto'`` survives a round trip through
+    :meth:`~algan.settings.abstract_settings.Settings.to_dict`. Anything else
+    is rejected here rather than resolved to a silent ``False`` at the first
+    render.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw == "auto":
+            return "auto"
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if raw in ("0", "false", "no", "off"):
+            return False
+    raise AlganConfigurationError(
+        "mps_friendly must be True, False or 'auto' (the default, which "
+        "follows the render device)"
+    )
+
+
 def _check_render_device_change_allowed(current, requested):
     """Raise unless the render device can still be changed.
 
@@ -154,6 +179,23 @@ class ComputingSettings(Settings):
     #: are discarded), so switch once at the top of a script rather than
     #: between renders.
     render_device: torch.device = field(default_factory=lambda: _DEFAULT_RENDER_DEVICE)
+    #: Restrict the renderer to operations Apple's Metal backend can run:
+    #: float32 in place of every float64 accumulator, int32 in place of the
+    #: int64 min/max reductions, and a scan of ``maximum``/``minimum`` in place
+    #: of ``cummax``/``cummin``. ``'auto'`` (the default) turns it on exactly
+    #: when the render device is MPS and leaves every other device on the
+    #: float64 path; ``True``/``False`` decide for themselves, which is what
+    #: makes the mode testable on a machine with no Apple GPU. Env override
+    #: ``ALGAN_MPS_FRIENDLY``. Read it through
+    #: :func:`algan.rendering.mps_compat.mps_friendly`, which is where the
+    #: resolution and the substitutions it selects are documented.
+    #:
+    #: The mode is **not deterministic**: the accumulators it narrows are the
+    #: ones §6.6.4 widened precisely because a float32 sum is not
+    #: order-reproducible, so two renders of one scene may differ in their low
+    #: bits. That is the trade MPS forces -- Metal has no float64 at all -- and
+    #: it is why the mode is off wherever float64 is available.
+    mps_friendly: bool | str = "auto"
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
@@ -180,6 +222,9 @@ class ComputingSettings(Settings):
     def __post_init__(self):
         object.__setattr__(
             self, "render_device", coerce_device(self.render_device, "render_device")
+        )
+        object.__setattr__(
+            self, "mps_friendly", _coerce_mps_friendly(self.mps_friendly)
         )
         for name in ("animation_memory_fraction", "rendering_memory_fraction"):
             value = float(getattr(self, name))
