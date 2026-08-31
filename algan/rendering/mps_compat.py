@@ -173,17 +173,22 @@ def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
     ``clamp_min``, one op, and CPU and CUDA do not pay a compare and a select
     for a defect they do not have.
 
-    A ``floor`` at or above the cliff needs none of this and asserts, rather
-    than silently doing nothing: at that magnitude ``clamp_min`` is correct on
-    every backend, and a call here would be a reader's false alarm.
+    A ``floor`` at or above the cliff takes ``clamp_min`` on **every** backend,
+    because there the clamp is measured correct on MPS too and is the cheaper
+    of the two. So this is a correct clamp at any magnitude a caller passes,
+    and raising a floor past the cliff -- an ordinary numerical tuning change --
+    quietly stops paying for the workaround rather than becoming an error. What
+    keeps ``clamp_min`` from creeping back into the renderer is a static check,
+    ``test_mps_friendly.py::test_the_renderer_floors_a_divide_through_clamp_floor``,
+    which is where that belongs: a call-time exception on a valid floor would
+    fire mid-render, on whichever scene first reached the branch.
+
+    **One magnitude is beyond either spelling.** At a float32 *subnormal* floor
+    (1.4e-45) the sweep has ``where`` failing on MPS as well -- the constant
+    itself does not survive -- so neither form is a guard there. No call site
+    is anywhere near it, and this says so rather than implying a universal fix.
     """
-    if floor >= _MPS_CLAMP_FLOOR:
-        raise ValueError(
-            f"clamp_floor is for a floor MPS cannot carry; {floor:g} is at or "
-            f"above {_MPS_CLAMP_FLOOR:g}, where clamp_min is exact everywhere. "
-            "Call tensor.clamp_min directly."
-        )
-    if not mps_friendly():
+    if floor >= _MPS_CLAMP_FLOOR or not mps_friendly():
         return tensor.clamp_min(floor)
     return torch.where(tensor < floor, floor, tensor)
 
