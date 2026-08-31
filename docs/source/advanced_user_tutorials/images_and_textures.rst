@@ -324,7 +324,7 @@ starts by asking for a grid:
     from algan import *
     import torch
 
-    square = Square(texture_grid_width=64, texture_grid_height=64, stroke_width=0)
+    square = Square(grid_width=64, grid_height=64, stroke_width=0)
     square.set_color_by_function(
         lambda uv: torch.cat((uv[..., :1], 1 - uv[..., :1], uv[..., 1:]), -1)
     )
@@ -332,7 +332,7 @@ starts by asking for a grid:
 
     Scene.save_video()
 
-``texture_grid_width`` and ``texture_grid_height`` are the number of color
+``grid_width`` and ``grid_height`` are the number of color
 samples along each axis, and they are the resolution of everything painted on the
 shape. Both default to ``1``; giving only the width squares the grid up.
 
@@ -369,7 +369,7 @@ left at ``(u, v) == (0, 0)``:
 
     from algan import *
 
-    circle = Circle(texture_grid_width=128, texture_grid_height=128, stroke_width=0)
+    circle = Circle(grid_width=128, grid_height=128, stroke_width=0)
     circle.set_color_by_image('world_map.png')
     circle.spawn()
 
@@ -398,7 +398,7 @@ colors cross-fade over the current context's duration:
         return torch.cat((torch.ones_like(uv[..., :1]), 1 - uv[..., 1:],
                           torch.zeros_like(uv[..., :1])), -1)
 
-    square = Square(texture_grid_width=64, stroke_width=0).scale(2)
+    square = Square(grid_width=64, stroke_width=0).scale(2)
     square.set_color_by_function(cool)
     square.spawn()
 
@@ -419,7 +419,7 @@ colored over its own frame, so the pattern repeats per glyph:
     from algan import *
     import torch
 
-    text = Text('Algan', texture_grid_width=16, texture_grid_height=16)
+    text = Text('Algan', grid_width=16, grid_height=16)
     for glyph in text.character_mobs:
         glyph.set_color_by_function(
             lambda uv: torch.cat(
@@ -435,8 +435,8 @@ Coloring along a line
 
 A :class:`~algan.mobs.shapes_2d.Line` is one-dimensional, and its texture grid follows: its control
 points are collinear, so the second basis row is synthesized perpendicular to the
-path and carries none of the shape's extent. ``texture_grid_height`` therefore
-defaults to a single row and ``texture_grid_width`` alone is the number of color
+path and carries none of the shape's extent. ``grid_height`` therefore
+defaults to a single row and ``grid_width`` alone is the number of color
 samples *along* the line.
 
 :meth:`Line.set_color_by_function <algan.mobs.shapes_2d.Line.set_color_by_function>`
@@ -449,7 +449,7 @@ running from 0 at :meth:`~algan.mobs.shapes_2d.Line.get_start` to 1 at :meth:`~a
     from algan import *
     import torch
 
-    line = Line(LEFT * 4, RIGHT * 4, stroke_width=30, texture_grid_width=64)
+    line = Line(LEFT * 4, RIGHT * 4, stroke_width=30, grid_width=64)
     line.set_color_by_function(
         lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
     )

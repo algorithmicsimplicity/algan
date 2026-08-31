@@ -586,11 +586,9 @@ class Mob(
         # their backing object, which is why the hint lives on the base class.
         hint = _MANIM_METHOD_HINTS.get(name)
         if hint is None:
-            raise AttributeError(
-                f"{type(self).__name__!r} object has no attribute {name!r}"
-            )
+            raise AttributeError(f"{self._describe()} has no attribute {name!r}")
         raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}. "
+            f"{self._describe()} has no attribute {name!r}. "
             f"That is Manim's name for it; in Algan use {hint}. "
             f"See the Manim migration guide for the full table."
         )

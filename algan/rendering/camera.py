@@ -99,8 +99,7 @@ class Camera(Mob):
         # Camera ownership is managed by Scene; tolerate the common generic
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
-        kwargs.pop("init", None)
-        super().__init__(*args, add_to_scene=False, init=False, **kwargs)
+        super().__init__(*args, add_to_scene=False, **kwargs)
         self.animatable_attrs.remove("color")
         with Off(animation_manager=self.animation_manager):
             self.orthographic = orthographic
@@ -108,7 +107,6 @@ class Camera(Mob):
                 scene=self.scene,
                 location=self.location + screen_distance * self.get_forward_direction(),
                 add_to_scene=False,
-                init=False,
             )
             self.screen.scale(
                 torch.tensor((1 / screen_half_height, 1 / screen_half_height, 1))

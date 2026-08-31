@@ -851,8 +851,8 @@ class Surface(Mob):
         are stored for a subclass's ``coord_function`` to read -- the base class
         does not itself remap ``(u, v)`` -- which is how
         :class:`~algan.mobs.shapes_3d.Sphere` and its siblings cut open shells
-        from partial sweeps. Those classes take theirs **in radians**, matching
-        Manim's domains rather than Algan's usual degrees.
+        from partial sweeps. Those classes take theirs as angles, in degrees
+        like every other angle in Algan.
     resolution
         Grid size as ``(u_patches, v_patches)``, or one int for both. Counts
         *patches*, one less than the vertices ``grid_width`` / ``grid_height``
@@ -887,6 +887,24 @@ class Surface(Mob):
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         ``opacity`` and ``location``.
+
+    Attributes
+    ----------
+    grid : :class:`~algan.animatable_base.mob.Mob`
+        The surface's vertices, as a child Mob, and the way to reach anything
+        that varies from vertex to vertex. ``grid.location`` holds their 3-D
+        world positions, shape ``(*, grid_width * grid_height, 3)`` row-major
+        over the sample grid, and ``grid.color`` their colors -- both animatable
+        like any other Mob attribute, so writing either records an animation.
+
+        These colors are the surface's albedo, interpolated across each triangle
+        from its corners. Setting a :attr:`color_texture` replaces them as the
+        albedo source, which is then sampled bilinearly from the texture's texels
+        instead; shading itself is per-fragment either way. The grid's resolution
+        is fixed at construction and a texture's is not, which is why the two are
+        kept separate.
+
+        :attr:`vertices` is shorthand for ``grid.location``.
 
     See Also
     --------
@@ -1214,10 +1232,13 @@ class Surface(Mob):
     def vertices(self) -> torch.Tensor:
         """The surface's vertex positions, shape ``(*, grid_width * grid_height, 3)``.
 
-        The live tensor the renderer tessellates from, laid out row-major over
-        the ``grid_height`` x ``grid_width`` sample grid. Writing it moves the
-        surface's vertices, which is the lowest-level way to deform a shape --
-        :meth:`set_location_by_function` is the usual one.
+        Shorthand for ``surface.grid.location``: the live tensor the renderer
+        tessellates from, laid out row-major over the ``grid_height`` x
+        ``grid_width`` sample grid. Writing it moves the surface's vertices,
+        which is the lowest-level way to deform a shape --
+        :meth:`set_location_by_function` is the usual one. Reach for
+        :attr:`grid` itself when you want the vertices' *colors*
+        (``grid.color``) rather than their positions.
 
         The assigned value must carry the same number of vertices the surface
         already has: the grid resolution is chosen once, at construction, and

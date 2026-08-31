@@ -198,17 +198,18 @@ A few Manim-parity surfaces keep Manim's radians on purpose. These take
 
 * ``RegularPolygon(start_angle=...)`` and ``Line(path_arc=...)``.
 * ``Wiggle(rotation_angle=...)``.
-* The ``u_range`` / ``v_range`` parametric domains of :class:`~algan.mobs.shapes_3d.Sphere`,
-  ``Cone``, ``Cylinder`` and ``Torus`` -- these are parameter intervals rather
-  than rotations. All of them restrict the geometry, so a partial range builds a
-  partial shape: an open shell with uncapped cut edges, re-tessellated from
-  scratch rather than carved out of the whole shape's grid. Which parameter is
-  which follows Manim: ``Sphere``'s ``u_range`` is the azimuth and its
-  ``v_range`` runs pole to pole, while ``Cylinder``'s and ``Cone``'s ``v_range``
-  is the azimuth about the axis (the extent along the axis comes from
-  ``height``, as it does in Manim). The zero of each sweep is Algan's own seam
-  rather than Manim's, so a half shape comes out rotated relative to Manim's --
-  the docstrings say where each one starts.
+The ``u_range`` / ``v_range`` parametric domains of
+:class:`~algan.mobs.shapes_3d.Sphere`, ``Cone``, ``Cylinder`` and ``Torus`` keep
+Manim's *names* but take Algan's **degrees**, so Manim's ``(0, PI)`` is
+``(0, 180)`` here. All of them restrict the geometry, so a partial range builds a
+partial shape: an open shell with uncapped cut edges, re-tessellated from
+scratch rather than carved out of the whole shape's grid. Which parameter is
+which follows Manim: ``Sphere``'s ``u_range`` is the azimuth and its
+``v_range`` runs pole to pole, while ``Cylinder``'s and ``Cone``'s ``v_range``
+is the azimuth about the axis (the extent along the axis comes from
+``height``, as it does in Manim). The zero of each sweep is Algan's own seam
+rather than Manim's, so a half shape comes out rotated relative to Manim's --
+the docstrings say where each one starts.
 
 Every one of those is a *constructor argument* handed straight to Manim. No
 Algan **method** is among them, so there is no Mob anywhere whose ``rotate``

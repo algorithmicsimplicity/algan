@@ -258,14 +258,10 @@ class Animatable:
         bound either way; only the registration is skipped, and a composite Mob
         passes the same choice down to the parts it builds.
     name
-        A label for this object, carried for the caller's own use. Defaults to
-        ``"_"``. Nothing in the engine reads it.
-    init
-        Whether to run the initialization hooks
-        (:meth:`~.Animatable.on_init` and the animation context's) as part of
-        construction. Defaults to True. ``False`` leaves the object incomplete
-        until you call :meth:`~.Animatable.init` yourself, and is only useful
-        to a subclass that has more setting up to do first.
+        A label for this object, used to identify it in ``repr()`` and in any
+        warning or error that mentions it -- so ``Square(name="title box")``
+        turns "Square" into "Square 'title box'" wherever Algan reports a
+        problem with it. Defaults to ``None``, meaning the class name alone.
     animation_manager
         The :class:`~.AnimationManager` controlling animations applied to this
         object. Defaults to ``None``, meaning the Scene's own.
@@ -307,8 +303,7 @@ class Animatable:
         self,
         scene: Scene | None = None,
         add_to_scene: bool = True,
-        name: str = "_",
-        init: bool = True,
+        name: str | None = None,
         animation_manager: AnimationManager | None = None,
         data_sub_inds: torch.Tensor | None = None,
         parent_batch_sizes: torch.Tensor | None = None,
@@ -353,8 +348,24 @@ class Animatable:
         self.previous_retroactive_time = 0
         self.ignore_wave_animations = False
 
-        if init:
-            self.init()
+        self.init()
+
+    def __repr__(self):
+        return f"<{self._describe()}>"
+
+    def _describe(self) -> str:
+        """This Mob as it should appear in a message: its class, plus its
+        ``name`` when it was given one.
+
+        Read straight out of ``__dict__`` rather than with ``getattr``: this is
+        called from error paths, including ones reached before ``name`` is set,
+        and ``Mob.__getattr__`` would otherwise word a second error about the
+        first one.
+        """
+        name = self.__dict__.get("name")
+        if not name or name == "_":
+            return type(self).__name__
+        return f"{type(self).__name__} {name!r}"
 
     def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
         """Make attributes animatable, so writing them animates.
@@ -1522,7 +1533,7 @@ class Animatable:
                 # one ``despawn``'s own docstring gives, said at the call that
                 # cannot do what it looks like it does.
                 warnings.warn(
-                    f"{type(self).__name__}.spawn() did nothing: this Mob has "
+                    f"spawn() on {self._describe()} did nothing: this Mob has "
                     f"already been despawned, and a despawned Mob cannot be "
                     f"brought back -- it keeps the lifespan it was given. To "
                     f"show it again, clone it before despawning and spawn the "
@@ -1729,11 +1740,10 @@ class Animatable:
         self._apply_change("opacity", -current, scope=scope)
 
     def init(self):
-        """Run this Mob's initialization hooks.
+        """Internal: run this Mob's initialization hooks.
 
-        Calls :meth:`~.Animatable.on_init` and lets the current context do its own
-        setup. Constructors call this for you unless they were passed
-        ``init=False``.
+        Calls :meth:`~.Animatable.on_init` and lets the current context do its
+        own setup. Construction always calls it; you never need to.
 
         Returns
         -------

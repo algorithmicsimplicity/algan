@@ -230,7 +230,7 @@ def _closed_mesh_is_outward(mob, name):
 # its seeds.
 _REVOLVED = {
     "sphere": lambda: Sphere(radius=0.8),
-    "sphere-partial": lambda: Sphere(radius=0.8, v_range=(0.4, 2.2)),
+    "sphere-partial": lambda: Sphere(radius=0.8, v_range=(22.9183, 126.0507)),
     "dot3d": lambda: Dot3D(point=RIGHT * 0.3, radius=0.2),
     "cylinder": lambda: Cylinder(radius=0.5, height=1.0),
     "cylinder-capped": lambda: Cylinder(radius=0.5, height=1.0, show_ends=True),
@@ -265,7 +265,10 @@ _REVOLVED = {
     "cone-direction": lambda: Cone(base_radius=0.5, height=1.1, direction=RIGHT),
     "torus": lambda: Torus(ring_radius=0.6, tube_radius=0.25),
     "torus-partial": lambda: Torus(
-        ring_radius=0.6, tube_radius=0.25, u_range=(0, 3.0), v_range=(0.5, 4.0)
+        ring_radius=0.6,
+        tube_radius=0.25,
+        u_range=(0, 171.8873),
+        v_range=(28.6479, 229.1831),
     ),
     "arrow3d": lambda: Arrow3D(start=ORIGIN, end=RIGHT * 1.1, shaft_radius=0.06),
 }

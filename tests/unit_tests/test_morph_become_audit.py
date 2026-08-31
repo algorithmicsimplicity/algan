@@ -229,7 +229,7 @@ def test_become_takes_the_targets_sidedness(scene):
     geometry wearing the other's declaration.
     """
     with Off():
-        source = Sphere(radius=0.7, u_range=(0.0, 3.14159 / 2)).spawn()
+        source = Sphere(radius=0.7, u_range=(0.0, 90.0)).spawn()
         target = Sphere(radius=0.7)
     assert (source.two_sided, source.closed_shell) != (
         target.two_sided,

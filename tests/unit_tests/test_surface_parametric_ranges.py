@@ -1,4 +1,4 @@
-"""``u_range`` / ``v_range`` on the Manim-parity curved shapes.
+"""``u_range`` / ``v_range`` on the curved shapes, in Algan's degrees.
 
 Two things are under test, and the second matters as much as the first. The
 ranges must actually restrict the geometry -- they were accepted and stored but
@@ -16,7 +16,6 @@ import math
 import pytest
 import torch
 
-from algan.constants.math import PI
 from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.scene_manager import SceneManager
 
@@ -71,7 +70,7 @@ def test_default_sphere_grid_is_bit_identical_to_the_legacy_sampling(radius):
 
 def test_explicit_default_sphere_ranges_are_bit_identical_to_omitting_them():
     implicit = Sphere(add_to_scene=False)
-    explicit = Sphere(u_range=(0, 2 * PI), v_range=(0, PI), add_to_scene=False)
+    explicit = Sphere(u_range=(0, 360), v_range=(0, 180), add_to_scene=False)
 
     assert (implicit.grid_width, implicit.grid_height) == (
         explicit.grid_width,
@@ -93,7 +92,7 @@ def test_default_cylinder_grid_is_bit_identical_to_the_legacy_sampling(radius, h
 
 def test_explicit_default_cylinder_range_is_bit_identical_to_omitting_it():
     implicit = Cylinder(add_to_scene=False)
-    explicit = Cylinder(v_range=(0, 2 * PI), add_to_scene=False)
+    explicit = Cylinder(v_range=(0, 360), add_to_scene=False)
 
     assert (implicit.grid_width, implicit.grid_height) == (
         explicit.grid_width,
@@ -110,7 +109,7 @@ def _extents(mob):
 def test_sphere_u_range_restricts_the_azimuth_to_the_out_half():
     # ``u`` starts at LEFT and turns through OUT, so half of it is the half
     # facing the camera: OUT is -z, and no vertex may cross into +z.
-    low, high = _extents(Sphere(u_range=(0, PI), add_to_scene=False).spawn())
+    low, high = _extents(Sphere(u_range=(0, 180), add_to_scene=False).spawn())
 
     assert high[2] <= 1e-6
     assert low[2] < -0.99
@@ -122,7 +121,7 @@ def test_sphere_u_range_restricts_the_azimuth_to_the_out_half():
 
 
 def test_sphere_u_range_second_half_is_the_in_half():
-    low, high = _extents(Sphere(u_range=(PI, 2 * PI), add_to_scene=False).spawn())
+    low, high = _extents(Sphere(u_range=(180, 360), add_to_scene=False).spawn())
 
     assert low[2] >= -1e-6
     assert high[2] > 0.99
@@ -130,11 +129,9 @@ def test_sphere_u_range_second_half_is_the_in_half():
 
 def test_sphere_v_range_runs_pole_to_pole():
     bottom_low, bottom_high = _extents(
-        Sphere(v_range=(0, PI / 2), add_to_scene=False).spawn()
+        Sphere(v_range=(0, 90), add_to_scene=False).spawn()
     )
-    top_low, top_high = _extents(
-        Sphere(v_range=(PI / 2, PI), add_to_scene=False).spawn()
-    )
+    top_low, top_high = _extents(Sphere(v_range=(90, 180), add_to_scene=False).spawn())
 
     # v = 0 is the DOWN pole and v = PI the UP one.
     assert bottom_low[1] == pytest.approx(-1, abs=1e-5)
@@ -146,8 +143,8 @@ def test_sphere_v_range_runs_pole_to_pole():
 def test_partial_sphere_vertices_all_lie_on_the_sphere():
     sphere = Sphere(
         radius=0.7,
-        u_range=(0, PI / 2),
-        v_range=(PI / 4, 3 * PI / 4),
+        u_range=(0, 90),
+        v_range=(45, 135),
         add_to_scene=False,
     ).spawn()
 
@@ -157,7 +154,7 @@ def test_partial_sphere_vertices_all_lie_on_the_sphere():
 
 
 def test_cylinder_v_range_restricts_the_azimuth_to_the_left_half():
-    low, high = _extents(Cylinder(v_range=(0, PI), add_to_scene=False).spawn())
+    low, high = _extents(Cylinder(v_range=(0, 180), add_to_scene=False).spawn())
 
     assert high[0] <= 1e-6
     assert low[0] < -0.99
@@ -167,14 +164,14 @@ def test_cylinder_v_range_restricts_the_azimuth_to_the_left_half():
 
 
 def test_cylinder_v_range_second_half_is_the_right_half():
-    low, high = _extents(Cylinder(v_range=(PI, 2 * PI), add_to_scene=False).spawn())
+    low, high = _extents(Cylinder(v_range=(180, 360), add_to_scene=False).spawn())
 
     assert low[0] >= -1e-6
     assert high[0] > 0.99
 
 
 def test_partial_cylinder_vertices_all_lie_on_the_cylinder():
-    cylinder = Cylinder(radius=0.6, v_range=(0, PI / 2), add_to_scene=False).spawn()
+    cylinder = Cylinder(radius=0.6, v_range=(0, 90), add_to_scene=False).spawn()
 
     points = cylinder.grid.location.detach().reshape(-1, 3)
     radii = points[:, [0, 2]].norm(dim=-1)
@@ -185,9 +182,9 @@ def test_partial_cylinder_vertices_all_lie_on_the_cylinder():
 @pytest.mark.parametrize(
     ("factory", "kwargs"),
     [
-        (Sphere, {"u_range": (0, PI)}),
-        (Sphere, {"v_range": (0, PI / 2)}),
-        (Cylinder, {"v_range": (0, PI)}),
+        (Sphere, {"u_range": (0, 180)}),
+        (Sphere, {"v_range": (0, 90)}),
+        (Cylinder, {"v_range": (0, 180)}),
     ],
 )
 def test_a_partial_range_no_longer_reproduces_the_whole_shape(factory, kwargs):

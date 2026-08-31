@@ -332,19 +332,23 @@ _CLOSED = {
 }
 
 _OPEN = {
-    "sphere-partial": lambda: Sphere(radius=0.5, v_range=(0.4, 2.2)),
+    "sphere-partial": lambda: Sphere(radius=0.5, v_range=(22.9183, 126.0507)),
     "cylinder-open": lambda: Cylinder(radius=0.35, height=0.9),
     # Whole discs on a half-pipe still leave the cut running along the tube.
     "halfpipe-with-discs": (
-        lambda: Cylinder(radius=0.35, height=0.9, v_range=(0.3, 3.0), show_ends=True)
+        lambda: Cylinder(
+            radius=0.35, height=0.9, v_range=(17.1887, 171.8873), show_ends=True
+        )
     ),
     "cone-open": lambda: Cone(base_radius=0.45, height=0.9),
     # A partial sweep leaves the wedge's cut faces open even with the base on.
     "cone-capped-partial": (
-        lambda: Cone(base_radius=0.45, height=0.9, show_base=True, v_range=(0.4, 3.0))
+        lambda: Cone(
+            base_radius=0.45, height=0.9, show_base=True, v_range=(22.9183, 171.8873)
+        )
     ),
     "torus-partial": (
-        lambda: Torus(ring_radius=0.55, tube_radius=0.22, v_range=(0.5, 4.0))
+        lambda: Torus(ring_radius=0.55, tube_radius=0.22, v_range=(28.6479, 229.1831))
     ),
     "polyhedron-single-quad": (
         lambda: Polyhedron([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], [[0, 1, 2, 3]])

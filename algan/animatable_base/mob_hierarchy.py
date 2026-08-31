@@ -139,8 +139,8 @@ class MobHierarchyMixin:
         # graph nothing can traverse.
         if self._contains_in_hierarchy(self, other_mob):
             raise HierarchyError(
-                f"{type(other_mob).__name__} is already below "
-                f"{type(self).__name__}, so making it the parent "
+                f"{other_mob._describe()} is already below "
+                f"{self._describe()}, so making it the parent "
                 f"would create a cycle"
             )
         other_mob.add_children(self)

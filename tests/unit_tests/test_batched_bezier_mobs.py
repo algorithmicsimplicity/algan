@@ -94,7 +94,7 @@ def test_border_texture_grid_is_independent_from_fill_texture_grid():
         color=WHITE,
         stroke_color=YELLOW,
         stroke_width=8,
-        texture_grid_width=2,
+        grid_width=2,
         add_to_scene=False,
     )
     fill_colors = torch.stack((RED, RED, BLUE, BLUE)).unsqueeze(0)

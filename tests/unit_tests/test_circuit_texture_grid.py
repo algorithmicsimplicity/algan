@@ -27,7 +27,7 @@ def _rgb(uv):
 
 def test_texture_grid_axes_are_independent():
     SceneManager.reset()
-    square = Square(texture_grid_width=4, texture_grid_height=2, add_to_scene=False)
+    square = Square(grid_width=4, grid_height=2, add_to_scene=False)
     assert (square.grid_width, square.grid_height) == (4, 2)
     assert square.num_texture_points == 8
 
@@ -43,9 +43,9 @@ def test_texture_grid_axes_are_independent():
             torch.testing.assert_close(points[i, j], expected, atol=1e-5, rtol=0)
 
 
-def test_texture_grid_height_mirrors_width_by_default():
+def test_grid_height_mirrors_width_by_default():
     SceneManager.reset()
-    square = Square(texture_grid_width=5, add_to_scene=False)
+    square = Square(grid_width=5, add_to_scene=False)
     assert (square.grid_width, square.grid_height) == (5, 5)
 
 
@@ -54,22 +54,20 @@ def test_degenerate_second_axis_defaults_to_one_row():
     # A straight line's control points are collinear: its second basis row is
     # synthesized perpendicular to the path and every point of the shape maps to
     # the same v, so sampling it more than once buys nothing.
-    line = Line(LEFT, RIGHT, texture_grid_width=8, add_to_scene=False)
+    line = Line(LEFT, RIGHT, grid_width=8, add_to_scene=False)
     assert (line.grid_width, line.grid_height) == (8, 1)
     assert line.num_texture_points == 8
 
     # Explicitly asking for rows still gets them.
-    thick = Line(
-        LEFT, RIGHT, texture_grid_width=8, texture_grid_height=3, add_to_scene=False
-    )
+    thick = Line(LEFT, RIGHT, grid_width=8, grid_height=3, add_to_scene=False)
     assert (thick.grid_width, thick.grid_height) == (8, 3)
 
     # An arc is not collinear, so it keeps the square default.
-    arc = Line(LEFT, RIGHT, path_arc=1.0, texture_grid_width=4, add_to_scene=False)
+    arc = Line(LEFT, RIGHT, path_arc=1.0, grid_width=4, add_to_scene=False)
     assert (arc.grid_width, arc.grid_height) == (4, 4)
 
     # A Point has no extent at all.
-    assert Point(texture_grid_width=4, add_to_scene=False).grid_height == 1
+    assert Point(grid_width=4, add_to_scene=False).grid_height == 1
 
 
 def test_default_grid_is_a_single_texel():
@@ -106,9 +104,7 @@ def test_line_first_basis_points_from_center_toward_start(start, end):
 
 def test_base_grid_spans_zero_to_one_and_centers_degenerate_axes():
     SceneManager.reset()
-    grid = Square(
-        texture_grid_width=3, texture_grid_height=2, add_to_scene=False
-    ).get_base_grid()
+    grid = Square(grid_width=3, grid_height=2, add_to_scene=False).get_base_grid()
     assert grid.shape == (3, 2, 2)
     torch.testing.assert_close(
         grid[..., 0], torch.tensor([[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]])
@@ -119,16 +115,14 @@ def test_base_grid_spans_zero_to_one_and_centers_degenerate_axes():
 
     # A single-sample axis carries one colour for the whole span, so it is
     # evaluated at the middle of it rather than at one end.
-    line_grid = Line(
-        LEFT, RIGHT, texture_grid_width=2, add_to_scene=False
-    ).get_base_grid()
+    line_grid = Line(LEFT, RIGHT, grid_width=2, add_to_scene=False).get_base_grid()
     assert line_grid.shape == (2, 1, 2)
     torch.testing.assert_close(line_grid[..., 1], torch.full((2, 1), 0.5))
 
 
 def test_set_color_by_function_writes_one_color_per_texel():
     SceneManager.reset()
-    square = Square(texture_grid_width=3, texture_grid_height=2, add_to_scene=False)
+    square = Square(grid_width=3, grid_height=2, add_to_scene=False)
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_function(_rgb)
 
@@ -143,7 +137,7 @@ def test_set_color_by_function_writes_one_color_per_texel():
 
 def test_set_color_by_function_returns_self_and_accepts_rgba():
     SceneManager.reset()
-    circle = Circle(texture_grid_width=2, add_to_scene=False)
+    circle = Circle(grid_width=2, add_to_scene=False)
     with Off(animation_manager=circle.animation_manager):
         result = circle.set_color_by_function(
             lambda uv: torch.cat((uv, uv[..., :1], uv[..., :1] * 0.5), -1)
@@ -157,14 +151,14 @@ def test_set_color_by_function_returns_self_and_accepts_rgba():
 
 def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
     SceneManager.reset()
-    filled = Square(texture_grid_width=2, stroke_color=RED, add_to_scene=False)
+    filled = Square(grid_width=2, stroke_color=RED, add_to_scene=False)
     border_before = filled.border_texture_points.color.clone()
     with Off(animation_manager=filled.animation_manager):
         filled.set_color_by_function(_rgb)
     assert not torch.equal(filled.texture_points.color, border_before)
     assert torch.equal(filled.border_texture_points.color, border_before)
 
-    unfilled = Square(texture_grid_width=2, filled=False, add_to_scene=False)
+    unfilled = Square(grid_width=2, filled=False, add_to_scene=False)
     with Off(animation_manager=unfilled.animation_manager):
         unfilled.set_color_by_function(_rgb)
     # An unfilled circuit has no interior to show the colours in, so the stroke
@@ -176,7 +170,7 @@ def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
 
 def test_line_set_color_by_function_runs_from_start_to_end():
     SceneManager.reset()
-    line = Line(LEFT * 2, RIGHT * 2, texture_grid_width=5, add_to_scene=False)
+    line = Line(LEFT * 2, RIGHT * 2, grid_width=5, add_to_scene=False)
     with Off(animation_manager=line.animation_manager):
         line.set_color_by_function(
             lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
@@ -202,7 +196,7 @@ def test_set_color_by_image_lands_the_images_top_left_at_the_origin_of_uv():
     image[:4, 4:, 1] = 1.0  # top-right green
     image[4:, :4, 2] = 1.0  # bottom-left blue
 
-    square = Square(texture_grid_width=8, texture_grid_height=8, add_to_scene=False)
+    square = Square(grid_width=8, grid_height=8, add_to_scene=False)
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_image(image)
 
@@ -218,7 +212,7 @@ def test_set_color_by_image_resamples_to_the_grid():
     SceneManager.reset()
     image = torch.rand(16, 12, 4)
     image[..., 3] = 1.0
-    square = Square(texture_grid_width=5, texture_grid_height=3, add_to_scene=False)
+    square = Square(grid_width=5, grid_height=3, add_to_scene=False)
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_image(image)
     assert square.texture_points.color.shape[-2] == 15
@@ -231,20 +225,20 @@ def test_a_flat_circuit_says_how_to_get_a_grid():
         lambda: square.set_color_by_function(_rgb),
         lambda: square.set_color_by_image(torch.rand(4, 4, 4)),
     ):
-        with pytest.raises(ValueError, match="texture_grid_width"):
+        with pytest.raises(ValueError, match="grid_width"):
             call()
 
 
 def test_a_function_returning_the_wrong_count_is_rejected():
     SceneManager.reset()
-    square = Square(texture_grid_width=3, add_to_scene=False)
+    square = Square(grid_width=3, add_to_scene=False)
     with pytest.raises(ValueError, match="one color per texel"):
         square.set_color_by_function(lambda uv: torch.zeros(4, 3))
 
 
 def test_multi_circuit_mobs_repeat_the_pattern_per_circuit():
     SceneManager.reset()
-    text = Text("ab", texture_grid_width=2, texture_grid_height=2)
+    text = Text("ab", grid_width=2, grid_height=2)
     circuit = next(
         mob
         for mob in text.get_descendants()
@@ -262,7 +256,7 @@ def test_multi_circuit_mobs_repeat_the_pattern_per_circuit():
 
 def test_a_single_glyph_view_colors_only_its_own_texels():
     SceneManager.reset()
-    text = Text("ab", texture_grid_width=2, texture_grid_height=2)
+    text = Text("ab", grid_width=2, grid_height=2)
     first, second = text.character_mobs[0], text.character_mobs[1]
     untouched = second.texture_points.color.clone()
     with Off(animation_manager=first.animation_manager):
@@ -289,8 +283,8 @@ def test_direct_construction_matches_the_shape_helpers():
     circuit = BezierCircuitCubic(
         segments,
         color=BLUE,
-        texture_grid_width=4,
-        texture_grid_height=2,
+        grid_width=4,
+        grid_height=2,
         add_to_scene=False,
     )
     assert (circuit.grid_width, circuit.grid_height) == (4, 2)
