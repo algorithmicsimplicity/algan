@@ -349,7 +349,7 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
 
 
 @pytest.mark.fast
-def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight():
+def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight(computing_settings):
     """The divide guard in ``_sibling_weights``, on whatever device is here.
 
     ``share = cov / sum(area)`` is guarded by a tiny floor, and the floor is
@@ -375,9 +375,17 @@ def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight():
     reason: it runs on ``torch.backends.mps.is_available()``'s device rather
     than Algan's configured one, so any Apple machine checks the real hardware
     and everywhere else it pins the arithmetic.
+
+    The mode is switched on here for the same reason the gather guard switches
+    it on: it is the mode that spells the floor as a ``where`` and the §6.6.4
+    accumulators as float32, and both are what the Apple arm has to exercise.
+    Left off, this reaches Metal asking for a float64 accumulator -- which
+    Torch refuses outright, ahead of any guard -- through a ``clamp_min`` the
+    hardware would not have honoured anyway.
     """
     from algan.rendering.raytracing.sheets import AA_MASK_ALL, _sibling_weights
 
+    computing_settings.set(mps_friendly=True)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     # Walk order, two bands: sheets 0-1 in band 0, sheets 2-4 in band 1. Every
     # sheet's own coverage is zero, so both bands sum to zero area.
