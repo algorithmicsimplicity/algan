@@ -448,6 +448,17 @@ answer is at the end of it.
 > 0. So the fp16 rounding §2.3c measures is a real defect but not, on its own,
 > this NaN's cause. What is established is where the NaN was made and that the
 > respelling removes it.
+>
+> The obvious candidate for the difference has been tested and is **not** it:
+> the render's tensor is the output of an `index_select` computed on the device
+> rather than a `full()` moved onto it, and §2.3b's whole finding was one gather
+> answering differently from another, so the probe clamps a gathered tensor too.
+> It still returns 5.96e-8, and its `0 / clamped` is finite. What that round
+> *did* turn up is that the defect is **dispatch-dependent**: clamping a tensor
+> a `scatter_add_` produced returns the honest `1e-12`, where `index_select` and
+> advanced indexing both return 5.96e-8. So no single measurement of this op
+> generalises, which is a reason to route every call site through one helper
+> rather than to reason about which of them is safe.
 
 ### 1.3b Two dtype views of one buffer cannot both be written — the arena
 
