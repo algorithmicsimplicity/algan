@@ -95,7 +95,7 @@ class MobOrientationMixin:
             ``(*, 1)`` to give each Mob of a batch its own angle.
         axis
             Axis to rotate around; need not be normalized. Defaults to ``OUTWARD``
-            (the -z axis, pointing out of the screen), which spins a flat 2-D
+            (the +z axis, pointing out of the screen), which spins a flat 2-D
             shape in the screen plane.
         about
             Point to rotate around, shape ``(*, 3)``. Defaults to ``None``,
@@ -174,7 +174,7 @@ class MobOrientationMixin:
             ``axis``, in degrees unless ``degrees`` is False.
         axis
             Axis to orbit around; need not be normalized. Defaults to ``OUTWARD``
-            (the -z axis, out of the screen).
+            (the +z axis, out of the screen).
         about
             Point to orbit around, shape ``(*, 3)``. Defaults to ``None``, which
             makes the call a **no-op** -- orbiting the Mob's own center would not
@@ -252,8 +252,9 @@ class MobOrientationMixin:
     def get_forward_direction(self) -> torch.Tensor:
         """Get the direction the Mob is facing.
 
-        The normalized third row of the Mob's basis, i.e. its local -z axis in
-        world space. Scale is divided out, so this is always unit length.
+        The normalized third row of the Mob's basis, i.e. its local +z axis in
+        world space -- which for an unrotated Mob is ``OUTWARD``, towards the
+        viewer. Scale is divided out, so this is always unit length.
 
         Returns
         -------

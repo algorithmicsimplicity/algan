@@ -159,7 +159,7 @@ def test_filled_circuit_texture_grid_is_refined_for_a_colour_wave():
 
 def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
     square = Square(color=YELLOW).spawn(animate=False)
-    corner = square.texture_points.location.clone()
+    lone_texel = square.texture_points.location.clone()
 
     with Sync(duration=4):
         square.wave_color(PURE_BLUE, direction=RIGHT + UP)
@@ -171,10 +171,18 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
         assert colors.shape[-2] == square.num_texture_points
         assert torch.equal(border_points, points)
         assert border_colors.shape[-2] == square.num_texture_points
-        # The refined grid spans the circuit's own frame, so it still contains
-        # the corner the single original sample sat at.
-        distances = (points.reshape(-1, 3) - corner.reshape(1, 3)).norm(dim=-1)
-        assert distances.min().item() < 1e-4
+        # The refined grid spans the circuit's own frame, so the single original
+        # sample lies inside it. Inside, not ON one of them: that sample sits at
+        # the CENTRE of the span (``_texture_grid_offsets``), which a refinement
+        # into an even number of samples straddles rather than lands on.
+        rows = square.basis.reshape(3, 3)
+        offsets = points.reshape(-1, 3) - square.location.reshape(1, 3)
+        origin = lone_texel.reshape(1, 3) - square.location.reshape(1, 3)
+        for row in rows[:2]:
+            axis = row / row.norm()
+            along = (offsets * axis).sum(-1)
+            at = float((origin * axis).sum(-1))
+            assert float(along.amin()) - 1e-4 <= at <= float(along.amax()) + 1e-4
 
     timeline = square.scene.timeline_manager
     timeline.set_state_to_times(torch.linspace(0.0, 4.0, 9))

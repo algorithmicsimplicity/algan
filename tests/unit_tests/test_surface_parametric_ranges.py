@@ -51,7 +51,15 @@ def _legacy_sphere_coords(uv: torch.Tensor, radius: float) -> torch.Tensor:
 
 
 def _legacy_cylinder_coords(mob: Cylinder, uv: torch.Tensor) -> torch.Tensor:
-    """``Cylinder.coord_function`` exactly as it read before ranges were honoured."""
+    """``Cylinder.coord_function`` exactly as it read before ranges were honoured.
+
+    The forward term is subtracted rather than added, because the sign of a
+    Mob's forward row is a convention and it changed with the axes (a Mob faces
+    ``OUTWARD`` now, so a ring swept from ``+forward`` would start on the near
+    side). What this pins is that *honouring the ranges* moved no vertex, so it
+    has to be written in the convention the shape is built in -- otherwise it
+    would pin the mirror of the ring instead.
+    """
     uv = uv.clone()
     uv[..., 1:] /= uv[..., 1:].amax()
     u = -uv[..., :1]
@@ -59,7 +67,7 @@ def _legacy_cylinder_coords(mob: Cylinder, uv: torch.Tensor) -> torch.Tensor:
     return (
         (u * math.pi * 2).sin() * mob.radius * mob.get_right_basis()
         + (v - 0.5) * mob.height * mob.get_up_basis()
-        + (u * math.pi * 2).cos() * mob.radius * mob.get_forward_basis()
+        - (u * math.pi * 2).cos() * mob.radius * mob.get_forward_basis()
     )
 
 

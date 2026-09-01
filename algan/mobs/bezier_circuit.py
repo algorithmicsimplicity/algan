@@ -126,6 +126,31 @@ def _extremal_control_point_index(dists, relative_tolerance=0.0):
     return int(torch.where(dists >= threshold, inds, dists.numel()).amin())
 
 
+def _texture_grid_offsets(samples, *, device=None, dtype=None):
+    """Sample offsets along one axis of a circuit's frame, spanning -1 to 1.
+
+    A single sample stands for the whole span, so it sits at the **centre** of
+    it -- which is where :meth:`~.BezierCircuitCubic.get_base_grid` reports it
+    too, at ``0.5``. ``torch.linspace(-1, 1, 1)`` is -1, the low END of the span,
+    which put a lone texel in a corner of the frame and left its world position
+    depending on the *sign* of the basis rows it is laid out along: re-signing
+    row 1 (which :func:`_circuit_location_and_basis` does, so that a flat shape
+    faces the viewer) then moved every glyph's texel clear across its own frame.
+    The colour is unaffected either way -- one texel is one flat colour, and the
+    renderer clamps the axis to it -- but ``wave_color`` reads each part's
+    position from here, so at a corner a text fade's per-glyph lag turned on a
+    convention, and a shape was ordered by its corner rather than by where it is.
+
+    All three places that lay out a circuit's texels share this: construction,
+    :meth:`~.BezierCircuitCubic.from_batches` (whose pack must land on exactly
+    the same points -- ``test_batched_bezier_mobs.py`` is what says so) and the
+    refinement a colour wave runs.
+    """
+    if samples < 2:
+        return torch.zeros(1, device=device, dtype=dtype)
+    return torch.linspace(-1, 1, samples, device=device, dtype=dtype) * (1 + 1e-5)
+
+
 def _circuit_location_and_basis(control_points):
     """Return the same local frame used by a standalone bezier circuit, plus
     whether its second in-plane axis had to be synthesized.
@@ -189,10 +214,22 @@ def _circuit_location_and_basis(control_points):
             _extremal_control_point_index(centre_dists, 1e-6)
         ].unsqueeze(-2)
         first_basis_n = F.normalize(first_basis, p=2, dim=-1)
-        second_basis = rotate_vector_around_axis(first_basis, 90, OUTWARD, -1)
+        # Clockwise about OUTWARD, so that the negated cross below lands on
+        # OUTWARD here too: a straight path's face is the same face a closed
+        # one's is.
+        second_basis = rotate_vector_around_axis(first_basis, -90, OUTWARD, -1)
     scale = first_basis.norm(p=2, dim=-1, keepdim=True)
     second_basis = second_basis * scale / second_basis.norm(p=2, dim=-1, keepdim=True)
-    third_basis_n = F.normalize(
+    # NEGATED, which is what makes a flat shape face the viewer. Row 2 is the
+    # face the circuit presents, and ``cross(row 0, row 1)`` follows the order
+    # the control points were authored in: every 2-D shape Algan ships is wound
+    # so that it comes out INWARD, which would leave a Square stating that it
+    # faces away from the camera it was drawn in front of, while
+    # ``DEFAULT_BASIS`` says a Mob faces OUTWARD. The sign belongs here rather
+    # than in the shapes because it is the *frame's* convention, not the paths':
+    # a path's direction is drawn (``Create``) and interpolated (``become``),
+    # and reversing one to fix a normal would move all of that.
+    third_basis_n = -F.normalize(
         broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
     )
 
@@ -201,8 +238,9 @@ def _circuit_location_and_basis(control_points):
         # both row lengths exactly as derived above. Row 0 takes whichever world
         # axis the plane admits, preferring x; row 1 follows from the plane's
         # orientation, so on a plane whose normal faces the camera it comes out
-        # along -y. Only one of the three world axes can be parallel to the
-        # normal, so the loop always settles.
+        # along +y -- an upright shape's own up is UP, which is what
+        # ``wave_color`` means by "bottom to top". Only one of the three world
+        # axes can be parallel to the normal, so the loop always settles.
         for reference in (RIGHT, UP, OUTWARD):
             candidate = reference.to(third_basis_n) - (
                 dot_product(reference.to(third_basis_n), third_basis_n) * third_basis_n
@@ -250,7 +288,7 @@ class BezierCircuitCubic(Mob):
     The grid's ``(u, v)`` domain is the circuit's own frame, exactly as
     :class:`~algan.mobs.surfaces.surface.Surface`'s is: ``u`` runs from 0 to 1
     along the first basis row and ``v`` along the second, which for an upright
-    2-D shape means ``u`` left to right and ``v`` top to bottom. Both rows are as
+    2-D shape means ``u`` left to right and ``v`` bottom to top. Both rows are as
     long as the distance from the centre to the furthest control point, so the
     frame spans the square that circumscribes the shape and the shape itself
     covers the middle of the domain rather than all of it.
@@ -474,13 +512,8 @@ class BezierCircuitCubic(Mob):
             else:
                 height = max(int(grid_height), 1)
 
-            # ``linspace(-1, 1, 1)`` is -1, so a single-sample axis puts its one
-            # texel at that end of the frame rather than in the middle. The
-            # renderer clamps the whole axis to it either way, so it is one
-            # color across the span regardless; what it does change is where
-            # ``wave_color`` reads the texel's position from.
-            a1 = torch.linspace(-1, 1, width).view(-1, 1, 1) * (1 + 1e-5)
-            a2 = torch.linspace(-1, 1, height).view(1, -1, 1) * (1 + 1e-5)
+            a1 = _texture_grid_offsets(width).view(-1, 1, 1)
+            a2 = _texture_grid_offsets(height).view(1, -1, 1)
             texture_grid_points = (a1 * first_basis + a2 * second_basis) + self.location
             texture_triangle_vertices = texture_grid_points
             self.grid_width = width
@@ -584,24 +617,17 @@ class BezierCircuitCubic(Mob):
             )
 
             texture_point_count = max(mob.num_texture_points, 1)
+            # The same offsets construction laid one member's grid out, so the
+            # pack lands on exactly the points the members would have.
+            axis_kwargs = {"device": locations.device, "dtype": locations.dtype}
             grid_locations = (
-                torch.linspace(
-                    -1,
-                    1,
-                    mob.grid_width,
-                    device=locations.device,
-                    dtype=locations.dtype,
-                ).view(1, 1, -1, 1, 1)
-                * (1 + 1e-5)
+                _texture_grid_offsets(mob.grid_width, **axis_kwargs).view(
+                    1, 1, -1, 1, 1
+                )
                 * bases[..., :3].unsqueeze(-2).unsqueeze(-2)
-                + torch.linspace(
-                    -1,
-                    1,
-                    mob.grid_height,
-                    device=locations.device,
-                    dtype=locations.dtype,
-                ).view(1, 1, 1, -1, 1)
-                * (1 + 1e-5)
+                + _texture_grid_offsets(mob.grid_height, **axis_kwargs).view(
+                    1, 1, 1, -1, 1
+                )
                 * bases[..., 3:6].unsqueeze(-2).unsqueeze(-2)
                 + locations.unsqueeze(-2).unsqueeze(-2)
             ).reshape(1, count * texture_point_count, 3)
@@ -715,9 +741,9 @@ class BezierCircuitCubic(Mob):
         location = self.location
 
         def offsets(size):
-            return torch.linspace(
-                -1, 1, size, device=location.device, dtype=location.dtype
-            ) * (1 + 1e-5)
+            return _texture_grid_offsets(
+                size, device=location.device, dtype=location.dtype
+            )
 
         first = self.basis[..., :3].unsqueeze(-2).unsqueeze(-2)
         second = self.basis[..., 3:6].unsqueeze(-2).unsqueeze(-2)
@@ -811,7 +837,7 @@ class BezierCircuitCubic(Mob):
 
         Values run from 0 to 1 along both axes: ``u`` along the circuit's first
         basis row, ``v`` along its second, which on an upright 2-D shape means
-        ``u`` left to right and ``v`` top to bottom. Both rows are as long as the
+        ``u`` left to right and ``v`` bottom to top. Both rows are as long as the
         distance from the circuit's centre to its furthest control point, so the
         domain covers the square that circumscribes the shape and the shape sits
         in the middle of it. An axis with a single sample carries one color for the whole span
@@ -966,8 +992,11 @@ class BezierCircuitCubic(Mob):
 
         The image is resampled onto the circuit's texture grid and interpolated
         across the shape by the renderer, and it follows the shape as it moves
-        and morphs. The image's top-left corner lands at ``(u, v) == (0, 0)``,
-        which on an upright 2-D shape is the top left of the frame.
+        and morphs. The image's top-left corner lands at the top left of the
+        frame, which on an upright 2-D shape is ``(u, v) == (0, 1)``: ``v`` runs
+        up the frame, as it does on a
+        :class:`~algan.mobs.surfaces.surface.Surface`, while an image's rows run
+        down the picture.
 
         Unlike :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_image`,
         which keeps the image at its own resolution, a circuit has no separate
@@ -1009,9 +1038,13 @@ class BezierCircuitCubic(Mob):
         from algan.utils.file_utils import get_image
 
         image = get_image(rgba_array_or_file_path)
-        # ``image`` is [row, column, channel] with rows running down the
-        # picture; the grid is [u, v] with v running down the circuit's frame,
-        # so the resample lands on (v, u) and transposes back.
+        # ``image`` is [row, column, channel] with rows running DOWN the
+        # picture; the grid is [u, v] with v running UP the circuit's frame, so
+        # the resample lands on (v, u), transposes back, and flips v -- which is
+        # the same flip ``mesh.image_to_texture_map`` does for a surface, for the
+        # same reason. Without it the picture arrives upside down: the contract
+        # is that its top-left corner lands at the top left of the frame, not
+        # that its first row lands at v == 0.
         resized = F.interpolate(
             image.permute(2, 0, 1).unsqueeze(0),
             (self.grid_height, self.grid_width),
@@ -1019,7 +1052,7 @@ class BezierCircuitCubic(Mob):
             antialias=True,
         ).squeeze(0)
         return self._apply_texture_grid_colors(
-            resized.permute(2, 1, 0), "set_color_by_image's image"
+            resized.permute(2, 1, 0).flip(1), "set_color_by_image's image"
         )
 
     def get_default_color(self):

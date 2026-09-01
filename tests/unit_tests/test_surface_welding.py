@@ -58,12 +58,9 @@ def test_the_unwelded_topology_is_exactly_what_it_always_was():
     """
     tris = _tris((False, False, False))
     assert tris.shape == ((W - 1) * (H - 1) * 2, 3)
-    # Cell (0, 0) is the two triangles the original construction emitted, wound
-    # so that cross(v1 - v0, v2 - v0) points out of the solid -- see
-    # ``_grid_triangle_indices``. The vertex SETS are the original ones; only
-    # the order round each triangle is reversed.
-    assert tris[0].tolist() == [H, 1, 0]
-    assert tris[1].tolist() == [H + 1, 1, H]
+    # Cell (0, 0) is the two triangles the original construction emitted.
+    assert tris[0].tolist() == [0, 1, H]
+    assert tris[1].tolist() == [H, 1, H + 1]
 
 
 def test_welding_the_seam_never_indexes_the_duplicate_column():

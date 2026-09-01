@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 
+import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
@@ -32,8 +33,17 @@ from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.utils.tensor_utils import (
     broadcast_gather,
     dot_product,
+    squish,
     unsquish,
 )
+
+#: A camera's own default orientation, and the one Mob orientation that is not
+#: :data:`~algan.constants.spatial.DEFAULT_BASIS`. A Mob's forward axis is the
+#: way it faces, so it starts ``OUTWARD``, towards the viewer; a camera's
+#: forward axis is the way it *looks*, so it starts ``INWARD``, at the scene --
+#: which is what puts its screen between it and the ``ORIGIN`` rather than
+#: behind it.
+_CAMERA_BASIS = torch.stack((RIGHT, UP, INWARD))
 
 
 class Camera(Mob):
@@ -99,6 +109,7 @@ class Camera(Mob):
         # Camera ownership is managed by Scene; tolerate the common generic
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
+        kwargs.setdefault("basis", squish(_CAMERA_BASIS))
         super().__init__(*args, add_to_scene=False, **kwargs)
         self.animatable_attrs.remove("color")
         with Off(animation_manager=self.animation_manager):

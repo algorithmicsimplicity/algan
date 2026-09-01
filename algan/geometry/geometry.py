@@ -545,13 +545,14 @@ def get_orthonormal_vector(*vectors):
     d = v0.shape[-1]
     seeds = torch.eye(d, dtype=v0.dtype, device=v0.device)
     if d == 3:
-        # Seed from Algan's own axes -- RIGHT, UP, INWARD -- rather than the raw
-        # identity rows. They differ only in the sign of the third, but that
-        # sign is what makes the choice follow the world's z convention. A +z
-        # seed picks the opposite perpendicular to the one mirrored geometry
-        # wants, which rolls a surface of revolution 180 degrees about its axis:
-        # the silhouette is rotation-symmetric so it looks the same, but which
-        # tessellated facet faces the light changes.
+        # Seed from RIGHT, UP, -z rather than the raw identity rows. They differ
+        # only in the sign of the third, and the sign is not a convention this
+        # could read off DEFAULT_BASIS -- it is the mirror the z flip put through
+        # the whole world: a +z seed picks the opposite perpendicular to the one
+        # mirrored geometry wants, which rolls a surface of revolution 180
+        # degrees about its axis. The silhouette is rotation-symmetric so it
+        # looks the same, but which tessellated facet faces the light changes,
+        # and the pixel baselines hold this seed.
         seeds = seeds * torch.tensor(
             (1.0, 1.0, -1.0), dtype=v0.dtype, device=v0.device
         ).unsqueeze(-1)

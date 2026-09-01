@@ -77,6 +77,46 @@ def test_default_grid_is_a_single_texel():
     assert square.num_texture_points == 1
 
 
+def test_a_lone_texel_sits_at_the_centre_of_its_span():
+    """A single sample stands for the whole span, so it sits in the MIDDLE of
+    it -- the same place ``get_base_grid`` reports it, ``0.5``.
+
+    At one end of the span instead, a lone texel's world position turned on the
+    signs of the basis rows it is laid out along, and those are a convention
+    (``_circuit_location_and_basis`` re-signed two of them so that a flat shape
+    faces the viewer). Nothing samples it for colour -- one texel is one flat
+    colour -- but ``wave_color`` orders each part by the position it reads here,
+    so a shape with one is ordered by where it actually is.
+    """
+    SceneManager.reset()
+    for name, mob in (
+        ("square", Square(add_to_scene=False)),
+        ("circle", Circle(radius=0.4, add_to_scene=False)),
+        ("line", Line(LEFT + DOWN, RIGHT + UP, add_to_scene=False)),
+    ):
+        with Off(animation_manager=mob.animation_manager):
+            mob.move(RIGHT * 1.5 + UP * 0.5)
+        torch.testing.assert_close(
+            mob.texture_points.location.reshape(-1, 3),
+            mob.location.reshape(-1, 3),
+            atol=1e-6,
+            rtol=0,
+            msg=lambda text, name=name: f"{name}'s lone texel is off centre: {text}",
+        )
+
+    # One degenerate axis, one sampled: the sampled axis spreads, the degenerate
+    # one stays on the frame's centre line.
+    strip = Square(texture_grid_width=4, texture_grid_height=1, add_to_scene=False)
+    offsets = strip.texture_points.location.reshape(-1, 3) - strip.location.reshape(
+        1, 3
+    )
+    rows = strip.basis.reshape(3, 3)
+    along_v = (offsets * rows[1] / rows[1].norm()).sum(-1)
+    torch.testing.assert_close(along_v, torch.zeros_like(along_v), atol=1e-6, rtol=0)
+    along_u = (offsets * rows[0] / rows[0].norm()).sum(-1)
+    assert float(along_u.amax() - along_u.amin()) > 1e-3
+
+
 @pytest.mark.parametrize(
     ("start", "end"),
     [
@@ -187,7 +227,15 @@ def test_line_set_color_by_function_runs_from_start_to_end():
     torch.testing.assert_close(colors[:, 2], 1 - along, atol=1e-5, rtol=0)
 
 
-def test_set_color_by_image_lands_the_images_top_left_at_the_origin_of_uv():
+def test_set_color_by_image_lands_the_images_top_left_at_the_frames_top_left():
+    """Stated in WORLD coordinates, which is where the contract lives.
+
+    Asserting it against ``(u, v) == (0, 0)`` instead cannot see the picture
+    turn over: ``v`` runs UP the circuit's frame (as it does on a ``Surface``),
+    while an image's rows run down the picture, so the two are opposite by
+    construction and only the texels' own positions say which way round the
+    result actually is.
+    """
     SceneManager.reset()
     # Quadrants, with rows running down the picture.
     image = torch.zeros(8, 8, 4)
@@ -200,11 +248,21 @@ def test_set_color_by_image_lands_the_images_top_left_at_the_origin_of_uv():
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_image(image)
 
-    # [u, v]: u across, v down, so the image's top left lands at (0, 0).
+    points = square.texture_points.location.reshape(8, 8, 3)
     colors = square.texture_points.color.reshape(8, 8, 5)
-    for (u, v), channel in (((0, 0), 0), ((-1, 0), 1), ((0, -1), 2)):
+    for corner, channel in (
+        ((LEFT + UP), 0),  # the picture's top-left quadrant is red
+        ((RIGHT + UP), 1),  # its top-right is green
+        ((LEFT + DOWN), 2),  # its bottom-left is blue
+    ):
+        # The texel furthest into that corner of the frame, by its own position.
+        score = (points * corner.reshape(3)).sum(-1)
+        u, v = divmod(int(score.reshape(-1).argmax()), 8)
         brightest = int(colors[u, v, :3].argmax())
-        assert brightest == channel
+        assert brightest == channel, (
+            f"the texel at {corner.reshape(3).tolist()} carries channel "
+            f"{brightest}, not {channel}: the image is not the way up it was given"
+        )
         assert colors[u, v, channel] > 0.9
 
 
