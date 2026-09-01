@@ -3175,8 +3175,22 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         alt_axis = torch.zeros_like(normals)
         alt_axis[..., 1] = 1
         helper = torch.where(normals[..., :1].abs() < 0.9, axis, alt_axis)
-        basis_u = F.normalize(torch.cross(normals, helper, dim=-1), p=2, dim=-1)
-        basis_v = torch.cross(normals, basis_u, dim=-1)
+        # Crossed helper-first, and ``basis_v`` with it: that pins this frame's
+        # handedness against the SIGN of the plane normal. Any orthonormal pair
+        # spanning the plane would do -- nothing visible depends on which one --
+        # but this is the frame the edge coverage integral is evaluated in, so
+        # its sign decides how a partly covered pixel rounds. Deriving it as
+        # ``cross(normal, helper)`` tied it to the normal, and re-signing that
+        # normal -- so a flat shape faces the viewer, as DEFAULT_BASIS says a Mob
+        # does -- re-rounded scattered antialiased pixels on every circuit and
+        # every glyph: measured at up to 58 channel values over ~25 isolated
+        # high-contrast pixels a frame, with no outline moved and no fill
+        # inverted. Written this way, the two negations cancel exactly (IEEE
+        # subtraction is antisymmetric, so ``cross(a, b)`` is the exact negation
+        # of ``cross(b, a)``) and every baseline still holds byte for byte --
+        # including the CUDA ones, which no CPU machine can regenerate.
+        basis_u = F.normalize(torch.cross(helper, normals, dim=-1), p=2, dim=-1)
+        basis_v = torch.cross(basis_u, normals, dim=-1)
 
         segment_lengths = (
             (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)

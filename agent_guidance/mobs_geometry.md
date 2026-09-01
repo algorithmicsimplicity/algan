@@ -107,6 +107,7 @@ sign, and each one is commented where it sits:
 | Site | What it derives |
 | :--- | :--- |
 | `surface.py: compute_grid_vertex_normals` | grid vertex normals — returns `+cross`, not `-cross` |
+| `bezier_circuit.py: _circuit_location_and_basis` | a 2-D shape's plane normal — `-cross(row 0, row 1)`, so the face it presents is OUTWARD |
 | `shapes_3d.py: Cylinder._move_between_points` | `forward = right x up`, the right-handed frame every Mob is built with |
 | `neural_net.py` (batched idle) | the same frame again, batched — the two must agree, and `test_neural_net_idle.py` is what says so |
 | `shapes_3d.py: _CapDisc._sweep_faces` | which way a cap's fan winds to face `direction` |
@@ -135,22 +136,44 @@ light baked geometry by normals turned away from it. That is the shape of the bu
 `(RIGHT, UP, INWARD)` default caused here, and it is why an imported glTF model needs no
 adjusting: its front faces +z, and so does a Mob's.
 
-### Two things the flip left inconsistent
+### A 2-D circuit's frame, and what its sign drags with it
 
-A **2-D circuit** derives its own frame from its control points
-(`bezier_circuit.py: _circuit_location_and_basis`), and row 2 of that frame is
-`cross(row 0, row 1)` — a cross product the flip never re-signed. Its control points do not
-move when the world mirrors in z (they are in the xy plane), so the normal it yields did not
-mirror with everything else. Measured on all three revisions, the NUMBER never moved:
-`Square`, `Circle` and `Triangle` have carried `(0, 0, -1)` throughout. What moved is what
-that vector is called — it was `OUTWARD`, at the viewer, before the flip and is `INWARD`
-after it — so a flat shape now states that it faces **away**. (`Text` is not one of these:
-its own basis is the Mob default, its glyphs carrying the circuit frames, so it faces
-`OUTWARD` with every other Mob.) Nothing visible depends on it — a circuit is `two_sided`, so `_sided_shading_normal` turns the normal toward
-whoever is looking — but it is the one place a Mob does not face the way `DEFAULT_BASIS` says
-it does. Re-signing it is not a one-liner: row 1 is `cross(row 2, row 0)`, so the plane
-normal's sign also sets the in-plane frame the texture grid and the analytic-AA edge
-parameterisation are laid out along.
+A circuit derives its own frame from its control points, so the flip could not reach it: its
+points do not move when the world mirrors in z (they are in the xy plane), and
+`cross(row 0, row 1)` follows the order they were authored in. Measured across the flip the
+NUMBER never moved — `Square`, `Circle` and `Triangle` carried `(0, 0, -1)` before it and
+after — but what that vector is *called* did, from `OUTWARD` to `INWARD`, which left a flat
+shape stating that it faced away from the camera it was drawn in front of. The cross is
+therefore **negated** (and the synthesized branch, for a collinear path, turns the other way
+round to agree), so every 2-D shape now presents `OUTWARD` like every other Mob.
+
+Row 1 comes with it — it is `cross(row 2, row 0)`, and the frame stays right-handed — so an
+upright shape's own up is now `UP` rather than `DOWN`. Three things read that row, and all
+three had to be looked at:
+
+* **`wave_color`** defaults its direction to the Mob's own up, so a default wave on a 2-D
+  shape now runs bottom to top, which is what its docstring always claimed.
+* **`set_color_by_image`** flips the picture's rows, exactly as `mesh.image_to_texture_map`
+  does for a surface and for the same reason: `v` runs UP the frame while an image's rows run
+  down it. The contract is the picture's top-left corner at the frame's top left — asserted in
+  world coordinates now (`test_circuit_texture_grid.py`), because the old index-only assertion
+  could not see the picture turn over.
+* **The texture grid's texel positions.** A single-sample axis puts its one texel at the
+  **-1 end** of the span rather than at its centre, so flipping the row moved it from the
+  frame's top-left corner to its bottom-left. Nothing samples it for colour (one texel is one
+  flat colour), but `wave_color` reads each part's position from it, so every glyph's lag in a
+  text fade moved a fraction of a wave. That is the whole pixel cost of this change, and it is
+  why the baselines were regenerated. Placing a lone sample at the centre — which is already
+  what `get_base_grid` documents for the `(u, v)` domain, `0.5` — would make that position
+  independent of the row's sign, and is the obvious follow-up.
+
+The **analytic-AA plane frame** (`primitives.py`) is *not* one of the three: it is an
+arbitrary orthonormal pair spanning the plane, and it is now derived helper-first so that its
+handedness does not track the normal's sign. Deriving it from the normal meant re-signing that
+normal re-rounded scattered antialiased pixels on every circuit and every glyph (measured at
+up to 58 channel values) for no visible gain.
+
+### One thing the flip left inconsistent
 
 A **polyhedron's** faces are re-wound by `orient_faces_outward`, whose signed-volume test is
 the ordinary right-hand-rule one, so `cross(v1-v0, v2-v0)` on a polyhedron triangle points
