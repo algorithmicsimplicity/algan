@@ -143,7 +143,7 @@ def test_pixel_answers_without_holding_the_request_open(viewer):
     payload = {"pending": True}
     while payload.get("pending") and time.monotonic() < deadline:
         started = time.monotonic()
-        payload = fetch(viewer, "/api/pixel?frame=0&x=10&y=10")
+        payload = fetch(viewer, "/api/fragments?frame=0&x=10&y=10")
         # Whatever the answer, it has to come back promptly. The wait is 3s;
         # allow generously for a loaded CI box without allowing a real block.
         assert time.monotonic() - started < 60, "the pixel route blocked"
@@ -153,13 +153,13 @@ def test_pixel_answers_without_holding_the_request_open(viewer):
     # Answered once, it is cached, so asking again is free rather than another
     # capture-armed render.
     again = time.monotonic()
-    repeat = fetch(viewer, "/api/pixel?frame=0&x=10&y=10")
+    repeat = fetch(viewer, "/api/fragments?frame=0&x=10&y=10")
     assert time.monotonic() - again < 30
     assert repeat == payload
 
 
 def test_pixel_outside_the_frame_is_refused_not_rendered(viewer):
-    payload = fetch(viewer, "/api/pixel?frame=0&x=9999&y=9999")
+    payload = fetch(viewer, "/api/fragments?frame=0&x=9999&y=9999")
     assert payload["available"] is False
     assert "outside" in payload["reason"]
 

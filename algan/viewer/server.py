@@ -8,16 +8,16 @@ display.
 
 Routes:
 
-``GET /``                       the page
-``GET /static/<name>``          its script and stylesheet
-``GET /api/state``              duration, frame rate, size, what is cached
-``GET /frame/<n>.png``          one rendered frame, rendering it if need be
-``GET /api/hierarchy``          the Scene's root nodes
-``GET /api/children?node=``     one node's children
-``GET /api/attrs?node=&frame=`` one node's animatable attributes
-``GET /api/pixel?frame=&x=&y=`` the fragment list behind one pixel
-``POST /api/resolution?name=``  re-render everything at another resolution
-``POST /api/shutdown``          stop serving
+``GET /``                           the page
+``GET /static/<name>``              its script and stylesheet
+``GET /api/state``                  duration, frame rate, size, what is cached
+``GET /frame/<n>.png``              one rendered frame, rendering it if need be
+``GET /api/hierarchy``              the Scene's root nodes
+``GET /api/children?node=``         one node's children
+``GET /api/attrs?node=&frame=``     one node's animatable attributes
+``GET /api/fragments?frame=&x=&y=`` the fragment list behind one pixel
+``POST /api/resolution?name=``      re-render everything at another resolution
+``POST /api/shutdown``              stop serving
 """
 
 from __future__ import annotations
@@ -83,7 +83,16 @@ class _Handler(BaseHTTPRequestHandler):
                 if rows is None:
                     return self._error(HTTPStatus.NOT_FOUND, "no such node")
                 return self._json(rows)
-            if route == "/api/pixel":
+            # Not ``/api/pixel``, however much it wants to be. "pixel" is the
+            # canonical tracking-pixel keyword, and EasyPrivacy -- which uBlock
+            # Origin, Adblock Plus and Ghostery all ship by default -- carries
+            # generic ``/pixel?`` rules that match on the path alone, host
+            # irrelevant, so a page served from 127.0.0.1 is filtered like any
+            # other. The extension cancels the request before it is sent, the
+            # page sees a bare ``TypeError``, and the reported symptom is that
+            # inspection hangs for eight seconds (the client's retry ladder) and
+            # then fails with a network error no server log can explain.
+            if route == "/api/fragments":
                 return self._json(
                     self.session.pixel(
                         int(_one(query, "frame", "0")),

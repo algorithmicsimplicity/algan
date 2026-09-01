@@ -249,7 +249,9 @@ async function inspect(x, y) {
   showPixelColour(x, y);
   const target = el("fragments");
   const frame = state.frame;
-  const url = `/api/pixel?frame=${frame}&x=${x}&y=${y}`;
+  // ``/api/fragments``, not ``/api/pixel``: content blockers ship generic
+  // ``/pixel?`` rules that match the path alone, and localhost is not exempt.
+  const url = `/api/fragments?frame=${frame}&x=${x}&y=${y}`;
   target.innerHTML = `<p class="empty">Reading fragments…</p>`;
   try {
     let data = await getJSONPatiently(url);
