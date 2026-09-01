@@ -13,6 +13,7 @@ from __future__ import annotations
 import pathlib
 
 import manim as mn
+import numpy as np
 import pytest
 import torch
 
@@ -227,3 +228,36 @@ def test_manim_generated_svgs_stay_keyed_on_their_content_addressed_basename():
         assert svg_cache._svg_content_id(user_svg).startswith("logo.svg:")
     finally:
         user_svg.unlink()
+
+
+def test_a_cache_hit_reproduces_glyph_geometry_bit_for_bit(isolated_svg_cache):
+    """A replayed recipe is the same bits as the parse it stands in for.
+
+    ``test_tex_survives_a_cache_hit`` proves the *structure* survives; this is
+    the half that a render can see. Glyph outlines meet the rasterizer through
+    analytic-AA coverage, so a few ULPs of control-point position move whole
+    channel values wherever a coverage sample flips side of an edge -- which is
+    how the sibling tessellation cache's origin bug showed up as an 18-channel
+    cold-vs-warm split in ``text_and_media``. Nothing may separate the cold
+    parse from the warm replay, in-process memo or disk.
+    """
+
+    def glyph_points(mob):
+        family = list(mob.family_members_with_points())
+        assert family, "the fixture produced no glyphs"
+        return np.concatenate([np.asarray(part.points) for part in family])
+
+    cold = glyph_points(mn.MathTex(r"\frac{a^2}{b}+\sqrt{x}"))
+    assert svg_cache._MEM_CACHE, "the cold parse was not cached"
+
+    warm_from_memo = glyph_points(mn.MathTex(r"\frac{a^2}{b}+\sqrt{x}"))
+
+    svg_cache._MEM_CACHE.clear()
+    warm_from_disk = glyph_points(mn.MathTex(r"\frac{a^2}{b}+\sqrt{x}"))
+
+    for label, warm in (("memo", warm_from_memo), ("disk", warm_from_disk)):
+        assert warm.shape == cold.shape, f"{label} replay changed the glyph count"
+        assert np.array_equal(warm, cold), (
+            f"the {label} replay differs from the cold parse by "
+            f"{np.abs(warm - cold).max():.3e}"
+        )

@@ -368,18 +368,32 @@ ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest tests/path_traced -
 These variables are read by the harnesses rather than by the package, so
 `import algan` warns that it does not recognise them. That is expected.
 
-**Never baseline the first render on a fresh machine — render twice and keep
-the second.** The first run of a scene containing `Tex`/`MathTex` populates the
-persistent Manim SVG geometry cache (`algan_cache/`), and its glyph
-antialiasing is not what every subsequent run produces. Measured while
-re-baselining `text_and_media` on a fresh container: the cold run differed from
-the two warm runs after it by up to **18 channel values** across 100 of 182
-frames — nine times the tolerance — confined to `MathTex` glyph edges, while
-runs two and three were byte-identical to each other and the warm output sat
-closer to the CUDA baseline than the cold one did. Baseline the cold render and
-the suite fails on the very next run, on the same machine, for no reason anyone
-would think to look for. The other five scenes were bit-stable cold-to-warm, so
-this is specifically a Tex-geometry-cache effect.
+**A cold cache no longer renders differently from a warm one.** It used to: the
+first run of a scene containing `Tex`/`MathTex` populates the persistent
+geometry caches under `algan_cache/`, and the tessellation cache stored tile
+coordinates relative to one origin and added a *different* one back on load, so
+a glyph tessellated cold and the same glyph replayed from the cache were not the
+same bits. Measured while re-baselining `text_and_media` on a fresh container at
+the time: the cold run differed from the two warm runs after it by up to **18
+channel values** across 100 of 182 frames — nine times the tolerance — confined
+to `MathTex` glyph edges, because analytic-AA coverage turns a few ULPs of
+vertex position into whole channel values wherever a coverage sample flips side
+of an edge. That was fixed in `TriangulatedBezierCircuit`: the two sides now
+agree on the origin, and the cold path replays its own save/load round trip so a
+freshly tessellated glyph and a cached one are the same bits rather than the
+same to within float32 rounding. `tests/unit_tests/test_tessellation_cache.py`
+pins both halves.
+
+Re-measured since, on Linux/CPU, with `~/.algan/cache`,
+`tests/full_renders/algan_cache`, the Taichi kernel cache, the dvisvgm cache and
+the fontconfig cache all deleted first: `text_and_media` rendered **byte-identical
+across a cold run and the two warm runs after it**, all 182 frames, max channel
+difference 0. The round-trip replay is still doing real work — instrumenting the
+same scene shows all 6 of its tessellation round trips are inexact in float32,
+by up to 1.5e-8 — which is exactly the margin the fix removes. So baselining the
+first render on a fresh machine is fine; if you ever see a cold-vs-warm split
+again, it is a regression in one of those two caches, not a fact of life, and
+the tessellation and `manim_svg` cache tests are where to look.
 
 Frames are compared channel-wise with a tolerance of 2 by the
 `assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
