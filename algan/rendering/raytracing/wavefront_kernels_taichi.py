@@ -30,6 +30,7 @@ from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
 )
+from algan.rendering.raytracing.glossy_prefilter_taichi import ACC_GEO as _ACC_GEO
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DIST as _GL_ROW_DIST,
 )
@@ -1600,6 +1601,7 @@ def wf_composite_accum_sparse(
         ray_offset: int, pixel_idx: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(),
         tonemapping: ti.template(), tonemap_exposure: ti.f32,
+        geo_cov: ti.template(),
         out: ti.types.ndarray()):
     """Composite compact accumulator rows at their real local pixels.
 
@@ -1610,6 +1612,24 @@ def wf_composite_accum_sparse(
     prefilled background IS their final value; under an in-kernel tonemap
     the sheet route pairs this with :func:`wf_finalize_uncovered`, which
     owes every untouched pixel ``finalize(bg)``.
+
+    ``geo_cov`` (compile-time) turns on the display-referred coverage resolve.
+    The blend below is linear and the display transform comes later, so a
+    channel whose radiance is above the display range keeps its clipped value
+    at every coverage: a 60%-covered pixel of a material at R = 1.85 still
+    holds R > 1 and shows the same 255 as the interior, while its unclipped
+    channels fall with coverage -- the fringe changes hue instead of fading,
+    which is the saturated rim on an over-range silhouette. What a
+    supersampled render answers there is the area average of the *displayed*
+    colour, and for the covered part that is at most its own area: clamping
+    the premultiplied geometry to ``area`` reproduces it exactly. Only the
+    geometric residual (``ACC_GEO``) licenses that clamp -- it is an area, so
+    the covered and uncovered parts are disjoint regions of the pixel and each
+    may be clamped on its own. A pixel whose leftover is reflected or
+    transmitted throughput deposits nothing there, keeps ``geo == 0`` and
+    takes the plain blend, because those parts are superimposed on the same
+    area and only their SUM may be clamped. A fully covered pixel has
+    ``geo == 0`` as well, so its over-range colour reaches bloom unclamped.
     """
     pixels_per_frame = width * height
     for r in range(pix_accum.shape[0]):
@@ -1620,10 +1640,24 @@ def wf_composite_accum_sparse(
         weight = ti.math.vec4(
             pix_accum[r, 4], pix_accum[r, 5], pix_accum[r, 6], 0.0)
         weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
+        # The covered area, as a display-range ceiling on what the geometry
+        # may contribute. 255.0 (no ceiling) wherever the resolve deposited no
+        # geometric residual, which is every pixel on the plain route.
+        cap = 255.0
+        if ti.static(geo_cov):
+            geo = pix_accum[r, _ACC_GEO]
+            if geo > 0.0:
+                cap = (1.0 - geo) * 255.0
         csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
+            acc = pix_accum[r, ci] * 255.0
+            if ti.static(geo_cov):
+                # Colour only: channel 3 is the authored glow lane, not a
+                # radiance the display clips.
+                if ti.static(ci < 3):
+                    acc = ti.min(acc, cap)
+            csum[ci] = acc + weight[ci] * bg
         color_final = finalize_pixel_color(
             csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):

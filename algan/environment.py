@@ -89,6 +89,7 @@ _HARNESS_VARIABLES = (
 #: fails a test rather than silently rendering with the wrong value.
 #: Alphabetical.
 _IMPORT_TIME_VARIABLES = (
+    "ALGAN_AA_DISPLAY_RESOLVE",
     "ALGAN_AMBIENT_STRENGTH",
     "ALGAN_AMBIENT_STRENGTH_LINEAR",
     "ALGAN_ANALYTIC_AA",

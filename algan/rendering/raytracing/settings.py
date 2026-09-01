@@ -1824,6 +1824,30 @@ def set_sheet_shell_ceiling_kernel(enabled):
 # minification (no mip chain).
 analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
+# Resolve a partially covered pixel in DISPLAY-referred terms rather than
+# purely in linear HDR. The composite blend is linear and the display
+# transform (``clamp`` then the OETF, or a tonemap curve) runs after it, so a
+# channel whose radiance is above the display range carries no coverage
+# information at all: at ORANGE under this package's own example lighting the
+# cone's red is 1.85, and a 60%-covered silhouette pixel still holds 1.11 and
+# shows the same 255 as the interior while its green and blue fall with
+# coverage. The fringe changes HUE instead of fading -- a saturated, darker
+# rim along every over-range silhouette, which is the artifact this fixes.
+# Measured over the six full-render scenes, 1.45% of channels are above the
+# display range, so this is not a corner case.
+#
+# What it does: clamp the geometry's premultiplied contribution to the pixel
+# area it actually covers, which is exactly the area average of the displayed
+# colour a supersampled render produces (verified against a 6x render of
+# solids_and_camera: the cone's silhouette goes from 73 channels off by more
+# than 25 to none). It applies only where the leftover weight is a genuine
+# AREA -- ``sheet_resolve_taichi`` deposits that separately -- and only when
+# the batch is entirely opaque, because a transmissive or reflective leftover
+# is superimposed on the covered area rather than beside it and only the SUM
+# of such parts may be clamped. Everything else keeps the plain linear blend,
+# so this is byte-inert on a scene with no over-range silhouette.
+aa_display_resolve = env_flag("ALGAN_AA_DISPLAY_RESOLVE", True)
+
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
 # edge functions ``_ss_pixel`` already evaluates, normalised by the edge lengths
 # in columns 10:12 of the projection table. Triangles need a seam rule that

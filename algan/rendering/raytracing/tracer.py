@@ -2730,6 +2730,26 @@ def raytrace_render_wavefront(
             if fragment_capture.is_armed():
                 fragment_capture.capture(coverage, merged, time_start, width, height)
             t_val_sparse = _get_tonemap_t_val()
+            # Display-referred coverage resolve (settings.aa_display_resolve).
+            # The clamp it applies is only sound where a pixel's leftover
+            # weight is a pure AREA, so every way of making it something else
+            # turns it off for the whole batch: any translucent, transmissive
+            # or refractive material folds transmittance into that weight, and
+            # a texture whose alpha the builder could not settle may do the
+            # same. (Reflection does too, but per pixel rather than per batch:
+            # a bounced primary deposits no geometric residual, so those
+            # pixels opt themselves out.) It also needs the linear frame
+            # buffer -- under an in-kernel tonemap the composite's output is
+            # already display-referred and the clamp would be applied twice.
+            geo_cov_sparse = int(
+                bool(rt_settings.aa_display_resolve)
+                and t_val_sparse == 3
+                and not merged.get("has_any_translucent")
+                and not merged.get("has_transmissive")
+                and not merged.get("has_refractive")
+                and not merged.get("has_refl_transparent")
+                and not merged.get("has_uncertain_texture_alpha")
+            )
             with _stage("wavefront:   - sparse setup"):
                 if t_val_sparse != 3:
                     # In-kernel tonemap on the sparse route (sheet unification,
@@ -2813,7 +2833,7 @@ def raytrace_render_wavefront(
                 # and a tile that spends every free byte on it has nothing left for
                 # the wide one.
                 pix_accum_rows, pix_accum_cols = (
-                    (2, GL_ROW_WIDTH) if gl_active else (1, 7)
+                    (2, GL_ROW_WIDTH) if gl_active else (1, 8)
                 )
                 sparse_primary = _auto_primary_per_tile(
                     memory,
@@ -3120,6 +3140,7 @@ def raytrace_render_wavefront(
                                     pix_accum[a:b],
                                     t_val_sparse,
                                     float(rt_settings.tonemap_exposure),
+                                    geo_cov_sparse,
                                     out,
                                 )
                                 covered_start = part_end
@@ -3152,6 +3173,7 @@ def raytrace_render_wavefront(
                             pix_accum,
                             t_val_sparse,
                             float(rt_settings.tonemap_exposure),
+                            geo_cov_sparse,
                             out,
                         )
                         memory.set_pointers(state_ptrs)

@@ -377,6 +377,41 @@ post-processing, where the shipped pipeline already prefers it
 (tonemap-last). The `_get_tonemap_t_val() == 3` condition disappears from
 path selection; a non-default tonemap changes post, not the resolve.
 
+**AND THAT COSTS THE COVERAGE ON AN OVER-RANGE CHANNEL** (found 2026-09-01,
+`aa_display_resolve`). The blend P6 writes is linear and the display transform
+runs at the byte write, so a channel above the display range comes out clipped
+at every coverage: with `tonemapping` off (the default, a bare `clamp`) a
+material at R = 1.85 — ORANGE under the 1.55 of light the shipped example
+scenes carry — still holds 1.11 at 60% coverage and shows the interior's 255,
+while its unclipped channels fall with coverage. The fringe changes HUE rather
+than fading: a saturated, darker rim along every over-range silhouette, and a
+bright seam along the interior creases §4.7's shading split made siblings of.
+Measured over the six full-render scenes, 1.45% of channels are above the
+display range, so this is not a corner case.
+
+What a supersampled render answers is the area average of the DISPLAYED
+colour, and the composite can reproduce it exactly by clamping the geometry's
+premultiplied contribution to the area it covers. The area is the part that
+needs care: a pixel's leftover weight is not one, it is background
+TRANSMITTANCE, and reflection and transmission both put weight there while
+occupying the same area the geometry covers, where only the SUM may be
+clamped. So the resolve deposits the geometric share separately (`ACC_GEO`,
+column 7 of the plain accumulator row), and only from a primary that retired
+without bouncing — the one case where nothing but sample visibility ever
+touched its weight. A bounced primary deposits nothing, its pixel reads
+`geo == 0`, and the composite falls back to the plain linear blend; so does
+every pixel of a batch carrying translucent, transmissive or refractive
+geometry, which `tracer.py` gates off wholesale. A fully covered pixel also
+has `geo == 0`, which is what keeps its over-range colour reaching bloom
+unclamped — bloom reads this buffer, and clamping there would dim the halo of
+every emitter authored above the display range.
+
+Not covered, and visible as a residual: a crease whose pixel the sheets
+partition exactly (`geo == 0`) still blends its two faces in linear and clips
+their sum. Fixing that means clamping each sheet's contribution to its own
+claim inside P5, which is a bigger change than this one and wants its own
+measurement.
+
 4.9 Continuations, shadows, and the identity items that stay live
 ------------------------------------------------------------------
 Reflective/refractive sheets spawn continuations weighted by their visible

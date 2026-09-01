@@ -48,6 +48,16 @@ _LOBE_CORE_SIGMA = 0.6
 _LOBE_HALO_SIGMA = 1.8
 _LOBE_CORE_WEIGHT = 0.6
 
+# Column of a PLAIN accumulator row (``pix_accum[r]``) holding the pixel's
+# geometric background residual: the fraction of the pixel area no sheet
+# covered, deposited only by a primary that retired without bouncing (see
+# sheet_resolve_taichi's retire). Columns 0..6 are the premultiplied color and
+# the total leftover weight; this is the one column past them, which is why the
+# plain row is eight wide. On the glossy layout the row is GL_ROW_WIDTH wide
+# and column 7 of the plain row is still this -- ``GL_ROW_DIST`` below is
+# column 7 of the *gloss* row, a different row of the same buffer.
+ACC_GEO = 7
+
 # Columns of a glossy accumulator row (``pix_accum[r + gloss_base]``). The
 # drain owns 0..7, the resolve owns 8..12; see DESIGN_glossy_prefilter.md §4.2.
 GL_ROW_DIST = 7

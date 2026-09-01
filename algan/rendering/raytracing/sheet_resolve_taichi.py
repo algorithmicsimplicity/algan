@@ -40,6 +40,7 @@ from algan.rendering.raytracing.arena_args_taichi import (
     arena_packed,
 )
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
+    ACC_GEO,
     GL_ROW_DP,
     GL_ROW_SIGMA_SCALE,
     GL_ROW_W,
@@ -1257,6 +1258,18 @@ def sheet_resolve_shade_arena(
                 rs_pix[r] = pixel
                 rs_int[r, 4] = r
             else:
+                # The GEOMETRIC share of the leftover, for the display-referred
+                # coverage resolve (``ACC_GEO``). A primary that never bounced
+                # only ever multiplied its weight by sample visibility, so what
+                # is left of it is the fraction of the PIXEL AREA no sheet
+                # covered -- an area, which the composite may clamp per part.
+                # A bounced ray's leftover is reflected/transmitted throughput
+                # through an area the geometry does cover, which must not be
+                # clamped that way, so it deposits nothing here and the
+                # composite falls back to the plain linear blend. Captured
+                # before the env fold below zeroes ``weight``.
+                if not bounced:
+                    ti.atomic_add(pix_accum[r, ACC_GEO], weight[0])
                 # Background-as-final-sheet (§4.5): on the sparse route the frame
                 # buffer is prefilled with the background — env map included, via
                 # env_background_prefill — and the composite multiplies the
