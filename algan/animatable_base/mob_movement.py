@@ -97,7 +97,7 @@ class MobMovementMixin:
         arc_normal
             Normal vector of the arc plane; the chord from the current location
             to ``point`` must be perpendicular to it. Defaults to ``OUTWARD`` (the
-            -z axis, out of the screen), which arcs in the screen plane.
+            +z axis, out of the screen), which arcs in the screen plane.
         recursive
             Whether to propagate the location change to descendants, preserving
             their offsets from this Mob. Defaults to True; False moves only this

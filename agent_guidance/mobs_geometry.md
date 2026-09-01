@@ -86,8 +86,18 @@ independently. `Text` packs its glyphs this way and a point cloud packs its dots
 
 `OUTWARD` is **+z** — out of the screen, towards the viewer — matching Manim, Three.js and
 glTF. `(RIGHT, UP, OUTWARD)` is therefore right-handed, and `rotate(90, OUTWARD)` turns
-anti-clockwise on screen. `DEFAULT_BASIS` is `(RIGHT, UP, INWARD)`: a Mob's *forward* axis
-faces the way the camera looks, into the scene, which is why it is not the identity.
+anti-clockwise on screen. `DEFAULT_BASIS` is `(RIGHT, UP, OUTWARD)` — the identity, and
+right-handed: a Mob's *forward* axis is the way it **faces**, so a new Mob faces the viewer,
+the way a glTF or Three.js model's front faces +z. A **camera**'s forward axis is the way it
+*looks*, so it is the one thing built the other way round, at `(RIGHT, UP, INWARD)`
+(`camera.py: _CAMERA_BASIS`) — which is what puts its screen between it and the origin.
+
+The pair matters to more than `get_forward_direction()`: geometry built from a Mob's own
+basis rows is built in a right-handed frame, and every such expression sweeps its
+cross-section from **minus** the forward row (`Cylinder.coord_function` and both
+`_cap_ring_offsets`), because the near side is where the forward axis points now. Get that
+sign wrong and the (u, v) handedness of every surface of revolution reverses, taking its
+vertex normals and its winding with it.
 
 Everything else follows from one fact: **a cross product is a pseudovector.** Mirror a scene
 in z and every ordinary vector mirrors with it, but `cross(a, b)` comes out *negated* as well
@@ -97,8 +107,7 @@ sign, and each one is commented where it sits:
 | Site | What it derives |
 | :--- | :--- |
 | `surface.py: compute_grid_vertex_normals` | grid vertex normals — returns `+cross`, not `-cross` |
-| `mesh.py: TriangleMesh` grid | the identity basis, not `DEFAULT_BASIS` (see below) |
-| `shapes_3d.py: Cylinder._move_between_points` | `forward = -(right x up)`, the frame every Mob is built with |
+| `shapes_3d.py: Cylinder._move_between_points` | `forward = right x up`, the right-handed frame every Mob is built with |
 | `neural_net.py` (batched idle) | the same frame again, batched — the two must agree, and `test_neural_net_idle.py` is what says so |
 | `shapes_3d.py: _CapDisc._sweep_faces` | which way a cap's fan winds to face `direction` |
 | `geometry.py: get_rotation_around_axis` | returns the **transpose** of Rodrigues, because every call site applies it to row vectors |
@@ -108,8 +117,9 @@ sign, and each one is commented where it sits:
 Anything that writes **world-space z as a literal** carries the convention too, and the
 built-in shapes are where that lives: `Sphere`/`Cone`/`Torus`'s `coord_function` (a surface's
 grid is world space — it is never mapped through the Mob's basis), and the vertex tables of
-`Prism`, `Tetrahedron`, `Octahedron`, `Icosahedron` and `Dodecahedron`. `Cylinder` needs
-none of it because it builds from `basis_rows`.
+`Prism`, `Tetrahedron`, `Octahedron`, `Icosahedron` and `Dodecahedron`. `Cylinder` writes no z
+literal because it builds from `basis_rows` — it carries the convention in the sign of its
+forward row instead, as above.
 
 A polygon is triangulated as a fan from `face[0]`, so re-winding a face must hold its first
 vertex in place — that is `_rewound`, and it is why the tables can be written outward-wound
@@ -117,12 +127,27 @@ without moving a single triangle. `ConvexHull3D` sorts Qhull's simplices into a 
 order for the same reason: the order the hull comes back in is a function of the input
 coordinates, and it reaches the renderer as triangle order.
 
-`TriangleMesh`'s grid takes the **identity** basis, not `DEFAULT_BASIS`: its corner positions
-are already baked into world space by the loader, so its basis is the transform applied from
-there on, and that starts as none. Authored normals are rotated by it while the positions are
-not, so a rotation there would light baked geometry by normals turned away from it.
+`TriangleMesh`'s grid needs no basis of its own: its corner positions are already baked into
+world space by the loader, so its basis is the transform applied from there on, and that
+starts as none — which `DEFAULT_BASIS`, being the identity, already is. Authored normals are
+rotated by it while the positions are not, so a basis that was a rotation (or a mirror) would
+light baked geometry by normals turned away from it. That is the shape of the bug the
+`(RIGHT, UP, INWARD)` default caused here, and it is why an imported glTF model needs no
+adjusting: its front faces +z, and so does a Mob's.
 
-### One thing the flip left inconsistent
+### Two things the flip left inconsistent
+
+A **2-D circuit** derives its own frame from its control points
+(`bezier_circuit.py: _circuit_location_and_basis`), and row 2 of that frame is
+`cross(row 0, row 1)` — a cross product the flip never re-signed. Its control points do not
+move when the world mirrors in z (they are in the xy plane), so the normal it yields did not
+mirror with everything else: `Square().get_normal()` is `INWARD`, i.e. a flat shape's stated
+face points **away** from the viewer, where before the flip it pointed at it. Nothing visible
+depends on it — a circuit is `two_sided`, so `_sided_shading_normal` turns the normal toward
+whoever is looking — but it is the one place a Mob does not face the way `DEFAULT_BASIS` says
+it does. Re-signing it is not a one-liner: row 1 is `cross(row 2, row 0)`, so the plane
+normal's sign also sets the in-plane frame the texture grid and the analytic-AA edge
+parameterisation are laid out along.
 
 A **polyhedron's** faces are re-wound by `orient_faces_outward`, whose signed-volume test is
 the ordinary right-hand-rule one, so `cross(v1-v0, v2-v0)` on a polyhedron triangle points

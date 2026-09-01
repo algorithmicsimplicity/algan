@@ -24,7 +24,8 @@ throughout and never reads ``IN`` or ``OUT`` (enforced by
 script's to keep or to shadow.
 
 ``ORIGIN`` is the zero vector, ``DEFAULT_BASIS`` the orientation every Mob
-starts with, and ``CAMERA_ORIGIN`` where a new Scene's camera sits.
+starts with -- facing ``OUTWARD``, towards the viewer -- and ``CAMERA_ORIGIN``
+where a new Scene's camera sits, looking ``INWARD`` at the Mobs that face it.
 
 Distances are in world units throughout; angles are in **degrees**, which is the
 convention that most often surprises users arriving from Manim.
@@ -47,11 +48,17 @@ IN = INWARD
 OUT = OUTWARD
 
 #: The orientation every Mob starts with: ``RIGHT``, ``UP`` and a forward axis
-#: that points **away** from the viewer, which is the direction a camera looks
-#: and so the direction a Mob facing the same way as the camera faces. This is
-#: what ``Mob.__init__`` defaults ``basis`` to, and what
+#: that points ``OUTWARD``, **towards** the viewer -- so a new Mob faces the
+#: camera, the way a model's front faces +z in Three.js and glTF. It is the
+#: identity matrix, and it is right-handed, like ``(RIGHT, UP, OUTWARD)``
+#: itself. This is what ``Mob.__init__`` defaults ``basis`` to, and what
 #: ``get_forward_direction()`` returns for an unrotated Mob.
-DEFAULT_BASIS = torch.stack((RIGHT, UP, INWARD))
+#:
+#: A camera is the one thing built the other way round: its forward axis is
+#: where it looks, so it starts at ``(RIGHT, UP, INWARD)`` -- ``_CAMERA_BASIS``
+#: in ``algan/rendering/camera.py`` -- and a Mob at the default orientation
+#: faces it.
+DEFAULT_BASIS = torch.stack((RIGHT, UP, OUTWARD))
 
 ORIGIN = torch.zeros_like(OUTWARD)
 CAMERA_ORIGIN = ORIGIN + OUTWARD * 7

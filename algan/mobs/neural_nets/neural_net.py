@@ -330,7 +330,9 @@ def _cylinder_coord_offsets(uv, radius, height, v_range0, v_range1, right, up, f
     uv[..., 1:] /= uv[..., 1:].amax()
     u = -(v_range0 + uv[..., :1] * (v_range1 - v_range0))
     v = uv[..., 1:]
-    return u.sin() * radius * right + (v - 0.5) * height * up + u.cos() * radius * fwd
+    # Minus ``fwd``, as in ``Cylinder.coord_function``: a Mob's forward axis
+    # points at the viewer, so the ring is swept from behind the tube.
+    return u.sin() * radius * right + (v - 0.5) * height * up - u.cos() * radius * fwd
 
 
 def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
@@ -424,9 +426,9 @@ def _update_idle_loops_batched(net, scalar_time, neurons, world_positions):
     sep = end_ - start_
     up_b = F.normalize(sep, p=2, dim=-1)
     right_b = get_orthonormal_vector(up_b)
-    # Negated exactly as in Cylinder._move_between_points, whose frame this
-    # replicates: DEFAULT_BASIS's forward is INWARD and RIGHT x UP is OUTWARD.
-    forward_b = -torch.cross(right_b, up_b, dim=-1)
+    # Right-handed exactly as in Cylinder._move_between_points, whose frame
+    # this replicates: DEFAULT_BASIS's forward is OUTWARD, and so is RIGHT x UP.
+    forward_b = torch.cross(right_b, up_b, dim=-1)
     mid = (start_ + end_) * 0.5
     d_mid = mid - syn_loc
     new_syn_loc = syn_loc + d_mid

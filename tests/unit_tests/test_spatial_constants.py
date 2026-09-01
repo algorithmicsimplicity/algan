@@ -40,9 +40,11 @@ def test_the_short_names_are_the_long_ones():
     # so OUTWARD is +z and the world basis (RIGHT, UP, OUTWARD) is right-handed.
     assert torch.equal(spatial.OUTWARD, torch.tensor((0.0, 0.0, 1.0)))
     assert torch.equal(torch.linalg.cross(spatial.RIGHT, spatial.UP), spatial.OUTWARD)
-    # A Mob's default orientation faces the way the camera looks, into the
-    # scene, so its forward axis is INWARD rather than OUTWARD.
-    assert torch.equal(spatial.DEFAULT_BASIS[2], spatial.INWARD)
+    # A Mob's default orientation faces the viewer, so its forward axis is
+    # OUTWARD and the whole basis is the (right-handed) identity. The camera is
+    # the one thing built facing the other way; see camera.py's _CAMERA_BASIS.
+    assert torch.equal(spatial.DEFAULT_BASIS[2], spatial.OUTWARD)
+    assert torch.equal(spatial.DEFAULT_BASIS, torch.eye(3))
 
 
 def test_all_four_names_are_star_exported():

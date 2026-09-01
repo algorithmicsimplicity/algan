@@ -685,9 +685,14 @@ class Cone(Surface):
         the cone.
         """
         phi = azimuth * 2 * PI
+        # Minus the forward basis, as in ``Cylinder._cap_ring_offsets`` and for
+        # the same reason: ``coord_function`` puts the ring's start at -z (the
+        # cone is built unrotated, so that is where the forward axis does NOT
+        # point), and the rim has to land on the body's own ring vertex for
+        # vertex -- ``test_normal_orientation.py`` is what says so.
         return (
             phi.sin() * self.radius * self.get_right_basis()
-            + phi.cos() * self.radius * self.get_forward_basis()
+            - phi.cos() * self.radius * self.get_forward_basis()
         )
 
     def coord_function(self, uv):
@@ -773,8 +778,9 @@ class Cylinder(Surface):
     v_range
         Azimuthal sweep around the cylinder's axis, **in radians** -- a
         Manim-parity domain, which is why it contradicts Algan's usual degrees.
-        The sweep starts on the side the cylinder's forward direction points at
-        (``INWARD``, for the default ``direction=UP``) and turns toward its left, so
+        The sweep starts behind the cylinder, opposite the side its forward
+        direction points at (so ``INWARD``, for the default ``direction=UP``), and
+        turns toward its left, so
         ``(0, PI)`` builds the ``LEFT`` half of the tube. Defaults to
         ``(0, 2 * PI)``, the closed tube. The extent *along* the axis comes from
         ``height``, which is where Manim also gets its ``u_range`` from.
@@ -957,7 +963,7 @@ class Cylinder(Surface):
         u = -(azimuth * 2 * PI)
         return (
             u.sin() * self.radius * basis_rows[..., 0, :]
-            + u.cos() * self.radius * basis_rows[..., 2, :]
+            - u.cos() * self.radius * basis_rows[..., 2, :]
         )
 
     def coord_function(self, uv):
@@ -973,10 +979,18 @@ class Cylinder(Surface):
         # ``-uv * pi * 2`` bit for bit: only a partial sweep moves a vertex.
         u = -(self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0]))
         v = uv[..., 1:]
+        # The ring is swept from MINUS the forward row (``INWARD``, for the
+        # default ``direction=UP``) and turns toward the tube's left, which is
+        # what makes ``(0, PI)`` the LEFT half. The sign is the Mob convention
+        # showing through: a Mob's forward axis points ``OUTWARD``, at the
+        # viewer, so a cross-section swept from ``+forward`` would start on the
+        # near side and run the other way round -- reversing the (u, v)
+        # handedness, hence the grid's normals and its winding, for every
+        # surface of revolution built off a basis.
         return (
             u.sin() * self.radius * basis_rows[..., 0, :]
             + (v - 0.5) * self.height * basis_rows[..., 1, :]
-            + u.cos() * self.radius * basis_rows[..., 2, :]
+            - u.cos() * self.radius * basis_rows[..., 2, :]
         )
 
     def normal_function(self, uv):
@@ -1060,17 +1074,17 @@ class Cylinder(Surface):
         with Sync(animation_manager=self.animation_manager):
             up_b = F.normalize(end - start, p=2, dim=-1)
             right_b = get_orthonormal_vector(up_b)
-            # forward = -(right x up) is the basis convention every other Mob is
-            # built with (look(), the default basis): DEFAULT_BASIS's forward is
-            # INWARD, and RIGHT x UP is OUTWARD now that OUTWARD is +z.
-            # get_orthonormal_vector promises orthogonality and determinism but
-            # says nothing about handedness, and the vector it returned here was
-            # the other one -- a mirrored frame, which turned the tessellated
-            # tube inside out: a Line3D's vertex normals and winding faced
-            # INWARD, so its lit side was its inside. Nothing showed while the
-            # flip in _prep_normal covered it; a transparent Line3D showed it
-            # plainly.
-            forward_b = -torch.cross(right_b, up_b, dim=-1)
+            # forward = right x up is the basis convention every other Mob is
+            # built with (look(), the default basis): DEFAULT_BASIS is
+            # right-handed, its forward being OUTWARD and RIGHT x UP being
+            # OUTWARD too. get_orthonormal_vector promises orthogonality and
+            # determinism but says nothing about handedness, and the vector it
+            # returned here was the other one -- a mirrored frame, which turned
+            # the tessellated tube inside out: a Line3D's vertex normals and
+            # winding faced INWARD, so its lit side was its inside. Nothing
+            # showed while the flip in _prep_normal covered it; a transparent
+            # Line3D showed it plainly.
+            forward_b = torch.cross(right_b, up_b, dim=-1)
             self.move_to((start + end) * 0.5)
             self._setattr_and_record_modification(
                 "basis",
