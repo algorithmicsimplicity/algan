@@ -858,7 +858,27 @@ def _bvh_deferral_eligible(scene):
     positive here costs a late build, never a wrong image.
     """
     _rts = SETTINGS.raytracing
-    if not (_rts.bvh_defer and _rts.hybrid_raster):
+    if not _rts.bvh_defer:
+        return False
+    # The sheet route is what resolves primaries without a tree, so every
+    # switch that vetoes it outright (``tracer.analytic_raster_route_active``)
+    # sends the batch to the classic wavefront, which traverses for every
+    # primary ray. All of them are readable here, so a settings-driven
+    # fallback -- ``analytic_aa=False``, the reference arm for judging a
+    # sheet-resolve change, most of all -- is planned for rather than
+    # discovered mid-render: its trees are built on the prefetch worker with
+    # the rest of the merge and uploaded with it, instead of stalling the
+    # render and being re-homed into the arena afterwards. The route's
+    # remaining vetoes are scene- or camera-dependent and stay runtime-only.
+    if not (
+        _rts.hybrid_raster
+        and _rts.analytic_aa
+        and _rts.sheet_resolve
+        and _rts.analytic_aa_run
+        and _rts.raster_sparse_coverage
+        and _rts.raster_empty_skip
+        and _rts.raster_covered_shade
+    ):
         return False
     if int(_rts.samples_per_pixel) > 1 or _rts.shadows or _rts.inplace_aa:
         return False
@@ -981,7 +1001,43 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
             )
 
 
-def build_deferred_bvhs(merged):
+#: The merged-scene keys ``build_deferred_bvhs`` writes. Re-homed into the
+#: arena as one group so an opaque tree aliased to its main tree stays aliased.
+_DEFERRED_BVH_KEYS = ("tri_bvh", "tri_opaque_bvh", "bez_bvh", "bez_opaque_bvh")
+
+
+def rehome_deferred_bvhs_to_arena(merged, memory):
+    """Move on-demand-built STBVHs into the arena the rest of the scene lives in.
+
+    The merged scene is uploaded as one ManualMemory allocation per dtype
+    (:func:`copy_merged_scene_to_arena`) and the widest kernels bind their
+    scene-indexed tables as offsets into that single buffer -- every array so
+    bound has to be a view of it (`arena_args_taichi`). A tree built by
+    :func:`build_deferred_bvhs` is an ordinary torch allocation made long after
+    that upload, so leaving it where the builder put it makes every one of
+    those launches raise ``ArenaBindingError``: ``t_leaf_prim`` in a different
+    allocation from the ``edge_accel`` bound beside it.
+
+    Copied at the arena's persistent (reverse) end, because these trees live
+    for the whole batch while this runs from inside a chunk. The caller
+    publishes the pointer reached so the per-chunk rewind and the render loop's
+    between-chunk restore hold the arena open exactly that far -- the same
+    treatment the batch-wide raster tables get (``tracer.rewind_to``).
+
+    Idempotent: a group already backed by ``memory`` is skipped, so a second
+    call after an out-of-memory retry costs nothing and copies nothing.
+    """
+    group = {
+        key: merged[key]
+        for key in _DEFERRED_BVH_KEYS
+        if isinstance(merged.get(key), STBVH)
+    }
+    if not group:
+        return
+    merged.update(_copy_merged_scene_to_arena(group, memory, persist=True))
+
+
+def build_deferred_bvhs(merged, memory=None):
     """Build the STBVHs a deferred batch skipped (see ``_finalize_bvhs``).
 
     Called by the tracer the moment anything actually needs a tree: shadows,
@@ -989,8 +1045,18 @@ def build_deferred_bvhs(merged):
     Monte Carlo path. Idempotent, and forces the tree kind recorded at merge
     time so the batch's placeholder and real trees always agree on the
     ``refit`` kernel template.
+
+    ``memory`` is the arena the merged scene was uploaded into; pass it so the
+    freshly built trees are re-homed there rather than left in the ordinary
+    torch allocations the builder returns
+    (:func:`rehome_deferred_bvhs_to_arena` says why that matters).
     """
     if not merged.get("bvh_deferred"):
+        # An out-of-memory retry re-enters here after the build itself
+        # succeeded and cleared the flag: the re-home may still be owed, and
+        # costs nothing once the trees are arena-backed.
+        if memory is not None:
+            rehome_deferred_bvhs_to_arena(merged, memory)
         return
     refit = bool(merged.get("bvh_deferred_refit"))
     num_frames = int(merged["num_frames"])
@@ -1062,6 +1128,8 @@ def build_deferred_bvhs(merged):
                 casts=casts,
             )
     merged["bvh_deferred"] = False
+    if memory is not None:
+        rehome_deferred_bvhs_to_arena(merged, memory)
 
 
 def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):

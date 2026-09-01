@@ -1022,6 +1022,32 @@ def _validate_render_capabilities(
     return plan
 
 
+#: Merged-scene key holding the arena reverse pointer this batch has allocated
+#: down to and must keep: the lowest (deepest) persistent allocation made from
+#: inside a chunk that still has to be readable in the next one. Read by
+#: ``rewind_to`` and by ``RenderLoopMixin.render_primitive_batch``. Published
+#: explicitly by whoever makes such an allocation rather than read off the
+#: arena, so an unrelated persistent allocation inside a chunk can never be
+#: retained by accident.
+ARENA_RETAINED_REVERSE_POINTER = "_arena_retained_reverse_pointer"
+
+
+def _retain_persistent(merged, memory):
+    """Publish the arena's current reverse pointer as batch-lived.
+
+    Lowers ``ARENA_RETAINED_REVERSE_POINTER`` to the pointer reached, so that
+    several publishers in one batch (the raster tables, a re-homed deferred
+    BVH build) each hold their own range open. A ``None`` arena means nothing
+    was allocated from one, so there is nothing to hold.
+    """
+    if memory is None:
+        return
+    reverse = memory.get_pointers()[1]
+    retained = merged.get(ARENA_RETAINED_REVERSE_POINTER)
+    if retained is None or reverse < retained:
+        merged[ARENA_RETAINED_REVERSE_POINTER] = reverse
+
+
 def _build_raster_tables(
     merged,
     memory,
@@ -1293,7 +1319,8 @@ def render_batch_raytraced(
     if merged.get("bvh_deferred") and int(samples_per_pixel) > 1:
         from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
 
-        build_deferred_bvhs(merged)
+        build_deferred_bvhs(merged, memory)
+        _retain_persistent(merged, memory)
     tri_bvh = merged["tri_bvh"]
     bez_bvh = merged["bez_bvh"]
     # A geometry type absent from the whole batch has only a placeholder BVH;
@@ -1526,13 +1553,17 @@ def render_batch_raytraced(
     launched_frames = []
 
     def rewind_to(pointers):
-        """Rewind the arena to ``pointers`` without reclaiming the batch-wide
-        raster tables.
+        """Rewind the arena to ``pointers`` without reclaiming what the batch
+        allocated persistently from inside a chunk.
 
-        ``_build_raster_tables`` allocates them at the arena's persistent
-        (reverse) end from inside the *first* chunk, caches them on ``merged``
-        -- which lives for the whole batch -- and publishes the reverse pointer
-        it reached. Every later chunk reads that cache instead of rebuilding.
+        Two things do that. ``_build_raster_tables`` allocates the batch-wide
+        raster tables at the arena's persistent (reverse) end from inside the
+        *first* chunk; ``build_deferred_bvhs`` re-homes an on-demand STBVH
+        build there (`scene_builder.rehome_deferred_bvhs_to_arena`). Both cache
+        on ``merged`` -- which lives for the whole batch -- and publish the
+        reverse pointer they reached through ``_retain_persistent``, so every
+        later chunk reads the cache instead of rebuilding.
+
         Restoring the reverse pointer to this chunk's entry value would hand
         their range back to the allocator while the cache still points into it,
         so the next chunk's forward allocations grow straight over the tables
@@ -1542,8 +1573,8 @@ def render_batch_raytraced(
         the render loop's own ``set_pointers`` nothing else allocates.
         """
         forward, reverse = pointers
-        if merged is not None and merged.get("_raster_tables") is not None:
-            retained = merged.get("_raster_tables_reverse_pointer")
+        if merged is not None:
+            retained = merged.get(ARENA_RETAINED_REVERSE_POINTER)
             if retained is not None:
                 reverse = min(reverse, retained)
         memory.set_pointers((forward, reverse))
@@ -2404,7 +2435,12 @@ def raytrace_render_wavefront(
         nonlocal tri_bvh, bez_bvh, t_bvh, bvh_refit
         from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
 
-        build_deferred_bvhs(merged)
+        # ``memory`` re-homes the built trees into the arena the rest of the
+        # merged scene lives in; without it the next launch to bind a BVH table
+        # through the arena raises ArenaBindingError (t_leaf_prim allocated
+        # somewhere other than the edge_accel beside it).
+        build_deferred_bvhs(merged, memory)
+        _retain_persistent(merged, memory)
         tri_bvh = merged["tri_bvh"]
         bez_bvh = merged["bez_bvh"]
         t_bvh = tri_bvh
@@ -2513,7 +2549,7 @@ def raytrace_render_wavefront(
                 width,
             )
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
-            merged["_raster_tables_reverse_pointer"] = memory.get_pointers()[1]
+            _retain_persistent(merged, memory)
 
     def _drain_sparse_secondary(
         active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis
@@ -2701,7 +2737,16 @@ def raytrace_render_wavefront(
         # Sparse hit records live at the arena's reverse end for the duration
         # of the window.  Coverage-sized ray pools are allocated/reset from the
         # forward end one compact slice at a time.
-        with memory.temp(clear_persist=True):
+        #
+        # ``persist_floor``: the bounce drain inside this scope can release a
+        # deferred BVH build (``_ensure_bvhs``), which re-homes the trees at the
+        # same reverse end and publishes the pointer. Those trees are cached on
+        # ``merged`` for the whole batch, so the scope's persist rewind has to
+        # stop short of them; everything else it allocates is still reclaimed.
+        with memory.temp(
+            clear_persist=True,
+            persist_floor=lambda: merged.get(ARENA_RETAINED_REVERSE_POINTER),
+        ):
             coverage = prepare_sparse_raster_coverage(
                 merged,
                 tri_screen,

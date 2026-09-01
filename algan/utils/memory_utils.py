@@ -577,9 +577,22 @@ class _RecordingScope:
 
 
 class TempMemoryContext:
-    def __init__(self, memory, clear_persist):
+    """Restore the arena pointers on exit.
+
+    ``clear_persist`` additionally rewinds the persistent (reverse) pointer to
+    its value at entry. ``persist_floor`` is a zero-argument callable returning
+    a reverse pointer that rewind must not cross, or ``None`` -- for the caller
+    that allocates something batch-lived at the persistent end from *inside*
+    the scope and needs it readable after the scope closes. It is read on exit,
+    not on entry, because that allocation happens during the block. Explicit
+    rather than inferred from the arena, so an unrelated persistent allocation
+    inside the scope is still reclaimed.
+    """
+
+    def __init__(self, memory, clear_persist, persist_floor=None):
         self.memory = memory
         self.clear_persist = clear_persist
+        self.persist_floor = persist_floor
 
     def __enter__(self):
         self.initial_pointer = self.memory.current_pointer
@@ -598,7 +611,11 @@ class TempMemoryContext:
             recorder.note_temp("pop")
         self.memory.current_pointer = self.initial_pointer
         if self.clear_persist:
-            self.memory.current_reverse_pointer = self.initial_reverse_pointer
+            reverse = self.initial_reverse_pointer
+            floor = self.persist_floor() if self.persist_floor is not None else None
+            if floor is not None:
+                reverse = min(reverse, floor)
+            self.memory.current_reverse_pointer = reverse
         # Never suppress an exception.  Pointer restoration is especially
         # important on the error path: callers use a temp scope around an
         # arena-backed operation and then retry a smaller frame window.
@@ -797,8 +814,8 @@ class ManualMemory:
         self.current_pointer = self.stack[-1]
         self.stack = self.stack[:-1]
 
-    def temp(self, clear_persist=False):
-        return TempMemoryContext(self, clear_persist)
+    def temp(self, clear_persist=False, persist_floor=None):
+        return TempMemoryContext(self, clear_persist, persist_floor)
 
     def scope(self, name, **params):
         """Label the enclosing region for memory calibration.

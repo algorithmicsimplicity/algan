@@ -55,6 +55,16 @@ list unchanged**. It splits the arguments, checks that every arena-bound one
 really is a slice of one allocation per dtype, and appends the buffers and
 tables. No launch site in the renderer changed when the kernels were converted.
 
+That check is on the whole kernel, not on one array: a table the merged scene
+owns and a table built later are bound side by side, so **anything built after
+``copy_merged_scene_to_arena`` has to be moved into the arena before it is
+passed to a converted kernel**. One thing is built that late -- a deferred
+STBVH build (``settings.bvh_defer``) skips the trees at merge and builds them
+mid-render -- and ``scene_builder.build_deferred_bvhs`` re-homes them for
+exactly this reason. Without that, the first launch to bind a BVH table raises
+here (``t_leaf_prim`` in a different allocation from the ``edge_accel`` beside
+it), and only on the scenes whose geometry families route them through it.
+
 Each module binds the launcher to a private name and gives the public name an
 ordinary ``def`` that delegates to it::
 

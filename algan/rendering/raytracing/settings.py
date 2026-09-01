@@ -537,9 +537,10 @@ def set_bvh_refit(enabled):
 # ~2.5s of build per batch on the MD bezier profile). Placeholder trees keep
 # the kernel ABI; scene_builder.build_deferred_bvhs builds the real trees on
 # demand the moment shadows, classic routing, an actually spawned continuation
-# ray, or the Monte Carlo path needs them -- so the rendered output is always
-# exactly what the eager build produces. ALGAN_BVH_DEFER=0 disables (for A/B
-# and validation).
+# ray, or the Monte Carlo path needs them, and re-homes them into the arena the
+# merged scene was uploaded into (the kernels bind their walk tables as offsets
+# into that one buffer) -- so the rendered output is always exactly what the
+# eager build produces. ALGAN_BVH_DEFER=0 disables (for A/B and validation).
 bvh_defer = env_flag("ALGAN_BVH_DEFER", True)
 
 

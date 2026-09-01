@@ -1511,16 +1511,21 @@ class RenderLoopMixin:
                         max(0, self.memory.max_pointer - chunk_base),
                     )
 
-                # The tracer's raster projection / bounds tables span the whole
-                # prepared batch, so it builds them once (on this first chunk)
-                # at the arena's persistent end and every later chunk reads
-                # them. Hold the reverse pointer open exactly that far -- the
-                # tables and nothing else -- so the per-chunk rewind below stops
-                # reclaiming what the next chunk is about to rebuild
-                # identically. Published by the tracer rather than read off the
-                # arena, so an unrelated persistent allocation inside a chunk
-                # can never be retained by accident.
-                retained = device_scene.get("_raster_tables_reverse_pointer")
+                # Some batch-wide data is allocated at the arena's persistent
+                # end from inside the first chunk and read by every later one:
+                # the tracer's raster projection / bounds tables, and the trees
+                # of a deferred STBVH build re-homed into the arena the merged
+                # scene lives in. Hold the reverse pointer open exactly that
+                # far -- those and nothing else -- so the per-chunk rewind below
+                # stops reclaiming what the next chunk still points into.
+                # Published by the tracer rather than read off the arena, so an
+                # unrelated persistent allocation inside a chunk can never be
+                # retained by accident.
+                from algan.rendering.raytracing.tracer import (
+                    ARENA_RETAINED_REVERSE_POINTER,
+                )
+
+                retained = device_scene.get(ARENA_RETAINED_REVERSE_POINTER)
                 if retained is not None and retained < render_pointers[1]:
                     render_pointers = (render_pointers[0], retained)
                     bytes_remaining = retained - render_pointers[0]
