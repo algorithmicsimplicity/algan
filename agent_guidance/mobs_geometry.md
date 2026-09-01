@@ -158,14 +158,18 @@ three had to be looked at:
   down it. The contract is the picture's top-left corner at the frame's top left — asserted in
   world coordinates now (`test_circuit_texture_grid.py`), because the old index-only assertion
   could not see the picture turn over.
-* **The texture grid's texel positions.** A single-sample axis puts its one texel at the
-  **-1 end** of the span rather than at its centre, so flipping the row moved it from the
-  frame's top-left corner to its bottom-left. Nothing samples it for colour (one texel is one
-  flat colour), but `wave_color` reads each part's position from it, so every glyph's lag in a
-  text fade moved a fraction of a wave. That is the whole pixel cost of this change, and it is
-  why the baselines were regenerated. Placing a lone sample at the centre — which is already
-  what `get_base_grid` documents for the `(u, v)` domain, `0.5` — would make that position
-  independent of the row's sign, and is the obvious follow-up.
+* **The texture grid's texel positions.** A single-sample axis used to put its one texel at
+  the **-1 end** of the span, so flipping the row moved it from the frame's top-left corner to
+  its bottom-left. Nothing samples it for colour (one texel is one flat colour), but
+  `wave_color` reads each part's position from it, so every glyph's lag in a text fade moved a
+  fraction of a wave — the whole pixel cost of the re-signing, and why those baselines were
+  regenerated. A lone sample now sits at the **centre** of its span, which is where
+  `get_base_grid` already reported it in `(u, v)` (`0.5`): the position no longer depends on
+  the sign of the rows it is laid out along, and a shape with one texel is ordered by where it
+  actually is rather than by a corner of its frame. Three places lay those texels out —
+  construction, `from_batches` (a pack must land on exactly the points its members would have)
+  and the refinement a wave runs — and they share `_texture_grid_offsets`, which is where the
+  rule lives. Changing one of them alone desyncs a packed `Text` from an unpacked one.
 
 The **analytic-AA plane frame** (`primitives.py`) is *not* one of the three: it is an
 arbitrary orthonormal pair spanning the plane, and it is now derived helper-first so that its

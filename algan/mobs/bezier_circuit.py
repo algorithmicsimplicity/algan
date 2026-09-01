@@ -124,6 +124,31 @@ def _extremal_control_point_index(dists, relative_tolerance=0.0):
     return int(torch.where(dists >= threshold, inds, dists.numel()).amin())
 
 
+def _texture_grid_offsets(samples, *, device=None, dtype=None):
+    """Sample offsets along one axis of a circuit's frame, spanning -1 to 1.
+
+    A single sample stands for the whole span, so it sits at the **centre** of
+    it -- which is where :meth:`~.BezierCircuitCubic.get_base_grid` reports it
+    too, at ``0.5``. ``torch.linspace(-1, 1, 1)`` is -1, the low END of the span,
+    which put a lone texel in a corner of the frame and left its world position
+    depending on the *sign* of the basis rows it is laid out along: re-signing
+    row 1 (which :func:`_circuit_location_and_basis` does, so that a flat shape
+    faces the viewer) then moved every glyph's texel clear across its own frame.
+    The colour is unaffected either way -- one texel is one flat colour, and the
+    renderer clamps the axis to it -- but ``wave_color`` reads each part's
+    position from here, so at a corner a text fade's per-glyph lag turned on a
+    convention, and a shape was ordered by its corner rather than by where it is.
+
+    All three places that lay out a circuit's texels share this: construction,
+    :meth:`~.BezierCircuitCubic.from_batches` (whose pack must land on exactly
+    the same points -- ``test_batched_bezier_mobs.py`` is what says so) and the
+    refinement a colour wave runs.
+    """
+    if samples < 2:
+        return torch.zeros(1, device=device, dtype=dtype)
+    return torch.linspace(-1, 1, samples, device=device, dtype=dtype) * (1 + 1e-5)
+
+
 def _circuit_location_and_basis(control_points):
     """Return the same local frame used by a standalone bezier circuit, plus
     whether its second in-plane axis had to be synthesized.
@@ -479,13 +504,8 @@ class BezierCircuitCubic(Mob):
             else:
                 height = max(int(texture_grid_height), 1)
 
-            # ``linspace(-1, 1, 1)`` is -1, so a single-sample axis puts its one
-            # texel at that end of the frame rather than in the middle. The
-            # renderer clamps the whole axis to it either way, so it is one
-            # color across the span regardless; what it does change is where
-            # ``wave_color`` reads the texel's position from.
-            a1 = torch.linspace(-1, 1, width).view(-1, 1, 1) * (1 + 1e-5)
-            a2 = torch.linspace(-1, 1, height).view(1, -1, 1) * (1 + 1e-5)
+            a1 = _texture_grid_offsets(width).view(-1, 1, 1)
+            a2 = _texture_grid_offsets(height).view(1, -1, 1)
             texture_grid_points = (a1 * first_basis + a2 * second_basis) + self.location
             texture_triangle_vertices = texture_grid_points
             self.grid_width = width
@@ -589,24 +609,17 @@ class BezierCircuitCubic(Mob):
             )
 
             texture_point_count = max(mob.num_texture_points, 1)
+            # The same offsets construction laid one member's grid out, so the
+            # pack lands on exactly the points the members would have.
+            axis_kwargs = {"device": locations.device, "dtype": locations.dtype}
             grid_locations = (
-                torch.linspace(
-                    -1,
-                    1,
-                    mob.grid_width,
-                    device=locations.device,
-                    dtype=locations.dtype,
-                ).view(1, 1, -1, 1, 1)
-                * (1 + 1e-5)
+                _texture_grid_offsets(mob.grid_width, **axis_kwargs).view(
+                    1, 1, -1, 1, 1
+                )
                 * bases[..., :3].unsqueeze(-2).unsqueeze(-2)
-                + torch.linspace(
-                    -1,
-                    1,
-                    mob.grid_height,
-                    device=locations.device,
-                    dtype=locations.dtype,
-                ).view(1, 1, 1, -1, 1)
-                * (1 + 1e-5)
+                + _texture_grid_offsets(mob.grid_height, **axis_kwargs).view(
+                    1, 1, 1, -1, 1
+                )
                 * bases[..., 3:6].unsqueeze(-2).unsqueeze(-2)
                 + locations.unsqueeze(-2).unsqueeze(-2)
             ).reshape(1, count * texture_point_count, 3)
@@ -720,9 +733,9 @@ class BezierCircuitCubic(Mob):
         location = self.location
 
         def offsets(size):
-            return torch.linspace(
-                -1, 1, size, device=location.device, dtype=location.dtype
-            ) * (1 + 1e-5)
+            return _texture_grid_offsets(
+                size, device=location.device, dtype=location.dtype
+            )
 
         first = self.basis[..., :3].unsqueeze(-2).unsqueeze(-2)
         second = self.basis[..., 3:6].unsqueeze(-2).unsqueeze(-2)
