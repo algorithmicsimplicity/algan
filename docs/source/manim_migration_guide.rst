@@ -198,6 +198,7 @@ A few Manim-parity surfaces keep Manim's radians on purpose. These take
 
 * ``RegularPolygon(start_angle=...)`` and ``Line(path_arc=...)``.
 * ``Wiggle(rotation_angle=...)``.
+
 The ``u_range`` / ``v_range`` parametric domains of
 :class:`~algan.mobs.shapes_3d.Sphere`, ``Cone``, ``Cylinder`` and ``Torus`` keep
 Manim's *names* but take Algan's **degrees**, so Manim's ``(0, PI)`` is
@@ -266,6 +267,7 @@ It sets four things, and each can be declined with a keyword:
        comes out byte-identical to Manim's.
    * - ``background``
      - Black, Manim's default.
+
 All three default to ``True``. Two extras default to ``False``:
 ``video_settings=True`` also switches the output to Manim's 1920x1080 at 60 fps,
 and ``shape_defaults=True`` makes Algan's *own* shapes (``Square``, ``Circle``,

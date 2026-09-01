@@ -214,11 +214,6 @@ class Mob(
 
     Attributes
     ----------
-    scale_coefficient : torch.Tensor
-        The Mob's size along its own right, up and forward axes, shape
-        ``(*, 3)``; ``(1, 1, 1)`` is unscaled. Derived from :attr:`basis`.
-        Note that ``scale`` is a *method*
-        (:meth:`~.Mob.scale`), not an attribute -- assigning to it raises.
     two_sided, closed_shell, casts_shadows, receives_shadows
         Plain (non-animatable) geometry declarations, documented individually
         below. All four are read once when the Mob is spawned, so they must be
@@ -1630,7 +1625,8 @@ class Mob(
         ``(1, 1, 1)`` is unscaled. Assigning to this resizes the Mob without
         rotating it, animated over the current context's duration (1 second by
         default); :meth:`~.Mob.scale` and :meth:`~.Mob.set_scale` are the usual
-        way to do that.
+        way to do that. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`),
+        not an attribute -- assigning to it raises.
         """
         return unsquish(self.basis, -1, 3).norm(p=2, dim=-1, keepdim=False)
 
