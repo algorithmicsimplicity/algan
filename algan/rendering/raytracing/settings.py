@@ -1675,9 +1675,11 @@ def set_sheet_positioned_depth(enabled):
 # whichever sheet sorted first. Ties and near-ties keep today's walk order.
 # Reflective materials veto the pixel: a reflective sheet can break the walk
 # before the winner claims, which would turn a mis-gated pixel into an unlit
-# one. Multi-sheet bands -- shade-class siblings and conflict-rank splits --
-# are exempt on BOTH sides: their band-pooled arithmetic writes occlusion once
-# and ignores slots, so gating a sibling would over-occlude.
+# one. Sheets that composite as a BAND -- shade-class siblings, and the
+# conflict-rank splits ``sheet_rank_pool`` pools -- are exempt on BOTH sides:
+# their band-pooled arithmetic writes occlusion once and ignores slots, so
+# gating a sibling would over-occlude. The exemption follows the compositing
+# group, so a rank split left as independent occluders is not exempt.
 sheet_sample_depth = env_flag("ALGAN_SHEET_SAMPLE_DEPTH", True)
 
 

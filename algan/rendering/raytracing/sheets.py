@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import torch
 
-from algan.environment import env_float
+from algan.environment import env_flag, env_float
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     band_class_groups,
@@ -141,6 +141,58 @@ FULL_DUST = 1e-3
 sheet_sample_depth_cede = min(
     1.0, max(0.0, env_float("ALGAN_SHEET_SAMPLE_DEPTH_CEDE", 0.25))
 )
+
+#: Composite a band's CONFLICT-RANK sub-bands as §4.4 siblings -- claiming
+#: additively against the same incoming visibility, occluding once by their
+#: summed factor -- wherever the band's own areas say it holds ONE layer.
+#:
+#: The rank split exists for geometry a ray genuinely crosses twice (see the
+#: fill-rule block in ``compact_sheets``), and there it must stay: two
+#: translucent layers attenuate per crossing. But the same key also fires on a
+#: SEAM. Adjacent triangles of one surface are supposed to partition the
+#: samples exactly -- ``raster_taichi``'s fixed-point top-left rule -- and they
+#: do wherever they share bit-identical vertices; where they do not (a
+#: T-junction between two adaptively diced patches, the camera-plane
+#: straddler's epsilon barycentric test, a fold tangency) they overlap by a
+#: sliver, one sample lands in both masks, and the later fragment is promoted
+#: to rank 1 over a dust-sized overlap.
+#:
+#: Walked as independent occluders those two sheets under-claim exactly as
+#: DESIGN_sheet_resolve.md §4.4 records for shading-class siblings: a band
+#: whose fragments cover 1.011 of the pixel occludes only 0.92 of it, and the
+#: deficit admits whatever is behind -- on ``solids_and_camera``'s Arrow3D, the
+#: white Line3D running inside the opaque red arrowhead, as a bright speck on
+#: the cone's shoulder. §4.4's arithmetic is what the band is owed: it commits
+#: the band's own exact area whatever the split.
+sheet_rank_pool = env_flag("ALGAN_SHEET_RANK_POOL", True)
+
+#: Most exact area a FULL-union band may hold and still count, for
+#: :data:`sheet_rank_pool`, as one layer the fill rule split over a seam.
+#:
+#: The other half of that test is the full union itself, and it is the half
+#: that carries the argument: a band owning every sub-pixel sample has nothing
+#: left to anti-alias, so the only question it still answers is how much it
+#: occludes -- its own exact area, which is what §4.4 commits. A PARTIAL union
+#: is excluded outright rather than by a looser threshold, because there area
+#: and sample count disagree by up to a whole sample cell for reasons that have
+#: nothing to do with layering: that disagreement IS a silhouette.
+#:
+#: This bound is then the overlap a seam is allowed: 1.05 lets a band's
+#: fragments overrun the pixel by 5% of its area, which a T-junction sliver or
+#: an epsilon-wide double claim does and a second layer does not. Measured
+#: against an ``analytic_aa=False`` supersampled reference on the frame the
+#: defect was found in (``solids_and_camera`` at 12.8 s), sweeping the bound
+#: over the pixels it moves:
+#:
+#:   1.01  0 pixels move -- the speck's own band is at 1.011
+#:   1.03  2 move, both strictly closer to the reference (39 -> 0, 1 -> 0)
+#:   1.05  5 move, 4 closer 1 further; summed error 47 -> 6
+#:   1.08  9 move, 4 closer 5 further; summed error 79 -> 51
+#:   1.10  12 move, 5 closer 6 further, 1 tied; summed error 91 -> 65
+#:
+#: so 1.05 keeps the whole win with headroom for a seam wider than this one's,
+#: and stops short of the band where the trade goes flat.
+sheet_rank_pool_layers = max(1.0, env_float("ALGAN_SHEET_RANK_POOL_LAYERS", 1.05))
 
 
 def resolve_pixel_reference(
@@ -662,6 +714,66 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
     return area, union, corr, split
 
 
+def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
+    """Which conflict-rank sub-bands composite as §4.4 siblings of one band.
+
+    Returns ``(n_group, group_of_cid)``: the compositing-group count and, per
+    sub-band (per ``cid``), the group it claims into. A group is one whole band
+    where that band covers the pixel once -- full sample union, exact area
+    within :data:`sheet_rank_pool_layers` -- and the sub-band itself, today's
+    behaviour, everywhere else. Sheets are NOT merged either way: the split
+    stays exactly where the fill rule put it, and only the compositing
+    arithmetic pools, so ``sheet_fused`` keeps meaning what it meant.
+
+    ``group_of_cid`` is ``None`` when no band pooled, so a stream that gains
+    nothing from this takes exactly the path it took before it existed.
+
+    The test is per band, over the WHOLE band's fragments: exact-area sum and
+    sample union, both from one ``_band_reduce`` pass. That pass is the cost,
+    and it is skipped outright on a stream where no band was rank-split at all
+    (``n_pool == nb``) -- 43,065 bands and 180 splits on the frame this was
+    measured on, so it is the split streams that pay.
+    """
+    # ``cid_band`` is the pre-rank band of each sub-band, in the ORIGINAL band
+    # numbering; compact it so it can index a reduction output.
+    uniq_pre, pool_of_cid = torch.unique(cid_band, sorted=True, return_inverse=True)
+    n_pool = int(uniq_pre.numel())
+    del uniq_pre
+    if n_pool == nb:
+        # Every band holds exactly one sub-band: nothing to pool, and no
+        # reduction pass to pay for.
+        return nb, None
+    pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
+    area, union, _fused, _sliver = _band_reduce(
+        pool_of_frag, msk_o, cov_o, n_pool, want_sliver=False
+    )
+    del pool_of_frag, _fused, _sliver
+    # A FULL union at about unit area: the band owns every sub-pixel sample and
+    # its fragments' exact areas cover the pixel once. There is nothing left to
+    # anti-alias inside such a band -- the only question it still answers is how
+    # much it occludes, and that is its own exact area, which is exactly what
+    # §4.4 commits. A partial union is excluded on purpose rather than by a
+    # looser threshold: there, area and sample count disagree by up to a whole
+    # sample cell for reasons that have nothing to do with layering (that IS
+    # what a silhouette is), so no ratio between them can tell one layer from
+    # two -- and the sweep recorded on ``sheet_rank_pool_layers`` says so.
+    fuse = (union == AA_MASK_ALL) & (area <= float(sheet_rank_pool_layers))
+    del union, area
+    # Zeroing a sub-band's rank in the key IS the pooling: every sub-band of a
+    # fused band lands on ``pool * 16``, and the key still orders by
+    # ``(band, rank)``, so the groups come out in walk order.
+    key = pool_of_cid * 16 + torch.where(
+        fuse.index_select(0, pool_of_cid), torch.zeros_like(rank_of_cid), rank_of_cid
+    )
+    del fuse, pool_of_cid
+    uniq_key, group_of_cid = torch.unique(key, sorted=True, return_inverse=True)
+    n_group = int(uniq_key.numel())
+    del uniq_key, key
+    if n_group == nb:
+        return nb, None
+    return n_group, group_of_cid
+
+
 def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     """§4.4 compositing weights for the sheets of a subdivided band.
 
@@ -709,7 +821,31 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     members.scatter_add_(
         0, sheet_band, torch.ones(nb, dtype=torch.int64, device=device)
     )
-    multi = members.index_select(0, sheet_band) > 1
+    # ...and ONLY where the band's sheets are one unbroken run of the walk.
+    # The arithmetic below is a band's, not a sheet's: it hands every sibling
+    # the band's union and its share of the band's coverage factor, and that is
+    # only paid back if the deferral chain below reaches the band's last sheet
+    # and writes the summed occlusion there. Where something else interleaves
+    # them the chain breaks, and a sibling that writes on its own would be
+    # painting its own exact area over samples it does not own -- ink moved
+    # off the geometry for nothing. Such a band composites sheet by sheet
+    # instead, which is the pre-split behaviour this docstring already promised
+    # for the interleaved case (measured: on a fold pixel of
+    # ``solids_and_camera``'s saddle Surface, where the two facings alternate
+    # in depth, the union substitution alone moved the pixel 36 channel values
+    # AWAY from an AA-off supersampled reference).
+    runs = torch.zeros_like(band_area, dtype=torch.int64)
+    starts = torch.ones(nb, dtype=torch.int64, device=device)
+    if nb > 1:
+        starts[1:] = (sheet_band[1:] != sheet_band[:-1]).to(torch.int64)
+    runs.scatter_add_(0, sheet_band, starts)
+    del starts
+    whole = runs == 1
+    del runs
+    multi = (members.index_select(0, sheet_band) > 1) & whole.index_select(
+        0, sheet_band
+    )
+    del whole
     if not bool(multi.any()):
         return cov, msk
 
@@ -1130,6 +1266,9 @@ def compact_sheets(
     # four bits are the rank. Under ``shade_split`` the same rule is recovered
     # from the class key further down.
     cid_band = uniq_cid // 16
+    # ...and the rank itself, which ``_rank_pool_groups`` needs to rebuild the
+    # key it pools with.
+    rank_of_cid = uniq_cid - cid_band * 16
     del uniq_cid
     if nb == 0:
         return None
@@ -1261,27 +1400,64 @@ def compact_sheets(
             cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
             del scale, c2, o2
         closed_s = None
-    # ``band_id`` is now the BAND -- the sheet this compaction would build
-    # with the split off. Under ``shade_split`` each band subdivides by
-    # shading class into §4.4 siblings, except where there is nothing to
-    # anti-alias: an areal (position-less) band stays whole, exactly as it
-    # is with the split off (``_band_composite``).
+    # ``band_id`` is now the SUB-BAND -- the sheet this compaction would build
+    # with the split off, once the conflict rank has divided it. Two things
+    # subdivide it further or pool it back:
+    #
+    # * ``rank_pool`` decides, per BAND, whether its conflict-rank sub-bands
+    #   are one layer seen twice by the fill rule (a seam) or two layers a ray
+    #   really crosses. A seam's sub-bands become §4.4 siblings of one band,
+    #   which is what stops an opaque surface's own sub-pixel self-overlap
+    #   letting the geometry behind it through (``sheet_rank_pool``);
+    # * ``shade_split`` subdivides each sub-band by shading class into §4.4
+    #   siblings, except where there is nothing to anti-alias: an areal
+    #   (position-less) band stays whole, exactly as it is with the split off
+    #   (``_band_composite``).
+    #
+    # Both feed the SAME arithmetic, so ``sheet_band`` names one compositing
+    # group whichever of them (or both) produced it, and the sheets of a group
+    # claim additively against one incoming visibility and occlude once.
     band_area = band_union = band_corr = sheet_band = None
+    n_group, group_of_cid = nb, None
+    if sheet_rank_pool and nb:
+        n_group, group_of_cid = _rank_pool_groups(
+            cid_band, rank_of_cid, band_id, cov_o, msk_o, nb
+        )
+    del rank_of_cid
     if shade_split:
-        band_of_frag = band_id
+        band_of_frag = (
+            band_id if group_of_cid is None else group_of_cid.index_select(0, band_id)
+        )
         band_area, band_union, band_corr, band_split = _band_composite(
-            band_of_frag, nb, cov_o, msk_o
+            band_of_frag, n_group, cov_o, msk_o
         )
         cls_o = cls.index_select(0, order)
         cls = None
         cls_eff = torch.where(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
         )
-        del cls_o, band_split
-        nb, band_id, sheet_band = band_class_groups(
-            band_of_frag, cls_eff, _SHADE_CLASS_BASE
+        del cls_o, band_split, band_of_frag
+        # Keyed by the SUB-BAND, not by the compositing group: pooling must not
+        # merge two sub-bands into one sheet, only make them claim as one band.
+        nb, band_id, sheet_cid = band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+        del cls_eff
+        sheet_band = (
+            sheet_cid
+            if group_of_cid is None
+            else group_of_cid.index_select(0, sheet_cid)
         )
-        del cls_eff, band_of_frag
+        del sheet_cid
+    elif group_of_cid is not None:
+        # No class split: one sheet per sub-band, so the group table is already
+        # per sheet. Left as ``None`` when nothing pooled, which keeps the
+        # weights -- and the multi-sheet-band exemption below -- exactly as
+        # they were.
+        band_area, band_union, band_corr, _split = _band_composite(
+            group_of_cid.index_select(0, band_id), n_group, cov_o, msk_o
+        )
+        del _split
+        sheet_band = group_of_cid
+    del group_of_cid
 
     # The band's aggregates in one walk of the sorted stream: exact area
     # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,

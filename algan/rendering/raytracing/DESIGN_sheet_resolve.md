@@ -325,6 +325,56 @@ different route. The claim is now the BAND's: every sibling shades with `E` and
 their energies sum into the one row they share, which is this section's rule
 applied to that resource.
 
+**A CONFLICT-RANK split is a sibling set too, when it is a seam rather than a
+layer (2026-09-01).** §6.2's rank key is the fill rule's own membership oracle
+and it is right about self-overlapping geometry -- but it also fires wherever
+adjacent triangles of ONE layer fail to partition the samples: a T-junction
+between two adaptively diced patches, the camera-plane straddler's epsilon
+barycentric test, a fold tangency. §10.5's own tent measurement said so at the
+time ("197 of 242 crease pixels were ALREADY two sheets in the OFF arm ... the
+rank key splits them"), and left them walked as independent occluders, which is
+the very arrangement the paragraphs above show under-claiming. It is the same
+defect, and it produces the same signature: on `solids_and_camera`'s Arrow3D,
+the near shell of the red cone covers 1.011 of a pixel in eight fragments, the
+rank key splits one of them off over a SINGLE shared sample, the two sub-bands
+occlude 0.92 between them, and the 8% deficit is filled by what is behind an
+opaque arrowhead -- the white `Line3D` running inside it, as a bright speck on
+the cone's shoulder (up to 94 channel values; visible in the committed
+baselines at frames 128 and 143).
+
+The fix is this section's arithmetic, gated on the band being ONE layer: full
+sample union at an exact area within `sheet_rank_pool_layers` (1.05) of the
+pixel. A band that owns every sample has nothing left to anti-alias, so the
+only question it still answers is how much it occludes, and §4.4 commits
+exactly its own exact area whatever the split. A PARTIAL union is excluded
+outright rather than by a looser threshold: there, area and sample count
+disagree by up to a whole sample cell for reasons that have nothing to do with
+layering -- that disagreement IS a silhouette -- so no ratio between them can
+tell one layer from two, and the sweep against an `analytic_aa=False`
+supersampled reference agrees (at 1.10 the trade goes flat: 5 pixels closer, 6
+further). Sheets are NOT merged: the split stays where the fill rule put it and
+`sheet_fused` keeps its meaning; only the compositing pools.
+
+**And the interleaved case had to be made real (same date).** The paragraph
+above promises that a band another surface interleaves "closes early and its
+remainder composites sheet by sheet, as it did before the split" -- but the
+weights did not say so. `_sibling_weights` handed the band's union to EVERY
+sibling, including one whose deferral chain cannot close, so it wrote its own
+exact area over samples it does not own with no band write to pay it back.
+Measured on a fold pixel of the same scene's saddle `Surface`, where the two
+facings alternate in depth and neither band's sheets are adjacent: the union
+substitution alone moved the pixel 36 channel values AWAY from the reference.
+Siblings now take §4.4's arithmetic only where the band is one unbroken run of
+the walk.
+
+Measured over the five full-render scenes that move (CUDA, lossless), judged
+per pixel against a 4x-resolution box-downsampled reference: on the five
+worst-moving frames of `solids_and_camera`, 77 pixels closer, 6 further, 7
+tied, summed error 1143 -> 245. The other four scenes move 1 pixel each at
+their worst frame, every one closer (94->0, 28->7, 13->2, 8->0, 13->1).
+`manim_compat_and_plots` -- pure circuits, which carry no rank -- is
+byte-identical, the mechanism confirming itself again.
+
 4.5 The background is the final sheet
 --------------------------------------
 Area 1, depth infinity, claim = residual `T`. The resolve emits, per pixel,

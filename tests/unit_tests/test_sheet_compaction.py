@@ -195,6 +195,104 @@ def test_mask_conflict_splits_overlapping_layers_at_any_depth():
     assert claims[1] < claims[0]  # the second layer sees attenuated samples
 
 
+def test_a_seam_rank_split_composites_as_one_band():
+    # ...and the same key ALSO fires on a seam, where one layer's adjacent
+    # triangles fail to partition the samples by a sliver -- a T-junction
+    # between two adaptively diced patches, say. Walked as independent
+    # occluders those sub-bands under-claim ((1-a)(1-b) > 1-(a+b)) and admit
+    # whatever is behind an opaque surface: the white Line3D inside
+    # solids_and_camera's red Arrow3D, as a bright speck on the cone shoulder.
+    # A band that owns EVERY sample at about unit area is one layer whatever
+    # the fill rule did, so its sub-bands composite as §4.4 siblings instead.
+    frags = [
+        (0, 1.0000, 0, 0.80, 0b11011111),
+        (0, 1.0001, 1, 0.21, 0b00110000),  # conflicts on lane 4 -> rank 1
+    ]
+    for rule in ("prim", "facing"):
+        out = _compact(frags, band_rule=rule)
+        # The SPLIT is untouched: two sheets, each recording its own area and
+        # its own union. Only the compositing weights pool.
+        assert out["num_sheets"] == 2, rule
+        assert torch.allclose(out["sheet_cov"], torch.tensor([0.80, 0.21])), rule
+        assert [int(m) & MASK_ALL for m in out["sheet_msk"]] == [0b11011111, 0b00110000]
+        wgt = out["sheet_wgt"]
+        # Negative = "this band continues at the next sheet": the first sibling
+        # claims against the undimmed visibility and defers the band's single
+        # occlusion write to the second.
+        assert wgt[0] < 0, rule
+        assert wgt[1] > 0, rule
+        # Both carry the BAND's union, and their magnitudes sum to the band's
+        # own coverage factor -- 1.0, the clamped 1.01 of a full union.
+        assert [int(m) & MASK_ALL for m in out["sheet_wmsk"]] == [MASK_ALL, MASK_ALL]
+        assert float(wgt.abs().sum()) == pytest.approx(1.0, abs=1e-5)
+
+    # And the oracle then leaves nothing of the pixel for what is behind.
+    from algan.rendering.raytracing.sheets import resolve_pixel_reference
+
+    out = _compact(frags)
+    _claims, T = resolve_pixel_reference(
+        [float(w) for w in out["sheet_wgt"]],
+        [int(m) for m in out["sheet_wmsk"]],
+        [False, False],
+    )
+    assert max(T) == pytest.approx(0.0, abs=1e-5)
+
+
+def test_a_partial_union_rank_split_is_never_pooled():
+    # The pooling test needs a FULL union, and that is the half of it that
+    # carries the argument. On a partial one -- a silhouette -- exact area and
+    # sample count disagree by up to a whole sample cell for reasons that have
+    # nothing to do with layering, so no threshold between them could tell one
+    # layer from two. The two-layer fixture above is exactly that shape.
+    frags = [
+        (0, 1.0000, 0, 0.5, 0b00111100),
+        (0, 1.0001, 1, 0.5, 0b00111100),
+    ]
+    out = _compact(frags)
+    assert out["num_sheets"] == 2
+    assert torch.equal(out["sheet_wgt"], out["sheet_cov"])
+    assert torch.equal(out["sheet_wmsk"], out["sheet_msk"])
+
+
+def test_an_interleaved_band_composites_sheet_by_sheet():
+    # §4.4's arithmetic is a BAND's: every sibling takes the band's union and
+    # its share of the band's coverage factor, and that is only paid back when
+    # the deferral chain reaches the band's last sheet and writes the summed
+    # occlusion there. Where another surface sits between them in the walk the
+    # chain cannot close, so the band composites sheet by sheet on its own
+    # areas and its own masks -- what it did before any split existed.
+    frags = [
+        (0, 1.0000, 0, 0.80, 0b11011111),
+        (0, 1.0001, 4, 0.50, 0b11111111),  # surface 1, between the two
+        (0, 1.0002, 1, 0.21, 0b00110000),
+    ]
+    out = _compact(frags, band_rule="facing")
+    assert out["num_sheets"] == 3
+    assert torch.equal(out["sheet_wgt"], out["sheet_cov"])
+    assert torch.equal(out["sheet_wmsk"], out["sheet_msk"])
+
+
+def test_sheet_rank_pool_setting_reaches_the_live_module():
+    from algan import SETTINGS
+    from algan.rendering.raytracing import sheets as sh
+
+    frags = [
+        (0, 1.0000, 0, 0.80, 0b11011111),
+        (0, 1.0001, 1, 0.21, 0b00110000),
+    ]
+    old = sh.sheet_rank_pool
+    try:
+        SETTINGS.raytracing.experimental.set(sheet_rank_pool=False)
+        assert sh.sheet_rank_pool is False
+        out = _compact(frags)
+        assert torch.equal(out["sheet_wgt"], out["sheet_cov"])
+        assert torch.equal(out["sheet_wmsk"], out["sheet_msk"])
+        SETTINGS.raytracing.experimental.set(sheet_rank_pool=True)
+        assert sh.sheet_rank_pool is True
+    finally:
+        sh.sheet_rank_pool = old
+
+
 def test_conflict_rank_kernel_agrees_with_torch_arm_through_compact_sheets():
     # The kernel arm of the conflict-rank scan must produce the SAME
     # compaction as the torch arm, on every array, not just the same sheet
