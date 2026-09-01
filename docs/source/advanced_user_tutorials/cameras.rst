@@ -194,6 +194,13 @@ these Mob methods all resolve against it:
 * :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen` -- scale and move to fill a screen
   rectangle.
 
+Their directions are the camera's, not the world's: ``move_to_screen_edge(RIGHT)``
+follows ``camera.right``, so it means the right of the frame however the camera is
+turned, and the Mob slides in the plane parallel to the screen without changing its
+distance to the camera. The third axis points out of the screen towards the viewer
+(``OUT`` is the camera's ``-forward``), so ``move_to_screen_edge(RIGHT + OUT)`` casts
+along the diagonal of the two until that ray leaves the frustum.
+
 Each of them resolves the camera *once*, when the call is recorded, so a later
 camera move will not keep the Mob pinned there. For something that must stay in a
 fixed screen position through a camera move (e.g. a caption, a legend) attach it to

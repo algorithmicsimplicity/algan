@@ -104,7 +104,10 @@ Screen-Relative Placement
 =========================
 
 These resolve against the current camera, so you say where the *viewer* should
-see the Mob:
+see the Mob. Their directions are read in the camera's frame rather than the
+world's: ``RIGHT`` is the right of the screen and ``UP`` the top of it whatever
+angle the camera is posed at, and a Mob moved to an edge stays the same distance
+from the camera instead of drifting towards or away from the viewer:
 
 .. list-table::
    :header-rows: 1

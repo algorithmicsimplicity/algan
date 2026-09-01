@@ -32,6 +32,51 @@ class MobMovementMixin:
     :class:`~algan.animatable_base.mob.Mob`.
     """
 
+    def _camera_screen_basis(self):
+        """Rows ``(right, up, -forward)`` of the camera's frame, or ``None``.
+
+        The frame the screen-relative helpers name their directions in: ``x``
+        runs across the screen, ``y`` up it, and ``z`` out of it towards the
+        viewer, which is why the third row is *minus* the camera's forward.
+
+        ``None`` means the camera's frame is already the world frame -- true of
+        the default camera, whose right/up/-forward are exactly ``RIGHT``,
+        ``UP`` and ``OUT``. Callers keep their world-direction path in that
+        case, so an unrotated camera goes through the same arithmetic it always
+        did rather than a matmul by an identity that is only identity up to
+        rounding.
+        """
+        camera = self.scene.camera
+        if camera is None:
+            raise AlganConfigurationError(
+                "Screen-relative movement requires the Scene to have a Camera"
+            )
+        basis = torch.cat(
+            (
+                camera.get_right_direction(),
+                camera.get_up_direction(),
+                -camera.get_forward_direction(),
+            ),
+            -2,
+        )
+        identity = torch.eye(3, device=basis.device, dtype=basis.dtype).expand_as(basis)
+        return None if torch.equal(basis, identity) else basis
+
+    def _screen_relative_direction(self, direction: torch.Tensor) -> torch.Tensor:
+        """Read a direction in the camera's frame, and return it in world space.
+
+        ``RIGHT`` becomes the camera's right, ``UP`` its up and ``OUT`` the
+        direction back towards the viewer, so a direction with no ``z``
+        component stays in the plane parallel to the screen however the camera
+        is posed. Without this the screen-relative helpers cast along world
+        axes: under a 60-degree yaw ``move_to_screen_edge(LEFT)`` used to
+        displace a Mob along world *+x*, landing it off the right of the frame.
+        """
+        basis = self._camera_screen_basis()
+        if basis is None:
+            return direction
+        return direction.to(device=basis.device, dtype=basis.dtype) @ basis
+
     def move_between(self, start: Mob | torch.Tensor, end: Mob | torch.Tensor) -> Mob:
         """Move the Mob to the midpoint between two locations.
 
@@ -540,6 +585,11 @@ class MobMovementMixin:
         past that edge is brought back in, and calling this twice leaves it where
         the first call put it.
 
+        ``direction`` is read in the camera's frame, not the world's, so
+        ``RIGHT`` means the right of the *screen* whatever angle the camera is
+        posed at, and the Mob travels in the plane parallel to the screen rather
+        than towards or away from the viewer.
+
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second
@@ -549,8 +599,11 @@ class MobMovementMixin:
         Parameters
         ----------
         direction
-            Which screen edge to move to: ``RIGHT``, ``LEFT``, ``UP`` or
-            ``DOWN``.
+            Which screen edge to move to, in the camera's frame: ``RIGHT``,
+            ``LEFT``, ``UP`` or ``DOWN``. ``x`` runs across the screen, ``y`` up
+            it and ``z`` out of it towards the viewer, so ``OUT`` is the camera's
+            ``-forward``; ``RIGHT + OUT`` casts along the diagonal of the two and
+            stops where that ray leaves the frustum.
         buffer
             Gap to leave between the Mob's boundary and the screen border, in
             world units. Defaults to ``SETTINGS.style.buffer`` (``0.6``).
@@ -568,7 +621,9 @@ class MobMovementMixin:
             Move all the way off-screen.
         """
         buffer = _resolve_buffer(buffer)
-        direction = cast_to_direction("direction", direction)
+        direction = self._screen_relative_direction(
+            cast_to_direction("direction", direction)
+        )
         normalized_edge = F.normalize(direction, p=2, dim=-1)
         # Get the boundary point of this Mob that is furthest towards the 'edge' direction
         mob_boundary_point = self.get_boundary_point(normalized_edge)
@@ -609,7 +664,8 @@ class MobMovementMixin:
         ----------
         directions
             The screen edges meeting at the corner, as an iterable of direction
-            vectors -- ``(UP, RIGHT)`` for the top-right.
+            vectors in the camera's frame -- ``(UP, RIGHT)`` for the top-right,
+            whatever angle the camera is posed at.
         buffer
             Gap to leave from every screen border named, in world units.
             Defaults to ``SETTINGS.style.buffer`` (``0.6``).
@@ -645,7 +701,9 @@ class MobMovementMixin:
         Parameters
         ----------
         direction
-            Which way to leave: ``RIGHT``, ``LEFT``, ``UP`` or ``DOWN``.
+            Which way to leave, in the camera's frame: ``RIGHT``, ``LEFT``,
+            ``UP`` or ``DOWN``, meaning the sides of the *screen* whatever angle
+            the camera is posed at.
         buffer
             Extra distance to travel beyond the screen border, in world units.
             Defaults to ``SETTINGS.style.buffer`` (``0.6``).
@@ -660,6 +718,9 @@ class MobMovementMixin:
             This Mob, so calls can be chained.
         """
         buffer = _resolve_buffer(buffer)
+        direction = self._screen_relative_direction(
+            cast_to_direction("direction", direction)
+        )
         bbox = self.get_bounding_box()
 
         points_on_screen_edge = self.scene.camera.project_point_onto_screen_border(
