@@ -141,9 +141,12 @@ A **2-D circuit** derives its own frame from its control points
 (`bezier_circuit.py: _circuit_location_and_basis`), and row 2 of that frame is
 `cross(row 0, row 1)` — a cross product the flip never re-signed. Its control points do not
 move when the world mirrors in z (they are in the xy plane), so the normal it yields did not
-mirror with everything else: `Square().get_normal()` is `INWARD`, i.e. a flat shape's stated
-face points **away** from the viewer, where before the flip it pointed at it. Nothing visible
-depends on it — a circuit is `two_sided`, so `_sided_shading_normal` turns the normal toward
+mirror with everything else. Measured on all three revisions, the NUMBER never moved:
+`Square`, `Circle` and `Triangle` have carried `(0, 0, -1)` throughout. What moved is what
+that vector is called — it was `OUTWARD`, at the viewer, before the flip and is `INWARD`
+after it — so a flat shape now states that it faces **away**. (`Text` is not one of these:
+its own basis is the Mob default, its glyphs carrying the circuit frames, so it faces
+`OUTWARD` with every other Mob.) Nothing visible depends on it — a circuit is `two_sided`, so `_sided_shading_normal` turns the normal toward
 whoever is looking — but it is the one place a Mob does not face the way `DEFAULT_BASIS` says
 it does. Re-signing it is not a one-liner: row 1 is `cross(row 2, row 0)`, so the plane
 normal's sign also sets the in-plane frame the texture grid and the analytic-AA edge

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.constants.spatial import LEFT, UP
+from algan.constants.spatial import LEFT, RIGHT, UP
 from algan.environment import env_flag
 from algan.geometry.geometry import map_global_to_local_coords
 from algan.mobs.neural_nets.neural_net import (
@@ -33,6 +33,45 @@ def test_idle_waypoints_are_squished_along_network_direction():
     assert parallel.abs().max() <= _IDLE_PARALLEL_RADIUS_FRACTION + 1e-6
     assert perpendicular.norm(dim=-1).max() <= 1 + 1e-6
     assert perpendicular.norm(dim=-1).amax() > parallel.abs().amax()
+    SceneManager.reset()
+
+
+def test_layers_march_along_the_network_direction_from_the_first_at_the_origin():
+    """The MLP's layout: layer ``i`` sits ``i * layer_spacing`` along
+    ``direction`` (``RIGHT`` by default) from the first layer at the origin,
+    with each layer's neurons spread along ``orth_direction`` (``UP``).
+
+    Pinned here because the net turns its own frame to face that direction
+    (``self.look(direction)``) and then places its input synapses and its output
+    label along ``get_forward_direction()``. A change to what a Mob's basis
+    starts as -- which is a Mob-wide convention, decided nowhere near this file
+    -- is the kind of thing that could turn the whole net round without moving
+    a neuron, or move the inputs to the wrong end of it.
+    """
+    SceneManager.reset()
+    spacing, neuron_spacing = 1.5, 0.5
+    dims = [3, 2, 1]
+    network = NeuralNetMLPV3(dims, layer_spacing=spacing, neuron_spacing=neuron_spacing)
+
+    for i, (layer, width) in enumerate(zip(network.layers, dims)):
+        locations = [neuron.location.reshape(-1, 3)[0] for neuron in layer]
+        assert [float(location[0]) for location in locations] == pytest.approx(
+            [i * spacing] * width
+        ), "a layer is not square on the network direction"
+        assert [float(location[1]) for location in locations] == pytest.approx(
+            [(k - width // 2) * neuron_spacing for k in range(width)]
+        ), "a layer's neurons are not spread along orth_direction"
+        assert [float(location[2]) for location in locations] == pytest.approx(
+            [0.0] * width
+        ), "the net is not flat in depth"
+
+    # The axis the layers march along is also the net's own forward, which is
+    # what reset_input_synapses and the output label are placed along: the
+    # inputs arrive from BEFORE the first layer (a negative offset along it).
+    assert network.get_forward_direction().reshape(-1).tolist() == pytest.approx(
+        RIGHT.reshape(-1).tolist(), abs=1e-6
+    )
+    assert network.input_synapse_offset < 0
     SceneManager.reset()
 
 
