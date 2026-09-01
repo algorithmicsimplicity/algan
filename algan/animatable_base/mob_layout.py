@@ -395,17 +395,30 @@ class MobLayoutMixin:
         )
 
     def _screen_axes(self):
-        """The camera's right/up/forward as an orthonormal frame, or ``None``.
+        """The camera's frame as an orthonormal basis, or ``None``.
 
-        ``None`` means the frame is the world frame, which lets callers keep the
-        cheaper world-axis code paths for an unrotated camera.
+        Rows ``(right, up, -forward)``: ``x`` runs across the screen, ``y`` up
+        it and ``z`` out of it towards the viewer. The third row is *minus* the
+        camera's forward so that the default camera -- which looks down world
+        ``-z`` from in front of the scene -- comes out as exactly the identity,
+        and so the basis is right-handed like the world's.
+
+        ``None`` means the camera's frame is the world frame, which lets callers
+        keep the cheaper world-axis code paths for an unrotated camera. Built
+        from ``forward`` this never fired: the default camera gave
+        ``diag(1, 1, -1)``, never equal to the identity, so every caller took
+        the rotated path to compute a result it already had. Flipping that row
+        is invisible to them -- the depth axis is only ever used as the span of
+        a bounding box (whose corner *set* a sign flip leaves alone) and in
+        ``transpose(axes) @ diag(scale) @ axes``, a sum of per-row outer
+        products in which each row's sign cancels with itself.
         """
         camera = self._screen_frame()[0]
         axes = torch.cat(
             (
                 camera.get_right_direction(),
                 camera.get_up_direction(),
-                camera.get_forward_direction(),
+                -camera.get_forward_direction(),
             ),
             -2,
         )

@@ -17,7 +17,11 @@ direction back towards the eye.
 
 The default camera's right/up/-forward are exactly ``RIGHT``, ``UP`` and
 ``OUT``, so none of this may move a Mob that an unrotated camera is looking at
--- ``test_the_default_camera_is_left_untouched`` is the guard on that.
+-- ``test_the_default_camera_is_left_untouched`` is the guard on that. That
+exactness is also what makes the frame's world-frame fast path fire: built from
+``forward`` instead, the default camera gives ``diag(1, 1, -1)``, the ``None``
+never comes back, and every caller takes the rotated path to compute a result it
+already had.
 """
 
 from __future__ import annotations
@@ -248,6 +252,23 @@ def test_move_off_screen_leaves_by_the_named_screen_edge(pose_name):
     assert float(screen[1]) == pytest.approx(0.5, abs=1e-3)
 
 
+@pytest.mark.parametrize("pose_name", sorted(POSES))
+def test_the_shared_frame_is_right_up_and_minus_forward(pose_name):
+    # Both mixins read directions through _screen_axes, so its rows are the
+    # contract. The third is *minus* forward: built from forward it gave
+    # diag(1, 1, -1) for the default camera, which is never equal to the
+    # identity, so the world-frame fast path below could not fire at all.
+    scene = _posed_scene(pose_name)
+    square = Square()
+
+    axes = square._screen_axes()
+
+    assert axes is not None
+    torch.testing.assert_close(
+        axes.reshape(3, 3), torch.stack(_camera_frame(scene)), atol=1e-6, rtol=0
+    )
+
+
 @pytest.mark.parametrize(
     "direction", [RIGHT, -RIGHT, UP, -UP, RIGHT + UP, OUT, RIGHT + OUT, IN]
 )
@@ -259,6 +280,6 @@ def test_the_default_camera_is_left_untouched(direction):
     square = Square()
     mapped = square._screen_relative_direction(direction)
 
-    assert square._camera_screen_basis() is None
+    assert square._screen_axes() is None
     assert mapped is direction
     assert scene.camera.get_right_direction().reshape(-1).tolist() == [1.0, 0.0, 0.0]

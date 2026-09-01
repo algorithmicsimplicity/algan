@@ -32,36 +32,6 @@ class MobMovementMixin:
     :class:`~algan.animatable_base.mob.Mob`.
     """
 
-    def _camera_screen_basis(self):
-        """Rows ``(right, up, -forward)`` of the camera's frame, or ``None``.
-
-        The frame the screen-relative helpers name their directions in: ``x``
-        runs across the screen, ``y`` up it, and ``z`` out of it towards the
-        viewer, which is why the third row is *minus* the camera's forward.
-
-        ``None`` means the camera's frame is already the world frame -- true of
-        the default camera, whose right/up/-forward are exactly ``RIGHT``,
-        ``UP`` and ``OUT``. Callers keep their world-direction path in that
-        case, so an unrotated camera goes through the same arithmetic it always
-        did rather than a matmul by an identity that is only identity up to
-        rounding.
-        """
-        camera = self.scene.camera
-        if camera is None:
-            raise AlganConfigurationError(
-                "Screen-relative movement requires the Scene to have a Camera"
-            )
-        basis = torch.cat(
-            (
-                camera.get_right_direction(),
-                camera.get_up_direction(),
-                -camera.get_forward_direction(),
-            ),
-            -2,
-        )
-        identity = torch.eye(3, device=basis.device, dtype=basis.dtype).expand_as(basis)
-        return None if torch.equal(basis, identity) else basis
-
     def _screen_relative_direction(self, direction: torch.Tensor) -> torch.Tensor:
         """Read a direction in the camera's frame, and return it in world space.
 
@@ -71,8 +41,15 @@ class MobMovementMixin:
         is posed. Without this the screen-relative helpers cast along world
         axes: under a 60-degree yaw ``move_to_screen_edge(LEFT)`` used to
         displace a Mob along world *+x*, landing it off the right of the frame.
+
+        The frame is
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin._screen_axes`,
+        shared with the layout mixin. Its ``None`` -- the camera's frame is the
+        world frame -- is what keeps an unrotated camera on exactly the
+        arithmetic it always did, rather than a matmul by an identity that is
+        only identity up to rounding.
         """
-        basis = self._camera_screen_basis()
+        basis = self._screen_axes()
         if basis is None:
             return direction
         return direction.to(device=basis.device, dtype=basis.dtype) @ basis
