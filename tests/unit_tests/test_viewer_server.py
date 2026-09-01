@@ -19,7 +19,7 @@ import urllib.request
 
 import pytest
 
-from algan import PREVIEW, RIGHT, Scene, Square, view
+from algan import PREVIEW, RIGHT, Scene, Square
 
 #: Small enough that a frame costs almost nothing, big enough to have an inside.
 TINY = PREVIEW.set(resolution=(48, 27))
@@ -30,7 +30,7 @@ def viewer(fresh_scene):
     """A running viewer over a two-second scene, stopped afterwards."""
     square = Square().spawn()
     square.move(RIGHT * 0.5)
-    handle = view(block=False, open_browser=False, video_settings=TINY)
+    handle = Scene.view(TINY, block=False, open_browser=False)
     try:
         yield handle
     finally:
@@ -40,6 +40,14 @@ def viewer(fresh_scene):
 def fetch(handle, path, *, raw=False, timeout=300):
     with urllib.request.urlopen(handle.url.rstrip("/") + path, timeout=timeout) as r:
         return r.read() if raw else json.load(r)
+
+
+def post(handle, path, *, timeout=300):
+    request = urllib.request.Request(
+        handle.url.rstrip("/") + path, data=b"", method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as r:
+        return json.load(r)
 
 
 def test_state_describes_the_scene(viewer):
@@ -119,6 +127,88 @@ def test_attributes_follow_the_playhead(viewer):
     assert location(0)[0] < location(last)[0], "the square moves right over the scene"
 
 
+def test_pixel_answers_without_holding_the_request_open(viewer):
+    """A slow inspection must be polled for, never waited out on one socket.
+
+    The first inspection of a session compiles a Taichi kernel variant for the
+    capture-armed render path -- measured in tens of seconds, and far worse
+    while frames are still rendering. Holding one HTTP request open for that
+    long is what made the browser abandon it and report ``Failed to fetch`` to
+    the page, throwing away an answer that was still coming. So the route
+    answers quickly with ``pending`` instead, and the page asks again.
+    """
+    import time
+
+    deadline = time.monotonic() + 300
+    payload = {"pending": True}
+    while payload.get("pending") and time.monotonic() < deadline:
+        started = time.monotonic()
+        payload = fetch(viewer, "/api/pixel?frame=0&x=10&y=10")
+        # Whatever the answer, it has to come back promptly. The wait is 3s;
+        # allow generously for a loaded CI box without allowing a real block.
+        assert time.monotonic() - started < 60, "the pixel route blocked"
+    assert not payload.get("pending"), "the inspection never resolved"
+    assert payload["x"] == 10
+    assert payload["y"] == 10
+    # Answered once, it is cached, so asking again is free rather than another
+    # capture-armed render.
+    again = time.monotonic()
+    repeat = fetch(viewer, "/api/pixel?frame=0&x=10&y=10")
+    assert time.monotonic() - again < 30
+    assert repeat == payload
+
+
+def test_pixel_outside_the_frame_is_refused_not_rendered(viewer):
+    payload = fetch(viewer, "/api/pixel?frame=0&x=9999&y=9999")
+    assert payload["available"] is False
+    assert "outside" in payload["reason"]
+
+
+def test_resolution_options_list_the_presets_and_the_two_named_ones(viewer):
+    """The picker offers every built-in size, plus the Scene's and view()'s."""
+    state = fetch(viewer, "/api/state")
+    rows = {row["name"]: row for row in state["resolution_options"]}
+    assert {"SMOKE_TEST", "PREVIEW", "HD", "UHD", "SCENE", "VIEW"} <= set(rows)
+    # This viewer was opened with TINY, so that is the option it starts on.
+    assert state["resolution_name"] == "VIEW"
+    width, height = TINY.resolution
+    # Labelled (height, width), which is the reverse of the (width, height) that
+    # ``VideoSettings.resolution`` stores. Pinned because it is easy to
+    # "helpfully" flip back while editing.
+    assert rows["VIEW"]["label"] == f"View: ({height}, {width})"
+    assert rows["HD"]["label"] == "HD: (1080, 1920)"
+
+
+def test_changing_resolution_re_renders_at_the_new_size(viewer):
+    from PIL import Image
+
+    before = fetch(viewer, "/api/state")
+    first = Image.open(io.BytesIO(fetch(viewer, "/frame/0.png", raw=True)))
+    assert first.size == TINY.resolution
+
+    after = post(viewer, "/api/resolution?name=SMOKE_TEST")
+    assert after["resolution_name"] == "SMOKE_TEST"
+    # The epoch is what tells the page its decoded frames -- and the browser's
+    # own HTTP cache, which is told frames are immutable -- to let go.
+    assert after["epoch"] > before["epoch"]
+    # A preset brings its resolution, not its clock. SMOKE_TEST is 2 fps and
+    # this viewer opened on TINY's 10; adopting the preset's rate would renumber
+    # every frame the viewer reports, so the picker changes size only. This
+    # caught a real bug: presets were built with the *Scene's* rate, so the
+    # first switch away from the ``view()`` option silently re-timed the video.
+    assert after["fps"] == before["fps"]
+    assert after["total_frames"] == before["total_frames"]
+
+    now = Image.open(io.BytesIO(fetch(viewer, "/frame/0.png", raw=True)))
+    assert now.size == (32, 32)
+
+
+def test_unknown_resolution_is_refused(viewer):
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        post(viewer, "/api/resolution?name=NOPE")
+    assert caught.value.code == 404
+
+
 def test_unknown_node_and_route_are_reported_not_raised(viewer):
     for path in ("/api/children?node=1", "/api/attrs?node=1", "/nope"):
         with pytest.raises(urllib.error.HTTPError) as caught:
@@ -150,7 +240,7 @@ def test_view_leaves_the_scene_authorable(fresh_scene):
     timeline, animations = scene.timeline_manager, scene.animation_manager
     end_before = scene._recorded_end_time_for_render()
 
-    handle = view(block=False, open_browser=False, video_settings=TINY)
+    handle = Scene.view(TINY, block=False, open_browser=False)
     try:
         fetch(handle, "/frame/0.png", raw=True)
     finally:
@@ -170,7 +260,7 @@ def test_view_does_not_change_the_scenes_video_settings(fresh_scene):
     Square().spawn()
     scene = Scene.instance()
     before = scene.video_settings
-    handle = view(block=False, open_browser=False, video_settings=TINY)
+    handle = Scene.view(TINY, block=False, open_browser=False)
     try:
         fetch(handle, "/frame/0.png", raw=True)
     finally:
@@ -191,7 +281,7 @@ def test_default_settings_keep_the_scenes_frame_rate(fresh_scene):
     Square().spawn()
     scene = Scene.instance()
     scene.set_video_settings(PREVIEW.set(frames_per_second=30))
-    handle = view(block=False, open_browser=False)
+    handle = Scene.view(block=False, open_browser=False)
     try:
         assert handle.session.fps == 30
         assert tuple(handle.session.video_settings.resolution) == PREVIEW.resolution

@@ -1284,20 +1284,70 @@ class Scene(RenderLoopMixin):
     ):
         """Open this Scene in the interactive viewer.
 
-        The same call as :func:`algan.view`, reached from the Scene. See that
-        function for what the viewer shows and for every parameter.
+        Starts a small web server on this machine and points a browser at it.
+        The page plays the Scene as it stands, and lets you stop on a frame and
+        ask what is in it: the Scene's mobs as a tree with their animatable
+        attributes, any pixel's colour, and the list of surfaces behind that
+        pixel, nearest first, each with its depth and the mob it came from.
+
+        Frames are rendered as you reach them rather than up front, so the
+        window opens immediately and seeking costs one chunk of frames. Nothing
+        is written to disk, and the Scene is left exactly as authored -- you can
+        keep adding to it, or call :meth:`save_video`, afterwards.
+
+        The video is the Scene as it stands when you call this. Frames already
+        rendered are kept, so if you go on authoring the same Scene from a REPL
+        (``block=False``), open a new viewer to see the additions rather than
+        expecting this one to grow.
+
+        There is no module-level ``view``: the viewer is reached from the Scene
+        and nowhere else, because the bare name is too general to spend on a
+        namespace that ``from algan import *`` empties into a user's own.
+
+        Parameters
+        ----------
+        video_settings
+            Resolution and anti-aliasing to render at, normally a preset such as
+            ``HD``. Defaults to ``None``, meaning the ``PREVIEW`` preset's
+            resolution at the Scene's own frame rate -- so seeking stays quick
+            while the frame numbers still match the video the Scene would
+            produce.
+        port
+            Port to serve on. Defaults to 0, meaning any free port.
+        open_browser
+            Whether to open the page in your default browser. Defaults to True.
+        block
+            Whether to serve until interrupted. Defaults to True, which is what
+            a script wants: the viewer stays up until you close it with Ctrl-C.
+            False returns immediately with the viewer running in the background,
+            which is what a REPL or a test wants. Note that a blocking viewer
+            running on the warm render daemon occupies it until you stop it,
+            since the daemon runs one script at a time.
+
+        Returns
+        -------
+        ViewerHandle
+            The running viewer. It carries the ``url`` being served and a
+            ``stop()`` that shuts it down, and works as a context manager.
 
         Animation
         ---------
-        Records nothing and leaves the Scene exactly as authored: frames are
-        rendered on demand and nothing is written to disk, so you can keep
-        adding to the Scene, or call :meth:`save_video`, afterwards.
+        Records nothing and renders nothing until the page asks for a frame. The
+        Scene's timeline, its mobs and its video settings are all left as they
+        were.
 
         Examples
         --------
         .. code-block:: python
 
-            Scene.view()
+            square = Square().spawn()
+            square.move(RIGHT)
+
+            Scene.view()  # opens a browser, serves until Ctrl-C
+
+            handle = Scene.view(block=False)  # keep scripting while it runs
+            print(handle.url)
+            handle.stop()
         """
         from algan.viewer import _view
 

@@ -23,7 +23,18 @@
   </section>
 
   <section class="pane" id="stage-pane">
-    <div class="stage">
+    <div class="stage-tools">
+      <label>resolution
+        <select id="resolution"></select>
+      </label>
+      <label class="zoom">zoom
+        <input type="range" id="zoom" min="100" max="1600" step="10" value="100"
+               aria-label="Zoom">
+        <span id="zoom-readout" class="mono">100%</span>
+      </label>
+      <button id="zoom-fit" type="button" class="small">Fit</button>
+    </div>
+    <div class="stage" id="stage">
       <canvas id="frame" width="16" height="9"></canvas>
     </div>
     <div class="transport">

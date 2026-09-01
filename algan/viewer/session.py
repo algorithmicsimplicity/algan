@@ -12,6 +12,25 @@ about Algan's renderer make concurrent access wrong rather than merely slow:
 
 So there is one worker thread that renders, one lock that every Scene access
 takes, and HTTP handler threads that wait on results rather than computing them.
+What that lock must *not* do is stand between the page and answers it could have
+had without touching the Scene at all, which is what the next paragraph is about.
+
+There are two locks, not one, and the split is the difference between a viewer
+that answers and one that does not. ``_scene_lock`` guards the Scene itself and
+is held for as long as a render or a materialized read takes. ``_lock`` guards
+only this object's own bookkeeping -- the frame cache, the playhead, the error --
+and is never held across anything slow. Routes that need no Scene access
+(``/api/state``, a cached ``/frame/N.png``) therefore answer immediately even
+while a chunk is rendering.
+
+The worker is also the *lowest-priority* user of the Scene. Python locks are not
+fair: a worker that releases the Scene lock at the end of a chunk and re-takes it
+at the top of the next one wins that race against a request that has been waiting
+since before the chunk started, and can keep winning for the whole video. So a
+request announces itself in ``_scene_demand`` before it queues, and the worker
+stands aside while that count is non-zero and abandons the chunk it is in at the
+next batch boundary. A request waits for the batch already in flight, not for the
+rest of the video.
 
 Frames are rendered lazily, a chunk at a time, and cached as encoded PNGs. A
 seek does not cancel the chunk already running -- ``get_frames`` is a generator
@@ -22,6 +41,7 @@ rather than by the rest of the video.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import threading
 import time
@@ -29,7 +49,16 @@ import time
 import torch
 
 from algan.rendering import fragment_capture
-from algan.settings.video_settings import PREVIEW
+from algan.settings.video_settings import (
+    HD,
+    LD,
+    MD,
+    PREVIEW,
+    PRODUCTION,
+    SMOKE_TEST,
+    THUMBNAIL,
+    UHD,
+)
 from algan.viewer import hierarchy
 from algan.viewer.pixels import PixelRecord
 
@@ -43,31 +72,66 @@ CHUNK_FRAMES = 12
 #: fill memory with PNGs nobody scrolled to.
 MAX_CACHED_FRAMES = 900
 
+#: The built-in presets the resolution picker offers, in the order it shows
+#: them: smallest first, so the cheap ones to render are the easy ones to reach.
+BUILT_IN_PRESETS = (
+    ("SMOKE_TEST", SMOKE_TEST),
+    ("THUMBNAIL", THUMBNAIL),
+    ("PREVIEW", PREVIEW),
+    ("LD", LD),
+    ("MD", MD),
+    ("HD", HD),
+    ("PRODUCTION", PRODUCTION),
+    ("UHD", UHD),
+)
+
+#: How many finished pixel inspections to keep. Each is a small dict, and
+#: keeping them is what makes the page's poll for a slow one free once it lands.
+MAX_CACHED_PIXELS = 256
+
 
 class ViewerSession:
     """A Scene, rendered on demand for a browser to page through."""
 
     def __init__(self, scene, video_settings=None):
         self.scene = scene
-        self.video_settings = self._resolve_settings(scene, video_settings)
+        self._options, self._current_option = self._build_options(scene, video_settings)
+        self.video_settings = self._options[self._current_option][1]
         self.fps = int(self.video_settings.frames_per_second)
         self.width, self.height = self.video_settings.resolution
         # Snapshotted, not followed: frames already rendered are cached, and a
         # Scene re-authored underneath a viewer would leave those frames showing
-        # geometry that no longer exists. A second ``view()`` call is the way to
-        # see later additions.
+        # geometry that no longer exists. A second ``Scene.view()`` call is the
+        # way to see later additions.
         self.duration = float(scene._recorded_end_time_for_render())
         # At least one frame: a scene authored but never advanced still has a
         # first frame to look at, and a zero-length scrubber is unusable.
         self.total_frames = max(1, round(self.duration * self.fps))
 
+        # Bookkeeping only, and never held across a render: see the module
+        # docstring for why the two locks are not one.
         self._lock = threading.RLock()
+        # The Scene: renders, materialized reads, fragment captures.
+        self._scene_lock = threading.RLock()
+        #: How many threads are queued for ``_scene_lock``. Guarded by ``_lock``.
+        self._scene_demand = 0
         self._cache: dict[int, bytes] = {}
         self._order: list[int] = []
         self._wanted = 0
         self._generation = 0
         self._error: str | None = None
         self._frame_ready = threading.Condition(self._lock)
+        self._scene_free = threading.Condition(self._lock)
+        #: Finished inspections, keyed by ``(frame, x, y)``, and the keys of the
+        #: ones still being computed. Both guarded by ``_lock``.
+        self._pixels: dict[tuple[int, int, int], dict] = {}
+        self._pixel_order: list[tuple[int, int, int]] = []
+        self._pixel_jobs: set[tuple[int, int, int]] = set()
+        self._pixel_ready = threading.Condition(self._lock)
+        #: Bumped whenever the render resolution changes. Everything cached
+        #: before a bump is of the wrong size, and the page puts it in the frame
+        #: URL so the browser's own HTTP cache cannot serve a stale PNG either.
+        self._epoch = 0
         self._work = threading.Event()
         self._closed = False
         self._work.set()
@@ -79,19 +143,141 @@ class ViewerSession:
     # -- settings ---------------------------------------------------------
 
     @staticmethod
-    def _resolve_settings(scene, video_settings):
-        """What to render at: small and quick, but on the Scene's own clock.
+    def _build_options(scene, video_settings):
+        """Every resolution the picker offers, and which one to start on.
 
-        The PREVIEW preset is 10 fps, and a viewer that renumbered a 30 fps
-        scene's frames would report a frame index that does not exist in the
-        video the script actually produces. So the resolution and supersampling
-        come from PREVIEW and the frame rate stays the Scene's.
+        **Every option carries the same frame rate**, so the picker changes the
+        size of a frame and never which frame an index names. The presets come
+        with frame rates of their own and adopting one would renumber the whole
+        video -- PREVIEW is 10 fps, so a 30 fps Scene viewed at PREVIEW's clock
+        would report frame indices that do not exist in the video the script
+        produces. A preset therefore contributes its *resolution* and
+        supersampling only. The rate itself is the one the session opened on:
+        whatever ``view()`` was given, or else the Scene's.
+
+        The Scene's own settings and the ones ``view()`` was given are listed
+        even when they duplicate a preset's size -- they are the two the user
+        named, and being able to pick them by name is the point.
+
+        Returns ``({name: (title, settings)}, starting name)``.
         """
-        if video_settings is not None:
-            return video_settings
-        return PREVIEW.set(
-            frames_per_second=int(scene.video_settings.frames_per_second)
+        opened_on = (
+            video_settings if video_settings is not None else scene.video_settings
         )
+        fps = int(opened_on.frames_per_second)
+        options = {
+            name: (name, preset.set(frames_per_second=fps))
+            for name, preset in BUILT_IN_PRESETS
+        }
+        options["SCENE"] = ("Scene", scene.video_settings.set(frames_per_second=fps))
+        if video_settings is not None:
+            options["VIEW"] = ("View", video_settings)
+            return options, "VIEW"
+        return options, "PREVIEW"
+
+    def resolution_options(self):
+        """The picker's rows: a name to post back, and a label to show.
+
+        Labelled ``(height, width)``, which is the order asked for -- note it is
+        the reverse of ``VideoSettings.resolution``, which is ``(width, height)``.
+        """
+        rows = []
+        for name, (title, settings) in self._options.items():
+            width, height = settings.resolution
+            rows.append(
+                {
+                    "name": name,
+                    "label": f"{title}: ({height}, {width})",
+                    "width": width,
+                    "height": height,
+                }
+            )
+        return rows
+
+    def set_resolution(self, name):
+        """Re-render everything at another of the offered resolutions.
+
+        Returns the new state, or ``None`` if there is no such option.
+
+        Takes the Scene lock, so it waits out the batch in flight rather than
+        swapping the size under a render that has already read it. Everything
+        cached is then wrong by definition and goes: the frames, and the pixel
+        inspections whose coordinates were in the old frame's grid.
+        """
+        key = str(name).upper()
+        entry = self._options.get(key)
+        if entry is None:
+            return None
+        settings = entry[1]
+        with self._scene(), self._lock:
+            if key != self._current_option:
+                self._current_option = key
+                self.video_settings = settings
+                self.width, self.height = settings.resolution
+                # Invariant, not an update: every option is built with the
+                # session's own frame rate, so the playhead keeps its meaning
+                # across a change of size. Recomputed anyway so that an option
+                # that ever did carry another rate could not slip through.
+                self.fps = int(settings.frames_per_second)
+                self.total_frames = max(1, round(self.duration * self.fps))
+                self._wanted = min(self._wanted, self.total_frames - 1)
+                self._cache.clear()
+                self._order.clear()
+                self._pixels.clear()
+                self._pixel_order.clear()
+                self._epoch += 1
+                # Stop the chunk in flight at its next batch: it is drawing the
+                # old size into a cache that no longer wants it.
+                self._generation += 1
+                self._frame_ready.notify_all()
+                self._pixel_ready.notify_all()
+        self._work.set()
+        return self.state()
+
+    # -- scene access -----------------------------------------------------
+
+    @contextlib.contextmanager
+    def _scene(self):
+        """Hold the Scene for the block, announcing the wait before queueing.
+
+        ``_scene_demand`` counts *waiters*, not holders, so it drops back to
+        zero the moment this thread is served. The render worker consults it
+        before starting a chunk and between batches within one, which is what
+        stops a request from losing the lock race indefinitely.
+        """
+        with self._lock:
+            self._scene_demand += 1
+        try:
+            self._scene_lock.acquire()
+        finally:
+            with self._lock:
+                self._scene_demand -= 1
+                self._scene_free.notify_all()
+        try:
+            yield
+        finally:
+            self._scene_lock.release()
+
+    def _scene_is_wanted(self):
+        """Is anything queued for the Scene behind the holder of it?"""
+        with self._lock:
+            return self._scene_demand > 0
+
+    def _stand_aside(self, timeout=30.0):
+        """Wait for the queue to clear before taking the Scene speculatively.
+
+        The timeout is a backstop, not a schedule: a page that somehow asked
+        without pause would otherwise stop the worker rendering entirely, and
+        a viewer that never renders another frame is worse than one that
+        answers a request a batch late.
+        """
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            while self._scene_demand and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._scene_free.wait(remaining)
 
     # -- public surface ---------------------------------------------------
 
@@ -111,6 +297,9 @@ class ViewerSession:
             "cached": _ranges(cached),
             "cached_count": len(cached),
             "error": error,
+            "epoch": self._epoch,
+            "resolution_name": self._current_option,
+            "resolution_options": self.resolution_options(),
         }
 
     def frame(self, index, timeout=120.0):
@@ -157,18 +346,18 @@ class ViewerSession:
     # -- hierarchy --------------------------------------------------------
 
     def roots(self):
-        with self._lock:
+        with self._scene():
             return hierarchy.roots(self.scene)
 
     def children(self, node, include_components=False):
-        with self._lock:
+        with self._scene():
             mob = hierarchy.index(self.scene).get(int(node))
             if mob is None:
                 return None
             return hierarchy.children(mob, include_components)
 
     def attributes(self, node, frame=None):
-        with self._lock:
+        with self._scene():
             mob = hierarchy.index(self.scene).get(int(node))
             if mob is None:
                 return None
@@ -183,18 +372,81 @@ class ViewerSession:
 
     # -- pixels -----------------------------------------------------------
 
-    def pixel(self, frame, x, y):
+    def pixel(self, frame, x, y, wait=3.0):
         """The fragment list behind one pixel of one frame.
 
-        Renders that frame again with the capture armed: the record only exists
-        while the chunk that made it is in flight, so an inspection is a render
-        rather than a lookup. Cheap in practice -- one frame, already warm.
+        Computed on a thread of its own and reported back over however many
+        requests it takes, rather than by holding one request open until it is
+        done. That is not a style preference: the *first* inspection of a
+        session compiles a Taichi kernel variant for the capture-armed render
+        path, which was measured at **12 s with an idle worker and 67 s with one
+        still rendering**, and a browser asked to wait that long for a single
+        response gives up and reports it to the page as ``TypeError: Failed to
+        fetch`` -- discarding an answer that was on its way.
+
+        So this waits ``wait`` seconds, which is long enough that a warm
+        inspection (~2 s) still answers in one round trip, and otherwise returns
+        ``{"pending": True}`` for the page to poll on. Results are cached by
+        ``(frame, x, y)``, so the poll that finally lands costs nothing and
+        re-inspecting a pixel is free.
         """
         frame = max(0, min(int(frame), self.total_frames - 1))
         x, y = int(x), int(y)
         if not (0 <= x < self.width and 0 <= y < self.height):
             return {"available": False, "reason": "outside the frame"}
+        key = (frame, x, y)
+        deadline = time.monotonic() + float(wait)
         with self._lock:
+            while True:
+                done = self._pixels.get(key)
+                if done is not None:
+                    return done
+                if key not in self._pixel_jobs:
+                    self._pixel_jobs.add(key)
+                    threading.Thread(
+                        target=self._compute_pixel,
+                        args=(key, self._epoch),
+                        name=f"algan-viewer-pixel-{frame}",
+                        daemon=True,
+                    ).start()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._closed:
+                    return {"pending": True, "frame": frame, "x": x, "y": y}
+                self._pixel_ready.wait(remaining)
+
+    def _compute_pixel(self, key, epoch):
+        """Run one inspection and publish it, whether it works or not.
+
+        An exception here has to become a *result*, not a lost thread: the page
+        is polling for this key and would otherwise poll until it gave up, with
+        nothing to show for it.
+
+        ``epoch`` is the resolution this was started under. If it has moved on,
+        the answer describes a frame of a different size and is dropped -- the
+        waiter then finds neither a result nor a job and starts a fresh one.
+        """
+        try:
+            payload = self._inspect_pixel(*key)
+        except Exception as exc:  # noqa: BLE001 -- reported to the page as-is
+            payload = {
+                "available": False,
+                "frame": key[0],
+                "x": key[1],
+                "y": key[2],
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        with self._lock:
+            if epoch == self._epoch:
+                self._pixels[key] = payload
+                self._pixel_order.append(key)
+                while len(self._pixel_order) > MAX_CACHED_PIXELS:
+                    self._pixels.pop(self._pixel_order.pop(0), None)
+            self._pixel_jobs.discard(key)
+            self._pixel_ready.notify_all()
+
+    def _inspect_pixel(self, frame, x, y):
+        """The inspection itself: one capture-armed render, read at one pixel."""
+        with self._scene():
             fragment_capture.arm()
             try:
                 self._render_range(frame, frame + 1, store=False)
@@ -296,7 +548,15 @@ class ViewerSession:
                 return False
             generation = self._generation
             end = min(start + CHUNK_FRAMES, self.total_frames)
-            self._render_range(start, end, store=True, generation=generation)
+        # Outside the bookkeeping lock, and behind anything already queued for
+        # the Scene: rendering ahead is speculative, and a request is not.
+        self._stand_aside()
+        if self._closed:
+            return False
+        with self._scene():
+            self._render_range(
+                start, end, store=True, generation=generation, yielding=True
+            )
         return True
 
     def _next_gap(self):
@@ -309,13 +569,19 @@ class ViewerSession:
                 return index
         return None
 
-    def _render_range(self, start, end, *, store, generation=None):
+    def _render_range(self, start, end, *, store, generation=None, yielding=False):
         """Render ``[start, end)`` and, if asked, cache the PNGs.
 
-        Runs with the lock held. ``preserving_authoring_state`` is what keeps
-        the Scene re-renderable: a render resolves the timeline's replay windows
-        into fixed timestamps, and leaving those behind makes every later render
-        stop its animations early.
+        Runs with ``_scene_lock`` held. ``preserving_authoring_state`` is what
+        keeps the Scene re-renderable: a render resolves the timeline's replay
+        windows into fixed timestamps, and leaving those behind makes every
+        later render stop its animations early.
+
+        ``yielding`` is for the worker's speculative chunks: it gives up the
+        rest of the chunk once something is queued for the Scene, so a request
+        waits for the batch in flight rather than for the chunk. A caller that
+        is itself serving a request (``pixel``) leaves it off -- it is the one
+        being waited for, and abandoning its own render would answer nothing.
         """
         scene = self.scene
         previous = scene.video_settings
@@ -345,6 +611,12 @@ class ViewerSession:
                         # The page moved. Finish this batch -- it is already
                         # materialized -- but do not start the next one.
                         break
+                    if yielding and self._scene_is_wanted():
+                        # Somebody is queued behind this chunk. Frames dropped
+                        # here are not lost: ``_next_gap`` finds them again on
+                        # the next pass, and the wait to be served is now one
+                        # batch rather than the rest of the video.
+                        break
         finally:
             if scene.video_settings is not previous:
                 scene.set_video_settings(previous, _explicit=explicit)
@@ -354,12 +626,17 @@ class ViewerSession:
         from PIL import Image
 
         buffer = io.BytesIO()
+        # Encoded outside the lock: PNG compression is the slow part, and
+        # holding the bookkeeping lock through it would stall ``/api/state``
+        # for exactly the reason the two locks exist.
         Image.fromarray(frame.contiguous().numpy()).save(buffer, format="PNG")
-        self._cache[index] = buffer.getvalue()
-        self._order.append(index)
-        while len(self._order) > MAX_CACHED_FRAMES:
-            self._cache.pop(self._order.pop(0), None)
-        self._frame_ready.notify_all()
+        png = buffer.getvalue()
+        with self._lock:
+            self._cache[index] = png
+            self._order.append(index)
+            while len(self._order) > MAX_CACHED_FRAMES:
+                self._cache.pop(self._order.pop(0), None)
+            self._frame_ready.notify_all()
 
     def close(self, timeout=30.0):
         """Stop the worker and wait for it to actually leave the Scene alone.
@@ -372,6 +649,12 @@ class ViewerSession:
         """
         self._closed = True
         self._work.set()
+        with self._lock:
+            # A worker parked in ``_stand_aside`` is not waiting on ``_work``,
+            # and a request parked on an inspection needs to be let go too.
+            self._scene_free.notify_all()
+            self._frame_ready.notify_all()
+            self._pixel_ready.notify_all()
         worker = self._worker
         if worker is not None and worker.is_alive():
             worker.join(timeout)

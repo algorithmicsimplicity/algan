@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import BLUE, OUT, PREVIEW, RED, UP, Cube, Scene, Square, view
+from algan import BLUE, OUT, PREVIEW, RED, UP, Cube, Scene, Square
 from algan.rendering import fragment_capture
 from algan.viewer.pixels import PixelRecord
 
@@ -242,7 +242,7 @@ def test_view_reports_fragments_for_a_clicked_pixel(fresh_scene):
     """The session route the page actually calls, end to end."""
     cube = Cube().set_color(BLUE).spawn()
     cube.rotate(45, UP)
-    handle = view(block=False, open_browser=False, video_settings=TINY)
+    handle = Scene.view(TINY, block=False, open_browser=False)
     try:
         session = handle.session
         image_frame = session.total_frames - 1
@@ -267,7 +267,7 @@ def test_view_reports_fragments_for_a_clicked_pixel(fresh_scene):
 
 def test_pixel_outside_the_frame_is_refused_not_guessed(fresh_scene):
     Square().spawn()
-    handle = view(block=False, open_browser=False, video_settings=TINY)
+    handle = Scene.view(TINY, block=False, open_browser=False)
     try:
         answer = handle.session.pixel(0, 9999, 9999)
         assert answer["available"] is False

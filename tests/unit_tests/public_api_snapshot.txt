@@ -378,4 +378,3 @@ set_log_level
 set_progress_style
 standard_shader
 toon_shader
-view

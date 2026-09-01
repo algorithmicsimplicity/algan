@@ -16,6 +16,7 @@ Routes:
 ``GET /api/children?node=``     one node's children
 ``GET /api/attrs?node=&frame=`` one node's animatable attributes
 ``GET /api/pixel?frame=&x=&y=`` the fragment list behind one pixel
+``POST /api/resolution?name=``  re-render everything at another resolution
 ``POST /api/shutdown``          stop serving
 """
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -105,10 +107,26 @@ class _Handler(BaseHTTPRequestHandler):
         return self._error(HTTPStatus.NOT_FOUND, "no such route")
 
     def do_POST(self):  # noqa: N802
-        if urlparse(self.path).path == "/api/shutdown":
+        url = urlparse(self.path)
+        if url.path == "/api/shutdown":
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return None
+        if url.path == "/api/resolution":
+            # POST, not GET: this one throws away every rendered frame and
+            # starts the video again at another size.
+            try:
+                name = _one(parse_qs(url.query), "name")
+                payload = self.session.set_resolution(name)
+            except (TypeError, ValueError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return self._error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}"
+                )
+            if payload is None:
+                return self._error(HTTPStatus.NOT_FOUND, "no such resolution")
+            return self._json(payload)
         return self._error(HTTPStatus.NOT_FOUND, "no such route")
 
     # -- replies ----------------------------------------------------------
@@ -152,7 +170,17 @@ class ViewerServer(ThreadingHTTPServer):
     """An HTTP server bound to one :class:`~algan.viewer.session.ViewerSession`."""
 
     daemon_threads = True
-    allow_reuse_address = True
+
+    # POSIX only, and deliberately so. There it means "do not make me wait out
+    # TIME_WAIT", which is what you want when re-running a script on a fixed
+    # ``port=``. On Windows the same flag means something else entirely: it lets
+    # a second socket bind a port that is *already in use*, and connections then
+    # go to whichever bound last. Two viewers on one port is not a hypothetical
+    # -- it happened here, four deep, and the failure it produces is vicious:
+    # requests are split between the servers, and killing one makes the port
+    # start refusing connections instantly, which a page reports as
+    # ``TypeError: Failed to fetch``. Better to fail loudly at bind time.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, session, host="127.0.0.1", port=0):
         super().__init__((host, port), _Handler)

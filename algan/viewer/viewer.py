@@ -1,4 +1,4 @@
-"""``view()``: open the Scene you have authored in an interactive viewer."""
+"""``Scene.view()``: open the Scene you have authored in an interactive viewer."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ logger = get_logger()
 class ViewerHandle:
     """A running viewer, and the means to stop it.
 
-    Returned by :func:`view`. Also a context manager, so a script can open a
-    viewer for as long as it needs one and be sure the port is released.
+    Returned by :meth:`~algan.scene.Scene.view`. Also a context manager, so a
+    script can open a viewer for as long as it needs one and be sure the port is
+    released.
     """
 
     def __init__(self, server, session):
@@ -74,68 +75,14 @@ def _view(
     open_browser: bool = True,
     block: bool = True,
 ) -> ViewerHandle:
-    """Open the Scene in an interactive viewer.
+    """Implementation of :meth:`algan.scene.Scene.view`.
 
-    Starts a small web server on this machine and points a browser at it. The
-    page plays the Scene as it stands, and lets you stop on a frame and ask what
-    is in it: the Scene's mobs as a tree with their animatable attributes, any
-    pixel's colour, and the list of surfaces behind that pixel, nearest first,
-    each with its depth and the mob it came from.
-
-    Frames are rendered as you reach them rather than up front, so the window
-    opens immediately and seeking costs one chunk of frames. Nothing is written
-    to disk, and the Scene is left exactly as authored -- you can keep adding to
-    it, or call :meth:`~algan.scene.Scene.save_video`, afterwards.
-
-    The video is the Scene as it stands when you call this. Frames already
-    rendered are kept, so if you go on authoring the same Scene from a REPL
-    (``block=False``), open a new viewer to see the additions rather than
-    expecting this one to grow.
-
-    Parameters
-    ----------
-    scene
-        The Scene to look at. Defaults to ``None``, meaning the active Scene.
-    video_settings
-        Resolution and anti-aliasing to render at, normally a preset such as
-        ``HD``. Defaults to ``None``, meaning the ``PREVIEW`` preset's
-        resolution at the Scene's own frame rate -- so seeking stays quick while
-        the frame numbers still match the video the Scene would produce.
-    port
-        Port to serve on. Defaults to 0, meaning any free port.
-    open_browser
-        Whether to open the page in your default browser. Defaults to True.
-    block
-        Whether to serve until interrupted. Defaults to True, which is what a
-        script wants: the viewer stays up until you close it with Ctrl-C. False
-        returns immediately with the viewer running in the background, which is
-        what a REPL or a test wants. Note that a blocking viewer running on the
-        warm render daemon occupies it until you stop it, since the daemon runs
-        one script at a time.
-
-    Returns
-    -------
-    ViewerHandle
-        The running viewer. It carries the ``url`` being served and a ``stop()``
-        that shuts it down, and works as a context manager.
-
-    Animation
-    ---------
-    Records nothing and renders nothing until the page asks for a frame. The
-    Scene's timeline, its mobs and its video settings are all left as they were.
-
-    Examples
-    --------
-    .. code-block:: python
-
-        square = Square().spawn()
-        square.move(RIGHT)
-
-        view()  # opens a browser, serves until Ctrl-C
-
-        handle = view(block=False)  # keep scripting while it runs
-        print(handle.url)
-        handle.stop()
+    Private on purpose. The viewer is reached from the Scene and nowhere else --
+    ``view`` is too general a name to export from a package whose ``__all__`` a
+    user dumps into their own namespace with ``from algan import *``. The
+    user-facing contract, including every parameter, is documented on
+    :meth:`~algan.scene.Scene.view`; ``scene`` here is the Scene to look at, and
+    defaults to the active one.
     """
     if scene is None:
         from algan.scene import Scene
@@ -158,7 +105,11 @@ def _view(
     try:
         handle.serve_forever()
     except KeyboardInterrupt:
-        print("\nAlgan viewer stopped.")
+        # Say it before stopping, not after: ``stop`` waits for the render batch
+        # in flight, which can take tens of seconds, and a Ctrl-C that prints
+        # nothing until it is over reads as a viewer that ignored it.
+        print("\nAlgan viewer stopping (waiting for the batch in flight)...")
     finally:
         handle.stop()
+        print("Algan viewer stopped.")
     return handle

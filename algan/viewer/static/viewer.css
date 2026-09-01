@@ -54,22 +54,48 @@ h2 {
 }
 .toggle { display: block; color: var(--dim); font-size: 12px; margin-bottom: 8px; }
 
+.stage-tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--dim);
+  font-size: 12px;
+}
+.stage-tools label { display: flex; align-items: center; gap: 6px; }
+.stage-tools select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+}
+.stage-tools select:hover { border-color: var(--accent); }
+.stage-tools .zoom { flex: 1; min-width: 160px; }
+.stage-tools input[type="range"] { flex: 1; min-width: 90px; accent-color: var(--accent); }
+#zoom-readout { min-width: 48px; text-align: right; }
+button.small { min-width: 0; padding: 3px 10px; font-size: 12px; }
+
 .stage {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* Scrolls rather than shrinks once zoomed past the fit, which is what makes
+     zoom useful: you pan to the part you are inspecting. ``margin: auto`` on
+     the canvas is what centres it while it is still smaller than the stage --
+     ``justify-content: center`` would centre it too, but then clip the top and
+     left of anything larger instead of letting it scroll. */
+  overflow: auto;
   min-height: 0;
   background: #0e1013;
   border: 1px solid var(--line);
   border-radius: 4px;
 }
 canvas {
-  /* Fill the stage but keep the frame's aspect ratio, so the pixel the mouse is
-     over maps onto a whole pixel of the render however the window is sized. */
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  /* Sized in CSS pixels by the script, as the fit-to-stage scale times the zoom,
+     so the element box is exactly the drawn image: no letterboxing to undo when
+     mapping the mouse back to a pixel of the render. */
+  margin: auto;
   image-rendering: pixelated;
   cursor: crosshair;
   display: block;

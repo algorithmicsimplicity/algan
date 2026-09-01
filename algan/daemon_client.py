@@ -71,9 +71,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import queue
 import socket
 import struct
 import sys
+import threading
 import time
 
 from algan.environment import (
@@ -266,6 +268,54 @@ def read_frame(stream):
     if payload is None:
         return None, b""
     return kind, payload
+
+
+def read_frames(stream, poll=0.2):
+    """Yield the daemon's frames without going deaf to Ctrl-C.
+
+    Reading the socket on the calling thread is what made a long daemon run
+    unstoppable on Windows. A blocking ``recv`` with no timeout is not
+    interrupted by a console Ctrl-C there, so a client parked in one never
+    reaches the eval loop, and the SIGINT handler
+    :func:`_install_cancel_handler` installed never runs -- not even the
+    second-Ctrl-C escape hatch inside it. Nothing was forwarded to the daemon
+    and nothing gave up locally, so the terminal simply froze. Ordinary renders
+    hid it by ending on their own; ``Scene.view()``, which serves until stopped,
+    does not.
+
+    So the read happens on a worker and this thread waits on a queue with a
+    timeout. Returning to the interpreter every ``poll`` seconds is what lets a
+    pending signal be delivered.
+
+    The worker is a daemon thread and is deliberately never joined: it is parked
+    in exactly the read this exists to avoid waiting for. It ends when the
+    socket closes.
+    """
+    frames = queue.Queue()
+
+    def pump():
+        try:
+            while True:
+                frame = read_frame(stream)
+                frames.put((None, frame))
+                if frame[0] is None:
+                    return
+        except BaseException as exc:  # noqa: BLE001 -- handed to the consumer
+            frames.put((exc, None))
+
+    threading.Thread(
+        target=pump, name="algan-daemon-client-reader", daemon=True
+    ).start()
+    while True:
+        try:
+            error, frame = frames.get(timeout=poll)
+        except queue.Empty:
+            continue
+        if error is not None:
+            raise error
+        yield frame
+        if frame[0] is None:
+            return
 
 
 def _read_exactly(stream, count):
@@ -467,8 +517,7 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
         stream.flush()
         _install_cancel_handler(state)
-        while True:
-            kind, data = read_frame(stream)
+        for kind, data in read_frames(stream):
             if kind is None:
                 if started:
                     raise DaemonRunFailed(
