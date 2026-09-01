@@ -368,19 +368,6 @@ ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest tests/path_traced -
 These variables are read by the harnesses rather than by the package, so
 `import algan` warns that it does not recognise them. That is expected.
 
-**Never baseline the first render on a fresh machine — render twice and keep
-the second.** The first run of a scene containing `Tex`/`MathTex` populates the
-persistent Manim SVG geometry cache (`algan_cache/`), and its glyph
-antialiasing is not what every subsequent run produces. Measured while
-re-baselining `text_and_media` on a fresh container: the cold run differed from
-the two warm runs after it by up to **18 channel values** across 100 of 182
-frames — nine times the tolerance — confined to `MathTex` glyph edges, while
-runs two and three were byte-identical to each other and the warm output sat
-closer to the CUDA baseline than the cold one did. Baseline the cold render and
-the suite fails on the very next run, on the same machine, for no reason anyone
-would think to look for. The other five scenes were bit-stable cold-to-warm, so
-this is specifically a Tex-geometry-cache effect.
-
 Frames are compared channel-wise with a tolerance of 2 by the
 `assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
 suites share so they cannot drift apart on tolerance. That tolerance is not

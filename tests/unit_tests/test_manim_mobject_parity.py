@@ -260,3 +260,46 @@ def test_svg_and_vector_field_families_convert_nested_geometry(tmp_path):
             and descendant.get_render_primitives() is not None
             for descendant in mob.get_descendants()
         )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda: algan.Arrow(algan.LEFT, algan.RIGHT), id="arrow"),
+        pytest.param(
+            lambda: mn.DoubleArrow(algan.LEFT, algan.RIGHT), id="double_arrow"
+        ),
+        pytest.param(lambda: mn.Vector(algan.RIGHT * 2), id="vector"),
+        pytest.param(lambda: algan.Axes(), id="axes"),
+        pytest.param(lambda: mn.Star(), id="star"),
+    ],
+)
+def test_building_the_same_compat_mob_twice_gives_the_same_geometry(build):
+    """Repeated construction is bit-identical, tips and all.
+
+    An earlier investigation recorded that a second ``Arrow`` built with the
+    same arguments disagreed with the first by ~2.0 -- the arrow's own length --
+    and a parity fixture was rewritten around the claim. It is not true: an
+    ``Arrow`` shortens its shaft and adds a tip inside ``__init__`` and mutates
+    nothing outside itself, and neither does anything else here. Measured on
+    every one of the 77 Manim Mobject classes that construct with no arguments,
+    three builds each: all identical. This pins the ones whose ``__init__``
+    does the most work, so the claim cannot be re-invented from a flaky reading.
+    """
+
+    def points_of(mob):
+        family = list(mob.manim_mobject.family_members_with_points())
+        assert family, "the fixture built a Mob with no geometry"
+        return np.concatenate([np.asarray(part.points) for part in family])
+
+    with algan.Off():
+        first = points_of(build())
+        second = points_of(build())
+        third = points_of(build())
+
+    assert second.shape == first.shape
+    assert third.shape == first.shape
+    assert np.array_equal(second, first), (
+        f"the second build differs by {np.abs(second - first).max()}"
+    )
+    assert np.array_equal(third, first)
