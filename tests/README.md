@@ -238,6 +238,21 @@ what they are. Its docstring is worth reading before editing it: it is shaped
 by the kernel-variant cost, which is why it is one scene rather than several
 and why it contains no `Surface` geometry.
 
+## Pending: the full-render and path-traced baselines want regenerating
+
+The grid triangulation was re-wound so a surface triangle's cross product points
+outward, the same rule a polyhedron's faces follow
+(`agent_guidance/mobs_geometry.md`, "One rule for winding"). That moves scattered
+antialiased and texture-sampled pixels — the frames are visually identical, but
+the comparison is exact — so **`tests/full_renders` and `tests/path_traced` fail
+against their committed baselines on every device until those are regenerated**,
+CUDA and CPU alike. `tests/unit_tests` and `tests/fast` — everything CI runs —
+are unaffected and green.
+
+Regenerate with `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1` (see the invocations in each suite's test
+module), on a machine of each device, and look at the result before committing.
+
 ## Baselines are per device
 
 Each render suite keeps one baseline directory per device —

@@ -177,38 +177,41 @@ handedness does not track the normal's sign. Deriving it from the normal meant r
 normal re-rounded scattered antialiased pixels on every circuit and every glyph (measured at
 up to 58 channel values) for no visible gain.
 
-### One thing the flip left inconsistent
+### One rule for winding, and what settling it cost
 
-A **polyhedron's** faces are re-wound by `orient_faces_outward`, whose signed-volume test is
-the ordinary right-hand-rule one, so `cross(v1-v0, v2-v0)` on a polyhedron triangle points
-**out** of the solid. A **surface's** grid triangles keep the index order they always had,
-because that order is a *screen-space* contract — the renderer's backface bit is the
-projected winding — and their world-space cross therefore points **in**.
+`cross(v1-v0, v2-v0)` points **out** of the solid on every triangle Algan builds, a
+polyhedron's and a surface's alike. A polyhedron gets there through
+`orient_faces_outward`'s signed-volume test; a grid gets there from the vertex order in
+`get_grid_to_triangle_indices`. So `+cross` is the outward normal anywhere, which is what
+`_flat_corner_normals` (mesh.py, morph_conversions.py) and the degenerate-vertex-normal
+fallback in `_triangle_normal` both already assumed — neither carries a sign of its own.
 
-`tests/unit_tests/test_normal_orientation.py::test_revolved_solid_normals_face_outward` is
-the test that says so: it fails on the revolved family and passes on the flat one. Reversing
-the grid triangulation to agree (`t1 = (idx10, idx01, idx00)`) makes it pass and **regresses
-three pixel baselines** — measured: `complex_hierarchy_become` max 1 → 93,
-`shapes_and_timeline` 0 → 66, `solids_and_camera` 9 → 163 — so the two consumers want
-opposite orders and one of them needs an explicit sign instead. The kernels that read a
-geometric face normal mostly pass it straight to `_orient_hit_normals`, which turns it
-against the ray, which is why nothing visible depends on it today; the exposure is the
-fallback path for a mesh whose vertex normals are degenerate. **Unresolved** — it needs
-whoever owns the analytic-AA run rule.
+It was not always one rule. Finishing the z flip (748c8e7) left the grid on its old index
+order, read then as a *screen-space* contract — the renderer's backface bit is the projected
+winding — which put a grid triangle's outward normal at `-cross` while a polyhedron's stayed
+`+cross`. `test_normal_orientation.py::test_revolved_solid_normals_face_outward` is the test
+that asserts otherwise, and it failed on 24 revolved cases for as long as that held.
 
-Re-measured at `3d6d812`, against CPU baselines regenerated on the same machine in the same
-session so that staleness could not be mistaken for movement. The reversal still moves
-pixels, and on more scenes than the three above — `complex_hierarchy_become` 93,
-`materials_and_lighting` 190, `shapes_and_timeline` 66, `solids_and_camera` 163,
-`text_and_media` 84, with only `manim_compat_and_plots` and `tests/fast` holding. So the
-deferral stands on current code; the reversal is not a free fix that only looked expensive
-once.
+The deferral was on cost, not doubt: reversing the grid triangulation was measured to move
+three pixel baselines. Re-measured at `3d6d812` against CPU baselines regenerated on the same
+machine in the same session — so staleness could not be mistaken for movement — it moves
+five: `materials_and_lighting` 190, `solids_and_camera` 163, `complex_hierarchy_become` 93,
+`text_and_media` 84, `shapes_and_timeline` 66, with `manim_compat_and_plots` byte-identical
+and `tests/fast` unaffected.
 
-Two things that measurement did settle, and that are worth not re-deriving. The reversal
-alone makes all 38 tests in `test_normal_orientation.py` pass, so the winding really is the
-whole of what that arm is asserting. And the revolved solids' **vertex** normals are already
-outward — measured `dot = +1.000` on `Cylinder`, `Sphere`, `Cone` and `Torus`, every corner
-lit — so nothing is mis-shaded today and the fallback is the only exposure, exactly as
-above. What makes this a CUDA-machine job rather than a hard one is the baselines: the
-change moves pixels on every device, so landing it means regenerating
-`expected_outputs_cuda/` in the same commit, and a CPU container cannot.
+**Those numbers are not a regression, and the word was wrong.** Rendered side by side at each
+scene's worst frame, the two are indistinguishable: all twelve material spheres shade
+identically, every solid keeps its silhouette, nothing is lit from the wrong side and no face
+is culled that should not be. What moves is scattered single pixels — antialiasing and
+texture sampling re-rounding when vertex order changes, the same effect the analytic-AA plane
+frame section above describes. A large max-channel number over a handful of pixels is what
+this suite reports for a sampling shift; it is not a measure of how wrong a frame looks.
+
+Two other things that measurement settled. The reversal alone turns all 38 tests in that file
+green, so the winding is the whole of what its revolved arm asserts. And the revolved solids'
+**vertex** normals were already outward throughout — `dot = +1.000` on `Cylinder`, `Sphere`,
+`Cone` and `Torus`, every corner lit — so nothing was ever mis-shaded, and the exposure was
+only ever the fallback.
+
+The cost that remains is bookkeeping: the pixels move on **every** device, so the CUDA and CPU
+baseline sets both have to be regenerated, and a CPU-only machine can do half of it.

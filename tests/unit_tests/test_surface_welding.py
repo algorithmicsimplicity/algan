@@ -58,9 +58,14 @@ def test_the_unwelded_topology_is_exactly_what_it_always_was():
     """
     tris = _tris((False, False, False))
     assert tris.shape == ((W - 1) * (H - 1) * 2, 3)
-    # Cell (0, 0) is the two triangles the original construction emitted.
-    assert tris[0].tolist() == [0, 1, H]
-    assert tris[1].tolist() == [H, 1, H + 1]
+    # Cell (0, 0) is the two triangles the construction emits, wound so that
+    # each one's cross product points OUT of the surface -- the same rule a
+    # polyhedron's faces follow. The vertex SETS are the original
+    # construction's; only the order within each is reversed, which is what
+    # gave the grid an outward normal to match (agent_guidance/
+    # mobs_geometry.md, "One rule for winding").
+    assert tris[0].tolist() == [H, 1, 0]
+    assert tris[1].tolist() == [H + 1, 1, H]
 
 
 def test_welding_the_seam_never_indexes_the_duplicate_column():

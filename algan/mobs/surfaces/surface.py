@@ -266,27 +266,31 @@ def get_grid_to_triangle_indices(
         idx10 = vertex_id(i_next, j_indices)
         idx11 = vertex_id(i_next, j_next)
 
-        # The index order is the original one, and it is a SCREEN-space
-        # contract: the renderer's backface bit is the projected winding, and
-        # mirroring the world and the camera together (which is what moving
-        # OUTWARD to +z did) leaves that projection unchanged. The world-space
-        # cross of these three did flip with everything else, so a grid
-        # triangle's outward normal is MINUS its cross, while a polyhedron's is
-        # plus its own -- the inconsistency written up in
-        # ``agent_guidance/mobs_geometry.md`` and asserted by
-        # ``test_normal_orientation.py``, whose revolved arm fails on it.
+        # Wound so that the world-space cross of each triangle points OUT of
+        # the surface, which is the same rule a polyhedron's faces follow
+        # (``orient_faces_outward``). One rule for both, so ``+cross`` is the
+        # outward normal anywhere in Algan -- which is what
+        # ``_flat_corner_normals`` (in mesh.py and morph_conversions.py) and
+        # the degenerate-vertex-normal fallback in ``_triangle_normal`` both
+        # assume, and neither of them applies a sign of its own.
         #
-        # Nothing here applies that minus: ``_flat_corner_normals`` (both of
-        # them, in mesh.py and morph_conversions.py) returns +cross, so a grid
-        # surface's FLAT normal is inward. It reaches no pixel today because a
-        # surface of revolution's vertex normals are never degenerate and
-        # ``_faces_viewer`` aligns the geometric normal to them before reading
-        # its sign; the exposure is the degenerate-vertex-normal fallback in
-        # ``_triangle_normal``. Reversing the order below fixes the sign and
-        # moves pixels on five of the six full-render scenes, so it has to land
-        # together with regenerated baselines for EVERY device.
-        t1 = torch.stack((idx00, idx01, idx10), dim=-1)
-        t2 = torch.stack((idx10, idx01, idx11), dim=-1)
+        # This is the reverse of the order the grid carried until the z flip
+        # (748c8e7) was finished. That order was kept because it was read as a
+        # SCREEN-space contract, which left a grid triangle's outward normal at
+        # -cross while a polyhedron's was +cross;
+        # ``test_normal_orientation.py``'s revolved arm is what asserted the
+        # inconsistency, and failed on it for 24 cases. Nothing depends on the
+        # projected winding for its own sake -- ``_faces_viewer`` aligns the
+        # geometric normal to the shading normal before reading its sign -- so
+        # re-winding here costs no correctness and buys one rule.
+        #
+        # It does move pixels: antialiasing and texture sampling re-round when
+        # vertex order changes, measured at up to 190 channel values across
+        # five of the six full-render scenes with the images visually
+        # indistinguishable either way. tests/fast is unaffected. See
+        # ``agent_guidance/mobs_geometry.md`` for the measurement.
+        t1 = torch.stack((idx10, idx01, idx00), dim=-1)
+        t2 = torch.stack((idx11, idx01, idx10), dim=-1)
         stacked = torch.stack((t1, t2), dim=-2)
         if pole_lo or pole_hi:
             # Collapsing a pole makes exactly one triangle of each adjacent
