@@ -195,3 +195,20 @@ geometric face normal mostly pass it straight to `_orient_hit_normals`, which tu
 against the ray, which is why nothing visible depends on it today; the exposure is the
 fallback path for a mesh whose vertex normals are degenerate. **Unresolved** — it needs
 whoever owns the analytic-AA run rule.
+
+Re-measured at `3d6d812`, against CPU baselines regenerated on the same machine in the same
+session so that staleness could not be mistaken for movement. The reversal still moves
+pixels, and on more scenes than the three above — `complex_hierarchy_become` 93,
+`materials_and_lighting` 190, `shapes_and_timeline` 66, `solids_and_camera` 163,
+`text_and_media` 84, with only `manim_compat_and_plots` and `tests/fast` holding. So the
+deferral stands on current code; the reversal is not a free fix that only looked expensive
+once.
+
+Two things that measurement did settle, and that are worth not re-deriving. The reversal
+alone makes all 38 tests in `test_normal_orientation.py` pass, so the winding really is the
+whole of what that arm is asserting. And the revolved solids' **vertex** normals are already
+outward — measured `dot = +1.000` on `Cylinder`, `Sphere`, `Cone` and `Torus`, every corner
+lit — so nothing is mis-shaded today and the fallback is the only exposure, exactly as
+above. What makes this a CUDA-machine job rather than a hard one is the baselines: the
+change moves pixels on every device, so landing it means regenerating
+`expected_outputs_cuda/` in the same commit, and a CPU container cannot.

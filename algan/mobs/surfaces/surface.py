@@ -270,9 +270,21 @@ def get_grid_to_triangle_indices(
         # contract: the renderer's backface bit is the projected winding, and
         # mirroring the world and the camera together (which is what moving
         # OUTWARD to +z did) leaves that projection unchanged. The world-space
-        # cross of these three did flip with everything else, which is why the
-        # outward normal is -cross here -- see ``_flat_corner_normals`` and
-        # ``test_normal_orientation.py``.
+        # cross of these three did flip with everything else, so a grid
+        # triangle's outward normal is MINUS its cross, while a polyhedron's is
+        # plus its own -- the inconsistency written up in
+        # ``agent_guidance/mobs_geometry.md`` and asserted by
+        # ``test_normal_orientation.py``, whose revolved arm fails on it.
+        #
+        # Nothing here applies that minus: ``_flat_corner_normals`` (both of
+        # them, in mesh.py and morph_conversions.py) returns +cross, so a grid
+        # surface's FLAT normal is inward. It reaches no pixel today because a
+        # surface of revolution's vertex normals are never degenerate and
+        # ``_faces_viewer`` aligns the geometric normal to them before reading
+        # its sign; the exposure is the degenerate-vertex-normal fallback in
+        # ``_triangle_normal``. Reversing the order below fixes the sign and
+        # moves pixels on five of the six full-render scenes, so it has to land
+        # together with regenerated baselines for EVERY device.
         t1 = torch.stack((idx00, idx01, idx10), dim=-1)
         t2 = torch.stack((idx10, idx01, idx11), dim=-1)
         stacked = torch.stack((t1, t2), dim=-2)
