@@ -106,7 +106,7 @@ def test_a_lone_texel_sits_at_the_centre_of_its_span():
 
     # One degenerate axis, one sampled: the sampled axis spreads, the degenerate
     # one stays on the frame's centre line.
-    strip = Square(texture_grid_width=4, texture_grid_height=1, add_to_scene=False)
+    strip = Square(grid_width=4, grid_height=1, add_to_scene=False)
     offsets = strip.texture_points.location.reshape(-1, 3) - strip.location.reshape(
         1, 3
     )
