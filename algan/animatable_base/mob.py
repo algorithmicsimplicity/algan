@@ -1490,6 +1490,13 @@ class Mob(
         context's runtime (1 second by default), carrying its children along so
         their offsets from it are preserved. ``mob.location = ORIGIN`` and
         ``mob.move_to(ORIGIN)`` are the same operation.
+
+        This is also the point the Mob turns and scales about, so a shape is
+        anchored at its own centroid -- the point it balances on, which for a
+        ``Triangle`` is a quarter of a unit below the middle of the box around
+        it. :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_center`
+        reports that box's midpoint instead, when what you want is the middle of
+        what the viewer sees rather than the point it pivots on.
         """
         return self.get_animated_attribute("location")
 

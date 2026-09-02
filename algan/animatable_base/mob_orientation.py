@@ -99,7 +99,9 @@ class MobOrientationMixin:
             shape in the screen plane.
         about
             Point to rotate around, shape ``(*, 3)``. Defaults to ``None``,
-            meaning rotate in place about the Mob's own center.
+            meaning rotate in place about the Mob's own
+            :attr:`~algan.animatable_base.mob.Mob.location`, which for a shape
+            is its centroid.
         degrees
             Whether ``angle`` is in degrees. Defaults to True; pass False to give
             it in radians.
