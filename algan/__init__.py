@@ -304,15 +304,15 @@ def clear_cached_kernels():
     clear_cache(include_kernels=True)
 
 
-# from algan.scenes.default_scene import default_scene_initializer
-def default_scene_initializer(scene):
+from algan.scenes.default_scene import default_scene_initializer
+"""def default_scene_initializer(scene):
     scene.camera = Camera(scene=scene, location=CAMERA_ORIGIN).spawn(animate=False)
     scene.light_sources = []
     PointLight(
         scene=scene,
         location=scene.camera.location + UP * 1 + RIGHT * 5 + OUTWARD * 1,
         color=WHITE,
-    ).spawn(animate=False)
+    ).spawn(animate=False)"""
 
 
 # The SceneManager singleton is created lazily. Its default Scene is created

@@ -162,91 +162,92 @@ def apply_manim_defaults(
             )
         )
 
-    if background:
-        scene.set_background(BLACK.clone())
+    with Off():
+        if background:
+            scene.set_background(BLACK.clone())
 
-    if camera:
-        scene_camera = scene.get_camera()
-        if scene_camera is not None:
-            # Manim's eye sits focal_distance from the frame plane on its +z
-            # side, which is OUTWARD * focal_distance -- already where an Algan
-            # camera looks from.
-            scene_camera.move_to(ORIGIN + OUTWARD * MANIM_FOCAL_DISTANCE)
-            scene_camera.look_at(ORIGIN)
-            scene_camera.set_fov(manim_fov())
+        if camera:
+            scene_camera = scene.get_camera()
+            if scene_camera is not None:
+                # Manim's eye sits focal_distance from the frame plane on its +z
+                # side, which is OUTWARD * focal_distance -- already where an Algan
+                # camera looks from.
+                scene_camera.move_to(ORIGIN + OUTWARD * MANIM_FOCAL_DISTANCE)
+                scene_camera.look_at(ORIGIN)
+                scene_camera.set_fov(manim_fov())
 
-    if shading:
-        scene.clear_lights()
-        PointLight(
-            scene=scene,
-            location=torch.tensor(MANIM_LIGHT_SOURCE).view(1, 1, 3),
-            color=WHITE,
-        ).spawn(animate=False)
-        # What the default material reaches, engine by engine. Manim gates its
-        # shading on ONE flag -- ``VMobject.shade_in_3d``, which its
-        # ThreeDCamera checks in ``modified_rgbas`` before calling
-        # ``get_shaded_rgb`` -- so a plain 2-D VMobject is Cairo-filled in its
-        # own colour and a ThreeDVMobject or Surface is lit. Algan reads the
-        # same flag: ``ManimMob`` carries it across, and a circuit that has it
-        # renders as PN patches (3-D geometry a material and the lights reach)
-        # rather than as an unlit analytic circuit. That is what makes a flat
-        # ``Cube`` face shade -- geometry alone would call it planar and leave
-        # it unlit where Manim shades it -- while a plain 2-D shape keeps
-        # matching on both sides by getting no lighting at all.
-        # ``ManimMaterial`` is what reproduces the law itself. The light above
-        # is what it responds to, placed where Manim's own light sits; a Mob
-        # given an explicitly lit material keeps it.
-        SETTINGS.style.set(default_material=ManimMaterial())
-        # Manim writes its colors straight out. Algan does too now -- this is
-        # its own default since 2026-08-22 -- so this is belt-and-braces against
-        # a Scene that turned tonemapping on. With the curve on, every fill
-        # darkens by about 10/255 and white lands on 222, uniformly enough to
-        # read as a color error rather than as a highlight roll-off. Off, a
-        # flat fill comes out byte-identical to Manim's.
-        SETTINGS.raytracing.set(tonemapping=False)
-        # And Manim does its ARITHMETIC in that same display-referred space:
-        # it composites alpha, antialiases and gradients sRGB values directly.
-        # Algan's default is a linear working space, which is the physically
-        # correct choice and the one three.js makes, but it puts a fill of
-        # opacity a on a^(1/2.2) of the colour -- MAROON at 0.55 lands on
-        # (150,71,87) where Manim puts (108,52,63). Matching Manim means
-        # matching its space. Measured on the parity scene: whole-frame mean
-        # 2.630 -> 1.636, the 0.55 fill 13.35 -> 0.49.
-        #
-        # This is a WHOLE-PIPELINE switch, not an alpha one: lighting goes
-        # display-referred with it, which is the rest of what Manim does. It is
-        # read through ti.static, so it costs nothing at runtime but compiles a
-        # separate kernel variant -- the first render after the switch pays a
-        # cold compile.
-        #
-        # And ti.static means it is really a PROCESS-START decision: flipping
-        # it after a render has already compiled kernels leaves those kernels
-        # in the old space while the host half of the pipeline moves, and the
-        # two disagree by ~24/255. ``use_manim_defaults`` is documented as a
-        # call you make once before building the Scene, which is before any
-        # render and therefore safe; a process that renders more than once
-        # wants ALGAN_LINEAR_COLOR=0 instead.
-        SETTINGS.raytracing.set(linear_color_space=False)
+        if shading:
+            scene.clear_lights()
+            PointLight(
+                scene=scene,
+                location=torch.tensor(MANIM_LIGHT_SOURCE).view(1, 1, 3),
+                color=WHITE,
+            ).spawn(animate=False)
+            # What the default material reaches, engine by engine. Manim gates its
+            # shading on ONE flag -- ``VMobject.shade_in_3d``, which its
+            # ThreeDCamera checks in ``modified_rgbas`` before calling
+            # ``get_shaded_rgb`` -- so a plain 2-D VMobject is Cairo-filled in its
+            # own colour and a ThreeDVMobject or Surface is lit. Algan reads the
+            # same flag: ``ManimMob`` carries it across, and a circuit that has it
+            # renders as PN patches (3-D geometry a material and the lights reach)
+            # rather than as an unlit analytic circuit. That is what makes a flat
+            # ``Cube`` face shade -- geometry alone would call it planar and leave
+            # it unlit where Manim shades it -- while a plain 2-D shape keeps
+            # matching on both sides by getting no lighting at all.
+            # ``ManimMaterial`` is what reproduces the law itself. The light above
+            # is what it responds to, placed where Manim's own light sits; a Mob
+            # given an explicitly lit material keeps it.
+            SETTINGS.style.set(default_material=ManimMaterial())
+            # Manim writes its colors straight out. Algan does too now -- this is
+            # its own default since 2026-08-22 -- so this is belt-and-braces against
+            # a Scene that turned tonemapping on. With the curve on, every fill
+            # darkens by about 10/255 and white lands on 222, uniformly enough to
+            # read as a color error rather than as a highlight roll-off. Off, a
+            # flat fill comes out byte-identical to Manim's.
+            SETTINGS.raytracing.set(tonemapping=False)
+            # And Manim does its ARITHMETIC in that same display-referred space:
+            # it composites alpha, antialiases and gradients sRGB values directly.
+            # Algan's default is a linear working space, which is the physically
+            # correct choice and the one three.js makes, but it puts a fill of
+            # opacity a on a^(1/2.2) of the colour -- MAROON at 0.55 lands on
+            # (150,71,87) where Manim puts (108,52,63). Matching Manim means
+            # matching its space. Measured on the parity scene: whole-frame mean
+            # 2.630 -> 1.636, the 0.55 fill 13.35 -> 0.49.
+            #
+            # This is a WHOLE-PIPELINE switch, not an alpha one: lighting goes
+            # display-referred with it, which is the rest of what Manim does. It is
+            # read through ti.static, so it costs nothing at runtime but compiles a
+            # separate kernel variant -- the first render after the switch pays a
+            # cold compile.
+            #
+            # And ti.static means it is really a PROCESS-START decision: flipping
+            # it after a render has already compiled kernels leaves those kernels
+            # in the old space while the host half of the pipeline moves, and the
+            # two disagree by ~24/255. ``use_manim_defaults`` is documented as a
+            # call you make once before building the Scene, which is before any
+            # render and therefore safe; a process that renders more than once
+            # wants ALGAN_LINEAR_COLOR=0 instead.
+            SETTINGS.raytracing.set(linear_color_space=False)
 
-    if stroke_geometry:
-        # Where the stroke goes. Manim strokes an SVG path: the stroke is
-        # centred on the outline and spends half its width outside. Algan lays
-        # a filled shape's stroke entirely inside instead, which keeps glyphs
-        # from fusing but leaves an imported Manim shape's silhouette half a
-        # stroke width too small -- the double outline that shows up in a
-        # parity diff of any stroked shape.
-        #
-        # And how wide it is. Algan's convention is the round "Manim's number
-        # is twice Algan's"; the exact figure is 2.0202, so an imported stroke
-        # is otherwise 1.01% too wide. Placement and width move together
-        # because the export conversions invert this one, and a ratio applied
-        # on the way in but not out would drift a round trip.
-        SETTINGS.style.set(
-            border_placement="centered",
-            manim_stroke_width_ratio=manim_stroke_width_ratio(),
-        )
+        if stroke_geometry:
+            # Where the stroke goes. Manim strokes an SVG path: the stroke is
+            # centred on the outline and spends half its width outside. Algan lays
+            # a filled shape's stroke entirely inside instead, which keeps glyphs
+            # from fusing but leaves an imported Manim shape's silhouette half a
+            # stroke width too small -- the double outline that shows up in a
+            # parity diff of any stroked shape.
+            #
+            # And how wide it is. Algan's convention is the round "Manim's number
+            # is twice Algan's"; the exact figure is 2.0202, so an imported stroke
+            # is otherwise 1.01% too wide. Placement and width move together
+            # because the export conversions invert this one, and a ratio applied
+            # on the way in but not out would drift a round trip.
+            SETTINGS.style.set(
+                border_placement="centered",
+                manim_stroke_width_ratio=manim_stroke_width_ratio(),
+            )
 
-    if shape_defaults:
-        SETTINGS.style.set(shape_style_profile="manim")
+        if shape_defaults:
+            SETTINGS.style.set(shape_style_profile="manim")
 
     return scene
