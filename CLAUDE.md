@@ -1,8 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-**Iff you are running on Claude Code Cloud you must also read `agent_guidance/CLAUDE_CLOUD.md`.**
+**Iff you are Claude Opus 5 you must also read `agent_guidance/opus5.md`.**
 
 This file is the operational quick-start: commands, hazards, and the API shape. It is short on purpose — the detail
 lives in `agent_guidance/`, split by topic so you read only what your task touches:
@@ -47,7 +46,6 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 - What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
 - **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never un-mark a test off run 1 or 2.
 - Run the **full** suite after touching the renderer, and before pushing. It is also what CI runs: CI names `tests/unit_tests tests/fast` as paths and does *not* pass `--fast`, so everything portable runs there.
-- **Taichi cost is per kernel variant, not per test**, charged to whichever test hits that variant first. Admitting one test of a group into the fast suite can pull in the whole variant's compile cost (this is why `test_raytracing_unit.py` is discussed as a whole). Adding PN geometry (`Sphere`/`Cylinder`/`Cone`/`Torus`/`Surface`) to `tests/fast/scene.py` costs ~20s on its own — use a `Polyhedron` subclass there.
 - Renders are compared **pixel-wise** against `expected_outputs_cuda/` (or `expected_outputs_cpu/`) in each render suite's own directory. Any channel deviation > 2 fails; diff videos land in that suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
