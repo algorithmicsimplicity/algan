@@ -26,6 +26,47 @@ levels reproduce the uniform barycentric grid exactly, and a smaller ``across``
 buys back the microtriangles a patch would otherwise spend resolving a direction
 its surface is flat along -- a cylinder's length, a cone's slant, an extruded
 profile.
+
+Which of these may be ``@compiled``
+-----------------------------------
+
+The dice is a chain of elementwise passes over the largest tensors the batch
+preparation builds, which is exactly what ``torch.compile`` fuses, and the
+functions here that carry no dividing constant and no ``F.normalize`` are
+decorated -- measured 3-8x each, on this module's real shapes.
+
+The rest are not, and must not be, because the level searches turn an ulp into
+a *discrete* difference. Inductor rewrites a division by a compile-time
+constant into a multiplication by its reciprocal
+(``torch/_inductor/lowering.py``, ``div_prim``), which is unconditional and not
+covered by the ``-fno-unsafe-math`` codegen the CPU backend otherwise uses;
+``1/3`` and ``1/6`` are not representable, so ``x / 3.0`` moves by up to an
+ulp, and ``F.normalize`` differs by an ulp for its own reasons. That ulp lands
+in the PN control net, the criterion kernels measure the moved net, a patch
+whose error sat on the threshold flips to the next subdivision level, and the
+tessellation genuinely changes: measured as **118 channel values** on
+``tests/full_renders/solids_and_camera`` against the eager arm, where the
+render suites allow 2. Both tessellations are within
+``render_tolerance_pixels``, so nothing is *wrong* -- but it is not the same
+picture, and that is the bar.
+
+So: :func:`logical_pn_control_points`,
+:func:`logical_pn_normal_control_points`,
+:func:`logical_pn_edge_control_points` and the trailing normalize of
+:func:`evaluate_logical_pn_normals` stay eager, and every compiled region here
+is verified bit-for-bit identical to its eager arm on captured render inputs.
+
+The decorated ones all take ``compiled``'s default ``dynamic=None``, although
+their leading extent -- the chunk's ``(frame, patch)`` row count -- moves on
+every call. ``dynamic=True`` makes the *trailing* extents symbolic too, and
+Inductor's CPU backend cannot vectorize an innermost loop whose length it does
+not know. Measured on this module's captured shapes, one thread: eager 5.7 /
+2.6 / 2.0 / 4.0 ms per :func:`evaluate_logical_pn` call against 0.50 / 0.35 /
+0.24 / 0.66 ms at ``dynamic=None`` and 15.6 / 15.9 / 15.3 / 0.47 ms at
+``dynamic=True``. Letting Dynamo specialize on the first shape and mark only
+the axis that actually moved as dynamic keeps the vectorized inner loop; a
+whole PN render (three meshes, three batches) recompiles the three of them six
+times between them, well inside the decorator's raised recompile limit.
 """
 
 from __future__ import annotations
@@ -36,6 +77,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.rendering.mps_compat import clamp_floor
+from algan.utils.torch_compile import compiled
 
 #: Frame height, in pixels, at which a ``render_tolerance_pixels`` budget is
 #: spent in full. Below it the budget is scaled down in proportion, so a small
@@ -104,6 +146,11 @@ def logical_pn_control_points(corners, normals):
     control depends only on that edge's endpoints and endpoint normals, so
     adjacent logical patches with shared vertex normals have the same curved
     boundary.
+
+    Deliberately **not** ``@compiled``, although it is the elementwise chain
+    torch.compile is best at -- measured 6.5x on this module's real shapes, and
+    given up anyway; see the module docstring on which of these may be
+    compiled and why this one may not.
     """
     p = corners.float()
     n = F.normalize(normals.float(), p=2, dim=-1)
@@ -147,7 +194,10 @@ def _edge_control(pi, pj, ni):
 
 
 def logical_pn_normal_control_points(corners, normals):
-    """Return the six control vectors of the quadratic PN normal patch."""
+    """Return the six control vectors of the quadratic PN normal patch.
+
+    Not ``@compiled``; see the module docstring.
+    """
     p = corners.float()
     n = F.normalize(normals.float(), p=2, dim=-1)
     p0, p1, p2 = p.unbind(-2)
@@ -220,6 +270,10 @@ def logical_pn_edge_control_points(corners, normals):
     lexicographic comparison of their ``(position, normal)`` keys, which makes
     the control tuple, and hence every float operation downstream of it,
     orientation-independent.
+
+    Not ``@compiled``; see the module docstring. This one is the sharpest case
+    of the rule stated there: what it feeds is a *level* decision, so an ulp of
+    difference is either invisible or a whole subdivision level.
     """
     p = corners.float()
     n = F.normalize(normals.float(), p=2, dim=-1)
@@ -267,6 +321,7 @@ def evaluate_cubic_curve(control_points, t):
     return total
 
 
+@compiled
 def evaluate_logical_pn(control_points, uv):
     """Evaluate cubic logical PN position patches at coordinates ``uv``.
 
@@ -281,6 +336,17 @@ def evaluate_logical_pn(control_points, uv):
     -------
     Tensor
         Shape ``[T, P, *uv.shape[:-1], 3]``.
+
+    Notes
+    -----
+    Compiled (:func:`~algan.utils.torch_compile.compiled`). The ten-term
+    Bernstein sum is the largest elementwise expression the batch preparation
+    evaluates -- one pass over ``[T, P, V, 3]`` per term in eager torch, and a
+    single fused pass compiled.
+
+    ``dynamic`` is left at its default even though the leading count is the
+    chunk's ``(frame, patch)`` row count, which differs on every call; the
+    module docstring has the measurement that says why forcing it on is a loss.
     """
     extra_dims = uv.ndim - 1
     controls = control_points.view(
@@ -347,7 +413,27 @@ def evaluate_logical_pn_per_patch(control_points, uv):
 
 
 def evaluate_logical_pn_normals(control_points, uv):
-    """Evaluate and normalize quadratic logical PN normal patches."""
+    """Evaluate and normalize quadratic logical PN normal patches.
+
+    The six-term sum is compiled (:func:`_evaluate_logical_pn_normals_fused`)
+    and the normalize is not: keeping it outside is what makes the compiled arm
+    bit-for-bit equal to the eager one, for the reason the module docstring
+    gives. It is also the cheap half -- one pass over the result, against six
+    over it plus the gathers.
+    """
+    return F.normalize(
+        _evaluate_logical_pn_normals_fused(control_points, uv), p=2, dim=-1
+    )
+
+
+@compiled
+def _evaluate_logical_pn_normals_fused(control_points, uv):
+    """The unnormalized quadratic normal patch of :func:`evaluate_logical_pn_normals`.
+
+    Split out so the normalize stays eager (module docstring), and compiled for
+    the same reason as :func:`evaluate_logical_pn`: six broadcast products and
+    their sum over ``[T, P, V, 3]``, which eager torch walks one pass at a time.
+    """
     extra_dims = uv.ndim - 1
     controls = control_points.view(
         *control_points.shape[:-2],
@@ -359,7 +445,7 @@ def evaluate_logical_pn_normals(control_points, uv):
     u = uv[..., 0].view(*uv_shape)
     v = uv[..., 1].view(*uv_shape)
     w = 1.0 - u - v
-    normals = (
+    return (
         (w * w) * controls[..., 0, :]
         + (u * u) * controls[..., 1, :]
         + (v * v) * controls[..., 2, :]
@@ -367,7 +453,6 @@ def evaluate_logical_pn_normals(control_points, uv):
         + (2.0 * u * v) * controls[..., 4, :]
         + (2.0 * w * v) * controls[..., 5, :]
     )
-    return F.normalize(normals, p=2, dim=-1)
 
 
 def _vertex_id_table(level, device):
@@ -543,17 +628,42 @@ def snap_boundary_values(values, pattern_edge_levels, edge_levels, boundary):
     shift = pattern_edge_levels.view(1, 3) - edge_levels
     if bool((shift <= 0).all()):
         return values
+    return _snap_boundary_values_fused(
+        values,
+        shift,
+        pattern_edge_levels,
+        boundary.edge_of_vertex,
+        boundary.index_on_edge,
+        boundary.is_interior,
+        boundary.edge_vertex_ids,
+    )
 
+
+@compiled
+def _snap_boundary_values_fused(
+    values,
+    shift,
+    pattern_edge_levels,
+    edge_of_vertex,
+    index_on_edge,
+    is_interior,
+    edge_vertex_ids,
+):
+    """The body of :func:`snap_boundary_values`, once the snap is known to bite.
+
+    A separate function so the caller keeps its ``bool((shift <= 0).all())``
+    early exit -- a data-dependent branch, which is exactly what a compiled
+    region must not contain -- and everything after it, an index chain with two
+    gathers and a blend, becomes one traced graph. The
+    :class:`SubdivisionBoundary` is unpacked at the call site for the same
+    reason: a NamedTuple of tensors crosses the boundary as its fields.
+    """
     num_patches, num_vertices = values.shape[0], values.shape[1]
     edge_counts = torch.bitwise_left_shift(
         torch.ones_like(pattern_edge_levels), pattern_edge_levels
     )
-    edges = boundary.edge_of_vertex.view(1, num_vertices).expand(
-        num_patches, num_vertices
-    )
-    positions = boundary.index_on_edge.view(1, num_vertices).expand(
-        num_patches, num_vertices
-    )
+    edges = edge_of_vertex.view(1, num_vertices).expand(num_patches, num_vertices)
+    positions = index_on_edge.view(1, num_vertices).expand(num_patches, num_vertices)
     vertex_shift = shift.clamp_min(0).gather(1, edges)
     step = torch.bitwise_left_shift(torch.ones_like(vertex_shift), vertex_shift)
     low_position = torch.bitwise_left_shift(
@@ -569,11 +679,9 @@ def snap_boundary_values(values, pattern_edge_levels, edge_levels, boundary):
         .view(1, num_vertices)
         .expand(num_patches, num_vertices)
     )
-    interior = boundary.is_interior.view(1, num_vertices)
-    low = torch.where(interior, identity, boundary.edge_vertex_ids[edges, low_position])
-    high = torch.where(
-        interior, identity, boundary.edge_vertex_ids[edges, high_position]
-    )
+    interior = is_interior.view(1, num_vertices)
+    low = torch.where(interior, identity, edge_vertex_ids[edges, low_position])
+    high = torch.where(interior, identity, edge_vertex_ids[edges, high_position])
     blend = torch.where(interior, torch.zeros_like(blend), blend).unsqueeze(-1)
 
     channels = values.shape[-1]
