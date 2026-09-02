@@ -5,10 +5,37 @@ import torch
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 from algan.settings import SETTINGS
 from algan.utils.color_space import linear_to_srgb
+from algan.utils.torch_compile import compiled
 
 __all__ = [
     "post_process_frames",
 ]
+
+
+@compiled(dynamic=True)
+def _supersample_box_filter(out, frames, anti_alias_level):
+    """The supersample box filter, as one pass over the render buffer.
+
+    Every preset but ``PREVIEW`` supersamples, so this runs on the full
+    render buffer of every real render: ``anti_alias_level ** 2`` strided
+    reads of it, each an eager pass that widens a slice to the accumulator's
+    float32 and adds it, plus the divide. Compiled they become one loop that
+    reads each source element once and writes the output once -- and the
+    accumulation order, hence the rounding, is exactly the loop's.
+
+    ``out`` is the caller's arena accumulator and is written by the single
+    ``copy_`` at the end, so the region stays idempotent under the decorator's
+    eager retry and the arena's high-water accounting is unchanged.
+    ``anti_alias_level`` arrives as a Python int, so Dynamo specialises the
+    loop it unrolls; the frame count moves per chunk, hence ``dynamic=True``.
+    """
+    acc = frames[:, ::anti_alias_level, ::anti_alias_level].to(out.dtype)
+    for i in range(anti_alias_level):
+        for j in range(anti_alias_level):
+            if i == j == 0:
+                continue
+            acc = acc + frames[:, i::anti_alias_level, j::anti_alias_level]
+    out.copy_(acc / (anti_alias_level * anti_alias_level))
 
 
 def _linear_rgb(src, dst, coefficients, scratch):
@@ -330,15 +357,7 @@ def post_process_frames(
         )
         with self.temp():
             frame_temp = self.get_tensor(aa_frame_out.shape, torch.float32)
-            frame_temp.copy_(frame_out[:, ::anti_alias_level, ::anti_alias_level])
-            for i in range(anti_alias_level):
-                for j in range(anti_alias_level):
-                    if i == j == 0:
-                        continue
-                    frame_temp.add_(
-                        frame_out[:, i::anti_alias_level, j::anti_alias_level]
-                    )
-            frame_temp.div_(anti_alias_level * anti_alias_level)
+            _supersample_box_filter(frame_temp, frame_out, int(anti_alias_level))
             aa_frame_out.copy_(frame_temp)
         frame_out = aa_frame_out
 

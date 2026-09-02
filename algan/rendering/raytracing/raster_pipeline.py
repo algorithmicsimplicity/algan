@@ -35,6 +35,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
 from algan.settings import SETTINGS
+from algan.utils.torch_compile import compiled
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
@@ -191,6 +192,78 @@ def _aa_dump_emit(tag, buf):
         )
 
 
+@compiled(dynamic=True)
+def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
+    """The projection record's arithmetic, from gathered inputs to the packed
+    table (:func:`precompute_triangle_projection` documents what it means).
+
+    Its own function so ``torch.compile`` covers the whole chain: forty-odd
+    elementwise passes and three cross products over ``[frames, ntri, 3, 3]``,
+    every one of which eager materializes in full, collapse into one loop that
+    writes only the ``[frames, ntri, ncol]`` result. The five row gathers stay
+    with the caller (they are ``index_select``s of whole rows, which the
+    compiler has nothing to add to), as does the arena write -- the caller's
+    ``out[...].copy_(packed)``. Pure, so a re-run after a compile failure is
+    exact; ``wide`` is the 13-column analytic-AA layout, passed as a Python
+    bool so Dynamo specialises the two shapes apart, and the frame and
+    triangle counts move from batch to batch, hence ``dynamic=True``.
+    """
+    nvec = torch.linalg.cross(pbx, pby)
+    n2 = (nvec * nvec).sum(-1)
+    big_d = ((sp - ro) * nvec).sum(-1)
+    d = verts - ro[:, None, None, :]
+    denom = (d * nvec[:, None, None, :]).sum(-1)
+    sign = torch.where(big_d >= 0, torch.ones_like(big_d), -torch.ones_like(big_d))
+    cam_ok = ((n2 > 1e-30) & (big_d.abs() > 1e-20))[:, None]
+    vert_front = denom * sign[:, None, None] > 1e-9
+    valid = cam_ok & vert_front.all(-1)
+    # A triangle with NO vertex in front of the camera-origin plane cannot be
+    # hit by any forward primary ray (every point of the triangle is a convex
+    # combination of its vertices, so its plane projection is <= 0, while any
+    # ray point at t > 0 projects > 0). Column 9 therefore carries a
+    # three-state flag: 1 = all-front (screen-space rasterization valid),
+    # 0 = straddling/degenerate (full-window ray-cast fallback), -1 = provably
+    # behind (the host culls the primitive from candidate emission entirely,
+    # instead of the old full-window fallback that made every behind-camera
+    # primitive a full-screen candidate scan).
+    behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
+
+    safe_denom = torch.where(denom.abs() > 1e-20, denom, torch.ones_like(denom))
+    hit = (
+        ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
+    )
+    rel = hit - sp[:, None, None, :]
+    safe_n2 = clamp_floor(n2, 1e-30)
+    u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
+        -1
+    ) / safe_n2[:, None, None]
+    v = (torch.linalg.cross(pbx[:, None, None, :], rel) * nvec[:, None, None, :]).sum(
+        -1
+    ) / safe_n2[:, None, None]
+    sx = u * half_h + half_w
+    sy = v * half_h + half_h
+    inv_d = torch.where(
+        valid[..., None], 1.0 / safe_denom, torch.zeros_like(safe_denom)
+    )
+    flag = valid.to(sx.dtype) - behind.to(sx.dtype)
+    parts = [sx, sy, inv_d, flag.unsqueeze(-1)]
+    if wide:
+        # Edge i faces vertex i: edge 0 is V1->V2, edge 1 is V2->V0, edge 2 is
+        # V0->V1 -- the same cyclic assignment _ss_pixel's e0/e1/e2 use.
+        nxt = [1, 2, 0]
+        prv = [2, 0, 1]
+        ex = sx[..., prv] - sx[..., nxt]
+        ey = sy[..., prv] - sy[..., nxt]
+        elen = torch.sqrt(ex * ex + ey * ey)
+        inv_len = torch.where(
+            valid[..., None] & (elen > 1e-12),
+            1.0 / clamp_floor(elen, 1e-12),
+            torch.zeros_like(elen),
+        )
+        parts.append(inv_len)
+    return torch.cat(parts, -1)
+
+
 def precompute_triangle_projection(
     merged,
     cam_origin,
@@ -255,60 +328,9 @@ def precompute_triangle_projection(
     sp = screen_point.index_select(0, frame_ids % screen_point.shape[0])
     pbx = pixel_basis_x.index_select(0, frame_ids % pixel_basis_x.shape[0])
     pby = pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0])
-    nvec = torch.linalg.cross(pbx, pby)
-    n2 = (nvec * nvec).sum(-1)
-    big_d = ((sp - ro) * nvec).sum(-1)
-    d = verts - ro[:, None, None, :]
-    denom = (d * nvec[:, None, None, :]).sum(-1)
-    sign = torch.where(big_d >= 0, torch.ones_like(big_d), -torch.ones_like(big_d))
-    cam_ok = ((n2 > 1e-30) & (big_d.abs() > 1e-20))[:, None]
-    vert_front = denom * sign[:, None, None] > 1e-9
-    valid = cam_ok & vert_front.all(-1)
-    # A triangle with NO vertex in front of the camera-origin plane cannot be
-    # hit by any forward primary ray (every point of the triangle is a convex
-    # combination of its vertices, so its plane projection is <= 0, while any
-    # ray point at t > 0 projects > 0). Column 9 therefore carries a
-    # three-state flag: 1 = all-front (screen-space rasterization valid),
-    # 0 = straddling/degenerate (full-window ray-cast fallback), -1 = provably
-    # behind (the host culls the primitive from candidate emission entirely,
-    # instead of the old full-window fallback that made every behind-camera
-    # primitive a full-screen candidate scan).
-    behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
-
-    safe_denom = torch.where(denom.abs() > 1e-20, denom, torch.ones_like(denom))
-    hit = (
-        ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
+    packed = _triangle_projection_fused(
+        verts, ro, sp, pbx, pby, float(half_w), float(half_h), ncol >= 13
     )
-    rel = hit - sp[:, None, None, :]
-    safe_n2 = clamp_floor(n2, 1e-30)
-    u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
-        -1
-    ) / safe_n2[:, None, None]
-    v = (torch.linalg.cross(pbx[:, None, None, :], rel) * nvec[:, None, None, :]).sum(
-        -1
-    ) / safe_n2[:, None, None]
-    sx = u * half_h + half_w
-    sy = v * half_h + half_h
-    inv_d = torch.where(
-        valid[..., None], 1.0 / safe_denom, torch.zeros_like(safe_denom)
-    )
-    flag = valid.to(sx.dtype) - behind.to(sx.dtype)
-    parts = [sx, sy, inv_d, flag.unsqueeze(-1)]
-    if ncol >= 13:
-        # Edge i faces vertex i: edge 0 is V1->V2, edge 1 is V2->V0, edge 2 is
-        # V0->V1 -- the same cyclic assignment _ss_pixel's e0/e1/e2 use.
-        nxt = [1, 2, 0]
-        prv = [2, 0, 1]
-        ex = sx[..., prv] - sx[..., nxt]
-        ey = sy[..., prv] - sy[..., nxt]
-        elen = torch.sqrt(ex * ex + ey * ey)
-        inv_len = torch.where(
-            valid[..., None] & (elen > 1e-12),
-            1.0 / clamp_floor(elen, 1e-12),
-            torch.zeros_like(elen),
-        )
-        parts.append(inv_len)
-    packed = torch.cat(parts, -1)
     out[:frames, :ntri].copy_(packed)
     return out
 
