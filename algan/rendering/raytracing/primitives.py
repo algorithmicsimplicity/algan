@@ -2942,24 +2942,48 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         ``(u, v)`` parametrization is unchanged, since the plane only slides
         along its view ray.
 
-        Displacing along the *view axis* rather than the plane normal keeps the
-        shape where it is on screen (a normal-space offset would slide a tilted
-        circuit sideways). The cost is that a circuit seen nearly edge-on gets a
-        proportionally smaller bias -- ``|dt| = bias * |f.n| / |rd.n|`` -- but
-        such a circuit covers almost no pixels for the ordering to matter in.
+        Displacing along a *view direction* rather than the plane normal keeps
+        the shape where it is on screen (a normal-space offset would slide a
+        tilted circuit sideways). The cost is that a circuit seen nearly edge-on
+        gets a proportionally smaller bias -- ``|dt| = bias * |f.n| / |rd.n|`` --
+        but such a circuit covers almost no pixels for the ordering to matter in.
+
+        The direction is each circuit's OWN eye ray, not the shared optical
+        axis. Sliding every circuit along one axis is a translation, and a
+        translation only preserves screen position for geometry on that axis:
+        off-axis it magnifies about the screen centre by ``bias / distance``,
+        displacing a circuit radially outward by its own eccentricity times that
+        ratio. At the tie-bin scale ``z_index`` was written for (1 bin is 1e-4
+        world units) that is ~1e-6 px and no one could see it, but a patch
+        border asks for ``2e4`` bins per world unit of its patch's bulge
+        (``BORDER_DEPTH_BIAS_BINS_PER_UNIT``) -- whole world units -- and a
+        saddle tile's stroke measured 7.2 px outboard of the outline it draws.
+        Along the circuit's own ray its centre stays exactly put and only the
+        rest of it scales, by the same ``bias / distance`` about that centre:
+        0.17% on a Manim ``Sphere``'s tiles, versus the ~0.25 px of displacement
+        the shared axis gave them.
         """
         if not getattr(self, "_has_z_index", False):
             return corners
-        # Unit view axis per frame: the screen centre as seen from the eye.
-        forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
         bias = self.z_index.to(corners.device).float() * depth_tie_epsilon  # [1, C, 1]
+        centers = self.mob_center.float()  # [T, C, 3]
+        # Unit eye ray per circuit. A circuit sitting on the eye has no ray of
+        # its own; fall back to the optical axis, which is what the whole scene
+        # used before and is as good as any direction there.
+        forward = F.normalize((sp - cam_o).float(), p=2, dim=-1)  # [T, 3]
+        rays = centers - cam_o.float().view(-1, 1, 3)
+        direction = torch.where(
+            rays.norm(p=2, dim=-1, keepdim=True) > 1e-6,
+            F.normalize(rays, p=2, dim=-1),
+            forward.unsqueeze(-2),
+        )  # [T, C, 3]
         num_segments = self.num_segments_per_object.to(corners.device).view(-1).long()
         circuit_of_segment = torch.repeat_interleave(
             torch.arange(num_segments.shape[0], device=corners.device), num_segments
         )
-        # [T, 1, 3] * [1, S, 1] -> [T, S, 3], one displacement per segment.
-        offset = forward.unsqueeze(-2) * bias[..., circuit_of_segment, :]
-        self.mob_center = self.mob_center - forward.unsqueeze(-2) * bias
+        # [T, S, 3] * [1, S, 1] -> [T, S, 3], one displacement per segment.
+        offset = direction[:, circuit_of_segment, :] * bias[..., circuit_of_segment, :]
+        self.mob_center = self.mob_center - direction * bias
         return corners - offset.unsqueeze(-2)
 
     def _compute_samples_per_segment(

@@ -122,6 +122,50 @@ def test_one_bin_of_bias_does_not_move_the_geometry(tmp_path):
     assert torch.equal((base > 0), (lifted > 0))
 
 
+def test_the_bias_runs_along_each_circuits_own_eye_ray():
+    """A large bias must not move a circuit on screen, wherever it sits in frame.
+
+    ``z_index`` was written for single tie-bins -- 1e-4 world units, small
+    enough that any direction hides the difference. A non-planar patch's border
+    asks for ``BORDER_DEPTH_BIAS_BINS_PER_UNIT`` (2e4) bins per world unit of
+    its patch's bulge, i.e. whole world units, and sliding every circuit along
+    ONE shared axis is a translation: that preserves screen position only for
+    geometry on that axis, and off-axis it magnifies about the screen centre.
+    A saddle tile's stroke landed 7.2 px outboard of the outline it drew.
+    Displaced along its own eye ray a circuit's centre cannot move at all.
+    """
+    import torch.nn.functional as F
+
+    from algan.rendering.raytracing.primitives import RayTracedBezierCircuitPrimitive
+
+    prim = RayTracedBezierCircuitPrimitive.__new__(RayTracedBezierCircuitPrimitive)
+    prim._has_z_index = True
+    # One circuit on the optical axis and two well off it, which is where the
+    # shared-axis translation used to slide the geometry.
+    centres = torch.tensor([[[0.0, 0.0, 0.0], [3.0, 2.0, 0.0], [-4.0, 1.5, 1.0]]])
+    prim.mob_center = centres.clone()
+    prim.z_index = torch.full((1, 3, 1), 1.0e4)  # one world unit of bias
+    prim.num_segments_per_object = torch.ones(3, dtype=torch.long)
+    corners = centres.unsqueeze(-2).expand(-1, -1, 4, -1).clone()
+    cam_o = torch.tensor([[0.0, 0.0, 20.0]])
+    sp = torch.tensor([[0.0, 0.0, 10.0]])
+
+    moved = prim._apply_z_index_bias(corners, cam_o, sp)
+
+    before = centres - cam_o.view(-1, 1, 3)
+    after = moved[..., 0, :] - cam_o.view(-1, 1, 3)
+    # Same ray out of the eye is the same pixel, however far along it the
+    # circuit ends up.
+    parallel = torch.cross(
+        F.normalize(before, p=2, dim=-1), F.normalize(after, p=2, dim=-1), dim=-1
+    )
+    assert float(parallel.abs().max()) < 1e-5
+    # And it did move, toward the camera, by the bias it asked for.
+    closer = before.norm(p=2, dim=-1) - after.norm(p=2, dim=-1)
+    assert float(closer.min()) > 0.99
+    assert float(closer.max()) < 1.01
+
+
 def _stack_centre_pixel(tmp_path, name, order):
     """Author coplanar shapes that all cover the frame centre, in ``order``.
 

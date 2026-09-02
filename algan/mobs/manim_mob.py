@@ -62,12 +62,19 @@ class ManimMob(BezierCircuitCubic):
     manim_mob : manim.Mobject
         The Manim Mobject which will be converted into an Algan Mob. It must be
         a bezier-circuit based object.
+    batch
+        Whether to pack the converted sub-hierarchy into one batched Mob, which
+        renders far faster for a Mobject made of many similar parts (a
+        ``Surface``'s tiles, a page of ``Text``). Defaults to ``False``: a
+        batch adopts the classification its FIRST member derived from geometry,
+        so a group mixing kinds -- a ``Sphere`` and a flat ``Square`` in one
+        ``VGroup`` -- currently loses the members that disagree with it.
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` .
 
     """
 
-    def __init__(self, manim_mob, batch=True, _add_to_scene=None, **kwargs):
+    def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         # Retain the source object so compatibility Mobs can delegate Manim-specific

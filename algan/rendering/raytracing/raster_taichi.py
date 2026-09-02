@@ -1734,16 +1734,35 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 bnu = gu
                 bnv = gv
                 if not filled:
-                    # Unfilled: the drawn band is bounded on the inside too, so
-                    # a stroke thinner than a pixel fades instead of vanishing.
+                    # Unfilled: the drawn band is bounded on BOTH sides, and
+                    # once it is thinner than a pixel both walls cut the SAME
+                    # pixel -- so reading only the nearer one (which this did)
+                    # cannot express the band at all. It integrated to
+                    # ``(w/2 + 1/2)^2`` instead of ``w``: a 0.30 px stroke, which
+                    # is what a Manim ``Surface``'s default stroke_width comes
+                    # to, was drawn with 1.40x its ink, and an axis-aligned one
+                    # swung between 1.00x and 2.19x with nothing but its
+                    # sub-pixel phase (``benchmarks/_aa_thin_stroke_sweep.py``).
+                    # The error closes at w = 1, where the one-wall ramp happens
+                    # to integrate to w exactly, which is why only sub-pixel
+                    # strokes ever showed it.
+                    #
+                    # The two walls are ANTIPARALLEL, so their half-planes cover
+                    # the whole pixel between them (their signed distances sum
+                    # to the width, which is never negative) and the slab's area
+                    # is exactly ``cov(near) + cov(far) - 1`` -- at any angle,
+                    # and for either coverage form, since it asks nothing of
+                    # ``_boundary_coverage`` beyond what it already returns.
                     half = 0.5 * border_w
-                    if (half - d) < (d + half):
-                        signed = half - d
-                        bnu = -gu
-                        bnv = -gv
-                    else:
-                        signed = d + half
-                c = _boundary_coverage(bnu, bnv, signed * inv_px, aa)
+                    c = ti.math.clamp(
+                        _boundary_coverage(-gu, -gv, (half - d) * inv_px, aa)
+                        + _boundary_coverage(gu, gv, (d + half) * inv_px, aa)
+                        - 1.0,
+                        0.0,
+                        1.0,
+                    )
+                else:
+                    c = _boundary_coverage(bnu, bnv, signed * inv_px, aa)
                 if ti.static(int(aa) == 3):
                     # THE ORIENTED WEDGE (DESIGN_analytic_aa_v2.md ss5). A thin
                     # stroke is a STRIP and a corner is a WEDGE; one distance

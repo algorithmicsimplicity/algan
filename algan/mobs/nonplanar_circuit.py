@@ -841,6 +841,150 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     return primitive
 
 
+def _scene_point_lights(circuit):
+    """This batch's point lights, as ``(origin, color)`` rows, or ``[]``.
+
+    Read from the materialized light Mobs for the same reason
+    :func:`camera_eye` reads the materialized camera: batch preparation sets
+    their state for exactly this batch's frames before it collects primitives.
+
+    ``color`` is built the way ``RenderLoopMixin._materialize_render_state``
+    builds the row it packs for the kernel -- decode to the working space,
+    then alpha, then opacity, then intensity, in that order, since the scalars
+    do not commute through the decode. That also carries the LIFESPAN for
+    free: a frame outside a light's lifespan materializes at opacity 0, so its
+    row is all-zero and contributes nothing, which is the same "zero color is
+    not live" gate ``RayTracedTrianglePrimitive._shade_vertex_colors`` uses.
+
+    Extended lights (directional, spot, area, hemisphere) are skipped: they
+    force the per-fragment lighting path, and the per-vertex shader convention
+    every material here is written against knows point lights only.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.utils.color_space import srgb_to_linear
+
+    scene = getattr(circuit, "scene", None)
+    rows = []
+    for light in getattr(scene, "light_sources", None) or ():
+        is_extended = getattr(light, "_is_extended", None)
+        if is_extended is not None and is_extended():
+            continue
+        origin = getattr(light, "location", None)
+        rgba = getattr(light, "color", None)
+        if origin is None or rgba is None:
+            continue
+        if rt_settings.linear_color_space:
+            rgba = torch.cat((srgb_to_linear(rgba[..., :3]), rgba[..., 3:]), -1)
+        color = rgba[..., :-1] * rgba[..., -1:] * light.opacity
+        intensity = getattr(light, "intensity", None)
+        if intensity is not None:
+            color = color * intensity
+        if not bool((color != 0).any()):
+            continue
+        rows.append((origin, color))
+    return rows
+
+
+def _shaded_border_colors(circuit, x, plan, border, frames):
+    """A patch border's color with the patch's own shading baked into it.
+
+    The border of a curved tile is drawn as flat stroke runs
+    (:func:`build_stroke_primitive`), and the renderer draws circuits UNLIT --
+    so an imported Manim ``Surface``'s grid lines came out at full
+    ``LIGHT_GREY`` everywhere while its fill shaded, where Manim shades the two
+    together (``ThreeDCamera.get_stroke_rgbas`` runs the stroke rgbas through
+    the same ``modified_rgbas`` as the fill). Baking is the only way to shade
+    them: a circuit carries no material, and the ribbon's own normal faces the
+    camera, so lighting it as geometry would light every grid line head-on.
+
+    The normal used is the TILE's, at the corner each run starts from --
+    :func:`patch_corner_normals` computes exactly Manim's winding normal, and
+    Manim shades a tile's stroke from its start and end corner normals. One
+    color per run rather than Manim's 2-stop gradient along the tile: at the
+    0.30 px a ``Surface``'s default ``stroke_width`` comes to, the difference
+    is well under the width of the line it colors.
+
+    Returns ``[T, R, C]``, one color per run, or ``None`` when there is
+    nothing to bake -- no material, or no light for it to answer.
+    """
+    from algan.settings import SETTINGS
+
+    shader = getattr(circuit, "shader", None)
+    material_params = {}
+    if shader is not None and hasattr(circuit, "get_shader_params"):
+        material_params = dict(circuit.get_shader_params())
+    if shader is None:
+        # The same fallback the patch's own primitive makes: a mob that set no
+        # material renders as the process default (``TrianglePrimitive``'s
+        # ``shader is None`` branch). Resolving it here rather than reading
+        # ``circuit.shader`` alone is what makes the border track the patch --
+        # a converted Manim tile carries no material of its own, so the fill
+        # shades through this fallback and the border has to find it too.
+        material = SETTINGS.style.default_material
+        shader = None if material is None else material.shader
+        if material is not None:
+            material_params = dict(material.get_shader_param_values())
+    lights = _scene_point_lights(circuit)
+    if shader is None or not lights:
+        return None
+
+    device = x.device
+    position, normals = patch_corner_normals(x, plan)
+    # Corner index per segment, to look up the corner each run starts at.
+    corner_seg = plan.corner_seg.to(device)
+    seg_to_corner = torch.zeros(
+        int(x.shape[1]), dtype=torch.long, device=device
+    ).index_copy_(
+        0, corner_seg, torch.arange(corner_seg.numel(), device=device, dtype=torch.long)
+    )
+    run_corner = seg_to_corner[plan.run_starts.to(device)]
+    point = position[:, run_corner, :]
+    normal = normals[:, run_corner, :]
+
+    members = member_of_segment(circuit, x.shape[1], device)
+    colors = _per_item(border, members[plan.run_starts.to(device)], frames).clone()
+    # The shader convention takes rgb plus the glow tail and leaves opacity
+    # alone -- the same split ``_shade_vertex_colors`` makes with ``[..., :-1]``.
+    albedo = colors[..., :-1]
+    scene = getattr(circuit, "scene", None)
+    eye = camera_eye(circuit)
+    # The material's extra parameters, in the shader's own signature order --
+    # the same rebuild ``RayTracedTrianglePrimitive._ordered_shader_param_values``
+    # does, and for the same reason. The signature defaults are NOT a safe
+    # stand-in: ``lambert_shader``'s ``emissive`` defaults to a plain tuple,
+    # which the shader then multiplies by a float, so a scene on the stock
+    # DiffuseMaterial raises rather than shading.
+    import inspect
+
+    from algan.rendering.raytracing.primitives import SHADER_FIXED_PARAM_COUNT
+
+    signature = inspect.signature(shader).parameters
+    params = []
+    for name in list(signature.keys())[SHADER_FIXED_PARAM_COUNT:]:
+        if name in material_params:
+            params.append(material_params[name])
+            continue
+        default = signature[name].default
+        params.append(default if default is not inspect._empty else 0)
+    for origin, light_color in lights:
+        albedo = shader(
+            getattr(scene, "memory", None),
+            point,
+            normal,
+            albedo,
+            eye if eye is not None else point,
+            origin.reshape(origin.shape[0], -1, 3)[:, :1, :],
+            light_color.reshape(light_color.shape[0], -1, light_color.shape[-1])[
+                :, :1, :
+            ],
+            1,
+            1,
+            *params,
+        )
+    colors[..., :-1] = albedo
+    return colors
+
+
 def build_stroke_primitive(
     circuit,
     x,
@@ -855,6 +999,7 @@ def build_stroke_primitive(
     transmission,
     depth_bias=0.0,
     eye=None,
+    run_colors=None,
 ):
     """The analytic circuit primitive a non-planar path's stroke renders as.
 
@@ -882,6 +1027,10 @@ def build_stroke_primitive(
     def per_run(value):
         return _per_item(value, run_member, frames)
 
+    # Already one row per run when the caller baked shading into it.
+    fill_rows = per_run(colors) if run_colors is None else run_colors
+    border_rows = per_run(border_colors) if run_colors is None else run_colors
+
     bias = float(depth_bias) + circuit._render_draw_bias()
     grid = torch.ones((1, num_runs, 1), dtype=torch.int32, device=device)
     primitive = circuit.render_primitive(
@@ -891,11 +1040,11 @@ def build_stroke_primitive(
         # frame axis off this tensor.
         next_offsets.view(1, -1, 1, 1),
         plan.run_counts.to(device),
-        per_run(colors).unsqueeze(-2),
+        fill_rows.unsqueeze(-2),
         per_run(opacity),
         normal,
         per_run(stroke_width),
-        per_run(border_colors).unsqueeze(-2),
+        border_rows.unsqueeze(-2),
         centre,
         grid,
         grid,
@@ -987,6 +1136,15 @@ def build_render_primitives(
                 transmission,
                 depth_bias=plan.sagitta * BORDER_DEPTH_BIAS_BINS_PER_UNIT,
                 eye=eye,
+                # A patch shades and its border is a circuit, which the
+                # renderer draws unlit -- so the two have to be brought
+                # together on the host. Manim runs a tile's stroke through the
+                # same shading as its fill, and a grid line that stays at full
+                # brightness over a shaded solid is what that difference looks
+                # like.
+                run_colors=_shaded_border_colors(
+                    circuit, x, plan, border, x.shape[0]
+                ),
             )
         )
     return primitives
