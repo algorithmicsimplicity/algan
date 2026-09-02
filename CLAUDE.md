@@ -1,7 +1,6 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-**Iff you are Claude Opus 5 you must also read `agent_guidance/opus5.md`.**
 
 This file is the operational quick-start: commands, hazards, and the API shape. It is short on purpose — the detail
 lives in `agent_guidance/`, split by topic so you read only what your task touches:
