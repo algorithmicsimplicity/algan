@@ -57,11 +57,11 @@ def test_direct_bezier_batch_matches_object_batch():
     assert torch.equal(actual.control_points.location, expected.control_points.location)
     assert torch.equal(
         actual.border_grid.location,
-        expected.border_texture_points.location,
+        expected.border_grid.location,
     )
     assert torch.equal(
         actual.border_grid.color,
-        expected.border_texture_points.color,
+        expected.border_grid.color,
     )
     assert torch.equal(
         actual.control_points.parent_batch_sizes,

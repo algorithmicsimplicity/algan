@@ -517,7 +517,7 @@ class Model3D(Mob):
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
-    def play_animation(self, name=None, duration=None, fps=30, loop=1, easing=identity):
+    def play_animation(self, name=None, runtime=None, fps=30, loop=1, easing=identity):
         """Play a baked node-keyframe animation on the timeline.
 
         The clip is baked to per-frame world corners (see
@@ -531,7 +531,7 @@ class Model3D(Mob):
         ----------
         name : str, optional
             Clip name; defaults to the first clip.
-        duration : float, optional
+        runtime : float, optional
             Playback runtime in seconds (per loop). Defaults to the clip's
             authored runtime.
         fps : int
