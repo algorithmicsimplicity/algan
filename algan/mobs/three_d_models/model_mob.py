@@ -546,8 +546,8 @@ class Model3D(Mob):
         times, corners = self.precompute_animation(name, fps=fps)
         if len(times) < 2:
             return self
-        if duration is None:
-            duration = clip.runtime or float(times[-1]) or 1.0
+        if runtime is None:
+            runtime = clip.runtime or float(times[-1]) or 1.0
 
         # Recompute smooth normals per frame so authored-normal meshes shade
         # correctly under the deformation.
@@ -563,7 +563,7 @@ class Model3D(Mob):
                 mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
             with Seq(
-                duration=duration,
+                runtime=runtime,
                 easing=easing,
                 animation_manager=self.animation_manager,
             ):
