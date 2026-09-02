@@ -11,7 +11,18 @@ for the compiled one) -- both are reported separately as "cold".
 Usage::
 
     uv run python benchmarks/_torch_compile_ab.py [--scene tests/fast/scene.py]
-        [--runs 3] [--quality PREVIEW] [--json out.json]
+        [--runs 3] [--quality PREVIEW] [--json out.json] [--pn-controls]
+
+``--pn-controls`` adds a third arm: the shipped compiled set *plus* the three
+PN control-net builders that ``rendering/logical_pn.py`` deliberately leaves
+eager (``logical_pn_control_points``,
+``logical_pn_normal_control_points``, ``logical_pn_edge_control_points``),
+compiled by patching their binding sites for the duration of that arm. It
+exists to price the decision, not to reverse it: the arm is expected to differ
+from the other two by more than the tolerance, because an ulp in the control
+net moves a subdivision level. Point it at ``benchmarks/_pn_geometry_scene.py``
+-- ``tests/fast/scene.py`` has no PN geometry at all, so the arm is a no-op
+there.
 
 The scene file only *records* an animation, exactly like ``tests/fast/scene.py``;
 this harness owns the Scene, the settings and the comparison. It is rebuilt for
@@ -23,6 +34,7 @@ use (``tests/conftest.py``, ``MAX_CHANNEL_DIFFERENCE``).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -62,6 +74,55 @@ def _load_scene(scene_file):
         sys.modules.pop("_algan_ab_scene", None)
 
 
+#: The three functions ``rendering/logical_pn.py`` keeps eager on purpose, and
+#: every module that imported them by name (patching the defining module alone
+#: would leave those bindings pointing at the eager originals).
+_PN_CONTROL_FUNCTIONS = (
+    "logical_pn_control_points",
+    "logical_pn_normal_control_points",
+    "logical_pn_edge_control_points",
+)
+_PN_CONTROL_MODULES = (
+    "algan.rendering.logical_pn",
+    "algan.rendering.raytracing.primitives",
+    "algan.mobs.surfaces.surface",
+)
+
+
+def _build_pn_control_wrappers():
+    """``{name: compiled wrapper}`` for the three eager-by-design builders.
+
+    Built once and reused across arms, so the compiled arm pays Dynamo's build
+    on its cold render and not again -- exactly as the shipped decorations do.
+    """
+    import importlib
+
+    from algan.utils.torch_compile import compiled
+
+    source = importlib.import_module("algan.rendering.logical_pn")
+    return {name: compiled(getattr(source, name)) for name in _PN_CONTROL_FUNCTIONS}
+
+
+@contextlib.contextmanager
+def _pn_controls_compiled(wrappers):
+    """Point every binding of the three builders at their compiled wrappers."""
+    import importlib
+
+    saved = []
+    for module_name in _PN_CONTROL_MODULES:
+        module = importlib.import_module(module_name)
+        for name, wrapper in wrappers.items():
+            if not hasattr(module, name):
+                continue
+            saved.append((module, name, getattr(module, name)))
+            setattr(module, name, wrapper)
+    try:
+        yield
+    finally:
+        for module, name, original in saved:
+            setattr(module, name, original)
+
+
 def _compare_videos(a_path, b_path):
     """``(max channel difference, worst frame, frame count)`` between two videos."""
     import cv2
@@ -98,6 +159,11 @@ def main():
     parser.add_argument("--runs", type=int, default=3, help="warm runs per arm")
     parser.add_argument("--quality", default="PREVIEW", help="a video preset name")
     parser.add_argument("--json", type=Path, default=None, help="write results here")
+    parser.add_argument(
+        "--pn-controls",
+        action="store_true",
+        help="add a third arm that also compiles the PN control-net builders",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -147,12 +213,24 @@ def main():
     print(f"scene         : {args.scene}")
     print(f"quality       : {args.quality}", flush=True)
 
+    arms = ["eager", "compiled"]
+    pn_wrappers = None
+    if args.pn_controls:
+        arms.append("compiled_pn")
+        pn_wrappers = _build_pn_control_wrappers()
+
     def render(arm, tag):
-        SETTINGS.computing.set(torch_compile=arm)
+        on = arm != "eager"
+        SETTINGS.computing.set(torch_compile=on)
         SceneManager.reset()
-        with Scene() as scene:
+        patch = (
+            _pn_controls_compiled(pn_wrappers)
+            if arm == "compiled_pn"
+            else contextlib.nullcontext()
+        )
+        with patch, Scene() as scene:
             _load_scene(args.scene)
-            assert torch_compile_enabled() == arm
+            assert torch_compile_enabled() == on
             started = time.perf_counter()
             scene.save_video(
                 out_dir / f"{tag}.mp4",
@@ -163,38 +241,46 @@ def main():
                 ffmpeg_params=["-crf", "0", "-preset", "ultrafast"],
             )
             elapsed = time.perf_counter() - started
-        print(
-            f"  {tag:<12} {'compiled' if arm else 'eager':<9} {elapsed:7.2f}s",
-            flush=True,
-        )
+        print(f"  {tag:<14} {arm:<12} {elapsed:7.2f}s", flush=True)
         return elapsed
 
-    results = {"eager": [], "compiled": []}
+    results = {arm: [] for arm in arms}
+    cold = {}
     print("cold (each arm's first render pays its one-off compile):")
-    cold_eager = render(False, "cold_eager")
-    cold_compiled = render(True, "cold_compiled")
+    for arm in arms:
+        cold[arm] = render(arm, f"cold_{arm}")
     print("warm, alternating:")
     for i in range(args.runs):
-        results["eager"].append(render(False, f"eager_{i}"))
-        results["compiled"].append(render(True, f"compiled_{i}"))
+        for arm in arms:
+            results[arm].append(render(arm, f"{arm}_{i}"))
 
-    worst, worst_frame, frames = _compare_videos(
-        out_dir / f"eager_{args.runs - 1}.mp4",
-        out_dir / f"compiled_{args.runs - 1}.mp4",
-    )
-    eager = statistics.median(results["eager"])
-    comp = statistics.median(results["compiled"])
-    speedup = eager / comp if comp else float("nan")
+    medians = {arm: statistics.median(results[arm]) for arm in arms}
+    eager = medians["eager"]
     print()
-    print(f"eager    warm: median {eager:.2f}s  min {min(results['eager']):.2f}s")
-    print(f"compiled warm: median {comp:.2f}s  min {min(results['compiled']):.2f}s")
-    print(f"speedup      : {speedup:.3f}x  (eager / compiled, medians)")
-    print(f"cold         : eager {cold_eager:.2f}s, compiled {cold_compiled:.2f}s")
-    verdict = "OK" if worst <= MAX_CHANNEL_DIFFERENCE else "EXCEEDS TOLERANCE"
-    print(
-        f"parity       : max channel difference {worst} over {frames} frames "
-        f"(worst at frame {worst_frame}) -- {verdict}"
-    )
+    for arm in arms:
+        print(
+            f"{arm:<12} warm: median {medians[arm]:.2f}s  "
+            f"min {min(results[arm]):.2f}s  "
+            f"speedup {eager / medians[arm] if medians[arm] else float('nan'):.3f}x  "
+            f"cold {cold[arm]:.2f}s"
+        )
+    speedup = eager / medians["compiled"] if medians["compiled"] else float("nan")
+
+    parity = {}
+    worst = 0
+    for arm in arms[1:]:
+        diff, worst_frame, frames = _compare_videos(
+            out_dir / f"eager_{args.runs - 1}.mp4",
+            out_dir / f"{arm}_{args.runs - 1}.mp4",
+        )
+        parity[arm] = diff
+        verdict = "OK" if diff <= MAX_CHANNEL_DIFFERENCE else "EXCEEDS TOLERANCE"
+        print(
+            f"parity vs eager ({arm}): max channel difference {diff} over "
+            f"{frames} frames (worst at frame {worst_frame}) -- {verdict}"
+        )
+        if arm == "compiled":
+            worst = diff
     states = compiled_functions()
     compiled_count = sum(1 for _, state in states if state == "compiled")
     failed = [(name, state) for name, state in states if state.startswith("failed")]
@@ -213,11 +299,12 @@ def main():
                     "compile_supported": supported,
                     "scene": str(args.scene),
                     "quality": args.quality,
-                    "cold": {"eager": cold_eager, "compiled": cold_compiled},
+                    "cold": cold,
                     "warm": results,
+                    "medians": medians,
                     "speedup": speedup,
                     "parity_max_channel_difference": worst,
-                    "frames": frames,
+                    "parity": parity,
                     "functions": states,
                 },
                 indent=2,
