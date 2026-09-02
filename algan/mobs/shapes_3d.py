@@ -1696,6 +1696,18 @@ class Polyhedron(Mob):
         self.faces_config = dict(faces_config or {})
         self.graph_config = dict(graph_config or {})
 
+        # A polyhedron's vertices are given in world coordinates, so nothing
+        # about them says where the solid *is* -- and left to the Mob default
+        # the anchor stayed at the world origin, which is what the solid then
+        # turned and scaled about, from wherever it happened to sit. Anchor it
+        # at the middle of its own geometry instead. An explicit ``location``
+        # still wins, and every built-in solid here is already built about its
+        # own centre, so this leaves ``Cube`` and ``Prism`` exactly where they
+        # were.
+        if "location" not in kwargs:
+            kwargs["location"] = (
+                self.vertex_coords.amin(-2) + self.vertex_coords.amax(-2)
+            ) * 0.5
         super().__init__(**kwargs)
         # Opt-in Manim shape profile: a mapped solid adopts Manim's fill
         # defaults on its faces unless the caller styled them (fill_color /

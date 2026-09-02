@@ -122,6 +122,64 @@ def test_inversed_mirrors_a_curve_through_the_diagonal():
     assert backward == pytest.approx(1 - forward.flip(0), abs=1e-5)
 
 
+def test_smooth_is_symmetric_about_its_halfway_point():
+    """``smooth`` eases in and out by the same amount at the same distance.
+
+    It is the default curve, so an asymmetry here would tilt every animation in
+    Algan that does not name a curve of its own: the same move would spend
+    longer accelerating than settling.
+    """
+    values = _evaluate(easings.smooth, SAMPLES)
+    mirrored = _evaluate(easings.smooth, 1 - SAMPLES)
+    assert values + mirrored == pytest.approx(torch.ones_like(values), abs=1e-6), (
+        "smooth(t) and smooth(1 - t) do not mirror each other"
+    )
+    assert float(torch.as_tensor(easings.smooth(torch.tensor(0.5))).reshape(-1)[0]) == (
+        pytest.approx(0.5, abs=1e-6)
+    )
+
+
+@pytest.mark.parametrize("name", MONOTONIC_CURVES)
+def test_a_curve_finishes_when_its_context_does_and_not_before(name):
+    """Every curve hands its animation over at the end of the runtime.
+
+    A rate function decides how an animation gets there, never when it is over:
+    three mobs animated under three curves in one context all arrive on the same
+    frame, however differently they travelled. A curve that reached 1 early
+    would leave its mob parked while the others were still moving, and one that
+    never quite reached it would leave the mob short of where the author put it.
+    """
+    func = getattr(easings, name)
+    runtime = 2.0
+    target = 2.0
+    with Scene() as scene:
+        with Off():
+            square = Square().spawn()
+        with Sync(runtime=runtime, easing=func):
+            square.move(RIGHT * target)
+
+        # A tenth of the runtime apart, plus a sample past the end: fine enough
+        # to catch a curve whose animation ends on the wrong frame, coarse
+        # enough that a long-settling curve (quintic is within 1e-5 of home at
+        # 0.9) is still measurably short on the sample before the last.
+        steps = 10
+        times = torch.arange(steps + 2, dtype=torch.float32) * (runtime / steps)
+        scene.timeline_manager.set_state_to_times(times)
+        travelled = [
+            float(square.location[index].reshape(-1, 3)[:, 0].mean())
+            for index in range(len(times))
+        ]
+
+    arrived = [abs(value - target) <= 1e-6 for value in travelled]
+    assert arrived.index(True) == steps, (
+        f"{name} reaches its target at t={times[arrived.index(True)]:.2f} of "
+        f"{runtime}, not at the end of the context"
+    )
+    assert travelled[-1] == pytest.approx(target, abs=1e-6), (
+        f"{name} does not hold its target after the context ends"
+    )
+
+
 def test_default_easing_is_one_of_the_published_curves():
     assert callable(DEFAULT_EASING)
     assert DEFAULT_EASING in {getattr(easings, name) for name in CURVES}

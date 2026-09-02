@@ -136,6 +136,36 @@ light baked geometry by normals turned away from it. That is the shape of the bu
 `(RIGHT, UP, INWARD)` default caused here, and it is why an imported glTF model needs no
 adjusting: its front faces +z, and so does a Mob's.
 
+### A shape is anchored at its centroid, not at the middle of its box
+
+`location` is what a Mob turns and scales about, so a shape has to be anchored at the point it
+balances on. `_circuit_location_and_basis` gets that from `_circuit_centroid`: the centroid of
+the region the circuit encloses, by shoelace sums over a polyline sampled from the curves
+(`_circuit_polyline`, 16 samples a segment, float64 so a symmetric shape comes back at its
+exact centre). Sub-loops carry their own signed area, so a hole subtracts itself and an
+`Annulus` lands dead centre. A path that encloses no area — a straight `Line`, any open stroke
+— has no area centroid and falls back to the centroid of the path itself, weighted by arc
+length, which is why the closing chord an open path would need for a *fill* is marked in
+`wraps` and left out of that sum.
+
+The box's midpoint is what `get_center` reports, and the two differ for anything that is not
+point-symmetric: a `Triangle`'s box centre sits a quarter of a unit above its centroid. Anchor
+a shape there and a spin makes it orbit a point above itself, which reads as the shape drifting
+upward — the bug this replaced, most visible with an updater spinning a `Triangle` while it
+moves left and right.
+
+Two things follow from the anchor and move with it, so a change here is never invisible:
+row 0's length is the distance from the anchor to the furthest control point (hence
+`scale_coefficient`, hence `Circle.radius`), and the texture grid is laid out about the anchor
+along those rows, which is what orders a `wave_color` across a `Text`.
+
+The flat-sided solids get the same treatment one level up: `Polyhedron` takes its vertices in
+world coordinates, so nothing about them says where the solid *is*, and left to the `Mob`
+default its anchor stayed at the **world origin** — a user-built solid turned about the origin
+from wherever it sat. It now defaults to the middle of its own vertices. The curved solids are
+not in this: a `Surface` builds its grid *relative to* `location`, so that anchor is the
+construction origin the author placed, and every built-in one is already centred on it.
+
 ### A 2-D circuit's frame, and what its sign drags with it
 
 A circuit derives its own frame from its control points, so the flip could not reach it: its

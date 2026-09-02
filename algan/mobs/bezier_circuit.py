@@ -35,6 +35,7 @@ tessellating them.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import torch.nn.functional as F
 
@@ -151,6 +152,189 @@ def _texture_grid_offsets(samples, *, device=None, dtype=None):
     return torch.linspace(-1, 1, samples, device=device, dtype=dtype) * (1 + 1e-5)
 
 
+#: Samples per cubic segment used to measure a circuit's centroid. A symmetric
+#: shape comes out exactly centred at any count, so this only bounds how far a
+#: *curved, lopsided* one can be off: measured against the closed form for a
+#: unit half disc (centroid at 4 / 3pi), 8 samples land within 1.3e-3 of it, 16
+#: within 2.8e-4 and 32 within 2.5e-5, which is where the cubic approximation of
+#: the arc itself takes over. 32 is the last count that buys anything, and the
+#: work is one small matrix multiply either way.
+_CENTROID_SAMPLES_PER_SEGMENT = 32
+
+#: Below this, times the square of the circuit's diagonal, an enclosed area is
+#: not an area: a straight Line's control points are collinear, so the shoelace
+#: sum over them is rounding noise rather than a shape, and the centroid falls
+#: back to the path's own.
+_DEGENERATE_AREA_FRACTION = 1e-9
+
+
+@lru_cache(maxsize=8)
+def _bezier_sample_weights(samples, device, dtype):
+    """Bernstein weights that sample one cubic segment, shape ``(samples, 4)``.
+
+    Cached: a ``Text`` builds one circuit per glyph and every one of them wants
+    the identical matrix, and rebuilding it there costs more than the multiply
+    it feeds.
+    """
+    t = torch.linspace(0, 1, samples + 1, device=device, dtype=dtype)[:-1].view(-1, 1)
+    s = 1 - t
+    return torch.cat((s * s * s, 3 * s * s * t, 3 * s * t * t, t * t * t), -1)
+
+
+def _circuit_polyline(control_points):
+    """Sample a cubic circuit into closed polyline loops.
+
+    Returns ``(points, next_index, wraps)``: every sample in authoring order,
+    for each one the index of the sample that follows it *around its own loop*,
+    and which of those steps is the loop's closing one. A segment whose P0 is
+    not where the previous segment's P3 left off starts a new loop -- which is
+    how a circuit carries holes, and each hole has to close on itself before its
+    signed area can cancel the outer loop's.
+
+    Sampling excludes each segment's ``t = 1``, which is the next segment's
+    ``t = 0``, and appends each loop's own final point once instead. On a closed
+    loop that point is where the loop began, so the closing step spans nothing;
+    on an open path -- a stroke, a half-drawn ``Create`` -- it is the far end,
+    which is the point a truncated sampling would have dropped, and the closing
+    step is the chord a fill would span. ``wraps`` is what lets a measure taken
+    over the path itself leave that chord out.
+    """
+    points = control_points.reshape(-1, 3)
+    segment_count = points.shape[-2] // 4
+    segments = points[: segment_count * 4].reshape(segment_count, 4, 3)
+
+    samples = _CENTROID_SAMPLES_PER_SEGMENT
+    weights = _bezier_sample_weights(samples, points.device, points.dtype)
+    curve = torch.einsum("ks,nsc->nkc", weights, segments).reshape(-1, 3)
+
+    # A loop starts wherever a segment does not continue the previous one.
+    if segment_count > 1:
+        extent = points.amax(-2) - points.amin(-2)
+        tolerance = 1e-6 * float(extent.norm(p=2, dim=-1).clamp_min(1.0))
+        gaps = (segments[1:, 0, :] - segments[:-1, 3, :]).norm(p=2, dim=-1)
+        breaks = bool((gaps > tolerance).any())
+    else:
+        breaks = False
+
+    count = curve.shape[-2]
+    if not breaks:
+        # One loop, which is every shape that is not a glyph or a shape with a
+        # hole: the closing step is simply the last one, so none of the
+        # per-loop bookkeeping below is needed.
+        curve = torch.cat((curve, segments[-1, 3, :].unsqueeze(-2)), -2)
+        next_index = torch.cat(
+            (
+                torch.arange(1, count + 1, device=points.device),
+                torch.zeros(1, dtype=torch.long, device=points.device),
+            )
+        )
+        wraps = torch.zeros(count + 1, dtype=torch.bool, device=points.device)
+        wraps[-1] = True
+        return curve, next_index, wraps
+
+    starts = torch.ones(segment_count, dtype=torch.bool, device=points.device)
+    starts[1:] = gaps > tolerance
+    loop_of_segment = starts.cumsum(0) - 1
+    loop_of_sample = loop_of_segment.repeat_interleave(samples)
+
+    loop_count = int(loop_of_segment[-1]) + 1
+    indices = torch.arange(count, device=points.device)
+    # First and last sample of each loop, found by scattering the sample
+    # indices to their loop and keeping the extremes.
+    scatter_base = torch.full(
+        (loop_count,), count, device=points.device, dtype=indices.dtype
+    )
+    first_of_loop = scatter_base.scatter_reduce(
+        0, loop_of_sample, indices, reduce="amin"
+    )
+    last_segment_of_loop = torch.zeros_like(scatter_base).scatter_reduce(
+        0,
+        loop_of_segment,
+        torch.arange(segment_count, device=points.device),
+        reduce="amax",
+    )
+    # Each loop's own end point, appended after the samples: index ``count + l``
+    # closes loop ``l``.
+    curve = torch.cat((curve, segments[last_segment_of_loop, 3, :]), -2)
+
+    continues = torch.zeros(count, dtype=torch.bool, device=points.device)
+    continues[:-1] = loop_of_sample[1:] == loop_of_sample[:-1]
+    next_index = torch.cat(
+        (
+            torch.where(continues, indices + 1, count + loop_of_sample),
+            first_of_loop,
+        )
+    )
+    wraps = torch.zeros(count + loop_count, dtype=torch.bool, device=points.device)
+    wraps[count:] = True
+    return curve, next_index, wraps
+
+
+def _circuit_centroid(control_points, bbox_centre):
+    """Where a circuit balances: the centroid of the region it encloses.
+
+    This is the point the shape turns about, so it is the shape's own centre of
+    area and not the middle of the box around it. The two differ for anything
+    not point-symmetric -- a ``Triangle``'s box centre sits a quarter of a unit
+    above its centroid, which is enough to make a spin look like it is also
+    drifting upward, since the shape then orbits a point above itself.
+
+    Measured by the shoelace sums over :func:`_circuit_polyline`, taken about
+    ``bbox_centre`` (which lies in the circuit's plane, so the triangle fan
+    those sums describe is planar and their signed areas are exact). Sub-loops
+    contribute their own signed area, so a hole subtracts itself.
+
+    A path that encloses no area -- a straight :class:`~.Line`, or any open
+    stroke -- has no area centroid, and falls back to the centroid of the path
+    itself, weighted by arc length. A circuit that is a single point falls back
+    to that point.
+
+    Parameters
+    ----------
+    control_points
+        The circuit's cubic control points, shape ``(*, 3)``.
+    bbox_centre
+        Midpoint of the control points' bounding box, shape ``(3,)``. Used as
+        the origin the moments are taken about.
+
+    Returns
+    -------
+    torch.Tensor
+        The centroid, shape ``(3,)``, in ``control_points``' dtype.
+    """
+    points = control_points.reshape(-1, 3)
+    if points.shape[-2] < 4:
+        return bbox_centre
+    # float64 throughout: the sums below are differences of similar magnitudes,
+    # and a symmetric shape has to come back at its exact centre rather than an
+    # ulp off it, or every render of one moves by a rounding error.
+    origin = bbox_centre.to(torch.float64)
+    curve, next_index, wraps = _circuit_polyline(points.to(torch.float64) - origin)
+    start = curve
+    end = curve[next_index]
+
+    extent = float((points.amax(-2) - points.amin(-2)).norm(p=2, dim=-1))
+    cross = torch.cross(start, end, dim=-1)
+    vector_area = cross.sum(-2) * 0.5
+    if float(vector_area.norm(p=2, dim=-1)) > _DEGENERATE_AREA_FRACTION * extent**2:
+        # Planar shoelace, taken along the plane the loops actually span.
+        normal = vector_area / vector_area.norm(p=2, dim=-1)
+        twice_areas = (cross * normal).sum(-1)
+        centroid = ((start + end) * twice_areas.unsqueeze(-1)).sum(-2) / (
+            3 * twice_areas.sum()
+        )
+        return (origin + centroid).to(control_points.dtype)
+
+    # The path's own centroid: the closing chord of an open path is not part of
+    # what is drawn, so it carries no weight here.
+    lengths = (end - start).norm(p=2, dim=-1) * (~wraps)
+    total = lengths.sum()
+    if float(total) <= 0:
+        return bbox_centre
+    centroid = (((start + end) * 0.5) * lengths.unsqueeze(-1)).sum(-2) / total
+    return (origin + centroid).to(control_points.dtype)
+
+
 def _circuit_location_and_basis(control_points):
     """Return the same local frame used by a standalone bezier circuit, plus
     whether its second in-plane axis had to be synthesized.
@@ -185,7 +369,11 @@ def _circuit_location_and_basis(control_points):
     control_points = control_points.reshape(-1, 3)
     mn = control_points.amin(-2)
     mx = control_points.amax(-2)
-    location = (mn + mx) * 0.5
+    bbox_centre = (mn + mx) * 0.5
+    # The frame is anchored at the shape's centroid, not at the middle of its
+    # box: ``location`` is what a Mob turns and scales about, and a shape has
+    # to turn about itself. See :func:`_circuit_centroid`.
+    location = _circuit_centroid(control_points, bbox_centre)
     if (mx - mn).norm(p=2, dim=-1) <= 1e-6:
         basis = squish(
             torch.eye(3, device=control_points.device, dtype=control_points.dtype)
