@@ -201,3 +201,22 @@ inheritance_edge_attrs = {
 html_js_files = ["responsiveSvg.js"]
 
 graphviz_output_format = "svg"
+
+
+# `Color` subclasses `torch.Tensor`, so its autosummary attribute table lists
+# ~40 tensor internals (`is_mkldnn`, `output_nr`, `nbytes`, ...) alongside its
+# three real ones. The class template already drops inherited *methods*; this
+# drops inherited attributes too, by identity against `torch.Tensor`, so a
+# subclass documents only what Algan defines on it.
+def _skip_inherited_tensor_members(app, what, name, obj, skip, options):
+    if skip:
+        return skip
+    import torch
+
+    if obj is not None and obj is getattr(torch.Tensor, name, None):
+        return True
+    return None
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", _skip_inherited_tensor_members)

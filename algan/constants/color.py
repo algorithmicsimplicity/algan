@@ -250,6 +250,15 @@ class Color(torch.Tensor):
         return (self * 255).to(torch.uint8)
 
     def new_empty(self, *args, **kwargs):
+        """Return a new opaque black :class:`Color` on this color's device.
+
+        Overrides :meth:`torch.Tensor.new_empty`, which would otherwise hand
+        back an uninitialized tensor of the requested size: a color's row is
+        always the fixed ``[R, G, B, glow, opacity]``, so the size arguments
+        are accepted for signature compatibility and ignored, and the row is
+        zeroed rather than left as whatever the allocator returned. Keyword
+        arguments are forwarded to the :class:`Color` constructor.
+        """
         return Color((0, 0, 0), **kwargs).to(self.device).as_subclass(Color)
 
     @staticmethod
