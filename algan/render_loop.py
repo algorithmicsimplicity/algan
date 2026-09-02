@@ -1744,9 +1744,7 @@ class RenderLoopMixin:
             if loc_inds[actor.control_points.id].numel() % 4 != 0:
                 return False
             timeline.attr_to_timeline["color"].mob_id_to_inds[actor.grid.id]
-            timeline.attr_to_timeline["color"].mob_id_to_inds[
-                actor.border_grid.id
-            ]
+            timeline.attr_to_timeline["color"].mob_id_to_inds[actor.border_grid.id]
         except (KeyError, AttributeError):
             return False
         return True
@@ -1859,9 +1857,7 @@ class RenderLoopMixin:
 
         timeline = self.timeline_manager
         tex_rows = (
-            timeline.attr_to_timeline["color"]
-            .mob_id_to_inds[actor.grid.id]
-            .numel()
+            timeline.attr_to_timeline["color"].mob_id_to_inds[actor.grid.id].numel()
         )
         border_tex_rows = (
             timeline.attr_to_timeline["color"]

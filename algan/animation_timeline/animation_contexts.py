@@ -627,9 +627,7 @@ class AnimationContext:
                     child.timespan.end - child.timespan.start
                     for child in self.child_contexts
                 ]
-                positive_runtimes = [
-                    runtime for runtime in runtimes if runtime > 0
-                ]
+                positive_runtimes = [runtime for runtime in runtimes if runtime > 0]
                 max_runtime = max(positive_runtimes, default=0)
                 for child, runtime in zip(self.child_contexts, runtimes):
                     # Empty / Off child contexts already have the desired zero
@@ -735,10 +733,11 @@ class AnimationContext:
         """
         # self.end_time = max(self.end_time, self.current_time + self.runtime_per_part)
         self.timespan.original_end = max(
-            self.timespan.original_end, self.timespan.current_time + self.runtime_per_part
+            self.timespan.original_end,
+            self.timespan.current_time + self.runtime_per_part,
         )
         self.timespan.current_time = (
-                self.timespan.current_time + self.runtime_per_part * self.lag_ratio
+            self.timespan.current_time + self.runtime_per_part * self.lag_ratio
         )
 
     def wait(self, t: float | None = None):
@@ -1113,7 +1112,7 @@ class Audio(AnimationContext):
     def __enter__(self):
         context = super().__enter__()
         if self.prev_context.runtime_per_part > 0 and (
-                self.prev_context.runtime is None or self.prev_context.runtime > 0
+            self.prev_context.runtime is None or self.prev_context.runtime > 0
         ):
             self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())

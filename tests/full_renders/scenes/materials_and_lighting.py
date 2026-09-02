@@ -98,22 +98,22 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.14, duration=1.3):
+    with Lag(0.14, runtime=1.3):
         for mob in lit:
             mob.spawn()
-    with Sync(duration=0.4):
+    with Sync(runtime=0.4):
         lit_labels.spawn()
-    with Lag(0.14, duration=1.3):
+    with Lag(0.14, runtime=1.3):
         for mob in exotic:
             mob.spawn()
-    with Sync(duration=0.4):
+    with Sync(runtime=0.4):
         exotic_labels.spawn()
 
 # --------------------------------------------------------------------------
 # Act 2 -- material parameters are ordinary animatable attributes.
 # --------------------------------------------------------------------------
 with Seq():
-    with Sync(duration=2.0):
+    with Sync(runtime=2.0):
         lit[2].shininess = 12
         lit[3].roughness = 0.85
         lit[3].metalness = 0.15
@@ -124,7 +124,7 @@ with Seq():
             mob.rotate(150, UP)
         for mob in exotic:
             mob.rotate(-150, UP)
-    with Sync(duration=1.4):
+    with Sync(runtime=1.4):
         key_light.move(RIGHT * 9)
         lit[3].roughness = 0.2
         lit[3].metalness = 0.75
@@ -134,7 +134,7 @@ with Seq():
 # Act 3 -- neutral probes in front of a wall, lit by each light type in turn
 # so the shadows they cast are the only thing distinguishing them.
 # --------------------------------------------------------------------------
-with Sync(duration=0.7):
+with Sync(runtime=0.7):
     lit.despawn()
     lit_labels.despawn()
     exotic.despawn()
@@ -196,15 +196,15 @@ with Seq():
             ground_color=BLUE_E,
             intensity=0.5,
         ).spawn(animate=False)
-    with Sync(duration=0.7):
+    with Sync(runtime=0.7):
         wall.spawn()
         probes.spawn()
         light_label.spawn()
-    with Sync(duration=1.8):
+    with Sync(runtime=1.8):
         point_light.move(RIGHT * 2.4)
         spot_light.move(RIGHT * 2.4)
         rect_light.move(RIGHT * 2.4)
-    with Sync(duration=1.4):
+    with Sync(runtime=1.4):
         point_light.move(LEFT * 2.4)
         spot_light.move(LEFT * 2.4)
         rect_light.move(LEFT * 2.4)
@@ -213,7 +213,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 4 -- emissive glow through the bloom post-process, and opacity.
 # --------------------------------------------------------------------------
-with Sync(duration=0.7):
+with Sync(runtime=0.7):
     probes.despawn()
     wall.despawn()
     hemisphere.despawn()
@@ -245,15 +245,15 @@ with Off():
     ).move(DOWN * 3.15)
 
 with Seq():
-    with Sync(duration=0.6):
+    with Sync(runtime=0.6):
         emitters.spawn()
         glow_label.spawn()
-    with Sync(duration=1.8):
+    with Sync(runtime=1.8):
         emitters[0].glow = 1.0
         emitters[1].glow = 2.5
         emitters[2].opacity = 0.2
         emitters[3].opacity = 0.55
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         emitters[0].glow = 0.0
         emitters[1].glow = 0.0
         emitters[2].opacity = 1.0

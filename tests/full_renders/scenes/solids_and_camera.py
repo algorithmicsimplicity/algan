@@ -123,22 +123,22 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.16, duration=1.5):
+    with Lag(0.16, runtime=1.5):
         for solid in curved:
             solid.spawn()
-    with Sync(duration=0.6):
+    with Sync(runtime=0.6):
         curved_labels.spawn()
-    with Lag(0.12, duration=1.2):
+    with Lag(0.12, runtime=1.2):
         for solid in flat:
             solid.spawn()
-    with Sync(duration=0.6):
+    with Sync(runtime=0.6):
         flat_labels.spawn()
 
 # --------------------------------------------------------------------------
 # Act 2 -- parent and children transform inside the same block.
 # --------------------------------------------------------------------------
 with Seq():
-    with Sync(duration=2.4):
+    with Sync(runtime=2.4):
         # The Group tilts about its own centre while each member also spins
         # about its own axis: the descendant bases have to compose, not
         # overwrite, and the labels must not follow (they are not children).
@@ -155,13 +155,13 @@ with Seq():
         curved[3].rotate(140, UP + OUT)
         curved[4].rotate(-70, RIGHT)
         key_light.move(LEFT * 9)
-    with Sync(duration=1.6):
+    with Sync(runtime=1.6):
         flat.rotate(-14, OUT, about=flat_center)
         # Travel out along a curved path and back, so the row is restored.
         curved[0].move_to(curved[0].get_center(), 180, arc_normal=OUT)
         curved[3].scale(1.3)
         key_light.move(RIGHT * 9)
-    with Sync(duration=0.8):
+    with Sync(runtime=0.8):
         curved[3].scale(1 / 1.3)
     Scene.wait(0.2)
 
@@ -169,7 +169,7 @@ with Seq():
 # Act 3 -- an axis triad built from Arrow3D/Line3D/Dot3D, a convex hull, and
 # the camera moving around them.
 # --------------------------------------------------------------------------
-with Sync(duration=0.8):
+with Sync(runtime=0.8):
     curved_labels.despawn()
     flat_labels.despawn()
     flat.despawn()
@@ -213,18 +213,18 @@ with Off():
     ).move(DOWN * 3.05)
 
 with Seq():
-    with Sync(duration=0.8):
+    with Sync(runtime=0.8):
         triad.spawn()
         hull.spawn()
         camera_label.spawn()
-    with Sync(duration=2.0):
+    with Sync(runtime=2.0):
         triad.rotate(120, UP + RIGHT)
         hull.rotate(-150, UP + OUT)
         Scene.get_camera().rotate(9, UP, about=ORIGIN)
-    with Sync(duration=1.8):
+    with Sync(runtime=1.8):
         Scene.get_camera().rotate(-9, UP, about=ORIGIN)
         Scene.get_camera().orbit(4, RIGHT, about=ORIGIN)
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         Scene.get_camera().orbit(-4, RIGHT, about=ORIGIN)
     Scene.wait(0.2)
 
@@ -232,7 +232,7 @@ with Seq():
 # Act 4 -- screen-relative layout, a colour wave over a curved surface, and
 # geometry leaving the frame.
 # --------------------------------------------------------------------------
-with Sync(duration=0.8):
+with Sync(runtime=0.8):
     triad.despawn()
     hull.despawn()
     camera_label.despawn()
@@ -247,7 +247,7 @@ with Off():
 
 with Seq():
     layout_label.spawn()
-    with Sync(duration=1.4):
+    with Sync(runtime=1.4):
         # Fit a named rectangle of the frame, then park the rest on a grid of
         # screen positions the camera resolves at record time.
         curved[4].fit_to_screen(
@@ -258,13 +258,13 @@ with Seq():
         curved[1].move_center_to_screen_position((0.85, 0.70))
         curved[2].move_center_to_screen_position((0.60, 0.32))
         curved[3].move_center_to_screen_position((0.85, 0.32))
-    with Sync(duration=1.8):
+    with Sync(runtime=1.8):
         # A colour wave over PN-tessellated geometry: the sphere is a single
         # flat colour, so the travelling band is unambiguous.
         curved[0].wave_color(YELLOW, direction=RIGHT)
         curved[1].rotate(180, UP)
         curved[3].rotate(180, RIGHT)
-    with Sync(duration=1.4):
+    with Sync(runtime=1.4):
         curved[0].move_off_screen(RIGHT, despawn=False)
         curved[1].move_off_screen(UP, despawn=False)
         curved[4].scale(0.6)

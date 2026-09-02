@@ -70,10 +70,10 @@ def _materialize(scene, surface, times):
     return primitive, seg
 
 
-def _crossfade_scene(tex_a, tex_b, duration=2):
+def _crossfade_scene(tex_a, tex_b, runtime=2):
     scene = SceneManager.reset()
     surface = Surface(color_texture=tex_a, grid_height=4, grid_width=4).spawn()
-    with AnimationContext(runtime=duration):
+    with AnimationContext(runtime=runtime):
         surface.color_texture = tex_b
     Scene.wait(1)
     return scene, surface
@@ -190,7 +190,7 @@ def test_the_gate_declines_overlapping_edits():
     tex_a = _tex(8, 8, 9)
     scene = SceneManager.reset()
     surface = Surface(color_texture=tex_a, grid_height=4, grid_width=4).spawn()
-    with Sync(duration=2):
+    with Sync(runtime=2):
         surface.color_texture = _tex(8, 8, 10)
         surface.color_texture = _tex(8, 8, 11)
     Scene.wait(0.5)

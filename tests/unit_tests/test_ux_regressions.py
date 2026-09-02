@@ -67,7 +67,7 @@ def test_kernel_compile_notice_ignores_offline_cache_hits():
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
-def test_equalize_runtimes_tolerates_zero_duration_children():
+def test_equalize_runtimes_tolerates_zero_runtime_children():
     with Sync(equalize_runtimes=True), algan.Off():
         pass
 
@@ -298,7 +298,7 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     _stub_out_frame_writing(monkeypatch, scene, on_render=prepare_transient_queries)
 
     square = Square().spawn()
-    with algan.Seq(duration=8):
+    with algan.Seq(runtime=8):
         square.move(algan.RIGHT)
         square.move(algan.UP)
         # Last statement in the block: nothing after it records an edit, so
@@ -344,7 +344,7 @@ def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(
     )
 
     square = Square().spawn()
-    with algan.Seq(duration=8):
+    with algan.Seq(runtime=8):
         square.move(algan.RIGHT)
 
     # Timings are final here, so resolving is legitimate and must survive.
@@ -404,7 +404,7 @@ def test_render_window_covers_the_whole_open_context_chain(monkeypatch, tmp_path
 
     square = Square().spawn()
     with algan.Sync():
-        with algan.Seq(duration=5):
+        with algan.Seq(runtime=5):
             square.move(algan.RIGHT)
             square.move(algan.UP)
         with algan.Seq():
@@ -432,7 +432,7 @@ def test_save_video_reset_false_rolls_back_derived_state_mid_block(
     scene_times_before = [list(pair) for pair in scene.scene_times]
 
     square = Square().spawn()
-    with algan.Seq(duration=8):
+    with algan.Seq(runtime=8):
         square.move(algan.RIGHT)
         square.move(algan.UP)
         # Last statement in the block, so nothing afterwards invalidates a
@@ -932,7 +932,7 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
     text = algan.Text("A", color=algan.YELLOW, add_to_scene=True).spawn(False)
     glyph = text.character_mobs[0]
 
-    text.write(duration=2)
+    text.write(runtime=2)
     text.scene.timeline_manager.set_state_to_times(
         torch.tensor([0.5, 1.5, 1.999], dtype=torch.get_default_dtype())
     )
@@ -970,7 +970,7 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     def fake(
         mobs,
         stroke_width=1,
-        duration=None,
+        runtime=None,
         lag_ratio=None,
         stroke_color=None,
         **kwargs,
@@ -1006,9 +1006,9 @@ def test_context_kwargs_on_a_method_point_at_the_context():
     """``mob.move(RIGHT, runtime=2)`` is the Manim reflex; say what to write."""
     square = Square().spawn()
     with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
-        square.move(algan.RIGHT, duration=2)
+        square.move(algan.RIGHT, runtime=2)
     with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
-        square.set(color=algan.BLUE, duration=2)
+        square.set(color=algan.BLUE, runtime=2)
     # lag_ratio must suggest Lag, which takes it positionally.
     with pytest.raises(TypeError, match=r"with Lag\(0\.3\)"):
         square.set(lag_ratio=0.3)
@@ -1891,7 +1891,7 @@ def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
 
         # Scene -- one despawn method with flags, and one reset with a flag.
         Square().spawn()
-        assert scene.despawn_mobs(retain_history=True, duration=0.5) is scene
+        assert scene.despawn_mobs(retain_history=True, runtime=0.5) is scene
         assert scene.reset(rebuild_timeline=False) is scene
         assert scene.reset() is scene
         for gone in (

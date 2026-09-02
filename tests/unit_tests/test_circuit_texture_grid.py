@@ -107,9 +107,7 @@ def test_a_lone_texel_sits_at_the_centre_of_its_span():
     # One degenerate axis, one sampled: the sampled axis spreads, the degenerate
     # one stays on the frame's centre line.
     strip = Square(grid_width=4, grid_height=1, add_to_scene=False)
-    offsets = strip.grid.location.reshape(-1, 3) - strip.location.reshape(
-        1, 3
-    )
+    offsets = strip.grid.location.reshape(-1, 3) - strip.location.reshape(1, 3)
     rows = strip.basis.reshape(3, 3)
     along_v = (offsets * rows[1] / rows[1].norm()).sum(-1)
     torch.testing.assert_close(along_v, torch.zeros_like(along_v), atol=1e-6, rtol=0)
@@ -203,9 +201,7 @@ def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
         unfilled.set_color_by_function(_rgb)
     # An unfilled circuit has no interior to show the colours in, so the stroke
     # takes them too.
-    assert torch.equal(
-        unfilled.border_grid.color, unfilled.grid.color
-    )
+    assert torch.equal(unfilled.border_grid.color, unfilled.grid.color)
 
 
 def test_line_set_color_by_function_runs_from_start_to_end():

@@ -103,7 +103,7 @@ def test_the_window_is_bounded():
 
 
 def test_prediction_is_monotone_in_the_frame_count():
-    # render_loop binary-searches durations elsewhere and the retry path halves
+    # render_loop binary-searches runtimes elsewhere and the retry path halves
     # them; a non-monotone predictor makes both incoherent.
     model = ChunkMemoryModel()
     model.observe(SIG, 2, 2_000_000)

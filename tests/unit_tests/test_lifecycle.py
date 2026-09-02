@@ -42,7 +42,7 @@ def test_unspawned_group_with_spawned_children_animates():
         with Seq():
             child.spawn(animate=False)
             start = scene.animation_manager.context.timespan.current_time
-            with Sync(duration=1.0):
+            with Sync(runtime=1.0):
                 group.move(RIGHT)
 
         end = scene.animation_manager.context.timespan.original_end
@@ -62,7 +62,7 @@ def test_fully_unspawned_mob_edits_stay_instant():
     with Scene() as scene:
         square = Square()
 
-        with Seq(), Sync(duration=1.0):
+        with Seq(), Sync(runtime=1.0):
             square.move(RIGHT)
 
         # Nothing is on screen, so the edit is applied instantly and takes up

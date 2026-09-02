@@ -82,7 +82,7 @@ def test_fade_of_a_static_image_keeps_a_one_frame_map():
     surface = Surface(
         color_texture=_u8_texture(4, 4), grid_height=4, grid_width=4
     ).spawn()
-    with Sync(duration=1):
+    with Sync(runtime=1):
         surface.opacity = 0.0
 
     # The spawn's own fade-in occupies [0, 1] and the fade-out [1, 2]; sample
@@ -116,7 +116,7 @@ def test_kill_switch_restores_the_premultiplied_map():
         surface = Surface(
             color_texture=_u8_texture(4, 4), grid_height=4, grid_width=4
         ).spawn()
-        with Sync(duration=1):
+        with Sync(runtime=1):
             surface.opacity = 0.0
 
         primitive = _materialize(scene, surface, torch.linspace(0.5, 2.0, 5))
@@ -134,7 +134,7 @@ def test_estimator_prices_a_fade_at_the_collapsed_window():
     surface = Surface(
         color_texture=_u8_texture(16, 16), grid_height=4, grid_width=4
     ).spawn()
-    with Sync(duration=1):
+    with Sync(runtime=1):
         surface.opacity = 0.0
     _materialize(scene, surface, torch.linspace(0.0, 1.0, 5))
 

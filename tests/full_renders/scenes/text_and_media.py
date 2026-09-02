@@ -101,17 +101,17 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.18, duration=1.6):
+    with Lag(0.18, runtime=1.6):
         plain.spawn()
         bold.spawn()
         italic.spawn()
         markup.spawn()
         mesh_text.spawn()
         mesh_tex.spawn()
-    with Sync(duration=0.9):
+    with Sync(runtime=0.9):
         formula.spawn()
         matrix_tex.spawn()
-    with Sync(duration=0.9):
+    with Sync(runtime=0.9):
         paragraph.spawn()
         code.spawn()
     counter_label.spawn()
@@ -136,15 +136,15 @@ with Off():
     series.move(formula.get_center() - series.get_center())
 
 with Seq():
-    with Sync(duration=0.5):
+    with Sync(runtime=0.5):
         glyphs.spawn()
-    written.spawn(False).write(duration=1.6)
+    written.spawn(False).write(runtime=1.6)
     # Glyphs are individually addressable, so single letters animate on their
     # own while the rest of the word stays put.
-    with Lag(0.25, duration=1.4):
+    with Lag(0.25, runtime=1.4):
         for glyph in lifted:
             glyph.move(UP * 0.35)
-    with Lag(0.25, duration=1.4):
+    with Lag(0.25, runtime=1.4):
         for glyph in lifted:
             glyph.move(DOWN * 0.35)
     # ``minimize_movement`` pairs each triangle with the closest one in the
@@ -155,7 +155,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 3 -- imported media and the fragment shader stack.
 # --------------------------------------------------------------------------
-with Sync(duration=0.8):
+with Sync(runtime=0.8):
     for mob in (
         plain,
         bold,
@@ -209,19 +209,19 @@ with Off():
     )
 
 with Seq():
-    with Sync(duration=0.8):
+    with Sync(runtime=0.8):
         image.spawn()
         image_frame.spawn()
         flat_image.spawn()
         model.spawn()
         shader_sphere.spawn()
         media_labels.spawn()
-    with Sync(duration=2.4):
+    with Sync(runtime=2.4):
         image.rotate(28, UP)
         model.rotate(300, UP)
         shader_sphere.rotate(210, UP + RIGHT)
         shader_sphere.frequency = 4.5
         shader_sphere.phase = 1.0
-    ShowPassingFlash(image_frame, time_width=0.25, duration=1.0)
-    Circumscribe(model, color=YELLOW, duration=0.9)
+    ShowPassingFlash(image_frame, time_width=0.25, runtime=1.0)
+    Circumscribe(model, color=YELLOW, runtime=0.9)
     Scene.wait(0.3)

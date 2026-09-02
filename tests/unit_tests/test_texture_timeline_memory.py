@@ -91,7 +91,7 @@ def test_colour_texture_still_interpolates_per_texel():
     surface = Surface(
         color_texture=_texture(4, 4, 0), grid_height=4, grid_width=4
     ).spawn()
-    with Seq(duration=1, easing=easings.identity):
+    with Seq(runtime=1, easing=easings.identity):
         surface.color_texture = _texture(4, 4, 2)
 
     scene = SceneManager.instance().current_scene

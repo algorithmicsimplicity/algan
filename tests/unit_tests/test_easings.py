@@ -145,7 +145,7 @@ def test_a_context_easing_reshapes_the_path_but_not_its_endpoints(name):
     with Scene() as scene:
         with Off():
             square = Square().spawn()
-        with Sync(duration=1.0, easing=func):
+        with Sync(runtime=1.0, easing=func):
             square.move(RIGHT * 2)
 
         times = torch.tensor([0.0, 0.5, 1.0])

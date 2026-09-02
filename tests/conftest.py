@@ -266,7 +266,7 @@ def pytest_runtest_logreport(report):
     if not _LOG_FILES:
         return
     nodeid = report.nodeid
-    _PHASE_SECONDS[nodeid] = _PHASE_SECONDS.get(nodeid, 0.0) + report.runtime
+    _PHASE_SECONDS[nodeid] = _PHASE_SECONDS.get(nodeid, 0.0) + report.duration
     if report.when == "call":
         _OUTCOMES[nodeid] = report.outcome.upper()
     elif report.failed:

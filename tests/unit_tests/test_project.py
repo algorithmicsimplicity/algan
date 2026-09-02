@@ -12,7 +12,7 @@ from algan.utils.algan_utils import RenderResult, algan_scene
 
 
 class _SilentClip:
-    duration = 0
+    runtime = 0
 
 
 @pytest.fixture(autouse=True)

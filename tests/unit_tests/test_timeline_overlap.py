@@ -94,9 +94,9 @@ def test_replay_window_resolution_extends_a_cached_prefix():
     """
     m = Mob().spawn(animate=False)
     with Sync(easing=easings.identity):
-        with Seq(duration=2):
+        with Seq(runtime=2):
             m.move(R * 2)
-        with Seq(duration=1):
+        with Seq(runtime=1):
             m.move(U * 2)
 
     timeline = m.scene.timeline_manager
@@ -105,9 +105,9 @@ def test_replay_window_resolution_extends_a_cached_prefix():
     assert prefix_count > 0
 
     with Sync(easing=easings.identity):
-        with Seq(duration=3):
+        with Seq(runtime=3):
             m.move(OUT * 2)
-        with Seq(duration=0.5):
+        with Seq(runtime=0.5):
             m.move(R)
     timeline._resolve_replay_windows()
     assert timeline._resolved_prefix_count > prefix_count
@@ -184,9 +184,9 @@ def test_nested_overlap():
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(easing=easings.identity):
-        with Seq(duration=1):
+        with Seq(runtime=1):
             m.move(R * 2)  # [t0, t0+1]
-        with Seq(duration=0.5):
+        with Seq(runtime=0.5):
             m.move(U * 2)  # [t0, t0+0.5]
     offs = [0.25, 0.4999, 0.5, 0.75, 1.0, 1.5]
     expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5) for dt in offs]
@@ -199,9 +199,9 @@ def test_three_overlapping_intervals():
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(easing=easings.identity):
-        with Seq(duration=1):
+        with Seq(runtime=1):
             m.move(R * 2)  # [t0, t0+1]
-        with Seq(duration=1):
+        with Seq(runtime=1):
             m.move(U * 2)  # [t0, t0+0.5]
             m.move(OUT * 2)  # [t0+0.5, t0+1]
     offs = [0.25, 0.4999, 0.5, 0.75, 0.9999, 1.0, 1.5]
@@ -224,9 +224,9 @@ def test_partial_row_overlap():
     g = Group([m1, m2])
     t0 = _now()
     with Sync(easing=easings.identity):
-        with Seq(duration=2):
+        with Seq(runtime=2):
             m1.move(R * 2)  # [t0, t0+2], m1 rows only
-        with Seq(duration=1):
+        with Seq(runtime=1):
             g.move(U * 2)  # [t0, t0+1], m1+m2 rows
     offs = [0.5, 0.9999, 1.0, 1.5, 2.0, 2.5]
     exp1 = [R * 2 * _lin(dt, 0, 2) + U * 2 * _lin(dt, 0, 1) for dt in offs]
@@ -245,9 +245,9 @@ def test_overlapping_rotations_continuity():
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(easing=easings.identity):
-        with Seq(duration=1):
+        with Seq(runtime=1):
             m.rotate(90, OUT)  # [t0, t0+1]
-        with Seq(duration=0.5):
+        with Seq(runtime=0.5):
             m.rotate(90, U)  # [t0, t0+0.5]
     offs = [0.4999, 0.5, 0.9999, 1.0, 1.5]
     (basis,) = _materialize([t0 + dt for dt in offs], [m], attr="basis")

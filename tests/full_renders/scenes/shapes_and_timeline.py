@@ -121,12 +121,12 @@ with Off():
 
 with Seq():
     title.spawn()
-    with Lag(0.18, duration=1.6):
+    with Lag(0.18, runtime=1.6):
         for shape in filled:
             shape.spawn()
-    with Sync(duration=0.7):
+    with Sync(runtime=0.7):
         filled_labels.spawn()
-    with Sync(duration=0.9):
+    with Sync(runtime=0.9):
         outlined.spawn()
         outlined_labels.spawn()
 
@@ -145,7 +145,7 @@ with Seq():
     rate_label.spawn()
     # The outer runtime rescales every child retroactively: the Seq below runs
     # three edits back to back inside the same 2 seconds the Sync spends on one.
-    with Sync(duration=2.0):
+    with Sync(runtime=2.0):
         with Seq():
             filled[0].move(UP * 0.5)
             filled[0].color = RED
@@ -163,7 +163,7 @@ with Seq():
             outlined[4].move(UP * 0.32)
         with Sync(easing=easings.ease_out_expo):
             outlined[5].move(UP * 0.32)
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         filled[5].wave_color(GREEN, direction=RIGHT)
         outlined[2].stroke_color = YELLOW
     Scene.wait(0.2)
@@ -182,25 +182,25 @@ with Off():
 
 with Seq():
     indication_label.spawn()
-    with Lag(0.55, duration=3.4):
-        Indicate(filled[0], color=WHITE, duration=0.8)
-        Wiggle(filled[1], scale_value=1.2, n_wiggles=4, duration=0.8)
-        Circumscribe(filled[2], color=TEAL_A, buff=0.15, duration=0.9)
-        Flash(filled[3], color=ORANGE, num_lines=10, flash_radius=0.75, duration=0.9)
-        FocusOn(filled[4], duration=0.9)
+    with Lag(0.55, runtime=3.4):
+        Indicate(filled[0], color=WHITE, runtime=0.8)
+        Wiggle(filled[1], scale_value=1.2, n_wiggles=4, runtime=0.8)
+        Circumscribe(filled[2], color=TEAL_A, buff=0.15, runtime=0.9)
+        Flash(filled[3], color=ORANGE, num_lines=10, flash_radius=0.75, runtime=0.9)
+        FocusOn(filled[4], runtime=0.9)
         Blink(filled[5], time_on=0.2, time_off=0.15, blinks=2)
-    with Sync(duration=1.5):
-        ShowPassingFlash(outlined[0], time_width=0.3, duration=1.5)
+    with Sync(runtime=1.5):
+        ShowPassingFlash(outlined[0], time_width=0.3, runtime=1.5)
         ShowPassingFlashWithThinningStrokeWidth(
-            outlined[1], n_segments=6, time_width=0.35, duration=1.5
+            outlined[1], n_segments=6, time_width=0.35, runtime=1.5
         )
-        ApplyWave(filled_labels, direction=UP, amplitude=0.18, duration=1.5)
+        ApplyWave(filled_labels, direction=UP, amplitude=0.18, runtime=1.5)
     Scene.wait(0.2)
 
 # --------------------------------------------------------------------------
 # Act 4 -- become morphing, updaters, DecimalNumber and hand-drawing.
 # --------------------------------------------------------------------------
-with Sync(duration=0.8):
+with Sync(runtime=0.8):
     filled_labels.despawn()
     outlined_labels.despawn()
     outlined.despawn()
@@ -252,7 +252,7 @@ with Off():
     ).move(DOWN * 3.0)
 
 with Seq():
-    with Sync(duration=0.6):
+    with Sync(runtime=0.6):
         morph.spawn()
         hub.spawn()
         satellite.spawn()
@@ -268,21 +268,21 @@ with Seq():
     )
     # ``become`` morphs position as well as shape, so the targets are built
     # where the morphing Mob already is.
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         morph.become(
             Circle(radius=0.7, color=TEAL, add_to_scene=False).move(
                 LEFT * 4.2 + DOWN * 1.4
             )
         )
         counter.set_value(37.5)
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         morph.become(
             Polygon(*STAR_POINTS, color=ORANGE, add_to_scene=False).move(
                 LEFT * 4.2 + DOWN * 1.4
             )
         )
         counter.set_value(-4.0)
-    DrawBorderThenFill([drawn], duration=1.4)
+    DrawBorderThenFill([drawn], runtime=1.4)
     satellite.remove_updater(orbit_id)
     hub.remove_updater(spin_id)
     Scene.wait(0.3)
@@ -290,7 +290,7 @@ with Seq():
 # --------------------------------------------------------------------------
 # Act 5 -- lifecycle: part of the scene leaves the frame, the rest despawns.
 # --------------------------------------------------------------------------
-with Sync(duration=1.4):
+with Sync(runtime=1.4):
     filled[0].move_off_screen(LEFT, despawn=False)
     filled[5].move_off_screen(RIGHT, despawn=False)
     filled[2].move_off_screen(UP, despawn=False)
@@ -298,7 +298,7 @@ with Sync(duration=1.4):
     hub.scale(1.4)
     counter.set_value(0.0)
 
-with Sync(duration=0.8):
+with Sync(runtime=0.8):
     hub.despawn()
     satellite.despawn()
     drawn.despawn()
@@ -382,15 +382,15 @@ with Off():
     )
 
 with Seq():
-    with Lag(0.15, duration=1.4):
+    with Lag(0.15, runtime=1.4):
         gradient_triangle.spawn()
         raw_circuit.spawn()
         quad.spawn()
         quad_triangulated.spawn()
-    with Sync(duration=0.5):
+    with Sync(runtime=0.5):
         primitive_labels.spawn()
         surrounding.spawn()
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         gradient_triangle.rotate(180, UP)
         raw_circuit.rotate(45, OUT)
         quad.rotate(-30, OUT)
@@ -401,7 +401,7 @@ with Seq():
 # PGroup's members are intentionally not separate Scene actors: this exercises
 # the composite's own primitive delegation as well as the three leaf classes.
 # --------------------------------------------------------------------------
-with Sync(duration=0.6):
+with Sync(runtime=0.6):
     gradient_triangle.despawn()
     raw_circuit.despawn()
     quad.despawn()
@@ -459,14 +459,14 @@ with Off():
     )
 
 with Seq():
-    with Lag(0.15, duration=1.2):
+    with Lag(0.15, runtime=1.2):
         dot_cloud.spawn()
         point_cloud_dot.spawn()
         true_dot.spawn()
         point_group.spawn()
-    with Sync(duration=0.5):
+    with Sync(runtime=0.5):
         point_labels.spawn()
-    with Sync(duration=1.2):
+    with Sync(runtime=1.2):
         dot_cloud.rotate(90, OUT)
         point_cloud_dot.scale(1.25)
         true_dot.move(UP * 0.35)

@@ -142,7 +142,7 @@ def test_chunk_peak_is_credited_to_the_window_that_actually_rendered():
     assert scene._observed_chunk_frames(64) == 64
 
 
-def test_probe_duration_lets_a_capacity_estimate_shortcut_the_halving():
+def test_probe_runtime_lets_a_capacity_estimate_shortcut_the_halving():
     class Scene(RenderLoopMixin):
         pass
 

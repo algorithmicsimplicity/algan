@@ -161,6 +161,7 @@ extend-exclude = [
   "buck-out",
   "media",
   "algan/external_libraries",
+  "benchmarks",
 ]
 # `ruff check` reports and does not rewrite. Opt in to rewriting per-invocation
 # with `ruff check --fix` (and `--unsafe-fixes` for the rest). This used to be
@@ -251,13 +252,6 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
   "SIM",
 ]
 
-# Same hazard, without the naming convention to key on: a benchmark may define
-# its own @ti.kernel to exercise one func in isolation, and several do. The
-# import has already broken scripts here, so keep it out of the whole directory
-# rather than tracking which script currently has a kernel in it.
-"benchmarks/*" = [
-  "I002",
-]
 
 "__init__.py" = [
   "F401",

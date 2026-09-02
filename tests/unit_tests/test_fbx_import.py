@@ -330,7 +330,7 @@ def _spin_translate_scene():
         rotation_times=times,
         rotations=quats,
     )
-    clip = AnimationData(name="clip", duration=1.0, channels=[channel])
+    clip = AnimationData(name="clip", runtime=1.0, channels=[channel])
     node = NodeData(name="spin", transform=torch.eye(4), parent=-1, mesh_indices=[0])
     return SceneData(
         meshes=[_triangle_mesh()],
@@ -365,7 +365,7 @@ def test_bake_hierarchy_animation():
     positions = torch.tensor([[0.0, 0.0, 0.0], [0.0, 3.0, 0.0]])
     clip = AnimationData(
         name="c",
-        duration=1.0,
+        runtime=1.0,
         channels=[
             NodeAnimation(node_name="root", position_times=times, positions=positions)
         ],
@@ -395,7 +395,7 @@ def test_play_animation_sets_recompute_normals():
     SceneManager.reset()
     with torch.inference_mode():
         model = Model3D(scene_data=_spin_translate_scene()).spawn()
-        model.play_animation(duration=1.0)
+        model.play_animation(runtime=1.0)
     assert model.mesh_mobs[0].recompute_normals is True
 
 

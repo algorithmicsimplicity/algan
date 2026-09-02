@@ -538,9 +538,7 @@ class BezierCircuitCubic(Mob):
 
         border_texture_kwargs = dict(kwargs)
         border_texture_kwargs["color"] = stroke_color
-        self.border_grid = Mob(
-            texture_triangle_vertices, **border_texture_kwargs
-        )
+        self.border_grid = Mob(texture_triangle_vertices, **border_texture_kwargs)
         self.border_grid.exclude_from_boundary = True
         self.border_grid.is_primitive = True
         # ``color`` on the circuit means fill color.  The border grid remains a

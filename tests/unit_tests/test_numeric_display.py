@@ -66,7 +66,7 @@ def test_num_integer_places_is_a_minimum_not_a_limit():
 def test_grown_slots_replay_the_interpolated_value():
     with Scene() as scene:
         display = DecimalNumber(0.0, decimal_places=2).spawn(animate=False)
-        with Sync(duration=1, easing=easings.identity):
+        with Sync(runtime=1, easing=easings.identity):
             display.value = 10000
 
         scene.timeline_manager.set_state_to_times(torch.tensor([0.0, 0.5, 1.0]))
@@ -93,7 +93,7 @@ def test_negative_sign_tracks_the_first_visible_integer_digit():
         display = DecimalNumber(10000, decimal_places=2).spawn(animate=False)
         with Off():
             display.value = 0
-        with Sync(duration=1, easing=easings.identity):
+        with Sync(runtime=1, easing=easings.identity):
             display.value = -100
 
         scene.timeline_manager.set_state_to_times(torch.tensor([0.5, 1.0]))
