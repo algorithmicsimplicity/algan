@@ -231,6 +231,34 @@ fields are the ones you set once at the top of a script:
     SETTINGS.style.set(shape_style_profile="manim")  # Manim-looking shapes
     SETTINGS.style.set(shape_style_profile="algan")  # back to Algan's
 
+``border_placement``
+    Where a *filled* shape lays its border relative to its outline.
+    ``"inward"`` (the default) puts the whole stroke inside, so raising
+    ``stroke_width`` eats into the shape rather than growing it and
+    neighbouring glyphs never fuse. ``"centered"`` straddles the outline the
+    way Manim and SVG's default ``stroke`` do, so half the width spills
+    outside and the silhouette grows with the stroke.
+    :meth:`~algan.scene.Scene.use_manim_defaults` selects ``"centered"``,
+    since an inward stroke puts an imported Manim shape's silhouette half a
+    stroke width in from where Manim draws it. Unfilled shapes -- a
+    :class:`~algan.mobs.shapes.Line`, an open ``Circle`` -- are centred under
+    both: an open path has no interior to lay a stroke inside of.
+
+.. code-block:: python
+
+    SETTINGS.style.set(border_placement="centered")  # Manim/SVG stroke
+
+``manim_stroke_width_ratio``
+    Manim stroke-width units per Algan unit, used by every conversion in the
+    Manim compatibility layer -- import, export and the shape adapters alike,
+    so a round trip returns the width it started with. Defaults to ``2.0``,
+    Algan's stated convention that "Manim's number is twice Algan's".
+    :meth:`~algan.scene.Scene.use_manim_defaults` swaps in the exact figure,
+    ``2.0202`` (:func:`~algan.manim_defaults.manim_stroke_width_ratio`), which
+    is the ratio that actually draws the same number of pixels Manim draws;
+    the two would agree if ``PREVIEW`` were 400 px tall rather than 396, so the
+    round convention is 1.01% off rather than wrong in kind.
+
 .. code-block:: python
 
     SETTINGS.style.set(background=Color([0.05, 0.05, 0.15]), buffer=0.3)

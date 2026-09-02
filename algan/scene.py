@@ -337,6 +337,7 @@ class Scene(RenderLoopMixin):
         background: bool = True,
         video_settings: bool = False,
         shape_defaults: bool = False,
+        stroke_geometry: bool = True,
     ):
         """Set this Scene up the way Manim sets its scenes up.
 
@@ -370,11 +371,25 @@ class Scene(RenderLoopMixin):
             Whether to reproduce Manim's color pipeline: its single light in
             its own position, ``ManimMaterial`` as the default material for
             3-D Mobs with none of their own -- reproducing the shading Manim's
-            ``get_shaded_rgb`` applies to 3-D geometry, where flat vector
-            Mobjects get none (and Algan's 2-D content is drawn unlit by
-            construction, so it never consults the setting) -- and no
-            tonemapping, so a flat fill comes out byte-identical to Manim's.
-            Defaults to ``True``.
+            ``get_shaded_rgb`` applies to anything flagged ``shade_in_3d``,
+            which :class:`~algan.mobs.manim_mob.ManimMob` carries across so
+            even a flat ``Cube`` face is lit -- no tonemapping, so a flat fill
+            comes out byte-identical to Manim's, and Manim's *display-referred*
+            working color space, since Manim composites alpha and antialiases
+            in sRGB rather than in linear light. Defaults to ``True``.
+
+            The color space is process-wide and changes every render, not only
+            Manim-derived content, and it compiles a separate set of GPU
+            kernels, so the first render after switching pays a cold compile.
+            It is also effectively a **process-start** decision: the renderer
+            folds it into its kernels at compile time, so switching it after
+            something has already rendered in this process leaves those kernels
+            in the old space while the rest of the pipeline moves to the new
+            one -- a measured ~24/255 disagreement. Calling this method once at
+            the top of a script, as intended, is before any render and is safe.
+            To be certain in a process that renders more than once, set
+            ``ALGAN_LINEAR_COLOR=0`` in the environment instead, or pass
+            ``shading=False`` here and leave the space alone.
         background
             Whether to set the background to black, Manim's default. Defaults to
             ``True``.
@@ -386,6 +401,19 @@ class Scene(RenderLoopMixin):
             Whether Algan's own shapes (``Square``, ``Circle``, ...) also adopt
             Manim's default colors and stroke styling. Defaults to ``False``,
             since it changes shapes that have nothing to do with Manim.
+        stroke_geometry
+            Whether strokes are laid out Manim's way rather than Algan's, in
+            the two respects the engines disagree on. *Placement*
+            (``SETTINGS.style.border_placement``): a filled shape's stroke
+            straddles its outline as Manim's does instead of running inward as
+            Algan's does, which otherwise puts a Manim shape's silhouette half
+            a stroke width inside where Manim draws it. *Width*
+            (``SETTINGS.style.manim_stroke_width_ratio``): the compatibility
+            layer converts stroke widths by the exact ``2.0202`` rather than
+            Algan's round ``2``, which is otherwise 1.01% too wide. Defaults to
+            ``True``. Neither changes a stroke's authored color or width, so
+            both are safe for shapes that never came from Manim -- but they are
+            process-wide, so pass ``False`` to leave other Scenes alone.
 
         Returns
         -------
@@ -416,6 +444,7 @@ class Scene(RenderLoopMixin):
             background=background,
             video_settings=video_settings,
             shape_defaults=shape_defaults,
+            stroke_geometry=stroke_geometry,
         )
 
     @active_scene_method

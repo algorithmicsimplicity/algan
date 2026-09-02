@@ -314,6 +314,38 @@ def compare(manim_frames, algan_frames, report_dir):
     return diff
 
 
+def make_workdir():
+    """Create the scratch directory the Manim subprocess renders in.
+
+    It must not contain a space. Manim hands LaTeX the ``.tex`` path as a bare
+    command-line argument, and TeX splits an unquoted filename at the first
+    space -- on Windows it even expands an 8.3 short name (``NATHAN~1.ELA``)
+    back to the long one first, so a space-free-looking path still breaks. TeX
+    then compiles whatever the truncated name happens to hit and writes its log
+    under that name, so no log lands where Manim looks for it and the failure is
+    reported as ``latex failed but did not produce a log file``. The default
+    ``%TEMP%`` sits under the user profile, which contains a space on many
+    Windows machines, so fall back to a directory beside the outputs when it
+    does.
+
+    Returns
+    -------
+    str
+        Path to a fresh scratch directory, to be removed by the caller.
+    """
+    base = Path(tempfile.gettempdir())
+    if " " in str(base.resolve()):
+        base = Path(__file__).resolve().parent.parent / OUTPUT_DIR / "work"
+        base.mkdir(parents=True, exist_ok=True)
+    workdir = tempfile.mkdtemp(prefix="manim_parity_", dir=str(base))
+    if " " in str(Path(workdir).resolve()):
+        raise SystemExit(
+            f"no space-free scratch directory available (tried {workdir!r}); "
+            "manim's latex call cannot be given a path containing a space"
+        )
+    return workdir
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hd", action="store_true", help="render at 1920x1080")
@@ -329,7 +361,7 @@ def main():
         directory.mkdir(parents=True, exist_ok=True)
 
     phases = [k / args.frames for k in range(args.frames)]
-    workdir = tempfile.mkdtemp(prefix="manim_parity_")
+    workdir = make_workdir()
     try:
         print(f"rendering {len(phases)} poses with manim at {width}x{height} ...")
         manim_frames = []

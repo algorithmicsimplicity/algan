@@ -461,7 +461,15 @@ _M_REFLECTIVITY = 20
 _M_ROUGHNESS = 21
 _M_IOR = 22
 _M_TRANSMISSION = 23
-_M_WIDTH = 24
+# > 0.5 if a FILLED circuit's border straddles the outline instead of running
+# inward from it (``SETTINGS.style.border_placement``, see
+# ``_circuit_point_region``). Carried per circuit rather than baked into the
+# kernels so the placement is switchable between renders in one process, and
+# separate from _M_BORDER_W rather than riding its sign for the same reason
+# _M_TRANSMISSION is separate from _M_IOR. Inert on an unfilled circuit, whose
+# stroke is centred either way.
+_M_BORDER_CENTERED = 24
+_M_WIDTH = 25
 
 
 @ti.func
@@ -475,45 +483,87 @@ def _safe_inverse(x: ti.f32) -> ti.f32:
 
 
 @ti.func
-def _circuit_query_radius(border_w, outline_w, filled):
-    """Nearest-edge search radius that can classify one point of a circuit.
+def _circuit_outer_dilation(border_w, outline_w, filled, centered):
+    """How far OUTSIDE the outline a circuit's drawn region reaches.
 
-    ``border_w`` is the circuit's full stroke width in plane units. A FILLED
-    circuit draws its border INWARD from the outline, so classification needs
-    distances out to the whole width -- or to the hairline dilation
-    ``outline_w``, whichever reaches further. An UNFILLED one centres the stroke
-    on the path and only needs half the width.
+    Normally just the hairline dilation ``outline_w``, which is what keeps a
+    sub-pixel or degenerate fill from vanishing. A FILLED circuit drawing a
+    CENTRED border also spills half the stroke past the outline, so its drawn
+    region reaches whichever of the two is further.
     """
-    r = 0.5 * ti.abs(border_w)
-    if filled:
-        r = ti.max(ti.abs(border_w), outline_w)
+    r = outline_w
+    if filled and centered:
+        r = ti.max(outline_w, 0.5 * ti.abs(border_w))
     return r
 
 
 @ti.func
-def _circuit_point_region(border_w, outline_w, filled, crossings, min_dist_sq):
+def _circuit_inner_distance(border_w, filled, centered):
+    """Signed distance (positive inside) at which the border gives way to fill.
+
+    The whole stroke width for an INWARD border, since it is laid entirely
+    inside the outline; half of it for a CENTRED one, which spends the other
+    half outside. An unfilled circuit is a centred band either way.
+    """
+    r = ti.abs(border_w)
+    if centered or (not filled):
+        r = 0.5 * ti.abs(border_w)
+    return r
+
+
+@ti.func
+def _circuit_query_radius(border_w, outline_w, filled, centered):
+    """Nearest-edge search radius that can classify one point of a circuit.
+
+    ``border_w`` is the circuit's full stroke width in plane units. The radius
+    has to reach both boundaries of the drawn region: the inner border/fill edge
+    (:func:`_circuit_inner_distance`) and the outer silhouette
+    (:func:`_circuit_outer_dilation`). An UNFILLED circuit is the band ``|d| <
+    border_w / 2`` and needs only half the width.
+    """
+    r = 0.5 * ti.abs(border_w)
+    if filled:
+        r = ti.max(_circuit_inner_distance(border_w, filled, centered),
+                   _circuit_outer_dilation(border_w, outline_w, filled,
+                                           centered))
+    return r
+
+
+@ti.func
+def _circuit_point_region(border_w, outline_w, filled, centered, crossings,
+                          min_dist_sq):
     """Classify one point of a circuit as ``(drawn, in_border)``.
 
     ``border_w`` is the full stroke width and ``crossings``/``min_dist_sq`` come
     from :func:`_bezier_point_metrics`, so the signed distance to the outline is
     ``d = +/- sqrt(min_dist_sq)``, positive inside.
 
-    A FILLED circuit's border runs INWARD -- the drawn region is the fill itself
-    (dilated by ``outline_w`` so hairlines and degenerate fills survive) and the
-    border is the part of it within ``border_w`` of the outline, i.e. ``d <=
-    border_w``. Raising ``stroke_width`` therefore eats into the shape instead
-    of dilating it, which is what keeps neighbouring glyphs from fusing.
+    A FILLED circuit's border runs INWARD by default -- the drawn region is the
+    fill itself (dilated by ``outline_w`` so hairlines and degenerate fills
+    survive) and the border is the part of it within ``border_w`` of the
+    outline, i.e. ``d <= border_w``. Raising ``stroke_width`` therefore eats
+    into the shape instead of dilating it, which is what keeps neighbouring
+    glyphs from fusing.
 
-    An UNFILLED circuit has no interior to eat into, so its stroke stays centred
-    on the path: the band ``|d| < border_w / 2``, the same total width.
+    With ``centered`` set (``SETTINGS.style.border_placement == "centered"``,
+    which is Manim's convention) the same stroke straddles the outline instead:
+    the drawn region grows outward to ``d > -border_w / 2`` and the border is
+    ``|d| < border_w / 2``. The shape then dilates with its stroke width, which
+    is the whole difference -- everything downstream (the border/fill blend, the
+    coverage filter, the packed ref) reads the same two booleans.
+
+    An UNFILLED circuit has no interior to eat into, so its stroke is centred on
+    the path whichever mode is in force: the band ``|d| < border_w / 2``.
     """
     drawn = False
     in_border = False
     if filled:
-        drawn = ((crossings % 2) == 1) or (min_dist_sq < outline_w * outline_w)
+        dil = _circuit_outer_dilation(border_w, outline_w, filled, centered)
+        inner = _circuit_inner_distance(border_w, filled, centered)
+        drawn = ((crossings % 2) == 1) or (min_dist_sq < dil * dil)
         in_border = drawn and (ti.abs(border_w) > 0.0) and (
             ((crossings % 2) == 0)
-            or (min_dist_sq < border_w * border_w))
+            or (min_dist_sq < inner * inner))
     else:
         half = 0.5 * ti.abs(border_w)
         drawn = min_dist_sq < half * half
@@ -1323,8 +1373,10 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                             * pixel_size)
                                 outline_w = 0.6 * pixel_size
                                 filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
+                                centered = (circuit_meta[
+                                    tm, circuit, _M_BORDER_CENTERED] > 0.5)
                                 query_radius = _circuit_query_radius(
-                                    border_w, outline_w, filled)
+                                    border_w, outline_w, filled, centered)
                                 te = f % num_edge_frames
                                 (crossings, min_dist_sq, _ccu, _ccv, _e1x,
                                      _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
@@ -1332,8 +1384,8 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                     circuit, te, u, v, query_radius,
                                     circuit_meta.shape[1], edges_2d, edge_accel)
                                 inside, in_border = _circuit_point_region(
-                                    border_w, outline_w, filled, crossings,
-                                    min_dist_sq)
+                                    border_w, outline_w, filled, centered,
+                                    crossings, min_dist_sq)
                                 if inside:
                                     best_t = t
                                     best_layer = layer
@@ -2584,8 +2636,10 @@ def _collect_hits(refit: ti.template(),
                                                 * pixel_size)
                                     outline_w = 0.6 * pixel_size
                                     filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
+                                    centered = (circuit_meta[
+                                        tm, circuit, _M_BORDER_CENTERED] > 0.5)
                                     query_radius = _circuit_query_radius(
-                                        border_w, outline_w, filled)
+                                        border_w, outline_w, filled, centered)
                                     te = f % num_edge_frames
                                     (crossings, min_dist_sq, _ccu, _ccv, _e1x,
                                      _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
@@ -2593,8 +2647,8 @@ def _collect_hits(refit: ti.template(),
                                         circuit, te, u, v, query_radius,
                                         circuit_meta.shape[1], edges_2d, edge_accel)
                                     inside, in_border = _circuit_point_region(
-                                        border_w, outline_w, filled, crossings,
-                                        min_dist_sq)
+                                        border_w, outline_w, filled, centered,
+                                        crossings, min_dist_sq)
                                     if inside:
                                         slot = worst_idx
                                         if count < kbuf:
@@ -2852,8 +2906,10 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                                 outline_w = 0.6 * pixel_size
                                 filled = (circuit_meta[tm, circuit, _M_FILLED]
                                           > 0.5)
+                                centered = (circuit_meta[
+                                    tm, circuit, _M_BORDER_CENTERED] > 0.5)
                                 query_radius = _circuit_query_radius(
-                                    border_w, outline_w, filled)
+                                    border_w, outline_w, filled, centered)
                                 te = f % num_edge_frames
                                 (crossings, min_dist_sq, _ccu, _ccv, _e1x,
                                      _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
@@ -2862,8 +2918,8 @@ def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
                                     circuit_meta.shape[1], edges_2d,
                                     edge_accel)
                                 inside, in_border = _circuit_point_region(
-                                    border_w, outline_w, filled, crossings,
-                                    min_dist_sq)
+                                    border_w, outline_w, filled, centered,
+                                    crossings, min_dist_sq)
                                 if inside:
                                     hit = 1
             else:

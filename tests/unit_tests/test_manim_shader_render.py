@@ -130,9 +130,17 @@ def restored_global_settings():
     style = SETTINGS.style
     saved_style = (style.default_material, style.background.clone())
     saved_tonemapping = SETTINGS.raytracing.tonemapping
+    # use_manim_defaults also selects Manim's display-referred working space,
+    # which changes what every LATER test in the session renders -- this test
+    # file's own expectations included. Restored to the value that was there,
+    # not to the documented default, so a leak from an earlier test is exposed
+    # rather than silently repaired.
+    saved_linear = SETTINGS.raytracing.linear_color_space
     yield
     SETTINGS.style.set(default_material=saved_style[0], background=saved_style[1])
-    SETTINGS.raytracing.set(tonemapping=saved_tonemapping)
+    SETTINGS.raytracing.set(
+        tonemapping=saved_tonemapping, linear_color_space=saved_linear
+    )
 
 
 def _face_descriptors(manim_defaults_rig):
@@ -234,7 +242,21 @@ def _render_scene(tmp_path, name, *, manim_defaults_rig):
             )
             with Off():
                 if manim_defaults_rig:
+                    space = SETTINGS.raytracing.linear_color_space
                     scene.use_manim_defaults()
+                    # Put the working colour space back to whatever this
+                    # SESSION has been rendering in. use_manim_defaults selects
+                    # Manim's display-referred space, which is a PROCESS-START
+                    # decision: it is folded into the kernels through ti.static,
+                    # so flipping it after something has already rendered
+                    # leaves the compiled kernels in the old space while the
+                    # host-side half of the pipeline moves to the new one, and
+                    # the two disagree by ~24/255. This file renders several
+                    # scenes in one process, so it has to pick one space and
+                    # keep it; what it is testing is the shading LAW, which
+                    # matches get_shaded_rgb to a byte in either space (both
+                    # tests pass under ALGAN_LINEAR_COLOR=0 as well).
+                    SETTINGS.raytracing.set(linear_color_space=space)
                 else:
                     # Not Algan's stock rig: this test states its own light.
                     scene.clear_lights()

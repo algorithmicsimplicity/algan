@@ -21,13 +21,26 @@ def scene():
     """A fresh Scene, with the process-global style settings restored after."""
     style = SETTINGS.style
     saved_style = (style.default_material, style.background.clone())
+    saved_placement = style.border_placement
+    saved_ratio = style.manim_stroke_width_ratio
     saved_tonemapping = SETTINGS.raytracing.tonemapping
+    saved_linear = SETTINGS.raytracing.linear_color_space
     created = Scene()
     try:
         yield created
     finally:
-        SETTINGS.style.set(default_material=saved_style[0], background=saved_style[1])
-        SETTINGS.raytracing.set(tonemapping=saved_tonemapping)
+        # Restored to what was there, not to the documented default: a suite
+        # that hardcodes the default silently repairs a leak from an earlier
+        # test instead of exposing it.
+        SETTINGS.style.set(
+            default_material=saved_style[0],
+            background=saved_style[1],
+            border_placement=saved_placement,
+            manim_stroke_width_ratio=saved_ratio,
+        )
+        SETTINGS.raytracing.set(
+            tonemapping=saved_tonemapping, linear_color_space=saved_linear
+        )
 
 
 def test_manim_fov_matches_manims_projection():
@@ -91,6 +104,25 @@ def test_use_manim_defaults_turns_off_tonemapping(scene):
     assert SETTINGS.raytracing.tonemapping is False
 
 
+def test_use_manim_defaults_uses_manims_display_referred_color_space(scene):
+    # Manim does its arithmetic in sRGB: it composites alpha, antialiases and
+    # gradients display-referred values directly. Algan's linear default is the
+    # physically correct choice, but it puts a fill of opacity a on a**(1/2.2)
+    # of the colour -- MAROON at 0.55 lands on (150,71,87) where Manim puts
+    # (108,52,63).
+    SETTINGS.raytracing.set(linear_color_space=True)
+    scene.use_manim_defaults()
+    assert SETTINGS.raytracing.linear_color_space is False
+
+
+def test_the_color_space_belongs_to_the_shading_group(scene):
+    # It is process-wide and recompiles kernels, so it must follow the same
+    # opt-out as the rest of the colour pipeline rather than being unconditional.
+    SETTINGS.raytracing.set(linear_color_space=True)
+    scene.use_manim_defaults(shading=False)
+    assert SETTINGS.raytracing.linear_color_space is True
+
+
 def test_use_manim_defaults_installs_the_manim_material(scene):
     from algan.rendering.shaders.material_shaders import manim_shader
     from algan.rendering.shaders.materials import ManimMaterial
@@ -101,6 +133,114 @@ def test_use_manim_defaults_installs_the_manim_material(scene):
     # what makes a material-less imported 3-D mob do the same.
     assert isinstance(SETTINGS.style.default_material, ManimMaterial)
     assert SETTINGS.style.default_material.shader is manim_shader
+
+
+def test_use_manim_defaults_centres_a_filled_shapes_stroke(scene):
+    # Manim strokes an SVG path: half the width falls outside the outline.
+    # Algan lays a filled shape's stroke wholly inside by default, which puts an
+    # imported shape's silhouette half a stroke width in from where Manim draws
+    # it -- measured at 5.79 px on a 12 px stroke.
+    SETTINGS.style.set(border_placement="inward")
+    scene.use_manim_defaults()
+    assert SETTINGS.style.border_placement == "centered"
+
+
+def test_use_manim_defaults_can_leave_stroke_geometry_alone(scene):
+    # Both settings are process-wide, so they have to be refusable together.
+    SETTINGS.style.set(border_placement="inward", manim_stroke_width_ratio=2.0)
+    scene.use_manim_defaults(stroke_geometry=False)
+    assert SETTINGS.style.border_placement == "inward"
+    assert SETTINGS.style.manim_stroke_width_ratio == 2.0
+
+
+def test_use_manim_defaults_uses_manims_exact_stroke_width_ratio(scene):
+    # Algan's convention is the round "Manim's number is twice Algan's". The
+    # exact figure is MANIM_FRAME_HEIGHT / (PREVIEW_height * 0.01) = 2.0202:
+    # they would agree if PREVIEW were 400 px tall rather than 396.
+    from algan.manim_defaults import manim_stroke_width_ratio
+    from algan.settings.video_settings import PREVIEW
+
+    assert manim_stroke_width_ratio() == pytest.approx(
+        MANIM_FRAME_HEIGHT / (PREVIEW.resolution[1] * 0.01)
+    )
+    assert manim_stroke_width_ratio() == pytest.approx(2.020202, abs=1e-6)
+
+    SETTINGS.style.set(manim_stroke_width_ratio=2.0)
+    scene.use_manim_defaults()
+    assert SETTINGS.style.manim_stroke_width_ratio == pytest.approx(
+        manim_stroke_width_ratio()
+    )
+
+
+def test_the_stroke_width_ratio_round_trips_through_the_compat_layer(scene):
+    """Import and export must invert each other under either ratio.
+
+    They are separate call sites reading one setting, which is the only reason
+    a round trip survives the ratio changing underneath it.
+    """
+    manim = pytest.importorskip("manim")
+
+    from algan.mobs.manim_compat import to_manim
+    from algan.mobs.manim_mob import ManimMob
+
+    for ratio in (2.0, 2.020202):
+        SETTINGS.style.set(manim_stroke_width_ratio=ratio)
+        source = manim.Square(side_length=2.0)
+        source.set_stroke(manim.WHITE, width=8.0, opacity=1.0)
+        imported = ManimMob(source, scene=scene)
+        assert float(
+            imported.stroke_width.reshape(-1)[0]
+        ) == pytest.approx(8.0 / ratio, abs=1e-5)
+        assert float(to_manim(imported).stroke_width) == pytest.approx(8.0, abs=1e-4)
+
+
+def test_a_flat_shade_in_3d_face_takes_the_patch_plan(scene):
+    """A Cube face is FLAT, so only Manim's flag can route it to a material.
+
+    An analytic circuit is drawn unlit; a PN patch is 3-D geometry the default
+    material and the lights reach. Planarity alone would leave every Cube face
+    unlit where Manim shades it.
+    """
+    manim = pytest.importorskip("manim")
+
+    from algan.mobs.manim_mob import ManimMob
+
+    # Manim builds Cube out of Square(shade_in_3d=True) faces.
+    face = manim.Cube(side_length=2.0).submobjects[0]
+    assert face.shade_in_3d is True
+    imported = ManimMob(face, scene=scene)
+    assert imported.shade_in_3d is True
+    assert imported._nonplanar_plan is not None
+    assert imported._nonplanar_plan.mode == "patch"
+
+    # A flat shape WITHOUT the flag is untouched: still the analytic path.
+    plain = ManimMob(manim.Square(side_length=2.0).set_fill(manim.BLUE, 1.0),
+                     scene=scene)
+    assert plain.shade_in_3d is False
+    assert plain._nonplanar_plan is None
+
+
+def test_an_unfilled_shade_in_3d_path_stays_on_planarity(scene):
+    """An open path bounds no surface, so there is no patch to make of it."""
+    manim = pytest.importorskip("manim")
+
+    from algan.mobs.manim_mob import ManimMob
+
+    line = manim.Line(manim.LEFT, manim.RIGHT)
+    line.shade_in_3d = True
+    imported = ManimMob(line, scene=scene)
+    assert imported.shade_in_3d is True
+    assert imported._nonplanar_plan is None
+
+
+def test_an_unknown_border_placement_is_rejected(scene):
+    from algan.errors import AlganConfigurationError
+
+    with pytest.raises(AlganConfigurationError):
+        SETTINGS.style.set(border_placement="outward")
+    for bad in (0.0, -1.0, float("nan")):
+        with pytest.raises(AlganConfigurationError):
+            SETTINGS.style.set(manim_stroke_width_ratio=bad)
 
 
 def test_use_manim_defaults_flags_are_independent(scene):

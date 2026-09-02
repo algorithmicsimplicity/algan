@@ -227,6 +227,9 @@ def test_a_missing_manim_class_is_skipped_rather_than_raised():
 def test_snapshot_matches_the_installed_manim():
     """Drift guard: the cached values come from the installed manim itself."""
     manim = pytest.importorskip("manim")
+
+    from algan.settings.shape_style_profiles import _manim_shape_style_for
+
     SETTINGS.style.set(shape_style_profile="manim")
     styles = _ensure_manim_shape_styles()
 
@@ -234,8 +237,22 @@ def test_snapshot_matches_the_installed_manim():
     style = styles["Square"]
     assert hex_of(style["color"]) == manim_square.fill_color.to_hex().upper()
     assert hex_of(style["stroke_color"]) == manim_square.stroke_color.to_hex().upper()
-    assert style["stroke_width"] == float(manim_square.stroke_width) / 2
+    # The SNAPSHOT holds Manim's own stroke-width unit, unconverted: the
+    # conversion ratio is a live setting (use_manim_defaults changes it) and
+    # this cache outlives the change, so converting here would go stale.
+    assert style["stroke_width_manim"] == float(manim_square.stroke_width)
     assert style["filled"] == (float(manim_square.fill_opacity) > 1e-5)
+
+    # What a shape actually reads is converted, by whatever ratio is in force.
+    saved = SETTINGS.style.manim_stroke_width_ratio
+    try:
+        for ratio in (2.0, 2.020202):
+            SETTINGS.style.set(manim_stroke_width_ratio=ratio)
+            assert _manim_shape_style_for(Square)["stroke_width"] == pytest.approx(
+                float(manim_square.stroke_width) / ratio
+            )
+    finally:
+        SETTINGS.style.set(manim_stroke_width_ratio=saved)
 
     manim_sphere = manim.Sphere()
     style = styles["Sphere"]

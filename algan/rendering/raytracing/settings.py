@@ -2556,7 +2556,7 @@ def nested_ior_mode():
 # reference AA=2 it dilates by 0.3 output pixels, at AA=1 by 0.6. Analytic AA
 # runs at AA=1, so 0.3 reproduces the reference appearance rather than doubling
 # every stroke weight. Tune only against rendered Text/Tex.
-analytic_aa_bez_min_half_width = env_float("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", 0.3)
+analytic_aa_bez_min_half_width = env_float("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", 0.0)
 
 # Maximum curve-to-chord flattening error, in pixels, for Bezier circuits under
 # analytic AA (overrides the primitive's own ``num_pixels_per_sample`` only when

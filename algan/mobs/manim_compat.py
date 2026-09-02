@@ -28,6 +28,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
+from algan.settings import SETTINGS
 
 # Every other manim entry point in Algan goes through a ``LazyModule`` whose
 # ``extras`` pull in the svg cache, which is what redirects manim's Tex/text
@@ -91,7 +92,10 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
     stroke_opacity = float(border[-1].detach().cpu())
     # Algan units out, Manim units in: twice, the export side of the
     # conversion ``algan.manim`` owns.
-    stroke_width = float(mob.stroke_width[0].reshape(-1)[0].detach().cpu()) * 2
+    stroke_width = (
+        float(mob.stroke_width[0].reshape(-1)[0].detach().cpu())
+        * SETTINGS.style.manim_stroke_width_ratio
+    )
     result.set_stroke(stroke_color, width=stroke_width, opacity=stroke_opacity)
     return result
 
@@ -252,7 +256,8 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
                 algan_mob.stroke_color, border_opacity_source
             )
             stroke_width = (
-                float(algan_mob.stroke_width.reshape(-1)[0].detach().cpu()) * 2
+                float(algan_mob.stroke_width.reshape(-1)[0].detach().cpu())
+                * SETTINGS.style.manim_stroke_width_ratio
             )
             manim_mob.set_stroke(
                 stroke_color,

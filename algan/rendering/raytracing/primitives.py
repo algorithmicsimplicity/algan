@@ -3346,6 +3346,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             "bezier metadata",
         )
         filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0, device=device)
+        # Read at geometry-build time rather than baked into the kernels, so
+        # flipping the placement between two renders in one process takes
+        # effect without a recompile (Taichi's offline cache would not notice
+        # a changed ti.static constant).
+        centered = torch.full(
+            (Tm, C, 1),
+            1.0 if SETTINGS.style.border_placement == "centered" else 0.0,
+            device=device,
+        )
         tex = torch.stack(
             (
                 (b1_m * bu_m).sum(-1),
@@ -3370,6 +3379,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 roughness_m,
                 ior_m,
                 transmission_m,
+                centered,
             ),
             -1,
         ).contiguous()

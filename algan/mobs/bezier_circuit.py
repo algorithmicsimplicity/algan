@@ -70,8 +70,10 @@ def _stroke_width_in_render_pixels(stroke_width, video_settings):
 
     ``stroke_width`` is authored against PREVIEW's frame height so a border keeps
     its apparent weight at any resolution.  The renderer wants the FULL stroke
-    width in pixels: a filled circuit lays it inside the outline, an unfilled one
-    centres it on the path (``_circuit_point_region``).
+    width in pixels; where it lays that width is
+    ``SETTINGS.style.border_placement``'s business, not this function's (a
+    filled circuit lays it inside the outline by default, an unfilled one
+    centres it on the path -- ``_circuit_point_region``).
     """
     return stroke_width * video_settings.resolution[1] / PREVIEW.resolution[1]
 
@@ -637,6 +639,7 @@ class BezierCircuitCubic(Mob):
         grid_height=None,
         empty=False,
         z_index=0,
+        shade_in_3d=False,
         **kwargs,
     ):
         self.num_bezier_parameters = 4
@@ -669,7 +672,16 @@ class BezierCircuitCubic(Mob):
         # only -- the geometry it describes is rebuilt from the live control
         # points every render batch -- but the choice itself is fixed, exactly
         # as the plane in ``basis`` above is.
-        self._nonplanar_plan = classify_circuit(control_points, filled)
+        #
+        # ``shade_in_3d`` also asks for the patch plan on FLAT geometry, which
+        # is a lighting decision rather than a geometric one: a patch is 3-D
+        # geometry that a material and the scene's lights reach, an analytic
+        # circuit is drawn unlit. Stored because ``_after_repack`` has to reach
+        # the same verdict.
+        self.shade_in_3d = bool(shade_in_3d)
+        self._nonplanar_plan = classify_circuit(
+            control_points, filled, self.shade_in_3d
+        )
 
         self.grid_width = self.grid_height = 1
         self.num_texture_points = 0
@@ -760,7 +772,9 @@ class BezierCircuitCubic(Mob):
         ``ManimMob(..., batch=True)`` relies on.
         """
         self._nonplanar_plan = classify_circuit(
-            self.control_points.location.reshape(-1, 3), self.filled
+            self.control_points.location.reshape(-1, 3),
+            self.filled,
+            getattr(self, "shade_in_3d", False),
         )
 
     @classmethod
@@ -981,8 +995,8 @@ class BezierCircuitCubic(Mob):
     #: Both of them are also untravellable, and ``filled`` is the sharpest case
     #: of it in the package: the flag does not merely hide the interior, it
     #: decides where the stroke goes (a filled circuit lays its border INWARD
-    #: from the outline, an unfilled one centres it on the path -- see
-    #: ``_circuit_point_region``), so no value of anything animatable
+    #: from the outline by default, an unfilled one centres it on the path --
+    #: see ``_circuit_point_region``), so no value of anything animatable
     #: interpolates between the two. A pair that crosses it cross-fades.
     _MORPH_UNTRAVELLABLE_ATTRS = (
         *Mob._MORPH_UNTRAVELLABLE_ATTRS,
@@ -996,7 +1010,8 @@ class BezierCircuitCubic(Mob):
 
         Separate from :attr:`~algan.animatable_base.mob.Mob.color`, which is the
         *fill*: setting one never changes the other, and on a filled circuit the
-        border is drawn inside the outline. Accepts anything a color attribute
+        border is drawn inside the outline unless
+        ``SETTINGS.style.border_placement`` is ``"centered"``. Accepts anything a color attribute
         does -- a :class:`~algan.constants.color.Color`, a named constant, a hex
         string.
 

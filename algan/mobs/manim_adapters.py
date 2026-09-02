@@ -91,6 +91,7 @@ from collections.abc import Mapping, Sequence
 
 from algan.constants.math import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
 from algan.mobs.manim_compat import _MANIM_WRAPPER_REGISTRY, _WRAPPER_DOCSTRINGS
+from algan.settings import SETTINGS
 from algan.utils.api_renames import (
     _ROOT_KEYWORD_RENAMES,
     _reject_renamed_keywords,
@@ -384,7 +385,12 @@ def _converted_kwargs(signature, angle_params, args, kwargs):
 
 
 def _to_manim_stroke_width(kwargs):
-    """Double an Algan-unit ``stroke_width`` into Manim's, in place.
+    """Scale an Algan-unit ``stroke_width`` into Manim's, in place.
+
+    The factor is ``SETTINGS.style.manim_stroke_width_ratio`` -- 2 under Algan's
+    own convention, the exact 2.0202 once ``use_manim_defaults`` has run -- and
+    it is the same one the import and export conversions use, so a round trip
+    returns the width it started with whichever is in force.
 
     Applied to every adapter rather than to a declared list: a Manim class
     accepts ``stroke_width`` whether or not its signature names it, so a
@@ -394,7 +400,7 @@ def _to_manim_stroke_width(kwargs):
     """
     width = kwargs.get("stroke_width")
     if width is not None:
-        kwargs["stroke_width"] = width * 2
+        kwargs["stroke_width"] = width * SETTINGS.style.manim_stroke_width_ratio
     return kwargs
 
 

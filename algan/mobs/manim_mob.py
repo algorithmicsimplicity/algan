@@ -30,6 +30,7 @@ from algan.constants.color import BLACK, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
+from algan.settings import SETTINGS
 from algan.utils.lazy_import import LazyModule
 from algan.utils.mob_utils import batch_mobs
 from algan.utils.tensor_utils import unsquish
@@ -162,10 +163,18 @@ class ManimMob(BezierCircuitCubic):
             color=convert_manim_color(manim_mob.fill_color, opacity=fill_opacity),
             opacity=1,
             stroke_color=convert_manim_color(manim_mob.stroke_color, stroke_opacity),
-            # Manim's stroke width is twice Algan's; this is the import side of
-            # the conversion ``algan.manim`` owns.
-            stroke_width=stroke_width / 2,
+            # Manim's stroke width is twice Algan's -- or whatever
+            # ``SETTINGS.style.manim_stroke_width_ratio`` says, which
+            # ``use_manim_defaults`` sets to the exact 2.0202. This is the
+            # import side of the conversion ``algan.manim`` owns.
+            stroke_width=stroke_width / SETTINGS.style.manim_stroke_width_ratio,
             filled=(not hasattr(manim_mob, "end")) and has_visible_fill,
+            # Manim's own "this is 3-D geometry" flag -- the exact one its
+            # ThreeDCamera gates get_shaded_rgb on (``modified_rgbas``), set by
+            # ThreeDVMobject and Surface. Carrying it across is what lets a flat
+            # Cube face be shaded: it is planar, so geometry alone would leave
+            # it on the unlit analytic path while Manim shades it.
+            shade_in_3d=bool(getattr(manim_mob, "shade_in_3d", False)),
             empty=empty,
             **kwargs,
         )

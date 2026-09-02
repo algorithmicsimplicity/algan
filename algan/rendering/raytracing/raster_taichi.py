@@ -48,6 +48,7 @@ from algan.rendering.raytracing.arena_args_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_BASIS_U,
     _M_BASIS_V,
+    _M_BORDER_CENTERED,
     _M_BORDER_W,
     _M_CENTER,
     _M_FILLED,
@@ -57,6 +58,8 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     _axis_cos,
     _bezier_point_metrics,
+    _circuit_inner_distance,
+    _circuit_outer_dilation,
     _circuit_point_region,
     _circuit_query_radius,
     _generate_ray,
@@ -1621,7 +1624,8 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
     so ``d = +/- sqrt(min_dist_sq)`` is a signed distance (positive inside) in
     plane units, and ``pixel_size`` converts it to pixels.  The drawn region is
 
-        filled:    d > -min_half_width
+        filled:    d > -outer_w        (outer_w = min_half_width, or half the
+                                        stroke width on a centred border)
         unfilled:  |d| < border_w / 2                     (a band)
 
     and its coverage is the box filter ``clamp(distance_to_boundary + 0.5, 0, 1)``
@@ -1630,7 +1634,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
     instead of dilating it, and both forms reach exactly 1 half a pixel inside,
     which is what lets the emission's opaque truncation keep culling.
 
-    A filled circuit's border is an INNER boundary at ``d = border_w`` cutting
+    A filled circuit's border is an INNER boundary at ``d = inner_w`` cutting
     the same drawn region in two (:func:`_circuit_point_region`), so it needs its
     own box filter: the coverage of the fill-only part is subtracted from the
     total, and the remainder is the border's area share.  Without that the outer
@@ -1677,7 +1681,16 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
             if ti.static(aa):
                 outline_w = aa_min_half_width * pixel_size
             filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
-            query_radius = _circuit_query_radius(border_w, outline_w, filled)
+            centered = circuit_meta[tm, circuit, _M_BORDER_CENTERED] > 0.5
+            # The two boundaries of the drawn region, in plane units. Which
+            # distances they sit at is the whole of the inward/centred split;
+            # every filter below is written against these rather than against
+            # ``border_w`` directly.
+            outer_w = _circuit_outer_dilation(border_w, outline_w, filled,
+                                              centered)
+            inner_w = _circuit_inner_distance(border_w, filled, centered)
+            query_radius = _circuit_query_radius(border_w, outline_w, filled,
+                                                 centered)
             if ti.static(aa or border_aa):
                 # The filter reaches half a pixel past each drawn boundary in
                 # any direction, so the nearest-edge query must too -- a pixel
@@ -1690,7 +1703,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 circuit, te, uu, vv, query_radius,
                 circuit_meta.shape[1], edges_2d, edge_accel)
             inside, is_border = _circuit_point_region(
-                border_w, outline_w, filled, crossings, min_dist_sq)
+                border_w, outline_w, filled, centered, crossings, min_dist_sq)
             bf = 1.0 if is_border else 0.0
             c = 1.0
             if ti.static(aa or border_aa):
@@ -1713,7 +1726,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 if d > 0.0:
                     gu = -gu
                     gv = -gv
-                signed = d + outline_w
+                signed = d + outer_w
                 # Which way the DRAWN region lies from the active boundary. For a
                 # filled circuit that is always "deeper in", but an unfilled one
                 # is a band with a wall on each side, and past its middle the
@@ -1764,8 +1777,8 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                             # single-plane path.
                             b1p = n1x * ccu + n1y * ccv
                             b2p = n2x * scu + n2y * scv
-                            sd1 = (outline_w - b1p) * inv_px
-                            sd2 = (outline_w - b2p) * inv_px
+                            sd1 = (outer_w - b1p) * inv_px
+                            sd2 = (outer_w - b2p) * inv_px
                             nd = n1x * n2x + n1y * n2y
                             if nd < 0.9:
                                 # nd >= 0.9: the second segment is the next
@@ -1840,7 +1853,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                         # is the only edge visible at all on an outlined glyph
                         # whose fill is invisible.
                         fill_c = _boundary_coverage(
-                            gu, gv, (d - border_w) * inv_px, aa)
+                            gu, gv, (d - inner_w) * inv_px, aa)
                         bf = ti.math.clamp(
                             (c - fill_c) / ti.max(c, 1e-6), 0.0, 1.0)
                     else:

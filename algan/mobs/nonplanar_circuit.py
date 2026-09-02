@@ -429,7 +429,7 @@ def _subpath_corners(corners, start, count):
     return [outgoing(i) for i in kept], [incoming(i) for i in kept]
 
 
-def classify_circuit(control_points, filled):
+def classify_circuit(control_points, filled, shade_in_3d=False):
     """Decide how a circuit's control points have to be rendered.
 
     ``control_points`` is the construction pose, shape ``[4 * S, 3]``.  Returns
@@ -440,6 +440,17 @@ def classify_circuit(control_points, filled):
     for many shapes, as ``batch_mobs`` and ``from_batches`` build -- is judged on
     its members rather than on their union, which is non-planar the moment two
     planar members face different ways.
+
+    ``shade_in_3d`` asks for the ``patch`` plan even where the geometry is
+    planar, and is named after the Manim attribute it carries
+    (``VMobject.shade_in_3d``, which ``ThreeDVMobject`` and ``Surface`` set).
+    It exists because the two plans differ in more than geometry: an analytic
+    circuit is drawn UNLIT, while a PN patch is ordinary 3-D geometry that
+    reaches ``SETTINGS.style.default_material`` and the scene's lights. A Manim
+    ``Cube`` is six *flat* ``Square`` faces with ``shade_in_3d=True``, so
+    planarity alone would leave them unlit where Manim shades them. Only a
+    FILLED circuit can take the patch plan -- an open path bounds no surface --
+    so an unfilled one is classified on planarity as usual.
     """
     if not nonplanar_circuits_enabled():
         return None
@@ -458,7 +469,9 @@ def classify_circuit(control_points, filled):
     subpath_starts = torch.tensor([start * 4 for start, _ in subpaths])
     subpath_ends = torch.tensor([(start + count) * 4 for start, count in subpaths])
     covariances = _window_covariances(flat, subpath_starts, subpath_ends)
-    if bool((_eigen_ratios(covariances, 0) <= PLANARITY_TOLERANCE).all()):
+    if bool((_eigen_ratios(covariances, 0) <= PLANARITY_TOLERANCE).all()) and not (
+        shade_in_3d and filled
+    ):
         return None
 
     sagitta = float(
@@ -780,7 +793,6 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
     frames = x.shape[0]
     tri_index = plan.tri_index.to(device)
     position, normals = patch_corner_normals(x, plan)
-
     members = member_of_segment(circuit, x.shape[1], device)
     vertex_member = members[plan.corner_seg.to(device)][tri_index]
 
@@ -804,9 +816,22 @@ def build_patch_primitive(circuit, x, colors, opacity, glow, shader_params):
         },
     )
     # A converted tile is a sheet, not the shell of a solid -- a Manim Sphere is
-    # 288 independent quads, not a closed orientable mesh -- so a back-facing hit
-    # keeps the viewer-facing flip rather than being shaded as an inside.
-    primitive.declare_one_sided(False)
+    # 288 independent quads, not a closed orientable mesh -- so by default a
+    # back-facing hit keeps the viewer-facing flip rather than being shaded as
+    # an inside.
+    #
+    # A tile Manim itself flagged ``shade_in_3d`` is the exception, and it is
+    # ONE line rather than a normal fix-up because
+    # :func:`patch_corner_normals` already computes exactly Manim's winding
+    # normal: both are ``cross(incoming, outgoing)`` at the corner (Manim spells
+    # it ``cross(points[i+3] - points[i], points[i-3] - points[i])``, which is
+    # the same product). Verified per tile against
+    # ``get_3d_vmob_start_corner_unit_normal``: Cube 6/6, Cylinder 578/578,
+    # Cone 1024/1024 and Torus 576/576 agree in sign, the mixed-winding Torus
+    # included. So the ONLY thing standing between the two engines was this
+    # flip; declaring the patch one-sided hands the authored winding straight
+    # to the shader, which is the whole content of Manim's convention.
+    primitive.declare_one_sided(bool(getattr(circuit, "shade_in_3d", False)))
     primitive.declare_shadow_flags(*circuit._resolved_shadow_flags())
     # One shell per sub-path: a tile's own coverage must not be summed with the
     # neighbour it merely touches.

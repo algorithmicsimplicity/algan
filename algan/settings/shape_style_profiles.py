@@ -154,10 +154,12 @@ def _resolve_shape_style(name, manim_name):
                 if stroke_color is not None
                 else None
             ),
-            # These are Manim's own constructor defaults, read off a Manim
-            # instance, so the value arriving here is in Manim's unit: half it
-            # for Algan's, the same conversion ManimMob performs on import.
-            "stroke_width": stroke_width_value / 2,
+            # Manim's OWN unit, deliberately unconverted: the snapshot is
+            # cached at profile-enable time, and
+            # ``manim_stroke_width_ratio`` can change afterwards (that is what
+            # ``use_manim_defaults`` does), so a converted value would go
+            # stale. ``_manim_shape_style_for`` converts on the way out.
+            "stroke_width_manim": stroke_width_value,
             "filled": (
                 fill_opacity_value is not None
                 and fill_opacity_value > _VISIBLE_OPACITY_THRESHOLD
@@ -207,4 +209,15 @@ def _manim_shape_style_for(shape_cls):
 
     if SETTINGS.style.shape_style_profile != "manim":
         return None
-    return _ensure_manim_shape_styles().get(shape_cls.__name__)
+    style = _ensure_manim_shape_styles().get(shape_cls.__name__)
+    if style is None:
+        return None
+    # The cached snapshot holds Manim's own stroke width; convert it here, so
+    # the live ratio is read on every construction rather than frozen into the
+    # cache. Copied rather than mutated -- the snapshot is shared.
+    return {
+        **style,
+        "stroke_width": (
+            style["stroke_width_manim"] / SETTINGS.style.manim_stroke_width_ratio
+        ),
+    }
