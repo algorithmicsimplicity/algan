@@ -80,7 +80,6 @@ def _point_pydub_at_bundled_ffmpeg():
 
 _point_pydub_at_bundled_ffmpeg()
 
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 # Taichi prints "[Taichi] version ..." to *stdout* the moment it is imported
 # (taichi/_lib/utils.py), so a script whose stdout is data got the banner mixed
 # into it and `algan --version` printed two versions. Its own opt-out is this
