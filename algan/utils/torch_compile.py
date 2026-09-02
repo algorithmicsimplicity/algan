@@ -20,6 +20,21 @@ be safe to *re-run* after a partial execution: pure, or writing only outputs
 computed from unmodified inputs, so that an eager retry after a mid-function
 compile failure cannot apply an in-place update twice.
 
+Two measured rules for what goes inside a compiled region, on top of the
+re-runnability above. **No division by a float constant, and no
+``F.normalize``, in a region whose result feeds a threshold.** Inductor
+rewrites ``x / 3.0`` as ``x * (1/3.0)`` unconditionally
+(``torch/_inductor/lowering.py``, ``div_prim``), which the CPU backend's
+``-fno-unsafe-math`` codegen does not cover, so such a region is an ulp off
+its eager arm; the PN level searches turn that ulp into a whole subdivision
+level, measured as 118 channel values on a render suite that allows 2
+(``rendering/logical_pn.py`` has the account). Products, sums, gathers,
+``where`` and division by a *tensor* are exact. And **leave ``dynamic`` at its
+default unless the trailing extents are large**: ``dynamic=True`` makes every
+axis symbolic, the CPU backend cannot vectorize an innermost loop of unknown
+length, and a ``[.., 3]`` chain measured up to 30x slower than with
+automatic dynamic shapes, which mark only the axis that actually moved.
+
 What ``'auto'`` (the default) resolves to is :func:`torch_compile_support`:
 on wherever ``torch.compile`` runs, off on Windows and on a Python that Dynamo
 does not support. Setting the field to ``True`` skips that check and tries
@@ -215,10 +230,12 @@ def compiled(fn=None, *, dynamic=None, fullgraph=False, mode=None, options=None)
     as its ``eager`` attribute, so a parity test can call both arms.
 
     ``dynamic=None`` (the default) lets Dynamo specialize on the first shapes
-    it sees and switch to symbolic shapes on the first recompile, which suits
-    tensors whose size moves from batch to batch. Pass ``dynamic=True`` for a
-    function whose shapes are known to vary on every call, so the one static
-    compile is not wasted.
+    it sees and mark only the axes that then move as symbolic, which suits
+    tensors whose leading size moves from batch to batch while their trailing
+    ``[.., 3]`` extents stay put. ``dynamic=True`` makes every axis symbolic
+    and costs the CPU backend its vectorized inner loop (the module docstring
+    has the measurement); reserve it for regions whose trailing extents are
+    large, such as a frame buffer.
     """
 
     def decorate(function):

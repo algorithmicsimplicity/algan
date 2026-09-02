@@ -141,8 +141,12 @@ jobs:
       - name: Report the environment Algan resolved
         run: uv run algan check
 
+      # `pipefail` so the tee cannot swallow the harness's exit code: GitHub
+      # runs this with `bash -e`, where a pipeline reports only its last
+      # command, and a crashed harness would otherwise report green.
       - name: Run the A/B
         run: |
+          set -o pipefail
           uv run python -u benchmarks/_torch_compile_ab.py \
             --runs "${{ inputs.runs || '3' }}" \
             --quality "${{ inputs.quality || 'PREVIEW' }}" \
