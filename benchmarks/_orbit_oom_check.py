@@ -32,7 +32,7 @@ with Off():
         [Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]
     ).spawn()
 
-with Seq(duration=4, easing=easings.identity):
+with Seq(runtime=4, easing=easings.identity):
     if mode == "rotate":
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:
@@ -40,7 +40,7 @@ with Seq(duration=4, easing=easings.identity):
 
 try:
     res = Scene.save_video(os.path.join(OUT_DIR, f"camera_{mode}"))
-    print(f"OK {mode}: {res.output_path} ({res.duration_seconds:.1f}s)")
+    print(f"OK {mode}: {res.output_path} ({res.walltime_seconds:.1f}s)")
 except Exception:
     traceback.print_exc()
     print(f"FAILED {mode}")

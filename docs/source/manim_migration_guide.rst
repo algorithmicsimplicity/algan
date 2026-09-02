@@ -131,8 +131,8 @@ Context                    What it does to the changes inside it
 ``Off()``                  Instantly, in a single frame, recording no animation.
 =========================  ====================================================
 
-``duration`` sets a context's total duration; ``duration_unit`` sets the default
-duration of each child animation inside it. Contexts nest, and a nested context
+``runtime`` sets a context's total runtime; ``runtime_per_part`` sets the default
+runtime of each child animation inside it. Contexts nest, and a nested context
 counts as one animation to its parent, which is what makes a complex multi-Mob
 sequence readable:
 
@@ -404,7 +404,7 @@ through the Scene:
     Scene.clear_lights()
     PointLight(location=UP * 4 + LEFT * 4 + OUT * 4).spawn()
 
-    with Seq(duration=3, easing=easings.identity):
+    with Seq(runtime=3, easing=easings.identity):
         camera.rotate(180, UP, about=ORIGIN)
 
     Scene.save_video()

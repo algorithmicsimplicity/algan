@@ -178,7 +178,7 @@ def write_frames_from_queue(queue, file_writer):
 
 
 def _max_duration_that_fits(requested_frames, fits):
-    """Largest positive duration for which the monotone ``fits`` predicate is
+    """Largest positive runtime for which the monotone ``fits`` predicate is
     true.
 
     Returning one when even a single frame does not fit preserves the existing
@@ -428,7 +428,7 @@ class RenderLoopMixin:
         is configured, including for the transient mobs a render itself
         creates, so it changes during a render and turned this cache into a
         per-batch rebuild -- measured at 257 ms a batch against the 96 ms
-        unindexed scan it replaced. Timing is fixed for the duration of a
+        unindexed scan it replaced. Timing is fixed for the runtime of a
         render, which is the same invariant that let the timestamps be read
         once per batch before.
 
@@ -667,7 +667,7 @@ class RenderLoopMixin:
         frame-window view uploaded independently for projection, so rejected
         probes cannot mutate it.
 
-        Returns ``(primitives, duration, render_state)`` or ``None`` when this
+        Returns ``(primitives, runtime, render_state)`` or ``None`` when this
         batch cannot safely use the reuse path.
         """
         total_frames = int(total_frames)
@@ -714,7 +714,7 @@ class RenderLoopMixin:
             self._release_preflight_candidate(candidate)
             return None
 
-        # Test the largest duration allowed by projection first.  It is often
+        # Test the largest runtime allowed by projection first.  It is often
         # already the final answer, turning the previous retry cascade into one
         # source fetch and one exact preflight.
         result = probe(upper)
@@ -745,7 +745,7 @@ class RenderLoopMixin:
                 continue
 
             best = duration
-            if True:  # duration == high:
+            if True:  # runtime == high:
                 logger.debug(
                     "Arena planner selected %s/%s fetched frames without "
                     "rematerializing the batch.",
@@ -755,7 +755,7 @@ class RenderLoopMixin:
                 return result[0], duration, result[1]
 
             # A larger prefix may fit.  Release this prepared candidate while
-            # retaining only its duration; keeping two merged scenes resident
+            # retaining only its runtime; keeping two merged scenes resident
             # would invalidate the next headroom measurement.
             self._release_preflight_candidate(result[0])
             low = duration + 1
@@ -768,7 +768,7 @@ class RenderLoopMixin:
             )
 
         # The final binary-search step can be a failure immediately above the
-        # best fitting duration, so recreate that winning prefix once.
+        # best fitting runtime, so recreate that winning prefix once.
         result = probe(best)
         if result is None:
             result = probe(best)
@@ -905,7 +905,7 @@ class RenderLoopMixin:
         The scene upload grows the arena's reverse pointer; camera/lights,
         output, wavefront state and post-processing grow the forward pointer.
         Preflighting both sides lets the outer batching loop binary-search a
-        maximum fitting prepared duration without rendering speculative frames.
+        maximum fitting prepared runtime without rendering speculative frames.
 
         Two of the terms are exact (the scene's arena bytes, and an actual
         out-of-memory raised by the projection or the merge) and the rest are
@@ -1454,7 +1454,7 @@ class RenderLoopMixin:
                     duration = end_ind - current_ind
                 new_ind = current_ind + duration
 
-                logger.debug(f"rendering batch with duration {duration}")
+                logger.debug(f"rendering batch with runtime {duration}")
 
                 background_source = (
                     self.background_frame if background is None else background
@@ -1743,9 +1743,9 @@ class RenderLoopMixin:
             loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
             if loc_inds[actor.control_points.id].numel() % 4 != 0:
                 return False
-            timeline.attr_to_timeline["color"].mob_id_to_inds[actor.texture_points.id]
+            timeline.attr_to_timeline["color"].mob_id_to_inds[actor.grid.id]
             timeline.attr_to_timeline["color"].mob_id_to_inds[
-                actor.border_texture_points.id
+                actor.border_grid.id
             ]
         except (KeyError, AttributeError):
             return False
@@ -1860,12 +1860,12 @@ class RenderLoopMixin:
         timeline = self.timeline_manager
         tex_rows = (
             timeline.attr_to_timeline["color"]
-            .mob_id_to_inds[actor.texture_points.id]
+            .mob_id_to_inds[actor.grid.id]
             .numel()
         )
         border_tex_rows = (
             timeline.attr_to_timeline["color"]
-            .mob_id_to_inds[actor.border_texture_points.id]
+            .mob_id_to_inds[actor.border_grid.id]
             .numel()
         )
         return (
@@ -2071,7 +2071,7 @@ class RenderLoopMixin:
         start_time = start_time_ind / self.frames_per_second
         # Spawn/despawn timestamps are read several times each below (twice per
         # actor in each of the two filters, and once per actor on every step of
-        # the duration search). Each read walks a TimelineEvent to its span and
+        # the runtime search). Each read walks a TimelineEvent to its span and
         # recomputes the context rescaling, which on a scene with tens of
         # thousands of actors made this the single hottest function in batch
         # preparation. Timing is fixed for the whole render, so read each
@@ -2108,7 +2108,7 @@ class RenderLoopMixin:
         )
 
         # Binary search for the largest batch that fits the animation-device
-        # budget.  The selected actor set grows monotonically with duration, so
+        # budget.  The selected actor set grows monotonically with runtime, so
         # the memory predicate is monotone too.
         def get_duration():
             requested_duration = min(
@@ -2823,7 +2823,7 @@ class RenderLoopMixin:
         try:
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
-            # The scene is excluded from garbage collection for the duration:
+            # The scene is excluded from garbage collection for the runtime:
             # the per-batch reclaim only ever needs to find the cycles this
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
@@ -3173,7 +3173,7 @@ class RenderLoopMixin:
                             )
                         logger.warning(
                             "Prepared batch does not fit the render arena; "
-                            "binary-searching the largest fitting duration."
+                            "binary-searching the largest fitting runtime."
                         )
                         if primitives:
                             primitives[0]._rt_device_scene = None
@@ -3222,7 +3222,7 @@ class RenderLoopMixin:
                         # it under-shoots (harmlessly) on a batch that fit.
                         self._arena_fetch_frame_cap = max(1, duration, arena_frames)
 
-                    # Only prefetch the successor once the current duration is
+                    # Only prefetch the successor once the current runtime is
                     # final. A speculative successor would start at the wrong
                     # boundary while the binary preflight search is active (and
                     # see the measurement note above the preflight).
@@ -3280,7 +3280,7 @@ class RenderLoopMixin:
                                 PERF,
                                 "Frame batch did not fit; retrying "
                                 f"{current_time_ind}:{new_time_ind} at half "
-                                "duration.",
+                                "runtime.",
                             )
                             # A prefetched successor starts at the old end and
                             # is invalid after this split. Drain and discard it
@@ -3291,10 +3291,10 @@ class RenderLoopMixin:
                                 primitives[0]._rt_prepared_host_scene = None
                                 primitives[0]._rt_merged_scene = None
                             del primitives
-                            # The arena preflight approved this duration and
+                            # The arena preflight approved this runtime and
                             # was wrong, so it cannot arbitrate durations just
                             # below it: binary-probing upward would converge to
-                            # duration-1, render-fail again, and repeat -- an
+                            # runtime-1, render-fail again, and repeat -- an
                             # O(frames) cascade of ~seconds-long refetches.
                             # Back off geometrically instead: cap the bounds at
                             # half so the halved candidate renders immediately,
@@ -3408,7 +3408,7 @@ class RenderLoopMixin:
         active context is the innermost open one, whose window covers only its
         own block -- an enclosing :class:`~.Sync` can already hold animations
         running past it -- so the whole open chain is consulted. Every open
-        context shares one timeframe (a ``duration`` rescales its block
+        context shares one timeframe (a ``runtime`` rescales its block
         retroactively, on exit), so their ends are directly comparable.
         """
         end = 0.0
@@ -3484,7 +3484,7 @@ class RenderLoopMixin:
 
             self.frame_queue = frame_queue
             # The snapshot is taken here rather than around the whole render call:
-            # the fade-out and the zero-duration guard record on the timeline
+            # the fade-out and the zero-runtime guard record on the timeline
             # first, and edits made after a snapshot would fall outside it.
             preserve = (
                 self.timeline_manager.preserving_authoring_state(

@@ -708,7 +708,7 @@ class Scene(RenderLoopMixin):
     def initialize_frames(self):
         """Internal: work out how many frames the recorded animation needs.
 
-        Derives the frame count from the recorded duration and the Scene's frame
+        Derives the frame count from the recorded runtime and the Scene's frame
         rate. Called by the render loop before rendering.
         """
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
@@ -717,7 +717,7 @@ class Scene(RenderLoopMixin):
     def despawn_mobs(
         self,
         retain_history: bool = False,
-        duration: float | None = None,
+        runtime: float | None = None,
         **kwargs,
     ):
         """Despawn every spawned Mob in the Scene.
@@ -728,8 +728,8 @@ class Scene(RenderLoopMixin):
         Animation
         ---------
         Recorded as an animation: all the despawns run together inside a
-        :class:`~.Sync`, over the current context's duration (1 second by default)
-        unless ``duration`` overrides it.
+        :class:`~.Sync`, over the current context's runtime (1 second by default)
+        unless ``runtime`` overrides it.
 
         Parameters
         ----------
@@ -738,9 +738,9 @@ class Scene(RenderLoopMixin):
             has to render, and discard the rest. Defaults to False, which leaves
             ``Scene.actors`` alone. True is what a scene-ending fade wants: actors
             that never acquired a complete lifespan are dropped.
-        duration
+        runtime
             Seconds the despawn takes, overriding the current context. Defaults to
-            ``None``, meaning use the context's duration.
+            ``None``, meaning use the context's runtime.
         **kwargs
             Passed to each :meth:`~.Animatable.despawn` -- notably
             ``animate=False`` to remove everything without fading.
@@ -750,10 +750,10 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
-        if duration is None:
+        if runtime is None:
             self._despawn_spawned_mobs(**kwargs)
         else:
-            with Seq(duration=duration, animation_manager=self.animation_manager):
+            with Seq(runtime=runtime, animation_manager=self.animation_manager):
                 self._despawn_spawned_mobs(**kwargs)
         if retain_history:
             self.actors = [
@@ -813,7 +813,7 @@ class Scene(RenderLoopMixin):
         from moviepy import CompositeAudioClip  # deferred: ~0.3 s of import algan
 
         audio_clip = CompositeAudioClip(clips_to_compose)
-        audio_clip.duration = self.animation_manager.context.timespan.original_end
+        audio_clip.runtime = self.animation_manager.context.timespan.original_end
         audio_clip.write_audiofile(
             file_path, fps=sample_rate, codec=codec, nbytes=nbytes
         )
@@ -1167,7 +1167,7 @@ class Scene(RenderLoopMixin):
         -------
         RenderResult or list of RenderResult
             One result per still, with ``status`` (``"rendered"`` or
-            ``"skipped"``), ``output_path`` and ``duration_seconds``. A list is
+            ``"skipped"``), ``output_path`` and ``walltime_seconds``. A list is
             returned only when ``at`` is a sequence, matching the shape of the
             input.
 
@@ -1226,7 +1226,7 @@ class Scene(RenderLoopMixin):
                 self.set_background(background)
             # Rendering resolves replay windows against the timings as they
             # stand. Mid-authoring those are not final -- an enclosing context
-            # with a duration rescales its block when it exits -- so the
+            # with a runtime rescales its block when it exits -- so the
             # resolution is restored rather than left on the timeline for the
             # next render to reuse.
             with self.timeline_manager.preserving_authoring_state(
@@ -1239,9 +1239,9 @@ class Scene(RenderLoopMixin):
                         continue
                     started = time.perf_counter()
                     self._render_still(target, time_stamp, post_processes)
-                    duration = time.perf_counter() - started
+                    walltime = time.perf_counter() - started
                     logger.info(
-                        "Finished rendering %s in %.1f s", target.name, duration
+                        "Finished rendering %s in %.1f s", target.name, walltime
                     )
                     # The same plan ``save_video`` reports, and for the same
                     # reason: it is how a script reads back which renderer ran,
@@ -1252,7 +1252,7 @@ class Scene(RenderLoopMixin):
                         RenderResult(
                             "rendered",
                             target,
-                            duration,
+                            walltime,
                             getattr(self, "last_render_plan", None),
                         )
                     )
@@ -1528,7 +1528,7 @@ class Scene(RenderLoopMixin):
         -------
         RenderResult
             Metadata with ``status`` (``"rendered"`` or ``"skipped"``),
-            ``output_path``, ``duration_seconds`` and the resolved
+            ``output_path``, ``walltime_seconds`` and the resolved
             ``render_plan``.
 
         Examples

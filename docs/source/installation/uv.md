@@ -162,39 +162,57 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 
 ### Step 3: Installing PyTorch
 
-Algan uses PyTorch for tensor math and GPU-accelerated ray tracing.
-Depending on your hardware and bandwidth, choose the appropriate installation command:
-
-:::::{tab-set}
-
-::::{tab-item} NVIDIA GPU (CUDA)
-For NVIDIA GPUs with full ray-tracing hardware acceleration (~2.5GB-5GB download):
-
-```bash
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-```
-*(Check [pytorch.org](https://pytorch.org/get-started/locally/) for your specific CUDA version if different from cu128).*
-::::
-
-::::{tab-item} CPU-Only (Lightweight)
-If you do not have an NVIDIA GPU, or for lightweight CI / cloud container deployments (~200MB download):
-
-```bash
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-```
-::::
-
-::::{tab-item} Apple Silicon (macOS)
-On macOS (M1/M2/M3/M4), standard PyTorch packages include native Apple Silicon (Metal/MPS) acceleration:
-
+Algan uses PyTorch for GPU-accelerated array operations.
+If you do not have a GPU you can also run Algan on CPU,
+but you will still need to install PyTorch.
+PyTorch can be installed by running:
 ```bash
 uv pip install torch torchvision
 ```
+
+Check that the installation was succesful by running the
+appropriate command:
+:::::{tab-set}
+
+::::{tab-item} Windows & Linux
+```bash
+uv run python -c "import torch; print(f'GPU is available: {torch.cuda.is_available()}')"
+```
+
+::::
+
+::::{tab-item} Mac
+```bash
+uv run python -c "import torch; print(f'GPU is available: {torch.mps.is_available()}')"
+```
+
 ::::
 
 :::::
+If it says `GPU is available: True` (or you want Algan to run on CPU),
+the installation was successful and you can go to the next step.
 
-If no error message is shown, then installation was successful and you can move on to installing Algan.
+Otherwise, in order to use your GPU you will need to go to [pytorch.org](https://pytorch.org/get-started/locally/) 
+and follow the instructions there. Select the following options
+PyTorch Build: Stable
+Your OS: Your OS
+Package: Pip
+Language: Python
+Compute Platform: Your hardware
+
+Then run the command given in the "Run this Command" box, with "uv pip" instead of "pip3".
+e.g. the box says:
+```bash
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+you run:
+```bash
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+If you are using an AMD (ROCm) GPU on Windows, you will need to follow the instructions at
+[AMD's documentation](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installrad/windows/install-pytorch.html/)
 
 ### Step 4: Installing Algan 
 
@@ -298,35 +316,7 @@ If you prefer to manage your dependencies through your project's
 `uv add algan` instead of `uv pip install algan`.
 :::
 
-Some features require optional extras:
-
-- `uv pip install "algan[audio]"` — synchronizing animations to a
-  pre-recorded speech audio file (installs `torchaudio` and `transformers`).
-- `uv pip install "algan[fbx]"` — importing FBX 3-D model files (also
-  requires the native `assimp` library to be installed separately).
-
 If you completed the installation instructions with no errors, then you are ready to Alganimate!
-
-:::{note}
-**You do not need to install FFmpeg.** Algan encodes video through
-`imageio-ffmpeg`, which ships its own FFmpeg binary and is pulled in
-automatically, so rendering works on a machine with no system FFmpeg at all.
-
-Two caveats. Manim, which Algan builds text on, prints
-`Couldn't find ffmpeg or avconv` on startup when there is no FFmpeg on
-`PATH`; the warning is harmless and does not affect rendering. And building
-Algan's *documentation* does shell out to a system `ffmpeg`, so install one
-(`sudo apt install ffmpeg`, `brew install ffmpeg`, or the Windows builds at
-<https://ffmpeg.org/download.html>) if you intend to do that — see
-{doc}`../contributing/development`.
-:::
-
-:::{important}
-The very first time you render a scene, Algan compiles its GPU render
-kernels. This can take several minutes, during which the render will appear
-to hang. This is normal! Compiled kernels are cached on disk, so all
-subsequent renders start immediately.
-:::
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code
@@ -338,12 +328,10 @@ import algan
 into a new file `my-first-animation.py`, the import is resolved
 correctly and autocompletion is available.
 
-*Happy Alganimating!*
-
 ## Installing from source
 
 The instructions above install a released Algan for *writing animations*. If
-you want to work on Algan itself — or run a version newer than the last
-release — clone the repository and install it from source instead. That setup,
+you want to work on Algan itself, or run a version newer than the latest
+release, clone the repository and install it from source instead. That setup,
 including the test suite and the documentation build, is covered in
 {doc}`../contributing/development`.

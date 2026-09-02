@@ -4,7 +4,7 @@ Everything the browser asks for goes through a :class:`ViewerSession`. It owns
 the Scene being inspected and serialises every touch of it, because two things
 about Algan's renderer make concurrent access wrong rather than merely slow:
 
-* A render binds Taichi's arch and allocates the render arena for its duration,
+* A render binds Taichi's arch and allocates the render arena for its runtime,
   so two renders at once fight over both.
 * Reading an attribute "at time t" materializes the Scene's whole timeline at
   that time. It is global mutation, undone afterwards -- so a render sharing the
@@ -287,7 +287,7 @@ class ViewerSession:
             cached = sorted(self._cache)
             error = self._error
         return {
-            "duration": self.duration,
+            "runtime": self.duration,
             "fps": self.fps,
             "total_frames": self.total_frames,
             "width": self.width,

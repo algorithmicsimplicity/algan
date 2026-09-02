@@ -13,7 +13,7 @@ from algan.rendering.raytracing.scene_builder import _prefill_background
 
 
 def test_animation_duration_search_uses_the_true_maximum():
-    # Repeated halving returned 500 here even though every duration through 999
+    # Repeated halving returned 500 here even though every runtime through 999
     # fits.  The animation-device budget should not discard that headroom.
     assert _max_duration_that_fits(1000, lambda n: n <= 999) == 999
 
@@ -169,7 +169,7 @@ def test_probe_duration_lets_a_capacity_estimate_shortcut_the_halving():
     capacity(90)
     assert scene._next_probe_duration(1, 99) == 50
 
-    # Always inside the bracket: an estimate below a duration already known to
+    # Always inside the bracket: an estimate below a runtime already known to
     # fit is clamped up to it.
     capacity(3)
     assert scene._next_probe_duration(20, 99) == 20
@@ -325,7 +325,7 @@ def _make_preflight_scene(
         def _prepared_batch_fits_render_arena(
             self, primitives, *_args, require_estimates_fit=True, **_kwargs
         ):
-            return preflight(primitives[0].duration, require_estimates_fit)
+            return preflight(primitives[0].runtime, require_estimates_fit)
 
         def render_primitive_batch(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs
@@ -452,7 +452,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
             pass
 
         def _prepared_batch_fits_render_arena(self, primitives, *_args, **_kwargs):
-            return primitives[0].duration <= 5
+            return primitives[0].runtime <= 5
 
         def render_primitive_batch(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs

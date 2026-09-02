@@ -239,8 +239,8 @@ def _iter_markdown_blocks(path: Path):
 def _collect_markdown_examples() -> list[DocExample]:
     """The Python in ``README.md``.
 
-    Nothing checked it, and it drifted: the Quickstart called ``spawn(duration=)``,
-    ``Sync(duration=)`` and ``Mob.shift()``, none of which exist -- three
+    Nothing checked it, and it drifted: the Quickstart called ``spawn(runtime=)``,
+    ``Sync(runtime=)`` and ``Mob.shift()``, none of which exist -- three
     failures in the first eight lines of code anyone runs, on the front page and
     on PyPI. It is an ordinary complete script, so it goes through the same
     tiers as every other one.

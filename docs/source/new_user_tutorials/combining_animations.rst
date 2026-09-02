@@ -19,6 +19,7 @@ Here's a basic example, playing two animations at the same time:
     with Sync():
         square.move(RIGHT * 2)
         square.rotate(90, OUT)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -69,6 +70,8 @@ The four basic contexts are:
         square.move_to(ORIGIN)
         circle.move_to(ORIGIN)
 
+    Scene.wait()
+
     Scene.save_video()
 
 :class:`.Off` is useful for doing scene setup, use it to put
@@ -88,9 +91,9 @@ Timing
 
 Two arguments control how long a context takes:
 
-* ``duration`` -- the total duration of the whole block, in seconds. The
+* ``runtime`` -- the total runtime of the whole block, in seconds. The
   animations inside are rescaled to fit.
-* ``duration_unit`` -- the duration of each individual animation inside.
+* ``runtime_per_part`` -- the runtime of each individual animation inside.
 
 .. algan:: ControllingTiming
 
@@ -98,20 +101,22 @@ Two arguments control how long a context takes:
 
     circle = Circle().spawn()
 
-    with Seq(duration=1):
+    with Seq(runtime=1):
         circle.move(LEFT)
         circle.move(UP)
         circle.move(RIGHT * 2)
         circle.move(DOWN)
 
-    with Seq(duration_unit=5):
+    with Seq(runtime_per_part=5):
         circle.rotate(360, UP)
         circle.move_to(ORIGIN)
+
+    Scene.wait()
 
     Scene.save_video()
 
 The first block squeezes four moves into one second total; the second gives each
-of its two animations five seconds. If you set both, ``duration`` overrides ``duration_unit``.
+of its two animations five seconds. If you set both, ``runtime`` overrides ``runtime_per_part``.
 
 Nesting Contexts
 ================
@@ -119,7 +124,7 @@ Nesting Contexts
 Contexts nest, and this is where they get really useful. A nested context is treated
 by its parent as a *single* animation, so you can build up a complex piece of
 choreography out of small, readable (and reusable!) blocks. A nested context also inherits every
-parameter you did not set (``duration_unit``, ``lag_ratio``, ``easing``)
+parameter you did not set (``runtime_per_part``, ``lag_ratio``, ``easing``)
 so you can set a house style on the outside and only override the exceptions.
 
 .. algan:: ControllingNesting
@@ -179,10 +184,11 @@ You can pass a different one to any context:
                         for i, c in enumerate((BLUE, GREEN, YELLOW))]
 
     funcs = (easings.identity, easings.smooth, easings.ease_out_quintic)
-    with Sync(duration=2):
+    with Sync(runtime=2):
         for square, func in zip(squares, funcs):
             with Seq(easing=func):
                 square.move(RIGHT * 6)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -221,8 +227,9 @@ A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
         return 1 - (1 - t) ** 2
 
     square = Square(color=BLUE).spawn()
-    with Seq(easing=bounce_out, duration=2):
+    with Seq(easing=bounce_out, runtime=2):
         square.move(DOWN * 2)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -242,8 +249,8 @@ with the parent context's easing rather than replacing it.
     * :doc:`../advanced_user_tutorials/audio_and_speech` --
       :class:`~algan.animation_timeline.animation_contexts.Audio` and
       :class:`~algan.animation_timeline.animation_contexts.Speech` are contexts
-      too, and they take their duration from a sound file rather than from
-      ``duration``.
+      too, and they take their runtime from a sound file rather than from
+      ``runtime``.
     * :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing
       animations to a point on the timeline of your own choosing, for when each
       Mob's start time is a function of something about that Mob.

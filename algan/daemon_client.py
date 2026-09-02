@@ -92,7 +92,7 @@ from algan.environment import (
 #: refuse each other rather than misparse, and the client falls back.
 #:
 #: 2 -- the run request carries the client's full environment (``env_full``),
-#: which the daemon applies for the duration of the run.
+#: which the daemon applies for the runtime of the run.
 PROTOCOL_VERSION = 2
 
 
@@ -491,7 +491,7 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         "script": script,
         "argv": list(argv if argv is not None else sys.argv[1:]),
         "env": startup_env(),
-        # The whole environment, applied by the daemon for the duration of the
+        # The whole environment, applied by the daemon for the runtime of the
         # run. Without it a script reads the *daemon's* environment, so
         # ``MY_VAR=x python scene.py`` would silently see the daemon's value.
         # Localhost-only, token-authenticated, and same-user, which is the same

@@ -478,7 +478,7 @@ class Model3D(Mob):
             Clip name; defaults to the first clip.
         times : sequence of float, optional
             Explicit sample times (seconds). Defaults to an ``fps`` grid over
-            the clip duration unioned with the authored keyframe times.
+            the clip runtime unioned with the authored keyframe times.
         fps : int
             Sampling rate used when ``times`` is not given.
 
@@ -491,7 +491,7 @@ class Model3D(Mob):
         clip = self._resolve_clip(name)
         device = self.location.device
         if times is None:
-            times = _anim.sample_times(clip.duration, fps, _anim.clip_key_times(clip))
+            times = _anim.sample_times(clip.runtime, fps, _anim.clip_key_times(clip))
         times = [float(t) for t in times]
 
         nodes = self.scene_data.nodes
@@ -532,8 +532,8 @@ class Model3D(Mob):
         name : str, optional
             Clip name; defaults to the first clip.
         duration : float, optional
-            Playback duration in seconds (per loop). Defaults to the clip's
-            authored duration.
+            Playback runtime in seconds (per loop). Defaults to the clip's
+            authored runtime.
         fps : int
             Sampling rate for baking (higher = smoother rotation, since corners
             are linearly interpolated between baked poses).
@@ -547,7 +547,7 @@ class Model3D(Mob):
         if len(times) < 2:
             return self
         if duration is None:
-            duration = clip.duration or float(times[-1]) or 1.0
+            duration = clip.runtime or float(times[-1]) or 1.0
 
         # Recompute smooth normals per frame so authored-normal meshes shade
         # correctly under the deformation.
@@ -557,7 +557,7 @@ class Model3D(Mob):
 
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
-        # Seq sequences the steps (rescaled to duration).
+        # Seq sequences the steps (rescaled to runtime).
         with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.set_location(corners[mob][0])

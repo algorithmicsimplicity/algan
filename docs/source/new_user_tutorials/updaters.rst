@@ -2,7 +2,7 @@
 Updaters
 ========
 
-So far, every animation has had a fixed duration on the timeline: you describe
+So far, every animation has had a fixed runtime on the timeline: you describe
 what should change, and Algan interpolates the frames in between. But sometimes
 you want a rule that holds *continuously*, for as long as it is needed, without
 knowing in advance how long that will be.
@@ -27,15 +27,19 @@ animations play:
 
     # Spin at 180 degrees per second, indefinitely.
     spin = triangle.add_updater(lambda mob, t: mob.rotate(t * 180, OUT))
+    Scene.wait()
 
     # Ordinary animations carry on as usual; the updater runs alongside them.
     triangle.move(RIGHT * 2)
+    Scene.wait()
     triangle.color = GREEN
+    Scene.wait()
     triangle.move(LEFT * 2)
+    Scene.wait()
 
     # And it stops when you say so.
     triangle.remove_updater(spin)
-    triangle.wait(1)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -78,13 +82,14 @@ attached. It makes periodic and open-ended motion easy:
     start_pos = ball.location
 
     # Bob up and down once per second.
-    ball.add_updater(lambda mob, t: mob.move_to(start_pos + UP * 0.8 * torch.sin(t * 2 * PI)))
+    ball.add_updater(lambda mob, t: mob.move(UP * 0.8 * torch.sin(t * 2 * PI)))
 
     # Follow the ball without taking its orientation.
     label.add_updater(lambda mob, t: mob.move_next_to(ball, DOWN))
 
-    with Seq(duration=4, easing=easings.identity):
+    with Seq(runtime=4, easing=easings.identity):
         ball.move(RIGHT * 6)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -114,4 +119,4 @@ and the updater is applied on top of that result.
       to escape the "one animation after another" model: writing animations to
       a point on the timeline you choose yourself.
     * :doc:`../advanced_user_tutorials/custom_animations` -- when what you want
-      *is* a fixed-duration animation, but not one the built-ins provide.
+      *is* a fixed-runtime animation, but not one the built-ins provide.

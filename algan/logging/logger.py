@@ -52,7 +52,7 @@ class _LiveStderrHandler(logging.StreamHandler):
 
     ``logging.StreamHandler()`` binds whichever object is ``sys.stderr`` at
     construction -- for this module, at import. The render daemon replaces
-    ``sys.stderr`` for the duration of each job with a stream that tees to the
+    ``sys.stderr`` for the runtime of each job with a stream that tees to the
     requesting client, so a handler bound at import writes every record to the
     daemon's own console and the client sees nothing at all. Deferring the
     lookup is the same trick the standard library plays with its own
@@ -173,7 +173,7 @@ def _stderr_is_terminal():
     """Whether ``sys.stderr`` is a terminal *right now*.
 
     Deliberately not cached. The render daemon replaces ``sys.stderr`` for the
-    duration of each job with a stand-in reporting the requesting *client's*
+    runtime of each job with a stand-in reporting the requesting *client's*
     terminal -- a stream that does not exist yet when this module is imported
     into a warm daemon.
     """

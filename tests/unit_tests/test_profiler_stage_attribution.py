@@ -20,7 +20,7 @@ from algan.utils.profiling_utils import StageTimers
 
 
 def _spin(seconds):
-    """Busy-wait, so the measured duration is not at the mercy of sleep jitter."""
+    """Busy-wait, so the measured runtime is not at the mercy of sleep jitter."""
     end = time.perf_counter() + seconds
     while time.perf_counter() < end:
         pass

@@ -310,7 +310,7 @@ def _parse_animations(gltf, blob):
     clips = []
     for ai, anim in enumerate(gltf.animations or []):
         per_node = {}
-        duration = 0.0
+        runtime = 0.0
         for chan in anim.channels:
             target = chan.target
             if target is None or target.node is None:
@@ -318,7 +318,7 @@ def _parse_animations(gltf, blob):
             sampler = anim.samplers[chan.sampler]
             times = _accessor_array(gltf, sampler.input, blob).float().reshape(-1)
             values = _accessor_array(gltf, sampler.output, blob).float()
-            duration = max(duration, float(times[-1]) if times.numel() else 0.0)
+            runtime = max(runtime, float(times[-1]) if times.numel() else 0.0)
             na = per_node.setdefault(
                 target.node, NodeAnimation(node_name=node_name(target.node))
             )
@@ -334,7 +334,7 @@ def _parse_animations(gltf, blob):
             clips.append(
                 AnimationData(
                     name=anim.name or f"animation_{ai}",
-                    duration=duration,
+                    runtime=runtime,
                     channels=list(per_node.values()),
                 )
             )

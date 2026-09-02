@@ -28,7 +28,7 @@ timeline, so they compose seamlessly with :doc:`animation contexts
 
     Scene.save_video()
 
-Most animation functions take an optional ``duration`` argument, which overrides
+Most animation functions take an optional ``runtime`` argument, which overrides
 the enclosing context's timing for that specific animation.
 
 Drawing Attention
@@ -94,8 +94,8 @@ region:
     from algan import *
 
     outline = Circle(radius=2, color=BLUE, stroke_width=6).spawn()
-    ShowPassingFlash(outline, duration=2)
-    ShowPassingFlash(outline, duration=2)
+    ShowPassingFlash(outline, runtime=2)
+    ShowPassingFlash(outline, runtime=2)
 
     Scene.save_video()
 
@@ -113,7 +113,7 @@ first traces the outer border and then animates the fill:
     circle = Circle(color=BLUE).scale(0.8).move(LEFT * 2).spawn(False)
     square = Square(color=YELLOW).scale(0.8).move(RIGHT * 2).spawn(False)
 
-    DrawBorderThenFill([circle, square], duration=2)
+    DrawBorderThenFill([circle, square], runtime=2)
 
     Scene.save_video()
 
@@ -158,7 +158,7 @@ outline. Any curve, line, or polygon can serve as the path:
 
     path = Circle(radius=2, color=GREY).spawn()
     dot = Dot(color=YELLOW).spawn()
-    MoveAlongPath(dot, path, duration=3)
+    MoveAlongPath(dot, path, runtime=3)
 
     Scene.save_video()
 
@@ -201,7 +201,7 @@ vector flows:
     grid = Group([Square(color=BLUE).scale(0.45) for _ in range(16)])
     grid.arrange_in_grid(4, row_buffer=0.1).spawn()
 
-    ApplyMatrix(grid, torch.tensor([[1.0, 0.6], [0.0, 1.0]]), duration=2)
+    ApplyMatrix(grid, torch.tensor([[1.0, 0.6], [0.0, 1.0]]), runtime=2)
 
     Scene.save_video()
 
@@ -222,7 +222,7 @@ deform continuously rather than just interpolate between two states:
                 x * torch.sin(angle) + y * torch.cos(angle),
                 z)
 
-    Homotopy(grid, swirl, duration=3)
+    Homotopy(grid, swirl, runtime=3)
 
     Scene.save_video()
 
@@ -241,12 +241,12 @@ natural way to visualise a differential equation:
         return torch.stack((-points[..., 1], points[..., 0],
                             torch.zeros_like(points[..., 2])), -1) * 0.5
 
-    PhaseFlow(dots, rotation_field, duration=3, virtual_time=2.0)
+    PhaseFlow(dots, rotation_field, runtime=3, virtual_time=2.0)
 
     Scene.save_video()
 
 ``virtual_time`` is how much of the field's own time to integrate over, and
-``integration_steps`` how finely. Both are independent of ``duration``, which is
+``integration_steps`` how finely. Both are independent of ``runtime``, which is
 only how long the viewer watches it.
 
 .. important::
@@ -263,7 +263,7 @@ only how long the viewer watches it.
     from algan import *
 
     text = Text("wave me", font_size=72).spawn()
-    ApplyWave(text, duration=2)
+    ApplyWave(text, runtime=2)
 
     Scene.save_video()
 
@@ -279,7 +279,7 @@ Where To Next
 =============
 
 * :doc:`../new_user_tutorials/updaters` -- animations that run indefinitely rather than for a fixed
-  duration.
+  runtime.
 * :doc:`../new_user_tutorials/child_mobs` -- applying an animation to a whole hierarchy at once.
 * :doc:`../new_user_tutorials/combining_animations` -- the contexts that decide when these run.
 * :doc:`../advanced_user_tutorials/custom_animations` -- writing an animation of

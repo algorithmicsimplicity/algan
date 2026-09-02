@@ -63,7 +63,7 @@ SETTINGS.video.set({"LD": LD, "MD": MD, "HD": HD}[quality])
 with Off():
     Group([Sphere(color=BLUE).move(RIGHT * 1.6 * i) for i in (-1, 0, 1)]).spawn()
 
-with Seq(duration=4, easing=easings.identity):
+with Seq(runtime=4, easing=easings.identity):
     if mode == "rotate":
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
     else:

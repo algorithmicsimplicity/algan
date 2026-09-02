@@ -48,7 +48,7 @@ class MobOrientationMixin:
         Animation
         ---------
         Recorded as an animation: the Mob rotates and scales back to its default
-        over the current context's duration (1 second by default). Applies to
+        over the current context's runtime (1 second by default). Applies to
         this Mob and its descendants.
 
         Returns
@@ -82,9 +82,9 @@ class MobOrientationMixin:
         Animation
         ---------
         Recorded as an animation: the rotation sweeps from 0 to ``angle``
-        over the current context's duration (1 second by default), so the Mob
+        over the current context's runtime (1 second by default), so the Mob
         turns rather than snapping. Retime it with
-        ``with Seq(duration=3): mob.rotate(90)``, or apply it instantly with
+        ``with Seq(runtime=3): mob.rotate(90)``, or apply it instantly with
         ``with Off(): mob.rotate(90)``. Applies to this Mob and its descendants.
 
         Parameters
@@ -164,7 +164,7 @@ class MobOrientationMixin:
         Animation
         ---------
         Recorded as an animation: the orbit sweeps from 0 to ``angle`` over
-        the current context's duration (1 second by default). Applies to this Mob
+        the current context's runtime (1 second by default). Applies to this Mob
         and its descendants.
 
         Parameters
@@ -321,7 +321,7 @@ class MobOrientationMixin:
         ---------
         Recorded as an animation: the turn is performed by
         :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`,
-        so it sweeps over the current context's duration
+        so it sweeps over the current context's runtime
         (1 second by default). Applies to this Mob and its descendants.
 
         Parameters
@@ -371,7 +371,7 @@ class MobOrientationMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). The direction is resolved when the call is recorded, so a Mob
         aimed at a moving target will not track it (use an updater for that).
         Applies to this Mob and its descendants.

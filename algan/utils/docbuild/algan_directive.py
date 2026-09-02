@@ -317,13 +317,13 @@ rendering_times_file_path = (
 )
 
 
-def _write_rendering_stats(scene_name: str, duration: float, file_name: str) -> None:
+def _write_rendering_stats(scene_name: str, walltime: float, file_name: str) -> None:
     with rendering_times_file_path.open("a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(
             [
                 re.sub(r"^(reference/)|(algan\.)", "", file_name),
                 scene_name,
-                f"{duration:.3f}",
+                f"{walltime:.3f}",
             ]
         )
 

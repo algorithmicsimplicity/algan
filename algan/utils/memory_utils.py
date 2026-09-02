@@ -854,7 +854,7 @@ class ManualMemory:
 
         Yields the :class:`AllocationRecorder`. Nesting is not supported: the
         calibration driver and the one-frame probe are the only callers, and
-        both own the arena for the duration.
+        both own the arena for the runtime.
         """
         previous = self._recorder
         recorder = AllocationRecorder()

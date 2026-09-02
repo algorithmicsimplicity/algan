@@ -8,7 +8,7 @@ its accumulated transcript, and the list of effects to mix.
 :class:`AudioEffect` is one sound placed at one time on the Scene's timeline.
 The :class:`~algan.animation_timeline.animation_contexts.Audio` and
 :class:`~algan.animation_timeline.animation_contexts.Speech` contexts add them,
-taking their duration from the clip so the animations inside are fitted to the
+taking their runtime from the clip so the animations inside are fitted to the
 sound. ``save_video`` composes every effect into one track and hands it to the
 video writer.
 

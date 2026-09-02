@@ -15,14 +15,14 @@ changes are laid out in time. There are four:
 
 Contexts nest, and a nested context counts as a single animation to its parent,
 which is what makes complex multi-Mob choreography readable. Unset parameters are
-inherited from the enclosing context. ``duration`` sets a context's total
-duration and is applied **retroactively** on ``__exit__``, by rescaling every
+inherited from the enclosing context. ``runtime`` sets a context's total
+runtime and is applied **retroactively** on ``__exit__``, by rescaling every
 child timestamp -- which is why an event recorded outside any entered-and-exited
 context evaluates to time zero.
 
 :class:`~algan.animation_timeline.animation_contexts.Audio` and
 :class:`~algan.animation_timeline.animation_contexts.Speech` are the same
-mechanism with their duration taken from a sound clip instead of a number.
+mechanism with their runtime taken from a sound clip instead of a number.
 
 :class:`AnimationManager` is the per-Scene owner of the context stack.
 
@@ -44,7 +44,7 @@ from algan.errors import ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
 
-DEFAULT_DURATION = 1
+DEFAULT_RUNTIME = 1
 DEFAULT_EASING = easings.smooth
 
 # AnimationContext parameters -- not method arguments. Manim spells timing per
@@ -52,9 +52,9 @@ DEFAULT_EASING = easings.smooth
 # one of these names arriving at a Mob method is always the same mistake. The
 # value is the context class to point the user at.
 _CONTEXT_ONLY_PARAMS = {
-    "duration": "Seq",
-    "duration_unit": "Seq",
-    "match_durations": "Sync",
+    "runtime": "Seq",
+    "runtime_per_part": "Seq",
+    "equialize_runtimes": "Sync",
     "ratio": "Lag",
     "easing": "Seq",
     "composed_easing": "ComposedEasing",
@@ -69,7 +69,7 @@ _CONTEXT_ONLY_PARAMS = {
 #: Manim writes ``run_time`` and ``lag_ratio``, so the same mistake has to be
 #: caught under those names and answered with the name Algan actually takes.
 _MANIM_CONTEXT_PARAM_SPELLINGS = {
-    "run_time": "duration",
+    "run_time": "runtime",
     "lag_ratio": "ratio",
 }
 
@@ -77,7 +77,7 @@ _MANIM_CONTEXT_PARAM_SPELLINGS = {
 def _reject_context_kwargs(kwargs):
     """Raise a useful TypeError if ``kwargs`` carries animation-context timing.
 
-    Mob methods do not take ``duration`` and friends; the surrounding
+    Mob methods do not take ``runtime`` and friends; the surrounding
     :class:`AnimationContext` does. Without this, such a call dies inside a
     generated closure with a traceback that names neither the method the user
     wrote nor the thing they should have written instead.
@@ -94,7 +94,7 @@ def _reject_context_kwargs(kwargs):
         # ``with Seq(ratio=...)`` would itself raise.
         if algan_name == "ratio":
             call = f"Lag({value!r})" if value is not None else "Lag(0.5)"
-        elif algan_name == "duration" and value == 0:
+        elif algan_name == "runtime" and value == 0:
             call = "Off()"
         elif value is not None:
             call = f"{context}({algan_name}={value!r})"
@@ -125,7 +125,7 @@ class AnimationManager:
     def __init__(self, scene=None):
         self.scene = scene
         self.context = Seq(
-            duration_unit=1.0,
+            runtime_per_part=1.0,
             priority_level=0,
             easing=easings.smooth,
             record_funcs=True,
@@ -161,7 +161,7 @@ class AnimationManager:
         ----------
         t
             How long to wait, in seconds. Defaults to ``None``, meaning one
-            animation's duration (1 second by default).
+            animation's runtime (1 second by default).
 
         Returns
         -------
@@ -254,13 +254,13 @@ def animation_manager_for(*owners):
     return managers[0] if managers else _active_animation_manager()
 
 
-# Plain, rather than `@dataclass(kw_only=True)` with `duration` opted back out of
+# Plain, rather than `@dataclass(kw_only=True)` with `runtime` opted back out of
 # it. `kw_only` is 3.10, on both the decorator and `field()`, and it is evaluated
 # when the class body runs -- so it made `import algan` a TypeError on 3.9, which
 # `requires-python` claims to support. Every field here has a default, so nothing
 # but the keyword-only constraint is lost, and that constraint only ever applied
 # to this base class: `Sync`, `Lag`, `Seq`, `Off` and the rest declare their own
-# `__init__` and take `duration` positionally through it, which is the spelling
+# `__init__` and take `runtime` positionally through it, which is the spelling
 # users actually write.
 @dataclass
 class AnimationContext:
@@ -273,30 +273,30 @@ class AnimationContext:
 
     Contexts nest, and a nested context inherits every parameter left as ``None``
     from its parent, overriding only what it sets. On exit, a context with a
-    ``duration`` retroactively rescales all the timestamps recorded inside it, which
-    is how you give a whole block a fixed duration without timing its parts.
+    ``runtime`` retroactively rescales all the timestamps recorded inside it, which
+    is how you give a whole block a fixed runtime without timing its parts.
 
     Parameters
     ----------
-    duration
-        Total duration of this context, in seconds; the animations inside are
-        rescaled to fit. Defaults to ``None``, meaning the duration follows from the
+    runtime
+        Total runtime of this context, in seconds; the animations inside are
+        rescaled to fit. Defaults to ``None``, meaning the runtime follows from the
         animations themselves.
-    duration_unit
-        Duration of each individual animation inside, in seconds. Defaults to
+    runtime_per_part
+        Runtime of each individual animation inside, in seconds. Defaults to
         ``None``, meaning inherit from the parent context (``1.0`` at the top
-        level). ``duration`` overrides this.
-    match_durations
-        Whether to stretch every animation inside to the duration of the longest one.
+        level). ``runtime`` overrides this.
+    equalize_runtimes
+        Whether to stretch every animation inside to the runtime of the longest one.
         Defaults to ``None`` (inherited; effectively False).
     lag_ratio
-        Fraction of one animation's duration to wait before starting the next: ``0``
+        Fraction of one animation's runtime to wait before starting the next: ``0``
         plays them together, ``1`` strictly in sequence, in between overlaps them.
         Defaults to ``None``, meaning inherit from the parent.
     priority_level
         Priority of this context. A context can only be overridden by one of equal or
         higher priority, which is what lets :class:`~.Off` resist an enclosing
-        ``duration``. Defaults to ``None``, meaning inherit (``0`` at the top level).
+        ``runtime``. Defaults to ``None``, meaning inherit (``0`` at the top level).
     easing
         Easing function mapping progress in ``[0, 1]`` to adjusted progress, e.g.
         ``easings.identity``. Replaces the parent's. Defaults to ``None``, meaning
@@ -326,9 +326,9 @@ class AnimationContext:
         is not currently active.
     """
 
-    duration: float | None = None
-    duration_unit: float | None = None
-    match_durations: bool | None = None
+    runtime: float | None = None
+    runtime_per_part: float | None = None
+    equalize_runtimes: bool | None = None
     lag_ratio: float | None = None
     priority_level: float | None = None
     easing: Callable[[], float] | None = None
@@ -413,7 +413,7 @@ class AnimationContext:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
         for attr in [
-            "duration_unit",
+            "runtime_per_part",
             "lag_ratio",
             "priority_level",
             "easing",
@@ -524,9 +524,9 @@ class AnimationContext:
         Returns
         -------
         float
-            The current time plus one animation's duration.
+            The current time plus one animation's runtime.
         """
-        return self.timespan.current_time + self.duration_unit
+        return self.timespan.current_time + self.runtime_per_part
 
     def add_mob(self, mob):
         """Record that a Mob was created in this context.
@@ -616,33 +616,33 @@ class AnimationContext:
             def rescale(x, b=self.timespan.original_start, s=1):
                 return (x - b) * s + b
 
-            def rescale_duration(context, scale):
+            def rescale_runtime(context, scale):
                 for child in context.get_descendants(include_self=True):
                     child.timespan.start = rescale(child.timespan.start, s=scale)
                     child.timespan.end = rescale(child.timespan.end, s=scale)
                 return False
 
-            if self.match_durations:
-                durations = [
+            if self.equalize_runtimes:
+                runtimes = [
                     child.timespan.end - child.timespan.start
                     for child in self.child_contexts
                 ]
-                positive_durations = [
-                    duration for duration in durations if duration > 0
+                positive_runtimes = [
+                    runtime for runtime in runtimes if runtime > 0
                 ]
-                max_duration = max(positive_durations, default=0)
-                for child, duration in zip(self.child_contexts, durations):
+                max_runtime = max(positive_runtimes, default=0)
+                for child, runtime in zip(self.child_contexts, runtimes):
                     # Empty / Off child contexts already have the desired zero
-                    # duration and must not cause a division by zero.
-                    if duration > 0:
-                        rescale_duration(child, max_duration / duration)
+                    # runtime and must not cause a division by zero.
+                    if runtime > 0:
+                        rescale_runtime(child, max_runtime / runtime)
 
-            if self.duration is not None:
-                my_duration = max(
+            if self.runtime is not None:
+                my_runtime = max(
                     self.timespan.original_end - self.timespan.original_start,
                     1e-6,
                 )
-                scale = self.duration / my_duration
+                scale = self.runtime / my_runtime
 
                 for child in self.get_descendants(include_self=False):
                     child.timespan.start = rescale(child.timespan.start, s=scale)
@@ -729,16 +729,16 @@ class AnimationContext:
         """Advance the cursor after recording one animation.
 
         How much it moves is what distinguishes the contexts: ``lag_ratio`` of one
-        animation's duration, so :class:`~.Sync` (0) leaves the cursor put and
+        animation's runtime, so :class:`~.Sync` (0) leaves the cursor put and
         :class:`~.Seq` (1) moves it past the whole animation. Called by the
         ``animated_function`` machinery; you do not call it yourself.
         """
-        # self.end_time = max(self.end_time, self.current_time + self.duration_unit)
+        # self.end_time = max(self.end_time, self.current_time + self.runtime_per_part)
         self.timespan.original_end = max(
-            self.timespan.original_end, self.timespan.current_time + self.duration_unit
+            self.timespan.original_end, self.timespan.current_time + self.runtime_per_part
         )
         self.timespan.current_time = (
-            self.timespan.current_time + self.duration_unit * self.lag_ratio
+                self.timespan.current_time + self.runtime_per_part * self.lag_ratio
         )
 
     def wait(self, t: float | None = None):
@@ -755,10 +755,10 @@ class AnimationContext:
         ----------
         t
             How long to wait, in seconds. Defaults to ``None``, meaning one
-            animation's duration (``duration_unit``, 1 second by default).
+            animation's runtime (``runtime_per_part``, 1 second by default).
         """
         if t is None:
-            t = self.duration_unit
+            t = self.runtime_per_part
         self.timespan.original_end = max(
             self.timespan.original_end, self.timespan.current_time + t
         )
@@ -911,7 +911,7 @@ class Off(AnimationContext):
     up (position, color, materials, etc) without the viewer watching things slide
     into place, and how you make a cut rather than a transition.
 
-    ``Off`` takes priority over enclosing contexts by default, so a ``duration``
+    ``Off`` takes priority over enclosing contexts by default, so a ``runtime``
     further out cannot stretch it back into an animation.
 
     Parameters
@@ -943,8 +943,8 @@ class Off(AnimationContext):
             kwargs["record_funcs"] = False
         super().__init__(
             lag_ratio=1,
-            duration_unit=0,
-            duration=0,
+            runtime_per_part=0,
+            runtime=0,
             priority_level=priority_level,
             new_animation=True,
             **kwargs,
@@ -984,12 +984,12 @@ class Lag(AnimationContext):
     Parameters
     ----------
     ratio
-        Fraction of one animation's duration to wait before starting the next.
+        Fraction of one animation's runtime to wait before starting the next.
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
         animation when the previous one is a tenth done. Can be larger than 1,
         in which case it introduces a pause (wait) after each animation finishes.
         Defaults to ``0.5``.
-    duration
+    runtime
         Passed to :class:`~.AnimationContext` .
     **kwargs
         Passed to :class:`~.AnimationContext` .
@@ -1008,8 +1008,8 @@ class Lag(AnimationContext):
     :class:`~.Seq` : ``Lag(1)``.
     """
 
-    def __init__(self, ratio: float = 0.5, duration: float | None = None, **kwargs):
-        super().__init__(duration, lag_ratio=ratio, new_animation=True, **kwargs)
+    def __init__(self, ratio: float = 0.5, runtime: float | None = None, **kwargs):
+        super().__init__(runtime, lag_ratio=ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
@@ -1020,7 +1020,7 @@ class Sync(Lag):
 
     Parameters
     ----------
-    duration
+    runtime
         Passed to :class:`~.AnimationContext` .
     **kwargs
         Passed to :class:`~.Lag` with ``ratio=0`` .
@@ -1034,9 +1034,9 @@ class Sync(Lag):
             square.color = BLUE
     """
 
-    def __init__(self, duration: float | None = None, **kwargs):
+    def __init__(self, runtime: float | None = None, **kwargs):
         _reject_fixed_lag_ratio("Sync", 0, kwargs)
-        super().__init__(ratio=0, duration=duration, **kwargs)
+        super().__init__(ratio=0, runtime=runtime, **kwargs)
 
 
 class Seq(Lag):
@@ -1045,11 +1045,11 @@ class Seq(Lag):
     Each animation starts as the previous one finishes, so the block lasts as long
     as all of them put together. This is what statements at the top level of a
     script already do; reach for ``Seq`` when you need to give a run of animations a
-    combined duration, or to sequence inside a :class:`~.Sync`.
+    combined runtime, or to sequence inside a :class:`~.Sync`.
 
     Parameters
     ----------
-    duration
+    runtime
         Passed to :class:`~.AnimationContext` .
     **kwargs
         Passed to :class:`~.Lag` with ``lag_ratio=1``.
@@ -1058,21 +1058,21 @@ class Seq(Lag):
     --------
     .. code-block:: python
 
-        with Seq(duration=2):  # three moves squeezed into two seconds
+        with Seq(runtime=2):  # three moves squeezed into two seconds
             square.move(RIGHT)
             square.move(UP)
             square.move(LEFT)
     """
 
-    def __init__(self, duration: float | None = None, **kwargs):
+    def __init__(self, runtime: float | None = None, **kwargs):
         _reject_fixed_lag_ratio("Seq", 1, kwargs)
-        super().__init__(ratio=1, duration=duration, **kwargs)
+        super().__init__(ratio=1, runtime=runtime, **kwargs)
 
 
 class Audio(AnimationContext):
     """Play a sound, and fit the block's animations to its length.
 
-    The context's duration is taken from the audio, so whatever you animate inside
+    The context's runtime is taken from the audio, so whatever you animate inside
     is stretched or squeezed to finish with the sound. That inversion is the point:
     you describe what should happen while a clip plays, rather than timing the clip
     against the animation.
@@ -1085,7 +1085,7 @@ class Audio(AnimationContext):
         Extra seconds to hold after the audio finishes, before the block ends.
         Defaults to ``0``.
     **kwargs
-        Passed to :class:`~.AnimationContext`. Note ``duration`` is set from the
+        Passed to :class:`~.AnimationContext`. Note ``runtime`` is set from the
         audio and should not be passed.
 
     Examples
@@ -1106,14 +1106,14 @@ class Audio(AnimationContext):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
             audio_clip = AudioFileClip(source)
-        kwargs["duration"] = audio_clip.duration + wait_at_end
+        kwargs["runtime"] = audio_clip.runtime + wait_at_end
         super().__init__(**kwargs)
         self.audio_clip = audio_clip
 
     def __enter__(self):
         context = super().__enter__()
-        if self.prev_context.duration_unit > 0 and (
-            self.prev_context.duration is None or self.prev_context.duration > 0
+        if self.prev_context.runtime_per_part > 0 and (
+                self.prev_context.runtime is None or self.prev_context.runtime > 0
         ):
             self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())

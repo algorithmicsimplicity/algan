@@ -13,7 +13,7 @@ materials, node hierarchy and rigid animation -- and gives you an ordinary Algan
     from algan import *
 
     model = Model3D('dragon.glb', fit_to_size=2.0).scale(3).spawn()
-    with Seq(duration=4, easing=easings.identity):
+    with Seq(runtime=4, easing=easings.identity):
         model.rotate(360, UP)
 
     Scene.save_video()
@@ -114,7 +114,7 @@ properties are animatable attributes like any other:
 .. code-block:: python
 
     model = Model3D('robot.glb', fit_to_size=2.0).spawn()
-    with Seq(duration=3):
+    with Seq(runtime=3):
         model.roughness = 0.1      # polish the whole model
 
 Working With Parts
@@ -130,7 +130,7 @@ part:
     print(model.node_names)              # what's in the file
 
     arm = model.get_part('LeftArm')      # one TriangleMesh, or a list of them
-    with Seq(duration=2):
+    with Seq(runtime=2):
         arm.rotate(45, OUT)
         arm.color = RED
 
@@ -153,7 +153,7 @@ one onto Algan's timeline:
 
     print(model.animation_names)         # available clips
 
-    model.play_animation('Walk', duration=4, loop=2)
+    model.play_animation('Walk', runtime=4, loop=2)
 
 .. list-table::
    :header-rows: 1
@@ -163,8 +163,8 @@ one onto Algan's timeline:
      - Meaning
    * - ``name``
      - Which clip. Defaults to the first one.
-   * - ``duration``
-     - Seconds per loop. Defaults to the clip's authored duration.
+   * - ``runtime``
+     - Seconds per loop. Defaults to the clip's authored runtime.
    * - ``loop``
      - How many times to repeat it.
    * - ``fps``
@@ -180,8 +180,8 @@ model across the frame:
 
 .. code-block:: python
 
-    with Sync(duration=4):
-        model.play_animation('Walk', duration=4)
+    with Sync(runtime=4):
+        model.play_animation('Walk', runtime=4)
         model.move(RIGHT * 6)
 
 .. important::

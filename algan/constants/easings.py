@@ -3,7 +3,7 @@
 A rate function maps a normalized time ``t`` in ``[0, 1]`` to a normalized
 progress, also usually in ``[0, 1]``. Every animation context takes one as
 ``easing``, and it decides the *feel* of a movement without changing its
-duration or its endpoints.
+runtime or its endpoints.
 
 ``smooth`` is the default: it eases in and out, so things start and stop gently.
 ``identity`` (and its alias ``linear``) is constant speed, which is what camera

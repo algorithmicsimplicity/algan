@@ -33,7 +33,7 @@ def test_texture_grid_axes_are_independent():
 
     # Texels are laid out with the first basis (u) axis outermost, so the packed
     # rows reshape into [width, height] -- the same layout Surface uses.
-    points = square.texture_points.location.reshape(4, 2, 3)
+    points = square.grid.location.reshape(4, 2, 3)
     first = square.basis[..., :3].reshape(3)
     second = square.basis[..., 3:6].reshape(3)
     center = square.location.reshape(3)
@@ -97,7 +97,7 @@ def test_a_lone_texel_sits_at_the_centre_of_its_span():
         with Off(animation_manager=mob.animation_manager):
             mob.move(RIGHT * 1.5 + UP * 0.5)
         torch.testing.assert_close(
-            mob.texture_points.location.reshape(-1, 3),
+            mob.grid.location.reshape(-1, 3),
             mob.location.reshape(-1, 3),
             atol=1e-6,
             rtol=0,
@@ -107,7 +107,7 @@ def test_a_lone_texel_sits_at_the_centre_of_its_span():
     # One degenerate axis, one sampled: the sampled axis spreads, the degenerate
     # one stays on the frame's centre line.
     strip = Square(grid_width=4, grid_height=1, add_to_scene=False)
-    offsets = strip.texture_points.location.reshape(-1, 3) - strip.location.reshape(
+    offsets = strip.grid.location.reshape(-1, 3) - strip.location.reshape(
         1, 3
     )
     rows = strip.basis.reshape(3, 3)
@@ -166,7 +166,7 @@ def test_set_color_by_function_writes_one_color_per_texel():
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_function(_rgb)
 
-    colors = square.texture_points.color.reshape(3, 2, 5)
+    colors = square.grid.color.reshape(3, 2, 5)
     grid = square.get_base_grid()
     torch.testing.assert_close(colors[..., 0], grid[..., 0])
     torch.testing.assert_close(colors[..., 1], grid[..., 1])
@@ -184,7 +184,7 @@ def test_set_color_by_function_returns_self_and_accepts_rgba():
         )
     assert result is circle
     torch.testing.assert_close(
-        circle.texture_points.color[..., 4].reshape(-1),
+        circle.grid.color[..., 4].reshape(-1),
         circle.get_base_grid()[..., 0].reshape(-1) * 0.5,
     )
 
@@ -192,11 +192,11 @@ def test_set_color_by_function_returns_self_and_accepts_rgba():
 def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
     SceneManager.reset()
     filled = Square(grid_width=2, stroke_color=RED, add_to_scene=False)
-    border_before = filled.border_texture_points.color.clone()
+    border_before = filled.border_grid.color.clone()
     with Off(animation_manager=filled.animation_manager):
         filled.set_color_by_function(_rgb)
-    assert not torch.equal(filled.texture_points.color, border_before)
-    assert torch.equal(filled.border_texture_points.color, border_before)
+    assert not torch.equal(filled.grid.color, border_before)
+    assert torch.equal(filled.border_grid.color, border_before)
 
     unfilled = Square(grid_width=2, filled=False, add_to_scene=False)
     with Off(animation_manager=unfilled.animation_manager):
@@ -204,7 +204,7 @@ def test_filled_circuit_colors_its_fill_and_unfilled_one_its_stroke():
     # An unfilled circuit has no interior to show the colours in, so the stroke
     # takes them too.
     assert torch.equal(
-        unfilled.border_texture_points.color, unfilled.texture_points.color
+        unfilled.border_grid.color, unfilled.grid.color
     )
 
 
@@ -216,8 +216,8 @@ def test_line_set_color_by_function_runs_from_start_to_end():
             lambda t: torch.cat((t, torch.zeros_like(t), 1 - t), -1)
         )
 
-    colors = line.texture_points.color.reshape(5, 5)
-    positions = line.texture_points.location.reshape(5, 3)
+    colors = line.grid.color.reshape(5, 5)
+    positions = line.grid.location.reshape(5, 3)
     start = line.get_start().reshape(3)
     end = line.get_end().reshape(3)
     # Redness has to grow with distance from the start, however the texels
@@ -248,8 +248,8 @@ def test_set_color_by_image_lands_the_images_top_left_at_the_frames_top_left():
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_image(image)
 
-    points = square.texture_points.location.reshape(8, 8, 3)
-    colors = square.texture_points.color.reshape(8, 8, 5)
+    points = square.grid.location.reshape(8, 8, 3)
+    colors = square.grid.color.reshape(8, 8, 5)
     for corner, channel in (
         ((LEFT + UP), 0),  # the picture's top-left quadrant is red
         ((RIGHT + UP), 1),  # its top-right is green
@@ -273,7 +273,7 @@ def test_set_color_by_image_resamples_to_the_grid():
     square = Square(grid_width=5, grid_height=3, add_to_scene=False)
     with Off(animation_manager=square.animation_manager):
         square.set_color_by_image(image)
-    assert square.texture_points.color.shape[-2] == 15
+    assert square.grid.color.shape[-2] == 15
 
 
 def test_a_flat_circuit_says_how_to_get_a_grid():
@@ -307,7 +307,7 @@ def test_multi_circuit_mobs_repeat_the_pattern_per_circuit():
     with Off(animation_manager=circuit.animation_manager):
         circuit.set_color_by_function(_rgb)
 
-    colors = circuit.texture_points.color.reshape(objects, 4, 5)
+    colors = circuit.grid.color.reshape(objects, 4, 5)
     for index in range(1, objects):
         assert torch.equal(colors[index], colors[0])
 
@@ -316,15 +316,15 @@ def test_a_single_glyph_view_colors_only_its_own_texels():
     SceneManager.reset()
     text = Text("ab", grid_width=2, grid_height=2)
     first, second = text.character_mobs[0], text.character_mobs[1]
-    untouched = second.texture_points.color.clone()
+    untouched = second.grid.color.clone()
     with Off(animation_manager=first.animation_manager):
         first.set_color_by_function(_rgb)
 
     torch.testing.assert_close(
-        first.texture_points.color.reshape(2, 2, 5)[..., :2],
+        first.grid.color.reshape(2, 2, 5)[..., :2],
         first.get_base_grid(),
     )
-    assert torch.equal(second.texture_points.color, untouched)
+    assert torch.equal(second.grid.color, untouched)
 
 
 def test_direct_construction_matches_the_shape_helpers():
@@ -348,4 +348,4 @@ def test_direct_construction_matches_the_shape_helpers():
     assert (circuit.grid_width, circuit.grid_height) == (4, 2)
     with Off(animation_manager=circuit.animation_manager):
         circuit.set_color_by_function(_rgb)
-    assert circuit.texture_points.color.shape[-2] == 8
+    assert circuit.grid.color.shape[-2] == 8

@@ -51,7 +51,7 @@ Manim-compatible variant.
         plastic = Sphere().move(RIGHT * 2).set_material(
             MeshPhongMaterial(color=BLUE, shininess=80)).spawn()
 
-    with Seq(duration_unit=5):
+    with Seq(runtime_per_part=5):
         metal.roughness = 1.0
         metal.metalness = 0.0
 

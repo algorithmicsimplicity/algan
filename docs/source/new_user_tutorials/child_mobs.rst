@@ -34,14 +34,15 @@ Let's see an example.
     center_square.scale(0.75).spawn()
     center_square.rotate(90, OUT)
     center_square.move(RIGHT * 1)
-    with Seq(duration=5):
+    with Seq(runtime=5):
         center_square.rotate(360, OUT, about=ORIGIN)
 
     center_square.wait()
     # You can even animate the parent and a child at the same time.
-    with Sync(duration=5):
+    with Sync(runtime=5):
         center_square.rotate(90, OUT)
         outer_squares[0].rotate(180, UP)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -77,72 +78,6 @@ you can animate a child independently, as in the last block of the example above
 
     :doc:`updaters` -- for a relation the parent-child rule cannot express, such
     as one mob following another *without* also taking its orientation.
-
-Changing the hierarchy mid-scene
-================================
-
-The hierarchy is read when an animation is **recorded**, not when it plays. So
-attaching, detaching and re-parenting all take effect immediately, and only
-affect the animations you record after them:
-
-.. code-block:: python
-
-    first.add_children(square)
-    first.move(RIGHT * 3)       # square travels with first
-
-    first.remove_child(square)
-    second.add_children(square)
-    second.move(UP * 4)         # square travels with second
-    first.move(RIGHT * 10)      # square stays where it is
-
-Play that back and the square follows ``first`` over the first second and
-``second`` over the next -- re-parenting does not reach backwards and rewrite an
-animation that was already recorded.
-
-Re-parenting never moves the mob. Algan keeps positions in world space rather
-than relative to a parent, so a mob keeps exactly where it is when it changes
-hands, and simply starts taking the new parent's changes instead of the old
-one's.
-
-A mob can have **more than one parent**, in which case it accumulates every
-parent's changes. That is what lets overlapping ``Group``\ s each arrange the
-same member::
-
-    Group(a, b).arrange_in_line(RIGHT)
-    Group(b, c).arrange_in_line(UP)     # b takes both
-
-Bear in mind that :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`
-does not detach the mob from any parent it already has, so an intended *move*
-from one parent to another is two calls -- ``remove_child`` (or
-:meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`,
-which is the same detachment from the other side) and then ``add_children``.
-Leave the first one out and the mob is driven by both.
-
-.. warning::
-
-    An :doc:`updater <updaters>` is the exception: it is re-run for every frame
-    it covers, against the hierarchy as it stands at the end of the script. Change
-    the hierarchy while an updater is live and the change applies to every frame
-    that updater covers, including frames before the change. Add and remove
-    updaters around a hierarchy edit rather than across one.
-
-    Algan says so when it happens, with a
-    :class:`~algan.errors.HierarchyChangedDuringUpdaterWarning` naming the
-    updater and the Mob whose children changed, at the line that changed them::
-
-        square.add_updater(spin)
-        Scene.wait(1)
-        parent.remove_child(square)   # <- warns: spin is still running
-        Scene.wait(1)
-
-    The fix is to bracket the edit instead::
-
-        updater_id = square.add_updater(spin)
-        Scene.wait(1)
-        square.remove_updater(updater_id)
-        parent.remove_child(square)
-        square.add_updater(spin)
-        Scene.wait(1)
 
 Inspecting the hierarchy
 ========================
@@ -187,6 +122,7 @@ Group's color sets every member's.
         group.rotate(180, OUT)   # the whole row turns about its centre
         group.color = BLUE       # every member changes
         group.move(UP * 0.5)
+    Scene.wait()
 
     Scene.save_video()
 
@@ -204,9 +140,13 @@ ordinary animations, so members slide into place rather than jumping.
     group = Group([Square(color=BLUE).scale(0.3) for _ in range(9)]).spawn()
 
     group.arrange_in_line(RIGHT)                    # a row
-    group.arrange_in_line(DOWN, buffer=0.2)         # a tight column
+    Scene.wait()
+    group.arrange_in_line(DOWN, buffer=0.15)         # a tight column
+    Scene.wait()
     group.arrange_in_grid(3)                        # 3 rows
+    Scene.wait()
     group.arrange_in_grid(3, row_buffer=1.0)        # 3 rows, generously spaced
+    Scene.wait()
 
     Scene.save_video()
 
@@ -242,5 +182,6 @@ keeping a separate list:
     group[0].move(UP)
 
     group.arrange_in_grid()
+    Scene.wait()
 
     Scene.save_video()

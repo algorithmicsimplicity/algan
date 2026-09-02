@@ -66,7 +66,7 @@ class ModifiedProtectedAttributeError(AlganError, ValueError):
 
 
 class AudioTranscriptMismatchError(AlganError, ValueError):
-    """Raised when audio duration and transcript mismatch during alignment."""
+    """Raised when audio runtime and transcript mismatch during alignment."""
 
     code = "ALGAN_TRANSCRIPT_AUDIO_MISMATCH"
 

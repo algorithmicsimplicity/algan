@@ -101,7 +101,7 @@ with Off():
 
 with Seq():
     model.spawn(animate=False)
-    with Sync(duration=2.4):
+    with Sync(runtime=2.4):
         model.rotate(300, UP)
 
 times = [float(t) for t in sys.argv[1:]] or [0.0, 0.6, 1.2, 1.8, 2.3]

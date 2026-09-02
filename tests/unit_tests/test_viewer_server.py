@@ -55,9 +55,9 @@ def test_state_describes_the_scene(viewer):
     assert (state["width"], state["height"]) == TINY.resolution
     assert state["fps"] == TINY.frames_per_second
     # A spawn and a move are one second each, and the frame count follows the
-    # duration at the viewer's frame rate.
-    assert state["duration"] == pytest.approx(2.0, abs=1e-6)
-    assert state["total_frames"] == round(state["duration"] * state["fps"])
+    # runtime at the viewer's frame rate.
+    assert state["runtime"] == pytest.approx(2.0, abs=1e-6)
+    assert state["total_frames"] == round(state["runtime"] * state["fps"])
     assert state["error"] is None
 
 

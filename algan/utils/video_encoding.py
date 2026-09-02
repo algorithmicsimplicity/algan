@@ -439,7 +439,7 @@ def check_codec_is_available(codec: str | None) -> None:
 
 @contextmanager
 def override_moviepy_ffmpeg_binary(binary: str | None):
-    """Point moviepy's FFmpeg writer at ``binary`` for the duration of the block.
+    """Point moviepy's FFmpeg writer at ``binary`` for the runtime of the block.
 
     Route taken: moviepy 2.x offers no per-writer binary argument -- its
     ``FFMPEG_VideoWriter`` builds its command line from the module global

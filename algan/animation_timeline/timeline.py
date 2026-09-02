@@ -2546,7 +2546,7 @@ class AnimationTimeline:
         # while frames materialize may construct Mobs -- the Manim
         # compatibility layer rebuilds its whole tree on every ``set_value``,
         # so a counting DecimalNumber does it on every frame. Those Mobs are
-        # ephemeral: they exist for the duration of the updater call and are
+        # ephemeral: they exist for the runtime of the updater call and are
         # rolled back afterwards, so rendering leaves the Scene exactly as it
         # was authored.
         self._replay_depth = 0
@@ -2786,7 +2786,7 @@ class AnimationTimeline:
     ):
         c = animation_context
         self.last_recorded_event = None
-        if c.duration_unit <= 0 or not c.record_funcs:
+        if c.runtime_per_part <= 0 or not c.record_funcs:
             return kwargs
         easing = c.easing
         composed_easing = c.composed_easing
@@ -3120,7 +3120,7 @@ class AnimationTimeline:
         event's context-rescaled end time into a plain ``replay_end`` float.
         That is correct once authoring is finished, but a render started from
         *inside* an unfinished context bakes in timestamps the enclosing
-        contexts have not rescaled yet (a ``duration`` rescales its block
+        contexts have not rescaled yet (a ``runtime`` rescales its block
         retroactively, on exit). Nothing invalidates those floats afterwards --
         only recording a new edit does -- so the stale, too-early ends survive
         into the next render, where :meth:`AttributeTimeline.prepare_for_queries`
@@ -3390,7 +3390,7 @@ class AnimationTimeline:
         interpolation weight (constant frames read the STORED states), so
         the two differ inside the description's qualified tolerance. Cached
         per edit, since the same animation spans every batch of its
-        duration.
+        runtime.
         """
         cached = self._segment_post_cache.get(id(ed))
         if cached is None:
@@ -3709,11 +3709,11 @@ class AnimationTimeline:
                 # earlier-executed animation overlapping this one's rows is
                 # still running) replay it at its final parameters, keeping
                 # its finished contribution in the rebuilt state.
-                duration = e - s
+                runtime = e - s
                 a = torch.where(
-                    elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a
+                    elapsed.view(-1, 1, 1) >= runtime, torch.ones_like(a), a
                 )
-                elapsed = elapsed.clamp(max=duration)
+                elapsed = elapsed.clamp(max=runtime)
             a = f.easing(a)
 
             kwargs = dict(f.kwargs.items())

@@ -6,7 +6,7 @@ triangulation, inward borders, and the analytic anti-aliasing on both the
 silhouette and the border/fill seam.
 
 On top of that geometry it exercises the recording side of the engine end to
-end -- the four animation contexts and their nesting, ``duration`` rescaling,
+end -- the four animation contexts and their nesting, ``runtime`` rescaling,
 rate functions, every indication animation, ``become`` morphing, updaters,
 ``wave_color``, ``DrawBorderThenFill`` and the spawn/despawn lifecycle.
 
@@ -131,7 +131,7 @@ with Seq():
         outlined_labels.spawn()
 
 # --------------------------------------------------------------------------
-# Act 2 -- nested contexts, retroactive duration rescaling and rate functions.
+# Act 2 -- nested contexts, retroactive runtime rescaling and rate functions.
 # --------------------------------------------------------------------------
 with Off():
     rate_label = Text(
@@ -143,7 +143,7 @@ with Off():
 
 with Seq():
     rate_label.spawn()
-    # The outer duration rescales every child retroactively: the Seq below runs
+    # The outer runtime rescales every child retroactively: the Seq below runs
     # three edits back to back inside the same 2 seconds the Sync spends on one.
     with Sync(duration=2.0):
         with Seq():

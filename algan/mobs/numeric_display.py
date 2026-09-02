@@ -2,7 +2,7 @@
 
 :class:`DecimalNumber` renders a number as text and makes its ``value`` an
 animatable attribute, so ``counter.value = 100`` counts smoothly from wherever it
-was over the surrounding context's duration -- re-rendering the glyphs each frame
+was over the surrounding context's runtime -- re-rendering the glyphs each frame
 rather than interpolating their outlines.
 
 ``decimal_places`` and ``integer_places`` fix the format so the display

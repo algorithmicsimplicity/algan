@@ -30,7 +30,7 @@ textured surface:
     from algan import *
 
     photo = ImageMob('world_map.png').scale(2).spawn()
-    with Seq(duration=2):
+    with Seq(runtime=2):
         photo.rotate(30, UP)
         photo.rotate(-30, UP)
 
@@ -78,7 +78,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     world = ImageMob('world_map.png').scale(2).spawn()
     world.wait()
 
-    with Seq(duration_unit=5, easing=easings.identity):
+    with Seq(runtime_per_part=5, easing=easings.identity):
         for shape in (Sphere(radius=2, add_to_scene=False),
                       Cylinder(radius=1, height=2, add_to_scene=False)):
             # Change the surface shape; the texture comes along.
@@ -120,7 +120,7 @@ take texture arguments at construction:
     checker[..., 4] = 1.0           # opacity
 
     globe = Sphere(radius=1.5, color_texture=checker).spawn()
-    with Seq(duration=3):
+    with Seq(runtime=3):
         globe.rotate(360, UP)
 
     Scene.save_video()
@@ -230,7 +230,7 @@ Animating a texture
 
 A texture map is an ordinary animatable attribute, so you animate it the way you
 animate a color or a location: **assign a new one**. Algan interpolates the old
-texture to the new one per texel over the current context's duration.
+texture to the new one per texel over the current context's runtime.
 
 .. algan:: TexturesAnimatedTexture
 
@@ -247,7 +247,7 @@ texture to the new one per texel over the current context's duration.
         return texture
 
     globe = Sphere(radius=1.5, color_texture=stripes(True)).spawn()
-    with Seq(duration=3):
+    with Seq(runtime=3):
         globe.color_texture = stripes(False)   # cross-fades, texel by texel
 
     Scene.save_video()
@@ -383,7 +383,7 @@ left at ``(u, v) == (0, 0)``:
     the image at its own resolution however coarse the surface's grid is.
 
 Both methods are recorded as animations, like any other attribute write, so the
-colors cross-fade over the current context's duration:
+colors cross-fade over the current context's runtime:
 
 .. algan:: TexturesCircuitCrossFade
 
@@ -402,7 +402,7 @@ colors cross-fade over the current context's duration:
     square.set_color_by_function(cool)
     square.spawn()
 
-    with Seq(duration=2):
+    with Seq(runtime=2):
         square.set_color_by_function(hot)   # cross-fades from whatever it was
 
     Scene.save_video()

@@ -288,7 +288,7 @@ class Camera(Mob):
         Animation
         ---------
         Recorded as an animation: all three rotations run inside a :class:`~.Sync`,
-        over the current context's duration (1 second by default).
+        over the current context's runtime (1 second by default).
 
         Parameters
         ----------
@@ -368,7 +368,7 @@ class Camera(Mob):
         Animation
         ---------
         Recorded as an animation: the moves run together inside a :class:`~.Sync`, over
-        the current context's duration (1 second by default). The Mob's extent is
+        the current context's runtime (1 second by default). The Mob's extent is
         measured when the call is recorded, so a Mob that changes size afterwards will
         not stay framed.
 

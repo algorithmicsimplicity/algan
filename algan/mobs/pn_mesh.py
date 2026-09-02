@@ -93,7 +93,7 @@ class PNMesh(Mob):
         )
         # A PN soup is what a CROSS-FAMILY ``become`` renders during the morph
         # window, so without this a non-casting mob would start casting for the
-        # duration of its own morph and stop again at the far end -- both
+        # runtime of its own morph and stop again at the far end -- both
         # endpoints honour the flag (``_MORPH_ADOPTED_ATTRS``), and the seam was
         # strictly interior to the transition.
         primitive.declare_shadow_flags(*self._resolved_shadow_flags())

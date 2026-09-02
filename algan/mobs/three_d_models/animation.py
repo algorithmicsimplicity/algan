@@ -238,19 +238,19 @@ def clip_key_times(clip):
     return sorted({round(x, 6) for x in times})
 
 
-def sample_times(duration, fps, key_times=None):
+def sample_times(runtime, fps, key_times=None):
     """Times (seconds) at which to bake the animation: a uniform ``fps`` grid
-    over ``[0, duration]`` unioned with any authored ``key_times`` so keyed
-    poses are hit exactly. Always includes ``0`` and ``duration``.
+    over ``[0, runtime]`` unioned with any authored ``key_times`` so keyed
+    poses are hit exactly. Always includes ``0`` and ``runtime``.
     """
-    duration = max(float(duration), 0.0)
-    ts = {0.0, duration}
-    if fps and fps > 0 and duration > 0:
-        n = int(round(duration * fps))
+    runtime = max(float(runtime), 0.0)
+    ts = {0.0, runtime}
+    if fps and fps > 0 and runtime > 0:
+        n = int(round(runtime * fps))
         for k in range(n + 1):
-            ts.add(min(duration, k / float(fps)))
+            ts.add(min(runtime, k / float(fps)))
     if key_times:
         for kt in key_times:
-            if 0.0 <= kt <= duration:
+            if 0.0 <= kt <= runtime:
                 ts.add(float(kt))
     return sorted(ts)

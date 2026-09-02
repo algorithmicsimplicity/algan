@@ -21,7 +21,7 @@ Plain Text
     title = Text("Euler's identity", font_size=64).move(UP * 1.5).spawn()
     formula = Tex(r"e^{i\pi} + 1 = 0", font_size=80).spawn()
 
-    with Seq(duration=3):
+    with Seq(runtime=3):
         formula.color = YELLOW
         title.move(UP * 0.5)
 
@@ -85,7 +85,7 @@ anything in ``$``:
     from algan import *
 
     formula = Tex(r"\frac{d}{dx}\left(x^2\right) = 2x", font_size=60).spawn()
-    with Seq(duration=2):
+    with Seq(runtime=2):
         formula.color = YELLOW
         formula.scale(1.3)
 
@@ -164,7 +164,7 @@ another, for the classic "written by hand" look:
 
     from algan import *
 
-    Text("Hand written", font_size=64).spawn(False).write(duration=3)
+    Text("Hand written", font_size=64).spawn(False).write(runtime=3)
 
     Scene.save_video()
 
@@ -173,7 +173,7 @@ first play its ordinary fade-in and *then* be written. ``write()`` deliberately
 does not change the text's spawned state; Algan keeps lifespan management
 separate from animations.
 
-``write()`` takes ``duration`` for the whole sequence and ``lag_ratio`` for how
+``write()`` takes ``runtime`` for the whole sequence and ``lag_ratio`` for how
 much each glyph overlaps the next (``0`` writes them all at once). It is shorthand
 for :func:`~.DrawBorderThenFill` applied to the glyphs -- that function works
 on any iterable of Mobs, so you can use it on shapes too. See
@@ -190,7 +190,7 @@ in between when you change it:
     from algan import *
 
     counter = DecimalNumber(0.0, decimal_places=2).scale(2).spawn()
-    with Seq(duration=3):
+    with Seq(runtime=3):
         counter.value = 100.0
 
     Scene.save_video()

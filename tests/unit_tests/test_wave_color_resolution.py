@@ -1,4 +1,4 @@
-"""Tests that ``wave_color`` re-samples coarse Mobs for the duration of the wave.
+"""Tests that ``wave_color`` re-samples coarse Mobs for the runtime of the wave.
 
 Run directly: .venv/Scripts/python.exe -m pytest tests/unit_tests/test_wave_color_resolution.py -q
 
@@ -151,22 +151,22 @@ def test_filled_circuit_texture_grid_is_refined_for_a_colour_wave():
     assert during_width == during_height
     assert during_points == during_width * during_height
     assert resolutions["after"] == (1, 1, 1)
-    assert square.texture_points.location.shape[-2] == 1
-    assert square.texture_points.color.shape[-2] == 1
-    assert square.border_texture_points.location.shape[-2] == 1
-    assert square.border_texture_points.color.shape[-2] == 1
+    assert square.grid.location.shape[-2] == 1
+    assert square.grid.color.shape[-2] == 1
+    assert square.border_grid.location.shape[-2] == 1
+    assert square.border_grid.color.shape[-2] == 1
 
 
 def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
     square = Square(color=YELLOW).spawn(animate=False)
-    lone_texel = square.texture_points.location.clone()
+    lone_texel = square.grid.location.clone()
 
     with Sync(duration=4):
         square.wave_color(PURE_BLUE, direction=RIGHT + UP)
-        points = square.texture_points.location
-        colors = square.texture_points.color
-        border_points = square.border_texture_points.location
-        border_colors = square.border_texture_points.color
+        points = square.grid.location
+        colors = square.grid.color
+        border_points = square.border_grid.location
+        border_colors = square.border_grid.color
         assert points.shape[-2] == square.num_texture_points
         assert colors.shape[-2] == square.num_texture_points
         assert torch.equal(border_points, points)
@@ -186,8 +186,8 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
 
     timeline = square.scene.timeline_manager
     timeline.set_state_to_times(torch.linspace(0.0, 4.0, 9))
-    assert square.texture_points.color.shape == (9, 1, 5)
-    assert square.border_texture_points.color.shape == (9, 1, 5)
+    assert square.grid.color.shape == (9, 1, 5)
+    assert square.border_grid.color.shape == (9, 1, 5)
     timeline.clear_buffers()
 
 
@@ -206,8 +206,8 @@ def test_circuit_wave_color_animates_fill_and_border_texture_grids():
 
     timeline = square.scene.timeline_manager
     timeline.set_state_to_times(torch.linspace(0.0, 3.0, 13))
-    fill_colors = square.texture_points.color
-    border_colors = square.border_texture_points.color
+    fill_colors = square.grid.color
+    border_colors = square.border_grid.color
     static = YELLOW.view(1, 1, -1).expand_as(fill_colors)
 
     assert not torch.allclose(fill_colors, static)
@@ -252,9 +252,9 @@ def test_composite_wave_has_one_speed_across_wide_and_split_parts():
         )
         return positions, times[color_distance.argmin(0)]
 
-    panel_positions, panel_peak_times = positions_and_peak_times(panel.texture_points)
+    panel_positions, panel_peak_times = positions_and_peak_times(panel.grid)
     glyph_positions, glyph_peak_times = zip(
-        *(positions_and_peak_times(glyph.texture_points) for glyph in glyphs)
+        *(positions_and_peak_times(glyph.grid) for glyph in glyphs)
     )
     glyph_positions = torch.cat(glyph_positions)
     glyph_peak_times = torch.cat(glyph_peak_times)

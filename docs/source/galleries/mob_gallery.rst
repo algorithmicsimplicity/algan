@@ -295,7 +295,7 @@ Manim compatibility layer. They animate as standard Algan Mobs:
         axes.spawn()
         graph.spawn()
 
-    with Seq(duration=2):
+    with Seq(runtime=2):
         graph.rotate(20, UP)
         graph.rotate(-20, UP)
 

@@ -286,7 +286,7 @@ class MobLayoutMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). Applies to this Mob and its descendants.
 
         Parameters
@@ -570,7 +570,7 @@ class MobLayoutMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). The screen position is resolved from the camera when the call is
         recorded, so a later camera move will not keep the Mob pinned there.
 
@@ -622,7 +622,7 @@ class MobLayoutMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). Applies to this Mob and its descendants.
 
         Parameters
@@ -660,7 +660,7 @@ class MobLayoutMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). Applies to this Mob and its descendants.
 
         Parameters
@@ -740,7 +740,7 @@ class MobLayoutMixin:
         Animation
         ---------
         Recorded as an animation: the scale and the move run together inside a
-        :class:`~algan.animation_timeline.animation_contexts.Sync`, over the current context's duration (1 second by
+        :class:`~algan.animation_timeline.animation_contexts.Sync`, over the current context's runtime (1 second by
         default). The rectangle is resolved from the camera when the call is
         recorded.
 
@@ -854,7 +854,7 @@ class MobLayoutMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). Applies to this Mob and its descendants.
 
         Parameters
@@ -916,7 +916,7 @@ class MobLayoutMixin:
         Animation
         ---------
         Assignment is recorded like any other Mob attribute: ``mob.x = 3``
-        slides the Mob over the current context's duration, and
+        slides the Mob over the current context's runtime, and
         ``with Off(): mob.x = 3`` teleports it. Reading is not animated.
         """
         return self.get_coord(0)

@@ -267,7 +267,7 @@ def test_become_takes_the_targets_fill(scene, source_filled):
 def test_an_empty_morph_still_spends_its_duration(scene):
     """Two empty Groups record nothing, so the context cursor never moved.
 
-    Every other become spends exactly one ``duration``. A no-op that spends
+    Every other become spends exactly one ``runtime``. A no-op that spends
     zero silently pulls everything after it in a ``Seq`` a second early.
     """
     with Off():

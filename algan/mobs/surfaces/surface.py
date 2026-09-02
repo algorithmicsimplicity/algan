@@ -1270,7 +1270,7 @@ class Surface(Mob):
         Animation
         ---------
         Assignment is recorded, so the vertices travel to their new positions
-        over the current context's duration (1 second by default). Wrap the
+        over the current context's runtime (1 second by default). Wrap the
         write in ``Off()`` to move them instantly.
         """
         return self.grid.location
@@ -1475,7 +1475,7 @@ class Surface(Mob):
         ---------
         An ordinary animatable attribute: assigning a new image is recorded as an
         animation, interpolating texel by texel from the old texture to the new one
-        over the current context's duration (1 second by default). Assign inside
+        over the current context's runtime (1 second by default). Assign inside
         ``Off()`` to swap it instantly. The new image must match the current
         resolution to interpolate -- see the note above about detaching history.
         """
@@ -1681,7 +1681,7 @@ class Surface(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default): the vertices cross-fade to their new colors. Wrap the call
         in ``Off()`` to apply it instantly.
 
@@ -1748,7 +1748,7 @@ class Surface(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default), so the surface cross-fades into the new coloring. Wrap the
         call in ``Off()`` to apply it instantly.
 
@@ -4032,7 +4032,7 @@ class Surface(Mob):
         Animation
         ---------
         Recorded as an animation: this surface's vertices travel to their new
-        positions over the current context's duration (1 second by default).
+        positions over the current context's runtime (1 second by default).
         Wrap the call in ``Off()`` to reshape instantly.
 
         Parameters
@@ -4072,7 +4072,7 @@ class Surface(Mob):
         Animation
         ---------
         Recorded as an animation: the grid points travel to their new positions over the
-        current context's duration (1 second by default), so calling this on a spawned
+        current context's runtime (1 second by default), so calling this on a spawned
         surface deforms it smoothly. Changing the grid *resolution* is a different
         matter -- that needs
         :meth:`~algan.animatable_base.mob.Mob.detach_history` first.
@@ -4121,7 +4121,7 @@ class Surface(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default), so the colors cross-fade smoothly.
 
         Parameters
@@ -4161,7 +4161,7 @@ class Surface(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default): the surface cross-fades, texel by texel, to the image.
 
         Parameters

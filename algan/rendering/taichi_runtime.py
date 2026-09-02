@@ -711,7 +711,7 @@ _RENDER_JOBS_ACTIVE = 0
 
 @contextlib.contextmanager
 def render_job_holding_the_arch():
-    """Mark the arch as in use for the duration of one render job.
+    """Mark the arch as in use for the runtime of one render job.
 
     A device change *during* a render is the one way this design can corrupt
     something rather than merely be slow: the batch-prep worker launches kernels

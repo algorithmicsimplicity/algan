@@ -285,7 +285,7 @@ class Line(BezierCircuitCubic):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default), so the colors cross-fade smoothly. Wrap the call in
         ``Off()`` to apply it instantly.
 

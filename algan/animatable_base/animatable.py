@@ -469,7 +469,7 @@ class Animatable:
         Animation
         ---------
         Recorded as an animation: the function's second argument sweeps from 0 to
-        ``t`` over the current context's duration (1 second by default). The
+        ``t`` over the current context's runtime (1 second by default). The
         function body must be vectorized over the Mob's batch; it runs on tensors,
         not on one part at a time.
 
@@ -508,8 +508,8 @@ class Animatable:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
-        default). The function's second argument runs from 0 to that duration, in
+        Recorded as an animation over the current context's runtime (1 second by
+        default). The function's second argument runs from 0 to that runtime, in
         seconds. The body must be vectorized over the Mob's batch.
 
         Parameters
@@ -542,7 +542,7 @@ class Animatable:
         Animation
         ---------
         Runs every frame for as long as it is attached, so it is unaffected by the
-        current context's duration. It is applied once immediately at zero elapsed
+        current context's runtime. It is applied once immediately at zero elapsed
         time, so the scene reflects it right away. Updaters are applied after
         recorded animations each frame, so an updater writing an attribute wins over
         an animation of that attribute.
@@ -776,7 +776,7 @@ class Animatable:
 
             def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
                 if kwargs:
-                    # ``mob.move(RIGHT, duration=2)`` lands here via
+                    # ``mob.move(RIGHT, runtime=2)`` lands here via
                     # move -> move_to -> set_location. Catch the Manim timing
                     # idiom with a message that names the fix; re-raise anything
                     # else so genuine typos keep failing.
@@ -974,7 +974,7 @@ class Animatable:
         ts = context.timespan
         # Reached only for mobs that are on screen (themselves or through a
         # descendant), so the edit always spans the context's animation.
-        nt = ts.current_time + context.duration_unit
+        nt = ts.current_time + context.runtime_per_part
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
             key, self.id, where, inds, value, ts.get_time(nt)
@@ -1198,7 +1198,7 @@ class Animatable:
         Parameters
         ----------
         *args, **kwargs
-            Passed to the current context's ``wait`` -- notably the duration in
+            Passed to the current context's ``wait`` -- notably the runtime in
             seconds, which defaults to 1.
 
         Returns
@@ -1425,7 +1425,7 @@ class Animatable:
         ---------
         Not animated by default: the copy appears instantly, already in place. Pass
         ``animate_creation=True`` for it to fade in over the current context's
-        duration (1 second by default).
+        runtime (1 second by default).
 
         Parameters
         ----------
@@ -1505,7 +1505,7 @@ class Animatable:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default): the Mob fades in. ``spawn(animate=False)`` makes it appear
         immediately, no animation.
 
@@ -1658,7 +1658,7 @@ class Animatable:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default): the Mob fades out. ``despawn(animate=False)`` removes it instantly,
         which is what you want for something already off-screen.
 
@@ -1760,7 +1760,7 @@ class Animatable:
         Animation
         ---------
         Recorded as an animation: the Mob fades out over the current context's
-        duration (1 second by default).
+        runtime (1 second by default).
 
         Returns
         -------

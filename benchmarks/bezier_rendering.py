@@ -52,7 +52,7 @@ def text_scene():
     with Off():
         nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(duration=1):
+    with Sync(runtime=1):
         mob.move(LEFT)
         nn.move(LEFT)
     return

@@ -74,7 +74,7 @@ def _render_centre_pixel(tmp_path, material):
 
 
 class rt_settings_off_tonemap:  # noqa: N801 - a context manager, not a class API
-    """Tonemapping off for the duration, restored afterwards.
+    """Tonemapping off for the runtime, restored afterwards.
 
     It is off by default, but a curve in the pipeline would be a second transfer
     function and these tests are about the first one.

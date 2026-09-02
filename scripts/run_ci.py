@@ -772,7 +772,7 @@ class LocalCIRunner:
         total_time = 0.0
 
         for r in executed_results:
-            total_time += r.duration
+            total_time += r.runtime
             if r.status == "PASSED":
                 status_disp = f"{Style.GREEN}PASSED{Style.RESET}"
                 passed_count += 1
@@ -783,7 +783,7 @@ class LocalCIRunner:
             wf_disp = r.workflow_name[: w_wf - 1]
             job_disp = r.job_name[: w_job - 1]
             step_disp = r.step_name[: w_step - 1]
-            time_disp = f"{r.duration:.2f}s"
+            time_disp = f"{r.runtime:.2f}s"
 
             row = (
                 f"{format_cell(wf_disp, w_wf)} "

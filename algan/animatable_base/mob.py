@@ -769,7 +769,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation spanning the current context's duration
+        Recorded as an animation spanning the current context's runtime
         (1 second by default), with the turning point at the halfway mark.
         Applies to descendants unless ``recursive`` is False.
 
@@ -871,7 +871,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation. All descendants fade together inside a
-        :class:`~.Sync`, over the current context's duration (1 second by
+        :class:`~.Sync`, over the current context's runtime (1 second by
         default).
 
         Parameters
@@ -905,7 +905,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default), with the peak of the pulse at the halfway mark. Color and
         opacity pulses run together inside a :class:`~.Sync`.
 
@@ -987,9 +987,9 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation. The total duration is ``lag_duration`` plus one
+        Recorded as an animation. The total runtime is ``lag_duration`` plus one
         part's pulse, so it is set by these parameters rather than by the current
-        context's duration. Re-sampling a part is a topology change, so it splits
+        context's runtime. Re-sampling a part is a topology change, so it splits
         that Mob's history the way
         :meth:`~algan.animatable_base.mob.Mob.detach_history` does, at the start
         of the wave and, when ``restore_resolution`` is True, again when the
@@ -1065,7 +1065,7 @@ class Mob(
             else []
         )
         with AnimationContext(
-            duration_unit=wave_length / lag_duration,
+            runtime_per_part=wave_length / lag_duration,
             animation_manager=self.animation_manager,
         ) as wave_context:
             primitive_mobs = self._wave_pulsed_parts()
@@ -1325,7 +1325,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation: the attribute interpolates from its current
-        value to ``value`` over the current context's duration (1 second by
+        value to ``value`` over the current context's runtime (1 second by
         default).
 
         Parameters
@@ -1401,7 +1401,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation: every affected value moves from what it is now
-        to its target over the current context's duration (1 second by default),
+        to its target over the current context's runtime (1 second by default),
         all together inside a :class:`~.Sync`. ``func`` is evaluated **once, at
         the moment of the call** -- it computes the destination, it is not
         re-run per frame. For a value that must be recomputed every frame, use
@@ -1487,7 +1487,7 @@ class Mob(
         """The Mob's position in world space, shape ``(*, 3)``.
 
         Assigning to this animates the Mob to the new position over the current
-        context's duration (1 second by default), carrying its children along so
+        context's runtime (1 second by default), carrying its children along so
         their offsets from it are preserved. ``mob.location = ORIGIN`` and
         ``mob.move_to(ORIGIN)`` are the same operation.
         """
@@ -1517,7 +1517,7 @@ class Mob(
         that axis. The identity matrix therefore means unrotated at unit scale.
 
         Assigning to this animates the Mob to the new basis over the current
-        context's duration (1 second by default), rotating and scaling its
+        context's runtime (1 second by default), rotating and scaling its
         children with it. Concurrent writes compose rather than overwrite, so a
         rotate and a scale inside one :class:`~.Sync` both take effect.
         """
@@ -1623,7 +1623,7 @@ class Mob(
 
         Derived from :attr:`~.Mob.basis` as the norm of each of its rows, so
         ``(1, 1, 1)`` is unscaled. Assigning to this resizes the Mob without
-        rotating it, animated over the current context's duration (1 second by
+        rotating it, animated over the current context's runtime (1 second by
         default); :meth:`~.Mob.scale` and :meth:`~.Mob.set_scale` are the usual
         way to do that. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`),
         not an attribute -- assigning to it raises.
@@ -1673,7 +1673,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default).
 
         Parameters
@@ -1720,7 +1720,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation: the Mob grows or shrinks over the current
-        context's duration (1 second by default).
+        context's runtime (1 second by default).
 
         Parameters
         ----------
@@ -1765,7 +1765,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default).
 
         Parameters
@@ -2051,7 +2051,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation: every attribute given moves to its new value
-        together inside a :class:`~.Sync`, over the current context's duration
+        together inside a :class:`~.Sync`, over the current context's runtime
         (1 second by default).
 
         Parameters
@@ -2082,7 +2082,7 @@ class Mob(
         Animation
         ---------
         Recorded as an animation: all the writes go into one :class:`~.Sync`
-        spanning the current context's duration (1 second by default). Changes
+        spanning the current context's runtime (1 second by default). Changes
         propagate to descendants; use :meth:`~.Mob.set_non_recursive` if they
         should not.
 
@@ -2135,7 +2135,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). The opacity write is non-recursive, so descendants run their own
         ``on_create``.
         """
@@ -2162,7 +2162,7 @@ class Mob(
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default).
         """
         self.opacity = torch.tensor((0.0,)).view(1)

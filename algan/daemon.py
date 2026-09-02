@@ -406,7 +406,7 @@ class _RunJob:
         self.script = request["script"]
         self.argv = list(request.get("argv", ()))
         self.cwd = request.get("cwd") or os.getcwd()
-        # The client's whole environment, applied for the duration of the run
+        # The client's whole environment, applied for the runtime of the run
         # so the script reads the variables its caller set, not the daemon's.
         env = request.get("env_full")
         self.env = dict(env) if isinstance(env, dict) else None
@@ -470,7 +470,7 @@ class _RunStream(io.TextIOWrapper):
 class _Pump:
     """Forward everything written to one descriptor into client frames.
 
-    The write end replaces file descriptor 1 or 2 for the duration of a run,
+    The write end replaces file descriptor 1 or 2 for the runtime of a run,
     so Python-level writes, C-level writes and *subprocess* writes (ffmpeg's,
     via moviepy) all travel one ordered channel and all reach the client. The
     previous implementation replaced ``sys.stdout`` only, so anything that
@@ -1036,7 +1036,7 @@ def main(argv=None):
     last = {"script": script, "args": list(args.script_args), "cwd": os.getcwd()}
 
     # Whether the daemon's state is fresh enough to run into. Set False for
-    # the duration of a run and True again by ``release_after_run``; a release
+    # the runtime of a run and True again by ``release_after_run``; a release
     # that failed leaves it False so the next run resets before it starts
     # rather than inheriting whatever the failure left behind.
     clean = {"state": True}

@@ -393,7 +393,7 @@ class Tex(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default).
 
         Parameters
@@ -487,9 +487,9 @@ class Tex(Mob):
 
         Animation
         ---------
-        Recorded as an animation. Its duration comes from ``duration`` and
+        Recorded as an animation. Its runtime comes from ``runtime`` and
         ``lag_ratio`` rather than the enclosing context, so a long string takes longer
-        to write unless you set ``duration``.
+        to write unless you set ``runtime``.
 
         Parameters
         ----------
@@ -531,14 +531,14 @@ class Tex(Mob):
         Animation
         ---------
         Recorded as an animation lasting **1 second**, regardless of the enclosing
-        context's duration.
+        context's runtime.
 
         Returns
         -------
         :class:`~.Tex`
             This text, so calls can be chained.
         """
-        with Seq(duration=1, animation_manager=self.animation_manager):
+        with Seq(runtime=1, animation_manager=self.animation_manager):
             with Off(
                 animation_manager=self.animation_manager
             ):  # Ensure initial state setting is not recorded as an animation
@@ -562,7 +562,7 @@ class Tex(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default). The despawn itself is recorded at the end of the wave, so no glyph
         disappears before the wave reaches it.
 
@@ -1047,7 +1047,7 @@ class Paragraph(Group):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second by
+        Recorded as an animation over the current context's runtime (1 second by
         default): the glyphs travel to their new positions.
 
         Parameters

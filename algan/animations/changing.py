@@ -1,4 +1,4 @@
-"""Animations whose geometry changes continuously for an indefinite duration."""
+"""Animations whose geometry changes continuously for an indefinite runtime."""
 
 from __future__ import annotations
 

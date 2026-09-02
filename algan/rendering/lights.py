@@ -172,7 +172,7 @@ class Light(Mob):
     ---------
     Writing ``light.intensity = 3`` after spawn is *recorded*: the value
     interpolates from its current value to the target over the current
-    context's duration (1 second by default), exactly like writing ``color``
+    context's runtime (1 second by default), exactly like writing ``color``
     -- wrap it in ``with Off():`` to apply instantly instead. Writes made
     before spawn are instant setup, as with ``location``. Like any Mob
     attribute write the change propagates to descendants (lights normally

@@ -60,7 +60,7 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation: the Mob travels to the midpoint over the
-        current context's duration (1 second by default). Applies to this Mob
+        current context's runtime (1 second by default). Applies to this Mob
         and its descendants.
 
         Parameters
@@ -105,8 +105,8 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation: the Mob sweeps along the arc over the current
-        context's duration (1 second by default). Wrap the call to retime it --
-        ``with Seq(duration=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+        context's runtime (1 second by default). Wrap the call to retime it --
+        ``with Seq(runtime=3): mob.move_to_point_along_arc(RIGHT, 90)``.
 
         Parameters
         ----------
@@ -275,7 +275,7 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation: the Mob travels from where it is to
-        ``location`` over the current context's duration (1 second by default).
+        ``location`` over the current context's runtime (1 second by default).
         Use ``with Off(): mob.move_to(...)`` to teleport it instead. Applies to
         this Mob and its descendants.
 
@@ -315,8 +315,8 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation: the Mob travels the displacement over the
-        current context's duration (1 second by default). Retime it with
-        ``with Seq(duration=2): mob.move(RIGHT)``, or apply it instantly with
+        current context's runtime (1 second by default). Retime it with
+        ``with Seq(runtime=2): mob.move(RIGHT)``, or apply it instantly with
         ``with Off(): mob.move(RIGHT)``. Applies to this Mob and its descendants.
 
         Parameters
@@ -370,7 +370,7 @@ class MobMovementMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default). Applies to this Mob and its descendants.
 
         Parameters
@@ -445,7 +445,7 @@ class MobMovementMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default). Applies to this Mob and its descendants.
 
         Parameters
@@ -516,7 +516,7 @@ class MobMovementMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default). The screen position is resolved once, when the call is
         recorded -- a later camera move will not keep the Mob pinned there (use
         an updater for that). Applies to this Mob and its descendants.
@@ -569,7 +569,7 @@ class MobMovementMixin:
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default). The edge position is resolved from the camera when the call
         is recorded. Applies to this Mob and its descendants.
 
@@ -634,7 +634,7 @@ class MobMovementMixin:
         Recorded as an animation. The two edge moves run inside a
         :class:`~algan.animation_timeline.animation_contexts.Sync`, so they happen
         simultaneously and the whole call still
-        takes the current context's duration (1 second by default) rather than
+        takes the current context's runtime (1 second by default) rather than
         two seconds. Applies to this Mob and its descendants.
 
         Parameters
@@ -653,7 +653,7 @@ class MobMovementMixin:
             This Mob, so calls can be chained.
         """
         # Chained move_to_screen_edge calls, run together so the whole corner
-        # move still takes one context duration.
+        # move still takes one context runtime.
         with Sync(animation_manager=self.animation_manager):
             for direction in directions:
                 self.move_to_screen_edge(direction, buffer=buffer)
@@ -669,7 +669,7 @@ class MobMovementMixin:
 
         Animation
         ---------
-        Recorded as an animation: the slide takes the current context's duration
+        Recorded as an animation: the slide takes the current context's runtime
         (1 second by default), and the despawn follows it in a
         :class:`~algan.animation_timeline.animation_contexts.Seq`
         without an extra fade, so the Mob is simply gone once it is out of sight.
@@ -733,8 +733,8 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation. All three legs run inside a
-        ``Seq(duration=1)``, so the whole path takes 1 second regardless of the
-        current context's duration. Applies to this Mob and its descendants.
+        ``Seq(runtime=1)``, so the whole path takes 1 second regardless of the
+        current context's runtime. Applies to this Mob and its descendants.
 
         Parameters
         ----------
@@ -760,7 +760,7 @@ class MobMovementMixin:
             * normalized_displacement_direction
         )
 
-        with Seq(duration=1, animation_manager=self.animation_manager):
+        with Seq(runtime=1, animation_manager=self.animation_manager):
             self.move(displacement)
             self.move(orthogonal_displacement)
             self.location = destination

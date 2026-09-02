@@ -56,11 +56,11 @@ def test_direct_bezier_batch_matches_object_batch():
         assert torch.equal(getattr(actual, attr), getattr(expected, attr))
     assert torch.equal(actual.control_points.location, expected.control_points.location)
     assert torch.equal(
-        actual.border_texture_points.location,
+        actual.border_grid.location,
         expected.border_texture_points.location,
     )
     assert torch.equal(
-        actual.border_texture_points.color,
+        actual.border_grid.color,
         expected.border_texture_points.color,
     )
     assert torch.equal(
@@ -100,8 +100,8 @@ def test_border_texture_grid_is_independent_from_fill_texture_grid():
     fill_colors = torch.stack((RED, RED, BLUE, BLUE)).unsqueeze(0)
     border_colors = torch.stack((GREEN, BLUE, GREEN, BLUE)).unsqueeze(0)
 
-    mob.texture_points.color = fill_colors
-    mob.border_texture_points.color = border_colors
+    mob.grid.color = fill_colors
+    mob.border_grid.color = border_colors
     primitive = mob.get_render_primitives()
 
     assert torch.allclose(primitive.colors, fill_colors.unsqueeze(-3))
@@ -111,13 +111,13 @@ def test_border_texture_grid_is_independent_from_fill_texture_grid():
     # The circuit's ordinary color remains the fill API and must not overwrite
     # the independently-authored border child.
     mob.color = YELLOW
-    assert torch.allclose(mob.border_texture_points.color, border_colors)
+    assert torch.allclose(mob.border_grid.color, border_colors)
 
     # The compatibility-facing stroke_color property now aliases the border
     # texture child, so a uniform write still works as it did before.
     mob.stroke_color = RED
-    assert torch.allclose(mob.texture_points.color, YELLOW.expand(1, 4, 5))
-    assert torch.allclose(mob.border_texture_points.color, RED.expand(1, 4, 5))
+    assert torch.allclose(mob.grid.color, YELLOW.expand(1, 4, 5))
+    assert torch.allclose(mob.border_grid.color, RED.expand(1, 4, 5))
 
 
 def test_batched_views_are_lazy_cached_and_isolated():
@@ -133,7 +133,7 @@ def test_batched_views_are_lazy_cached_and_isolated():
     assert list(views._views) == [0]
     assert first.location.shape[-2] == 1
     assert first.control_points.location.shape[-2] == 16
-    assert first.border_texture_points.location.shape[-2] == 1
+    assert first.border_grid.location.shape[-2] == 1
 
     second = views[1]
     second_before = second.location.clone()

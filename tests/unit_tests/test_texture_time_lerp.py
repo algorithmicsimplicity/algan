@@ -73,7 +73,7 @@ def _materialize(scene, surface, times):
 def _crossfade_scene(tex_a, tex_b, duration=2):
     scene = SceneManager.reset()
     surface = Surface(color_texture=tex_a, grid_height=4, grid_width=4).spawn()
-    with AnimationContext(duration=duration):
+    with AnimationContext(runtime=duration):
         surface.color_texture = tex_b
     Scene.wait(1)
     return scene, surface
@@ -154,7 +154,7 @@ def test_an_overshooting_easing_is_described_verbatim():
     tex_a, tex_b = _tex(8, 8, 5), _tex(8, 8, 6)
     scene = SceneManager.reset()
     surface = Surface(color_texture=tex_a, grid_height=4, grid_width=4).spawn()
-    with AnimationContext(duration=2, easing=ease_out_back):
+    with AnimationContext(runtime=2, easing=ease_out_back):
         surface.color_texture = tex_b
     Scene.wait(1)
     times = torch.linspace(1.0, 3.0, 9)
@@ -209,7 +209,7 @@ def test_the_gate_declines_when_an_updater_depends_on_the_mob():
     # (an updater added after the window's times never runs in it, and the
     # description stays valid there).
     surface.add_updater(lambda mob, t: mob.set(opacity=1.0))
-    with AnimationContext(duration=2):
+    with AnimationContext(runtime=2):
         surface.color_texture = tex_b
     Scene.wait(1)
     times = torch.linspace(1.0, 3.0, 5)
@@ -274,7 +274,7 @@ def test_estimator_prices_a_crossfade_at_the_endpoints():
     tex_a, tex_b = _tex(16, 16, 19), _tex(16, 16, 20)
     scene = SceneManager.reset()
     surface = Sphere(radius=1.0, color_texture=tex_a).spawn()
-    with AnimationContext(duration=2):
+    with AnimationContext(runtime=2):
         surface.color_texture = tex_b
     times = torch.linspace(1.2, 2.8, 5)
     _, seg = _materialize(scene, surface, times)
@@ -385,7 +385,7 @@ def test_an_updater_discovering_the_mob_mid_window_gets_a_dense_fill():
             captured["tex"] = surface.color_texture
 
     square.add_updater(probe)  # active from t = 2
-    with AnimationContext(duration=2):
+    with AnimationContext(runtime=2):
         surface.color_texture = tex_b  # [2, 4]
     Scene.wait(1)
     times = torch.linspace(2.2, 4.4, 5)  # elapsed reaches 2.4 > 2.0

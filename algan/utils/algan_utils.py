@@ -3,7 +3,7 @@
 :class:`RenderResult` is the value returned by
 :meth:`~algan.scene.Scene.save_video` and
 :meth:`~algan.scene.Scene.save_frame`: its ``status``, ``output_path``,
-``duration_seconds`` and ``render_plan`` describe what was written and how it was
+``walltime_seconds`` and ``render_plan`` describe what was written and how it was
 rendered.
 
 The rest is scene-level tooling: ``algan_scene`` for declaring a renderable
@@ -125,7 +125,7 @@ class RenderResult:
 
     status: Literal["rendered", "skipped"]
     output_path: Path
-    duration_seconds: float = 0.0
+    walltime_seconds: float = 0.0
     render_plan: object | None = None
 
     @property
@@ -154,12 +154,12 @@ class RenderResult:
                         f'<source src="data:{mime};base64,{b64}" type="{mime}">'
                         f"Your browser does not support the video tag."
                         f"</video>"
-                        f'<div style="font-size: 0.85em; color: #666; margin-top: 4px;">Rendered to <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</div>'
+                        f'<div style="font-size: 0.85em; color: #666; margin-top: 4px;">Rendered to <code>{self.output_path.name}</code> ({self.walltime_seconds:.2f}s)</div>'
                         f"</div>"
                     )
             except Exception:
                 pass
-            return f"<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code> ({self.duration_seconds:.2f}s)</p>"
+            return f"<p>RenderResult: <code>{self.status}</code> &mdash; <code>{self.output_path.name}</code> ({self.walltime_seconds:.2f}s)</p>"
 
         if ext in (".png", ".jpg", ".jpeg", ".webp"):
             mime = (
@@ -296,7 +296,7 @@ def _render_scene_to_file(
         if animate_fade_out is None:
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
         render_started = True
-        # A scene authored entirely inside Off() otherwise has zero duration,
+        # A scene authored entirely inside Off() otherwise has zero runtime,
         # which produces an empty video. Keep one frame alive. This is needed
         # in every mode, because it decides how many frames get rendered.
         timeline_context = scene.animation_manager.context
@@ -330,13 +330,13 @@ def _render_scene_to_file(
         # timeline whether or not the scene is being reset afterwards.
         if animate_fade_out:
             scene_finalized = True
-            scene.despawn_mobs(retain_history=True, duration=0.5)
+            scene.despawn_mobs(retain_history=True, runtime=0.5)
         elif reset:
             # The scene is about to be discarded: keep the historical
             # instantaneous despawn so reset=True behaves exactly as before.
             scene_finalized = True
             with Off(animation_manager=scene.animation_manager):
-                scene.despawn_mobs(retain_history=True, duration=0.5, animate=False)
+                scene.despawn_mobs(retain_history=True, runtime=0.5, animate=False)
         else:
             # Leave the authored scene re-renderable: no despawns, no actor
             # filtering. Mobs stay spawned and the timeline stays as written,
@@ -413,10 +413,10 @@ def _render_scene_to_file(
             preserve_authoring_state=not reset,
             **kwargs,
         )
-        duration = time.perf_counter() - start_time
+        walltime = time.perf_counter() - start_time
         plan = getattr(scene, "last_render_plan", None)
-        logger.info("Finished rendering %s in %.1f s", destination.name, duration)
-        return RenderResult("rendered", destination, duration, plan)
+        logger.info("Finished rendering %s in %.1f s", destination.name, walltime)
+        return RenderResult("rendered", destination, walltime, plan)
     finally:
         if file_writer is not None:
             try:

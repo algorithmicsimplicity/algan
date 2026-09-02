@@ -2734,7 +2734,7 @@ def raytrace_render_wavefront(
             shade_sparse_raster_coverage,
         )
 
-        # Sparse hit records live at the arena's reverse end for the duration
+        # Sparse hit records live at the arena's reverse end for the runtime
         # of the window.  Coverage-sized ray pools are allocated/reset from the
         # forward end one compact slice at a time.
         #

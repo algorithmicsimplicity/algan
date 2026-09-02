@@ -192,7 +192,7 @@ def ApplyPointwiseFunction(
     function=None,
     *,
     about_point=ORIGIN,
-    duration: float = 1.0,
+    runtime: float = 1.0,
     easing=None,
 ):
     """Animate an arbitrary point mapping over all renderable geometry.
@@ -206,7 +206,7 @@ def ApplyPointwiseFunction(
     )
     about_point = cast_to_tensor(about_point)
     with Sync(
-        duration=duration,
+        runtime=runtime,
         easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
@@ -227,7 +227,7 @@ def ApplyMatrix(
     matrix=None,
     *,
     about_point=ORIGIN,
-    duration: float = 1.0,
+    runtime: float = 1.0,
     easing=None,
 ):
     """Animate a 2×2 or 3×3 linear transform about ``about_point``.
@@ -251,7 +251,7 @@ def ApplyMatrix(
         mobject,
         lambda points: points @ matrix.to(points).transpose(-1, -2),
         about_point=about_point,
-        duration=duration,
+        runtime=runtime,
         easing=easing,
     )
 
@@ -278,7 +278,7 @@ def ApplyComplexFunction(
     function=None,
     *,
     about_point=ORIGIN,
-    duration: float = 1.0,
+    runtime: float = 1.0,
     easing=None,
 ):
     """Animate a complex map on the x-y plane while preserving z."""
@@ -289,7 +289,7 @@ def ApplyComplexFunction(
         mobject,
         lambda points: _apply_complex_function(function, points),
         about_point=about_point,
-        duration=duration,
+        runtime=runtime,
         easing=easing,
     )
 
@@ -314,7 +314,7 @@ def Homotopy(
     mobject,
     homotopy_func=None,
     *,
-    duration: float = 2.0,
+    runtime: float = 2.0,
     easing=None,
 ):
     """Animate a continuous point deformation.
@@ -328,7 +328,7 @@ def Homotopy(
         mobject, homotopy_func, function_name="Homotopy"
     )
     with Sync(
-        duration=duration,
+        runtime=runtime,
         easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
@@ -345,7 +345,7 @@ def ComplexHomotopy(
     mobject,
     complex_homotopy=None,
     *,
-    duration: float = 2.0,
+    runtime: float = 2.0,
     easing=None,
 ):
     """Animate ``f(z, t)`` on the x-y plane while preserving z."""
@@ -374,7 +374,7 @@ def ComplexHomotopy(
     return Homotopy(
         mobject,
         homotopy,
-        duration=duration,
+        runtime=runtime,
         easing=easing,
     )
 
@@ -412,7 +412,7 @@ def PhaseFlow(
     *,
     virtual_time: float = 1.0,
     integration_steps: int = 32,
-    duration: float = 1.0,
+    runtime: float = 1.0,
     easing=easings.identity,
 ):
     """Flow geometry through a vector field using deterministic RK4 integration.
@@ -426,7 +426,7 @@ def PhaseFlow(
     if integration_steps < 1:
         raise ValueError("integration_steps must be at least 1")
     with Sync(
-        duration=duration,
+        runtime=runtime,
         easing=easing,
         animation_manager=animation_manager_for(mobject),
     ):
@@ -547,7 +547,7 @@ def MoveAlongPath(
     mobject: Mob,
     path: Mob,
     *,
-    duration: float = 1.0,
+    runtime: float = 1.0,
     easing=None,
     samples_per_curve: int = 24,
 ):
@@ -564,7 +564,7 @@ def MoveAlongPath(
     # Validate eagerly so a malformed path fails while defining the scene.
     _path_control_points(path)
     with Sync(
-        duration=duration,
+        runtime=runtime,
         easing=easing,
         animation_manager=animation_manager_for(mobject, path),
     ):

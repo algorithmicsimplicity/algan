@@ -59,7 +59,7 @@ text_string = ("a" * 50 + "\n") * 50
 
 
 def text_scene():
-    with Sync(duration=0.25):
+    with Sync(runtime=0.25):
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
         # A few ordinary circuits so the groups have real size: the parity
@@ -70,7 +70,7 @@ def text_scene():
             c.move(RIGHT * (i - 3)).spawn()
         for i, s in enumerate(squares):
             s.move(LEFT * (i + 1)).spawn()
-    with Sync(duration=0.25):
+    with Sync(runtime=0.25):
         mob.move(LEFT)
         nn.move(LEFT)
 

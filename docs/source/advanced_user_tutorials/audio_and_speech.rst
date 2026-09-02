@@ -11,7 +11,7 @@ Audio Contexts
 ==============
 
 Use :class:`~algan.animation_timeline.animation_contexts.Audio` to align an
-animation block's duration to a sound file:
+animation block's runtime to a sound file:
 
 .. algan-doc-check: skip -- requires music.wav asset
 
@@ -29,7 +29,7 @@ animation block's duration to a sound file:
 
 This flips the usual animation workflow on its head: instead of manually
 calculating how many seconds each visual action should take, the audio clip
-determines the duration, and all animations inside the block automatically scale
+determines the runtime, and all animations inside the block automatically scale
 to match.
 
 Both ``Audio`` and ``Speech`` contexts take ``wait_at_end``, a number of extra seconds to hold after the

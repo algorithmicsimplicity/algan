@@ -67,8 +67,8 @@ def test_kernel_compile_notice_ignores_offline_cache_hits():
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
-def test_match_durations_tolerates_zero_duration_children():
-    with Sync(match_durations=True), algan.Off():
+def test_equalize_runtimes_tolerates_zero_duration_children():
+    with Sync(equalize_runtimes=True), algan.Off():
         pass
 
 
@@ -938,7 +938,7 @@ def test_text_write_materializes_manim_outline_and_fill_styles():
     )
 
     assert torch.allclose(
-        glyph.texture_points.color[:, 0, -1],
+        glyph.grid.color[:, 0, -1],
         torch.tensor([0.0, 0.5, 0.999]),
         atol=1e-4,
     )
@@ -1003,11 +1003,11 @@ def _stub_render(monkeypatch, scene):
 
 
 def test_context_kwargs_on_a_method_point_at_the_context():
-    """``mob.move(RIGHT, duration=2)`` is the Manim reflex; say what to write."""
+    """``mob.move(RIGHT, runtime=2)`` is the Manim reflex; say what to write."""
     square = Square().spawn()
-    with pytest.raises(TypeError, match=r"with Seq\(duration=2\)"):
+    with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
         square.move(algan.RIGHT, duration=2)
-    with pytest.raises(TypeError, match=r"with Seq\(duration=2\)"):
+    with pytest.raises(TypeError, match=r"with Seq\(runtime=2\)"):
         square.set(color=algan.BLUE, duration=2)
     # lag_ratio must suggest Lag, which takes it positionally.
     with pytest.raises(TypeError, match=r"with Lag\(0\.3\)"):

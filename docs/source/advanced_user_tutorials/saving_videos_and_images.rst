@@ -120,7 +120,7 @@ small result object describing what it did, which is handy in scripts:
 .. code-block:: python
 
     result = Scene.save_video("my_video")
-    print(result.output_path, result.duration_seconds)
+    print(result.output_path, result.walltime_seconds)
 
 Choosing the video encoder
 ==========================

@@ -268,7 +268,7 @@ def run_case(source_name, target_name, *, minimize_movement=False, strategy="aut
                     strategy=strategy,
                 )
             end = float(scene.animation_manager.context.timespan.current_time)
-            result["duration"] = end - start
+            result["runtime"] = end - start
 
             if morphed is None:
                 result["problems"].append("become returned None")

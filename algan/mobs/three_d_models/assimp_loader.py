@@ -263,14 +263,14 @@ def _parse_animations(scene):
     out = []
     for anim in getattr(scene, "animations", []) or []:
         tps = getattr(anim, "tickspersecond", 0.0) or 25.0
-        duration_ticks = getattr(anim, "duration", 0.0) or 0.0
+        runtime_ticks = getattr(anim, "runtime", 0.0) or 0.0
         channels = []
         for ch in getattr(anim, "channels", []) or []:
             channels.append(_parse_channel(ch, tps))
         out.append(
             AnimationData(
                 name=getattr(anim, "name", "") or "",
-                duration=float(duration_ticks) / float(tps),
+                runtime=float(runtime_ticks) / float(tps),
                 channels=channels,
             )
         )

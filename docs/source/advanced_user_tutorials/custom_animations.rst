@@ -66,7 +66,7 @@ over one second.
 
 An animated function is an animation like any other, so it obeys the surrounding
 :doc:`animation context <../new_user_tutorials/combining_animations>`: wrap it in
-``Seq(duration=...)`` to set its duration, put it inside ``Sync()`` to run it
+``Seq(runtime=...)`` to set its runtime, put it inside ``Sync()`` to run it
 alongside other animations, and give it a ``easing`` to change its easing.
 
 More than one animated argument
@@ -86,7 +86,7 @@ value:
         mob.location = (RIGHT * np.cos(angle) + UP * np.sin(angle)) * radius
 
     dot = Dot(color=YELLOW).scale(2).spawn()
-    with Seq(duration=3, easing=easings.identity):
+    with Seq(runtime=3, easing=easings.identity):
         spiral_out(dot, turns=2.5, radius=3.0)
 
     Scene.save_video()

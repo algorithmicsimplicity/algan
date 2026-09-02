@@ -531,31 +531,31 @@ class BezierCircuitCubic(Mob):
 
         fill_texture_kwargs = dict(kwargs)
         fill_texture_kwargs["color"] = self.color if self.filled else stroke_color
-        self.texture_points = Mob(texture_triangle_vertices, **fill_texture_kwargs)
-        self.texture_points.exclude_from_boundary = True
-        self.texture_points.is_primitive = True
-        self.add_children(self.texture_points)
+        self.grid = Mob(texture_triangle_vertices, **fill_texture_kwargs)
+        self.grid.exclude_from_boundary = True
+        self.grid.is_primitive = True
+        self.add_children(self.grid)
 
         border_texture_kwargs = dict(kwargs)
         border_texture_kwargs["color"] = stroke_color
-        self.border_texture_points = Mob(
+        self.border_grid = Mob(
             texture_triangle_vertices, **border_texture_kwargs
         )
-        self.border_texture_points.exclude_from_boundary = True
-        self.border_texture_points.is_primitive = True
+        self.border_grid.exclude_from_boundary = True
+        self.border_grid.is_primitive = True
         # ``color`` on the circuit means fill color.  The border grid remains a
         # child so it follows transforms and participates in waves/cloning, but
         # it must not inherit ordinary fill-color writes from an ancestor.
-        self.border_texture_points._excluded_from_parent_attrs = frozenset({"color"})
-        self.add_children(self.border_texture_points)
+        self.border_grid._excluded_from_parent_attrs = frozenset({"color"})
+        self.add_children(self.border_grid)
 
         self.control_points = Mob(control_points, **fill_texture_kwargs)
         self.control_points.is_primitive = True
         self.add_children(self.control_points)
         self.control_points.num_points_per_object = 4
         self.components = [
-            self.texture_points,
-            self.border_texture_points,
+            self.grid,
+            self.border_grid,
             self.control_points,
         ]
 
@@ -632,8 +632,8 @@ class BezierCircuitCubic(Mob):
                 + locations.unsqueeze(-2).unsqueeze(-2)
             ).reshape(1, count * texture_point_count, 3)
             for texture_mob in (
-                mob.texture_points,
-                mob.border_texture_points,
+                mob.grid,
+                mob.border_grid,
             ):
                 pack_member_rows(
                     texture_mob,
@@ -649,7 +649,7 @@ class BezierCircuitCubic(Mob):
         """Refine the texture grids so a color wave crosses the shape smoothly.
 
         A circuit's fill and border are colored by bilinearly sampling the
-        independent ``texture_points`` and ``border_texture_points`` grids laid
+        independent ``grid`` and ``border_grid`` grids laid
         across it. Those grids are a single sample unless
         ``grid_width`` / ``grid_height`` were raised by hand, so
         a shape flashes as one flat color instead of showing the wave
@@ -659,7 +659,7 @@ class BezierCircuitCubic(Mob):
 
         A circuit whose grid is already rectangular was sized deliberately by
         its author, so it is left exactly as it is rather than being squared up
-        for the duration of a wave.
+        for the runtime of a wave.
         """
         if "color" not in pulsed_attrs:
             # Only color is stored per texture point. A circuit's opacity is a
@@ -674,15 +674,15 @@ class BezierCircuitCubic(Mob):
             self.num_texture_points < 1
             or size != self.grid_height
             or self.data_sub_inds is not None
-            or self.texture_points.data_sub_inds is not None
-            or self.border_texture_points.data_sub_inds is not None
+            or self.grid.data_sub_inds is not None
+            or self.border_grid.data_sub_inds is not None
         ):
             return None
         objects = self.location.shape[-2]
         expected_points = objects * self.num_texture_points
         if (
-            self.texture_points.location.shape[-2] != expected_points
-            or self.border_texture_points.location.shape[-2] != expected_points
+            self.grid.location.shape[-2] != expected_points
+            or self.border_grid.location.shape[-2] != expected_points
         ):
             return None
 
@@ -722,7 +722,7 @@ class BezierCircuitCubic(Mob):
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
         old_values = {}
-        for texture_mob in (self.texture_points, self.border_texture_points):
+        for texture_mob in (self.grid, self.border_grid):
             values = {}
             for attr in dict.fromkeys(texture_mob.animatable_attrs):
                 try:
@@ -753,7 +753,7 @@ class BezierCircuitCubic(Mob):
             + location.unsqueeze(-2).unsqueeze(-2)
         )
         new_locations = points.reshape(*points.shape[:-4], -1, 3)
-        for texture_mob in (self.texture_points, self.border_texture_points):
+        for texture_mob in (self.grid, self.border_grid):
             texture_mob._setattr_and_rebatch_without_record("location", new_locations)
 
             # Every attribute stored one value per texture point has to follow
@@ -782,7 +782,7 @@ class BezierCircuitCubic(Mob):
     #: ``get_render_primitives`` reads both live and neither is animatable, so a
     #: filled Square becoming an unfilled one used to stay solid -- a full-range
     #: difference over 3.6% of the frame. The colors that go with the fill
-    #: arrive separately: ``texture_points`` and ``border_texture_points`` are
+    #: arrive separately: ``grid`` and ``border_grid`` are
     #: components, and the morph recurses into them. ``z_index`` is deliberately
     #: absent -- it already reaches the endpoint on its own, and assigning it
     #: here would bypass the setter that propagates it to the sub-hierarchy.
@@ -822,14 +822,14 @@ class BezierCircuitCubic(Mob):
         Animation
         ---------
         Recorded like any other color attribute: the border cross-fades to the
-        new color over the current context's duration (1 second by default).
+        new color over the current context's runtime (1 second by default).
         Wrap the write in ``Off()`` to change it instantly.
         """
-        return self.border_texture_points.color
+        return self.border_grid.color
 
     @stroke_color.setter
     def stroke_color(self, value):
-        self.border_texture_points.color = value
+        self.border_grid.color = value
 
     def get_base_grid(self) -> torch.Tensor:
         """Get the circuit's texture grid, the ``(u, v)`` domain it is colored
@@ -856,7 +856,7 @@ class BezierCircuitCubic(Mob):
         --------
         :meth:`~.BezierCircuitCubic.set_color_by_function` : Color the circuit over this grid.
         """
-        device = self.texture_points.location.device
+        device = self.grid.location.device
 
         def axis(size):
             if size < 2:
@@ -895,9 +895,9 @@ class BezierCircuitCubic(Mob):
             # one row block each, and every circuit is colored over its own
             # frame, so the same grid of colors repeats per circuit.
             colors = colors.repeat(objects, 1)
-        targets = [self.texture_points]
+        targets = [self.grid]
         if not self.filled:
-            targets.append(self.border_texture_points)
+            targets.append(self.border_grid)
         with Sync(animation_manager=self.animation_manager):
             for target in targets:
                 target.color = colors.unsqueeze(0)
@@ -934,7 +934,7 @@ class BezierCircuitCubic(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default), so the colors cross-fade smoothly. Wrap the call in
         ``Off()`` to apply it instantly.
 
@@ -1007,7 +1007,7 @@ class BezierCircuitCubic(Mob):
 
         Animation
         ---------
-        Recorded as an animation over the current context's duration (1 second
+        Recorded as an animation over the current context's runtime (1 second
         by default): the circuit cross-fades, texel by texel, to the image. Wrap
         the call in ``Off()`` to apply it instantly.
 
@@ -1076,8 +1076,8 @@ class BezierCircuitCubic(Mob):
         if cache is not None and cache[0] == STRUCTURE_VERSION[0]:
             return cache[1]
         n_ctrl = self.control_points.location.shape[-2]
-        n_tex = self.texture_points.location.shape[-2]
-        n_border_tex = self.border_texture_points.location.shape[-2]
+        n_tex = self.grid.location.shape[-2]
+        n_border_tex = self.border_grid.location.shape[-2]
         n_loc = self.location.shape[-2]
         n_segments = max(n_ctrl // 4, 1)  # cubic beziers have 4 control points each
         # Animation state: control points (3 floats), two color textures (5
@@ -1140,8 +1140,8 @@ class BezierCircuitCubic(Mob):
             return build_nonplanar_render_primitives(
                 self,
                 unsquish(self.control_points.location, -2, num_control_points),
-                self.texture_points.get_animated_attribute("color"),
-                self.border_texture_points.get_animated_attribute("color"),
+                self.grid.get_animated_attribute("color"),
+                self.border_grid.get_animated_attribute("color"),
                 *shader_vars[:1],
                 *shader_vars[2:],
             )
@@ -1154,15 +1154,15 @@ class BezierCircuitCubic(Mob):
         if self.control_points.parent_batch_sizes is None:
             return self._get_render_primitives(
                 unsquish(self.control_points.location, -2, num_control_points),
-                self.texture_points.get_animated_attribute("color"),
-                self.border_texture_points.get_animated_attribute("color"),
+                self.grid.get_animated_attribute("color"),
+                self.border_grid.get_animated_attribute("color"),
                 self.location,
                 self.basis,
                 *shader_vars,
             )
         x = self.control_points.location
-        tpc = self.texture_points.get_animated_attribute("color")
-        border_tpc = self.border_texture_points.get_animated_attribute("color")
+        tpc = self.grid.get_animated_attribute("color")
+        border_tpc = self.border_grid.get_animated_attribute("color")
         num_segments_per_circuit = (
             self.control_points.parent_batch_sizes // num_control_points
         )
@@ -1309,8 +1309,8 @@ class BezierCircuitCubic(Mob):
         Animation
         ---------
         Recorded as an animation: the drawn portion sweeps from 0 to ``t`` over
-        the current context's duration (1 second by default). Wrap the call to
-        change that -- ``with Seq(duration=3): shape.draw()`` -- or in ``Off()``
+        the current context's runtime (1 second by default). Wrap the call to
+        change that -- ``with Seq(runtime=3): shape.draw()`` -- or in ``Off()``
         to jump straight to the end state. Applies to this circuit only, not to
         its descendants, so a composite Mob draws each of its parts separately.
 
@@ -1620,8 +1620,8 @@ def build_render_primitives_batched(actors, scene):
     loc = read("location", actors)
     o, basis, g, bw = broadcast_all([o, basis, g, bw], ignored_dims=[-1])
     cp = read("location", [a.control_points for a in actors])
-    tpc = read("color", [a.texture_points for a in actors])
-    border_tpc = read("color", [a.border_texture_points for a in actors])
+    tpc = read("color", [a.grid for a in actors])
+    border_tpc = read("color", [a.border_grid for a in actors])
 
     # --- circuit topology (mirrors _get_render_primitives) ---
     loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds

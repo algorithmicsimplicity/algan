@@ -247,7 +247,7 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             )
 
         if styles_own_geometry and hasattr(manim_mob, "set_stroke"):
-            border_opacity_source = algan_mob.border_texture_points.opacity
+            border_opacity_source = algan_mob.border_grid.opacity
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
                 algan_mob.stroke_color, border_opacity_source
             )
@@ -772,7 +772,7 @@ active Scene unspawned. Call
 :meth:`~algan.animatable_base.animatable.Animatable.spawn` to make it appear.
 Everything after that -- ``formula.color = BLUE``, a move, a delegated Manim
 edit -- is recorded on the timeline like any other Mob's, over the current
-context's duration.
+context's runtime.
 
 Parameters
 ----------

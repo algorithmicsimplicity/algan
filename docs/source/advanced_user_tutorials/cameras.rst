@@ -53,7 +53,7 @@ The turntable shot is the classic way to show off a 3-D scene. Notice that we us
         Group([Cube(size=0.8, color=BLUE).move(RIGHT * 1.6 * i)
                for i in (-1, 0, 1)]).spawn()
 
-    with Seq(duration=4, easing=easings.identity):
+    with Seq(runtime=4, easing=easings.identity):
         Scene.get_camera().rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
@@ -84,7 +84,7 @@ updater (see :doc:`../new_user_tutorials/updaters`):
     camera = Scene.get_camera()
     camera.add_updater(lambda self, t: self.look_at(ball.location))
 
-    with Seq(duration=3):
+    with Seq(runtime=3):
         ball.move(RIGHT * 3 + UP * 1.5)
         ball.move(LEFT * 6)
 
@@ -108,7 +108,7 @@ wide-angle view with exaggerated perspective:
                for i in range(4)]).spawn()
 
     camera = Scene.get_camera()
-    with Seq(duration=3):
+    with Seq(runtime=3):
         camera.set_fov(20)
         camera.set_fov(90)
 
@@ -141,7 +141,7 @@ where you need exact parallel lines without perspective distortion, use
         cubes = Group([Cube(size=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
-    with Seq(duration=3):
+    with Seq(runtime=3):
         cubes.rotate(360, UP, about=ORIGIN)
 
     Scene.save_video()
@@ -219,7 +219,7 @@ the camera as a child, or drive it with an updater:
         caption.move_to_screen_position(0.15, 0.1)
         caption.spawn()
 
-    with Seq(duration=3, easing=easings.identity):
+    with Seq(runtime=3, easing=easings.identity):
         Scene.get_camera().rotate(90, UP, about=ORIGIN)
 
     Scene.save_video()

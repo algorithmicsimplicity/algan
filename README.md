@@ -68,7 +68,7 @@ sphere.set_material(
 
 # 2. Define animation timeline with contexts
 sphere.spawn()
-with Sync(duration=2):
+with Sync(runtime=2):
     sphere.move(RIGHT * 2)
     sphere.rotate(180, OUT, about=ORIGIN)
     sphere.color = RED

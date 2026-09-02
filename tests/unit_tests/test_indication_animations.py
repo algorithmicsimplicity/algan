@@ -7,7 +7,7 @@ that produce no error at all:
   spotlight, ``Circumscribe``'s frame) has to be registered as an actor on the
   owning Scene -- the render loop iterates ``scene.actors`` rather than walking
   the hierarchy, so unregistered geometry is simply invisible;
-* they each take an explicit ``duration`` that must win over the enclosing
+* they each take an explicit ``runtime`` that must win over the enclosing
   context, and must leave the Mob in the state they found it (that is what
   makes them safe to drop into an existing animation).
 """

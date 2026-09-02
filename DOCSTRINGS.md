@@ -55,7 +55,7 @@ and when to reach for this instead of the neighbouring method.
 
 Animation
 ---------
-Whether the call is recorded, its default duration, how to change it. (See §6.)
+Whether the call is recorded, its default runtime, how to change it. (See §6.)
 
 Parameters
 ----------
@@ -112,8 +112,8 @@ def rotate(
     Animation
     ---------
     Recorded as an animation: the rotation sweeps from 0 to ``angle`` over the
-    current context's duration (1 second by default). Wrap the call in a context to
-    change that -- ``with Seq(duration=3): mob.rotate(90)`` -- or in ``Off()`` to apply
+    current context's runtime (1 second by default). Wrap the call in a context to
+    change that -- ``with Seq(runtime=3): mob.rotate(90)`` -- or in ``Off()`` to apply
     it instantly without animating. Applies to this Mob and all of its descendants.
 
     Parameters
@@ -285,7 +285,7 @@ Returns
   right ("An ID identifying the updater... can be used to remove the updater... using
   :meth:`~.Animatable.remove_updater`").
 - If the return is a structure, name its fields: `save_video` → "``status`` (``"rendered"`` or
-  ``"skipped"``), ``output_path``, ``duration_seconds``, ``render_plan``".
+  ``"skipped"``), ``output_path``, ``walltime_seconds``, ``render_plan``".
 - **Omit the section entirely** for methods that return `None`. Do not write "Returns nothing."
 - Getters must state what convention the value is in: normalized or not, world or screen space,
   a view or a copy.
@@ -297,10 +297,10 @@ spawn. **A user cannot infer which from the name**, so every Tier-1 method that 
 carries an `Animation` section. State, in one short paragraph:
 
 1. **Is it recorded?** "Recorded as an animation" vs "Takes effect immediately and is not animated".
-2. **Default duration**, if recorded: "over the current context's duration (1 second by default)".
+2. **Default runtime**, if recorded: "over the current context's runtime (1 second by default)".
 3. **What interpolates**, for `@animated_function` methods: name the animated argument and its start
    value, e.g. "sweeps from 0 to ``angle``" (`animated_args={"angle": 0}`).
-4. **How to change the timing**: one inline example, `with Seq(duration=3): ...` or `with Off(): ...`.
+4. **How to change the timing**: one inline example, `with Seq(runtime=3): ...` or `with Off(): ...`.
 5. **Propagation**: whether the change applies to descendants (most `Mob` attribute writes do) or
    only to this Mob (`set_non_recursive`).
 6. **Spawn-order constraints**: if the method must be called *before* `spawn()`, say so here and
@@ -456,7 +456,7 @@ Before you commit a change to a Tier-1 function:
 - [ ] Every default is stated in prose, including what `None` means.
 - [ ] Units (degrees / seconds / world vs screen), tensor shapes, and accepted alternative forms are
       stated.
-- [ ] `Animation` section says recorded-or-immediate, default duration, propagation, and any
+- [ ] `Animation` section says recorded-or-immediate, default runtime, propagation, and any
       before-spawn constraint.
 - [ ] `Returns` present, with the exact chaining sentence if it returns `self`; absent if it returns
       `None`.

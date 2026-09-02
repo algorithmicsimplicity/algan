@@ -51,6 +51,7 @@ that interpolates from the old value to the new value.
     circle.location = circle.location + DOWN + RIGHT * 2
     circle.glow = 0.5
     circle.opacity = 0.0
+    Scene.wait()
 
     Scene.save_video()
 
@@ -81,6 +82,7 @@ into the color you assign:
     circle.opacity = 0.5                    # ... or set them separately
 
     circle.color = GREEN.set_glow(0.5)   # ... or together, in one animation
+    Scene.wait()
 
     Scene.save_video()
 

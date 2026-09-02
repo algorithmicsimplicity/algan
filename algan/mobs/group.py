@@ -147,7 +147,7 @@ class Group(Mob):
                         descendant.location
                         for descendant in mob.get_descendants()
                         # Internal helper mobs (e.g. a bezier circuit's
-                        # texture_points) sit at off-geometry locations;
+                        # grid) sit at off-geometry locations;
                         # boundary queries already skip them, and including
                         # them here corrupts the midpoint.
                         if not descendant.exclude_from_boundary
@@ -339,7 +339,7 @@ class Group(Mob):
         Animation
         ---------
         Recorded as an animation: every member moves at once inside a
-        :class:`~.Sync`, over the current context's duration (1 second by default).
+        :class:`~.Sync`, over the current context's runtime (1 second by default).
         Call it before spawning to lay a Group out for free.
 
         Parameters
@@ -422,7 +422,7 @@ class Group(Mob):
         Animation
         ---------
         Recorded as an animation: every member moves at once inside a
-        :class:`~.Sync`, over the current context's duration (1 second by default).
+        :class:`~.Sync`, over the current context's runtime (1 second by default).
 
         Parameters
         ----------
@@ -462,7 +462,7 @@ class Group(Mob):
         Animation
         ---------
         Recorded as an animation: every member moves at once inside a
-        :class:`~.Sync`, over the current context's duration (1 second by default).
+        :class:`~.Sync`, over the current context's runtime (1 second by default).
         Call it before spawning to lay a Group out for free.
 
         Parameters

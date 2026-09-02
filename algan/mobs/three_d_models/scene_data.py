@@ -126,7 +126,7 @@ class AnimationData:
     """A named animation clip: a set of per-node keyframe tracks."""
 
     name: str = ""
-    duration: float = 0.0  # seconds
+    runtime: float = 0.0  # seconds
     channels: list[NodeAnimation] = field(default_factory=list)
 
 
