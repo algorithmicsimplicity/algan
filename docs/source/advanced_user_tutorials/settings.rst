@@ -326,7 +326,9 @@ Three things to know:
 * **It can never fail a render.** A function whose compile fails on your
   machine -- no C++ compiler on the path, an operation the backend cannot
   lower -- warns once, naming the function and the reason, and runs eagerly
-  from then on.
+  from then on. On an Apple GPU this is the common case for now: PyTorch
+  2.7's Metal backend is a prototype, and a function it cannot build simply
+  keeps running eagerly on the GPU.
 * **Output is unchanged to within the rounding the render suites already
   tolerate.** Fused arithmetic keeps the operation order; only transcendental
   functions may differ by a unit in the last place.
