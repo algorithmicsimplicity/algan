@@ -46,6 +46,7 @@ breaking anyone.
 | 14 | [Missing-tool errors: LaTeX, ffmpeg, pydub](#14-missing-tool-errors) | LATER-OK | The first thing a PyPI installer without TeX will hit. |
 | 15 | [Metadata and hygiene](#15-metadata-and-hygiene) | LATER-OK | Stale conda recipe, no changelog, placeholder badge and logos, stale branches. |
 | 16 | [Smaller correctness and UX items](#16-smaller-items) | LATER-OK | Collected so they are not rediscovered. |
+| 17 | [Tests and CI](#17-tests-and-ci) | LATER-OK | Green at HEAD; the gaps are what CI structurally cannot see. |
 
 ---
 
@@ -65,8 +66,10 @@ reads that belong to **moviepy**, not Algan:
 - `algan/animation_timeline/animation_contexts.py:1108` — `audio_clip.runtime + wait_at_end`. moviepy clips have `.duration`. `Speech` funnels through `Audio.__init__`, so both contexts are dead, and every example in `docs/source/advanced_user_tutorials/audio_and_speech.rst` raises.
 - `algan/scene.py:816` — `audio_clip.runtime = ...original_end`. This *sets* a junk attribute on a `CompositeAudioClip`, so the intended clamp of the audio track to the scene end never applies. No exception; the rendered audio length is simply wrong.
 
-The unit tests that exercise `Speech` (`tests/unit_tests/test_project.py`) are
-outside the fast suite, which is why `--fast` is green.
+The full unit suite is green because no test enters `Audio` over a real clip:
+`tests/unit_tests/test_project.py:14` stands in a `_SilentClip` whose attribute
+was renamed to `runtime = 0` along with the code, so the test mirrors the bug
+instead of catching it.
 
 **Fix.** Restore `.duration` at both sites. Add one fast-marked smoke test that
 enters `Audio` over a generated 1 s wav — the rename touched a foreign
@@ -314,6 +317,17 @@ Correctness and UX, all **verified**, none contract-breaking to fix later:
 - 121 bare `raise ValueError`, ~30 in user-facing constructors (`surface.py:1085-1091`, `text.py:1033,1102,1165`). `AlganConfigurationError` subclasses `ValueError`, so converting is non-breaking; do it before `except AlganError` becomes a contract users rely on.
 - Magic scalars where Algan has types: `Material(side=0)`, `AdvancedPBRMaterial(specular_color=16777215, sheen_color=0, ...)`, `Text(slant='NORMAL', weight='NORMAL')`.
 - Viewer: binds `127.0.0.1` only, path-safe static serving, no CORS; but no `Host`-header check and `POST /api/shutdown` is unauthenticated, so a DNS-rebound or CSRF page can stop a running viewer. A per-session token in the URL closes both.
+
+## 17. Tests and CI
+
+**Verified** locally and against the Actions history of `algorithmicsimplicity/algan`.
+
+- `ruff check .` and `ruff format --check .` are clean (313 files). The three per-push workflows (Code Quality, Docs, Test on ubuntu 3.9/3.10/3.13 + macOS 3.10) are green at `3c03536`.
+- `tests/unit_tests`: `1 failed, 2641 passed, 139 skipped in 11:06`. The one failure (`test_daemon_run_context.py::test_stdin_is_isolated_from_the_trigger`) captured this sandbox's own shell-startup text on the subprocess's stdin and is green in Actions; not a repo bug.
+- The four pushes before HEAD were **red on every matrix leg** with rename fallout (`border_texture_points`, `Model3D.play_animation(runtime=)`, `DEFAULT_DURATION` in the `__all__` snapshot, `Primitive.runtime`) and were fixed by two "Fixed failing tests" commits. Cut the release from a commit that has its own green run, and tag that commit.
+- **What CI cannot see.** No matrix leg has a GPU, so the 8 CUDA-only tests (`test_wide_attr_device.py`, `test_scene_arena_upload.py`) never execute anywhere automatically — the class of invisibility that `test_wide_attr_device.py`'s own docstring records causing a staleness bug on 2026-08-28. `tests/full_renders` and `tests/path_traced` are not even collected in CI (`test.yaml` names `tests/unit_tests tests/fast`), so six dense pixel-compared scenes and the path tracer are guarded only by whoever runs the full suite by hand; `tests/path_traced` has no CUDA baseline set yet. A dispatch-only GPU job (there is precedent in `taichi_build.yaml` and `mps_probe.yaml`) would close the first gap before the first release, not after.
+- Skips worth a decision: 122 doc-render cases behind `ALGAN_RUN_DOC_RENDERS=1`; two `test_raytracing_unit.py` cases for a megakernel removed in `ceaf3c4` (delete them); one `pygltflib` skip that is really §12's undeclared dependency.
+- `tests/README.md` says the fast suite "is now 191"; it collects 464 cases (74 `fast` decorators with parametrization). The cold run here reported 96 s against the 75 s budget; per `CLAUDE.md` that reading is junk before the third consecutive run.
 
 ---
 
