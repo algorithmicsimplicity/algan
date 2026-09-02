@@ -56,6 +56,18 @@ So: :func:`logical_pn_control_points`,
 :func:`evaluate_logical_pn_normals` stay eager, and every compiled region here
 is verified bit-for-bit identical to its eager arm on captured render inputs.
 
+**What that decision costs**, so it is priced rather than merely justified.
+Measured with ``benchmarks/_compile_candidates_ab.py`` on the PN fixture
+(``benchmarks/_pn_geometry_scene.py``, PREVIEW, CPU render, 4 cores), held at
+the dice's own ``[23, 396, 3, 3]`` shape: 2.03 -> 0.42 ms for the position
+control net, 2.39 -> 0.59 ms for the normals and 2.62 -> 0.73 ms for the edges,
+so 3.6-4.9x each and **~16 ms of a 4.0 s render, 0.4%**. Every one of those
+calls differed from its eager arm (up to 9.5e-07), which is the ulp above.
+The three run once per dice, so there is no shape to amortise them over
+either; the whole-render arm that compiles them
+(``_torch_compile_ab.py --pn-controls``) measures 1.00x. A tessellation change
+for 0.4% is not a trade this module makes.
+
 The decorated ones all take ``compiled``'s default ``dynamic=None``, although
 their leading extent -- the chunk's ``(frame, patch)`` row count -- moves on
 every call. ``dynamic=True`` makes the *trailing* extents symbolic too, and
