@@ -41,8 +41,8 @@ _RENAMED = {
 }
 
 
-def _coerce_mps_friendly(value):
-    """Validate ``mps_friendly`` as ``True``, ``False`` or ``'auto'``.
+def _coerce_tristate(value, name, auto_means):
+    """Validate a ``True`` / ``False`` / ``'auto'`` field.
 
     A string is accepted so the field can be written the way its environment
     variable is, and so ``'auto'`` survives a round trip through
@@ -61,8 +61,17 @@ def _coerce_mps_friendly(value):
         if raw in ("0", "false", "no", "off"):
             return False
     raise AlganConfigurationError(
-        "mps_friendly must be True, False or 'auto' (the default, which "
-        "follows the render device)"
+        f"{name} must be True, False or 'auto' (the default, which {auto_means})"
+    )
+
+
+def _coerce_mps_friendly(value):
+    return _coerce_tristate(value, "mps_friendly", "follows the render device")
+
+
+def _coerce_torch_compile(value):
+    return _coerce_tristate(
+        value, "torch_compile", "is on wherever torch.compile is supported"
     )
 
 
@@ -196,6 +205,19 @@ class ComputingSettings(Settings):
     #: bits. That is the trade MPS forces -- Metal has no float64 at all -- and
     #: it is why the mode is off wherever float64 is available.
     mps_friendly: bool | str = "auto"
+    #: Run the pipeline's per-frame torch arithmetic -- timeline
+    #: materialization, projection and shading, the sheet compaction, the
+    #: post-processing chain -- through ``torch.compile``, which fuses each
+    #: chain of small tensor operations into one kernel. ``'auto'`` (the
+    #: default) is on wherever ``torch.compile`` runs and off where it does not
+    #: (Windows, a Python that Dynamo does not support); ``True`` tries
+    #: regardless and ``False`` is off everywhere. A function whose compile
+    #: fails warns once and runs eagerly, so the switch can never fail a
+    #: render. The first render of a process pays the compile (seconds per
+    #: function on the CPU, cached across processes by Inductor); every later
+    #: one is faster. Env override ``ALGAN_TORCH_COMPILE``. Read it through
+    #: :func:`algan.utils.torch_compile.torch_compile_enabled`.
+    torch_compile: bool | str = "auto"
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
@@ -225,6 +247,9 @@ class ComputingSettings(Settings):
         )
         object.__setattr__(
             self, "mps_friendly", _coerce_mps_friendly(self.mps_friendly)
+        )
+        object.__setattr__(
+            self, "torch_compile", _coerce_torch_compile(self.torch_compile)
         )
         for name in ("animation_memory_fraction", "rendering_memory_fraction"):
             value = float(getattr(self, name))

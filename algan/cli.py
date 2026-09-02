@@ -97,6 +97,21 @@ def _cmd_check(_args: argparse.Namespace) -> int:
                 "  [INFO] MPS-friendly mode is ON: float32 accumulators and "
                 "int32 reductions, so renders are not bit-reproducible."
             )
+        # Whether the pipeline's torch arithmetic runs fused. Off is a real
+        # answer on Windows, and the reason is what a "why is this slower
+        # than the docs say" starts from.
+        from algan.utils.torch_compile import (
+            torch_compile_enabled,
+            torch_compile_support,
+        )
+
+        supported, reason = torch_compile_support()
+        print(
+            f"  torch.compile: {'ON' if torch_compile_enabled() else 'OFF'} "
+            f"(SETTINGS.computing.torch_compile={SETTINGS.computing.torch_compile!r}"
+            + ("" if supported else f"; unsupported here: {reason}")
+            + ")"
+        )
     except ImportError:
         print("  [ERROR] PyTorch is not installed.")
 
