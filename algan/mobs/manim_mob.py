@@ -67,7 +67,7 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
-    def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
+    def __init__(self, manim_mob, batch=True, _add_to_scene=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         # Retain the source object so compatibility Mobs can delegate Manim-specific
