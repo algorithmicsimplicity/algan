@@ -64,6 +64,11 @@ def grid_hexes(surface):
     }
 
 
+def texture_hexes(surface):
+    texture = surface.color_texture
+    return {hex_of(row) for row in texture.reshape(-1, texture.shape[-1])}
+
+
 def face_style(solid):
     face = solid.faces[0][0]
     return (
@@ -147,10 +152,19 @@ def test_profile_on_adopts_manim_circuit_defaults(shape_name, expected):
 
 
 def test_profile_on_gives_the_curved_solids_manim_s_checkerboard():
+    """The checkerboard arrives as a color texture, not as alternating vertices.
+
+    Manim paints its two-tone solids face by face, so its checkerboard is
+    whatever its tessellation is. Algan carries the pattern in a
+    ``color_texture`` instead, which is why the grid stays one flat colour and
+    the two tones have to be read off the map.
+    """
     SETTINGS.style.set(shape_style_profile="manim")
     for surface in (Sphere(), Cylinder(), Torus()):
-        assert grid_hexes(surface) == {"#29ABCA", "#236B8E"}
+        assert texture_hexes(surface) == {"#29ABCA", "#236B8E"}
+        assert grid_hexes(surface) == {"#29ABCA"}
     # Manim's Cone carries one fill colour and no checkerboard.
+    assert Cone()._has_color_texture is False
     assert grid_hexes(Cone()) == {"#29ABCA"}
 
 

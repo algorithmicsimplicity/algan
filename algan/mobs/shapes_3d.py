@@ -11,12 +11,12 @@ per frame to whatever the camera needs, so they stay smooth as you move in.
 defined by explicit vertices and flat polygon faces. Their faces are already
 planar, so they are triangulated once at construction and never refined.
 
-The revolved solids share one vocabulary: ``radius``, ``u_range`` / ``v_range``,
-``closed`` and ``checkered_color``, with ``direction`` defaulting to ``UP`` on
-both :class:`Cone` and :class:`Cylinder`. Manim's spellings of those
-(``base_radius``, ``show_base``, ``show_ends``, ``u_min``,
-``checkerboard_colors``) raise here, naming the Algan one; they are correct
-under ``algan.manim``, where Manim's classes live. ``resolution`` is the one
+The revolved solids share one vocabulary: ``radius``, ``u_range`` / ``v_range``
+and ``closed``, with ``direction`` defaulting to ``UP`` on both :class:`Cone`
+and :class:`Cylinder`. Manim's spellings of those (``base_radius``,
+``show_base``, ``show_ends``, ``u_min``, ``checkerboard_colors``) raise here,
+naming the Algan one; they are correct under ``algan.manim``, where Manim's
+classes live. ``resolution`` is the one
 Manim name kept, counting patches rather than vertices as Manim does, and
 ``u_range`` / ``v_range`` keep Manim's names but take Algan's degrees.
 
@@ -186,9 +186,19 @@ def _sweep_radians(range_):
 #: ``u_min`` beside ``u_range``); the root namespace carries one vocabulary and
 #: says so when a script uses Manim's. ``algan.manim.Cone`` and friends are
 #: Manim's classes under Manim's names.
+#: Extra guidance for the renames whose replacement takes a different kind of
+#: value, so "Algan spells it X" alone would leave the reader stuck.
+_SOLID_KEYWORD_HINTS: dict[str, str] = {
+    "checkerboard_colors": (
+        "A checkerboard is a texture map here rather than a second vertex "
+        "color, so its detail does not depend on the tessellation: "
+        "`color_texture=get_checkerboard((BLUE, BLUE_E))`."
+    ),
+}
+
 _SOLID_KEYWORD_RENAMES: dict[str, str] = {
     "base_radius": "radius",
-    "checkerboard_colors": "checkered_color",
+    "checkerboard_colors": "color_texture",
     "show_base": "closed",
     "show_ends": "closed",
     "u_min": "u_range",
@@ -450,8 +460,10 @@ class Sphere(Surface):
         a band around the equator. Defaults to ``(0, 180)``, pole to pole.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
-        ``color``, ``checkered_color``, ``grid_width``/``grid_height`` and the
-        texture maps.
+        ``color``, ``grid_width``/``grid_height`` and the texture maps --
+        notably ``color_texture``, which
+        :func:`~algan.mobs.surfaces.procedural_textures.get_checkerboard` and
+        its siblings build.
 
     Notes
     -----
@@ -503,7 +515,11 @@ class Sphere(Surface):
         **kwargs,
     ):
         _reject_renamed_keywords(
-            "Sphere", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Sphere"
+            "Sphere",
+            kwargs,
+            _SOLID_KEYWORD_RENAMES,
+            manim_alternative="Sphere",
+            hints=_SOLID_KEYWORD_HINTS,
         )
         self.radius = radius
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
@@ -599,8 +615,9 @@ class Cone(Surface):
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
-        ``color`` and ``checkered_color`` for the two-tone styling Manim spells
-        ``checkerboard_colors``.
+        ``color``, and ``color_texture`` for the two-tone styling Manim spells
+        ``checkerboard_colors``:
+        ``color_texture=get_checkerboard((BLUE, BLUE_E))``.
 
     Examples
     --------
@@ -634,7 +651,11 @@ class Cone(Surface):
         **kwargs,
     ):
         _reject_renamed_keywords(
-            "Cone", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Cone"
+            "Cone",
+            kwargs,
+            _SOLID_KEYWORD_RENAMES,
+            manim_alternative="Cone",
+            hints=_SOLID_KEYWORD_HINTS,
         )
         self.radius = radius
         self.height = height
@@ -800,8 +821,9 @@ class Cylinder(Surface):
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
-        ``color`` and ``checkered_color`` for the two-tone styling Manim spells
-        ``checkerboard_colors``.
+        ``color``, and ``color_texture`` for the two-tone styling Manim spells
+        ``checkerboard_colors``:
+        ``color_texture=get_checkerboard((BLUE, BLUE_E))``.
 
     Notes
     -----
@@ -855,7 +877,11 @@ class Cylinder(Surface):
         **kwargs,
     ):
         _reject_renamed_keywords(
-            "Cylinder", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Cylinder"
+            "Cylinder",
+            kwargs,
+            _SOLID_KEYWORD_RENAMES,
+            manim_alternative="Cylinder",
+            hints=_SOLID_KEYWORD_HINTS,
         )
         self.radius = radius
         self.height = height
@@ -1500,7 +1526,11 @@ class Torus(Surface):
         **kwargs,
     ):
         _reject_renamed_keywords(
-            "Torus", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Torus"
+            "Torus",
+            kwargs,
+            _SOLID_KEYWORD_RENAMES,
+            manim_alternative="Torus",
+            hints=_SOLID_KEYWORD_HINTS,
         )
         self.ring_radius = ring_radius
         self.tube_radius = tube_radius

@@ -125,6 +125,40 @@ take texture arguments at construction:
 
     Scene.save_video()
 
+Procedural patterns
+-------------------
+
+You rarely have to write that array out. :mod:`~algan.mobs.surfaces.procedural_textures`
+builds the usual patterns for you --
+:func:`~algan.mobs.surfaces.procedural_textures.get_checkerboard`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_stripes`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_grid_lines`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_polka_dots`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_bricks`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_gradient`,
+:func:`~algan.mobs.surfaces.procedural_textures.get_radial_gradient` and
+:func:`~algan.mobs.surfaces.procedural_textures.get_noise` -- each returning the
+same ``[W, H, 5]`` image the argument takes:
+
+.. algan:: TexturesProceduralCheckerboard
+
+    from algan import *
+
+    globe = Sphere(
+        radius=1.5, color_texture=get_checkerboard((RED, WHITE), resolution=8)
+    ).spawn()
+    with Seq(runtime=3):
+        globe.rotate(360, UP)
+
+    Scene.save_video()
+
+Because the pattern lives in the map rather than in the mesh, its detail has
+nothing to do with how finely the surface is tessellated: a flat plane sampled
+at two vertices per axis carries the same checkerboard as the sphere above.
+Each generator takes the count of pattern cells and, separately, a
+``texture_resolution`` in texels; the renderer samples the map bilinearly, so
+the defaults spend 32 texels on a cell to keep its edges hard.
+
 The available texture arguments:
 
 .. list-table::

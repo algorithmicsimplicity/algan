@@ -51,8 +51,10 @@ def test_manim_parametric_surface_api_lives_in_algan_manim():
     (``shapes_3d._surface_resolution_kwargs``) and ``algan.manim`` carries
     Manim's own class, so the native constructor takes only native arguments.
     ``checkerboard_colors`` is the one that answers with a pointer rather than
-    a bare ``TypeError``, because Algan's spelling of it (``checkered_color``)
-    is not a name a reader would guess.
+    a bare ``TypeError``, because Algan does not have a second-color argument at
+    all: a checkerboard here is a ``color_texture``, built by
+    ``get_checkerboard``, so that its detail comes from the map rather than from
+    however the surface happened to be tessellated.
     """
     surface = mn.Surface(
         lambda u, v: np.array([u, v, u * v]),
@@ -89,7 +91,7 @@ def test_manim_parametric_surface_api_lives_in_algan_manim():
         with pytest.raises(TypeError):
             algan.Surface(add_to_scene=False, **{removed: None})
 
-    with pytest.raises(AlganConfigurationError, match="checkered_color"):
+    with pytest.raises(AlganConfigurationError, match="get_checkerboard"):
         algan.Surface(add_to_scene=False, checkerboard_colors=None)
 
 

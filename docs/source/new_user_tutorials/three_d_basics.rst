@@ -149,7 +149,8 @@ handle batched tensors.
         y = uv[..., 1:] * 4 - 2
         return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
 
-    surface = Surface(saddle, checkered_color=BLUE).spawn()
+    checker = get_checkerboard((BLUE, BLUE_E))
+    surface = Surface(saddle, color_texture=checker).spawn()
     with Seq(runtime=3):
         surface.rotate(60, RIGHT)
         surface.rotate(360, OUT)
