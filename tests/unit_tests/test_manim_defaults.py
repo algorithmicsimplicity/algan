@@ -188,9 +188,9 @@ def test_the_stroke_width_ratio_round_trips_through_the_compat_layer(scene):
         source = manim.Square(side_length=2.0)
         source.set_stroke(manim.WHITE, width=8.0, opacity=1.0)
         imported = ManimMob(source, scene=scene)
-        assert float(
-            imported.stroke_width.reshape(-1)[0]
-        ) == pytest.approx(8.0 / ratio, abs=1e-5)
+        assert float(imported.stroke_width.reshape(-1)[0]) == pytest.approx(
+            8.0 / ratio, abs=1e-5
+        )
         assert float(to_manim(imported).stroke_width) == pytest.approx(8.0, abs=1e-4)
 
 
@@ -214,8 +214,9 @@ def test_a_flat_shade_in_3d_face_takes_the_patch_plan(scene):
     assert imported._nonplanar_plan.mode == "patch"
 
     # A flat shape WITHOUT the flag is untouched: still the analytic path.
-    plain = ManimMob(manim.Square(side_length=2.0).set_fill(manim.BLUE, 1.0),
-                     scene=scene)
+    plain = ManimMob(
+        manim.Square(side_length=2.0).set_fill(manim.BLUE, 1.0), scene=scene
+    )
     assert plain.shade_in_3d is False
     assert plain._nonplanar_plan is None
 

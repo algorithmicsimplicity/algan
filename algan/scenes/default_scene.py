@@ -1,8 +1,11 @@
-from algan.constants.spatial import ORIGIN, UP, RIGHT, OUTWARD
+from __future__ import annotations
+
 from algan.constants.color import WHITE
+from algan.constants.spatial import ORIGIN, OUTWARD, RIGHT, UP
 from algan.manim_defaults import MANIM_FOCAL_DISTANCE, manim_fov
 from algan.rendering.camera import Camera
 from algan.rendering.lights import PointLight
+
 
 def default_scene_initializer(scene):
     scene.camera = Camera(scene=scene)

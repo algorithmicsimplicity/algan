@@ -51,7 +51,6 @@ BORDER_PLACEMENTS = ("inward", "centered")
 _DEFAULT_MANIM_STROKE_WIDTH_RATIO = 2.0
 
 
-
 @dataclass
 class StyleSettings(Settings):
     background: Color = field(default_factory=lambda: BLACK.clone())

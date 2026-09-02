@@ -303,7 +303,8 @@ def clear_cached_kernels():
     """
     clear_cache(include_kernels=True)
 
-#from algan.scenes.default_scene import default_scene_initializer
+
+# from algan.scenes.default_scene import default_scene_initializer
 def default_scene_initializer(scene):
     scene.camera = Camera(scene=scene, location=CAMERA_ORIGIN).spawn(animate=False)
     scene.light_sources = []

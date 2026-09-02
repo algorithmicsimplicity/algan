@@ -1142,9 +1142,7 @@ def build_render_primitives(
                 # same shading as its fill, and a grid line that stays at full
                 # brightness over a shaded solid is what that difference looks
                 # like.
-                run_colors=_shaded_border_colors(
-                    circuit, x, plan, border, x.shape[0]
-                ),
+                run_colors=_shaded_border_colors(circuit, x, plan, border, x.shape[0]),
             )
         )
     return primitives

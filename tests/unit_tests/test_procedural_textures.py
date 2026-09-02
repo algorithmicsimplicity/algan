@@ -109,9 +109,11 @@ def test_a_single_color_fills_the_whole_map():
 
 def test_pattern_counts_and_texture_size_are_separate_knobs():
     assert tuple(get_checkerboard(resolution=(4, 2)).shape) == (128, 64, 5)
-    assert tuple(
-        get_checkerboard(resolution=4, texture_resolution=(16, 32)).shape
-    ) == (16, 32, 5)
+    assert tuple(get_checkerboard(resolution=4, texture_resolution=(16, 32)).shape) == (
+        16,
+        32,
+        5,
+    )
 
 
 def test_gradient_runs_from_the_first_color_to_the_last():
