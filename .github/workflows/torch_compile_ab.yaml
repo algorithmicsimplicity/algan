@@ -1,0 +1,200 @@
+name: torch.compile A/B
+
+# Measures what `SETTINGS.computing.torch_compile` buys, in WARM wall time, on
+# the machines this project cannot measure from a Linux box: the Apple-silicon
+# runner's CPU and its Metal GPU. The Linux arm is the control -- the same
+# harness on a backend whose numbers are already known from a developer box,
+# so an Apple arm that reports nothing is distinguishable from a broken
+# harness.
+#
+# This is a measurement, not a check, so like mps_probe.yaml it runs on hand
+# dispatch or when the harness itself changes, and never on the ordinary test
+# matrix. Each arm renders tests/fast/scene.py at PREVIEW repeatedly in one
+# process, alternating the switch off and on, and reports the medians, the
+# cold (first-render) cost of each arm, and the pixel difference between them
+# (`benchmarks/_torch_compile_ab.py`). The job summary is the deliverable; the
+# JSON is uploaded beside it.
+#
+# The MPS arm needs the patched Taichi wheel (see mps_probe.yaml and
+# taichi_build.yaml): on stock Taichi `auto` refuses the Apple GPU and renders
+# on the CPU, so without a wheel that arm would silently duplicate the mac-cpu
+# arm. The default run id is the latest successful taichi_build.yaml run.
+on:
+  workflow_dispatch:
+    inputs:
+      taichi_wheel_run_id:
+        description: "Run id of a taichi_build.yaml run whose patched wheel the MPS arm installs"
+        type: string
+        default: "33342025517"
+      runs:
+        description: "Warm renders per arm"
+        type: string
+        default: "3"
+      quality:
+        description: "Video preset to render at"
+        type: string
+        default: "PREVIEW"
+  push:
+    paths:
+      - ".github/workflows/torch_compile_ab.yaml"
+      - "benchmarks/_torch_compile_ab.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  ab:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      # The point is the comparison between arms, so one failing must not take
+      # the others' readings with it.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            device: mps
+            label: mac-mps
+          - os: macos-latest
+            device: cpu
+            label: mac-cpu
+          - os: ubuntu-latest
+            device: cpu
+            label: linux-cpu
+
+    permissions:
+      contents: read
+      actions: read
+
+    env:
+      ALGAN_RENDER_DEVICE: ${{ matrix.device }}
+      # Unbuffered so the per-render lines reach the log as they happen.
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.11 on every arm: the patched wheel is cp311 (taichi_build.yaml builds
+      # against the image's framework Python), and the other arms match it so
+      # the interpreter is not a variable in the comparison.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The same system dependencies test.yaml installs, for the same reasons:
+      # the Pango stack needs a fontconfig to resolve the vendored test faces
+      # through, and the fast scene's Tex needs `latex` and `dvisvgm`.
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg \
+            texlive-latex-base texlive-latex-extra texlive-fonts-recommended latexmk
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install pango cairo pkg-config
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install \
+            standalone preview amsfonts xkeyval dvisvgm
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Fetch the patched Taichi wheel
+        if: ${{ matrix.device == 'mps' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: taichi-build-macos-arm64
+          run-id: ${{ inputs.taichi_wheel_run_id || '33342025517' }}
+          github-token: ${{ github.token }}
+          path: patched-taichi
+
+      # `--no-deps` because uv sync already resolved the wheel's dependencies;
+      # `--reinstall-package` because it carries the same version as the one
+      # it replaces, so a plain install would consider the requirement met.
+      - name: Install the patched Taichi wheel
+        if: ${{ matrix.device == 'mps' }}
+        run: |
+          set -euo pipefail
+          wheel=$(find patched-taichi -name 'taichi*.whl' | head -1)
+          if [ -z "$wheel" ]; then
+            echo "the build run produced no wheel"
+            exit 1
+          fi
+          uv pip install --no-deps --reinstall-package taichi "$wheel"
+
+      # Says in the clear which device the arm actually renders on and what
+      # the compile switch resolved to, before any number is taken.
+      - name: Report the environment Algan resolved
+        run: uv run algan check
+
+      # `pipefail` so the tee cannot swallow the harness's exit code: GitHub
+      # runs this with `bash -e`, where a pipeline reports only its last
+      # command, and a crashed harness would otherwise report green.
+      - name: Run the A/B
+        run: |
+          set -o pipefail
+          uv run python -u benchmarks/_torch_compile_ab.py \
+            --runs "${{ inputs.runs || '3' }}" \
+            --quality "${{ inputs.quality || 'PREVIEW' }}" \
+            --json "torch_compile_ab-${{ matrix.label }}.json" \
+            | tee ab-output.txt
+
+      # The fast scene has no PN surfaces, so it never reaches the compiled
+      # patch evaluation in logical_pn.py; this fixture is spheres, a torus
+      # and a cylinder, moving, which does.
+      - name: Run the A/B on the PN-geometry scene
+        if: always()
+        run: |
+          set -o pipefail
+          uv run python -u benchmarks/_torch_compile_ab.py \
+            --scene benchmarks/_pn_geometry_scene.py \
+            --output-dir benchmarks/algan_outputs/torch_compile_ab_pn \
+            --runs "${{ inputs.runs || '3' }}" \
+            --quality "${{ inputs.quality || 'PREVIEW' }}" \
+            --json "torch_compile_ab_pn-${{ matrix.label }}.json" \
+            | tee ab-output-pn.txt
+
+      - name: Publish the report to the job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## torch.compile A/B -- ${{ matrix.label }}"
+            echo
+            echo '```'
+            cat ab-output.txt 2>/dev/null || echo "(the harness produced no output)"
+            echo '```'
+            echo
+            echo "### PN-geometry scene"
+            echo
+            echo '```'
+            cat ab-output-pn.txt 2>/dev/null || echo "(the harness produced no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: torch-compile-ab-${{ matrix.label }}
+          path: |
+            torch_compile_ab-${{ matrix.label }}.json
+            torch_compile_ab_pn-${{ matrix.label }}.json
+            ab-output.txt
+            ab-output-pn.txt
+          if-no-files-found: warn
+          retention-days: 30

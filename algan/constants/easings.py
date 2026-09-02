@@ -30,12 +30,38 @@ def identity(t):
 linear = identity
 
 
+#: ``smooth``'s three per-inflection constants, keyed by the inflection value.
+#: The curve is the default easing, so this is evaluated once per animation
+#: event per replay -- thousands of times in a batch of a mob-heavy scene --
+#: and every one of those calls used to build a one-element tensor and run a
+#: sigmoid, a negate, a divide and two more elementwise ops on it to arrive at
+#: the same two numbers. Cached rather than folded into Python floats so the
+#: values are bit-identical to what the per-call arithmetic produced.
+_SMOOTH_CONSTANTS: dict[float, tuple] = {}
+
+
+def _smooth_constants(inflection):
+    """``(inflection_tensor, error, 1 - 2 * error)`` for ``smooth``."""
+    cached = _SMOOTH_CONSTANTS.get(inflection)
+    if cached is not None:
+        return cached
+    inflection_t = torch.tensor((inflection,))
+    error = (-inflection_t / 2).sigmoid_()
+    constants = (inflection_t, error, 1 - 2 * error)
+    _SMOOTH_CONSTANTS[inflection] = constants
+    return constants
+
+
 def smooth(t, inflection=10.0):
-    inflection = torch.tensor((inflection,))
-    error = (-inflection / 2).sigmoid_()
-    return (((inflection * (t - 0.5)).sigmoid_() - error) / (1 - 2 * error)).clamp_(
-        min=0, max=1
-    )
+    if isinstance(inflection, (int, float)):
+        inflection, error, scale = _smooth_constants(float(inflection))
+    else:
+        # Anything that is not a plain number is not a cache key; build the
+        # constants exactly as this always did, including what that rejects.
+        inflection = torch.tensor((inflection,))
+        error = (-inflection / 2).sigmoid_()
+        scale = 1 - 2 * error
+    return (((inflection * (t - 0.5)).sigmoid_() - error) / scale).clamp_(min=0, max=1)
 
 
 def delay_fade(t):

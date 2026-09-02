@@ -293,6 +293,46 @@ Two changes are refused rather than silently mishandled:
   window is allocated on the render device when the Mob is created, and nothing
   re-asks afterwards. Choose the device before creating one.
 
+Fusing the pipeline's arithmetic with ``torch.compile``
+======================================================
+
+Between the ray-tracing kernels, a render is a long chain of small PyTorch
+operations: the timeline materialized at every frame, vertices projected and
+shaded, the analytic-coverage fragments compacted into sheets, frames
+post-processed. Eager PyTorch pays a dispatch and a full pass over memory for
+each one. ``SETTINGS.computing.torch_compile`` runs those chains through
+``torch.compile`` instead, which fuses each into a single kernel:
+
+.. code-block:: python
+
+    from algan import *
+
+    SETTINGS.computing.set(torch_compile=False)   # or True, or "auto"
+
+``"auto"``, the default, is on wherever ``torch.compile`` is supported and off
+where it is not -- Windows, and any Python version PyTorch's compiler does not
+yet support. ``True`` tries regardless; ``False`` is off everywhere. The
+environment variable ``ALGAN_TORCH_COMPILE`` overrides the field, and
+``algan check`` reports what it resolved to.
+
+Three things to know:
+
+* **The first render of a process is slower, every later one faster.** Each
+  compiled function is built on its first call -- seconds apiece on a CPU,
+  cached on disk by PyTorch so a later process starts warmer -- and that cost
+  lands on the first frames of the first render. A script that renders once
+  and exits may not recoup it; a session that renders repeatedly, the
+  interactive viewer, and any longer video do.
+* **It can never fail a render.** A function whose compile fails on your
+  machine -- no C++ compiler on the path, an operation the backend cannot
+  lower -- warns once, naming the function and the reason, and runs eagerly
+  from then on. On an Apple GPU this is the common case for now: PyTorch
+  2.7's Metal backend is a prototype, and a function it cannot build simply
+  keeps running eagerly on the GPU.
+* **Output is unchanged to within the rounding the render suites already
+  tolerate.** Fused arithmetic keeps the operation order; only transcendental
+  functions may differ by a unit in the last place.
+
 Initialization-only configuration
 =================================
 

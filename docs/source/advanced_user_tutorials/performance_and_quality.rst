@@ -278,6 +278,12 @@ changed between renders, at the cost of a fresh kernel-preparation pass whenever
 the change crosses the CPU/GPU line -- see :doc:`settings` for that and for the
 two changes that are refused rather than mishandled.
 
+The pipeline's own PyTorch arithmetic -- everything between the ray-tracing
+kernels -- runs through ``torch.compile`` by default wherever that is supported,
+which fuses each chain of small operations into one kernel.
+``SETTINGS.computing.set(torch_compile=False)`` turns it off; the first render
+of a process pays the compile and every later one benefits. See :doc:`settings`.
+
 The **animation** device is chosen at import time and cannot be changed
 afterwards, so it is an environment variable set **before** ``import algan``:
 

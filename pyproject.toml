@@ -45,6 +45,12 @@ dependencies = [
     "reprit>=0.9.0",
     "decision>=0.3.0",
     "numpy>=1.20.0",
+    # torch.compile's Inductor backend builds its CPU kernels through
+    # torch.utils.cpp_extension, which imports setuptools at module level.
+    # Nothing declares it: torch does not, and a uv venv does not seed it, so
+    # on macOS arm64 (where no other dependency pulls it in) every compiled
+    # function fell back to eager with "No module named 'setuptools'".
+    "setuptools>=61",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
     "torch>=2.0.0",

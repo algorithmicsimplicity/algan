@@ -192,3 +192,6 @@ benchmarks/renderer_audit/package-lock.json
 torch-op-probe.txt
 pytest-output.txt
 compile-trace.txt
+
+# Written by algan/utils/profiling_utils.py into the working directory
+algan_profile_report*.txt

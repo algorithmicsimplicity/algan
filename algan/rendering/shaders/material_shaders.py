@@ -34,6 +34,7 @@ import torch.nn.functional as F
 
 from algan.utils.color_space import linear_to_srgb, srgb_to_linear
 from algan.utils.tensor_utils import dot_product
+from algan.utils.torch_compile import compiled
 
 #: Number of fixed leading parameters in the shader calling convention: the
 #: ``memory, vertex_location, vertex_normal, albedo_color, camera_location,
@@ -91,6 +92,53 @@ def _split_albedo(albedo_color):
     return albedo_color[..., :3], albedo_color[..., 3:]
 
 
+def _plain(value):
+    """``value`` as a plain tensor, so no :class:`~algan.constants.color.Color`
+    reaches a compiled core.
+
+    ``torch.compile`` traces a ``torch.Tensor`` subclass through its own
+    subclass machinery, which the arithmetic here has no use for; a Color's
+    channels are already what the shader convention names. Anything that is not
+    a strict-subclass tensor (a plain tensor, a float, a tuple) is returned
+    untouched, so this is a no-op on every argument that was never a Color.
+    """
+    if type(value) is not torch.Tensor and isinstance(value, torch.Tensor):
+        return value.as_subclass(torch.Tensor)
+    return value
+
+
+def _fused_arm(fused, *color_params):
+    """``fused``, or its eager self when a color parameter is a Python sequence.
+
+    The color-valued material parameters (``emissive``, ``specular_color``,
+    ``sheen_color``, ...) are spelled as plain tuples in these signatures and
+    reach the live path as tensors -- ``Material.get_shader_param_values`` runs
+    every one of them through ``_to_rgb``. A *direct* call left on the defaults
+    therefore does tuple arithmetic, whose behaviour (a ``TypeError``, or
+    sequence repetition against an integer) is what it has always been and is
+    not this refactor's to change. Dynamo raises its own error on it, which the
+    fallback would read as a compiler refusal and demote the shader on for the
+    whole process -- so the tuple case simply does not go through the compiler.
+    """
+    for value in color_params:
+        if not torch.is_tensor(value) and isinstance(value, (tuple, list)):
+            return fused.eager
+    return fused
+
+
+def _energy_scale_core(weight, linear_space):
+    """:func:`_energy_scale` with its settings read already resolved.
+
+    Separate so a compiled shader core takes the gate as a plain ``bool``
+    argument -- ``_linear_color_space()``'s function-local import and live
+    module read are exactly the two things a compiled region must not contain,
+    and Dynamo specializes the branch on the bool instead.
+    """
+    if linear_space:
+        return 1.0
+    return 1.0 / weight.clamp_min(1.0)
+
+
 def _energy_scale(weight):
     """Reciprocal of the illumination budget -- the torch twin of
     ``shading_taichi._energy_scale``.
@@ -109,9 +157,20 @@ def _energy_scale(weight):
     Off under ``_linear_color_space()``: there lights sum plainly and this
     returns exactly 1.0, since normalising would make them stop adding.
     """
-    if _linear_color_space():
-        return 1.0
-    return 1.0 / weight.clamp_min(1.0)
+    return _energy_scale_core(weight, _linear_color_space())
+
+
+def _recombine_core(rgb, glow_tail, linear_space):
+    """:func:`_recombine` with its settings read already resolved; see
+    :func:`_energy_scale_core` for why the gate is an argument.
+    """
+    rgb = rgb.clamp_min(0.0)
+    if not linear_space:
+        # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
+        # range, so the in-range case is a bit-identical no-op and there is no
+        # divide-by-zero on black.
+        rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
+    return torch.cat((rgb, glow_tail), -1)
 
 
 def _recombine(rgb, glow_tail):
@@ -134,13 +193,7 @@ def _recombine(rgb, glow_tail):
     clamp stays either way -- it is not part of the bound; it stops a negative
     reaching the encoder's pow.
     """
-    rgb = rgb.clamp_min(0.0)
-    if not _linear_color_space():
-        # clamp_min(1.0) makes the divisor exactly 1 whenever nothing is over
-        # range, so the in-range case is a bit-identical no-op and there is no
-        # divide-by-zero on black.
-        rgb = rgb / rgb.amax(-1, keepdim=True).clamp_min(1.0)
-    return torch.cat((rgb, glow_tail), -1)
+    return _recombine_core(rgb, glow_tail, _linear_color_space())
 
 
 def _normalize(v):
@@ -268,6 +321,48 @@ def basic_material_shader(
     return albedo_color
 
 
+@compiled(dynamic=True)
+def _lambert_fused(
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    light_origin,
+    light_color,
+    light_intensity,
+    ambient_light_intensity,
+    emissive,
+    emissive_intensity,
+    flat_shading,
+    env_map_intensity,
+    ambient_strength,
+    linear_space,
+):
+    """:func:`lambert_shader`'s arithmetic, as one compiled region.
+
+    Everything the shader convention carries but the maths does not use --
+    the ``memory`` arena, the two live ``rt_settings`` reads behind
+    ``_ambient_strength()`` / ``_linear_color_space()`` (a function-local
+    import each) -- is resolved by the caller and arrives here as a plain
+    float and a plain bool, which is what lets the whole chain fuse. Pure and
+    re-runnable, so the eager fallback in :mod:`algan.utils.torch_compile`
+    can retry it. ``dynamic=True``: both leading dimensions (the batch's frame
+    count and the collection's triangle count) move from call to call.
+    """
+    rgb, glow = _split_albedo(albedo_color)
+    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
+    light_dir = _normalize(light_origin - vertex_location)
+    n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
+    radiance = light_color[..., :3] * light_intensity
+
+    kA = ambient_strength * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
+    diffuse = rgb * radiance * n_dot_l
+    out = (ambient + diffuse) * _energy_scale_core(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
+    ) + emissive * emissive_intensity
+    return _recombine_core(out, glow, linear_space)
+
+
 def lambert_shader(
     memory,
     vertex_location,
@@ -284,19 +379,21 @@ def lambert_shader(
     env_map_intensity: float = 1.0,
 ):
     """MeshLambertMaterial: Lambertian (diffuse-only) lighting plus emissive."""
-    rgb, glow = _split_albedo(albedo_color)
-    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
-    light_dir = _normalize(light_origin - vertex_location)
-    n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
-    radiance = light_color[..., :3] * light_intensity
-
-    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
-    ambient = rgb * kA
-    diffuse = rgb * radiance * n_dot_l
-    out = (ambient + diffuse) * _energy_scale(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA
-    ) + emissive * emissive_intensity
-    return _recombine(out, glow)
+    return _fused_arm(_lambert_fused, emissive)(
+        vertex_location,
+        vertex_normal,
+        _plain(albedo_color),
+        light_origin,
+        _plain(light_color),
+        light_intensity,
+        ambient_light_intensity,
+        _plain(emissive),
+        emissive_intensity,
+        flat_shading,
+        env_map_intensity,
+        _ambient_strength(),
+        _linear_color_space(),
+    )
 
 
 def manim_shader(
@@ -379,6 +476,55 @@ def manim_shader(
     return _recombine(out, glow)
 
 
+@compiled(dynamic=True)
+def _phong_fused(
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    camera_location,
+    light_origin,
+    light_color,
+    light_intensity,
+    ambient_light_intensity,
+    emissive,
+    emissive_intensity,
+    spec_rgb,
+    shininess,
+    flat_shading,
+    env_map_intensity,
+    ambient_strength,
+    linear_space,
+):
+    """:func:`phong_shader`'s arithmetic, as one compiled region; see
+    :func:`_lambert_fused` for what the caller resolves before this runs.
+    """
+    rgb, glow = _split_albedo(albedo_color)
+    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
+    (_l, _v, _h, n_dot_l, _nv, n_dot_h, v_dot_h) = _light_geometry(
+        vertex_location, n, camera_location, light_origin
+    )
+    radiance = light_color[..., :3] * light_intensity
+
+    kA = ambient_strength * ambient_light_intensity * env_map_intensity
+    ambient = rgb * kA
+    diffuse = rgb * radiance * n_dot_l
+    # Blinn-Phong specular: F_Schlick(specular, 1, V.H) * 0.25 * D, with
+    # D = (shininess * 0.5 + 1) * (N.H)^shininess, scaled by N.L -- which
+    # also keeps back faces dark without a separate gate.
+    s = (
+        shininess.clamp_min(1e-3)
+        if torch.is_tensor(shininess)
+        else max(shininess, 1e-3)
+    )
+    d_blinn = (s * 0.5 + 1.0) * n_dot_h.clamp_min(1e-4) ** s
+    f_spec = spec_rgb + (1.0 - spec_rgb) * (1.0 - v_dot_h).clamp(0.0, 1.0) ** 5
+    specular_out = f_spec * radiance * (0.25 * d_blinn * n_dot_l)
+    out = (ambient + diffuse + specular_out) * _energy_scale_core(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
+    ) + emissive * emissive_intensity
+    return _recombine_core(out, glow, linear_space)
+
+
 def phong_shader(
     memory,
     vertex_location,
@@ -403,35 +549,79 @@ def phong_shader(
     normalization and its Fresnel term but not its ``1/pi`` (the diffuse lobe
     drops the same factor, so the ratio between them is three.js's exactly).
     """
+    # ``specular`` reaches the live path as a tensor (Material.get_shader_param_values
+    # runs it through _to_rgb); the signature default is a plain tuple, and
+    # ``1 - tuple`` is not a thing, so normalise before the Fresnel. Done here
+    # rather than inside the compiled core: building a tensor from a Python
+    # tuple is host work, not arithmetic to fuse.
+    spec_rgb = specular if torch.is_tensor(specular) else torch.tensor(specular)
+    return _fused_arm(_phong_fused, emissive)(
+        vertex_location,
+        vertex_normal,
+        _plain(albedo_color),
+        camera_location,
+        light_origin,
+        _plain(light_color),
+        light_intensity,
+        ambient_light_intensity,
+        _plain(emissive),
+        emissive_intensity,
+        _plain(spec_rgb),
+        shininess,
+        flat_shading,
+        env_map_intensity,
+        _ambient_strength(),
+        _linear_color_space(),
+    )
+
+
+@compiled(dynamic=True)
+def _standard_fused(
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    camera_location,
+    light_origin,
+    light_color,
+    light_intensity,
+    ambient_light_intensity,
+    roughness,
+    metalness,
+    emissive,
+    emissive_intensity,
+    env_map_intensity,
+    flat_shading,
+    ambient_strength,
+    linear_space,
+):
+    """:func:`standard_shader`'s arithmetic, as one compiled region; see
+    :func:`_lambert_fused` for what the caller resolves before this runs.
+    """
     rgb, glow = _split_albedo(albedo_color)
     n = _shading_normal(vertex_location, vertex_normal, flat_shading)
-    (_l, _v, _h, n_dot_l, _nv, n_dot_h, v_dot_h) = _light_geometry(
+    (_l, _v, _h, n_dot_l, n_dot_v, n_dot_h, v_dot_h) = _light_geometry(
         vertex_location, n, camera_location, light_origin
     )
     radiance = light_color[..., :3] * light_intensity
 
-    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
-    ambient = rgb * kA
-    diffuse = rgb * radiance * n_dot_l
-    # Blinn-Phong specular: F_Schlick(specular, 1, V.H) * 0.25 * D, with
-    # D = (shininess * 0.5 + 1) * (N.H)^shininess, scaled by N.L -- which
-    # also keeps back faces dark without a separate gate.
-    s = (
-        shininess.clamp_min(1e-3)
-        if torch.is_tensor(shininess)
-        else max(shininess, 1e-3)
-    )
-    d_blinn = (s * 0.5 + 1.0) * n_dot_h.clamp_min(1e-4) ** s
-    # ``specular`` reaches the live path as a tensor (Material.get_shader_param_values
-    # runs it through _to_rgb); the signature default is a plain tuple, and
-    # ``1 - tuple`` is not a thing, so normalise before the Fresnel.
-    spec_rgb = specular if torch.is_tensor(specular) else torch.tensor(specular)
-    f_spec = spec_rgb + (1.0 - spec_rgb) * (1.0 - v_dot_h).clamp(0.0, 1.0) ** 5
-    specular_out = f_spec * radiance * (0.25 * d_blinn * n_dot_l)
-    out = (ambient + diffuse + specular_out) * _energy_scale(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    # Base reflectivity: 4% for dielectrics, the albedo for metals.
+    f0 = 0.04 * (1.0 - metalness) + metalness * rgb
+    fresnel = fresnel_schlick(v_dot_h, f0)
+    ndf = ggx_distribution(n_dot_h, roughness)
+    geom = smith_geometry(n_dot_v, n_dot_l, roughness)
+    specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
+
+    k_d = (1.0 - fresnel) * (1.0 - metalness)
+    diffuse = k_d * rgb * radiance * n_dot_l
+    direct = diffuse + specular * radiance * n_dot_l
+
+    # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
+    kA = ambient_strength * ambient_light_intensity * env_map_intensity
+    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
+    out = (ambient + direct) * _energy_scale_core(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
-    return _recombine(out, glow)
+    return _recombine_core(out, glow, linear_space)
 
 
 def standard_shader(
@@ -457,76 +647,62 @@ def standard_shader(
     image-based environment reflection of the GLSL material is approximated by a
     constant ambient term scaled by ``env_map_intensity``.
     """
-    rgb, glow = _split_albedo(albedo_color)
-    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
-    (_l, _v, _h, n_dot_l, n_dot_v, n_dot_h, v_dot_h) = _light_geometry(
-        vertex_location, n, camera_location, light_origin
+    return _fused_arm(_standard_fused, emissive)(
+        vertex_location,
+        vertex_normal,
+        _plain(albedo_color),
+        camera_location,
+        light_origin,
+        _plain(light_color),
+        light_intensity,
+        ambient_light_intensity,
+        roughness,
+        metalness,
+        _plain(emissive),
+        emissive_intensity,
+        env_map_intensity,
+        flat_shading,
+        _ambient_strength(),
+        _linear_color_space(),
     )
-    radiance = light_color[..., :3] * light_intensity
-
-    # Base reflectivity: 4% for dielectrics, the albedo for metals.
-    f0 = 0.04 * (1.0 - metalness) + metalness * rgb
-    fresnel = fresnel_schlick(v_dot_h, f0)
-    ndf = ggx_distribution(n_dot_h, roughness)
-    geom = smith_geometry(n_dot_v, n_dot_l, roughness)
-    specular = (ndf * geom * fresnel) / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
-
-    k_d = (1.0 - fresnel) * (1.0 - metalness)
-    diffuse = k_d * rgb * radiance * n_dot_l
-    direct = diffuse + specular * radiance * n_dot_l
-
-    # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
-    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
-    ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
-    out = (ambient + direct) * _energy_scale(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA
-    ) + emissive * emissive_intensity
-    return _recombine(out, glow)
 
 
-def physical_shader(
-    memory,
+@compiled(dynamic=True)
+def _physical_fused(
     vertex_location,
     vertex_normal,
     albedo_color,
     camera_location,
     light_origin,
     light_color,
-    light_intensity: float,
-    ambient_light_intensity: float,
-    roughness: float = 1.0,
-    metalness: float = 0.0,
-    emissive=(0.0, 0.0, 0.0),
-    emissive_intensity: float = 1.0,
-    env_map_intensity: float = 1.0,
-    flat_shading: float = 0.0,
-    ior: float = 1.5,
-    specular_intensity: float = 1.0,
-    specular_color=(1.0, 1.0, 1.0),
-    clearcoat: float = 0.0,
-    clearcoat_roughness: float = 0.0,
-    sheen: float = 0.0,
-    sheen_roughness: float = 1.0,
-    sheen_color=(0.0, 0.0, 0.0),
-    transmission: float = 0.0,
-    iridescence: float = 0.0,
-    # Registered so the packed name reaches the material block's
-    # attenuation_sigma slots; deliberately unused HERE -- absorption acts on
-    # the segment a ray travels inside the medium, which a per-vertex surface
-    # pass does not see (the wavefront bounce loop applies it).
-    attenuation_sigma=(0.0, 0.0, 0.0),
+    light_intensity,
+    ambient_light_intensity,
+    roughness,
+    metalness,
+    emissive,
+    emissive_intensity,
+    env_map_intensity,
+    flat_shading,
+    ior,
+    specular_intensity,
+    specular_color,
+    clearcoat,
+    clearcoat_roughness,
+    sheen,
+    sheen_roughness,
+    sheen_color,
+    transmission,
+    ambient_strength,
+    linear_space,
 ):
-    """MeshPhysicalMaterial: MeshStandard plus clearcoat, sheen, ior-driven
-    specular and (approximate) transmission.
+    """:func:`physical_shader`'s arithmetic, as one compiled region -- the
+    longest chain in this module (three GGX lobes and the sheen layer), and the
+    one with most to gain from fusing. See :func:`_lambert_fused` for what the
+    caller resolves before this runs.
 
-    ``ior`` drives the dielectric base reflectivity
-    ``F0 = ((ior - 1) / (ior + 1))^2``, scaled by ``specular_intensity`` and
-    tinted by ``specular_color`` (the KHR specular workflow). A second GGX lobe
-    adds the ``clearcoat``. ``sheen`` adds a soft inverted-Fresnel rim. The
-    ``transmission`` and ``iridescence`` parameters are approximated (no
-    refraction / thin-film spectral model in a per-vertex pass).
-    Volumetric absorption is not approximated here at all: it is applied along
-    the refracted path in the renderer, driven by this parameter's packed slot.
+    ``iridescence`` and ``attenuation_sigma`` are not parameters here: the
+    public shader accepts them for the material block's sake and this maths
+    never reads them.
     """
     rgb, glow = _split_albedo(albedo_color)
     n = _shading_normal(vertex_location, vertex_normal, flat_shading)
@@ -578,15 +754,126 @@ def physical_shader(
     sheen_brdf = _d_charlie(n_dot_h, sheen_r) * _v_neubelt(n_dot_v, n_dot_l)
     direct = direct + sheen_c * sheen_brdf * radiance * n_dot_l
 
-    kA = _ambient_strength() * ambient_light_intensity * env_map_intensity
+    kA = ambient_strength * ambient_light_intensity * env_map_intensity
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * kA
     # No per-light transmission term: the transmitted share is carried by the
     # renderer's own continuation, and adding it here again double counted.
     # See shading_taichi._stage_physical.
-    out = (ambient + direct) * _energy_scale(
-        n_dot_l * radiance.amax(-1, keepdim=True) + kA
+    out = (ambient + direct) * _energy_scale_core(
+        n_dot_l * radiance.amax(-1, keepdim=True) + kA, linear_space
     ) + emissive * emissive_intensity
-    return _recombine(out, glow)
+    return _recombine_core(out, glow, linear_space)
+
+
+def physical_shader(
+    memory,
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    camera_location,
+    light_origin,
+    light_color,
+    light_intensity: float,
+    ambient_light_intensity: float,
+    roughness: float = 1.0,
+    metalness: float = 0.0,
+    emissive=(0.0, 0.0, 0.0),
+    emissive_intensity: float = 1.0,
+    env_map_intensity: float = 1.0,
+    flat_shading: float = 0.0,
+    ior: float = 1.5,
+    specular_intensity: float = 1.0,
+    specular_color=(1.0, 1.0, 1.0),
+    clearcoat: float = 0.0,
+    clearcoat_roughness: float = 0.0,
+    sheen: float = 0.0,
+    sheen_roughness: float = 1.0,
+    sheen_color=(0.0, 0.0, 0.0),
+    transmission: float = 0.0,
+    iridescence: float = 0.0,
+    # Registered so the packed name reaches the material block's
+    # attenuation_sigma slots; deliberately unused HERE -- absorption acts on
+    # the segment a ray travels inside the medium, which a per-vertex surface
+    # pass does not see (the wavefront bounce loop applies it).
+    attenuation_sigma=(0.0, 0.0, 0.0),
+):
+    """MeshPhysicalMaterial: MeshStandard plus clearcoat, sheen, ior-driven
+    specular and (approximate) transmission.
+
+    ``ior`` drives the dielectric base reflectivity
+    ``F0 = ((ior - 1) / (ior + 1))^2``, scaled by ``specular_intensity`` and
+    tinted by ``specular_color`` (the KHR specular workflow). A second GGX lobe
+    adds the ``clearcoat``. ``sheen`` adds a soft inverted-Fresnel rim. The
+    ``transmission`` and ``iridescence`` parameters are approximated (no
+    refraction / thin-film spectral model in a per-vertex pass).
+    Volumetric absorption is not approximated here at all: it is applied along
+    the refracted path in the renderer, driven by this parameter's packed slot.
+    """
+    return _fused_arm(_physical_fused, emissive, specular_color, sheen_color)(
+        vertex_location,
+        vertex_normal,
+        _plain(albedo_color),
+        camera_location,
+        light_origin,
+        _plain(light_color),
+        light_intensity,
+        ambient_light_intensity,
+        roughness,
+        metalness,
+        _plain(emissive),
+        emissive_intensity,
+        env_map_intensity,
+        flat_shading,
+        ior,
+        specular_intensity,
+        _plain(specular_color),
+        clearcoat,
+        clearcoat_roughness,
+        sheen,
+        sheen_roughness,
+        _plain(sheen_color),
+        transmission,
+        _ambient_strength(),
+        _linear_color_space(),
+    )
+
+
+@compiled(dynamic=True)
+def _toon_fused(
+    vertex_location,
+    vertex_normal,
+    albedo_color,
+    light_origin,
+    light_color,
+    light_intensity,
+    ambient_light_intensity,
+    emissive,
+    emissive_intensity,
+    num_bands,
+    flat_shading,
+    ambient_strength,
+    linear_space,
+):
+    """:func:`toon_shader`'s arithmetic, as one compiled region; see
+    :func:`_lambert_fused` for what the caller resolves before this runs.
+    """
+    rgb, glow = _split_albedo(albedo_color)
+    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
+    light_dir = _normalize(light_origin - vertex_location)
+    n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
+
+    bands = (
+        num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
+    )
+    stepped = torch.ceil(n_dot_l * bands) / bands
+    kA = ambient_strength * ambient_light_intensity
+    ambient = rgb * kA
+    diffuse = rgb * light_color[..., :3] * light_intensity * stepped
+    out = (ambient + diffuse) * _energy_scale_core(
+        stepped * (light_color[..., :3] * light_intensity).amax(-1, keepdim=True) + kA,
+        linear_space,
+    ) + emissive * emissive_intensity
+    return _recombine_core(out, glow, linear_space)
 
 
 def toon_shader(
@@ -609,22 +896,21 @@ def toon_shader(
     The Three.js ``gradientMap`` is approximated by an even ``num_bands``-step
     ramp.
     """
-    rgb, glow = _split_albedo(albedo_color)
-    n = _shading_normal(vertex_location, vertex_normal, flat_shading)
-    light_dir = _normalize(light_origin - vertex_location)
-    n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
-
-    bands = (
-        num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
+    return _fused_arm(_toon_fused, emissive)(
+        vertex_location,
+        vertex_normal,
+        _plain(albedo_color),
+        light_origin,
+        _plain(light_color),
+        light_intensity,
+        ambient_light_intensity,
+        _plain(emissive),
+        emissive_intensity,
+        num_bands,
+        flat_shading,
+        _ambient_strength(),
+        _linear_color_space(),
     )
-    stepped = torch.ceil(n_dot_l * bands) / bands
-    kA = _ambient_strength() * ambient_light_intensity
-    ambient = rgb * kA
-    diffuse = rgb * light_color[..., :3] * light_intensity * stepped
-    out = (ambient + diffuse) * _energy_scale(
-        stepped * (light_color[..., :3] * light_intensity).amax(-1, keepdim=True) + kA
-    ) + emissive * emissive_intensity
-    return _recombine(out, glow)
 
 
 def normal_shader(
