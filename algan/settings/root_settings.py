@@ -49,8 +49,15 @@ class AlganSettings:
         "style",
         "video",
         "raytracing",
-        "skip_save_frame",
+        "_skip_save_frame",
     )
+
+    #: The five sections that are public configuration. ``__slots__`` also
+    #: carries ``_skip_save_frame``, an engine flag rather than a setting: the
+    #: docs build sets it so an example's ``save_frame`` call renders nothing,
+    #: and it must not appear in ``dir(SETTINGS)``, ``repr`` or a snapshot
+    #: beside ``video`` and ``raytracing`` as though a user should reach for it.
+    _SECTIONS = ("computing", "paths", "style", "video", "raytracing")
 
     def __init__(self):
         object.__setattr__(self, "computing", ComputingSettings())
@@ -58,24 +65,24 @@ class AlganSettings:
         object.__setattr__(self, "style", StyleSettings())
         object.__setattr__(self, "video", LD.as_mutable())
         object.__setattr__(self, "raytracing", RayTracingSettings())
-        object.__setattr__(self, "skip_save_frame", False)
+        object.__setattr__(self, "_skip_save_frame", False)
 
     def __setattr__(self, name, value):
-        if name == "skip_save_frame":
-            object.__setattr__(self, "skip_save_frame", value)
+        if name == "_skip_save_frame":
+            object.__setattr__(self, "_skip_save_frame", value)
             return
-        if name in self.__slots__:
+        if name in self._SECTIONS:
             raise AlganConfigurationError(
                 f"SETTINGS.{name} has stable identity; call SETTINGS.{name}.set(...)"
             )
         raise AttributeError(name)
 
     def __dir__(self):
-        return sorted(self.__slots__) + ["snapshot", "restore", "override"]
+        return sorted(self._SECTIONS) + ["snapshot", "restore", "override"]
 
     def __repr__(self):
         sections = "\n".join(
-            f"  {name}={getattr(self, name)!r}" for name in self.__slots__
+            f"  {name}={getattr(self, name)!r}" for name in self._SECTIONS
         )
         return f"SETTINGS(\n{sections}\n)"
 
@@ -106,7 +113,7 @@ class AlganSettings:
 
         Example: ``with SETTINGS.override(raytracing={"samples_per_pixel": 4}):``
         """
-        unknown = [name for name in sections if name not in self.__slots__]
+        unknown = [name for name in sections if name not in self._SECTIONS]
         if unknown:
             raise AlganConfigurationError(f"Unknown settings section '{unknown[0]}'")
         snapshot = self.snapshot()

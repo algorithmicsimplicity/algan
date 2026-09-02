@@ -33,6 +33,7 @@ from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.spatial import OUTWARD, UP
 from algan.geometry.geometry import get_rotation_around_axis
+from algan.utils.api_renames import _renamed_keywords
 from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
 
@@ -84,7 +85,7 @@ def wiggle(t, wiggles: int = 2):
 
 
 @animated_function(animated_args={"interpolation": 0.0})
-def _indicate_scale_step(mobject, scale_factor, interpolation=1.0):
+def _indicate_scale_step(mob, scale_factor, interpolation=1.0):
     """Apply one frame of Indicate's relative there-and-back scale pulse."""
     interpolation = cast_to_tensor(interpolation)
     scale_factor = cast_to_tensor(scale_factor).to(interpolation)
@@ -92,11 +93,12 @@ def _indicate_scale_step(mobject, scale_factor, interpolation=1.0):
     # Go through Mob.scale rather than writing the derived scale_coefficient
     # timeline directly. The scale property ultimately updates basis (the
     # renderer's source of truth) and carries descendant locations with it.
-    mobject.scale(1.0 + (scale_factor - 1.0) * pulse)
-    return mobject
+    mob.scale(1.0 + (scale_factor - 1.0) * pulse)
+    return mob
 
 
-def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0):
+@_renamed_keywords(mobject="mob")
+def Indicate(mob, scale_factor: float = 1.2, color=YELLOW, runtime: float = 1.0):
     """Draw attention to a Mob by briefly growing and recoloring it.
 
     The Mob swells and flashes color, then returns to exactly how it was -- the
@@ -110,7 +112,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, runtime: float = 
 
     Parameters
     ----------
-    mobject
+    mob
         The Mob to indicate.
     scale_factor
         How large the Mob grows at the peak, as a multiple of its current size.
@@ -127,10 +129,10 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, runtime: float = 
     """
     color = cast_to_tensor(color)
     scale_factor = cast_to_tensor(scale_factor)
-    with Sync(runtime=runtime, animation_manager=animation_manager_for(mobject)):
-        mobject.pulse_color(color)
-        _indicate_scale_step(mobject, scale_factor)
-    return mobject
+    with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):
+        mob.pulse_color(color)
+        _indicate_scale_step(mob, scale_factor)
+    return mob
 
 
 @animated_function(
@@ -206,8 +208,9 @@ def wiggle_step(
     mob.location = loc
 
 
+@_renamed_keywords(mobject="mob")
 def Wiggle(
-    mobject,
+    mob,
     scale_value: float = 1.1,
     rotation_angle: float = 0.01 * math.pi * 2,
     n_wiggles: int = 6,
@@ -229,7 +232,7 @@ def Wiggle(
 
     Parameters
     ----------
-    mobject
+    mob
         The Mob to wiggle.
     scale_value
         Peak size during the wiggle, as a multiple of the current size. Defaults to
@@ -253,10 +256,10 @@ def Wiggle(
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    basis_0 = mobject.basis.clone()
-    location_0 = mobject.location.clone()
-    with Sync(runtime=runtime, animation_manager=animation_manager_for(mobject)):
-        mobject.animate_function(
+    basis_0 = mob.basis.clone()
+    location_0 = mob.location.clone()
+    with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):
+        mob.animate_function(
             wiggle_step,
             basis_0=basis_0,
             location_0=location_0,
@@ -266,11 +269,12 @@ def Wiggle(
             scale_about_point=scale_about_point,
             rotate_about_point=rotate_about_point,
         )
-    return mobject
+    return mob
 
 
+@_renamed_keywords(mobject="mob")
 def Blink(
-    mobject,
+    mob,
     time_on: float = 0.5,
     time_off: float = 0.5,
     blinks: int = 1,
@@ -289,7 +293,7 @@ def Blink(
 
     Parameters
     ----------
-    mobject
+    mob
         The Mob to blink.
     time_on
         Seconds visible per cycle. Defaults to ``0.5``.
@@ -306,19 +310,19 @@ def Blink(
     :class:`~.Mob`
         The Mob that was passed in.
     """
-    with Seq(animation_manager=animation_manager_for(mobject)):
+    with Seq(animation_manager=animation_manager_for(mob)):
         for _ in range(blinks):
-            with Off(animation_manager=animation_manager_for(mobject)):
-                mobject.set_opacity_via_color(1.0)
-            mobject.wait(time_on)
-            with Off(animation_manager=animation_manager_for(mobject)):
-                mobject.set_opacity_via_color(0.0)
-            mobject.wait(time_off)
+            with Off(animation_manager=animation_manager_for(mob)):
+                mob.set_opacity_via_color(1.0)
+            mob.wait(time_on)
+            with Off(animation_manager=animation_manager_for(mob)):
+                mob.set_opacity_via_color(0.0)
+            mob.wait(time_off)
         if not hide_at_end:
-            with Off(animation_manager=animation_manager_for(mobject)):
-                mobject.set_opacity_via_color(1.0)
-            mobject.wait(time_on)
-    return mobject
+            with Off(animation_manager=animation_manager_for(mob)):
+                mob.set_opacity_via_color(1.0)
+            mob.wait(time_on)
+    return mob
 
 
 def FocusOn(focus_point, opacity: float = 0.2, color=GRAY, runtime: float = 2.0):
@@ -440,14 +444,14 @@ def undraw_step(mob, t, full_control_points):
 
 
 def _show_passing_flash_on_bezier(
-    mobject, time_width: float, runtime: float, *, clone_source: bool
+    mob, time_width: float, runtime: float, *, clone_source: bool
 ):
-    animation_manager = animation_manager_for(mobject)
+    animation_manager = animation_manager_for(mob)
     with Seq(animation_manager=animation_manager):
         with Off(animation_manager=animation_manager):
-            source_uses_fill = mobject.filled
-            source_color = mobject.color.clone()
-            flash = mobject.clone(spawn=False) if clone_source else mobject
+            source_uses_fill = mob.filled
+            source_color = mob.color.clone()
+            flash = mob.clone(spawn=False) if clone_source else mob
             flash.filled = False
             if source_uses_fill and torch.any(source_color[..., -1] > 0):
                 flash.stroke_color = source_color
@@ -458,11 +462,11 @@ def _show_passing_flash_on_bezier(
             flash.set_non_recursive(opacity=torch.ones_like(flash.opacity))
 
             source_is_visible = (
-                clone_source and mobject.is_spawned() and not mobject.is_despawned()
+                clone_source and mob.is_spawned() and not mob.is_despawned()
             )
             if source_is_visible:
-                source_opacity = mobject.opacity.clone()
-                mobject.set_non_recursive(opacity=torch.zeros_like(mobject.opacity))
+                source_opacity = mob.opacity.clone()
+                mob.set_non_recursive(opacity=torch.zeros_like(mob.opacity))
         with Sync(runtime=runtime, animation_manager=animation_manager):
             flash.animate_function(
                 passing_flash_step,
@@ -472,10 +476,11 @@ def _show_passing_flash_on_bezier(
         with Off(animation_manager=animation_manager):
             flash.despawn(animate=False)
             if source_is_visible:
-                mobject.set_non_recursive(opacity=source_opacity)
+                mob.set_non_recursive(opacity=source_opacity)
 
 
-def ShowPassingFlash(mobject, time_width: float = 0.1, runtime: float = 1.0):
+@_renamed_keywords(mobject="mob")
+def ShowPassingFlash(mob, time_width: float = 0.1, runtime: float = 1.0):
     """Run a bright segment along a curve, like a spark following a wire.
 
     A short piece of the curve is visible at a time and travels from one end to the
@@ -491,7 +496,7 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, runtime: float = 1.0):
 
     Parameters
     ----------
-    mobject
+    mob
         The curve, or a Mob containing curves, to flash along.
     time_width
         Length of the travelling segment as a fraction of the curve. Defaults to
@@ -506,21 +511,21 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, runtime: float = 1.0):
     """
     from algan.mobs.bezier_circuit import BezierCircuitCubic
 
-    if isinstance(mobject, BezierCircuitCubic):
+    if isinstance(mob, BezierCircuitCubic):
         _show_passing_flash_on_bezier(
-            mobject,
+            mob,
             time_width=time_width,
             runtime=runtime,
             clone_source=True,
         )
     else:
         beziers = [
-            d for d in mobject.get_descendants() if isinstance(d, BezierCircuitCubic)
+            d for d in mob.get_descendants() if isinstance(d, BezierCircuitCubic)
         ]
-        with Sync(runtime=runtime, animation_manager=animation_manager_for(mobject)):
+        with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):
             for b in beziers:
                 ShowPassingFlash(b, time_width=time_width, runtime=runtime)
-    return mobject
+    return mob
 
 
 def ShowPassingFlashWithThinningStrokeWidth(
@@ -661,8 +666,9 @@ def Flash(
     return point_or_mobject
 
 
+@_renamed_keywords(mobject="mob")
 def Circumscribe(
-    mobject,
+    mob,
     shape=None,
     fade_in: bool = False,
     fade_out: bool = False,
@@ -688,7 +694,7 @@ def Circumscribe(
 
     Parameters
     ----------
-    mobject
+    mob
         The Mob to circumscribe.
     shape
         Outline shape: ``Rectangle``, ``Square`` or ``Circle`` (the classes
@@ -722,18 +728,18 @@ def Circumscribe(
     """
     from algan.mobs.shapes_2d import Circle, Rectangle, Square, SurroundingRectangle
 
-    animation_manager = animation_manager_for(mobject)
+    animation_manager = animation_manager_for(mob)
     if shape is None or shape in (Rectangle, Square):
         frame = SurroundingRectangle(
-            mobject,
-            scene=mobject.scene,
+            mob,
+            scene=mob.scene,
             color=color,
             buffer=buff,
             stroke_width=stroke_width,
             filled=False,
         )
     elif shape == Circle:
-        bbox = mobject.get_bounding_box()
+        bbox = mob.get_bounding_box()
         mn = bbox.amin(-2)
         mx = bbox.amax(-2)
         center = (mn + mx) * 0.5
@@ -741,7 +747,7 @@ def Circumscribe(
         height = mx[..., 1] - mn[..., 1]
         radius = 0.5 * torch.sqrt(width**2 + height**2) + buff
         frame = Circle(
-            scene=mobject.scene,
+            scene=mob.scene,
             radius=radius,
             stroke_color=color,
             stroke_width=stroke_width,
@@ -797,11 +803,12 @@ def Circumscribe(
             runtime=runtime,
             clone_source=False,
         )
-    return mobject
+    return mob
 
 
+@_renamed_keywords(mobject="mob")
 def ApplyWave(
-    mobject,
+    mob,
     direction=UP,
     amplitude: float = 0.2,
     ripples: int = 1,
@@ -821,7 +828,7 @@ def ApplyWave(
 
     Parameters
     ----------
-    mobject
+    mob
         The Mob to ripple.
     direction
         Direction points are displaced in, shape ``(*, 3)``. Defaults to ``UP``. The
@@ -844,7 +851,7 @@ def ApplyWave(
     """
     direction = cast_to_tensor(direction)
     vect = amplitude * F.normalize(direction, p=2, dim=-1)
-    bbox = mobject.get_bounding_box()
+    bbox = mob.get_bounding_box()
     x_min = bbox.amin(-2)[..., 0].min()
     x_max = bbox.amax(-2)[..., 0].max()
 
@@ -882,4 +889,4 @@ def ApplyWave(
         nudge = w.unsqueeze(-1) * vect.to(points)
         return points + nudge
 
-    return Homotopy(mobject, wave_homotopy, runtime=runtime)
+    return Homotopy(mob, wave_homotopy, runtime=runtime)

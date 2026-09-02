@@ -46,6 +46,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.constants.color import *
 from algan.constants.spatial import DOWN, LEFT, ORIGIN, RIGHT, UP
+from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
@@ -54,6 +55,42 @@ from algan.mobs.triangulated_bezier_circuit import (
 )
 from algan.utils.mob_utils import BatchedMobViewSequence
 from algan.utils.tensor_utils import unsquish
+
+#: The external programs LaTeX typesetting needs, and what each one does.
+#: ``latex`` compiles the document, ``dvisvgm`` turns the DVI into the SVG
+#: outlines Algan reads.
+_LATEX_BINARIES = ("latex", "dvisvgm")
+
+
+def _require_latex_toolchain():
+    """Raise before anything is written when there is no TeX distribution.
+
+    Most people who ``pip install algan`` have no TeX, and until this existed
+    the first :class:`Tex` produced a ``rich``-formatted line from the vendored
+    Manim and then a raw ``FileNotFoundError: 'latex'`` from deep inside it,
+    with nothing to say which program was missing or that :class:`Text` needs
+    none of it. Checked here rather than in the vendored code, and before
+    :func:`make_manim_dir` writes a scratch directory for a run that cannot
+    happen.
+    """
+    import shutil
+
+    missing = [name for name in _LATEX_BINARIES if shutil.which(name) is None]
+    if not missing:
+        return
+    names = " and ".join(missing)
+    raise AlganConfigurationError(
+        f"LaTeX typesetting needs {names} on PATH, and "
+        f"{'they were' if len(missing) > 1 else 'it was'} not found.\n"
+        "  Debian/Ubuntu: sudo apt install texlive-latex-base "
+        "texlive-latex-extra dvisvgm\n"
+        "  macOS:         brew install --cask basictex, then "
+        "sudo tlmgr install standalone preview dvisvgm\n"
+        "  Windows:       install MiKTeX (https://miktex.org) and let it "
+        "install packages on the fly\n"
+        "Text(...) needs none of this: it renders through Pango and is the "
+        "right class for prose. Tex(..., latex=False) does the same."
+    )
 
 
 def make_manim_dir():
@@ -220,6 +257,8 @@ class Tex(Mob):
         sync_stroke_color=True,
         **kwargs,
     ):
+        if latex:
+            _require_latex_toolchain()
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         make_manim_dir()

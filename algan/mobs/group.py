@@ -23,6 +23,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan.animatable_base.animatable import _rejecting_timing_kwargs
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
@@ -57,15 +58,19 @@ class Group(Mob):
 
     Parameters
     ----------
-    mobs : Iterable[ :class:`~algan.animatable_base.mob.Mob` ]
-        The collection of mobs to group.
-    *args, **kwargs
-        Passed to :class:`~algan.animatable_base.mob.Mob`.
-
-    Returns
-    -------
-    :class:`~algan.mobs.group.Group`
-        The new mob which parents the provided mob collection.
+    *mobs
+        The Mobs to group, as separate arguments or as one iterable --
+        ``Group(a, b)`` and ``Group([a, b])`` are the same call, and nested
+        iterables are flattened. They must all belong to the same Scene.
+    link_children
+        Whether the Mobs become real children of the Group, so that they carry
+        it as a parent and follow its transforms. Defaults to True. ``False``
+        makes an observational view: transforms still recurse over the members,
+        but their ``parents`` are untouched, which is what ``group[1:3]``
+        returns.
+    **kwargs
+        Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``scene``,
+        which must be the members' own Scene, and ``name``.
 
     Examples
     --------
@@ -82,9 +87,9 @@ class Group(Mob):
 
     """
 
-    def __init__(self, *mobs, _link_children=True, **kwargs):
+    def __init__(self, *mobs, link_children: bool = True, **kwargs):
         initial_mobs = list(traverse(mobs))
-        self._link_children = bool(_link_children)
+        self._link_children = bool(link_children)
         if initial_mobs:
             scenes = {id(mob.scene): mob.scene for mob in initial_mobs}
             if len(scenes) != 1:
@@ -205,7 +210,7 @@ class Group(Mob):
             *list(mobs),
             scene=self.scene,
             add_to_scene=False,
-            _link_children=False,
+            link_children=False,
         )
 
     def __setitem__(self, item, value):
@@ -323,6 +328,7 @@ class Group(Mob):
         """
         return self.children
 
+    @_rejecting_timing_kwargs
     def arrange_in_line(
         self,
         direction: torch.Tensor = RIGHT,
@@ -412,6 +418,7 @@ class Group(Mob):
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
         return self
 
+    @_rejecting_timing_kwargs
     def arrange_between_points(self, start: torch.Tensor, end: torch.Tensor):
         """Space the members evenly along the segment between two points.
 
@@ -444,6 +451,7 @@ class Group(Mob):
                 mob.location = start + dif * ((i + 1) / (len(self.children) + 1))
         return self
 
+    @_rejecting_timing_kwargs
     def arrange_in_grid(
         self,
         num_rows: int = None,

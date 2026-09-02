@@ -502,6 +502,50 @@ is ``True`` -- so there is no conversion step and no behavioural difference.
 
 Prefer the Algan name in new code; there is nothing to fix in old code.
 
+Manim names that do not
+=======================
+
+Those spellings are the exception, not the rule. Where Manim's word for
+something is not Algan's, the root namespace carries Algan's only, and the
+Manim spelling raises an error naming the one to use. Everything in this table
+still works exactly as written under ``import algan.manim as mn``, which is
+that namespace's whole purpose.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Manim's spelling, at the root
+     - Algan's
+   * - ``mobject=`` on ``Brace``, ``Indicate``, ``Circumscribe``, ``ApplyMatrix``,
+       ``Wiggle`` and the rest
+     - ``mob=``
+   * - ``element_to_mobject=`` on ``Table``, ``Matrix`` and their variants
+     - ``element_to_mob=``
+   * - ``SVGMobject``, ``MobjectMatrix``, ``MobjectTable``, ``DashedVMobject``,
+       ``CurvesAsSubmobjects``
+     - ``SVGMob``, ``MobMatrix``, ``MobTable``, ``DashedMob``,
+       ``CurvesAsChildren``
+   * - ``Cone(base_radius=..., show_base=..., u_min=...)``,
+       ``Cylinder(show_ends=...)``, ``checkerboard_colors=``
+     - ``radius``, ``closed``, ``u_range``, ``checkered_color`` -- one
+       vocabulary across ``Sphere``, ``Cone``, ``Cylinder``, ``Torus`` and
+       ``Surface``, with ``direction`` defaulting to ``UP`` on both ``Cone``
+       and ``Cylinder``
+   * - ``RegularPolygon(num_vertices=...)``
+     - ``RegularPolygon(n=...)``
+   * - ``Dot(point=...)``
+     - ``Dot(location=...)``, the name of the attribute it sets
+
+An angle is the one mistake that cannot be caught this way, because a radian
+measure is a legal degree measure. ``Arc(angle=PI / 2)`` builds a 1.57 degree
+sliver rather than a quarter arc, so a non-integer angle smaller than a full
+turn warns and says what the degree spelling would be::
+
+    `angle=1.5708` looks like radians; Algan takes degrees (did you mean `angle=90`?)
+
+Whole numbers never warn -- ``Arc(angle=5)`` is a real five degree arc.
+
 Manim animations, on the other hand, do not come across: ``Transform``,
 ``Create``, ``FadeIn`` and friends have no meaning on Algan's timeline. Most of
 the common ones have a direct equivalent in

@@ -22,6 +22,14 @@ from algan.scene import Scene
 from algan.settings.video_settings import LD
 
 
+def _read_frame(path):
+    """The rendered PNG as an ``[H, W, C]`` uint8 array."""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return np.asarray(image)
+
+
 def _render(tmp_path, name, z_index):
     """Two coplanar unit squares, red under blue, blue given ``z_index``.
 
@@ -36,9 +44,7 @@ def _render(tmp_path, name, z_index):
         red.spawn(animate=False)
         blue.spawn(animate=False)
         scene.save_frame(str(path), video_settings=LD)
-    import torchvision
-
-    frame = torchvision.io.read_image(str(path)).permute(1, 2, 0).numpy()
+    frame = _read_frame(path)
     height, width = frame.shape[:2]
     return frame[height // 2, width // 2].astype(int)
 
@@ -109,9 +115,7 @@ def test_one_bin_of_bias_does_not_move_the_geometry(tmp_path):
                 square.z_index = z_index
             square.spawn(animate=False)
             scene.save_frame(str(path), video_settings=LD)
-        import torchvision
-
-        return torchvision.io.read_image(str(path)).permute(1, 2, 0)[..., :3].sum(-1)
+        return torch.from_numpy(_read_frame(path).copy())[..., :3].sum(-1)
 
     base = silhouette("bias_off", 0)
     lifted = silhouette("bias_on", 1)
@@ -146,9 +150,7 @@ def _stack_centre_pixel(tmp_path, name, order):
         for mob in mobs:
             mob.spawn(animate=False)
         scene.save_frame(str(path), video_settings=LD)
-    import torchvision
-
-    frame = torchvision.io.read_image(str(path)).permute(1, 2, 0).numpy()
+    frame = _read_frame(path)
     height, width = frame.shape[:2]
     return frame[height // 2, width // 2].astype(int)
 

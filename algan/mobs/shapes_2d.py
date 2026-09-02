@@ -38,6 +38,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.settings.shape_style_profiles import _manim_shape_style_for
+from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.tensor_utils import (
     broadcast_all,
     cast_to_tensor,
@@ -643,9 +644,6 @@ class RegularPolygon(Polygon):
     ----------
     n
         Number of sides. Defaults to ``6``; must be at least 3.
-    num_vertices
-        Alias of ``n``, for Manim compatibility. When given it overrides ``n``.
-        Defaults to ``None``.
     radius
         Distance from the center to each vertex, in world units. Defaults to ``1``.
     start_angle
@@ -666,13 +664,16 @@ class RegularPolygon(Polygon):
         self,
         n: int = 6,
         *,
-        num_vertices: int | None = None,
         radius: float = 1,
         start_angle: float | None = None,
         **kwargs,
     ):
-        if num_vertices is not None:
-            n = num_vertices
+        _reject_renamed_keywords(
+            "RegularPolygon",
+            kwargs,
+            {"num_vertices": "n"},
+            manim_alternative="RegularPolygon",
+        )
         if n < 3:
             raise ValueError("RegularPolygon requires n >= 3")
         if start_angle is None:
@@ -969,8 +970,10 @@ class Dot(Circle):
 
     Parameters
     ----------
-    point
-        Where to put it, shape ``(*, 3)`` in world units. Defaults to ``ORIGIN``.
+    location
+        Where to put it, shape ``(*, 3)`` in world units. Defaults to ``ORIGIN``
+        (the centre of the scene). The same name as :attr:`~.Mob.location`, which
+        is what it sets.
     radius
         Radius in world units. Defaults to ``0.08`` -- small enough to read as a
         marker beside shapes of unit size.
@@ -996,21 +999,24 @@ class Dot(Circle):
         from algan import *
 
         for position in (UP, LEFT + DOWN, RIGHT + DOWN):
-            Dot(point=position, radius=0.15, color=BLUE).spawn()
+            Dot(location=position, radius=0.15, color=BLUE).spawn()
 
         Scene.save_video()
     """
 
     def __init__(
         self,
-        point=ORIGIN,
+        location=ORIGIN,
         radius=0.08,
         stroke_width=0,
         fill_opacity=1.0,
         color=WHITE,
         **kwargs,
     ):
+        _reject_renamed_keywords(
+            "Dot", kwargs, {"point": "location"}, manim_alternative="Dot"
+        )
         kwargs.setdefault("color", color)
         kwargs.setdefault("stroke_width", stroke_width)
         kwargs.setdefault("fill_opacity", fill_opacity)
-        super().__init__(radius=radius, location=point, **kwargs)
+        super().__init__(radius=radius, location=location, **kwargs)

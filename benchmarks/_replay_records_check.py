@@ -53,7 +53,7 @@ def main():
     authored = len(ft.function_applications)
     print(f"after authoring:            {authored} function applications")
 
-    scene.initialize_frames()
+    scene._initialize_frames()
     for light in scene.light_sources:
         light.is_primitive = True
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]
@@ -62,7 +62,7 @@ def main():
     for i in range(4):
         # Same window every time: nothing about the scene changed, so a
         # correct replay would record nothing at all.
-        scene.get_batch_of_primitives(0, 20, actors, 10**12)
+        scene._get_batch_of_primitives(0, 20, actors, 10**12)
         scene.timeline_manager.clear_buffers()
         counts.append(len(ft.function_applications))
         print(
@@ -90,7 +90,7 @@ def main():
     bar_off.set_start_point(LEFT * 2)
     bar_off.set_end_point(RIGHT * 2)
     bar_off.set_start_point(LEFT + UP)
-    scene_off.initialize_frames()
+    scene_off._initialize_frames()
     for light in scene_off.light_sources:
         light.is_primitive = True
     actors_off = [
@@ -108,7 +108,7 @@ def main():
         animation_manager=scene_off.animation_manager,
     ):
         for _ in range(4):
-            scene_off.get_batch_of_primitives(0, 20, actors_off, 10**12)
+            scene_off._get_batch_of_primitives(0, 20, actors_off, 10**12)
             scene_off.timeline_manager.clear_buffers()
     n1 = len(ft_off.function_applications)
     print(f"\nsame 4 preps wrapped in the render's Off(): {n0} -> {n1} (+{n1 - n0})")
@@ -119,7 +119,7 @@ def main():
     )
 
     # Crucially: does a REAL render do this, or only a bare
-    # get_batch_of_primitives call like the loop above? A render runs inside
+    # _get_batch_of_primitives call like the loop above? A render runs inside
     # Scene's own context management, which may already suppress recording --
     # in which case the growth above is an artifact of the harness and not a
     # bug in the engine. Watch a genuine save_video batch by batch.

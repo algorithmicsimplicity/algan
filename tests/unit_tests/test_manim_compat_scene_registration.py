@@ -28,7 +28,7 @@ def _actor_ids(scene):
 
 
 def _renderable_actors(scene):
-    """The actors that ``get_batch_of_primitives`` would consider."""
+    """The actors that ``_get_batch_of_primitives`` would consider."""
     return [
         actor
         for actor in scene.actors

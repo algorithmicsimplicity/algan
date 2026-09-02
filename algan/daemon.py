@@ -32,13 +32,17 @@ coalesce into at most one queued re-run):
 
 * **Enter** in the daemon terminal re-renders; ``q`` quits. This is the
   primary workflow: edit in your editor, save, switch to the daemon, Enter.
-* A **localhost TCP socket** (default port 46711; ``--port``, or env
+* A **localhost TCP socket** (preferred port 46711; ``--port``, or env
   ``ALGAN_DAEMON_PORT``; ``--no-serve`` disables) accepts the line commands
-  ``render`` / ``ping`` / ``quit``. Bind an editor key to the stdlib
-  one-liner (deliberately not ``-m algan.daemon``, which would import the
-  whole library just to poke the socket)::
+  ``render`` / ``ping`` / ``quit``, each of which must carry the token from
+  the state file. If the preferred port is taken the daemon binds an
+  ephemeral one instead of exiting, and publishes it in the state file --
+  which is where clients look anyway. Bind an editor key to::
 
-      python -c "import socket;s=socket.create_connection(('127.0.0.1',46711),2);s.sendall(b'render\\n');print(s.recv(16).decode().strip())"
+      algan daemon render     # also: algan daemon ping, algan daemon quit
+
+  Those subcommands read ``$ALGAN_HOME/daemon.json`` for the port and the
+  token and send the line for you.
 
 * ``--watch`` re-renders when the scene script or any of its sibling helper
   modules change on disk (polled; coalesced; never interrupts).
@@ -105,9 +109,15 @@ Three more limits that are specific to serving other processes:
   by a script with non-default toggles serves only scripts that set the same
   ones: stop it if you want one baked with the defaults.
 * **Anything that can reach 127.0.0.1 can ask the daemon to execute a path.**
-  Requests must carry the token from the state file, which lives in the user's
+  Every request -- ``run``, ``cancel``, ``render``, ``ping`` and ``quit``
+  alike -- must carry the token from the state file, which lives in the user's
   home directory (mode 0600 where the platform honours it). Do not forward the
   port off-host.
+* **The daemon must be the same Algan.** The state file records the
+  interpreter, the prefix, the package directory and the version it was
+  started with, and a client whose own differ is not served: it runs cold in
+  its own process rather than executing against another virtualenv's
+  site-packages (:func:`algan.daemon_client.describe_interpreter_mismatch`).
 """
 
 from __future__ import annotations
@@ -371,7 +381,21 @@ class _StateFile:
             "pid": os.getpid(),
             "token": self.token,
             "env": _dc.startup_env(),
+            # Which Algan this is, in the four terms a client can check
+            # without importing anything heavy. ``$ALGAN_HOME`` defaults to
+            # ``~/.algan`` for every project on the machine, so without these
+            # a daemon started from one virtualenv would happily execute
+            # another's script against its own site-packages -- and the
+            # source digest, which hashes *this* tree, cannot see that.
+            "python": sys.executable,
+            "prefix": sys.prefix,
+            "algan_path": _ALGAN_DIR,
+            "algan_version": _dc.algan_version(),
         }
+
+    def set_port(self, port):
+        """Record the port actually bound (see :func:`_start_socket`)."""
+        self._payload["port"] = port
 
     def write(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -664,6 +688,39 @@ def _refuse(stream, reason):
         stream.flush()
 
 
+def _is_plumbing_frame(filename):
+    """Whether a traceback frame belongs to the machinery, not the script."""
+    if filename in ("<frozen runpy>", "<string>"):
+        return True
+    base = os.path.basename(filename)
+    return base == "runpy.py" or os.path.abspath(filename) == os.path.abspath(__file__)
+
+
+def strip_plumbing_frames(tb):
+    """Drop the daemon's and ``runpy``'s frames from the top of ``tb``.
+
+    A script that raises under the daemon showed ``algan/daemon.py ... in
+    execute`` and two ``runpy`` frames above its own first line -- frames a
+    plain ``python scene.py`` would never print and that say nothing about the
+    error. Only the *leading* run of them is dropped, so a script that itself
+    calls ``runpy`` still shows that call.
+
+    Returns ``tb`` unchanged if every frame is plumbing: an empty traceback
+    would be worse than an honest one.
+    """
+    stripped = tb
+    while stripped is not None and _is_plumbing_frame(
+        stripped.tb_frame.f_code.co_filename
+    ):
+        stripped = stripped.tb_next
+    return tb if stripped is None else stripped
+
+
+def _print_script_traceback(exc):
+    """Report a user script's exception as its own process would have."""
+    traceback.print_exception(type(exc), exc, strip_plumbing_frames(exc.__traceback__))
+
+
 def _user_modules(script_dir):
     """Names of loaded modules whose source lives under the script's tree."""
     names = []
@@ -688,21 +745,43 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             line = self.rfile.readline().decode(errors="replace").strip()
         except OSError:
             return
-        command = line.lower()
+        # ``verb [token]``. Every verb needs the token: this socket executes
+        # arbitrary paths and stops the process, and a bare ``quit`` from any
+        # local process used to be enough to stop somebody else's daemon.
+        # ``run`` carries its token inside the JSON request that follows.
+        verb, _, token = line.partition(" ")
+        command = verb.lower()
+        token = token.strip()
+        if command == "run":
+            self._handle_run()
+            return
+        if command == "cancel":
+            self._handle_cancel(token)
+            return
+        if command not in ("render", "ping", "quit"):
+            self.wfile.write(b"err: expected run | cancel | render | ping | quit\n")
+            return
+        if not self._token_ok(token):
+            return
         if command == "render":
             self.server.events.put(("render", "socket"))
             self.wfile.write(b"ok\n")
         elif command == "quit":
             self.server.events.put(("quit", "socket"))
             self.wfile.write(b"ok\n")
-        elif command == "ping":
-            self.wfile.write(b"pong\n")
-        elif command == "run":
-            self._handle_run()
-        elif command.startswith("cancel "):
-            self._handle_cancel(line.split(None, 1)[1].strip())
         else:
-            self.wfile.write(b"err: expected run | cancel | render | ping | quit\n")
+            self.wfile.write(b"pong\n")
+
+    def _token_ok(self, token):
+        """Whether ``token`` is this daemon's. Answers the caller when not."""
+        if secrets.compare_digest(str(token), self.server.state.token):
+            return True
+        _say("rejected a trigger with a bad token")
+        self.wfile.write(
+            b"err: bad token -- pass the one from the daemon state file "
+            b"(algan daemon render | ping | quit do this for you)\n"
+        )
+        return False
 
     def _handle_run(self):
         """Accept a client's script, queue it, and block until it has run."""
@@ -808,15 +887,40 @@ class _TriggerServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = sys.platform != "win32"
 
 
-def _start_socket(events, port, state, busy, sources):
+def _bind_trigger_socket(port, allow_fallback):
+    """Bind the trigger socket, falling back to an ephemeral port.
+
+    The preferred port (46711, or ``ALGAN_DAEMON_PORT``) is a convenience, not
+    an address anyone needs: clients discover the daemon through the state
+    file, which carries whatever port was actually bound. It can be held by
+    another user, another ``ALGAN_HOME``, or a daemon of ours that has not let
+    go of it yet -- and a daemon that exits over that leaves no state file, so
+    every later run spawns another one that fails the same way, for ever.
+    Binding port 0 instead costs nothing and ends that loop.
+
+    An explicit ``--port`` is not a preference but an instruction, so it does
+    not fall back: it fails loudly and the daemon runs without a socket.
+    """
     try:
-        server = _TriggerServer(("127.0.0.1", port), _TriggerHandler)
+        return _TriggerServer(("127.0.0.1", port), _TriggerHandler)
+    except OSError as first:
+        if not allow_fallback:
+            raise
+        _say(f"port {port} is unavailable ({first}); binding an ephemeral port")
+    return _TriggerServer(("127.0.0.1", 0), _TriggerHandler)
+
+
+def _start_socket(events, port, state, busy, sources, allow_fallback=True):
+    try:
+        server = _bind_trigger_socket(port, allow_fallback)
     except OSError as e:
         _say(
             f"trigger socket unavailable on 127.0.0.1:{port} ({e}); "
             "stdin trigger still works."
         )
         return None
+    port = server.server_address[1]
+    state.set_port(port)
     server.daemon_threads = True
     server.events = events
     server.state = state
@@ -826,11 +930,7 @@ def _start_socket(events, port, state, busy, sources):
         target=server.serve_forever, daemon=True, name="algan-daemon-socket"
     ).start()
     _say(f"trigger socket on 127.0.0.1:{port} -- poke with:")
-    _say(
-        '  python -c "import socket;s=socket.create_connection'
-        f"(('127.0.0.1',{port}),2);s.sendall(b'render\\n');"
-        'print(s.recv(16).decode().strip())"'
-    )
+    _say("  algan daemon render   (also: algan daemon ping | quit)")
     return server
 
 
@@ -970,8 +1070,10 @@ def main(argv=None):
     parser.add_argument(
         "--port",
         type=int,
-        default=port,
-        help=f"trigger socket port (default {port})",
+        default=None,
+        help=f"trigger socket port. Without this the daemon prefers {port} and "
+        "falls back to an ephemeral one when it is taken; given explicitly, "
+        "the port is an instruction and binding it is allowed to fail",
     )
     parser.add_argument(
         "--no-serve", action="store_true", help="do not open the trigger socket"
@@ -1008,11 +1110,19 @@ def main(argv=None):
     busy = threading.Event()
     snapshot = _SettingsSnapshot()
     sources = _SourceDigest.capture()
-    state = _StateFile(args.port)
+    wanted_port = port if args.port is None else args.port
+    state = _StateFile(wanted_port)
     server = (
         None
         if args.no_serve
-        else _start_socket(events, args.port, state, busy, sources)
+        else _start_socket(
+            events,
+            wanted_port,
+            state,
+            busy,
+            sources,
+            allow_fallback=args.port is None,
+        )
     )
     if server is None and script is None:
         # Nothing can ever reach this process: no socket to serve clients, and
@@ -1115,9 +1225,9 @@ def main(argv=None):
         except KeyboardInterrupt:
             code = 130
             _say(f"run #{run_count} interrupted; state will be reset on the next run")
-        except BaseException:  # noqa: BLE001 -- one script must not kill the daemon
+        except BaseException as exc:  # noqa: BLE001 -- must not kill the daemon
             code = 1
-            traceback.print_exc()
+            _print_script_traceback(exc)
             _say(
                 f"run #{run_count} FAILED after "
                 f"{time.perf_counter() - started:.1f} s -- fix the script "

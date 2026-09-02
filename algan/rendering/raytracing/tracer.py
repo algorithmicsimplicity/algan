@@ -1025,7 +1025,7 @@ def _validate_render_capabilities(
 #: Merged-scene key holding the arena reverse pointer this batch has allocated
 #: down to and must keep: the lowest (deepest) persistent allocation made from
 #: inside a chunk that still has to be readable in the next one. Read by
-#: ``rewind_to`` and by ``RenderLoopMixin.render_primitive_batch``. Published
+#: ``rewind_to`` and by ``RenderLoopMixin._render_primitive_batch``. Published
 #: explicitly by whoever makes such an allocation rather than read off the
 #: arena, so an unrelated persistent allocation inside a chunk can never be
 #: retained by accident.
@@ -2532,7 +2532,7 @@ def raytrace_render_wavefront(
         # on the merged scene (which lives for the batch). The reverse pointer
         # reached here is published alongside them so the render loop can hold
         # the arena open across chunks exactly that far and no further (see
-        # RenderLoopMixin.render_primitive_batch).
+        # RenderLoopMixin._render_primitive_batch).
         cached_tables = merged.get("_raster_tables")
         if cached_tables is not None:
             tri_screen, tri_bounds, bez_bounds = cached_tables

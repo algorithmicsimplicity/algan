@@ -78,7 +78,7 @@ Cube
 CubicBezier
 CurvedArrow
 CurvedDoubleArrow
-CurvesAsSubmobjects
+CurvesAsChildren
 Cutout
 Cylinder
 DARKER_GRAY
@@ -90,11 +90,10 @@ DARK_GREY
 DEFAULT_BASIS
 DEFAULT_RUNTIME
 DEGREES
-DEGREES_TO_RADIANS
 DIELECTRIC_IOR
 DOWN
 DashedLine
-DashedVMobject
+DashedMob
 DecimalMatrix
 DecimalNumber
 DecimalTable
@@ -192,7 +191,6 @@ MAROON_E
 MD
 MEGABYTES
 MIRROR
-ManimMaterial
 ManimMob
 ManualMemory
 MarkupText
@@ -210,8 +208,8 @@ MeshPhysicalMaterial
 MeshStandardMaterial
 MeshToonMaterial
 Mob
-MobjectMatrix
-MobjectTable
+MobMatrix
+MobTable
 Model3D
 ModifiedProtectedAttributeError
 MoveAlongPath
@@ -255,9 +253,7 @@ Polyhedron
 Prism
 Project
 Quad
-QuadTriangulated
 RADIANS
-RADIANS_TO_DEGREES
 RED
 RED_A
 RED_B
@@ -285,7 +281,7 @@ STAGE_PHYSICAL
 STAGE_STANDARD
 STAGE_UNLIT
 STONE
-SVGMobject
+SVGMob
 SampleSpace
 Scene
 SceneManager
@@ -330,9 +326,6 @@ Title
 Torus
 Triangle
 TriangleMesh
-TriangleTriangulated
-TriangleVertices
-TriangulatedBezierCircuit
 TruncationCounts
 UHD
 UP
@@ -367,13 +360,10 @@ easings
 fresnel_rim
 glass_ball
 lambert_shader
-manim_fov
-manim_shader
 matcap_shader
 normal_shader
 phong_shader
 physical_shader
-set_environment_map
 set_log_level
 set_progress_style
 standard_shader

@@ -118,4 +118,13 @@ def test_manim_material_contract():
     # The canonical nine, in order, then exactly the material's own params.
     assert params[: len(fixed)] == fixed
     assert list(m.get_shader_param_values().keys()) == params[len(fixed) :]
-    assert {"manim_shader", "STAGE_MANIM", "ManimMaterial"} <= set(algan.__all__)
+    # ``STAGE_MANIM`` is a fragment stage like the rest and stays at the root;
+    # the shader and the material it belongs to mean "Manim's version of this"
+    # and live with the rest of that layer, in ``algan.manim``.
+    import algan.manim as mn
+
+    assert "STAGE_MANIM" in algan.__all__
+    assert {"manim_shader", "ManimMaterial"} <= set(mn.__all__)
+    assert not {"manim_shader", "ManimMaterial"} & set(algan.__all__)
+    assert mn.ManimMaterial is ManimMaterial
+    assert mn.manim_shader is ms.manim_shader

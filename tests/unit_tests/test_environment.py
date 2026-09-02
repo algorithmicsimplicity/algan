@@ -18,6 +18,7 @@ from algan.environment import (
     env_overrides,
     env_str,
     import_time_environment_variables,
+    misspelled_algan_environment_variables,
     startup_environment_variables,
     unknown_algan_environment_variables,
     warn_for_unknown_algan_environment_variables,
@@ -289,7 +290,7 @@ def test_env_str_returns_the_value_unstripped(monkeypatch):
     assert env_str("ALGAN_BVH_BUILD") == ""
 
 
-def test_unknown_algan_environment_variables_are_sorted_and_warned():
+def test_unknown_algan_environment_variables_are_sorted():
     environ = {
         "PATH": "ignored",
         "ALGAN_RENDER_DEVICE": "cpu",
@@ -301,11 +302,36 @@ def test_unknown_algan_environment_variables_are_sorted_and_warned():
         "ALGAN_A_UNKNOWN",
         "ALGAN_Z_UNKNOWN",
     )
+
+
+def test_a_misspelled_variable_is_warned_about_with_its_match():
+    environ = {"ALGAN_RENDER_DEVIC": "cpu", "ALGAN_LOG_LEVELS": "DEBUG"}
+
+    assert misspelled_algan_environment_variables(environ) == (
+        ("ALGAN_LOG_LEVELS", "ALGAN_LOG_LEVEL"),
+        ("ALGAN_RENDER_DEVIC", "ALGAN_RENDER_DEVICE"),
+    )
     with pytest.warns(
         AlganWarning,
-        match="Unknown Algan environment variables: ALGAN_A_UNKNOWN, ALGAN_Z_UNKNOWN",
+        match=r"ALGAN_LOG_LEVELS \(did you mean ALGAN_LOG_LEVEL\?\)",
     ):
         warn_for_unknown_algan_environment_variables(environ)
+
+
+def test_an_unrelated_algan_prefixed_variable_is_not_warned_about():
+    """The ALGAN_ prefix is not Algan's to police.
+
+    Warning about every unrecognised name meant an unrelated tool's
+    ``ALGAN_FOO`` -- or a wrapper script's own bookkeeping -- produced a
+    warning on every single import, which is how a real warning gets ignored.
+    """
+    environ = {"ALGAN_A_UNKNOWN": "1", "ALGAN_PROJECT_NAME": "demo"}
+
+    assert misspelled_algan_environment_variables(environ) == ()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warn_for_unknown_algan_environment_variables(environ)
+    assert not caught
 
 
 def test_all_registered_algan_environment_variables_are_accepted():

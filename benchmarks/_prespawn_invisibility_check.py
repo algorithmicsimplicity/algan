@@ -70,7 +70,7 @@ WORLD_MAP = os.path.join(os.path.dirname(__file__), "..", "tests", "world_map.jp
 FPS = LD.frames_per_second
 FIRST_HALF = 1.0  # seconds rendered before the late mobs spawn
 
-_orig_get_batch = rl.RenderLoopMixin.get_batch_of_primitives
+_orig_get_batch = rl.RenderLoopMixin._get_batch_of_primitives
 _state = {"drop_unspawned": False, "primitives": None}
 
 
@@ -92,7 +92,7 @@ def _filtered_get_batch(self, start_ind, end_ind, actors, budget):
     return result
 
 
-rl.RenderLoopMixin.get_batch_of_primitives = _filtered_get_batch
+rl.RenderLoopMixin._get_batch_of_primitives = _filtered_get_batch
 
 
 def build():

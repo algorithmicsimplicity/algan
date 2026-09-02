@@ -50,6 +50,43 @@ def reset_global_authoring_state():
     SceneManager.reset()
 
 
+@pytest.mark.fast
+def test_audio_context_times_its_block_from_a_real_clip(tmp_path):
+    """``Audio`` reads moviepy's ``.duration``, which is not Algan's name.
+
+    In the fast suite because it broke from a rename made *elsewhere*: a sweep
+    of Algan's own ``duration`` -> ``runtime`` renamed this read too, and since
+    it is an attribute of a moviepy clip rather than of anything in Algan,
+    nothing in the package could have flagged it. Both ``Audio`` and
+    ``Speech`` (which funnels through it) were dead on entry and every audio
+    example in the docs raised. Only a test that constructs a real clip sees
+    that class of error, so this one writes a wav.
+    """
+    import numpy as np
+    from scipy.io import wavfile
+
+    from algan.animation_timeline.animation_contexts import Audio
+
+    sample_rate = 8000
+    clip_path = tmp_path / "one_second_of_silence.wav"
+    wavfile.write(clip_path, sample_rate, np.zeros(sample_rate, dtype=np.int16))
+
+    scene = SceneManager.instance().current_scene
+    context = Audio(str(clip_path), animation_manager=scene.animation_manager)
+    with context:
+        Square(scene=scene).spawn()
+
+    assert context.audio_clip.duration == pytest.approx(1.0, abs=0.01)
+    assert context.runtime == pytest.approx(context.audio_clip.duration)
+
+    trailing = Audio(
+        str(clip_path), wait_at_end=0.25, animation_manager=scene.animation_manager
+    )
+    with trailing:
+        Square(scene=scene).spawn()
+    assert trailing.runtime == pytest.approx(trailing.audio_clip.duration + 0.25)
+
+
 def test_context_is_restored_after_user_exception():
     scene = SceneManager.instance().current_scene
     root = scene.animation_manager.context
@@ -168,7 +205,13 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
 
         scene.save_frame(tmp_path / "single_still", at=0.0)
 
-        pattern = re.compile(r"^Finished rendering single_still\.png in \d+\.\d+ s$")
+        # The absolute path, not the bare name: a reader of the log should not
+        # have to guess which directory the file landed in.
+        pattern = re.compile(
+            r"^Finished rendering "
+            + re.escape(str(tmp_path / "single_still.png"))
+            + r" in \d+\.\d+ s$"
+        )
         assert any(
             pattern.match(record.message)
             for record in caplog.records
@@ -179,7 +222,8 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
         scene.save_frame(tmp_path / "single_still", at=0.0, overwrite=False)
 
         assert not any(
-            "Finished rendering single_still.png" in record.message
+            "Finished rendering" in record.message
+            and "single_still.png" in record.message
             for record in caplog.records
         )
 
@@ -188,7 +232,9 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
 
         assert any(
             re.match(
-                r"^Finished rendering multi_still_0\.0\.png in \d+\.\d+ s$",
+                r"^Finished rendering "
+                + re.escape(str(tmp_path / "multi_still_0.0.png"))
+                + r" in \d+\.\d+ s$",
                 record.message,
             )
             for record in caplog.records
@@ -196,7 +242,9 @@ def test_save_frame_logs_completion_message(monkeypatch, tmp_path, caplog):
         )
         assert any(
             re.match(
-                r"^Finished rendering multi_still_1\.0\.png in \d+\.\d+ s$",
+                r"^Finished rendering "
+                + re.escape(str(tmp_path / "multi_still_1.0.png"))
+                + r" in \d+\.\d+ s$",
                 record.message,
             )
             for record in caplog.records
@@ -364,7 +412,7 @@ def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(
 
 
 def _stub_out_video_writing(monkeypatch, scene, on_render=None):
-    """Drive render_to_video without ffmpeg. Returns the recorded windows."""
+    """Drive _render_to_video without ffmpeg. Returns the recorded windows."""
     windows = []
 
     def fake_frames(start_ind, end_ind, **_kwargs):
@@ -385,7 +433,7 @@ def _stub_out_video_writing(monkeypatch, scene, on_render=None):
 def _render_to_video(scene, tmp_path, name="clip"):
     source = tmp_path / f"{name}_temp.mp4"
     source.write_bytes(b"")
-    scene.render_to_video(
+    scene._render_to_video(
         SimpleNamespace(close=lambda: None),
         str(source),
         str(tmp_path / f"{name}.mp4"),
@@ -512,7 +560,10 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     assert replacement_scene.animation_manager is not old_managers[1]
     assert replacement_scene.audio_manager is not old_managers[2]
     assert replacement_scene.audio_manager.video_transcript == ""
-    assert replacement_scene.camera.location.is_inference()
+    # The rebuilt camera is ordinary, mutable state: import no longer enters a
+    # process-wide inference mode, so nothing the Scene owns is an inference
+    # tensor that a later in-place authoring edit would trip over.
+    assert not replacement_scene.camera.location.is_inference()
 
 
 def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
@@ -531,7 +582,7 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
-    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "_render_to_video", lambda *_a, **_k: None)
 
     result = algan.Scene.save_video(
         tmp_path / "keep.mp4",
@@ -565,7 +616,7 @@ def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
-    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "_render_to_video", lambda *_a, **_k: None)
 
     algan.Scene.save_video(
         tmp_path / "discard.mp4",
@@ -857,7 +908,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
         observed["end"] = scene.animation_manager.context.timespan.original_end
         observed["background_override"] = render_kwargs.get("background")
 
-    monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)
+    monkeypatch.setattr(scene, "_render_to_video", fake_render_to_video)
     result = algan.Scene.save_video(
         tmp_path / "static.mp4",
         video_settings=VideoSettings((8, 8), 4, supersampling=1),
@@ -999,7 +1050,7 @@ def _stub_render(monkeypatch, scene):
 
     monkeypatch.setattr(scene, "save_audio", lambda *_a, **_k: None)
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
-    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+    monkeypatch.setattr(scene, "_render_to_video", lambda *_a, **_k: None)
 
 
 def test_context_kwargs_on_a_method_point_at_the_context():
@@ -1222,6 +1273,97 @@ def test_internal_helpers_are_importable_but_not_star_exported():
         "get_rotation_between_bases",
     ):
         assert name not in algan.__all__
+
+
+def test_primitive_builders_are_not_authoring_vocabulary():
+    """``api_settings.md``'s star-import rule keeps primitive builders out.
+
+    They are what the shape classes are assembled from -- a bare triangle's
+    vertex buffer, a triangulated quad -- and each carried ``Mob``'s generic
+    docstring rather than one of its own, so a reader who found them in the
+    namespace learnt nothing about what they were for. Still importable where
+    they are defined, which is where the renderer tests take them from.
+    """
+    from algan.mobs.shapes_2d import (  # noqa: F401
+        QuadTriangulated,
+        TriangleTriangulated,
+        TriangleVertices,
+    )
+    from algan.mobs.triangulated_bezier_circuit import (  # noqa: F401
+        TriangulatedBezierCircuit,
+    )
+
+    for name in (
+        "TriangleVertices",
+        "TriangleTriangulated",
+        "QuadTriangulated",
+        "TriangulatedBezierCircuit",
+    ):
+        assert name not in algan.__all__
+        assert hasattr(algan, name), f"{name} should stay importable from algan"
+
+
+def test_only_the_two_angle_multipliers_a_script_writes_are_exported():
+    """Four names for two factors, two of which differ by 57x, is a trap.
+
+    ``DEGREES`` and ``RADIANS`` are the suffixes a call site writes.
+    ``DEGREES_TO_RADIANS`` / ``RADIANS_TO_DEGREES`` are what library code
+    multiplies by at a unit boundary, and ``RADIANS_TO_DEGREES`` *is*
+    ``RADIANS`` -- so a namespace carrying both invites reading the pair as
+    synonyms of the other pair.
+    """
+    from algan.constants.math import (  # noqa: F401
+        DEGREES_TO_RADIANS,
+        RADIANS_TO_DEGREES,
+    )
+
+    assert {"DEGREES", "RADIANS"} <= set(algan.__all__)
+    assert not {"DEGREES_TO_RADIANS", "RADIANS_TO_DEGREES"} & set(algan.__all__)
+
+
+def test_there_is_no_module_level_scene_method_wrapper():
+    """``Scene.set_environment_map`` is the one spelling.
+
+    ``active_scene_method`` already resolves the active Scene when the method
+    is called on the class, so a module-level ``set_environment_map`` was a
+    second name for one thing -- and the only one of its kind, which made it
+    a precedent rather than a convenience.
+    """
+    assert not hasattr(algan, "set_environment_map")
+    assert "set_environment_map" not in algan.__all__
+    assert callable(algan.Scene.set_environment_map)
+
+
+def test_the_manim_compatibility_names_live_in_algan_manim():
+    """A name meaning "Manim's version of this" belongs behind that import."""
+    import algan.manim as mn
+
+    for name in ("manim_fov", "manim_shader", "ManimMaterial"):
+        assert name not in algan.__all__, f"{name} should not be root-exported"
+        assert name in mn.__all__, f"{name} should be in algan.manim.__all__"
+
+    # And the compatibility namespace does not export its own plumbing: the
+    # parity registry it drives its tests from, nor ~40 OpenGL* second
+    # spellings of classes already there under renderer-independent names.
+    assert "MANIM_MOBJECT_NAMES" not in mn.__all__
+    assert "OpenGLSquare" not in mn.__all__
+    assert hasattr(mn, "OpenGLSquare")
+
+
+def test_skip_save_frame_is_not_a_settings_section():
+    """The docs promise five sections; the sixth slot is an engine flag."""
+    assert not hasattr(algan.SETTINGS, "skip_save_frame")
+    assert algan.SETTINGS._skip_save_frame is False
+    assert "skip_save_frame" not in dir(algan.SETTINGS)
+    assert "_skip_save_frame" not in dir(algan.SETTINGS)
+    assert set(dir(algan.SETTINGS)) >= {
+        "computing",
+        "paths",
+        "raytracing",
+        "style",
+        "video",
+    }
+    assert "_skip_save_frame" not in repr(algan.SETTINGS)
 
 
 @pytest.mark.parametrize(

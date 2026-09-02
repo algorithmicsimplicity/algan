@@ -15,18 +15,23 @@ one both move the geometry.
 
 from __future__ import annotations
 
+import inspect
 import math
+import warnings
 
 import numpy as np
 import pytest
 
 import algan
 import algan.manim as mn
+from algan.errors import AlganConfigurationError, ApproximationWarning
 from algan.mobs.manim_adapters import (
     _ADAPTED,
     _ANGLE_PARAMS,
     _NATIVE,
     _NOT_ADAPTED,
+    _ROOT_CLASS_NAMES,
+    _ROOT_NAME_FOR,
     _angle_params_for,
 )
 from algan.mobs.manim_compat import _MANIM_WRAPPER_REGISTRY
@@ -80,12 +85,15 @@ def test_native_list_matches_what_the_root_namespace_resolves():
     )
 
     for name in _ADAPTED:
-        exported = getattr(algan, name, None)
-        assert exported is not None, f"{name} is adapted but not exported at the root"
+        root_name = _ROOT_NAME_FOR[name]
+        exported = getattr(algan, root_name, None)
+        assert exported is not None, (
+            f"{name} is adapted but {root_name} is not exported at the root"
+        )
         assert exported.__module__ == _ADAPTER_MODULE, (
-            f"{name} is in the adapted set but the root name resolves to "
-            f"{exported.__module__}, which shadows the adapter. Move it to "
-            "_NATIVE."
+            f"{name} is in the adapted set but the root name {root_name} "
+            f"resolves to {exported.__module__}, which shadows the adapter. "
+            "Move it to _NATIVE."
         )
 
 
@@ -200,3 +208,116 @@ def test_stroke_width_is_algan_units_at_the_root():
     """Half of Manim's, on a class whose own signature never names it."""
     assert float(algan.Star(stroke_width=3).stroke_width.reshape(-1)[0]) == 3.0
     assert float(mn.Star(stroke_width=6).stroke_width.reshape(-1)[0]) == 3.0
+
+
+# --------------------------------------------------------------------------
+# What the adapter *shows*: signature, docstring and the radians warning.
+# Delegating used to hand the root spellings Manim's own, which then said the
+# wrong thing in the one place a user looks -- ``help()`` and the reference.
+# --------------------------------------------------------------------------
+
+
+def test_displayed_angle_defaults_are_in_degrees():
+    """``help(Arc)`` must not answer a degrees argument with 1.5707963267948966."""
+    parameters = inspect.signature(algan.Arc).parameters
+    assert parameters["angle"].default == 90
+    assert parameters["start_angle"].default == 0
+    # Manim's own spelling keeps Manim's default, which is the whole point of
+    # having two namespaces.
+    assert mn.Arc.__signature__.parameters["angle"].default == pytest.approx(
+        math.pi / 2
+    )
+
+
+def test_no_manim_type_leaks_into_a_displayed_signature():
+    """A displayed annotation names a builtin or nothing -- never a Manim alias."""
+    leaked = {}
+    for name in _ADAPTED:
+        adapter = getattr(algan, _ROOT_NAME_FOR[name])
+        text = str(inspect.signature(adapter))
+        hits = [
+            token
+            for token in ("Mobject", "VMobject", "Point3D", "Point2D", "Vector3D")
+            if token in text
+        ]
+        if hits:
+            leaked[name] = hits
+    assert not leaked, f"Manim types reach the displayed signature: {leaked}"
+
+
+def test_no_adapter_docstring_teaches_a_manim_scene():
+    """Manim's prose is replaced, not appended to.
+
+    Manim's docstrings carry ``.. manim::`` blocks -- ``class X(Scene)`` bodies
+    calling ``self.play`` -- which Algan's docs build would execute and render
+    into Algan's own reference pages, teaching a script that does not run here.
+    """
+    offenders = {}
+    for name in _ADAPTED:
+        doc = getattr(algan, _ROOT_NAME_FOR[name]).__doc__ or ""
+        hits = [
+            token for token in ("self.play", ".. manim::", "(Scene)") if token in doc
+        ]
+        if hits:
+            offenders[name] = hits
+    assert not offenders, f"Manim scene code reaches Algan's docstrings: {offenders}"
+
+
+def test_every_adapter_documents_its_conversions():
+    for name in _ADAPTED:
+        doc = getattr(algan, _ROOT_NAME_FOR[name]).__doc__ or ""
+        assert f"algan.manim.{name}" in doc, f"{name} does not point at its Manim twin"
+        assert "stroke_width" in doc
+
+
+@pytest.mark.parametrize("value", [math.pi / 2, 0.5, -1.25, 3.14159])
+def test_a_radian_looking_angle_warns(value):
+    with pytest.warns(ApproximationWarning, match="looks like radians"):
+        algan.Arc(angle=value)
+
+
+@pytest.mark.parametrize("value", [90, 5, 45.0, -180, 400.5])
+def test_a_degree_angle_does_not_warn(value):
+    """Whole numbers never warn, and neither does anything past a full turn.
+
+    ``Arc(angle=5)`` is a legitimate five degree arc, and warning on it would
+    train the reader to ignore the message that catches ``PI / 2``.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ApproximationWarning)
+        algan.Arc(angle=value)
+
+
+def test_the_radians_warning_names_the_degree_spelling():
+    with pytest.warns(ApproximationWarning) as caught:
+        algan.Arc(angle=math.pi / 2)
+    assert (
+        str(caught[0].message)
+        == "`angle=1.5708` looks like radians; Algan takes degrees "
+        "(did you mean `angle=90`?)"
+    )
+
+
+def test_manim_keyword_spellings_are_refused_at_the_root():
+    """``mobject=`` and ``element_to_mobject=`` name arguments Algan does not have."""
+    square = algan.Square()
+    with pytest.raises(AlganConfigurationError, match="Algan spells it `mob`"):
+        algan.Brace(mobject=square)
+    with pytest.raises(AlganConfigurationError, match="element_to_mob"):
+        algan.Table([["a"]], element_to_mobject=None)
+
+
+def test_manim_keyword_spellings_still_work_under_algan_manim():
+    """The compatibility namespace is Manim's conventions, spellings included."""
+    square = mn.Square()
+    assert mn.Brace(mobject=square) is not None
+    assert algan.Brace(mob=square) is not None
+
+
+@pytest.mark.parametrize(("manim_name", "root_name"), sorted(_ROOT_CLASS_NAMES.items()))
+def test_the_mobject_spelled_classes_are_renamed_at_the_root(manim_name, root_name):
+    """Algan's word is ``Mob``; ``algan.manim`` keeps Manim's."""
+    assert getattr(algan, manim_name, None) is None
+    assert getattr(algan, root_name).__module__ == _ADAPTER_MODULE
+    assert hasattr(mn, manim_name)
+    assert root_name in algan.__all__

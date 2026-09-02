@@ -52,7 +52,7 @@ def test_taichi_background_fills_the_whole_frame_batch():
 
 def test_scene_constructor_defers_taichi_background_until_render():
     scene = Scene(
-        background_frame=_coordinate_background,
+        background=_coordinate_background,
         video_settings=SMOKE_TEST,
     )
 

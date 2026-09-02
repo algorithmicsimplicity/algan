@@ -43,6 +43,59 @@ class AudioManager:
 
 
 class AudioEffect:
+    """One sound placed at one moment on a Scene's timeline.
+
+    A Scene collects these as it is authored and mixes them into a single
+    track when :meth:`~algan.scene.Scene.save_video` runs -- each clip is
+    offset to its own start time, so overlapping effects simply play over each
+    other.
+
+    You do not usually build one: the
+    :class:`~algan.animation_timeline.animation_contexts.Audio` and
+    :class:`~algan.animation_timeline.animation_contexts.Speech` contexts add
+    one for you, at the time the block opens, and take the block's runtime from
+    the clip's own duration so the animations inside are fitted to the sound.
+
+    Parameters
+    ----------
+    audio_clip
+        A moviepy ``AudioClip`` -- what ``AudioFileClip(path)`` returns, or the
+        clip a speech generator produced.
+    start_time
+        A zero-argument callable returning the scene time, in seconds, at which
+        the clip should begin. It is a callable rather than a number because a
+        context's start is only final once the block it sits in has been
+        rescaled, which happens after the effect is registered.
+
+    Attributes
+    ----------
+    audio_clip
+        The clip, as supplied.
+    start_time_func
+        The callable supplied as ``start_time``.
+
+    See Also
+    --------
+    :class:`~algan.animation_timeline.animation_contexts.Audio` : Play a sound
+        file over a block of animation.
+    :class:`~algan.animation_timeline.animation_contexts.Speech` : Narrate a
+        block, generating the audio from text.
+
+    Examples
+    --------
+    Reach for the context rather than the class:
+
+    .. code-block:: python
+
+        from algan import *
+
+        square = Square().spawn()
+        with Audio("chime.wav"):
+            square.rotate(90)
+
+        Scene.save_video("chimed")
+    """
+
     def __init__(self, audio_clip, start_time):
         self.audio_clip = audio_clip
         self.start_time_func = start_time

@@ -53,7 +53,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _opt_disabled,
 )
 from algan.constants.color import BLACK, Color
-from algan.errors import DespawnedMobWarning
+from algan.errors import DespawnedMobWarning, HierarchyError
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
@@ -126,6 +126,26 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     return kwargs
 
 
+def _rejecting_timing_kwargs(func):
+    """Answer a timing keyword on a method that has no ``**kwargs`` to catch it.
+
+    :func:`animated_function` covers everything it wraps, and methods with a
+    ``**kwargs`` passthrough check on their own; this covers the rest --
+    ``scale``, ``spawn``, ``become`` -- so ``mob.scale(2, runtime=3)`` names the
+    context to wrap the call in rather than raising a bare unexpected-keyword
+    ``TypeError``. ``functools.wraps`` keeps ``__wrapped__`` set, so the real
+    signature is still what ``help()`` and the docs build show.
+    """
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if kwargs:
+            _reject_context_kwargs(kwargs)
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
 def animated_function(function=None, *, animated_args=None, unique_args=()):
     """Decorator that turns a function into an animated function. The animation is created by interpolating
     all args named in the animated_args dict from the value provided in this dict the value passed as an actual argument
@@ -155,6 +175,14 @@ def animated_function(function=None, *, animated_args=None, unique_args=()):
         @animation_manager_bound
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
+            # Every animated method funnels through here, including the ones
+            # with no **kwargs of their own (rotate, scale, spawn, become,
+            # ...). Checking here rather than inside the wrapped function is
+            # what makes ``mob.rotate(90, runtime=2)`` answer with the context
+            # to wrap the call in, instead of a bare unexpected-keyword
+            # TypeError naming a parameter list the user never saw.
+            if kwargs:
+                _reject_context_kwargs(kwargs)
             if not self.is_animating():
                 # Mobs with nothing spawned in their subtree record nothing:
                 # no function events (this branch), and attribute writes go
@@ -317,7 +345,7 @@ class Animatable:
         if scene is None:
             scene = active_scene_for_new_mob()
         self.scene = scene
-        self.id = self.scene.get_new_id()
+        self.id = self.scene._get_new_id()
         # Whether this Mob was registered with the Scene, kept because a
         # composite that builds sub-parts has to make the same decision for
         # them: a Mob built with ``add_to_scene=False`` is one nobody intends to
@@ -335,9 +363,9 @@ class Animatable:
 
         self.anchor_priority = 0
 
-        self.children = []
+        self._children = []
         self.components = []
-        self.parents = []
+        self._parents = []
         self.traversable = False
         self.parent_batch_sizes = parent_batch_sizes
 
@@ -352,6 +380,58 @@ class Animatable:
 
     def __repr__(self):
         return f"<{self._describe()}>"
+
+    # ``children`` and ``parents`` are two views of one graph, and every link
+    # has to be written to both ends. Rebinding either list writes one end and
+    # leaves the other dangling -- ``parent.children = []`` used to succeed and
+    # leave each ex-child still naming that parent, after which the parent moved
+    # without them. The lists themselves stay live and mutable, because the
+    # hierarchy methods edit them in place; only rebinding the name is refused.
+    @property
+    def children(self) -> list[Animatable]:
+        """The Mobs attached below this one, in attachment order.
+
+        The live list, not a copy: it changes as the hierarchy does. Edit it
+        with :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`,
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`
+        or
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.replace_children`
+        rather than by assignment, so the children's ``parents`` are kept in step.
+        """
+        return self._children
+
+    @children.setter
+    def children(self, value):
+        raise HierarchyError(
+            f"{self._describe()}.children cannot be assigned to: a parent-child "
+            f"link is stored at both ends, and replacing this list would leave "
+            f"the children still naming this Mob as a parent. Use "
+            f"mob.replace_children([...]) to swap the whole set, "
+            f"mob.add_children(child) to attach one, or mob.remove_child(child) "
+            f"to detach one."
+        )
+
+    @property
+    def parents(self) -> list[Animatable]:
+        """The Mobs this one is attached to, in attachment order.
+
+        The live list, not a copy. Edit it with
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_parent`
+        or
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`
+        rather than by assignment, so the parents' ``children`` are kept in step.
+        """
+        return self._parents
+
+    @parents.setter
+    def parents(self, value):
+        raise HierarchyError(
+            f"{self._describe()}.parents cannot be assigned to: a parent-child "
+            f"link is stored at both ends, and replacing this list would leave "
+            f"the parents still naming this Mob as a child. Use "
+            f"mob.add_parent(parent) to attach this Mob to one, or "
+            f"mob.remove_parent(parent) to detach it."
+        )
 
     def _describe(self) -> str:
         """This Mob as it should appear in a message: its class, plus its
@@ -1308,7 +1388,7 @@ class Animatable:
         clone_data = memo["___clone_data___"]
         cls = self.__class__
         clone = cls.__new__(cls)
-        clone.parents = []
+        clone._parents = []
         clone.anchor_priority = 0
         memo[id(self)] = clone
         object.__setattr__(clone, "scene", self.scene)
@@ -1318,7 +1398,7 @@ class Animatable:
             # A new id gives the clone fresh timeline rows (filled from the
             # original's current values by the attribute copy below) and a
             # fresh lifespan.
-            clone.id = self.scene.get_new_id()
+            clone.id = self.scene._get_new_id()
         else:
             # Share the original's timeline rows and lifespan.
             clone.id = self.id
@@ -1370,13 +1450,13 @@ class Animatable:
                 "_subtree_spawn_cache",
             ]:
                 continue
-            if k in ["parents"]:
+            if k in ["_parents"]:
                 object.__setattr__(clone, k, [])
                 continue
             if isinstance(v, Animatable) and v in children:
                 object.__setattr__(clone, k, id_to_child[child_to_id[v]])
                 continue
-            if k in ["children", "components"]:
+            if k in ["_children", "components"]:
                 v = []
             if k in ["anchors"]:
                 v = defaultdict(list)
@@ -1491,6 +1571,7 @@ class Animatable:
                 d.data_sub_inds = None
         return c
 
+    @_rejecting_timing_kwargs
     def spawn(self, animate: bool = True):
         """Bring the Mob into the video.
 
@@ -1645,6 +1726,7 @@ class Animatable:
                 )
             self._apply_change("opacity", targets, scope=scope)
 
+    @_rejecting_timing_kwargs
     def despawn(self, animate: bool = True):
         """Remove the Mob from the video.
 

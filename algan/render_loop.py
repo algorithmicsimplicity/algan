@@ -5,11 +5,11 @@ useful standalone (``self`` is always the Scene). It owns everything between
 "the timeline has recorded animations" and "frames are streamed to the video
 writer": batch sizing by memory budget, timeline state materialization and
 primitive batching
-(:meth:`~algan.render_loop.RenderLoopMixin.get_batch_of_primitives`),
+(:meth:`~algan.render_loop.RenderLoopMixin._get_batch_of_primitives`),
 the prefetch pipeline (:meth:`~algan.render_loop.RenderLoopMixin.get_frames`),
 per-batch rendering
-(:meth:`~algan.render_loop.RenderLoopMixin.render_primitive_batch`), and video
-file output (:meth:`~algan.render_loop.RenderLoopMixin.render_to_video`).
+(:meth:`~algan.render_loop.RenderLoopMixin._render_primitive_batch`), and video
+file output (:meth:`~algan.render_loop.RenderLoopMixin._render_to_video`).
 """
 
 from __future__ import annotations
@@ -379,7 +379,7 @@ class RenderLoopMixin:
     #: list. Instance attribute on first write; see :meth:`_actor_window_index`.
     _actor_window_cache = None
 
-    def batch_prep_context(self):
+    def _batch_prep_context(self):
         """The context a render puts around **all** of its batch preparation.
 
         Preparing a batch replays recorded animated functions, and replay calls
@@ -391,7 +391,7 @@ class RenderLoopMixin:
         replayed**. The render never sees this because its batch loop runs
         inside this context.
 
-        Anything else that calls :meth:`get_batch_of_primitives` -- every prep
+        Anything else that calls :meth:`_get_batch_of_primitives` -- every prep
         benchmark and probe in this repo -- must enter it too, or it silently
         grows the timeline on every call: measured at +6 events per call on a
         three-animation scene, and +31..99 per call on the reference scene.
@@ -1253,7 +1253,7 @@ class RenderLoopMixin:
         self.memory.reset()
         release_torch_memory(force_gc=True)
 
-    def render_primitive_batch(
+    def _render_primitive_batch(
         self,
         primitive_batch,
         start_ind,
@@ -1540,11 +1540,11 @@ class RenderLoopMixin:
                 len(self.memory) - self.memory.current_reverse_pointer
             )
             # Camera/screen/light state is no longer reset here: batch prep
-            # (get_batch_of_primitives) resets and re-materializes it at the
+            # (_get_batch_of_primitives) resets and re-materializes it at the
             # start of each batch, and may already be running on a worker
             # thread for the next batch while this render executes.
 
-    def render_background_batch(
+    def _render_background_batch(
         self,
         start_ind,
         end_ind,
@@ -1556,7 +1556,7 @@ class RenderLoopMixin:
 
         Used for frame windows with no renderable primitives (an empty scene,
         or a stretch where nothing is spawned) so the output video still
-        covers the window. Mirrors ``render_primitive_batch``'s frame
+        covers the window. Mirrors ``_render_primitive_batch``'s frame
         finalization -- background prefill into the render arena followed by
         the standard post-processing chain -- with the ray tracer itself
         skipped, so these frames match what the tracer produces when nothing
@@ -1618,7 +1618,7 @@ class RenderLoopMixin:
                 duration = model.plan(signature, end_ind - current_ind, bytes_remaining)
             else:
                 # Unmanaged mode uses PyTorch's ordinary allocator; there is
-                # no finite arena to size against (see render_primitive_batch).
+                # no finite arena to size against (see _render_primitive_batch).
                 duration = end_ind - current_ind
             new_ind = current_ind + duration
 
@@ -1647,7 +1647,7 @@ class RenderLoopMixin:
                 )
             # Pressure-gated gc: the background-only path allocates almost
             # nothing per window, so a forced full collection here was pure
-            # fixed cost (see the render_primitive_batch call site).
+            # fixed cost (see the _render_primitive_batch call site).
             release_torch_memory(force_gc=False)
             chunk_base = original_pointers[0] + len(self.memory) - original_pointers[1]
             self.memory.max_pointer = chunk_base
@@ -1931,7 +1931,7 @@ class RenderLoopMixin:
 
     def _scene_has_renderable_actors(self, start_time_ind, end_time_ind):
         """Whether any spawned renderable actor's lifespan intersects the
-        frame window (mirroring ``get_batch_of_primitives``' candidate
+        frame window (mirroring ``_get_batch_of_primitives``' candidate
         filter). Cheap -- only lifespan timestamps are evaluated -- so the
         empty-scene warning can fire before rendering starts rather than
         after it finishes.
@@ -1957,7 +1957,7 @@ class RenderLoopMixin:
         ``shadows`` is turned on. Cheap: the rig is resolved first, so the
         ordinary scene never walks its actors at all, and the walk itself reads
         one attribute before it evaluates a lifespan (which is not free -- see
-        ``get_batch_of_primitives``). No primitives are built.
+        ``_get_batch_of_primitives``). No primitives are built.
         """
         from algan.rendering.shaders.materials import (
             _PER_FRAGMENT_ADVICE,
@@ -2059,7 +2059,7 @@ class RenderLoopMixin:
         )
         return int(outside_arena * _RENDER_PREP_FRACTION)
 
-    def get_batch_of_primitives(
+    def _get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
         """Build the largest renderable primitive batch within the memory budget."""
@@ -2336,7 +2336,7 @@ class RenderLoopMixin:
         primitives and append them to ``out``.
 
         This is the per-class emission the final grouping loop in
-        get_batch_of_primitives has always applied to a whole bucket,
+        _get_batch_of_primitives has always applied to a whole bucket,
         factored out unchanged so a bucket that mixes raw runs with finished
         collections (see the run splitting above) can emit its raw runs
         between the collections it walks past. Called once over a bucket
@@ -2415,7 +2415,7 @@ class RenderLoopMixin:
         Identical inputs, identical math, so the packed arrays are byte-exact
         (within device float tolerance) to main-thread preparation. Each
         successfully projected primitive is marked ``_rt_projected`` and skipped
-        by ``render_primitive_batch``; on any failure the un-projected remainder
+        by ``_render_primitive_batch``; on any failure the un-projected remainder
         (and the merge) simply runs on the render thread as before.
         """
         try:
@@ -2578,7 +2578,7 @@ class RenderLoopMixin:
         still fail its exact arena check on the render thread, which falls
         back to the ordinary refetch-at-a-shorter-window retry.
 
-        Runs strictly after :meth:`get_batch_of_primitives` on the same worker
+        Runs strictly after :meth:`_get_batch_of_primitives` on the same worker
         (so the timeline materialization it reads is complete) and strictly
         before the render thread's ``pending.result()`` handover, so none of
         the state written here is ever touched concurrently.
@@ -2665,7 +2665,7 @@ class RenderLoopMixin:
     def _materialize_render_state(self, start_ind, end_ind):
         """Materialize camera/screen/light state over ``[start_ind, end_ind)``
         and extract the plain tensors the renderer consumes (this used to be
-        the first thing render_primitive_batch did). Returning a snapshot
+        the first thing _render_primitive_batch did). Returning a snapshot
         instead of writing camera attributes means the render thread never
         reads animated state -- by the time a batch renders, prep for the
         *next* batch may be mutating that state on a worker thread.
@@ -2819,12 +2819,16 @@ class RenderLoopMixin:
         try:
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
+            # ``no_grad`` rather than ``inference_mode``: a render that leaves
+            # the Scene re-renderable (``save_video(reset=False)``) leaves
+            # tensors behind that later authoring mutates in place, and an
+            # inference tensor may not be mutated once the mode has exited.
             # The scene is excluded from garbage collection for the runtime:
             # the per-batch reclaim only ever needs to find the cycles this
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
             with (
-                torch.inference_mode(),
+                torch.no_grad(),
                 scene_excluded_from_gc(),
                 render_job_holding_the_arch(),
             ):
@@ -2900,7 +2904,7 @@ class RenderLoopMixin:
 
         _rt_settings._begin_render_job()
 
-        with self.batch_prep_context():
+        with self._batch_prep_context():
             current_time_ind = start_time_ind
 
             max_animate_mem = int(
@@ -2918,17 +2922,16 @@ class RenderLoopMixin:
             # Set ALGAN_PREFETCH_BATCHES=0 to fall back to serial (also
             # reduces peak memory by one batch's tensors).
             prefetch_enabled = env_flag("ALGAN_PREFETCH_BATCHES", True)
-            # inference_mode is thread-local; mirror the caller's mode in the
-            # worker so prep-created tensors can be mutated in-place later by
-            # the render thread (inference tensors may only be modified while
-            # inference mode is on).
-            inference_mode_enabled = torch.is_inference_mode_enabled()
+            # Grad mode is thread-local; mirror the caller's in the worker so
+            # prep-created tensors carry the same autograd state the render
+            # thread's do.
+            grad_enabled = torch.is_grad_enabled()
 
             def fetch_batch(time_ind, batch_end_ind=None):
                 if batch_end_ind is None:
                     batch_end_ind = end_time_ind
-                with torch.inference_mode(inference_mode_enabled):
-                    batch = self.get_batch_of_primitives(
+                with torch.set_grad_enabled(grad_enabled):
+                    batch = self._get_batch_of_primitives(
                         time_ind, batch_end_ind, actors, max_animate_mem
                     )
                     # Pre-run the ray tracer's vertex shade + packing
@@ -3236,7 +3239,7 @@ class RenderLoopMixin:
                         produced_output = False
                         retry_after_render_failure = False
                         try:
-                            for frame_batch in self.render_primitive_batch(
+                            for frame_batch in self._render_primitive_batch(
                                 primitives,
                                 current_time_ind,
                                 new_time_ind,
@@ -3350,7 +3353,7 @@ class RenderLoopMixin:
                             f"No active actors in {current_time_ind}:"
                             f"{new_time_ind}; rendering background only."
                         )
-                        for frame_batch in self.render_background_batch(
+                        for frame_batch in self._render_background_batch(
                             current_time_ind,
                             new_time_ind,
                             post_processes=post_processes,
@@ -3414,7 +3417,7 @@ class RenderLoopMixin:
             context = context.prev_context
         return end
 
-    def render_to_video(
+    def _render_to_video(
         self,
         file_writer,
         file_path,
@@ -3433,7 +3436,7 @@ class RenderLoopMixin:
         finished yet -- and render again. See
         :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
         """
-        with torch.inference_mode():
+        with torch.no_grad():
             previous_scene_times = (
                 [list(pair) for pair in self.scene_times]
                 if preserve_authoring_state
@@ -3450,7 +3453,7 @@ class RenderLoopMixin:
                     ),
                 ]
             )
-            self.initialize_frames()
+            self._initialize_frames()
 
             # Closing the camera/light lifespans is only meaningful when the scene
             # is being finalized; skipping it leaves the scene re-renderable after

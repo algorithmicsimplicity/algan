@@ -33,6 +33,7 @@ import torch.nn.functional as F
 from algan.animatable_base.animatable import (
     ANIMATABLE_PROPERTY_VERSION,
     Animatable,
+    _rejecting_timing_kwargs,
     animated_function,
     attr_ranges_for_mob,
 )
@@ -1717,6 +1718,7 @@ class Mob(
             parts.extend(child.get_parts_as_mobs())
         return parts
 
+    @_rejecting_timing_kwargs
     def scale(self, scale_factor: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Resize the Mob relative to its current size.
 
@@ -1763,6 +1765,7 @@ class Mob(
         "the animatable attribute mob.scale_coefficient directly.",
     )
 
+    @_rejecting_timing_kwargs
     def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Set the Mob's absolute scale, ignoring its current size.
 
@@ -2218,6 +2221,17 @@ class Mob(
         for c in self.children:
             c._set_data_sub_inds(data_sub_inds)
 
+    def __bool__(self) -> bool:
+        """A Mob is always truthy, however many batch members it has.
+
+        Without this, ``bool(mob)`` falls back to ``__len__``, and an unbatched
+        Mob reports zero members -- so ``if mob:`` skipped a perfectly good
+        Square while a batched ``Text`` passed, which is not a distinction any
+        script means to draw. A Mob exists; whether it has parts is
+        :func:`len`'s question.
+        """
+        return True
+
     def __len__(self):
         """Number of logical objects in this Mob's batch, or 0 if it is not batched."""
         parent_batch_sizes = getattr(self, "parent_batch_sizes", None)
@@ -2266,3 +2280,48 @@ class Mob(
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
         cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)
         return cloned_mob
+
+
+# Verb methods that read like animatable attributes. ``mob.rotate = 90`` is the
+# same mistake ``mob.scale = 2`` is (see _GuardedMethod): a plain method would
+# be shadowed by the assignment, changing nothing about the render and breaking
+# every later call. ``scale`` is guarded at its own definition because it is
+# defined on this class; these are inherited from the mixins, so they are
+# wrapped here, where the whole set is visible in one place.
+_GUARDED_VERB_METHODS = {
+    "move": (
+        "'move' is a method, not an attribute -- 'mob.move = RIGHT' would set a "
+        "tensor on the Mob and move nothing. Use mob.move(RIGHT) to displace "
+        "the Mob, or assign the animatable attribute mob.location directly."
+    ),
+    "move_to": (
+        "'move_to' is a method, not an attribute -- 'mob.move_to = ORIGIN' "
+        "would set a tensor on the Mob and move nothing. Use "
+        "mob.move_to(ORIGIN), or assign the animatable attribute mob.location "
+        "directly."
+    ),
+    "rotate": (
+        "'rotate' is a method, not an attribute -- 'mob.rotate = 90' would set "
+        "an int on the Mob and rotate nothing. Use mob.rotate(90) to turn the "
+        "Mob about its own center, or assign the animatable attribute "
+        "mob.basis directly."
+    ),
+    "become": (
+        "'become' is a method, not an attribute -- 'mob.become = other' would "
+        "set a Mob on the Mob and transform nothing. Use mob.become(other)."
+    ),
+    "spawn": (
+        "'spawn' is a method, not an attribute -- 'mob.spawn = True' would set "
+        "a bool on the Mob and show nothing. Use mob.spawn(), and "
+        "mob.is_spawned() to ask whether it is already in the video."
+    ),
+    "despawn": (
+        "'despawn' is a method, not an attribute -- 'mob.despawn = True' would "
+        "set a bool on the Mob and remove nothing. Use mob.despawn(), and "
+        "mob.is_despawned() to ask whether it has already left the video."
+    ),
+}
+
+for _name, _message in _GUARDED_VERB_METHODS.items():
+    setattr(Mob, _name, _GuardedMethod(getattr(Mob, _name), _message))
+del _name, _message

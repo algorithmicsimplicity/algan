@@ -233,7 +233,7 @@ _REVOLVED = {
     "sphere-partial": lambda: Sphere(radius=0.8, v_range=(22.9183, 126.0507)),
     "dot3d": lambda: Dot3D(point=RIGHT * 0.3, radius=0.2),
     "cylinder": lambda: Cylinder(radius=0.5, height=1.0),
-    "cylinder-capped": lambda: Cylinder(radius=0.5, height=1.0, show_ends=True),
+    "cylinder-capped": lambda: Cylinder(radius=0.5, height=1.0, closed=True),
     "cylinder-x": lambda: Cylinder(radius=0.4, height=1.2, direction=RIGHT),
     "cylinder-z": lambda: Cylinder(radius=0.4, height=1.2, direction=OUT),
     "cylinder-diagonal": lambda: Cylinder(
@@ -251,18 +251,18 @@ _REVOLVED = {
     "line3d-diagonal": lambda: Line3D(
         start=LEFT + IN * 0.7, end=RIGHT * 1.2 + UP * 0.6, radius=0.09
     ),
-    "cone": lambda: Cone(base_radius=0.6, height=1.0),
-    "cone-capped": lambda: Cone(base_radius=0.6, height=1.0, show_base=True),
+    "cone": lambda: Cone(radius=0.6, height=1.0),
+    "cone-capped": lambda: Cone(radius=0.6, height=1.0, closed=True),
     "cone-capped-tilted": lambda: Cone(
-        base_radius=0.5, height=1.2, direction=(0.4, -1.0, 0.7), show_base=True
+        radius=0.5, height=1.2, direction=(0.4, -1.0, 0.7), closed=True
     ),
     "cylinder-capped-tilted": lambda: Cylinder(
-        radius=0.4, height=1.1, direction=(1.0, 0.3, -0.6), show_ends=True
+        radius=0.4, height=1.1, direction=(1.0, 0.3, -0.6), closed=True
     ),
     "line3d-capped-rebased": lambda: Line3D(
         start=LEFT + IN * 0.4, end=RIGHT * 1.3 + UP * 0.5, radius=0.15
     ).move_between_points(LEFT * 0.6 + UP, RIGHT + IN * 0.9),
-    "cone-direction": lambda: Cone(base_radius=0.5, height=1.1, direction=RIGHT),
+    "cone-direction": lambda: Cone(radius=0.5, height=1.1, direction=RIGHT),
     "torus": lambda: Torus(ring_radius=0.6, tube_radius=0.25),
     "torus-partial": lambda: Torus(
         ring_radius=0.6,
@@ -309,23 +309,21 @@ def test_polyhedron_winds_outward(name):
 # u=0 row and every other row is something else).
 _RIMS = {
     "cylinder": (
-        lambda: Cylinder(radius=0.45, height=1.0, show_ends=True),
+        lambda: Cylinder(radius=0.45, height=1.0, closed=True),
         lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
     ),
     "cylinder-tilted": (
         lambda: Cylinder(
-            radius=0.3, height=1.2, direction=(1.0, 0.4, -0.7), show_ends=True
+            radius=0.3, height=1.2, direction=(1.0, 0.4, -0.7), closed=True
         ),
         lambda m, g: ((m.bottom_cap, g[:, 0]), (m.top_cap, g[:, -1])),
     ),
     "cone": (
-        lambda: Cone(base_radius=0.55, height=1.1, show_base=True),
+        lambda: Cone(radius=0.55, height=1.1, closed=True),
         lambda m, g: ((m.base_circle, g[0]),),
     ),
     "cone-tilted": (
-        lambda: Cone(
-            base_radius=0.4, height=0.9, direction=(0.2, -1.0, 0.5), show_base=True
-        ),
+        lambda: Cone(radius=0.4, height=0.9, direction=(0.2, -1.0, 0.5), closed=True),
         lambda m, g: ((m.base_circle, g[0]),),
     ),
     "line3d-rebased": (

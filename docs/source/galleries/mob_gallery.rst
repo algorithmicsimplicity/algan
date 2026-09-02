@@ -112,7 +112,7 @@ above -- ``algan.manim`` is where Manim's own (double) stroke unit lives:
 
     with Off():
         Group([
-            Arc(radius=1, start_angle=0, angle=3.14),
+            Arc(radius=1, start_angle=0, angle=180),
             Annulus(inner_radius=0.5, outer_radius=1.0),
             Ellipse(width=2, height=1.2),
             Star(n=6, color=BLUE, stroke_color=WHITE, stroke_width=2),
@@ -139,7 +139,7 @@ how Algan turns them into triangles.
 
     shapes = Group([
         Sphere(radius=0.45), Cube(size=0.75), Cylinder(radius=0.35, height=0.8),
-        Cone(base_radius=0.45, height=0.8), Torus(ring_radius=0.55, tube_radius=0.2),
+        Cone(radius=0.45, height=0.8), Torus(ring_radius=0.55, tube_radius=0.2),
         Tetrahedron(edge_length=1.0), Octahedron(edge_length=0.6),
         Icosahedron(edge_length=0.5),
     ])
@@ -161,7 +161,7 @@ Curved 3-D Shapes:
    * - :class:`~algan.mobs.shapes_3d.Cylinder`
      - Sized with ``radius``, ``height``, and ``direction``.
    * - :class:`~algan.mobs.shapes_3d.Cone`
-     - Sized with ``base_radius``, ``height``, and ``direction``.
+     - Sized with ``radius``, ``height``, and ``direction``.
    * - :class:`~algan.mobs.shapes_3d.Torus`
      - Sized with ``ring_radius`` and ``tube_radius``.
    * - :class:`~algan.mobs.shapes_3d.Dot3D`, :class:`~algan.mobs.shapes_3d.Line3D`

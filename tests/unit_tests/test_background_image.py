@@ -14,14 +14,14 @@ def _write_test_image(tmp_path, height, width):
     """A PNG with no symmetry in either axis, so a transpose or a flip of the
     decoded background is detectable.
     """
-    import torchvision
+    from PIL import Image
 
     rows = torch.arange(height, dtype=torch.float32).view(-1, 1) * 7
     cols = torch.arange(width, dtype=torch.float32).view(1, -1)
     red = (rows + cols).clamp_max(255)
     image = torch.stack((red, torch.zeros_like(red), 255 - red), dim=0).to(torch.uint8)
     path = tmp_path / "background.png"
-    torchvision.io.write_png(image, str(path))
+    Image.fromarray(image.permute(1, 2, 0).numpy(), mode="RGB").save(path)
     return path, image.permute(1, 2, 0).float() / 255
 
 

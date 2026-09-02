@@ -11,10 +11,14 @@ per frame to whatever the camera needs, so they stay smooth as you move in.
 defined by explicit vertices and flat polygon faces. Their faces are already
 planar, so they are triangulated once at construction and never refined.
 
-Several constructors accept Manim's argument names (``resolution`` counting
-patches rather than vertices, ``checkerboard_colors``) so that ported scripts
-keep working. ``u_range`` / ``v_range`` keep Manim's *names* but take Algan's
-degrees, not Manim's radians.
+The revolved solids share one vocabulary: ``radius``, ``u_range`` / ``v_range``,
+``closed`` and ``checkered_color``, with ``direction`` defaulting to ``UP`` on
+both :class:`Cone` and :class:`Cylinder`. Manim's spellings of those
+(``base_radius``, ``show_base``, ``show_ends``, ``u_min``,
+``checkerboard_colors``) raise here, naming the Algan one; they are correct
+under ``algan.manim``, where Manim's classes live. ``resolution`` is the one
+Manim name kept, counting patches rather than vertices as Manim does, and
+``u_range`` / ``v_range`` keep Manim's names but take Algan's degrees.
 
 Unlike 2-D shapes, these respond to light. See
 :doc:`/new_user_tutorials/three_d_basics`.
@@ -38,6 +42,7 @@ from algan.geometry.geometry import get_orthonormal_vector
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
 from algan.settings.shape_style_profiles import _manim_shape_style_for
+from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
@@ -175,6 +180,21 @@ def _sweep_radians(range_):
     )
 
 
+#: Manim's spellings for the revolved solids' arguments, and Algan's. Manim
+#: gives one concept two or three names across ``Cone``/``Cylinder``/``Sphere``
+#: (``base_radius`` beside ``radius``, ``show_base`` beside ``show_ends``,
+#: ``u_min`` beside ``u_range``); the root namespace carries one vocabulary and
+#: says so when a script uses Manim's. ``algan.manim.Cone`` and friends are
+#: Manim's classes under Manim's names.
+_SOLID_KEYWORD_RENAMES: dict[str, str] = {
+    "base_radius": "radius",
+    "checkerboard_colors": "checkered_color",
+    "show_base": "closed",
+    "show_ends": "closed",
+    "u_min": "u_range",
+}
+
+
 def _surface_resolution_kwargs(resolution, kwargs):
     """Translate Manim's surface resolution/style names to Algan's Surface."""
     if resolution is not None:
@@ -189,13 +209,6 @@ def _surface_resolution_kwargs(resolution, kwargs):
         kwargs.setdefault("color", kwargs.pop("fill_color"))
     if "fill_opacity" in kwargs:
         kwargs.setdefault("opacity", kwargs.pop("fill_opacity"))
-    checkerboard = kwargs.pop("checkerboard_colors", None)
-    if checkerboard not in (None, False):
-        colors = list(checkerboard)
-        if colors:
-            kwargs.setdefault("color", colors[0])
-        if len(colors) > 1:
-            kwargs.setdefault("checkered_color", colors[1])
     # Surface faces do not have a separate raster-style stroke in Algan.
     for key in (
         "stroke_color",
@@ -489,6 +502,9 @@ class Sphere(Surface):
         *args,
         **kwargs,
     ):
+        _reject_renamed_keywords(
+            "Sphere", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Sphere"
+        )
         self.radius = radius
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         kwargs.setdefault("location", center)
@@ -550,22 +566,23 @@ class Sphere(Surface):
 class Cone(Surface):
     """A circular cone, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
 
-    The cone is open at its base by default; ``show_base`` closes it with a
+    The cone is open at its base by default; ``closed`` caps it with a
     flat disc added as a child -- a lit triangle mesh carrying the cone's own
     mesh identity, so the rim is an interior edge of one surface. The uncapped
     disc is always built and available as ``base_circle``.
 
     Parameters
     ----------
-    base_radius
+    radius
         Radius of the base, in world units. Defaults to ``1``.
     height
         Distance from base to tip along ``direction``, in world units. Defaults
         to ``1``.
     direction
         Direction the tip points, shape ``(*, 3)``; it need not be normalized.
-        Defaults to ``OUTWARD`` (out of the screen, towards the viewer).
-    show_base
+        Defaults to ``UP`` (the +y axis), the same default as
+        :class:`Cylinder`'s axis.
+    closed
         Whether to cap the base with a filled circle. Defaults to ``False``: the
         cone is open, so the camera can see inside it. The disc samples its rim
         more finely than the cone samples its rings -- it has to, since a flat
@@ -575,23 +592,15 @@ class Cone(Surface):
     v_range
         Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
         cone. Defaults to ``(0, 360)`` (the full cone).
-    u_min
-        Retained for Manim compatibility; stored on the instance and not used by
-        :meth:`coord_function`. Defaults to ``0``.
-    checkerboard_colors
-        Manim's two-tone surface styling: a sequence of two colors becomes
-        Algan's ``color`` and ``checkered_color``. Defaults to ``False`` (a single
-        color).
-    radius, closed
-        Algan's older spellings of ``base_radius`` and ``show_base``. When not
-        ``None`` they win over the Manim-named argument. Both default to ``None``.
     resolution
         Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
         both; each value becomes ``grid_width``/``grid_height`` plus one, since
         Manim counts patches and Algan counts vertices. Defaults to ``None``,
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
     *args, **kwargs
-        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
+        ``color`` and ``checkered_color`` for the two-tone styling Manim spells
+        ``checkerboard_colors``.
 
     Examples
     --------
@@ -602,43 +611,34 @@ class Cone(Surface):
 
         from algan import *
 
-        Cone(base_radius=0.6, height=1.2, direction=UP, show_base=True).spawn()
+        Cone(radius=0.6, height=1.2, direction=UP, closed=True).spawn()
 
         Scene.save_video()
     """
 
     # The side's normals face out of the cone. An UNCAPPED cone therefore
     # shades its inside as an inside (ambient only) rather than as a second
-    # lit exterior; pass ``show_base=True``, or set ``two_sided = True`` on
+    # lit exterior; pass ``closed=True``, or set ``two_sided = True`` on
     # the instance, if you want the old two-sided lighting.
     two_sided = False
 
     def __init__(
         self,
-        base_radius=1,
+        radius=1,
         height=1,
-        direction=OUTWARD,
-        show_base=False,
+        direction=UP,
         v_range=(0, 360),
-        u_min=0,
-        checkerboard_colors=False,
-        radius=None,
-        closed=None,
+        closed=False,
         resolution=None,
         *args,
         **kwargs,
     ):
-        # Preserve Algan's older ``radius``/``closed`` spellings.
-        if radius is not None:
-            base_radius = radius
-        if closed is not None:
-            show_base = closed
-        self.radius = base_radius
-        self.base_radius = base_radius
+        _reject_renamed_keywords(
+            "Cone", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Cone"
+        )
+        self.radius = radius
         self.height = height
         self.direction = cast_to_tensor(direction)
-        self.u_min = u_min
-        kwargs["checkerboard_colors"] = checkerboard_colors
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         super().__init__(*args, v_range=v_range, **kwargs)
 
@@ -666,7 +666,7 @@ class Cone(Surface):
             color=self.color,
             geometry_tolerance=self._geometry_tolerance,
             max_grid_resolution=self._max_grid_resolution,
-            add_to_scene=bool(show_base) and self._added_to_scene,
+            add_to_scene=bool(closed) and self._added_to_scene,
         )
         self.base_circle._mesh_key = self._mesh_key
         with Off(animation_manager=self.animation_manager):
@@ -677,9 +677,9 @@ class Cone(Surface):
         # ``_cap_ring_offsets``). Both the side and its cap must carry the
         # declaration: they share one surface id (``_mesh_key``), and the
         # renderer reads it per triangle.
-        self.closed_shell = bool(show_base) and _sweep_is_full(v_range, 360)
+        self.closed_shell = bool(closed) and _sweep_is_full(v_range, 360)
         self.base_circle.closed_shell = self.closed_shell
-        if show_base:
+        if closed:
             self.add_children(self.base_circle)
         self.start_point = -direction_t * height * 0.5
         self.end_point = direction_t * height * 0.5
@@ -765,7 +765,7 @@ class Cone(Surface):
 class Cylinder(Surface):
     """A cylinder, tessellated from a :class:`~algan.mobs.surfaces.surface.Surface`.
 
-    Only the curved side is built by default; ``show_ends`` adds the two end
+    Only the curved side is built by default; ``closed`` adds the two end
     discs as children and as Scene actors (:meth:`add_bases` does the same after
     construction).
 
@@ -784,7 +784,7 @@ class Cylinder(Surface):
         the default ``direction=UP``) and turns toward its left, so ``(0, 180)``
         builds the ``LEFT`` half of the tube. Defaults to ``(0, 360)``, the
         closed tube. The extent *along* the axis comes from ``height``.
-    show_ends
+    closed
         Whether to close both ends with flat discs -- lit triangle meshes
         carrying the tube's own mesh identity, so each rim is an interior edge
         of one surface. Defaults to ``False``: the tube is open at both ends.
@@ -798,11 +798,10 @@ class Cylinder(Surface):
         both; each value becomes ``grid_width``/``grid_height`` plus one, since
         Manim counts patches and Algan counts vertices. Defaults to ``None``,
         meaning Algan sizes the grid itself from ``geometry_tolerance``.
-    closed
-        Algan's older spelling of ``show_ends``. When not ``None`` it wins.
-        Defaults to ``None``.
     *args, **kwargs
-        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
+        ``color`` and ``checkered_color`` for the two-tone styling Manim spells
+        ``checkerboard_colors``.
 
     Notes
     -----
@@ -821,7 +820,7 @@ class Cylinder(Surface):
 
         from algan import *
 
-        Cylinder(radius=0.4, height=1.6, direction=RIGHT, show_ends=True).spawn()
+        Cylinder(radius=0.4, height=1.6, direction=RIGHT, closed=True).spawn()
 
         Scene.save_video()
 
@@ -850,14 +849,14 @@ class Cylinder(Surface):
         height=1,
         direction=UP,
         v_range=(0, 360),
-        show_ends=False,
+        closed=False,
         resolution=None,
-        closed=None,
         *args,
         **kwargs,
     ):
-        if closed is not None:
-            show_ends = closed
+        _reject_renamed_keywords(
+            "Cylinder", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Cylinder"
+        )
         self.radius = radius
         self.height = height
         self._height = height
@@ -868,7 +867,7 @@ class Cylinder(Surface):
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         if not torch.allclose(direction_t, UP.to(direction_t)):
             self.look(direction_t, with_axis="up")
-        if show_ends:
+        if closed:
             self.add_bases(direction_t)
 
     def add_bases(self, direction=None):
@@ -1175,7 +1174,7 @@ class Arrow3D(Mob):
             radius=shaft_radius,
             height=float((shaft_end - start).norm(p=2, dim=-1).reshape(-1)[0]),
             direction=direction,
-            show_ends=True,
+            closed=True,
             resolution=surface_resolution,
             color=color,
             add_to_scene=False,
@@ -1183,10 +1182,10 @@ class Arrow3D(Mob):
         self.tail.move_to((start + shaft_end) * 0.5)
         self.head = Cone(
             scene=self.scene,
-            base_radius=tip_radius,
+            radius=tip_radius,
             height=tip_length,
             direction=direction,
-            show_base=True,
+            closed=True,
             resolution=surface_resolution,
             color=color,
             add_to_scene=False,
@@ -1500,6 +1499,9 @@ class Torus(Surface):
         resolution=None,
         **kwargs,
     ):
+        _reject_renamed_keywords(
+            "Torus", kwargs, _SOLID_KEYWORD_RENAMES, manim_alternative="Torus"
+        )
         self.ring_radius = ring_radius
         self.tube_radius = tube_radius
         # Through the shared translator, like Sphere/Cone/Cylinder. Torus used

@@ -317,7 +317,7 @@ def test_stop_asks_a_live_daemon_to_quit(home, capsys):
         assert cli.main(["daemon", "--stop"]) == 0
     finally:
         daemon.close()
-    assert daemon.received == b"quit\n"
+    assert daemon.received == b"quit t\n", "the token goes with every verb"
     assert "4242" in capsys.readouterr().out, "say which process was stopped"
 
 
@@ -332,6 +332,52 @@ def test_stop_clears_a_dead_registration(home, capsys):
     assert cli.main(["daemon", "--stop"]) == 0
     assert not (home / "daemon.json").exists()
     assert "cleared its registration" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["render", "ping", "quit"])
+def test_a_trigger_verb_is_sent_with_the_token(home, capsys, verb):
+    """The raw-socket one-liner these replace could not carry a token."""
+    daemon = _FakeDaemon()
+    _register(home, daemon.port, token="s3cret")
+    try:
+        assert cli.main(["daemon", verb]) == 0
+    finally:
+        daemon.close()
+    assert daemon.received == f"{verb} s3cret\n".encode()
+    assert "4242" in capsys.readouterr().out
+
+
+def test_a_trigger_says_so_when_nothing_is_running(home, capsys):
+    assert cli.main(["daemon", "ping"]) == 0
+    assert "No Algan daemon is running." in capsys.readouterr().out
+
+
+def test_a_trigger_clears_a_dead_registration(home, capsys):
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    port = free.getsockname()[1]
+    free.close()
+    _register(home, port)
+
+    assert cli.main(["daemon", "render"]) == 0
+    assert not (home / "daemon.json").exists()
+
+
+def test_a_refused_trigger_is_reported_and_fails(home, capsys):
+    class _Refusing(_FakeDaemon):
+        def _serve(self):
+            conn, _ = self.server.accept()
+            with conn:
+                self.received = conn.recv(64)
+                conn.sendall(b"err: bad token\n")
+
+    daemon = _Refusing()
+    _register(home, daemon.port)
+    try:
+        assert cli.main(["daemon", "render"]) == 1
+    finally:
+        daemon.close()
+    assert "refused" in capsys.readouterr().out
 
 
 def test_the_daemon_command_does_not_pass_it_our_own_arguments(monkeypatch):
@@ -367,6 +413,32 @@ def test_check_reports_the_environment(capsys):
     printed = capsys.readouterr().out
     assert "PyTorch" in printed
     assert "Taichi" in printed
+    assert algan.__version__ in printed
+    # Its help says "paths", and "where did my video go" is what it is run for.
+    assert "output:" in printed
+    assert "cache:" in printed
+
+
+def test_check_reports_the_ffmpeg_algan_will_actually_use(capsys, monkeypatch):
+    """Not ``which ffmpeg``: renders go through the bundled build.
+
+    ``check`` used to warn that video export may fail on a machine where it
+    demonstrably does not, and to name ``/usr/bin/ffmpeg`` on one where the
+    encode goes somewhere else entirely.
+    """
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli.main(["check"]) == 0
+    printed = capsys.readouterr().out
+    assert "[WARNING] No ffmpeg" not in printed
+    assert "imageio-ffmpeg" in printed
+
+
+def test_a_pinned_ffmpeg_binary_outranks_everything(capsys):
+    SETTINGS.paths.set(ffmpeg_binary="/opt/ffmpeg/bin/ffmpeg")
+    assert cli.main(["check"]) == 0
+    printed = capsys.readouterr().out
+    assert "/opt/ffmpeg/bin/ffmpeg" in printed
+    assert "SETTINGS.paths.ffmpeg_binary" in printed
 
 
 def test_settings_survive_a_cli_run(reporting_script):

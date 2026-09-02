@@ -486,7 +486,7 @@ def install_pipeline_hooks():
     import algan.render_loop as rl
 
     _try_wrap(bzc, "build_render_primitives_batched", "build_render_primitives_batched")
-    _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
+    _try_wrap(Scene, "_get_batch_of_primitives", "Scene._get_batch_of_primitives")
     _try_wrap(Animatable, "_get_attr_inds", "_get_attr_inds")
     from algan.animation_timeline.timeline import AnimationTimeline, AttributeTimeline
 
@@ -503,7 +503,7 @@ def install_pipeline_hooks():
     )
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
     # The *batched* surface build had no hook, so its whole cost was charged to
-    # Scene.get_batch_of_primitives' exclusive column -- and on a scene whose
+    # Scene._get_batch_of_primitives' exclusive column -- and on a scene whose
     # surfaces are all batchable (the reference scene: every batch reports
     # num_pn=0 and Surface.get_render_primitives never appears) that made the
     # single largest item in the profile unattributable. Its bezier counterpart
@@ -1360,7 +1360,7 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
                 f"{lt:>10.3f}{ct:>10.3f}"
             )
         # Sum *exclusive* times so nested stages aren't double-counted (e.g.
-        # Surface.get_render_primitives runs inside Scene.get_batch_of_primitives;
+        # Surface.get_render_primitives runs inside Scene._get_batch_of_primitives;
         # kernels run inside "ray traced render total"). Kernels bypass the stack
         # machinery, so their time is already inside the render stage's exclusive
         # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.

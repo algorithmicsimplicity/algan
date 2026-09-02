@@ -1,6 +1,6 @@
 # OX_AUDIT — Light-transport correctness of Algan's renderer vs. the Three.js/glTF material model
 
-**Date:** 2026-08-21 · **Repo:** `/home/user/algan` @ `ecd6947` · **Method:** code reading + algebra only. **No render was run** (this audit is read-only); every quantity below is computed by hand from the cited expressions.
+**Date:** 2026-08-21 · **Repo:** `algan` @ `ecd6947` · **Method:** code reading + algebra only. **No render was run** (this audit is read-only); every quantity below is computed by hand from the cited expressions.
 
 **References used:** KHR_materials_transmission / _volume / _clearcoat / _sheen specs (fetched from KhronosGroup/glTF main), Three.js `lights_physical_pars_fragment.glsl.js` / `lights_fragment_begin.glsl.js` / `lights_physical_fragment.glsl.js` (fetched from mrdoob/three.js dev, r18x-era), and three-gpu-pathtracer from prior knowledge (its source was **not** fetched — see "Not checked").
 

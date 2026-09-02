@@ -1,6 +1,6 @@
 """Does a REAL multi-batch render grow the timeline / re-resolve every batch?
 
-A probe that calls ``get_batch_of_primitives`` directly -- which is how every
+A probe that calls ``_get_batch_of_primitives`` directly -- which is how every
 prep-side measurement in this repo is taken -- runs *outside* the context
 management a render sets up, and records new function applications on every
 call. That is a harness artifact. This checks the same quantities inside a
@@ -117,7 +117,7 @@ def main():
     if after == before and STATS["resolve"] <= 1:
         print(
             "\nA real render records nothing and resolves once. The per-batch\n"
-            "growth seen by direct get_batch_of_primitives probes is a HARNESS\n"
+            "growth seen by direct _get_batch_of_primitives probes is a HARNESS\n"
             "ARTIFACT -- those calls run outside the render's context management."
         )
     else:

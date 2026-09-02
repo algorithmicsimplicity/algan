@@ -312,7 +312,7 @@ def _make_preflight_scene(
         def background_is_transparent(self):
             return False
 
-        def get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
+        def _get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
             if requested_windows is not None:
                 requested_windows.append(end_ind - start_ind)
             primitive = Primitive()
@@ -327,7 +327,7 @@ def _make_preflight_scene(
         ):
             return preflight(primitives[0].duration, require_estimates_fit)
 
-        def render_primitive_batch(
+        def _render_primitive_batch(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs
         ):
             duration = end_ind - start_ind
@@ -443,7 +443,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
         def background_is_transparent(self):
             return False
 
-        def get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
+        def _get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
             primitive = Primitive()
             primitive.duration = end_ind - start_ind
             return [primitive], end_ind, {"lights": []}
@@ -454,7 +454,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
         def _prepared_batch_fits_render_arena(self, primitives, *_args, **_kwargs):
             return primitives[0].duration <= 5
 
-        def render_primitive_batch(
+        def _render_primitive_batch(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs
         ):
             duration = end_ind - start_ind

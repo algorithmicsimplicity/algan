@@ -623,6 +623,56 @@ class TempMemoryContext:
 
 
 class ManualMemory:
+    """A bump-allocator arena the renderer draws its per-frame tensors from.
+
+    One block of bytes is claimed up front on the render device, and every
+    render-time tensor is a view into it. Allocation moves a pointer forward;
+    freeing is done by putting the pointer back, so a whole stage's temporaries
+    are released in one assignment and nothing is handed back to the caching
+    allocator mid-render. That is what makes a frame batch's memory use
+    predictable enough to size the batch from a measurement -- see
+    :mod:`algan.rendering.memory_model`.
+
+    A second pointer runs backwards from the end for allocations that must
+    outlive the forward scope they were made in, so the arena is full when the
+    two meet. :meth:`temp` is the scoped form of snapshot-and-restore.
+
+    You rarely construct one: the Scene's render loop owns the arena for a job.
+    Reach for it directly when writing a kernel-level benchmark or an A/B
+    fixture that has to allocate the way a render does.
+
+    Parameters
+    ----------
+    portion_of_available_memory_used
+        Fraction of the device's currently free memory to claim, from ``0`` to
+        ``1``. Ignored when ``num_bytes`` is given.
+    device
+        Torch device to allocate on. Defaults to ``None``, meaning
+        ``SETTINGS.computing.render_device``.
+    managed
+        Whether this arena really owns memory. Defaults to ``True``. ``False``
+        allocates one byte and turns off poisoning and recording, which is what
+        a code path that must hold an arena object but never allocate from it
+        (a CPU-side dry run, a size probe) uses instead of ``None``.
+    num_bytes
+        Exact size to claim, in bytes. Defaults to ``None``, meaning take
+        ``portion_of_available_memory_used`` of what is free.
+
+    Examples
+    --------
+    Allocate inside a scope, and let leaving it free everything at once:
+
+    .. code-block:: python
+
+        from algan.utils.memory_utils import ManualMemory
+
+        arena = ManualMemory(0.5)
+        with arena.temp():
+            scratch = arena.get_tensor((1024, 3), torch.float32)
+            ...
+        # scratch's bytes are available again here.
+    """
+
     def __init__(
         self,
         portion_of_available_memory_used,

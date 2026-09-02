@@ -1,8 +1,0 @@
-Rendering device set to cuda
-Encoding video with libx264
-Began rendering det_batch3_0.mp4
-Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
-Finished rendering det_batch3_0.mp4 in 74.8 s
-[Taichi] version 1.7.4, llvm 15.0.4, commit b4b956fd, linux, python 3.13.15
-[Taichi] Starting on arch=cuda
-rendered scratch_perf/det_batch3_0.mp4 74.8s

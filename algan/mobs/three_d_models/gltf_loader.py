@@ -348,7 +348,24 @@ def _augment_with_animations(file_path, meshes, static_nodes):
     """
     try:
         from pygltflib import GLTF2
+    except ImportError:
+        # pygltflib is a core dependency of algan; reaching this means the
+        # install is broken (or a downstream packager stripped it), not that
+        # the feature is optional -- say so by name instead of silently
+        # degrading like the defensive except below.
+        import warnings
 
+        from algan.errors import UnsupportedFeatureWarning
+
+        warnings.warn(
+            "glTF animation needs the 'pygltflib' package, which is not "
+            "installed (pip install pygltflib); loading this model as static.",
+            UnsupportedFeatureWarning,
+            stacklevel=2,
+        )
+        return static_nodes, []
+
+    try:
         gltf = GLTF2().load(file_path)
         if not gltf.animations:
             return static_nodes, []

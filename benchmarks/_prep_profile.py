@@ -82,7 +82,7 @@ def main():
         )
         print(s.getvalue())
 
-    # Mimic render_to_video's prelude.
+    # Mimic _render_to_video's prelude.
     scene.scene_times.append(
         [
             scene.scene_times[-1][0],
@@ -92,7 +92,7 @@ def main():
             ),
         ]
     )
-    scene.initialize_frames()
+    scene._initialize_frames()
     scene.camera.despawn(animate=False)
     for light in scene.light_sources:
         light.despawn(animate=False)
@@ -124,7 +124,7 @@ def main():
 
     # This harness had the right idea before there was a name for it; it now
     # shares the render loop's own definition so the two cannot drift.
-    with scene.batch_prep_context():
+    with scene._batch_prep_context():
         prof = cProfile.Profile()
         cur = start_ind
         for _b in range(num_batches):
@@ -132,7 +132,7 @@ def main():
                 break
             t0 = time.perf_counter()
             prof.enable()
-            prims, new_ind, rs = scene.get_batch_of_primitives(
+            prims, new_ind, rs = scene._get_batch_of_primitives(
                 cur, end_ind, actors, max_animate_mem
             )
             prof.disable()

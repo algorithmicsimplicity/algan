@@ -38,10 +38,12 @@ How the handoff works
 A run on the daemon is meant to be indistinguishable from a run in its own
 process. ``sys.argv``, the working directory, the environment, stdout and stderr
 (at the descriptor level, so ``ffmpeg`` and other subprocesses reach you) and the
-tty-ness of both streams are all reproduced. Two things deliberately are not:
-``stdin`` is connected to the null device, because the daemon's own stdin is its
-re-render trigger, and ``atexit`` handlers do not run, because a warm process
-never shuts down.
+tty-ness of both streams are all reproduced. Three things deliberately are not:
+everything **above** your ``import algan`` runs twice -- once in your process,
+where the handoff decision is made, and again in the daemon, so keep side
+effects below the import; ``stdin`` is connected to the null device, because the
+daemon's own stdin is its re-render trigger; and ``atexit`` handlers do not run,
+because a warm process never shuts down.
 
 **Concurrent scripts are queued and run one at a time**, in arrival order. A
 waiting client is told its position. On Windows this is what you want anyway: two
@@ -83,7 +85,10 @@ switch to the daemon, press Enter.
      - Also re-render when the script or its sibling helper modules change on
        disk. Needs a ``SCRIPT``.
    * - ``--port PORT``
-     - Trigger-socket port. Default 46711.
+     - Trigger-socket port. Without it the daemon prefers 46711 and binds an
+       ephemeral port when that one is taken, publishing whichever it got in
+       the state file; given explicitly, the port is an instruction and binding
+       it is allowed to fail.
    * - ``--no-serve``
      - Do not open the trigger socket. Needs a ``SCRIPT``.
    * - ``--no-initial-render``
@@ -99,14 +104,16 @@ A render is never interrupted, and triggers arriving mid-render coalesce into at
 most one queued re-run. There are three ways in:
 
 * **Enter** in the daemon's terminal.
-* **The trigger socket** on ``127.0.0.1``, port 46711 by default. It accepts the
-  line commands ``render``, ``ping`` and ``quit``. Bind an editor key to the
-  standard-library one-liner -- deliberately not ``python -m algan.daemon``,
-  which would import the whole library just to poke a socket:
+* **The trigger socket** on ``127.0.0.1``, at whatever port the state file
+  names (46711 when it was free). It accepts the line commands ``render``,
+  ``ping`` and ``quit``, and **each must carry the daemon's token** -- this
+  socket executes arbitrary paths and stops the process, so a bare ``quit``
+  from any local process is not enough. The CLI reads both the port and the
+  token for you; bind an editor key to:
 
   .. code-block:: bash
 
-      python -c "import socket;s=socket.create_connection(('127.0.0.1',46711),2);s.sendall(b'render\n');print(s.recv(16).decode().strip())"
+      algan daemon render         # also: algan daemon ping, algan daemon quit
 
 * **``--watch``**, which polls the script and its sibling modules for changes.
 
@@ -126,12 +133,10 @@ Stopping it
      - When to use it
    * - ``q`` then Enter, or Ctrl+C
      - A daemon you launched in a terminal.
-   * - ``algan daemon --stop``
-     - Anything, including a background daemon: it reads the state file and
-       sends ``quit`` for you, and clears the registration if nothing answers.
-   * - ``quit`` on the trigger socket
-     - The same thing without importing Algan. Same one-liner as above with
-       ``b'quit\n'`` in place of ``b'render\n'``.
+   * - ``algan daemon quit`` (or ``--stop``)
+     - Anything, including a background daemon: it reads the state file for the
+       port and the token, sends ``quit`` for you, and clears the registration
+       if nothing answers.
    * - Kill the process
      - The ``pid`` is in ``~/.algan/daemon.json``.
    * - Wait
@@ -165,8 +170,11 @@ Both live under ``$ALGAN_HOME``, which defaults to ``~/.algan``:
    * - File
      - Contents
    * - ``daemon.json``
-     - The state file: port, pid, an access token, and the startup environment
-       the daemon baked in. Its absence means no daemon is running.
+     - The state file: the port actually bound, the pid, an access token, the
+       startup environment the daemon baked in, and which Algan it is (its
+       interpreter, prefix, package directory and version -- a client whose own
+       differ runs cold rather than being executed by another virtualenv). Its
+       absence means no daemon is running.
    * - ``daemon.log``
      - Console output of auto-started daemons.
 
@@ -328,7 +336,8 @@ Environment variables
      - Start one when none is running.
    * - ``ALGAN_DAEMON_PORT``
      - ``46711``
-     - Trigger-socket port.
+     - Preferred trigger-socket port. An ephemeral one is bound when it is
+       taken, and the state file carries whichever was used.
    * - ``ALGAN_DAEMON_TIMEOUT``
      - ``2.0``
      - Seconds the client waits to connect before falling back.
@@ -355,7 +364,8 @@ and is what stops the handoff from recursing. Do not set it yourself.
 .. warning::
 
     **Anything that can reach ``127.0.0.1`` can ask the daemon to execute a
-    path.** Requests must carry the token from the state file, which lives in
+    path.** Every request -- ``run``, ``cancel``, ``render``, ``ping`` and
+    ``quit`` alike -- must carry the token from the state file, which lives in
     your home directory (mode 0600 where the platform honours it), but do not
     forward the port off-host.
 

@@ -41,8 +41,8 @@ def test_scene_owned_managers_are_regular_instances():
     assert first.timeline_manager is not second.timeline_manager
     assert first.animation_manager is not second.animation_manager
     assert first.audio_manager is not second.audio_manager
-    second.terminate()
-    first.terminate()
+    second._terminate()
+    first._terminate()
 
 
 def test_scene_context_pushes_and_pops_active_scene():
@@ -56,7 +56,7 @@ def test_scene_context_pushes_and_pops_active_scene():
         assert mob.scene is inner
 
     assert manager.current_scene is outer
-    outer.terminate()
+    outer._terminate()
 
 
 def test_explicit_scene_remains_isolated_while_another_scene_is_active():
@@ -76,7 +76,7 @@ def test_explicit_scene_remains_isolated_while_another_scene_is_active():
         assert mob.lifespan is outer.timeline_manager.get_lifespan(mob.id)
         assert mob.id not in inner.timeline_manager.mob_id_to_lifespan
 
-    outer.terminate()
+    outer._terminate()
 
 
 def test_reset_replaces_only_one_scenes_managers():
@@ -105,16 +105,16 @@ def test_reset_replaces_only_one_scenes_managers():
         ) == inner_managers
         assert SceneManager.instance().current_scene is inner
 
-    outer.terminate()
+    outer._terminate()
 
 
 def test_covered_scene_cannot_be_terminated_out_of_order():
     outer = Scene(scene_initializer=_empty_scene)
     inner = Scene(scene_initializer=_empty_scene)
     with pytest.raises(RuntimeError, match="current active Scene"):
-        outer.terminate()
-    inner.terminate()
-    outer.terminate()
+        outer._terminate()
+    inner._terminate()
+    outer._terminate()
 
 
 def test_unqualified_mob_uses_current_scene_not_context_manager_scene():
@@ -126,7 +126,7 @@ def test_unqualified_mob_uses_current_scene_not_context_manager_scene():
         assert mob.scene is inner
         assert mob.animation_manager is inner.animation_manager
 
-    outer.terminate()
+    outer._terminate()
 
 
 def test_scene_context_pops_after_exception():
@@ -142,7 +142,7 @@ def test_scene_context_pops_after_exception():
         enter_and_fail()
 
     assert manager.current_scene is outer
-    outer.terminate()
+    outer._terminate()
 
 
 def test_inactive_scene_render_temporarily_activates_it(monkeypatch):
@@ -168,8 +168,8 @@ def test_inactive_scene_render_temporarily_activates_it(monkeypatch):
     }
     assert manager.current_scene is inner
 
-    inner.terminate()
-    outer.terminate()
+    inner._terminate()
+    outer._terminate()
 
 
 def test_empty_group_slice_keeps_owning_scene():
@@ -180,4 +180,4 @@ def test_empty_group_slice_keeps_owning_scene():
         assert empty_view.scene is outer
         assert empty_view not in outer.actors
 
-    outer.terminate()
+    outer._terminate()

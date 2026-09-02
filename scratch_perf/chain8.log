@@ -1,4 +1,0 @@
-=== bisect: branch, wide-attr OFF, 3-frame batches vs fresh master
-frames compared: 30
-worst channel diff: 0 (frame -1)
-pixels over tol 2: worst frame 0 of 8294400 (0.000%, frame -1); mean 0.0/frame; 0 of 30 frames affected

@@ -56,16 +56,46 @@ That is a known limit of delegating rather than reimplementing.
 
 There is no third conversion: Manim's ``OUT`` and Algan's ``OUTWARD`` are both
 ``+z``, so an imported point keeps the coordinates it was written with.
+
+What the adapter *shows*
+------------------------
+Delegating gave the root spellings Manim's ``__signature__`` and Manim's
+docstring, which then said the wrong thing in the one place a user looks:
+``help(Arc)`` showed ``angle: float = 1.5707963267948966`` for an argument this
+module reads as degrees, and ``Brace(mobject: 'Mobject')`` named a type and a
+keyword Algan does not have. So each adapter carries its own:
+
+- :func:`_root_signature` renames the superseded keywords
+  (:data:`~algan.utils.api_renames._ROOT_KEYWORD_RENAMES`), restates every angle
+  default in degrees, and drops annotations naming Manim types.
+- :func:`_root_docstring` replaces Manim's prose rather than appending to it,
+  so no ``.. manim::`` block, ``class X(Scene)`` or ``self.play(...)`` reaches
+  Algan's reference pages. The bodies are **generated** from Manim's summary
+  line plus the converted signature; the two classes with hand-written Algan
+  docstrings (``MathTex``, ``Title``, in ``_WRAPPER_DOCSTRINGS``) keep them.
+- The five classes whose Manim names spell "Mobject" take Algan's spelling at
+  the root (:data:`_ROOT_CLASS_NAMES`); the Manim names stay in
+  :mod:`algan.manim`.
+- A supplied angle that looks like radians warns
+  (:func:`~algan.utils.api_renames._warn_if_angle_looks_like_radians`), because
+  ``Arc(angle=PI / 2)`` is a legal 1.57 degree sliver and nothing else would
+  say so.
 """
 
 from __future__ import annotations
 
 import inspect
 import math
+import re
 from collections.abc import Mapping, Sequence
 
-from algan.constants.math import DEGREES_TO_RADIANS
-from algan.mobs.manim_compat import _MANIM_WRAPPER_REGISTRY
+from algan.constants.math import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
+from algan.mobs.manim_compat import _MANIM_WRAPPER_REGISTRY, _WRAPPER_DOCSTRINGS
+from algan.utils.api_renames import (
+    _ROOT_KEYWORD_RENAMES,
+    _reject_renamed_keywords,
+    _warn_if_angle_looks_like_radians,
+)
 
 #: Compatibility classes Algan implements natively. The native class keeps the
 #: root name and Manim's stays reachable as ``algan.manim.<name>``; adapting
@@ -317,8 +347,14 @@ def _converted_kwargs(signature, angle_params, args, kwargs):
     ``TAU/4`` is a quarter turn in either convention -- so applying defaults
     before converting would read that ``1.57`` as degrees and build a 1.57
     degree arc.
+
+    Each supplied angle is also checked for the opposite mistake: a value
+    written in radians is a legal, silent, wrong picture, so it warns.
     """
     supplied = _supplied_arguments(signature, args, kwargs)
+    for name in angle_params:
+        if name in supplied:
+            _warn_if_angle_looks_like_radians(name, supplied[name])
     converted = dict(kwargs)
     positional = list(args)
     names = list(signature.parameters) if signature is not None else []
@@ -362,36 +398,309 @@ def _to_manim_stroke_width(kwargs):
     return kwargs
 
 
+#: Manim class name -> the root spelling of it. Manim names its base class
+#: ``Mobject`` and spells five concrete classes after it; Algan's is ``Mob``,
+#: and a root namespace that says ``Mobject`` in five places and ``Mob``
+#: everywhere else teaches a word Algan does not use. The Manim names stay
+#: reachable as ``algan.manim.<name>``, where they are correct.
+_ROOT_CLASS_NAMES: dict[str, str] = {
+    "CurvesAsSubmobjects": "CurvesAsChildren",
+    "DashedVMobject": "DashedMob",
+    "MobjectMatrix": "MobMatrix",
+    "MobjectTable": "MobTable",
+    "SVGMobject": "SVGMob",
+}
+
+#: Annotation strings worth showing. Manim annotates with its own aliases
+#: (``Point3DLike``, ``Vector3D``, ``ManimColor``, ``Mobject``) which name types
+#: Algan does not have, and Sphinx renders the annotation verbatim -- so
+#: anything but a plain builtin is dropped rather than translated into a
+#: half-truth. ``float`` and ``int`` are the ones that carry real information.
+_KEPT_ANNOTATION_TOKENS: frozenset[str] = frozenset(
+    {"bool", "complex", "float", "int", "None", "str"}
+)
+
+#: Algan-only constructor arguments every compatibility Mob accepts, named in
+#: the generated ``**kwargs`` entry so the passthrough is not a dead end.
+_ALGAN_ONLY_KWARGS_DOC = "``scene``, ``add_to_scene``, ``glow`` and ``glow_radius``"
+
+_ROLE_MARKUP = re.compile(r":[a-zA-Z:]+:`([^`]*)`")
+
+
+def _plain_text(text: str) -> str:
+    """Strip Sphinx roles out of borrowed prose, keeping the words.
+
+    Manim's summary lines cross-reference Manim's own reference pages
+    (``:class:`~.VMobject```), which do not exist in Algan's. Rendering the
+    name as a literal keeps the sentence readable and cannot dangle.
+    """
+
+    def replace(match):
+        target = match.group(1)
+        if "<" in target:
+            target = target.split("<", 1)[0]
+        return f"``{target.strip().lstrip('~.')}``"
+
+    return _ROLE_MARKUP.sub(replace, text)
+
+
+def _manim_summary(manim_class) -> str | None:
+    """The first paragraph of ``manim_class``'s docstring, as one plain line."""
+    doc = manim_class.__doc__
+    if not doc:
+        return None
+    collected: list[str] = []
+    for line in doc.expandtabs().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if collected:
+                break
+            continue
+        collected.append(stripped)
+    if not collected:
+        return None
+    return _plain_text(" ".join(collected))
+
+
+class _Literal:
+    """A default shown as source text rather than as its own ``repr``.
+
+    ``__signature__`` here is display-only -- an adapter's ``__init__`` takes
+    ``*args, **kwargs`` and binds against the *wrapper's* signature -- so a
+    default can be swapped for something that reads like the code a user would
+    write. Manim's own reprs do not: a direction arrives as
+    ``array([ 0., -1., 0.])`` and a colour as ``ManimColor('#000000')``, both of
+    which name Manim's world rather than Algan's.
+    """
+
+    __slots__ = ("_text",)
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def __repr__(self) -> str:
+        return self._text
+
+
+#: The 3-vectors Manim writes as its own module constants, spelled the way an
+#: Algan script would spell them. Keyed by tuple so a numpy default matches.
+_DIRECTION_LITERALS: dict[tuple[float, float, float], str] = {
+    (0.0, 0.0, 0.0): "ORIGIN",
+    (0.0, 1.0, 0.0): "UP",
+    (0.0, -1.0, 0.0): "DOWN",
+    (-1.0, 0.0, 0.0): "LEFT",
+    (1.0, 0.0, 0.0): "RIGHT",
+    (0.0, 0.0, 1.0): "OUT",
+    (0.0, 0.0, -1.0): "IN",
+    (1.0, 1.0, 0.0): "UP + RIGHT",
+    (-1.0, 1.0, 0.0): "UP + LEFT",
+    (1.0, -1.0, 0.0): "DOWN + RIGHT",
+    (-1.0, -1.0, 0.0): "DOWN + LEFT",
+}
+
+
+def _display_default(default):
+    """``default`` as an Algan script would write it, for the shown signature."""
+    if inspect.isclass(default):
+        return _Literal(default.__name__)
+    to_hex = getattr(default, "to_hex", None)
+    if callable(to_hex) and type(default).__name__ == "ManimColor":
+        return _Literal(repr(to_hex()))
+    shape = getattr(default, "shape", None)
+    if shape == (3,):
+        key = tuple(round(float(component), 9) for component in default)
+        named = _DIRECTION_LITERALS.get(key)
+        return _Literal(named if named is not None else repr(key))
+    if isinstance(default, (list, tuple)) and default:
+        rendered = [_display_default(item) for item in default]
+        if any(isinstance(item, _Literal) for item in rendered):
+            body = ", ".join(repr(item) for item in rendered)
+            return _Literal(f"[{body}]" if isinstance(default, list) else f"({body})")
+        return default
+    # Anything whose repr carries its address: a bare repr would make the
+    # rendered reference differ between two builds of identical source, and a
+    # lambda's qualified name is Manim's class name rather than Algan's.
+    if " at 0x" in repr(default):
+        if inspect.isfunction(default) and default.__name__ != "<lambda>":
+            return _Literal(default.__qualname__)
+        if inspect.isroutine(default):
+            return _Literal("<default>")
+        return _Literal(f"<{type(default).__name__}>")
+    return default
+
+
+def _degrees_default(default):
+    """Manim's radian default, restated in the degrees the adapter reads."""
+    if isinstance(default, bool) or not isinstance(default, (int, float)):
+        return default
+    degrees = round(float(default) * RADIANS_TO_DEGREES, 6)
+    return int(degrees) if float(degrees).is_integer() else degrees
+
+
+def _root_annotation(annotation):
+    if annotation is inspect.Parameter.empty:
+        return annotation
+    text = (
+        annotation
+        if isinstance(annotation, str)
+        else getattr(annotation, "__name__", None)
+    )
+    if not isinstance(text, str):
+        return inspect.Parameter.empty
+    tokens = {token for token in text.replace("|", " ").split() if token}
+    if tokens and tokens <= _KEPT_ANNOTATION_TOKENS:
+        return text
+    return inspect.Parameter.empty
+
+
+def _root_signature(signature, angle_params, renames):
+    """Manim's signature restated in Algan's names, units and types."""
+    if signature is None:
+        return None
+    parameters = []
+    for parameter in signature.parameters.values():
+        default = parameter.default
+        if parameter.name in angle_params:
+            default = _degrees_default(default)
+        elif parameter.name == "stroke_width" and isinstance(default, (int, float)):
+            # ``_to_manim_stroke_width`` doubles what the caller passes, so
+            # Manim's own default is twice the number an Algan author would
+            # write for the same line.
+            default = default / 2
+        elif default is not inspect.Parameter.empty:
+            default = _display_default(default)
+        parameters.append(
+            parameter.replace(
+                name=renames.get(parameter.name, parameter.name),
+                default=default,
+                annotation=_root_annotation(parameter.annotation),
+            )
+        )
+    return signature.replace(
+        parameters=parameters, return_annotation=inspect.Signature.empty
+    )
+
+
+def _parameter_entries(signature, angle_params, name) -> list[str]:
+    """A generated ``Parameters`` block: every argument, its unit and default."""
+    if signature is None:
+        return []
+    entries = []
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            entries.append(
+                f"**{parameter.name}\n"
+                f"    Manim's remaining ``{name}`` arguments, converted as above, "
+                f"plus the Algan-only {_ALGAN_ONLY_KWARGS_DOC}."
+            )
+            continue
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            entries.append(
+                f"*{parameter.name}\n    Passed positionally to Manim's ``{name}``."
+            )
+            continue
+        sentences = []
+        if parameter.name in angle_params:
+            sentences.append("In **degrees**")
+        if parameter.name == "stroke_width":
+            sentences.append("In Algan's stroke unit, half Manim's")
+        if parameter.default is inspect.Parameter.empty:
+            sentences.append("Required")
+        else:
+            sentences.append(f"Defaults to ``{parameter.default!r}``")
+        entries.append(f"{parameter.name}\n    " + ". ".join(sentences) + ".")
+    return entries
+
+
+def _root_docstring(name, root_name, wrapper, root_sig, angle_params) -> str:
+    """Algan-facing prose for an adapter, replacing Manim's inherited docstring.
+
+    Hand-written where one exists (``_WRAPPER_DOCSTRINGS``); otherwise
+    generated, and the ``Notes`` section says so, because a generated entry can
+    state an argument's unit and default but not its meaning.
+    """
+    converted = [
+        "``stroke_width`` is in Algan's unit, half Manim's for the same visual weight"
+    ]
+    if angle_params:
+        listed = ", ".join(f"``{param}``" for param in angle_params)
+        converted.insert(0, f"{listed} in **degrees** rather than radians")
+    boundary = (
+        f"Manim's ``{name}``, under Algan's conventions: "
+        f"{'; '.join(converted)}. ``algan.manim.{name}`` is the same class "
+        f"under Manim's own conventions."
+    )
+    animation = (
+        "Animation\n"
+        "---------\n"
+        "Constructing one records nothing: the Mob joins the active Scene "
+        "unspawned, and\n"
+        ":meth:`~algan.animatable_base.animatable.Animatable.spawn` is what "
+        "makes it appear.\n"
+        "Everything after that -- a move, a colour change, a delegated Manim "
+        "edit -- is\n"
+        "recorded on the Scene's timeline over the current context's runtime."
+    )
+
+    if name in _WRAPPER_DOCSTRINGS:
+        return f"{wrapper.__doc__}\n\nNotes\n-----\n{boundary}\n"
+
+    summary = _manim_summary(wrapper._manim_class) or f"Manim's ``{name}``."
+    parameters = _parameter_entries(root_sig, angle_params, name)
+    sections = [summary, boundary, animation]
+    if parameters:
+        sections.append("Parameters\n----------\n" + "\n".join(parameters))
+    sections.append(
+        "Notes\n"
+        "-----\n"
+        f"This description is generated from Manim's own summary line and the\n"
+        f"converted signature of ``{root_name}``: each entry states its "
+        f"argument's unit\n"
+        "and default rather than its meaning. Manim's documentation for "
+        f"``{name}``\ndescribes what each one does."
+    )
+    return "\n\n".join(sections) + "\n"
+
+
 def _make_adapter(name: str, angle_params: tuple[str, ...]):
     wrapper = _MANIM_WRAPPER_REGISTRY[name]
     signature = getattr(wrapper, "__signature__", None)
+    root_name = _ROOT_CLASS_NAMES.get(name, name)
+    # Only the spellings this class actually declares are translated on the way
+    # in; the rejection below is unconditional, because a Manim keyword the
+    # signature does not name still reaches the backing class through
+    # ``**kwargs`` and would otherwise be accepted in silence.
+    inbound = {
+        new: old
+        for old, new in _ROOT_KEYWORD_RENAMES.items()
+        if signature is not None and old in signature.parameters
+    }
+    root_sig = _root_signature(signature, angle_params, _ROOT_KEYWORD_RENAMES)
 
     def __init__(self, *args, **kwargs):
+        _reject_renamed_keywords(root_name, kwargs, manim_alternative=name)
+        for new, old in inbound.items():
+            if new in kwargs:
+                kwargs[old] = kwargs.pop(new)
         # Run unconditionally rather than only for a class with declared angle
         # parameters: a nested ``arc_config`` can reach a class through
         # ``**kwargs`` too, and skipping the pass is how one gets missed.
         args, kwargs = _converted_kwargs(signature, angle_params, args, kwargs)
         super(adapter, self).__init__(*args, **_to_manim_stroke_width(kwargs))
 
-    converted = [
-        "``stroke_width`` is in Algan's unit, half Manim's for the same visual weight"
-    ]
-    if angle_params:
-        listed = ", ".join(f"``{p}``" for p in angle_params)
-        converted.insert(0, f"{listed} are given in **degrees**")
-    doc = (
-        f"{wrapper.__doc__ or name}\n\n"
-        f"    Algan's spelling: {'; '.join(converted)}.\n"
-        f"    ``algan.manim.{name}`` is the same class under Manim's\n"
-        f"    conventions -- radians, and Manim's stroke unit.\n"
-    )
     adapter = type(
-        name,
+        root_name,
         (wrapper,),
-        {"__init__": __init__, "__module__": __name__, "__doc__": doc},
+        {
+            "__init__": __init__,
+            "__module__": __name__,
+            "__doc__": _root_docstring(
+                name, root_name, wrapper, root_sig, angle_params
+            ),
+        },
     )
-    if signature is not None:
-        adapter.__signature__ = signature
+    if root_sig is not None:
+        adapter.__signature__ = root_sig
     return adapter
 
 
@@ -423,13 +732,21 @@ _ANGLE_PARAMS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Manim class name -> the name the root namespace answers with. Identity for
+#: all but :data:`_ROOT_CLASS_NAMES`; tests walk it rather than ``_ADAPTED``,
+#: since that is what ``from algan import *`` actually publishes.
+_ROOT_NAME_FOR: dict[str, str] = {
+    name: _ROOT_CLASS_NAMES.get(name, name) for name in _ADAPTED
+}
+
+
 def _build():
     for name in _ADAPTED:
-        globals()[name] = _make_adapter(name, _ANGLE_PARAMS[name])
+        globals()[_ROOT_NAME_FOR[name]] = _make_adapter(name, _ANGLE_PARAMS[name])
 
 
 _build()
 
-__all__ = list(_ADAPTED)
+__all__ = sorted(_ROOT_NAME_FOR.values())
 
 del _build

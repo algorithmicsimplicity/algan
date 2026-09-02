@@ -214,6 +214,12 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     exactly what a user would do, and so is ``algan.manim``: since the API
     overhaul's Phase 1 that is the public spelling of the compatibility layer,
     and a scene covering compat geometry has to reach it the way a user would.
+
+    ``algan.mobs.shapes_2d`` joins them for the same reason: the primitive
+    builders (``TriangleTriangulated``, ``QuadTriangulated``) are public at
+    their own path but deliberately out of the star-import namespace, and the
+    scene that covers their render paths has to name them the way a user
+    reaching for them would.
     """
     source = scene_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(scene_path))
@@ -229,9 +235,12 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
             )
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
-    assert imported <= {"from algan import *", "torch", "algan.manim"}, (
-        f"{scene_path.name} imports more than the public API: {sorted(imported)}"
-    )
+    assert imported <= {
+        "from algan import *",
+        "torch",
+        "algan.manim",
+        "from algan.mobs.shapes_2d import QuadTriangulated,TriangleTriangulated",
+    }, f"{scene_path.name} imports more than the public API: {sorted(imported)}"
     assert "from algan import *" in imported, (
         f"{scene_path.name} must author against the public star import"
     )

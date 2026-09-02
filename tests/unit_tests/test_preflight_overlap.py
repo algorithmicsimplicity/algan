@@ -499,7 +499,7 @@ def _make_loop_scene(monkeypatch, *, overlap_enabled):
         def background_is_transparent(self):
             return False
 
-        def get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
+        def _get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
             primitive = Primitive()
             duration = min(2, end_ind - start_ind)
             primitive.duration = duration
@@ -539,7 +539,7 @@ def _make_loop_scene(monkeypatch, *, overlap_enabled):
                 records["calibrated"] = True
             return True
 
-        def render_primitive_batch(
+        def _render_primitive_batch(
             self, _primitives, start_ind, end_ind, *_args, **_kwargs
         ):
             duration = end_ind - start_ind

@@ -22,9 +22,46 @@ import sys
 from pathlib import Path
 
 
+def _version() -> str:
+    """The installed Algan version, without importing the package."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("algan")
+    except PackageNotFoundError:
+        return "0+unknown"
+
+
+def _ffmpeg_binary() -> tuple[str | None, str]:
+    """The ffmpeg Algan will actually encode with, and where it came from.
+
+    Not ``shutil.which("ffmpeg")``: a pinned ``SETTINGS.paths.ffmpeg_binary``
+    outranks everything, and with nothing pinned Algan encodes through
+    imageio-ffmpeg's bundled build -- which is why a render on a machine with
+    an empty ``PATH`` produces a perfectly good mp4 while ``PATH`` alone says
+    there is no ffmpeg at all.
+    """
+    from algan.settings import SETTINGS
+
+    pinned = SETTINGS.paths.ffmpeg_binary
+    if pinned:
+        return str(pinned), "SETTINGS.paths.ffmpeg_binary"
+    try:
+        import imageio_ffmpeg
+
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+        if bundled:
+            return bundled, "bundled with imageio-ffmpeg"
+    except Exception:  # noqa: BLE001 -- fall through to PATH
+        pass
+    found = shutil.which("ffmpeg")
+    return (found, "PATH") if found else (None, "")
+
+
 def _cmd_check(_args: argparse.Namespace) -> int:
     """Check system environment and dependencies."""
     print("=== Algan Environment Health Check ===")
+    print(f"Algan: {_version()}")
 
     # 1. Python version
     py_ver = (
@@ -72,11 +109,15 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         print("  [ERROR] Taichi is not installed.")
 
     # 4. FFmpeg
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path, source = _ffmpeg_binary()
     if ffmpeg_path:
-        print(f"FFmpeg: [OK] {ffmpeg_path}")
+        print(f"FFmpeg: [OK] {ffmpeg_path} ({source})")
     else:
-        print("  [WARNING] FFmpeg not found on PATH. Video export may fail.")
+        print(
+            "  [WARNING] No ffmpeg found: none pinned in "
+            "SETTINGS.paths.ffmpeg_binary, none bundled with imageio-ffmpeg, "
+            "and none on PATH. Video export will fail."
+        )
 
     # 5. LaTeX (optional)
     latex_path = shutil.which("latex")
@@ -88,8 +129,30 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "  [INFO] LaTeX not found (optional - standard Text mobs work via Pango without LaTeX)."
         )
 
+    # 6. Paths -- this command's help says it reports them, and "where did my
+    # video go" is the question it is most often run to answer.
+    try:
+        from algan.settings import SETTINGS
+
+        paths = SETTINGS.paths
+        print("Paths:")
+        print(f"  output:      <script directory>/{paths.output_directory}")
+        print("               (output_root defaults to the running script's own")
+        print("                directory, so a render lands beside your scene)")
+        print(f"  cache:       {paths.cache_directory}")
+        print(f"  daemon home: {_daemon_home()}")
+    except Exception as exc:  # noqa: BLE001 -- a health check must still finish
+        print(f"  [WARNING] could not resolve Algan's paths: {exc}")
+
     print("======================================")
     return 0
+
+
+def _daemon_home() -> str:
+    """``$ALGAN_HOME``: the daemon state file and its log live here."""
+    from algan import daemon_client
+
+    return daemon_client.algan_home()
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
@@ -133,21 +196,40 @@ if __name__ == "__main__":
     return 0
 
 
+#: ``algan daemon <verb>``: the trigger-socket line commands, which are what an
+#: editor keybinding pokes. Each needs the daemon's token, which is why they are
+#: subcommands rather than the raw socket one-liner they replace.
+DAEMON_TRIGGERS = ("render", "ping", "quit")
+
+
 def _cmd_daemon(args: argparse.Namespace) -> int:
     """Manage or run the Algan warm render daemon."""
     if args.stop:
-        return _stop_daemon()
+        return _trigger_daemon("quit")
+    if args.trigger is not None:
+        return _trigger_daemon(args.trigger)
     from algan import daemon
 
     print("Launching Algan render daemon...")
+    print(
+        "Scripts run inside it, so everything above `import algan` runs twice "
+        "(once in the launching process, once here), atexit handlers do not "
+        "run, and a run's stdin is /dev/null."
+    )
     # An explicit empty argv. Given None, the daemon parses ``sys.argv[1:]``,
     # which here is this CLI's own arguments -- it would read "daemon" as the
     # name of a script to render and exit with "script not found".
     return daemon.main([])
 
 
-def _stop_daemon() -> int:
-    """Ask a running daemon to quit, through its trigger socket."""
+def _trigger_daemon(verb: str) -> int:
+    """Send one trigger verb, with the state file's token, to the daemon.
+
+    The token is required for every verb (a bare ``quit`` from any local
+    process used to be enough to stop someone else's daemon), and the state
+    file is where both the token and the actual port live -- the daemon
+    publishes an ephemeral port there when the preferred one is taken.
+    """
     import socket
 
     from algan import daemon_client
@@ -159,16 +241,23 @@ def _stop_daemon() -> int:
     port = int(state["port"])
     try:
         with socket.create_connection(("127.0.0.1", port), 5) as sock:
-            sock.sendall(b"quit\n")
-            reply = sock.recv(16).decode("utf-8", "replace").strip()
+            sock.sendall(f"{verb} {state['token']}\n".encode())
+            reply = sock.recv(128).decode("utf-8", "replace").strip()
     except OSError as exc:
         # A daemon killed outright leaves its registration behind, and every
-        # later run then tries the dead port and falls back cold. Since we came
-        # here to make sure no daemon is running, clear it.
+        # later run then tries the dead port and falls back cold. Clear it:
+        # whichever verb was asked for, nothing is answering.
         daemon_client._clear_stale_state(state)
         print(f"No daemon answered on port {port} ({exc}); cleared its registration.")
         return 0
-    print(f"Daemon (pid {state.get('pid', '?')}) is stopping [{reply or 'no reply'}].")
+    pid = state.get("pid", "?")
+    if reply.startswith("err:"):
+        print(f"Daemon (pid {pid}) refused `{verb}`: {reply[4:].strip()}")
+        return 1
+    if verb == "quit":
+        print(f"Daemon (pid {pid}) is stopping [{reply or 'no reply'}].")
+    else:
+        print(f"Daemon (pid {pid}) on port {port}: {reply or 'no reply'}")
     return 0
 
 
@@ -300,10 +389,11 @@ def main(argv: list[str] | None = None) -> int:
         prog="algan",
         description="Algan: High-performance 2D/3D programmatic animation engine.",
     )
-    import algan
-
+    # Read from the installed metadata rather than by importing the package:
+    # `algan --version` and `algan --help` used to pay the full ~3 s import
+    # (torch, taichi, the vendored manim) to print one line.
     parser.add_argument(
-        "-v", "--version", action="version", version=f"Algan {algan.__version__}"
+        "-v", "--version", action="version", version=f"Algan {_version()}"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Subcommand to run")
@@ -360,9 +450,23 @@ def main(argv: list[str] | None = None) -> int:
         "--no-daemon", action="store_true", help="Bypass the warm render daemon"
     )
     # daemon
-    daemon_parser = subparsers.add_parser("daemon", help="Manage warm render daemon")
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Run or poke the warm render daemon",
+        description="With no argument, run a daemon in this terminal. With a "
+        "verb, send that trigger to the running one: `render` re-runs its last "
+        "script (bind an editor key to it), `ping` checks it is alive, `quit` "
+        "stops it. Each carries the token from the daemon's state file.",
+    )
     daemon_parser.add_argument(
-        "--stop", action="store_true", help="Stop running daemon"
+        "trigger",
+        nargs="?",
+        choices=DAEMON_TRIGGERS,
+        default=None,
+        help="Trigger to send to the running daemon",
+    )
+    daemon_parser.add_argument(
+        "--stop", action="store_true", help="Stop running daemon (same as `quit`)"
     )
 
     # check

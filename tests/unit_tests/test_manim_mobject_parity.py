@@ -8,6 +8,7 @@ import torch
 
 import algan
 import algan.manim as mn
+from algan.errors import AlganConfigurationError
 
 
 def test_all_manim_0201_mobjects_are_exported():
@@ -46,9 +47,12 @@ def test_manim_parametric_surface_api_lives_in_algan_manim():
     The native :class:`algan.Surface` used to accept it too -- ``func(u, v)``,
     ``fill_color``, ``checkerboard_colors``, and five more names that were
     stored and never read. That second compatibility layer is gone: the shape
-    constructors translate the style names (``shapes_3d._surface_resolution_kwargs``)
-    and ``algan.manim`` carries Manim's own class, so the native constructor
-    takes only native arguments.
+    constructors translate what is left of it
+    (``shapes_3d._surface_resolution_kwargs``) and ``algan.manim`` carries
+    Manim's own class, so the native constructor takes only native arguments.
+    ``checkerboard_colors`` is the one that answers with a pointer rather than
+    a bare ``TypeError``, because Algan's spelling of it (``checkered_color``)
+    is not a name a reader would guess.
     """
     surface = mn.Surface(
         lambda u, v: np.array([u, v, u * v]),
@@ -74,7 +78,6 @@ def test_manim_parametric_surface_api_lives_in_algan_manim():
         "func",
         "fill_color",
         "fill_opacity",
-        "checkerboard_colors",
         "stroke_color",
         "stroke_width",
         "should_make_jagged",
@@ -85,6 +88,9 @@ def test_manim_parametric_surface_api_lives_in_algan_manim():
     ):
         with pytest.raises(TypeError):
             algan.Surface(add_to_scene=False, **{removed: None})
+
+    with pytest.raises(AlganConfigurationError, match="checkered_color"):
+        algan.Surface(add_to_scene=False, checkerboard_colors=None)
 
 
 def test_native_3d_geometry_families_build_renderable_meshes():
@@ -235,7 +241,7 @@ def test_svg_and_vector_field_families_convert_nested_geometry(tmp_path):
         return np.array([-point[1], point[0], 0.0])
 
     objects = [
-        algan.SVGMobject(svg_path, add_to_scene=False),
+        algan.SVGMob(svg_path, add_to_scene=False),
         mn.ArrowVectorField(
             field,
             x_range=[-1, 1, 1],

@@ -236,7 +236,7 @@ def test_view_leaves_the_scene_authorable(fresh_scene):
     """
     square = Square().spawn()
     square.move(RIGHT * 0.5)
-    scene = Scene.instance()
+    scene = Scene.current()
     timeline, animations = scene.timeline_manager, scene.animation_manager
     end_before = scene._recorded_end_time_for_render()
 
@@ -258,7 +258,7 @@ def test_view_leaves_the_scene_authorable(fresh_scene):
 def test_view_does_not_change_the_scenes_video_settings(fresh_scene):
     """The viewer renders small; the Scene must not be left that way."""
     Square().spawn()
-    scene = Scene.instance()
+    scene = Scene.current()
     before = scene.video_settings
     handle = Scene.view(TINY, block=False, open_browser=False)
     try:
@@ -279,7 +279,7 @@ def test_default_settings_keep_the_scenes_frame_rate(fresh_scene):
     clock.
     """
     Square().spawn()
-    scene = Scene.instance()
+    scene = Scene.current()
     scene.set_video_settings(PREVIEW.set(frames_per_second=30))
     handle = Scene.view(block=False, open_browser=False)
     try:

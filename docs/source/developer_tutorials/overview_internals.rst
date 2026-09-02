@@ -76,7 +76,7 @@ therefore conditional:
 
 * the end-of-scene despawn of every actor runs when a fade-out was requested,
   or when ``reset=True``;
-* ``render_to_video`` closes the camera and light lifespans only when the Scene
+* ``_render_to_video`` closes the camera and light lifespans only when the Scene
   is being finalized (``despawn_camera_and_lights``).
 
 Both lifespans extend past the last rendered frame index either way, so output

@@ -216,6 +216,11 @@ If you are using an AMD (ROCm) GPU on Windows, you will need to follow the instr
 
 ### Step 4: Installing Algan 
 
+:::{note}
+Algan's installed footprint is large -- around 5 GB, mostly PyTorch's CUDA
+wheels and their NVIDIA dependencies pulled in by Step 3 above.
+:::
+
 Follow the instructions for your operating system below:
 
 ::::::{tab-set}
@@ -283,7 +288,7 @@ Instructions for popular systems / package managers are given below.
 :::{tab-item} Debian-based / apt
 ```bash
 sudo apt update
-sudo apt install build-essential python3-dev libcairo2-dev libpango1.0-dev
+sudo apt install build-essential python3-dev libpango1.0-dev libcairo2-dev pkg-config
 ```
 :::
 

@@ -134,7 +134,7 @@ def materialize(disabled, windows, break_invalidation=False):
         scene = SceneManager.reset()
         scene.set_video_settings(SMOKE_TEST)
         build_scene()
-        scene.initialize_frames()
+        scene._initialize_frames()
         for light in scene.light_sources:
             light.is_primitive = True
         actors = [
@@ -146,10 +146,10 @@ def materialize(disabled, windows, break_invalidation=False):
 
         out = []
         for start, stop in windows:
-            # See Scene.batch_prep_context: outside it a direct call records
+            # See Scene._batch_prep_context: outside it a direct call records
             # new events on every replay and corrupts what is being compared.
-            with scene.batch_prep_context():
-                scene.get_batch_of_primitives(start, stop, actors, 10**12)
+            with scene._batch_prep_context():
+                scene._get_batch_of_primitives(start, stop, actors, 10**12)
             tlm = scene.timeline_manager
             snapshot = {}
             for attr, timeline in tlm.attr_to_timeline.items():

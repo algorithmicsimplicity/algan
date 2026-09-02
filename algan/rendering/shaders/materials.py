@@ -613,6 +613,10 @@ class ManimMaterial(Material):
 
     :meth:`~.Scene.use_manim_defaults` installs this material as the
     default for 3-D Mobs alongside the rig it sets up.
+
+    It means "Manim's version of this", so it lives with the rest of that
+    layer: ``import algan.manim as mn`` then ``mn.ManimMaterial``, rather than
+    ``from algan import *``.
     """
 
     shader = staticmethod(ms.manim_shader)

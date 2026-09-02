@@ -25,6 +25,12 @@ Algan's and delegate here, so ``Arc(angle=90)`` and ``mn.Arc(angle=PI / 2)``
 build the same geometry. Reach for this module when you want Manim's
 conventions, or a class with no native counterpart at all.
 
+The three Manim-defaults names live here too, for the same reason: ``manim_fov``
+(Manim's camera projection), ``manim_shader`` (its default 3-D lighting, ported
+in-kernel) and ``ManimMaterial`` (the material carrying that shader) each mean
+"Manim's version of this". :func:`~algan.manim_defaults.use_manim_defaults`
+installs all three on a Scene at once.
+
 Nothing here is exported by ``from algan import *``; it is reached by import,
 which is what makes the boundary visible at the call site.
 
@@ -34,6 +40,7 @@ See :doc:`/advanced_user_tutorials/importing_from_manim`.
 from __future__ import annotations
 
 from algan.animatable_base.mob import Mob
+from algan.manim_defaults import manim_fov
 from algan.mobs import image_compat as _image_compat
 from algan.mobs import manim_compat as _manim_compat
 from algan.mobs import manim_parity as _manim_parity
@@ -41,6 +48,8 @@ from algan.mobs import opengl_compat as _opengl_compat
 from algan.mobs import point_cloud as _point_cloud
 from algan.mobs.manim_compat import install_opengl_aliases
 from algan.mobs.manim_mob import ManimMob
+from algan.rendering.shaders.material_shaders import manim_shader
+from algan.rendering.shaders.materials import ManimMaterial
 
 _SOURCE_MODULES = (
     _manim_compat,
@@ -66,15 +75,44 @@ GenericGraph = globals()["Graph"]
 # follows Manim's conventions, not Algan's.
 _INSTALLED_OPENGL_ALIASES = install_opengl_aliases(globals())
 
-__all__ = sorted(
+#: Reachable as ``mn.<name>`` but kept out of ``__all__``, which is this
+#: module's documented surface. Two groups, for the same reason ``algan``'s own
+#: namespace is curated:
+#:
+#: * the ``OpenGL*`` aliases -- ~40 second spellings of classes already here
+#:   under their renderer-independent names, describing a backend Algan does
+#:   not have;
+#: * the parity registry (the ``MANIM_*_NAMES`` tuples and the installer that
+#:   consumes them) -- inventory data driving
+#:   ``tests/unit_tests/test_manim_mobject_parity.py``, not classes to build
+#:   with.
+_INTERNAL_MANIM_EXPORTS = frozenset(
     {
-        *(name for module in _SOURCE_MODULES for name in module.__all__),
         *_INSTALLED_OPENGL_ALIASES,
-        "GenericGraph",
-        "ManimMob",
-        "Mobject",
+        "MANIM_MOBJECT_NAMES",
+        "MANIM_OPENGL_MOBJECT_NAMES",
+        "MANIM_PRIVATE_MOBJECT_NAMES",
+        "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
         "install_opengl_aliases",
     }
+)
+
+__all__ = sorted(
+    name
+    for name in {
+        *(name for module in _SOURCE_MODULES for name in module.__all__),
+        "GenericGraph",
+        "ManimMaterial",
+        "ManimMob",
+        "Mobject",
+        "manim_fov",
+        "manim_shader",
+    }
+    - _INTERNAL_MANIM_EXPORTS
+    # A few OpenGL* spellings arrive through the source modules' own ``__all__``
+    # rather than the alias installer (the point-cloud and surface families);
+    # they are the same second spellings and stay out for the same reason.
+    if not name.startswith("OpenGL")
 )
 
 del _module, _name

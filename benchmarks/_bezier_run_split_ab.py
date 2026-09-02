@@ -8,7 +8,7 @@ frame by frame, pixel by pixel; the requirement is 0 differing channels.
 
 Both arms must also see IDENTICAL batch windows, or the comparison would be
 confounded by re-windowed state rather than by the change; the script wraps
-get_batch_of_primitives and asserts it.
+_get_batch_of_primitives and asserts it.
 
 The scene is the constructed clash scene from _bezier_batchability.py (a
 packed Text whose glyph primitives share a batch identifier with ordinary
@@ -89,13 +89,13 @@ class ArmWatcher:
 
     def wrap_scene(self, scene):
         watcher = self
-        orig = scene.get_batch_of_primitives
+        orig = scene._get_batch_of_primitives
 
         def recording(start_ind, end_ind, actors, mem):
             watcher.windows.append((start_ind, end_ind))
             return orig(start_ind, end_ind, actors, mem)
 
-        scene.get_batch_of_primitives = recording
+        scene._get_batch_of_primitives = recording
 
 
 def render_arm(flag_value, out_name):

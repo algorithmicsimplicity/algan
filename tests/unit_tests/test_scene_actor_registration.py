@@ -216,16 +216,14 @@ def unbuilt_geometry(mob):
     return [part for part in geometry if id(part) not in asked]
 
 
-# ``show_ends``/``show_base`` promise a closed solid, and an open one is not
+# ``closed=True`` promises a closed solid, and an open one is not
 # merely a shading difference: a ray enters through the missing cap and hits
 # whatever is inside.  That is what put a white speck of the axis Line3D on the
 # red Arrow3D of ``tests/full_renders/solids_and_camera`` at the seam between
 # its shaft and its head.
 _CAPPED = {
-    "cylinder": lambda **kw: algan.Cylinder(
-        radius=0.4, height=1.0, show_ends=True, **kw
-    ),
-    "cone": lambda **kw: algan.Cone(base_radius=0.5, height=1.0, show_base=True, **kw),
+    "cylinder": lambda **kw: algan.Cylinder(radius=0.4, height=1.0, closed=True, **kw),
+    "cone": lambda **kw: algan.Cone(radius=0.5, height=1.0, closed=True, **kw),
     # Line3D is a capped Cylinder, and Arrow3D is one plus a capped Cone --
     # whose caps hang off parts that are not actors themselves.
     "line3d": lambda **kw: algan.Line3D(
@@ -269,7 +267,7 @@ def test_add_bases_twice_keeps_one_pair_of_caps():
     The replaced pair would stay attached and registered behind the new one,
     drawing twice at the same depth.
     """
-    cylinder = _spawned(algan.Cylinder(radius=0.4, height=1.0, show_ends=True))
+    cylinder = _spawned(algan.Cylinder(radius=0.4, height=1.0, closed=True))
     caps = (cylinder.bottom_cap, cylinder.top_cap)
     before = len(cylinder.scene.actors)
 
@@ -282,7 +280,7 @@ def test_add_bases_twice_keeps_one_pair_of_caps():
 
 def test_uncapped_cone_registers_no_base():
     """``base_circle`` is built for every cone; only a capped one draws it."""
-    cone = _spawned(algan.Cone(base_radius=0.5, height=1.0))
+    cone = _spawned(algan.Cone(radius=0.5, height=1.0))
 
     assert cone.base_circle is not None
     assert not any(child is cone.base_circle for child in cone.children)

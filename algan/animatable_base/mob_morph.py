@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from algan.animatable_base.animatable import _rejecting_timing_kwargs
 from algan.animation_timeline.animation_contexts import NoExtra, Off, Seq, Sync
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants import easings
@@ -1609,6 +1610,7 @@ class MobMorphMixin:
             "only ImageMob falls back to a dissolve automatically"
         )
 
+    @_rejecting_timing_kwargs
     def become(
         self,
         other_mob: Mob,
