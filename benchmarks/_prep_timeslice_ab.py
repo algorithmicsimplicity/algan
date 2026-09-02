@@ -9,7 +9,7 @@ and a scatter -- and outside replay it is ``slice(None)``. The replay window is
 an interval over ascending frame times, so the ``.nonzero()`` it used to pass is
 contiguous and can be a slice.
 
-This times ``get_batch_of_primitives`` -- the batch-prep worker's whole job --
+This times ``_get_batch_of_primitives`` -- the batch-prep worker's whole job --
 with the selector on and off, alternating arms in one process because
 wall-clock across processes on this machine swings ~2x with thermal state.
 
@@ -54,12 +54,12 @@ ROUNDS = 3
 
 
 def _prep(scene, actors, lo, hi):
-    # batch_prep_context is what a render puts around its batch loop. Without
+    # _batch_prep_context is what a render puts around its batch loop. Without
     # it a direct call records new events on every replay, which re-resolves
     # replay windows and invalidates the event-window caches every call --
     # none of which a render does, so the measurement would be of the harness.
-    with scene.batch_prep_context():
-        scene.get_batch_of_primitives(lo, hi, actors, 10**12)
+    with scene._batch_prep_context():
+        scene._get_batch_of_primitives(lo, hi, actors, 10**12)
 
 
 def _arm(disabled):
@@ -70,7 +70,7 @@ def main():
     scene = SceneManager.reset()
     scene.set_video_settings(PREVIEW)
     build_scene()
-    scene.initialize_frames()
+    scene._initialize_frames()
     for light in scene.light_sources:
         light.is_primitive = True
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]

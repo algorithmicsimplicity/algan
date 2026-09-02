@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import torch
 
 from algan.animatable_base.mob import Mob
@@ -116,10 +117,14 @@ def _load_image_hwc(path):
     or ``None`` on failure.
     """
     try:
-        import torchvision
+        from PIL import Image
 
-        img = torchvision.io.read_image(path)  # [C, H, W] uint8
-        return img.permute(1, 2, 0).float() / 255.0
+        with Image.open(path) as pil_image:
+            array = np.array(pil_image)  # [H, W, C] (or [H, W] for grayscale)
+        if array.ndim == 2:
+            array = array[:, :, None]
+        img = torch.from_numpy(array)  # [H, W, C] uint8
+        return img.float() / 255.0
     except Exception:
         return None
 

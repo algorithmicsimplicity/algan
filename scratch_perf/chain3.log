@@ -1,4 +1,0 @@
-=== UHD on the branch with 3-frame batches vs baseline
-frames compared: 30
-worst channel diff: 80 (frame 1)
-pixels over tol 2: worst frame 402055 of 8294400 (4.847%, frame 28); mean 355429.3/frame; 30 of 30 frames affected

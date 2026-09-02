@@ -28,7 +28,7 @@ def _midpoint_of_recorded_move(angle_degrees):
     mob.move_to([2, 0, 0], angle_degrees, arc_normal=[0, 0, 1])
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
     location = mob.location.clone()
-    scene.terminate()
+    scene._terminate()
     return location
 
 
@@ -71,7 +71,7 @@ def test_shallow_arc_remains_finite_and_reaches_target(angle_degrees):
     torch.testing.assert_close(
         mob.location[..., 0], torch.tensor([[1.0]]), atol=2e-5, rtol=0
     )
-    scene.terminate()
+    scene._terminate()
 
 
 def test_non_unit_normal_supports_an_arbitrary_arc_plane():
@@ -90,7 +90,7 @@ def test_non_unit_normal_supports_an_arbitrary_arc_plane():
         atol=2e-5,
         rtol=2e-5,
     )
-    scene.terminate()
+    scene._terminate()
 
 
 def test_batched_zero_and_circular_sweeps_are_supported_together():
@@ -108,7 +108,7 @@ def test_batched_zero_and_circular_sweeps_are_supported_together():
 
     expected = torch.tensor([[[1.0, 0.0, 0.0], [1.0, math.sqrt(2) - 1, 0.0]]])
     torch.testing.assert_close(mob.location, expected, atol=2e-5, rtol=2e-5)
-    scene.terminate()
+    scene._terminate()
 
 
 def test_non_recursive_arc_move_leaves_child_location_unchanged():
@@ -135,7 +135,7 @@ def test_non_recursive_arc_move_leaves_child_location_unchanged():
     torch.testing.assert_close(
         child.location, torch.tensor([[[0.0, 1.0, 0.0]]]), atol=1e-6, rtol=0
     )
-    scene.terminate()
+    scene._terminate()
 
 
 @pytest.mark.parametrize(
@@ -151,4 +151,4 @@ def test_invalid_arc_geometry_is_rejected(target, angle, normal, message):
     mob = Mob(location=[0, 0, 0], add_to_scene=False)
     with pytest.raises(ValueError, match=message):
         mob.move_to(target, angle, arc_normal=normal)
-    scene.terminate()
+    scene._terminate()

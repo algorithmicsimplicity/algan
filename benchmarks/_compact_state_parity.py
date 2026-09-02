@@ -77,7 +77,7 @@ def materialize(disabled, windows):
     scene = SceneManager.reset()
     scene.set_video_settings(SMOKE_TEST)
     mobs = build_scene()
-    scene.initialize_frames()
+    scene._initialize_frames()
     for light in scene.light_sources:
         light.is_primitive = True
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]
@@ -86,10 +86,10 @@ def materialize(disabled, windows):
     views = []
     widths = []
     for start, stop in windows:
-        # See Scene.batch_prep_context: a direct call outside it records new
+        # See Scene._batch_prep_context: a direct call outside it records new
         # events on every replay and corrupts the timeline being compared.
-        with scene.batch_prep_context():
-            scene.get_batch_of_primitives(start, stop, actors, 10**12)
+        with scene._batch_prep_context():
+            scene._get_batch_of_primitives(start, stop, actors, 10**12)
         tlm = scene.timeline_manager
         snapshot = {}
         for attr, timeline in tlm.attr_to_timeline.items():

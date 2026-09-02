@@ -34,21 +34,64 @@ from algan.utils.tensor_utils import cast_to_tensor
 
 
 class DecimalNumber(Mob):
-    def __init__(self, value, decimal_places=2, integer_places=None, **kwargs):
-        """An animated numeric counter whose integer part grows as needed.
+    """A number drawn on screen, which counts when you assign to it.
 
-        Parameters
-        ----------
-        value
-            The initial value displayed.
-        decimal_places
-            Number of digits after the decimal point. With 0, no decimal
-            point is shown.
-        integer_places
-            Initial minimum number of digits before the decimal point. If None,
-            derived from the initial value (at least 1). The display allocates
-            more leading digit slots automatically when its value grows.
-        """
+    :attr:`value` is an animatable attribute, so ``counter.value = 100``
+    is recorded like a move or a color change and the display counts from
+    wherever it was to 100 over the surrounding context's runtime. The glyphs
+    are re-typeset each frame rather than morphed into one another, which is
+    what makes ``7`` become ``8`` rather than bending into it.
+
+    The number is laid out to a fixed width from ``decimal_places`` and
+    ``integer_places``, so it does not jitter sideways as digits come and go.
+    Leading-digit slots are added automatically when the value outgrows them.
+
+    Animation
+    ---------
+    Constructing one records nothing; the Mob joins the active Scene unspawned,
+    and :meth:`~algan.animatable_base.animatable.Animatable.spawn` makes it
+    appear. Assigning to :attr:`value` afterwards is recorded and interpolates
+    from the current value over the current context's runtime (1 second by
+    default) -- ``with Seq(runtime=3): counter.value = 100`` to change that, or
+    ``with Off():`` to jump.
+
+    Parameters
+    ----------
+    value
+        The number shown at construction.
+    decimal_places
+        Digits after the decimal point. Defaults to ``2``; ``0`` shows no
+        decimal point at all.
+    integer_places
+        Minimum digits before the decimal point. Defaults to ``None``, meaning
+        take it from ``value`` (at least 1). More are allocated automatically
+        when the value grows past the reserved width.
+    **kwargs
+        Passed to :class:`~algan.mobs.text.Tex`, which typesets the digits --
+        notably ``color`` and ``font_size`` -- and on to :class:`~.Mob`.
+
+    Attributes
+    ----------
+    value
+        The number displayed, shape ``(*, 1)``. Assigning to it records a
+        counting animation.
+
+    Examples
+    --------
+    A counter that runs from 0 to 50 over two seconds:
+
+    .. algan:: Example1DecimalNumber
+
+        from algan import *
+
+        counter = DecimalNumber(0, decimal_places=1).spawn()
+        with Seq(runtime=2):
+            counter.value = 50
+
+        Scene.save_video()
+    """
+
+    def __init__(self, value, decimal_places=2, integer_places=None, **kwargs):
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
         value = cast_to_tensor(value)

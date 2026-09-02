@@ -429,8 +429,18 @@ class ManimCompatMob(ManimMob):
 
     _manim_class = _manim.VMobject
     _ALGAN_ONLY_KWARGS = {"add_to_scene", "glow", "glow_radius", "batch", "scene"}
+    #: True for wrappers whose Manim source typesets through LaTeX on
+    #: construction (``MathTex``, ``Title``, the ``Matrix`` family, ...), so a
+    #: missing TeX distribution is reported up front, in Algan's words, rather
+    #: than as a ``FileNotFoundError: 'latex'`` from inside Manim after it has
+    #: written a scratch file. Set by :func:`_make_manim_wrapper`.
+    _needs_latex = False
 
     def __init__(self, *args, **kwargs):
+        if self._needs_latex:
+            from algan.mobs.text import _require_latex_toolchain
+
+            _require_latex_toolchain()
         algan_kwargs = {
             key: kwargs.pop(key)
             for key in tuple(kwargs)
@@ -670,7 +680,7 @@ class ManimCompatMob(ManimMob):
         # render components keep their timeline identity while the composite
         # structure exactly follows the backing Manim object.
         target_non_components = target.get_non_component_children()
-        self.children = list(self.components) + target_non_components
+        self.children[:] = list(self.components) + target_non_components
         self.submobjects = target_non_components
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
@@ -903,13 +913,26 @@ _WRAPPER_DOCSTRINGS: dict[str, str] = {
 }
 
 
+# Composite Manim classes that always typeset their parts with LaTeX even
+# though they are not ``Tex`` subclasses themselves: the matrix family builds a
+# ``MathTex`` per entry, ``Variable`` and ``BraceLabel`` label with one.
+_LATEX_COMPOSITES = frozenset(
+    {"Matrix", "IntegerMatrix", "DecimalMatrix", "Variable", "BraceLabel"}
+)
+
+
 def _make_manim_wrapper(name: str):
     manim_class = getattr(_manim, name)
+    needs_latex = name in _LATEX_COMPOSITES or (
+        isinstance(manim_class, type)
+        and issubclass(manim_class, _manim.SingleStringMathTex)
+    )
     wrapper = type(
         name,
         (ManimCompatMob,),
         {
             "_manim_class": manim_class,
+            "_needs_latex": needs_latex,
             "__module__": __name__,
             "__doc__": _WRAPPER_DOCSTRINGS.get(name, manim_class.__doc__),
         },

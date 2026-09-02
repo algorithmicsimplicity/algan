@@ -70,7 +70,7 @@ def _build_scene():
 def _materialize(scene, mob, frames=4):
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]
     times = torch.arange(frames) / 10.0
-    with scene.batch_prep_context():
+    with scene._batch_prep_context():
         scene.timeline_manager.set_state_to_times(times, active_mobs=actors)
         timeline = scene.timeline_manager.attr_to_timeline[mob._color_texture_attr]
         window = timeline.active_state.clone()
@@ -146,8 +146,8 @@ def test_texture_is_priced_against_the_render_device_budget(
 def _build_one_batch(scene):
     """Prepare one 4-frame batch and hand back its textured primitives."""
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]
-    with scene.batch_prep_context():
-        primitives, end, _ = scene.get_batch_of_primitives(0, 4, actors, 10**12)
+    with scene._batch_prep_context():
+        primitives, end, _ = scene._get_batch_of_primitives(0, 4, actors, 10**12)
     assert end == 4
     assert primitives
     textured = [p for p in primitives if getattr(p, "texture_map", None) is not None]

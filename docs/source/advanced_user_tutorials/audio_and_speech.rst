@@ -50,10 +50,10 @@ to trim or preprocess audio beforehand):
 Speech Contexts
 ===============
 
-:class:`~algan.animation_timeline.animation_contexts.Speech` is a specialized
-context that generates synthetic voice narration from text:
-:class:`~algan.animation_timeline.animation_contexts.Speech` is an Audio context
-whose clip is generated from a script segment:
+:class:`~algan.animation_timeline.animation_contexts.Speech` is an
+:class:`~algan.animation_timeline.animation_contexts.Audio` context whose clip
+is generated from a script segment, so the block runs for exactly as long as
+the line takes to say:
 
 .. algan-doc-check: skip -- needs a system text-to-speech engine (eSpeak)
 
@@ -110,14 +110,13 @@ a process-global singleton:
         audio_file="narration.wav",
         transcript_file="narration.txt",
     )
-    Scene.set_speech_source(generator)
+    Scene.current().audio_manager.set_speech_source(generator)
 
     diagram = Circle().spawn()
     with Speech("First we draw a circle."):
         diagram.scale(1.5)
 
     Scene.save_video("narrated_diagram.mp4")
-        scene.save_video("narrated_diagram.mp4")
 
 ``get_speech_generator_from_file`` aligns the transcript to the audio and
 returns a callable. Each Speech segment asks that callable for the matching
@@ -138,7 +137,7 @@ MoviePy audio clip:
         # Select or synthesize a clip for this exact script segment.
         return AudioFileClip("prepared_segment.wav")
 
-    Scene.audio_manager.set_speech_source(speech_generator)
+    Scene.current().audio_manager.set_speech_source(speech_generator)
 
 The generator is Scene-local. Two Scenes can use different voices or recorded
 sources in the same process without interfering with one another.

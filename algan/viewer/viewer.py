@@ -87,7 +87,7 @@ def _view(
     if scene is None:
         from algan.scene import Scene
 
-        scene = Scene.instance()
+        scene = Scene.current()
     session = ViewerSession(scene, video_settings)
     server = ViewerServer(session, port=port)
     handle = ViewerHandle(server, session)

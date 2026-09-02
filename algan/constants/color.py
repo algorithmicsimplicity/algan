@@ -106,6 +106,76 @@ def _parse_color_string(s: str) -> tuple[tuple[float, float, float], float]:
 
 
 class Color(torch.Tensor):
+    """A color, as five channels: red, green, blue, glow and opacity.
+
+    Everything in Algan that takes a color -- a Mob's ``color`` and
+    ``stroke_color``, a material's, a light's, a Scene's background -- accepts
+    one of these, or anything the constructor below accepts. The named palette
+    (``BLUE``, ``RED_E``, ``WHITE``, ...) is made of them.
+
+    Glow and opacity are channels rather than separate attributes so they
+    travel with the color through ordinary arithmetic: ``BLUE * 0.5`` dims the
+    color *and* halves its alpha, and interpolating between two colors
+    interpolates their emissive strength too. When you want to change one
+    channel alone, use :meth:`set_opacity` or assign to :attr:`glow`.
+
+    A ``Color`` is a :class:`torch.Tensor` subclass, so it takes part in tensor
+    arithmetic and can carry batch dimensions -- a ``(*, 5)`` array of them is
+    what paints one color per vertex or per texel.
+
+    Parameters
+    ----------
+    rgb
+        The color. Accepts a hex string (``"#58C4DD"``, with an optional
+        eighth digit for alpha), a CSS color name (``"teal"``), an
+        ``(r, g, b)`` sequence in ``[0, 1]``, an ``(r, g, b, a)`` or
+        ``(r, g, b, glow, a)`` sequence, or a tensor of any of those widths.
+        A four- or five-wide value supplies ``opacity`` (and ``glow``) itself.
+    glow
+        Additive emissive brightness, fed to the bloom accumulator. Unbounded
+        above; ``0`` is a non-emissive surface. Defaults to ``0``.
+    opacity
+        Alpha, in ``[0, 1]``: ``0`` invisible, ``1`` fully opaque. Defaults to
+        ``1``, except where ``rgb`` carried an alpha of its own.
+    *args, **kwargs
+        Passed to :meth:`torch.Tensor.__new__`.
+
+    Attributes
+    ----------
+    rgb
+        The first three channels, as a plain tensor. Assignable.
+    glow
+        The fourth channel, shape ``(*, 1)``. Assignable.
+    opacity
+        The fifth channel, shape ``(*, 1)``, in ``[0, 1]``. Assignable.
+
+    Raises
+    ------
+    :class:`.InvalidColorError`
+        If a string is neither a hex code nor a known CSS color name.
+
+    See Also
+    --------
+    :meth:`~.Color.set_opacity` : Change the alpha alone, leaving the rest.
+    :meth:`~.Color.add_defaults` : Pad a bare RGB or RGBA tensor to five
+        channels.
+
+    Examples
+    --------
+    Three ways of spelling a color, and a glowing one:
+
+    .. algan:: Example1Color
+        :save_last_frame:
+
+        from algan import *
+
+        Square(color=BLUE).move(LEFT * 2.5).spawn()
+        Square(color="#58C4DD").spawn()
+        Square(color=Color((1, 0.4, 0.2), glow=3)).move(RIGHT * 2.5).spawn()
+
+        Scene.save_video()
+    """
+
     def __new__(
         cls,
         rgb: str | tuple[float, ...] | list[float] | torch.Tensor,

@@ -94,9 +94,9 @@ def manim_fov(
     --------
     ::
 
-        from algan.manim_defaults import manim_fov
+        import algan.manim as mn
 
-        Scene.get_camera().set_fov(manim_fov())
+        Scene.get_camera().set_fov(mn.manim_fov())
     """
     return math.degrees(2.0 * math.atan((frame_height * 0.5) / focal_distance))
 

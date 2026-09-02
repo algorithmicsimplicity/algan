@@ -21,6 +21,7 @@ abort a render.
 
 from __future__ import annotations
 
+import difflib
 import os
 import warnings
 from collections.abc import Mapping
@@ -431,16 +432,45 @@ def unknown_algan_environment_variables(
     )
 
 
+#: How close an undeclared name must be to a declared one before it is worth
+#: reporting. ``difflib``'s ratio, so 0.8 is "a typo of", not "starts with the
+#: same prefix": ``ALGAN_LOG_LEVELS`` and ``ALGAN_RENDER_DEVIC`` clear it,
+#: ``ALGAN_FOO`` does not.
+_MISSPELLING_CUTOFF = 0.8
+
+
+def misspelled_algan_environment_variables(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Undeclared ``ALGAN_`` names that look like a declared one, and its match.
+
+    The whole ``ALGAN_`` prefix is not Algan's to police -- a wrapper script, a
+    CI job or an unrelated tool may keep its own variables under it, and
+    warning about those on every import is noise that teaches people to ignore
+    the warning that matters. What *is* worth saying is that a name looks like
+    one Algan honors but is not it, because that silently does nothing.
+    """
+    close = difflib.get_close_matches
+    declared = sorted(ALGAN_ENVIRONMENT_VARIABLES)
+    matches = []
+    for name in unknown_algan_environment_variables(environ):
+        best = close(name, declared, n=1, cutoff=_MISSPELLING_CUTOFF)
+        if best:
+            matches.append((name, best[0]))
+    return tuple(matches)
+
+
 def warn_for_unknown_algan_environment_variables(
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """Warn once when the process contains unsupported Algan variables."""
-    unknown = unknown_algan_environment_variables(environ)
-    if not unknown:
+    """Warn once when the process contains misspelled Algan variables."""
+    misspelled = misspelled_algan_environment_variables(environ)
+    if not misspelled:
         return
-    noun = f"variable{'' if len(unknown) == 1 else 's'}"
+    noun = f"variable{'' if len(misspelled) == 1 else 's'}"
+    listed = ", ".join(f"{name} (did you mean {match}?)" for name, match in misspelled)
     warnings.warn(
-        f"Unknown Algan environment {noun}: {', '.join(unknown)}. "
+        f"Unknown Algan environment {noun}: {listed}. "
         "These variables will be ignored; check their spelling or remove them.",
         AlganWarning,
         stacklevel=2,
@@ -456,6 +486,7 @@ __all__ = [
     "env_overrides",
     "env_str",
     "import_time_environment_variables",
+    "misspelled_algan_environment_variables",
     "startup_environment_variables",
     "unknown_algan_environment_variables",
     "warn_for_unknown_algan_environment_variables",

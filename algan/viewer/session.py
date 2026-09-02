@@ -592,7 +592,7 @@ class ViewerSession:
                 scene.set_video_settings(self.video_settings)
             preserve = scene.animation_manager.context.prev_context is not None
             with (
-                torch.inference_mode(),
+                torch.no_grad(),
                 scene.timeline_manager.preserving_authoring_state(
                     preserve_replay_resolution=preserve
                 ),

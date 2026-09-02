@@ -14,15 +14,15 @@ and watches which actors each arm actually sends where, so running it with
 ALGAN_BEZIER_GROUP_RUNS=0 (the old all-or-nothing revert) and =1 (run
 splitting) shows exactly what the split moved.
 
-It also times get_batch_of_primitives per window under both arms, alternating
+It also times _get_batch_of_primitives per window under both arms, alternating
 the arms per round and taking medians -- un-alternated wall-clock A/Bs on this
 class of machine produce noise that reads as a result.
 
     ALGAN_BEZIER_GROUP_RUNS=0 .venv/bin/python benchmarks/_bezier_batchability.py
     .venv/bin/python benchmarks/_bezier_batchability.py
 
-Prep only, no render. batch_prep_context is mandatory: calling
-get_batch_of_primitives outside it grows the timeline on every call and
+Prep only, no render. _batch_prep_context is mandatory: calling
+_get_batch_of_primitives outside it grows the timeline on every call and
 corrupts the measurement.
 """
 
@@ -216,7 +216,7 @@ def probe_scene(label, build_scene_fn):
     # The bezier_rendering benchmark's settings (UHD at 60 fps).
     scene.set_video_settings(UHD.set_frames_per_second(60))
     build_scene_fn()
-    # Mimic render_to_video's prelude (benchmarks/_prep_profile.py).
+    # Mimic _render_to_video's prelude (benchmarks/_prep_profile.py).
     scene.scene_times.append(
         [
             scene.scene_times[-1][0],
@@ -226,7 +226,7 @@ def probe_scene(label, build_scene_fn):
             ),
         ]
     )
-    scene.initialize_frames()
+    scene._initialize_frames()
     scene.camera.despawn(animate=False)
     for light in scene.light_sources:
         light.despawn(animate=False)
@@ -253,7 +253,7 @@ def probe_scene(label, build_scene_fn):
     )
 
     # Windows spread across the scene, each capped to WINDOW_WIDTH_FRAMES so
-    # there is more than one of them (get_batch_of_primitives would otherwise
+    # there is more than one of them (_get_batch_of_primitives would otherwise
     # take the whole remaining scene in one batch).
     span = end_ind - start_ind
     step = max(1, span // NUM_WINDOWS)
@@ -273,10 +273,10 @@ def probe_scene(label, build_scene_fn):
             index[0][i] for i in inds if isinstance(index[0][i], BezierCircuitCubic)
         ]
 
-    with scene.batch_prep_context():
+    with scene._batch_prep_context():
         # Warm-up pass (first-call lazy init must not land in any timing).
         for w0, w1 in windows:
-            scene.get_batch_of_primitives(w0, w1, actors, max_animate_mem)
+            scene._get_batch_of_primitives(w0, w1, actors, max_animate_mem)
 
         # --- classification tables, one per arm ---
         arm = os.environ.get("ALGAN_BEZIER_GROUP_RUNS", "1")
@@ -299,7 +299,7 @@ def probe_scene(label, build_scene_fn):
             per_window = []
             for w0, w1 in windows:
                 watcher.reset()
-                scene.get_batch_of_primitives(w0, w1, actors, max_animate_mem)
+                scene._get_batch_of_primitives(w0, w1, actors, max_animate_mem)
                 rows = classify(scene, watcher, window_circuits(w0, w1))
                 for key, value in rows.items():
                     totals[key].extend(value)
@@ -317,11 +317,11 @@ def probe_scene(label, build_scene_fn):
             os.environ["ALGAN_BEZIER_GROUP_RUNS"] = flag
             for i, (w0, w1) in enumerate(windows):
                 t_start = time.perf_counter()
-                scene.get_batch_of_primitives(w0, w1, actors, max_animate_mem)
+                scene._get_batch_of_primitives(w0, w1, actors, max_animate_mem)
                 times[(flag, i)].append(time.perf_counter() - t_start)
 
         print(
-            "\n== get_batch_of_primitives wall clock (median of "
+            "\n== _get_batch_of_primitives wall clock (median of "
             f"{TIMING_ROUNDS // 2} rounds per arm, arms alternated) =="
         )
         for i, (w0, _) in enumerate(windows):

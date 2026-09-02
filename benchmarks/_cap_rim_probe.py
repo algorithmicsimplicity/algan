@@ -55,7 +55,7 @@ with Off():
 
     # The solids_and_camera cylinder, scaled up and tilted the way Act 2 tilts
     # it, so the cap faces the camera.
-    cylinder = Cylinder(radius=0.45, height=1.0, show_ends=True).set_material(
+    cylinder = Cylinder(radius=0.45, height=1.0, closed=True).set_material(
         MeshLambertMaterial(color=GREEN)
     )
     cylinder.scale(2.4).rotate(75, RIGHT).spawn(animate=False)

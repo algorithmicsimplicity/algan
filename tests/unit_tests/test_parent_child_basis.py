@@ -27,7 +27,7 @@ def scene():
     SceneManager.reset()
     current = algan.Scene(scene_initializer=_empty_scene)
     yield current
-    current.terminate()
+    current._terminate()
     SceneManager.reset()
 
 

@@ -32,6 +32,17 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ## Installation
 
+Algan depends on Manim, which needs `pycairo` and `manimpango` built from source
+on Linux and macOS. Install their system packages first:
+
+```bash
+# Linux (Debian/Ubuntu)
+sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
+
+# macOS
+brew install pango cairo pkg-config
+```
+
 Install via [uv](https://docs.astral.sh/uv/) (recommended):
 
 ```bash
@@ -43,6 +54,9 @@ Or via `pip`:
 ```bash
 pip install algan
 ```
+
+The installed footprint is large (~5 GB, mostly the CUDA build of `torch` and
+its NVIDIA dependencies).
 
 For detailed platform-specific prerequisites (FFmpeg, GPU acceleration, optional LaTeX for formulas), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation/uv.html).
 
@@ -96,7 +110,7 @@ The output video will be written to `algan_outputs/quickstart.mp4`.
 Algan includes a first-class CLI:
 
 ```bash
-algan check                 # Verify PyTorch, GPU acceleration, Taichi, FFmpeg & LaTeX
+algan check                 # Verify PyTorch, GPU acceleration, Taichi, FFmpeg, LaTeX & paths
 algan new my_scene.py       # Scaffold a new scene script
 algan render my_scene.py    # Render scene to video
 ```
@@ -124,6 +138,40 @@ algan render project.py -- --help                    # the project's help, not o
 Where both name the same thing, the script wins: `-q` sets the default preset,
 and a `Project`'s own `--video-settings` (or its `video_settings=` argument)
 overrides it.
+
+### The warm render daemon
+
+The first render of a session pays several seconds of library import plus
+Taichi kernel preparation. Algan pays that once: the first `python scene.py`
+starts a background daemon, and every later run hands its script to that warm
+process and starts rendering in about a second. Nothing is launched
+differently — it happens inside `import algan`.
+
+```bash
+algan daemon                # run one in this terminal (Enter re-renders, q quits)
+algan daemon ping           # is one running?
+algan daemon render         # re-render the last script (bind an editor key to it)
+algan daemon quit           # stop it (algan daemon --stop is the same)
+```
+
+Those verbs each carry the token from the daemon's state file
+(`$ALGAN_HOME/daemon.json`, default `~/.algan`), which is also where the port
+lives — the daemon prefers 46711 and falls back to an ephemeral port when it is
+taken.
+
+**A script served by the daemon runs in another process**, and three things
+follow from that:
+
+- everything above `import algan` runs **twice** — once in your process, once
+  in the daemon — so keep side effects below the import;
+- `atexit` handlers do not run, because the warm process never shuts down;
+- `stdin` is `/dev/null`, since the daemon's own stdin is its re-render trigger.
+
+Everything else is reproduced: `sys.argv`, the working directory, the full
+environment, stdout/stderr (including from ffmpeg and other subprocesses),
+their tty-ness, and the exit code. `ALGAN_USE_DAEMON=0` runs in-process,
+`ALGAN_AUTO_DAEMON=0` only stops new ones being started, and a script being
+debugged is never handed off.
 
 ---
 

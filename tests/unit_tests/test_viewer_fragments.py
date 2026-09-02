@@ -67,7 +67,7 @@ def test_capture_is_off_unless_armed(fresh_scene):
     """The hook must cost nothing on a render nobody is inspecting."""
     assert fragment_capture.is_armed() is False
     Cube().spawn().rotate(45, UP)
-    captures, image = capture_frame(Scene.instance(), 5)
+    captures, image = capture_frame(Scene.current(), 5)
     assert captures, "an armed render should produce a record"
     assert fragment_capture.is_armed() is False, "disarm must leave it off"
 
@@ -75,7 +75,7 @@ def test_capture_is_off_unless_armed(fresh_scene):
 def test_fragments_are_sorted_nearest_first_and_name_their_mob(fresh_scene):
     cube = Cube().set_color(BLUE).spawn()
     cube.rotate(60, UP)
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, image = capture_frame(scene)
     record = PixelRecord(captures[0], {cube.id: cube})
 
@@ -107,7 +107,7 @@ def test_two_mobs_are_told_apart(fresh_scene):
     front.location = front.location + OUT * 1.2
     front.scale_coefficient = front.scale_coefficient * 0.4
     front.spawn()
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, image = capture_frame(scene)
     record = PixelRecord(captures[0], {back.id: back, front.id: front})
 
@@ -140,7 +140,7 @@ def test_pixel_rows_are_not_flipped(fresh_scene):
     cube.location = cube.location + UP * 1.6
     cube.spawn()
     cube.rotate(45, UP)
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, image = capture_frame(scene)
     record = PixelRecord(captures[0], {cube.id: cube})
 
@@ -174,7 +174,7 @@ def test_circuit_fragments_decode_their_circuit_and_border(fresh_scene):
     both must come back out with the packing's own arithmetic.
     """
     Square().set_color(RED).spawn()
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, image = capture_frame(scene)
     record = PixelRecord(captures[0], {})
 
@@ -202,7 +202,7 @@ def test_uncovered_pixel_reports_no_fragments(fresh_scene):
     """Background is a real answer, not a missing one."""
     cube = Cube().spawn()
     cube.rotate(45, UP)
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, image = capture_frame(scene)
     record = PixelRecord(captures[0], {cube.id: cube})
     dark = (image.sum(-1) == 0).nonzero()
@@ -219,7 +219,7 @@ def test_albedo_matches_the_authored_colour(fresh_scene):
     """
     cube = Cube().set_color(BLUE).spawn()
     cube.rotate(45, UP)
-    scene = Scene.instance()
+    scene = Scene.current()
     captures, _ = capture_frame(scene)
     record = PixelRecord(captures[0], {cube.id: cube})
 

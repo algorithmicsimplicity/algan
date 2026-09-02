@@ -31,7 +31,7 @@ from __future__ import annotations
 import inspect
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,10 +42,12 @@ from algan.animation_timeline.animation_contexts import (
     AnimationManager,
     Seq,
     Sync,
+    _reject_context_kwargs,
+    _reject_negative_runtime,
     animation_manager_context,
 )
 from algan.animation_timeline.timeline import TimelineManager
-from algan.constants.color import InvalidColorError, to_color
+from algan.constants.color import Color, InvalidColorError, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.logging.logger import get_logger
@@ -128,11 +130,16 @@ class Scene(RenderLoopMixin):
     video_settings
         Resolution / fps / quality settings (see
         :mod:`algan.settings.video_settings`).
-    background_frame
-        Background color/image or procedural callable. A Taichi ``@ti.func``
-        uses the scalar ``(x, y, time) -> color`` contract. Python callables
+    background
+        What the Scene is drawn on: a color, an image tensor, or a procedural
+        callable. A Taichi ``@ti.func`` uses the scalar ``(x, y, time) ->
+        color`` contract and is evaluated at render time. Python callables
         passed through the render APIs receive broadcastable Torch tensors;
-        the direct constructor retains its legacy coordinate-grid callback.
+        the direct constructor calls a Python callable once, with a
+        coordinate grid. Defaults to ``None``, meaning
+        ``SETTINGS.style.background``. It is the same background
+        :meth:`~.Scene.set_background` sets and ``save_video(background=...)``
+        overrides for one render.
     memory
         Optional :class:`~algan.utils.memory_utils.ManualMemory` render arena.
     scene_initializer
@@ -142,16 +149,16 @@ class Scene(RenderLoopMixin):
 
     def __init__(
         self,
-        video_settings=None,
-        background_frame=None,
+        video_settings: VideoSettings | None = None,
+        background: Color | str | torch.Tensor | Callable | None = None,
         memory=None,
         scene_initializer=None,
     ):
         chose_video_settings = video_settings is not None
         if video_settings is None:
             video_settings = SETTINGS.video
-        if background_frame is None:
-            background_frame = SETTINGS.style.frame
+        if background is None:
+            background = SETTINGS.style.frame
         self.set_video_settings(video_settings)
         # Whether this Scene was *given* its settings, or merely started from
         # the process-wide ones. Only the first kind outranks a later
@@ -163,10 +170,10 @@ class Scene(RenderLoopMixin):
         self.background_is_set = False
         # Preserve the legacy direct-Scene constructor callback while leaving
         # a Taichi func deferred: a @ti.func can only be called from a kernel.
-        if callable(background_frame) and not getattr(
-            background_frame, "_is_taichi_function", False
+        if callable(background) and not getattr(
+            background, "_is_taichi_function", False
         ):
-            background_frame = background_frame(
+            background = background(
                 torch.stack(
                     (
                         torch.arange(self.num_pixels_screen_height)
@@ -179,9 +186,9 @@ class Scene(RenderLoopMixin):
                     -1,
                 )
             )
-        self.background_frame = background_frame
-        self._initial_background_frame = background_frame
-        self.background = background_frame
+        self.background_frame = background
+        self._initial_background_frame = background
+        self.background = background
         self.actors = []
         self.effects = []
         self.camera = None
@@ -190,9 +197,7 @@ class Scene(RenderLoopMixin):
         # Manim's +z-toward-viewer convention lands the right way round in
         # Algan's, where -z faces the viewer. Read by ManimMob at construction.
         self.scene_times = [[self.current_time, self.current_time]]
-        depth_source = (
-            SETTINGS.style.frame if callable(background_frame) else background_frame
-        )
+        depth_source = SETTINGS.style.frame if callable(background) else background
         self.background_depths = torch.full_like(
             depth_source[..., :1],
             dtype=torch.get_default_dtype(),
@@ -240,16 +245,16 @@ class Scene(RenderLoopMixin):
     def __exit__(self, exc_type, exc_value, traceback):
         self._context_depth = max(0, self._context_depth - 1)
         if self._context_depth == 0:
-            self.terminate()
+            self._terminate()
         return False
 
-    def terminate(self):
+    def _terminate(self):
         """Pop this scene from the active-scene stack and return it."""
         SceneManager.instance().terminate(self)
         return self
 
     @active_scene_method
-    def wait(self, time: float = 1):
+    def wait(self, time: float = 1, **kwargs) -> Scene:
         """Hold the scene still for a while.
 
         Advances time without changing anything, leaving a pause in the video --
@@ -262,18 +267,45 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         time
-            How long to wait, in seconds. Defaults to ``1``.
+            How long to wait, in seconds. Must be zero or more. Defaults to
+            ``1``.
+        **kwargs
+            Accepted only so that the timing spellings Algan does not use
+            (``duration``, ``run_time``, ``rate_func``) can be answered with
+            the name it does; anything else is rejected.
 
         Returns
         -------
         :class:`~.Scene`
             This Scene, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``time`` is negative, or a keyword argument names a parameter
+            :meth:`~.Scene.wait` does not have.
         """
+        if kwargs:
+            _reject_context_kwargs(kwargs)
+            raise TypeError(
+                f"wait() got an unexpected keyword argument "
+                f"{next(iter(kwargs))!r}. wait() takes one argument, the "
+                f"number of seconds to wait."
+            )
+        _reject_negative_runtime("time", time)
         self.animation_manager.wait(time)
         return self
 
     @staticmethod
-    def instance():
+    def _instance() -> Scene:
+        """Internal: the Scene currently being authored.
+
+        :meth:`~.Scene.current` is the spelling to write; this is what it calls.
+        """
+        return SceneManager.instance().current_scene
+
+    @staticmethod
+    def current() -> Scene:
         """Get the Scene currently being authored.
 
         Creates the default Scene on first use, so this never returns ``None``.
@@ -283,18 +315,7 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             The active Scene.
         """
-        return SceneManager.instance().current_scene
-
-    @staticmethod
-    def current():
-        """Get the Scene currently being authored; an alias of :meth:`~.Scene.instance`.
-
-        Returns
-        -------
-        :class:`~.Scene`
-            The active Scene.
-        """
-        return Scene.instance()
+        return Scene._instance()
 
     @active_scene_method
     def get_camera(self):
@@ -537,12 +558,21 @@ class Scene(RenderLoopMixin):
         env = source
         byte_ranged = False
         if isinstance(env, str):
-            import cv2
+            import numpy as np
+            from PIL import Image, UnidentifiedImageError
 
-            img = cv2.imread(env, cv2.IMREAD_COLOR)
-            if img is None:
-                raise FileNotFoundError(f"Could not read environment map image: {env}")
-            env = torch.from_numpy(img[..., ::-1].copy())  # BGR -> RGB
+            # ``convert("RGB")`` reproduces what the previous cv2 read gave
+            # this code: three 8-bit channels in RGB order, alpha dropped and
+            # a greyscale source replicated across the channels. The array is
+            # copied because PIL's buffer is read-only.
+            try:
+                with Image.open(env) as image:
+                    img = np.array(image.convert("RGB"), copy=True)
+            except (OSError, UnidentifiedImageError) as exc:
+                raise FileNotFoundError(
+                    f"Could not read environment map image: {env}"
+                ) from exc
+            env = torch.from_numpy(img)
             byte_ranged = True
         if not torch.is_tensor(env):
             env = torch.tensor(env)
@@ -594,7 +624,7 @@ class Scene(RenderLoopMixin):
         """
         return length / (0.5 * self.num_pixels_screen_height)
 
-    def set_current_time(self, t: float):
+    def _set_current_time(self, t: float):
         """Internal: move the authoring cursor to an absolute time.
 
         Parameters
@@ -608,10 +638,10 @@ class Scene(RenderLoopMixin):
             This Scene, so calls can be chained.
         """
         self.current_time = t
-        self.update_max_time(self.current_time)
+        self._update_max_time(self.current_time)
         return self
 
-    def increment_current_time(self, t: float):
+    def _increment_current_time(self, t: float):
         """Internal: advance the authoring cursor by an interval.
 
         Parameters
@@ -624,10 +654,10 @@ class Scene(RenderLoopMixin):
         :class:`~.Scene`
             This Scene, so calls can be chained.
         """
-        self.set_current_time(self.current_time + t)
+        self._set_current_time(self.current_time + t)
         return self
 
-    def update_max_time(self, t: float):
+    def _update_max_time(self, t: float):
         """Internal: extend the recorded end of the animation to include a time.
 
         The video's length is the largest time any recording reached, which is what
@@ -647,7 +677,7 @@ class Scene(RenderLoopMixin):
         self.max_time = max(self.max_time, t)
         return self
 
-    def set_time_to_latest(self):
+    def _set_time_to_latest(self):
         """Move the authoring cursor to the end of everything recorded so far.
 
         Use it after animations that ran in parallel, to carry on from the end of the
@@ -705,7 +735,7 @@ class Scene(RenderLoopMixin):
         self.effects.append(effect)
         return self
 
-    def initialize_frames(self):
+    def _initialize_frames(self):
         """Internal: work out how many frames the recorded animation needs.
 
         Derives the frame count from the recorded runtime and the Scene's frame
@@ -813,7 +843,8 @@ class Scene(RenderLoopMixin):
         from moviepy import CompositeAudioClip  # deferred: ~0.3 s of import algan
 
         audio_clip = CompositeAudioClip(clips_to_compose)
-        audio_clip.runtime = self.animation_manager.context.timespan.original_end
+        # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
+        audio_clip.duration = self.animation_manager.context.timespan.original_end
         audio_clip.write_audiofile(
             file_path, fps=sample_rate, codec=codec, nbytes=nbytes
         )
@@ -1012,7 +1043,7 @@ class Scene(RenderLoopMixin):
             return False
         return (self.background_frame[..., -1].min() < (1 - (0.5 / 255))).item()
 
-    def get_pixel_format(self) -> str:
+    def _get_pixel_format(self) -> str:
         """Get the pixel format the Scene's frames should be encoded in.
 
         Returns
@@ -1096,7 +1127,7 @@ class Scene(RenderLoopMixin):
         # explicit choice rather than restating it here.
         extra = {} if post_processes is None else {"post_processes": post_processes}
         frame = None
-        with torch.inference_mode():
+        with torch.no_grad():
             for batch in self.get_frames(time_ind, time_ind + 1, **extra):
                 if batch.shape[0]:
                     frame = batch[-1]
@@ -1119,7 +1150,7 @@ class Scene(RenderLoopMixin):
         at: float | Sequence[float] | None = None,
         *,
         overwrite: bool = True,
-        background=None,
+        background: Color | str | torch.Tensor | Callable | None = None,
         post_processes=None,
     ) -> RenderResult | list[RenderResult]:
         """Render one or more still frames from this Scene.
@@ -1133,9 +1164,12 @@ class Scene(RenderLoopMixin):
         ----------
         file_path
             Where to write the image. A bare filename is placed in Algan's
-            output directory; a path with a parent directory is used as given.
+            output directory; a path with a parent directory is used as given;
+            a path naming a directory (one that exists, or that ends with a
+            separator) has ``SETTINGS.paths.output_filename`` placed inside it.
             A missing extension defaults to ``.png``. Defaults to ``None``,
-            meaning ``SETTINGS.paths.output_filename``.
+            meaning ``SETTINGS.paths.output_filename``. The path actually
+            written is reported, absolute, as ``result.output_path``.
         video_settings
             Resolution and anti-aliasing for this still only, normally a
             preset such as ``HD``. Defaults to ``None``, meaning the Scene's
@@ -1191,13 +1225,18 @@ class Scene(RenderLoopMixin):
             # has filtered out.
             if not project_run.should_render_frame():
                 return []
-        if SETTINGS.skip_save_frame:
+        if SETTINGS._skip_save_frame:
             return []
         # Import lazily to avoid the Scene/algan_utils import cycle during
         # package initialization while sharing video output's exact resolver.
-        from algan.utils.algan_utils import RenderResult, _resolve_output_destination
+        from algan.utils.algan_utils import (
+            RenderResult,
+            _check_container_is_supported,
+            _resolve_output_destination,
+        )
 
         destination = _resolve_output_destination(file_path, ".png")
+        _check_container_is_supported(destination, still=True)
         if at is None or not hasattr(at, "__len__"):
             targets = [(destination, at)]
             returns_list = False
@@ -1240,9 +1279,7 @@ class Scene(RenderLoopMixin):
                     started = time.perf_counter()
                     self._render_still(target, time_stamp, post_processes)
                     walltime = time.perf_counter() - started
-                    logger.info(
-                        "Finished rendering %s in %.1f s", target.name, walltime
-                    )
+                    logger.info("Finished rendering %s in %.1f s", target, walltime)
                     # The same plan ``save_video`` reports, and for the same
                     # reason: it is how a script reads back which renderer ran,
                     # what it could not honor, and what it truncated. The field
@@ -1360,7 +1397,11 @@ class Scene(RenderLoopMixin):
         )
 
     @active_scene_method
-    def set_background(self, background, overwrite: bool = True):
+    def set_background(
+        self,
+        background: Color | str | torch.Tensor | Callable | None,
+        overwrite: bool = True,
+    ) -> Scene:
         """Set what the Scene is drawn against.
 
         Animation
@@ -1439,7 +1480,7 @@ class Scene(RenderLoopMixin):
         """
         return self.background
 
-    def get_new_id(self) -> int:
+    def _get_new_id(self) -> int:
         """Internal: allocate the next Mob id for this Scene.
 
         Ids key a Mob's rows on the Scene timeline. Called during Mob construction.
@@ -1460,7 +1501,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         reset: bool = False,
-        background=None,
+        background: Color | str | torch.Tensor | Callable | None = None,
         animate_fade_out: bool | None = None,
         post_processes=None,
         codec: str | None = None,
@@ -1474,10 +1515,13 @@ class Scene(RenderLoopMixin):
         file_path
             Where to write the video. A bare filename such as ``"my_video"``
             is placed in Algan's output directory; a path with a parent
-            directory, relative or absolute, is used exactly as given. If the
-            name has no extension Algan appends ``.mp4``, or ``.mov`` when the
-            background is transparent. Defaults to ``None``, meaning
-            ``SETTINGS.paths.output_filename``.
+            directory, relative or absolute, is used exactly as given; a path
+            naming a directory (one that exists, or that ends with a
+            separator) has ``SETTINGS.paths.output_filename`` placed inside it.
+            If the name has no extension Algan appends ``.mp4``, or ``.mov``
+            when the background is transparent. Defaults to ``None``, meaning
+            ``SETTINGS.paths.output_filename``. The path actually written is
+            reported, absolute, as ``result.output_path``.
         video_settings
             Resolution, frame rate and anti-aliasing for this render, normally
             one of the presets (``PREVIEW``, ``LD``, ``MD``, ``HD``,
@@ -1556,7 +1600,7 @@ class Scene(RenderLoopMixin):
 
         from algan.utils.algan_utils import _render_scene_to_file
 
-        # render_to_video owns the post-processing default, so only forward an
+        # _render_to_video owns the post-processing default, so only forward an
         # explicit choice rather than restating it here.
         extra = {} if post_processes is None else {"post_processes": post_processes}
         with (

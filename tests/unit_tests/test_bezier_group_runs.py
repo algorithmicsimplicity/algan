@@ -74,7 +74,7 @@ def _clash_scene(scene):
 
 
 def _prepare_one_batch(scene, monkeypatch, runs):
-    """Run ``get_batch_of_primitives`` over one frame window of the clash scene.
+    """Run ``_get_batch_of_primitives`` over one frame window of the clash scene.
 
     Returns ``(collections, per_actor_build_calls)``. The call count is what
     tells the two arms apart without reading the collections: every circuit
@@ -102,7 +102,7 @@ def _prepare_one_batch(scene, monkeypatch, runs):
             round(scene._recorded_end_time_for_render() * scene.frames_per_second),
         ]
     )
-    scene.initialize_frames()
+    scene._initialize_frames()
     start_ind, end_ind = scene.scene_times[-1]
     end_ind = max(end_ind, start_ind + 1)
     actors = [scene.camera, scene.camera.screen, *scene.light_sources, *scene.actors]
@@ -110,8 +110,8 @@ def _prepare_one_batch(scene, monkeypatch, runs):
         SETTINGS.computing.animation_memory_fraction
         * get_num_available_bytes(_ANIMATION_DEVICE)
     )
-    with scene.batch_prep_context():
-        collections, _end, _state = scene.get_batch_of_primitives(
+    with scene._batch_prep_context():
+        collections, _end, _state = scene._get_batch_of_primitives(
             start_ind, end_ind, actors, max_mem
         )
     return collections, calls

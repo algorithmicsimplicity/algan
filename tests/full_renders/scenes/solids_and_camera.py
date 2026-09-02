@@ -61,10 +61,14 @@ with Off():
         Sphere(radius=0.55).set_material(
             MeshStandardMaterial(color=BLUE, roughness=0.45)
         ),
-        Cylinder(radius=0.45, height=1.0, show_ends=True).set_material(
+        Cylinder(radius=0.45, height=1.0, closed=True).set_material(
             MeshLambertMaterial(color=GREEN)
         ),
-        Cone(base_radius=0.55, height=1.1, show_base=True).set_material(
+        # ``direction`` is pinned rather than defaulted: Cone's default moved
+        # from OUTWARD to UP so that it matches Cylinder's, and this scene is
+        # compared pixel for pixel -- an un-pinned cone would re-baseline the
+        # whole suite for a change that has nothing to do with the renderer.
+        Cone(radius=0.55, height=1.1, closed=True, direction=OUT).set_material(
             MeshPhongMaterial(color=ORANGE, shininess=55)
         ),
         Torus(ring_radius=0.55, tube_radius=0.22).set_material(

@@ -596,6 +596,116 @@ def test_a_dead_registration_is_removed_and_replaced(home, monkeypatch):
     assert not state_file.exists()
 
 
+def _identity_state(port, **overrides):
+    state = {"port": port, "token": "t", "pid": 1, **dc.interpreter_identity()}
+    state.update(overrides)
+    return state
+
+
+def test_a_matching_interpreter_is_no_mismatch():
+    assert dc.describe_interpreter_mismatch(_identity_state(1)) is None
+
+
+def test_a_state_file_from_an_older_daemon_carries_no_identity():
+    """Nothing to compare is not a mismatch; the protocol check catches it."""
+    assert dc.describe_interpreter_mismatch({"port": 1, "token": "t"}) is None
+
+
+@pytest.mark.parametrize("field", ["python", "prefix", "algan_path", "algan_version"])
+def test_each_identity_field_is_compared(field):
+    message = dc.describe_interpreter_mismatch(
+        _identity_state(1, **{field: "/somewhere/else"})
+    )
+    assert message is not None
+    assert field in message
+
+
+def test_a_mismatched_interpreter_names_both(monkeypatch):
+    message = dc.describe_interpreter_mismatch(
+        _identity_state(1, python="/other/venv/bin/python")
+    )
+    assert "/other/venv/bin/python" in message
+    assert dc.sys.executable in message
+
+
+def test_a_live_daemon_from_another_virtualenv_is_not_used(home, monkeypatch):
+    """It would execute this script against the wrong site-packages."""
+    daemon = _PingableDaemon()
+    (home / "daemon.json").write_text(
+        json.dumps(_identity_state(daemon.port, python="/other/venv/bin/python")),
+        encoding="utf-8",
+    )
+    _no_spawn(monkeypatch)
+    monkeypatch.setattr(
+        dc, "run_remote", lambda *a, **k: pytest.fail("must not hand off")
+    )
+    try:
+        assert dc._dispatch("scene.py") is None
+    finally:
+        daemon.close()
+    assert (home / "daemon.json").exists(), "the live daemon keeps its registration"
+
+
+def test_a_dead_registration_from_another_virtualenv_is_replaced(home, monkeypatch):
+    """Nothing owns it, so it must not block auto-start for ever."""
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    port = free.getsockname()[1]
+    free.close()
+    state_file = home / "daemon.json"
+    state_file.write_text(
+        json.dumps(_identity_state(port, python="/other/venv/bin/python")),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALGAN_AUTO_DAEMON", "0")  # stop after the cleanup
+
+    assert dc._dispatch("scene.py") is None
+    assert not state_file.exists()
+
+
+class _PingableDaemon:
+    """A socket that answers one ``ping <token>`` with ``pong``."""
+
+    def __init__(self):
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(1)
+        self.port = self.server.getsockname()[1]
+        self.received = None
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        try:
+            conn, _ = self.server.accept()
+        except OSError:
+            return
+        with conn:
+            self.received = conn.recv(128)
+            conn.sendall(b"pong\n")
+
+    def close(self):
+        self.thread.join(timeout=5)
+        self.server.close()
+
+
+def test_reachability_is_a_token_carrying_ping(home):
+    daemon = _PingableDaemon()
+    try:
+        assert dc.is_reachable({"port": daemon.port, "token": "tok"})
+    finally:
+        daemon.close()
+    assert daemon.received == b"ping tok\n"
+
+
+def test_nothing_listening_is_not_reachable():
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    port = free.getsockname()[1]
+    free.close()
+    assert not dc.is_reachable({"port": port, "token": "tok"})
+
+
 def test_a_newer_registration_survives_the_cleanup(home):
     """Only the daemon we actually failed to reach gets de-registered."""
     state_file = home / "daemon.json"

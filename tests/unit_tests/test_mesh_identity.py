@@ -247,8 +247,8 @@ def test_surface_identity_survives_a_sliced_frame_window():
 
 
 _CAPPED_SOLIDS = {
-    "cylinder": lambda: Cylinder(radius=0.4, height=1.0, show_ends=True),
-    "cone": lambda: Cone(base_radius=0.5, height=1.0, show_base=True),
+    "cylinder": lambda: Cylinder(radius=0.4, height=1.0, closed=True),
+    "cone": lambda: Cone(radius=0.5, height=1.0, closed=True),
     "line3d": lambda: Line3D(start=LEFT, end=RIGHT, radius=0.15),
 }
 

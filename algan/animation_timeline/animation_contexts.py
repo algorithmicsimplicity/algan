@@ -40,12 +40,25 @@ from typing import Any, Callable
 
 from algan.animation_timeline.timeline import TimelineSpan
 from algan.constants import easings
-from algan.errors import ContextReuseError
+from algan.errors import AlganConfigurationError, ContextReuseError
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
 
 DEFAULT_RUNTIME = 1
 DEFAULT_EASING = easings.smooth
+
+
+class _TimingParameterError(AlganConfigurationError, TypeError):
+    """Raised when a timing parameter reaches a call that cannot take it.
+
+    Both bases carry weight. It is an :class:`~algan.errors.AlganConfigurationError`
+    like every other bad-argument error Algan raises, and a ``TypeError``
+    because an unexpected keyword argument has always been one -- so code that
+    catches either still catches this.
+    """
+
+    code = "ALGAN_TIMING_PARAMETER"
+
 
 # AnimationContext parameters -- not method arguments. Manim spells timing per
 # call (``mob.shift(RIGHT, run_time=2)``); Algan spells it with a with-block, so
@@ -54,7 +67,7 @@ DEFAULT_EASING = easings.smooth
 _CONTEXT_ONLY_PARAMS = {
     "runtime": "Seq",
     "runtime_per_part": "Seq",
-    "equialize_runtimes": "Sync",
+    "equalize_runtimes": "Sync",
     "ratio": "Lag",
     "easing": "Seq",
     "composed_easing": "ComposedEasing",
@@ -73,15 +86,74 @@ _MANIM_CONTEXT_PARAM_SPELLINGS = {
     "lag_ratio": "ratio",
 }
 
+#: Names Algan used to spell differently, or that a reader guesses from Manim
+#: or from a video library, mapped to the one Algan name for the same thing.
+#: These are rejected *everywhere* -- on a context, on ``Scene.wait`` and on an
+#: animated Mob method -- because none of them is a parameter of anything, so
+#: leaving one through means the value is silently ignored or the call dies
+#: several frames down in a setter the user never typed.
+_LEGACY_PARAM_SPELLINGS = {
+    "duration": "runtime",
+    "run_time": "runtime",
+    "rate_func": "easing",
+    "rate_functions": "easings",
+}
+
+
+#: Every name the guards below answer for, as one set. Checked first, with a
+#: single ``isdisjoint``, because ``animated_function`` and every
+#: ``AnimationContext`` construction run this on the authoring hot path --
+#: mob construction performs thousands of both.
+_GUARDED_PARAM_NAMES = frozenset(
+    (*_CONTEXT_ONLY_PARAMS, *_MANIM_CONTEXT_PARAM_SPELLINGS, *_LEGACY_PARAM_SPELLINGS)
+)
+
+_LEGACY_PARAM_NAMES = frozenset(_LEGACY_PARAM_SPELLINGS)
+
+
+def _show_value(value):
+    """A short literal for ``value``, for quoting back in an error message."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return "..."
+    return repr(value)
+
+
+def _reject_legacy_timing_kwargs(kwargs, *, context_name=None):
+    """Raise if ``kwargs`` uses a name Algan does not have for a timing thing.
+
+    ``duration``/``run_time``/``rate_func`` are the natural wrong guesses --
+    the README teaches ``runtime`` and ``easing`` -- and every one of them
+    otherwise surfaces as an internal traceback. ``context_name`` words the
+    suggestion as a constructor call when the mistake was made on a context.
+    """
+    if _LEGACY_PARAM_NAMES.isdisjoint(kwargs):
+        return
+    for name in kwargs:
+        replacement = _LEGACY_PARAM_SPELLINGS.get(name)
+        if replacement is None:
+            continue
+        shown = _show_value(kwargs[name])
+        if context_name is None:
+            fix = f"    with Seq({replacement}={shown}):\n        ...\n"
+        else:
+            fix = f"    with {context_name}({replacement}={shown}):\n        ...\n"
+        raise _TimingParameterError(
+            f"'{name}' is not an Algan parameter; Algan spells it "
+            f"'{replacement}'. Write:\n\n{fix}"
+        )
+
 
 def _reject_context_kwargs(kwargs):
-    """Raise a useful TypeError if ``kwargs`` carries animation-context timing.
+    """Raise a useful error if ``kwargs`` carries animation-context timing.
 
     Mob methods do not take ``runtime`` and friends; the surrounding
     :class:`AnimationContext` does. Without this, such a call dies inside a
     generated closure with a traceback that names neither the method the user
     wrote nor the thing they should have written instead.
     """
+    if _GUARDED_PARAM_NAMES.isdisjoint(kwargs):
+        return
+    _reject_legacy_timing_kwargs(kwargs)
     for name in kwargs:
         # ``run_time``/``lag_ratio`` are Manim's spellings; they are caught here
         # and answered with Algan's name, not echoed back.
@@ -100,12 +172,56 @@ def _reject_context_kwargs(kwargs):
             call = f"{context}({algan_name}={value!r})"
         else:
             call = f"{context}({algan_name}=...)"
-        raise TypeError(
+        raise _TimingParameterError(
             f"'{name}' sets the timing of an animation context, not of a "
             f"single call. Wrap the call instead:\n\n"
             f"    with {call}:\n"
             f"        ...\n"
         )
+
+
+def _reject_negative_runtime(name, value):
+    """Raise if ``value`` is a negative number of seconds.
+
+    Time only moves forward. A negative runtime rewinds the scene clock, which
+    then silently shortens or empties the render rather than failing -- and
+    ``scene.wait(target - now)`` coming out negative is an easy thing to write.
+    """
+    if value is None:
+        return value
+    try:
+        negative = value < 0
+    except TypeError:
+        return value
+    if negative:
+        raise AlganConfigurationError(
+            f"{name}={value!r} is negative, and a runtime is a number of "
+            f"seconds, so it must be zero or more. Time in Algan only moves "
+            f"forward: to animate something backwards, reverse the animation "
+            f"itself rather than its runtime."
+        )
+    return value
+
+
+def _guard_context_init(cls):
+    """Make ``cls``'s generated ``__init__`` reject legacy timing spellings.
+
+    ``AnimationContext`` is a dataclass, so its ``__init__`` is generated and
+    cannot simply be written by hand; wrapping it after the fact is what lets
+    ``Sync(duration=1)`` answer with ``runtime`` instead of dying on an
+    unexpected keyword argument. Every subclass funnels through ``super()``,
+    so guarding the base guards all of them.
+    """
+    original = cls.__init__
+
+    @wraps(original)
+    def __init__(self, *args, **kwargs):
+        if kwargs and not _LEGACY_PARAM_NAMES.isdisjoint(kwargs):
+            _reject_legacy_timing_kwargs(kwargs, context_name=type(self).__name__)
+        original(self, *args, **kwargs)
+
+    cls.__init__ = __init__
+    return cls
 
 
 class AnimationManager:
@@ -160,8 +276,8 @@ class AnimationManager:
         Parameters
         ----------
         t
-            How long to wait, in seconds. Defaults to ``None``, meaning one
-            animation's runtime (1 second by default).
+            How long to wait, in seconds. Must be zero or more. Defaults to
+            ``None``, meaning one animation's runtime (1 second by default).
 
         Returns
         -------
@@ -262,6 +378,7 @@ def animation_manager_for(*owners):
 # to this base class: `Sync`, `Lag`, `Seq`, `Off` and the rest declare their own
 # `__init__` and take `runtime` positionally through it, which is the spelling
 # users actually write.
+@_guard_context_init
 @dataclass
 class AnimationContext:
     """Base class for the ``with`` blocks that control animation timing.
@@ -280,12 +397,12 @@ class AnimationContext:
     ----------
     runtime
         Total runtime of this context, in seconds; the animations inside are
-        rescaled to fit. Defaults to ``None``, meaning the runtime follows from the
-        animations themselves.
+        rescaled to fit. Must be zero or more. Defaults to ``None``, meaning the
+        runtime follows from the animations themselves.
     runtime_per_part
-        Runtime of each individual animation inside, in seconds. Defaults to
-        ``None``, meaning inherit from the parent context (``1.0`` at the top
-        level). ``runtime`` overrides this.
+        Runtime of each individual animation inside, in seconds. Must be zero or
+        more. Defaults to ``None``, meaning inherit from the parent context
+        (``1.0`` at the top level). ``runtime`` overrides this.
     equalize_runtimes
         Whether to stretch every animation inside to the runtime of the longest one.
         Defaults to ``None`` (inherited; effectively False).
@@ -324,6 +441,15 @@ class AnimationContext:
         The :class:`~.AnimationManager` to record against. Defaults to ``None``,
         meaning the active Scene's -- pass one explicitly when authoring a Scene that
         is not currently active.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If ``runtime`` or ``runtime_per_part`` is negative, or a parameter is
+        spelled the way Manim or an older Algan spelled it (``duration``,
+        ``run_time``, ``rate_func``).
+    :class:`.ContextReuseError`
+        If the same context object is entered by a second ``with`` block.
     """
 
     runtime: float | None = None
@@ -346,6 +472,8 @@ class AnimationContext:
     animation_manager: Any = None
 
     def __post_init__(self):
+        _reject_negative_runtime("runtime", self.runtime)
+        _reject_negative_runtime("runtime_per_part", self.runtime_per_part)
         if self.new_mobs is None:
             self.new_mobs = []
         if self.child_contexts is None:
@@ -753,11 +881,18 @@ class AnimationContext:
         Parameters
         ----------
         t
-            How long to wait, in seconds. Defaults to ``None``, meaning one
-            animation's runtime (``runtime_per_part``, 1 second by default).
+            How long to wait, in seconds. Must be zero or more. Defaults to
+            ``None``, meaning one animation's runtime (``runtime_per_part``,
+            1 second by default).
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``t`` is negative.
         """
         if t is None:
             t = self.runtime_per_part
+        _reject_negative_runtime("t", t)
         self.timespan.original_end = max(
             self.timespan.original_end, self.timespan.current_time + t
         )
@@ -1105,7 +1240,8 @@ class Audio(AnimationContext):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
             audio_clip = AudioFileClip(source)
-        kwargs["runtime"] = audio_clip.runtime + wait_at_end
+        # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
+        kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
         self.audio_clip = audio_clip
 

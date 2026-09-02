@@ -31,7 +31,7 @@ def _built_grid(mob):
 
 
 def _make_capped_cylinder(**kwargs):
-    body = Cylinder(radius=CYLINDER_RADIUS, height=1.0, show_ends=True, **kwargs)
+    body = Cylinder(radius=CYLINDER_RADIUS, height=1.0, closed=True, **kwargs)
     grid = _built_grid(body)
     # Rings are the constant-v rows (the azimuth runs on u); v=0/v=1 are the
     # two ends the caps close.
@@ -42,7 +42,7 @@ def _make_capped_cylinder(**kwargs):
 
 
 def _make_capped_cone(**kwargs):
-    body = Cone(base_radius=CONE_RADIUS, height=1.1, show_base=True, **kwargs)
+    body = Cone(radius=CONE_RADIUS, height=1.1, closed=True, **kwargs)
     grid = _built_grid(body)
     # The azimuth runs on v; u=0 is the base ring (u=1 collapses to the tip).
     return {body.base_circle: grid[0]}

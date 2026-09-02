@@ -208,7 +208,7 @@ def _build_edge_scene(roughness):
     from algan.rendering.lights import AmbientLight
     from algan.rendering.shaders.materials import MeshStandardMaterial
 
-    Scene.instance().set_background(BLACK, True)
+    Scene.current().set_background(BLACK, True)
     SceneManager.instance().light_sources = [
         AmbientLight(color=WHITE, intensity=1.0).spawn(animate=False)
     ]

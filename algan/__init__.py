@@ -40,25 +40,65 @@ _maybe_handoff()
 # compatibility Mobs.  Expose it under Manim's normal top-level package name
 # before importing any Algan mob modules; those modules intentionally use the
 # public ``manim`` import path.
-from algan.external_libraries import manim as _vendored_manim
+#
+# That import drags in pydub, which probes PATH for ffmpeg while *it* is
+# imported and warns "Couldn't find ffmpeg or avconv" when there is none -- on
+# every `import algan`, although Algan encodes through imageio-ffmpeg's bundled
+# binary and works perfectly well. Silence that one warning here, then hand
+# pydub the bundled binary below so a conversion that does reach it works too.
+import warnings as _warnings
+
+with _warnings.catch_warnings():
+    _warnings.filterwarnings(
+        "ignore", message="Couldn't find ffmpeg or avconv", category=RuntimeWarning
+    )
+    from algan.external_libraries import manim as _vendored_manim
 
 sys.modules.setdefault("manim", _vendored_manim)
 
+
+def _point_pydub_at_bundled_ffmpeg():
+    """Give pydub the binary Algan encodes with when PATH has none.
+
+    pydub resolves its converter once, at import, and falls back to the bare
+    name ``"ffmpeg"`` -- which fails at the first conversion on a machine that
+    only has the wheel-bundled build. Everything else in Algan already prefers
+    that build (``algan.utils.video_encoding``), so point pydub at it too.
+    """
+    import shutil as _shutil
+
+    try:
+        audio_segment = sys.modules["pydub"].AudioSegment
+        if _shutil.which(audio_segment.converter) is not None:
+            return
+        import imageio_ffmpeg
+
+        audio_segment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 -- a convenience, never an import failure
+        pass
+
+
+_point_pydub_at_bundled_ffmpeg()
+
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# Taichi prints "[Taichi] version ..." to *stdout* the moment it is imported
+# (taichi/_lib/utils.py), so a script whose stdout is data got the banner mixed
+# into it and `algan --version` printed two versions. Its own opt-out is this
+# variable, read at that import; ``setdefault`` so anyone who wants the banner
+# can still ask for it. It is not an ALGAN_ variable, hence not declared in
+# algan/environment.py -- it belongs to Taichi, like TI_OFFLINE_CACHE_FILE_PATH.
+os.environ.setdefault("ENABLE_TAICHI_HEADER_PRINT", "False")
 import shutil
 
 import torch
 
 # Algan never needs gradients: all animation math is pure tensor arithmetic.
-# Inference mode is entered process-wide (and never exited) because it must
-# cover every tensor the library ever creates, including module-level
-# constants. NOTE for library consumers: this means importing algan disables
-# autograd in the importing process; do not import algan into a process that
-# also trains torch models.
-torch.set_grad_enabled(False)
-c = torch.inference_mode()
-c.__enter__()
-
+# That is a property of Algan's own work, not of the process, so the grad mode
+# is switched off around the render entry points (``RenderLoopMixin.get_frames``
+# and friends) rather than here. A process-global ``set_grad_enabled(False)``
+# plus a never-exited ``torch.inference_mode()`` used to be entered right here,
+# which meant importing algan permanently disabled autograd for the importing
+# process -- a notebook that imported it could never train afterwards.
 from algan.settings import *
 from algan.settings._startup import _ANIMATION_DEVICE, render_device
 
@@ -68,7 +108,10 @@ torch.set_default_dtype(torch.float32)
 from algan.errors import *
 from algan.logging.logger import get_logger, set_log_level, set_progress_style
 
-get_logger().info(f"Rendering device set to {render_device()}")
+# DEBUG, not INFO: every `import algan` printed this line to stderr, including
+# a plain `algan --help`. It is a diagnostic, and `algan check` reports the same
+# device on demand.
+get_logger().debug(f"Rendering device set to {render_device()}")
 
 from algan.constants.color import *
 from algan.constants.math import *
@@ -110,7 +153,6 @@ _install_render_arch_guard()
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
 from algan.animation_timeline.animation_contexts import *
-from algan.manim_defaults import manim_fov
 from algan.mobs.bezier_circuit import *
 from algan.mobs.group import *
 from algan.mobs.image_mob import *
@@ -129,18 +171,20 @@ from algan.scene import Scene
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.utils.algan_utils import *
 
-
-def set_environment_map(*args, **kwargs):
-    """Set the environment map on the current active scene."""
-    return SceneManager.instance().current_scene.set_environment_map(*args, **kwargs)
-
-
+# There is deliberately no module-level wrapper for a Scene method here.
+# ``Scene.set_environment_map`` is the one spelling, and ``Scene.foo(...)``
+# already resolves the active Scene when called on the class -- so the wrapper
+# bought nothing and cost the namespace a second name for one thing. It used to
+# sit between these two blocks, which is why they need the split marker to stay
+# apart now that it is gone: the shader/material imports below must land after
+# the Mob modules above, and sorting them into one block would hoist
+# ``material_presets`` above them.
+# isort: split
 from algan.constants.material_presets import *
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
     depth_shader,
     lambert_shader,
-    manim_shader,
     matcap_shader,
     normal_shader,
     phong_shader,
@@ -317,6 +361,31 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "animation_manager_context",
         "animation_manager_for",
         "prepare_kwargs",
+        # Primitive builders. `api_settings.md`'s star-import rule keeps these
+        # out of the namespace: they are what the shape classes are assembled
+        # from (a bare triangle's vertex buffer, a triangulated quad), not
+        # something an authoring script reaches for, and each carries Mob's
+        # generic docstring rather than one of its own. Still importable from
+        # `algan.mobs.shapes_2d` / `algan.mobs.triangulated_bezier_circuit`,
+        # which is where the benchmarks and the renderer tests take them from.
+        "TriangleVertices",
+        "TriangleTriangulated",
+        "QuadTriangulated",
+        "TriangulatedBezierCircuit",
+        # Degree/radian boundary factors. `DEGREES` and `RADIANS` are the two
+        # multipliers a script writes; these two are library-internal, and four
+        # names for two factors -- two of which read as synonyms and differ by
+        # 57x -- is exactly the collision the curated namespace exists to stop.
+        "DEGREES_TO_RADIANS",
+        "RADIANS_TO_DEGREES",
+        # The Manim-compatibility surface: Manim's field of view, Manim's
+        # default 3-D shading and the material that carries it. They mean
+        # "Manim's version of this", so they belong beside the rest of that
+        # layer in `algan.manim` rather than in a namespace of Algan's own
+        # names. `use_manim_defaults()` installs them for you.
+        "manim_fov",
+        "manim_shader",
+        "ManimMaterial",
         # render-primitive construction
         "build_render_primitives_batched",
         "get_render_primitives_batched",

@@ -23,6 +23,11 @@ import torch
 import algan.manim as mn
 from algan import *
 
+# The primitive builders are out of the star-import namespace (they are what
+# the shape classes are assembled from, not authoring vocabulary), so this
+# scene names them from the module that defines them.
+from algan.mobs.shapes_2d import QuadTriangulated, TriangleTriangulated
+
 # Pinned so the render does not depend on the host's fonts;
 # tests/conftest.py registers the vendored faces.
 FONT = "Algan Test Sans"

@@ -316,9 +316,9 @@ def _forms_closed_shell(prims):
 _CLOSED = {
     "sphere": lambda: Sphere(radius=0.5),
     "dot3d": lambda: Dot3D(radius=0.15),
-    "cylinder-capped": lambda: Cylinder(radius=0.35, height=0.9, show_ends=True),
+    "cylinder-capped": lambda: Cylinder(radius=0.35, height=0.9, closed=True),
     "line3d": lambda: Line3D(radius=0.08),
-    "cone-capped": lambda: Cone(base_radius=0.45, height=0.9, show_base=True),
+    "cone-capped": lambda: Cone(radius=0.45, height=0.9, closed=True),
     "torus": lambda: Torus(ring_radius=0.55, tube_radius=0.22),
     "prism": lambda: Prism(width=0.9, height=0.6, depth=0.7),
     "cube": lambda: Cube(size=0.8),
@@ -337,15 +337,13 @@ _OPEN = {
     # Whole discs on a half-pipe still leave the cut running along the tube.
     "halfpipe-with-discs": (
         lambda: Cylinder(
-            radius=0.35, height=0.9, v_range=(17.1887, 171.8873), show_ends=True
+            radius=0.35, height=0.9, v_range=(17.1887, 171.8873), closed=True
         )
     ),
-    "cone-open": lambda: Cone(base_radius=0.45, height=0.9),
+    "cone-open": lambda: Cone(radius=0.45, height=0.9),
     # A partial sweep leaves the wedge's cut faces open even with the base on.
     "cone-capped-partial": (
-        lambda: Cone(
-            base_radius=0.45, height=0.9, show_base=True, v_range=(22.9183, 171.8873)
-        )
+        lambda: Cone(radius=0.45, height=0.9, closed=True, v_range=(22.9183, 171.8873))
     ),
     "torus-partial": (
         lambda: Torus(ring_radius=0.55, tube_radius=0.22, v_range=(28.6479, 229.1831))
@@ -434,14 +432,14 @@ _OPEN = {
 
 def _capped_cylinder_detached_cap():
     """A real hole where a chain would plausibly be hunted for."""
-    body = Cylinder(radius=0.35, height=0.9, show_ends=True)
+    body = Cylinder(radius=0.35, height=0.9, closed=True)
     body.remove_child(body.top_cap)
     return body
 
 
 def _capped_cylinder_mis_sized_cap():
     """Concentric but wrong: a sloppy loop-matcher welds rim to ring here."""
-    body = Cylinder(radius=0.35, height=0.9, show_ends=True)
+    body = Cylinder(radius=0.35, height=0.9, closed=True)
     body.top_cap.scale(0.85)
     return body
 
@@ -455,7 +453,7 @@ def _capped_cylinder_phase_shifted_cap():
     separates this from closed; that is what makes it the case most likely
     to slip through.
     """
-    body = Cylinder(radius=0.35, height=0.9, show_ends=True)
+    body = Cylinder(radius=0.35, height=0.9, closed=True)
     body.top_cap.rotate(180.0 / (body.grid_width - 1), UP)
     return body
 
@@ -555,7 +553,7 @@ def test_a_merged_collection_keeps_each_mobs_declaration():
     """
     with Scene(), Off():
         solid = Octahedron(edge_length=0.8)
-        open_cone = Cone(base_radius=0.4, height=0.8)
+        open_cone = Cone(radius=0.4, height=0.8)
         for mob in (solid, open_cone):
             mob.spawn(animate=False)
         solid_skin = _triangle_prims(solid)

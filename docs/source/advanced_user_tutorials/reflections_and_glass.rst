@@ -248,7 +248,7 @@ refractive one something to bend, and it lights the whole scene:
 
     from algan import *
 
-    set_environment_map("world_map.png", intensity=1.0, ambient=True)
+    Scene.set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     Sphere().set_material(
         MeshStandardMaterial(metalness=1.0, roughness=0.05)).spawn()

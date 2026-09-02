@@ -55,6 +55,7 @@ from algan.rendering.logical_pn import (
     normalize_pixel_tolerance,
 )
 from algan.settings.shape_style_profiles import _manim_shape_style_for
+from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.file_utils import get_image
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
 from algan.utils.tensor_utils import (
@@ -1050,6 +1051,11 @@ class Surface(Mob):
         # scene/timeline bookkeeping that differs for every instance.
         resolution_cache_state = dict(self.__dict__)
 
+        _reject_renamed_keywords(
+            type(self).__name__,
+            kwargs,
+            {"checkerboard_colors": "checkered_color"},
+        )
         self.u_range = (0, 1) if u_range is None else tuple(u_range)
         self.v_range = (0, 1) if v_range is None else tuple(v_range)
 
@@ -1094,11 +1100,11 @@ class Surface(Mob):
             )
         # Opt-in Manim shape profile: a mapped shape adopts Manim's
         # constructor fill (and checkerboard pair) unless the caller passed a
-        # color of its own -- ``Sphere(checkerboard_colors=[a, b])`` arrives
-        # here already translated to ``color``/``checkered_color`` by
-        # ``shapes_3d._surface_resolution_kwargs``. Injected
-        # here so both the Mob's own color attribute and the grid child built
-        # below carry it.
+        # color of its own. Read off a Manim instance by
+        # ``settings.shape_style_profiles``, which is where Manim's own
+        # ``checkerboard_colors`` default is translated into ``color`` and
+        # ``checkered_color``. Injected here so both the Mob's own color
+        # attribute and the grid child built below carry it.
         if "color" not in kwargs:
             style = _manim_shape_style_for(type(self))
             if style is not None and style["color"] is not None:

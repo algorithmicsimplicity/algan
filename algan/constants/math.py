@@ -3,11 +3,10 @@
 ``PI`` and ``TAU`` are the usual circle constants, provided so a script need not
 import :mod:`math` alongside Algan.
 
-``DEGREES_TO_RADIANS`` and ``RADIANS_TO_DEGREES`` are the conversion factors
-behind the ``DEGREES`` / ``RADIANS`` suffixes. Because Algan's native angular
-unit is already degrees, ``rotate(90 * DEGREES)`` and ``rotate(90)`` are the same
-call -- the reverse of Manim, where ``DEGREES`` converts *into* the native
-radians. See :doc:`/manim_migration_guide`.
+``DEGREES`` and ``RADIANS`` are the two unit suffixes a script writes. Because
+Algan's native angular unit is already degrees, ``rotate(90 * DEGREES)`` and
+``rotate(90)`` are the same call -- the reverse of Manim, where ``DEGREES``
+converts *into* the native radians. See :doc:`/manim_migration_guide`.
 
 ``KILOBYTES``, ``MEGABYTES`` and ``GIGABYTES`` are byte multipliers, used to write
 memory budgets in :data:`algan.SETTINGS` readably.
@@ -38,9 +37,13 @@ Use it when you think in radians: ``square.rotate(PI * RADIANS)`` turns half a
 circle, exactly as ``square.rotate(180)`` does.
 """
 
-# Internal degree/radian boundary conversions, kept distinct from the user-facing
-# DEGREES / RADIANS multipliers above. RADIANS_TO_DEGREES aliases RADIANS on
-# purpose; algan.geometry.geometry and algan.animations.indication consume it.
+# Internal degree/radian boundary conversions, kept out of ``algan.__all__``
+# (see _INTERNAL_EXPORT_NAMES) because a namespace holding four names for two
+# factors -- two of which look like synonyms and differ by 57x -- is a trap.
+# DEGREES / RADIANS above are the pair a script writes. These two are the pair
+# library code multiplies by at a unit boundary: RADIANS_TO_DEGREES aliases
+# RADIANS on purpose, and algan.geometry.geometry, algan.mobs.shapes_3d,
+# algan.mobs.manim_adapters and algan.animations.indication consume them.
 RADIANS_TO_DEGREES = RADIANS
 DEGREES_TO_RADIANS = PI / 180
 

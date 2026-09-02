@@ -179,7 +179,7 @@ def arm(builder, disabled):
     scene = SceneManager.reset()
     scene.set_video_settings(LD)
     marked = builder()
-    scene.initialize_frames()
+    scene._initialize_frames()
 
     end = max(
         (float(a.lifespan.end()) for a in scene.actors if a.lifespan.end() >= 0),

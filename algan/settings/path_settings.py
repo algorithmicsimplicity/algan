@@ -28,13 +28,21 @@ def _main_script_path():
     """Path of the script Python was started with, if there is one.
 
     Absent for ``-c``, ``-m``, REPL and most embedding hosts.
+
+    ``__main__.__file__`` is not always a file: piping a script into Python
+    sets it to ``<stdin>``, ``exec`` of a string sets ``<string>``, and a
+    notebook cell sets ``<ipython-input-3-...>``. Those are placeholders, not
+    paths -- taking a stem from one produced ``<stdin>.mp4``, a name Windows
+    refuses outright -- so anything that is not an existing file is reported
+    the same way as no script at all.
     """
     main = sys.modules.get("__main__")
     path = getattr(main, "__file__", None)
     if not path:
         return None
     try:
-        return os.path.abspath(path)
+        path = os.path.abspath(path)
+        return path if os.path.isfile(path) else None
     except OSError:
         return None
 

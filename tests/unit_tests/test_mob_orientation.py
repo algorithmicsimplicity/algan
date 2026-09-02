@@ -34,7 +34,7 @@ def test_rotate_without_about_point_only_changes_basis():
 
     torch.testing.assert_close(mob.location, initial_location)
     assert not torch.equal(mob.basis, initial_basis)
-    scene.terminate()
+    scene._terminate()
 
 
 def test_rotate_about_point_changes_basis_and_location():
@@ -51,7 +51,7 @@ def test_rotate_about_point_changes_basis_and_location():
         rtol=0,
     )
     assert not torch.equal(mob.basis, initial_basis)
-    scene.terminate()
+    scene._terminate()
 
 
 def test_orbit_only_changes_location():
@@ -68,7 +68,7 @@ def test_orbit_only_changes_location():
         rtol=0,
     )
     torch.testing.assert_close(mob.basis, initial_basis)
-    scene.terminate()
+    scene._terminate()
 
 
 def test_animated_rotate_about_point_replays_location_and_basis_together():
@@ -87,4 +87,4 @@ def test_animated_rotate_about_point_replays_location_and_basis_together():
         rtol=0,
     )
     assert not torch.equal(mob.basis, initial_basis)
-    scene.terminate()
+    scene._terminate()

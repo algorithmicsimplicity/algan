@@ -121,7 +121,22 @@ def get_file_writer(
 # @compiled
 @dataclass(frozen=True)
 class RenderResult:
-    """Outcome metadata returned by :meth:`algan.scene.Scene.save_video`."""
+    """Outcome metadata returned by :meth:`algan.scene.Scene.save_video`.
+
+    Attributes
+    ----------
+    status
+        ``"rendered"`` when a file was written, ``"skipped"`` when one already
+        existed and ``overwrite=False``.
+    output_path
+        Where the file is, or would have been. Always **absolute**, whatever
+        was passed as ``file_path``.
+    walltime_seconds
+        Seconds the render took, ``0.0`` for a skipped one.
+    render_plan
+        The last batch's :class:`~algan.rendering.raytracing.RenderPlan`: which
+        renderer ran, what it could not honor, and how often each ceiling bound.
+    """
 
     status: Literal["rendered", "skipped"]
     output_path: Path
@@ -197,7 +212,47 @@ class RenderResult:
         return None
 
 
+#: Container formats Algan will write a video into. FFmpeg infers the muxer
+#: from the extension, so an unknown one is not a slow encode -- it is a failed
+#: one, and until this check existed it failed *after* the render, as a
+#: ``FileNotFoundError`` on the temporary file's rename.
+_SUPPORTED_VIDEO_CONTAINERS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
+
+#: Still-image formats :meth:`~algan.scene.Scene.save_frame` will write.
+_SUPPORTED_IMAGE_FORMATS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
+
+
+def _check_container_is_supported(destination, *, still: bool = False) -> None:
+    """Fail before the render on an output extension Algan cannot write.
+
+    Same shape as the transparent-MP4 error: say what is wrong, then list what
+    to write instead. Raised up front because the alternative is paying for a
+    whole render and then discovering the muxer never existed.
+    """
+    supported = _SUPPORTED_IMAGE_FORMATS if still else _SUPPORTED_VIDEO_CONTAINERS
+    suffix = Path(destination).suffix
+    if suffix.lower() in supported:
+        return
+    kind = "still-image format" if still else "video container"
+    raise AlganConfigurationError(
+        f"{suffix or 'that name'!r} is not a {kind} Algan can write. Use one "
+        f"of {', '.join(supported)}, or leave the extension off and Algan "
+        f"picks the right one."
+    )
+
+
 def _resolve_output_destination(file_path, default_extension: str) -> Path:
+    """Turn a user's ``file_path`` into the absolute file to write.
+
+    The rules, in order: an empty string is refused; a target that names a
+    directory gets ``SETTINGS.paths.output_filename`` placed inside it; a
+    missing extension becomes ``default_extension``; a bare filename lands in
+    ``output_root / output_directory``; everything else is used as supplied.
+    The result is always absolute, because it is also what
+    :class:`RenderResult` reports back and what the finish log prints -- a
+    relative path there is only as good as the reader's guess at the working
+    directory.
+    """
     if file_path is None:
         file_path = SETTINGS.paths.output_filename
 
@@ -208,19 +263,34 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
             "'renders/final.mp4'; got an empty string. Pass None to use the "
             "default output name."
         )
-    requested = Path(raw_path)
+    requested = Path(raw_path).expanduser()
+
+    # The same rule ``algan render -o`` applies (see cli._output_settings): a
+    # trailing separator or an existing directory names somewhere to write
+    # into, not the file itself. Without it ``save_video("renders/")`` dropped
+    # the directory and wrote ``renders.mp4`` beside it.
+    names_directory = str(raw_path).endswith(("/", os.sep)) or requested.is_dir()
+    if names_directory:
+        requested = requested / SETTINGS.paths.output_filename
+
     if requested.suffix == "":
         requested = requested.with_suffix(default_extension)
 
     # A bare filename uses Algan's standard output directory. Paths with an
-    # explicit parent (including ``./``) are honoured exactly as supplied.
-    if not requested.is_absolute() and os.path.dirname(raw_path) == "":
+    # explicit parent (including ``./``), and directories named as such, are
+    # honoured exactly as supplied.
+    if (
+        not names_directory
+        and not requested.is_absolute()
+        and os.path.dirname(raw_path) == ""
+    ):
         requested = (
             Path(SETTINGS.paths.output_root)
             / SETTINGS.paths.output_directory
             / requested
         )
 
+    requested = Path(os.path.abspath(requested))
     requested.parent.mkdir(parents=True, exist_ok=True)
     return requested
 
@@ -278,6 +348,9 @@ def _render_scene_to_file(
 
         default_extension = ".mov" if scene.background_is_transparent() else ".mp4"
         destination = _resolve_output_destination(file_path, default_extension)
+        # Up front, beside the codec check below and for the same reason: a
+        # container FFmpeg has no muxer for must not cost a whole render first.
+        _check_container_is_supported(destination)
 
         if destination.exists() and not overwrite:
             return RenderResult("skipped", destination)
@@ -372,7 +445,7 @@ def _render_scene_to_file(
         audio_file_path = destination.with_name(f"{destination.stem}_temp.wav")
         script_file_path = destination.with_name(f"{destination.stem}_script.txt")
 
-        logger.info(f"Began rendering {destination.name}")
+        logger.info(f"Began rendering {destination}")
         start_time = time.perf_counter()
         audiofile = scene.save_audio(
             str(audio_file_path),
@@ -401,7 +474,7 @@ def _render_scene_to_file(
                 audiofile,
                 audio_codec,
             )
-        scene.render_to_video(
+        scene._render_to_video(
             file_writer,
             str(temp_file_path),
             str(destination),
@@ -415,7 +488,9 @@ def _render_scene_to_file(
         )
         walltime = time.perf_counter() - start_time
         plan = getattr(scene, "last_render_plan", None)
-        logger.info("Finished rendering %s in %.1f s", destination.name, walltime)
+        # The absolute path, not the bare name: "Finished rendering out.mp4"
+        # left the reader to guess which directory it landed in.
+        logger.info("Finished rendering %s in %.1f s", destination, walltime)
         return RenderResult("rendered", destination, walltime, plan)
     finally:
         if file_writer is not None:

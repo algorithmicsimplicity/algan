@@ -93,7 +93,10 @@ from algan.environment import (
 #:
 #: 2 -- the run request carries the client's full environment (``env_full``),
 #: which the daemon applies for the runtime of the run.
-PROTOCOL_VERSION = 2
+#: 3 -- every trigger verb (``render``/``ping``/``quit``, not just
+#: ``run``/``cancel``) carries the state file's token, and the state file
+#: records the interpreter, prefix, package path and version of the daemon.
+PROTOCOL_VERSION = 3
 
 
 def connect_timeout():
@@ -193,6 +196,64 @@ def state_path():
 def startup_env():
     """The subset of the environment that the daemon bakes in at launch."""
     return {name: env_str(name, "") for name in STARTUP_ENV}
+
+
+def algan_version():
+    """The installed Algan version, or ``""`` when there is no metadata."""
+    try:
+        from importlib.metadata import version
+
+        return version("algan")
+    except Exception:  # noqa: BLE001 -- a source checkout may have no metadata
+        return ""
+
+
+#: The fields of the state file that say *which* Algan the daemon is, and the
+#: order they are reported in. ``$ALGAN_HOME`` defaults to ``~/.algan`` for
+#: every project on the machine, so one daemon is registered for all of them:
+#: without this check ``projB/.venv/bin/python scene.py`` would be executed by
+#: project A's interpreter, resolving the script's imports against the wrong
+#: site-packages. The daemon's source digest hashes its *own* tree and cannot
+#: see this.
+_IDENTITY_FIELDS = ("python", "prefix", "algan_path", "algan_version")
+
+
+def interpreter_identity():
+    """This process's answer to each of :data:`_IDENTITY_FIELDS`."""
+    return {
+        "python": sys.executable,
+        "prefix": sys.prefix,
+        # This module lives in the package, so its directory *is* the Algan
+        # that would be imported here -- known without importing anything.
+        "algan_path": os.path.dirname(os.path.abspath(__file__)),
+        "algan_version": algan_version(),
+    }
+
+
+def describe_interpreter_mismatch(state, identity=None):
+    """One line naming both interpreters, or ``None`` when they match.
+
+    A running daemon whose identity differs must not serve this script: it
+    would execute it in another virtualenv, against another Algan. There is
+    nothing to negotiate -- unlike a settings mismatch the daemon cannot adopt
+    it -- so the client simply runs cold. Fields the state file does not carry
+    are not compared, so an older daemon is left to the protocol check.
+    """
+    if not isinstance(state, dict):
+        return None
+    identity = interpreter_identity() if identity is None else identity
+    differing = [
+        name
+        for name in _IDENTITY_FIELDS
+        if name in state and str(state[name]) != str(identity.get(name, ""))
+    ]
+    if not differing:
+        return None
+    return (
+        f"the running daemon is a different Algan ({', '.join(differing)} "
+        f"differ): it runs {state.get('python', '?')} and this script runs "
+        f"{identity.get('python', '?')}; running cold in this process instead."
+    )
 
 
 def describe_env_mismatch(client_env, daemon_env):
@@ -626,7 +687,9 @@ def _autostart():
     timeout = env_float("ALGAN_DAEMON_START_TIMEOUT", 60.0)
     _warn(
         "starting a background render daemon so later runs skip the startup "
-        f"cost (log: {log_path()}). Disable with ALGAN_AUTO_DAEMON=0."
+        "cost; scripts then run in it, so everything above `import algan` runs "
+        "twice (once here, once there), atexit handlers do not run and stdin is "
+        f"/dev/null (log: {log_path()}). Disable with ALGAN_AUTO_DAEMON=0."
     )
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
@@ -642,6 +705,24 @@ def _autostart():
         "in-process (it will serve the next run)"
     )
     return None
+
+
+def is_reachable(state):
+    """Whether a daemon is actually answering at ``state``'s address.
+
+    A ``ping`` rather than a bare connect, so a process that merely holds the
+    port does not read as a daemon -- and the token goes with it, as it does
+    with every other verb.
+    """
+    try:
+        with socket.create_connection(
+            ("127.0.0.1", int(state["port"])), connect_timeout()
+        ) as sock:
+            token = str(state["token"]).encode("ascii", "replace")
+            sock.sendall(b"ping " + token + b"\n")
+            return b"pong" in sock.recv(64)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _clear_stale_state(state):
@@ -661,6 +742,24 @@ def _clear_stale_state(state):
 def _dispatch(script):
     """Run ``script`` on a daemon. Returns its exit code, or None to run here."""
     state = read_state()
+    if state is not None:
+        mismatch = describe_interpreter_mismatch(state)
+        if mismatch is not None:
+            if is_reachable(state):
+                # No auto-start: that daemon is alive and owns the
+                # registration. Starting a second one would take the state
+                # file from it and leave *its* clients running cold in turn.
+                _warn(mismatch)
+                return None
+            # A registration left behind by another virtualenv's daemon, which
+            # is no longer running. Nothing owns it, so replace it with ours
+            # rather than running cold for ever.
+            _clear_stale_state(state)
+            _warn(
+                "removed a stale registration left by another interpreter's "
+                f"daemon ({state.get('python', '?')})"
+            )
+            state = None
     if state is not None:
         try:
             return run_remote(state, script)

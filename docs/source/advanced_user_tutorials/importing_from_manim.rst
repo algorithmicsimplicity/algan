@@ -137,7 +137,7 @@ Importing an SVG
 ================
 
 An ``.svg`` file drawn in Inkscape, Illustrator or Figma comes in through the
-same door. :class:`~.SVGMobject` parses the file into cubic Bezier outlines,
+same door. ``SVGMob`` parses the file into cubic Bezier outlines,
 which is exactly what Algan's 2-D shapes are made of, so the result is a
 first-class Mob: it scales without pixelating, takes Algan colors, and morphs
 into other shapes:
@@ -148,7 +148,7 @@ into other shapes:
 
     from algan import *
 
-    logo = SVGMobject("logo.svg").scale(2).spawn()
+    logo = SVGMob("logo.svg").scale(2).spawn()
     logo.color = BLUE
     logo.rotate(360, UP)
 
@@ -158,7 +158,7 @@ Each path in the file becomes its own Mob inside the result, reachable through
 :ref:`children <reference-mob-children>` (the top-level Mob holds a
 :class:`~algan.mobs.group.Group`, whose children are the paths), so you can animate an individual
 piece without disturbing the rest. Unlike a :class:`~algan.mobs.group.Group`, an
-:class:`~.SVGMobject` is not itself indexable.
+``SVGMob`` is not itself indexable.
 
 The path is resolved by Manim, which looks for it relative to the working
 directory rather than to your script. So unlike :class:`~.ImageMob`, launching

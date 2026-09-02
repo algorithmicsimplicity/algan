@@ -1056,7 +1056,7 @@ class TriangulatedBezierCircuit(Mob):
         self.set_shader(null_shader)
         # if create and not self.animation_manager.context.delay_creation:
         #    self.spawn(animate_creation)
-        self.parents = []
+        self.parents.clear()
 
     def get_local_coord_bounding_box(self):
         all_points = torch.stack([point_to_tensor2(_.end) for _ in self.path], 0)

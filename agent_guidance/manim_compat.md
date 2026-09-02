@@ -15,6 +15,32 @@ as Manim's `OUT`, so an imported point keeps the numbers it was written with. Th
 `Scene.manim_coordinates` and no `from_manim_coordinates`/`to_manim_coordinates` — they
 existed only to mirror what no longer needs mirroring. See `mobs_geometry.md`.
 
+**Names are converted at the same boundary.** Manim's `mobject=` is `mob=` at the root and
+`element_to_mobject=` is `element_to_mob=`; the five classes Manim spells after `Mobject`
+are `SVGMob`, `MobMatrix`, `MobTable`, `DashedMob` and `CurvesAsChildren`. Every Manim
+spelling raises `AlganConfigurationError` at the root naming the Algan one, and every one of
+them still works verbatim under `mn.`. `algan/utils/api_renames.py` holds the table and both
+mechanisms (`_reject_renamed_keywords`, the `@_renamed_keywords` decorator), which is also
+where the "that looks like radians" warning lives.
+
+## An adapter carries its own signature and docstring
+
+Delegating handed the root spellings Manim's `__signature__` and Manim's docstring, which
+then said the wrong thing in the one place a user looks: `help(Arc)` reported
+`angle: float = 1.5707963267948966` for an argument this layer reads as degrees, and
+`Brace(mobject: 'Mobject', direction: 'Vector3D')` named a keyword and two types Algan does
+not have. `_root_signature` and `_root_docstring` in `manim_adapters.py` build both:
+
+- angle defaults are restated in degrees, and `stroke_width`'s in Algan's unit;
+- annotations survive only if they name a plain builtin, so no Manim type alias is displayed;
+- Manim's prose is **replaced**, not appended to — a `.. manim::` block is Manim scene code
+  that Algan's docs build would execute and render into Algan's own reference pages.
+
+Those docstring bodies are *generated* — Manim's summary line plus the converted parameter
+list, with each entry stating its unit and default rather than its meaning, and a `Notes`
+section saying so. A hand-written Algan docstring goes in `_WRAPPER_DOCSTRINGS` in
+`manim_compat.py` and wins over the generated one; `MathTex` and `Title` have them.
+
 ## Everything is adapted unless it says why not
 
 `algan/mobs/manim_adapters.py` gives every wrapped Manim class a root spelling that converts

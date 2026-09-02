@@ -24,11 +24,12 @@ from algan.constants import easings
 from algan.constants.spatial import ORIGIN
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
+from algan.utils.api_renames import _renamed_keywords
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
-def _resolve_mobject_and_callable(first, second, *, function_name: str):
-    """Accept both Algan's ``(mobject, function)`` and Manim's reverse order."""
+def _resolve_mob_and_callable(first, second, *, function_name: str):
+    """Accept both Algan's ``(mob, function)`` and Manim's reverse order."""
     if isinstance(first, Mob) and callable(second):
         return first, second
     if callable(first) and isinstance(second, Mob):
@@ -39,8 +40,8 @@ def _resolve_mobject_and_callable(first, second, *, function_name: str):
     )
 
 
-def _geometry_point_owners(mobject: Mob) -> list[Mob]:
-    """Return fixed-size point buffers which define ``mobject``'s geometry.
+def _geometry_point_owners(mob: Mob) -> list[Mob]:
+    """Return fixed-size point buffers which define ``mob``'s geometry.
 
     Bezier circuits render from their control-point component; surfaces render
     from their sampled grid.  Modifying those child Mobs gives pointwise
@@ -49,7 +50,7 @@ def _geometry_point_owners(mobject: Mob) -> list[Mob]:
     """
     owners: list[Mob] = []
     seen: set[int] = set()
-    for descendant in mobject.get_descendants():
+    for descendant in mob.get_descendants():
         owner = None
         if isinstance(descendant, BezierCircuitCubic):
             owner = descendant.control_points
@@ -60,7 +61,7 @@ def _geometry_point_owners(mobject: Mob) -> list[Mob]:
             owners.append(owner)
     if not owners:
         raise TypeError(
-            f"{type(mobject).__name__} has no deformable Bezier or surface geometry."
+            f"{type(mob).__name__} has no deformable Bezier or surface geometry."
         )
     return owners
 
@@ -187,8 +188,9 @@ def _pointwise_interpolation_step(
     return point_owner
 
 
+@_renamed_keywords(mobject="mob")
 def ApplyPointwiseFunction(
-    mobject,
+    mob,
     function=None,
     *,
     about_point=ORIGIN,
@@ -201,16 +203,16 @@ def ApplyPointwiseFunction(
     ``ApplyPointwiseFunction(function, mob)`` are accepted.  The function may
     operate on a whole ``[..., 3]`` torch tensor or on one NumPy point at a time.
     """
-    mobject, function = _resolve_mobject_and_callable(
-        mobject, function, function_name="ApplyPointwiseFunction"
+    mob, function = _resolve_mob_and_callable(
+        mob, function, function_name="ApplyPointwiseFunction"
     )
     about_point = cast_to_tensor(about_point)
     with Sync(
         runtime=runtime,
         easing=easing,
-        animation_manager=animation_manager_for(mobject),
+        animation_manager=animation_manager_for(mob),
     ):
-        for owner in _geometry_point_owners(mobject):
+        for owner in _geometry_point_owners(mob):
             initial = owner.location.clone()
             centered = initial - about_point.to(initial)
             target = _call_point_function(function, centered) + about_point.to(initial)
@@ -219,11 +221,12 @@ def ApplyPointwiseFunction(
                 initial_points=initial,
                 target_points=target,
             )
-    return mobject
+    return mob
 
 
+@_renamed_keywords(mobject="mob")
 def ApplyMatrix(
-    mobject,
+    mob,
     matrix=None,
     *,
     about_point=ORIGIN,
@@ -235,9 +238,9 @@ def ApplyMatrix(
     Accepts both ``ApplyMatrix(mob, matrix)`` and Manim's
     ``ApplyMatrix(matrix, mob)`` argument order.
     """
-    if not isinstance(mobject, Mob) and isinstance(matrix, Mob):
-        mobject, matrix = matrix, mobject
-    if not isinstance(mobject, Mob):
+    if not isinstance(mob, Mob) and isinstance(matrix, Mob):
+        mob, matrix = matrix, mob
+    if not isinstance(mob, Mob):
         raise TypeError("ApplyMatrix expects a Mob and a 2x2 or 3x3 matrix.")
     matrix = torch.as_tensor(matrix, dtype=torch.get_default_dtype())
     if matrix.shape == (2, 2):
@@ -248,7 +251,7 @@ def ApplyMatrix(
         raise ValueError("matrix must have shape (2, 2) or (3, 3)")
 
     return ApplyPointwiseFunction(
-        mobject,
+        mob,
         lambda points: points @ matrix.to(points).transpose(-1, -2),
         about_point=about_point,
         runtime=runtime,
@@ -273,8 +276,9 @@ def _apply_complex_function(function: Callable, points: torch.Tensor) -> torch.T
     return torch.stack((result.real, result.imag, points[..., 2]), dim=-1).to(points)
 
 
+@_renamed_keywords(mobject="mob")
 def ApplyComplexFunction(
-    mobject,
+    mob,
     function=None,
     *,
     about_point=ORIGIN,
@@ -282,11 +286,11 @@ def ApplyComplexFunction(
     easing=None,
 ):
     """Animate a complex map on the x-y plane while preserving z."""
-    mobject, function = _resolve_mobject_and_callable(
-        mobject, function, function_name="ApplyComplexFunction"
+    mob, function = _resolve_mob_and_callable(
+        mob, function, function_name="ApplyComplexFunction"
     )
     return ApplyPointwiseFunction(
-        mobject,
+        mob,
         lambda points: _apply_complex_function(function, points),
         about_point=about_point,
         runtime=runtime,
@@ -310,8 +314,9 @@ def _homotopy_step(point_owner, t, homotopy_func, initial_points):
     return point_owner
 
 
+@_renamed_keywords(mobject="mob")
 def Homotopy(
-    mobject,
+    mob,
     homotopy_func=None,
     *,
     runtime: float = 2.0,
@@ -324,33 +329,34 @@ def Homotopy(
     the former implementation, this works for surfaces and triangle meshes in
     addition to cubic Bezier paths.
     """
-    mobject, homotopy_func = _resolve_mobject_and_callable(
-        mobject, homotopy_func, function_name="Homotopy"
+    mob, homotopy_func = _resolve_mob_and_callable(
+        mob, homotopy_func, function_name="Homotopy"
     )
     with Sync(
         runtime=runtime,
         easing=easing,
-        animation_manager=animation_manager_for(mobject),
+        animation_manager=animation_manager_for(mob),
     ):
-        for owner in _geometry_point_owners(mobject):
+        for owner in _geometry_point_owners(mob):
             owner.animate_function(
                 _homotopy_step,
                 homotopy_func=homotopy_func,
                 initial_points=owner.location.clone(),
             )
-    return mobject
+    return mob
 
 
+@_renamed_keywords(mobject="mob")
 def ComplexHomotopy(
-    mobject,
+    mob,
     complex_homotopy=None,
     *,
     runtime: float = 2.0,
     easing=None,
 ):
     """Animate ``f(z, t)`` on the x-y plane while preserving z."""
-    mobject, complex_homotopy = _resolve_mobject_and_callable(
-        mobject, complex_homotopy, function_name="ComplexHomotopy"
+    mob, complex_homotopy = _resolve_mob_and_callable(
+        mob, complex_homotopy, function_name="ComplexHomotopy"
     )
 
     def homotopy(points, t):
@@ -372,7 +378,7 @@ def ComplexHomotopy(
         )
 
     return Homotopy(
-        mobject,
+        mob,
         homotopy,
         runtime=runtime,
         easing=easing,
@@ -406,8 +412,9 @@ def _phase_flow_step(
     return point_owner
 
 
+@_renamed_keywords(mobject="mob")
 def PhaseFlow(
-    mobject,
+    mob,
     function=None,
     *,
     virtual_time: float = 1.0,
@@ -420,17 +427,15 @@ def PhaseFlow(
     The result is independent of render frame rate and batch boundaries, unlike
     an updater that repeatedly applies a small Euler step.
     """
-    mobject, function = _resolve_mobject_and_callable(
-        mobject, function, function_name="PhaseFlow"
-    )
+    mob, function = _resolve_mob_and_callable(mob, function, function_name="PhaseFlow")
     if integration_steps < 1:
         raise ValueError("integration_steps must be at least 1")
     with Sync(
         runtime=runtime,
         easing=easing,
-        animation_manager=animation_manager_for(mobject),
+        animation_manager=animation_manager_for(mob),
     ):
-        for owner in _geometry_point_owners(mobject):
+        for owner in _geometry_point_owners(mob):
             owner.animate_function(
                 _phase_flow_step,
                 vector_field=function,
@@ -438,7 +443,7 @@ def PhaseFlow(
                 virtual_time=float(virtual_time),
                 integration_steps=int(integration_steps),
             )
-    return mobject
+    return mob
 
 
 def _path_control_points(path: Mob) -> torch.Tensor:
@@ -519,7 +524,7 @@ def _bezier_path_point(
     unique_args=["path", "initial_location", "initial_center", "samples_per_curve"],
 )
 def _move_along_path_step(
-    mobject,
+    mob,
     t,
     path,
     initial_location,
@@ -539,25 +544,26 @@ def _move_along_path_step(
     displacement = point.view(frame_count, 1, 3) - initial_center.to(point).view(
         1, 1, 3
     )
-    mobject.location = initial_location.expand(frame_count, -1, -1) + displacement
-    return mobject
+    mob.location = initial_location.expand(frame_count, -1, -1) + displacement
+    return mob
 
 
+@_renamed_keywords(mobject="mob")
 def MoveAlongPath(
-    mobject: Mob,
+    mob: Mob,
     path: Mob,
     *,
     runtime: float = 1.0,
     easing=None,
     samples_per_curve: int = 24,
 ):
-    """Move ``mobject`` along the arc length of a cubic Bezier path.
+    """Move ``mob`` along the arc length of a cubic Bezier path.
 
     The path may itself animate in the same context; its materialized control
     points are sampled for every frame.  ``samples_per_curve`` controls only the
     arc-length approximation, not the rendered geometry.
     """
-    if not isinstance(mobject, Mob) or not isinstance(path, Mob):
+    if not isinstance(mob, Mob) or not isinstance(path, Mob):
         raise TypeError("MoveAlongPath expects two Mobs.")
     if samples_per_curve < 2:
         raise ValueError("samples_per_curve must be at least 2")
@@ -566,16 +572,16 @@ def MoveAlongPath(
     with Sync(
         runtime=runtime,
         easing=easing,
-        animation_manager=animation_manager_for(mobject, path),
+        animation_manager=animation_manager_for(mob, path),
     ):
-        mobject.animate_function(
+        mob.animate_function(
             _move_along_path_step,
             path=path,
-            initial_location=mobject.location.clone(),
-            initial_center=mobject.get_center().detach().reshape(-1, 3)[0],
+            initial_location=mob.location.clone(),
+            initial_center=mob.get_center().detach().reshape(-1, 3)[0],
             samples_per_curve=int(samples_per_curve),
         )
-    return mobject
+    return mob
 
 
 __all__ = [

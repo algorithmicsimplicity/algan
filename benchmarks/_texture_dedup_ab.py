@@ -133,13 +133,13 @@ class MergeWatcher:
 
     def wrap_scene(self, scene):
         watcher = self
-        orig = scene.get_batch_of_primitives
+        orig = scene._get_batch_of_primitives
 
         def recording(start_ind, end_ind, actors, mem):
             watcher.windows.append((int(start_ind), int(end_ind)))
             return orig(start_ind, end_ind, actors, mem)
 
-        scene.get_batch_of_primitives = recording
+        scene._get_batch_of_primitives = recording
 
 
 def render_arm(on, out_name):

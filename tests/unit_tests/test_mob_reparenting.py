@@ -52,7 +52,7 @@ def fresh_scene_stack():
 def scene():
     scene = Scene(scene_initializer=_empty_scene)
     yield scene
-    scene.terminate()
+    scene._terminate()
 
 
 def _mob(location, name="_"):

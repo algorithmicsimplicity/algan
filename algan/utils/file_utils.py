@@ -47,13 +47,17 @@ def resolve_asset_path(file_path):
 
 def get_image(file_path):
     if isinstance(file_path, str):
-        import torchvision  # deferred: ~0.2 s of import algan
+        # Imported here, not at module scope, to keep PIL off algan's import-time
+        # critical path.
+        from PIL import Image
 
-        file_path = (
-            torchvision.io.read_image(resolve_asset_path(file_path))
-            .to(_ANIMATION_DEVICE)
-            .permute(1, 2, 0)
-        )
+        with Image.open(resolve_asset_path(file_path)) as pil_image:
+            array = np.array(pil_image)
+        if array.ndim == 2:
+            # Grayscale: PIL/numpy drop the channel axis entirely; put it back
+            # so downstream code always sees [H, W, C].
+            array = array[:, :, None]
+        file_path = torch.from_numpy(array).to(_ANIMATION_DEVICE)
         file_path = file_path.float() / 255
     elif not torch.is_tensor(file_path):
         # A numpy array is the natural way to hand over pixels -- it is what

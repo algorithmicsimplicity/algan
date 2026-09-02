@@ -339,14 +339,16 @@ An environment map wraps the scene in a 360° image. It acts as a **skybox**
 **image-based lighting** (the whole scene lit by the colors of the map).
 
 Pass an equirectangular image (a longitude × latitude panorama, sky at the top) to
-:meth:`Scene.set_environment_map <.Scene.set_environment_map>`, also available as
-the top-level ``set_environment_map``:
+:meth:`Scene.set_environment_map <.Scene.set_environment_map>`. Like every
+Scene method, it is reachable on the class as well as on an instance, so a
+module-level script writes ``Scene.set_environment_map(...)`` and it applies to
+the active Scene:
 
 .. algan:: LightingEnvironmentMap
 
     from algan import *
 
-    set_environment_map("world_map.png", intensity=1.0, ambient=True)
+    Scene.set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     # A mirror sphere reflects the environment; other objects are lit by it.
     mirror = Sphere().move(LEFT * 1.5).set_material(

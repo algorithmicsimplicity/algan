@@ -1,5 +1,18 @@
 # Release audit: what to fix before Algan goes on PyPI
 
+> **Status: partly acted on, on this branch.** Fixed: §1, §3, §4, §6 (all four
+> bugs; the auto-spawn default and `~/.algan` were kept by decision, the daemon
+> knobs stay environment variables because they are read before `SETTINGS`
+> exists), §7 except the Manim root-logger item (kept by decision), §8 except
+> the five Three.js material spellings (kept by decision), §9, §10, §11, §12
+> (OpenCV became a dev-only dependency: the tests decode frames with it, the
+> library no longer imports it), §14. Still open: §2 (which Manim runs — a
+> decision), §5 (docs deploy), §13 (repository weight), §15, §16, §17, and one
+> leftover from §7: `algan --version` still takes ~3 s because the console
+> script is `algan.cli:main`, so importing `algan.cli` runs the package
+> `__init__`; the fix is an entry point outside the package. The findings below
+> are kept in their original wording as the record of what was wrong.
+
 **What this is.** A pre-release audit of Algan `0.2.2` at `3c03536` (branch
 `claude/algan-release-audit-a06q1y`), carried out on 2026-09-02. The brief was to
 find what will be *harder to fix after* the first public release: distribution

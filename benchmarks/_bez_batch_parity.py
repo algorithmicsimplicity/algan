@@ -105,7 +105,7 @@ def main():
             ),
         ]
     )
-    scene.initialize_frames()
+    scene._initialize_frames()
     scene.camera.despawn(animate=False)
     for light in scene.light_sources:
         light.despawn(animate=False)

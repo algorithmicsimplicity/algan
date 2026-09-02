@@ -420,12 +420,12 @@ def main():
                 round(scene._recorded_end_time_for_render() * scene.frames_per_second),
             ]
         )
-        scene.initialize_frames()
+        scene._initialize_frames()
         start_ind, end_ind = scene.scene_times[-1]
         end_ind = min(end_ind, start_ind + WINDOW_FRAMES)
         print(f"window: frames {start_ind}..{end_ind}")
 
-        with scene.batch_prep_context():
+        with scene._batch_prep_context():
             times = torch.arange(start_ind, end_ind)
             scene.timeline_manager.set_state_to_times(
                 times / scene.frames_per_second, active_mobs=spheres

@@ -3585,7 +3585,7 @@ class AnimationTimeline:
         timeline without bound as batches are prepared, and re-resolving replay
         windows every time. A render never saw this because its batch loop runs
         inside the same context (:meth:`~algan.render_loop.RenderLoopMixin
-        .batch_prep_context`); doing it here means every caller is safe,
+        ._batch_prep_context`); doing it here means every caller is safe,
         including the benchmarks and probes that drive prep directly.
 
         The context matches the render's exactly, so entering it inside a

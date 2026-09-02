@@ -9,10 +9,10 @@ The public rendering API is Scene-owned, and these are the only spellings:
 
 ```python
 scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=False,
-                 background_color=None, animate_fade_out=None, post_processes=None,
+                 background=None, animate_fade_out=None, post_processes=None,
                  codec=None, audio_codec=None, ffmpeg_params=None)
 scene.save_frame(file_path=None, video_settings=None, at=None, *,
-                 overwrite=True, background_color=None, post_processes=None)
+                 overwrite=True, background=None, post_processes=None)
 ```
 
 `Scene.save_video` carries the user-facing signature and documentation; `algan.utils.algan_utils._render_scene_to_file` carries the implementation. Keep them in sync — do not push parameters back into `*args, **kwargs`, because that is what made the signature invisible to `help()`, IDEs and autodoc.
@@ -27,9 +27,15 @@ Both still and video output use the same resolver, `_resolve_output_destination`
 
 - a bare filename is placed under `SETTINGS.paths.output_root / SETTINGS.paths.output_directory`;
 - a relative path with an explicit parent and an absolute path are used as supplied;
+- a target that already exists as a directory, or that ends with a path separator, is a **directory**: `SETTINGS.paths.output_filename` is placed inside it. This is the same rule `algan render -o` applies (`cli._output_settings`), minus its no-suffix arm — `save_video("intro")` names a file, not a directory;
 - missing still-image extensions default to `.png`;
 - missing video extensions default to `.mp4` for opaque output and `.mov` for transparent output;
-- parent directories are created automatically.
+- parent directories are created automatically;
+- the returned path is always **absolute**, in every branch, because it is also what `RenderResult.output_path` reports and what the "Finished rendering …" line prints.
+
+The container extension is validated up front by `_check_container_is_supported`, beside `check_codec_is_available` and for the same reason: an unwritable container used to cost a whole render and then surface as a `FileNotFoundError` on the temporary file's rename. `_SUPPORTED_VIDEO_CONTAINERS` and `_SUPPORTED_IMAGE_FORMATS` in `../algan/utils/algan_utils.py` are the lists of record.
+
+`__main__.__file__` is not always a file — `<stdin>` under a pipe, `<string>` under `exec`, `<ipython-input-3-…>` in a notebook. `_main_script_path()` reports anything that is not an existing file as no script at all, so those resolve like `script is None` instead of producing `<stdin>.mp4`.
 
 `output_root` defaults to the directory of `__main__.__file__`, falling back to the working directory; `output_filename` defaults to that script's stem. Do not reintroduce multiple independent `file_name`, `output_path`, and `output_dir` parameters, and do not resurrect `base_directory`.
 
@@ -49,17 +55,34 @@ Three pieces of finalization are therefore conditional:
 
 - the zero-duration guard (one frame of `wait` for an all-`Off()` scene) always runs, because it decides how many frames are rendered;
 - the end-of-scene despawn of every actor runs when a fade-out was requested (it is part of the requested output) or when `reset=True`;
-- `render_to_video` closes the camera and light lifespans only when the Scene is being finalized, via `despawn_camera_and_lights`.
+- `_render_to_video` closes the camera and light lifespans only when the Scene is being finalized, via `despawn_camera_and_lights`.
 
 Both lifespans extend past the last rendered frame index either way, so output is unaffected by these gates. `RenderLoopMixin.get_frames` calls `timeline_manager.clear_buffers()` when it finishes, restoring `active_state` to `current_state`; that is what makes a non-reset Scene queryable again after a render.
 
-`reset=False` also passes `preserve_authoring_state=True` into `render_to_video`, which rolls back the two pieces of state the render itself derives: the appended `scene_times` window, and the replay-window resolution (via `preserving_authoring_state()`, as for `save_frame`). The snapshot is taken around the `get_frames` loop rather than around the whole call, because the fade-out and the zero-duration guard record on the timeline first and edits made after a snapshot would fall outside it.
+`reset=False` also passes `preserve_authoring_state=True` into `_render_to_video`, which rolls back the two pieces of state the render itself derives: the appended `scene_times` window, and the replay-window resolution (via `preserving_authoring_state()`, as for `save_frame`). The snapshot is taken around the `get_frames` loop rather than around the whole call, because the fade-out and the zero-duration guard record on the timeline first and edits made after a snapshot would fall outside it.
 
 Together with the conditional finalization above, that makes a `reset=False` render legal **from inside an unfinished block**: render a preview mid-`Seq`/`Speech`, keep authoring, and the final render is identical to one where the preview never happened. The frame window for such a render comes from `_recorded_end_time_for_render()`, which takes the max over the whole open context chain — the innermost open context covers only its own block, while an enclosing `Sync` can already hold animations running past it. Every open context shares one un-rescaled timeframe, so their ends are directly comparable; with all blocks closed this is just the root context's end, exactly as before.
 
 With `reset=True` the Scene's timeline, animation and audio managers are rebuilt in `finally` on both success and failure, and authored mobs must not be reused. `overwrite=False` returns a skipped result without finalizing anything. Harnesses that re-author a scene per run (profilers, repeated benchmark passes) should pass `reset=True` explicitly.
 
 Transparent output cannot use MP4. Use MOV or WebM, or an opaque background.
+
+### Scene's public half and its engine half
+
+A `Scene` is both the thing a script authors against and the object the render loop drives, and the two
+sets of methods are told apart by a leading underscore. Public: `save_video`, `save_frame`, `view`,
+`show_frame`, `wait`, `add`, `add_actor`, `add_effect`, `reset`, `current`, `set_background`,
+`get_background`, `set_environment_map`, `set_video_settings`, `background_is_transparent`,
+`get_camera`, `add_light`/`remove_light`/`clear_lights`, `length_to_pixels`/`pixels_to_length`,
+`despawn_mobs`, `save_audio`, `use_manim_defaults`, `render_all_funcs`, and `get_frames` (the render
+loop's entry point, which the viewer and the benchmarks both drive).
+
+Engine-only, and therefore private: `_get_batch_of_primitives`, `_render_primitive_batch`,
+`_render_background_batch`, `_batch_prep_context`, `_render_to_video`, `_initialize_frames`,
+`_set_current_time`, `_increment_current_time`, `_update_max_time`, `_set_time_to_latest`,
+`_get_new_id`, `_get_pixel_format`, `_terminate` and `_instance`. The last two have public
+counterparts a script should reach for instead — a `with Scene() as scene:` block for the first,
+`Scene.current()` for the second, which is now the one spelling for the active Scene.
 
 ### Scene-function discovery
 
@@ -76,6 +99,8 @@ Runtime-adjustable public configuration is rooted at the stable process-global `
 - `SETTINGS.style`;
 - `SETTINGS.video`;
 - `SETTINGS.raytracing`.
+
+Those five are the whole of it. `AlganSettings.__slots__` also carries `_skip_save_frame`, which the docs build sets so that an example's `save_frame` call renders nothing; it is an engine flag rather than a setting, so it is underscored and kept out of `dir()`, `repr()` and `snapshot()` — the list of sections comes from `AlganSettings._SECTIONS`, not from `__slots__`.
 
 `SETTINGS.video`'s fields are `resolution`, `frames_per_second`, `supersampling`, `fxaa` and `audio_sample_rate`. `SETTINGS.paths`'s are `cache_directory`, `output_root`, `output_directory`, `output_filename` and `ffmpeg_binary`.
 
@@ -148,7 +173,10 @@ Initialization-only settings intentionally have no public mutable Python object.
 - Scene-owned managers rather than singleton managers;
 - `DrawBorderThenFill(mobs)` rather than `write(mob)`; it takes any iterable of Mobs, and `Tex`/`Text` expose `.write()` as the glyph-wise shorthand;
 - `import algan.manim as mn` for the compatibility layer — it is not star-imported, and `mn.X` is under Manim's conventions where root `X` is under Algan's (see `CLAUDE.md`, "The `algan.manim` boundary");
-- `duration` rather than `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;
+- `runtime` rather than `duration` / `run_time`, and `easing` / `easings` rather than `rate_func` / `rate_funcs`;
+- `mob` rather than `mobject`, and `element_to_mob` rather than `element_to_mobject`, on every root callable that takes one; `SVGMob`, `MobMatrix`, `MobTable`, `DashedMob` and `CurvesAsChildren` rather than Manim's `Mobject`-spelled class names. Passing an old spelling at the root raises `AlganConfigurationError` naming the new one — the mechanism is `algan/utils/api_renames.py`, applied by the adapters' generated `__init__` and by the `@_renamed_keywords` decorator on the animations. All of it still works under `algan.manim`, which is Manim's conventions by design;
+- one vocabulary across the revolved solids: `radius`, `u_range` / `v_range`, `closed`, `checkered_color`, and `direction=UP` on both `Cone` and `Cylinder`. Manim's `base_radius`, `show_base`, `show_ends`, `u_min` and `checkerboard_colors` raise; `resolution` is the one Manim name kept, because it means something Algan has no other word for (patches, where `grid_width`/`grid_height` count vertices);
+- `RegularPolygon(n=...)` rather than `num_vertices=`, and `Dot(location=...)` rather than `point=`, matching `Mob.location`;
 - `stroke_width` / `stroke_color` rather than `border_width` / `border_color`, in Algan's unit — Manim's is twice it, and that conversion exists only at the `algan.manim` boundary.
 
 Do not add a second spelling for something that already has a name. If a rename is genuinely warranted, rename in place and update every call site — the project is pre-release specifically so this stays cheap.
@@ -159,7 +187,13 @@ The one Algan-side pair that stays is `IN = INWARD` / `OUT = OUTWARD`, and it ea
 
 `from algan import *` is the documented entry point, so `algan.__all__` is effectively the public surface. `algan/__init__.py` builds it from a rule plus two deny-lists (`_INTERNAL_EXPORT_MODULES`, `_INTERNAL_EXPORT_NAMES`) and one allow-list (`_EXTRA_EXPORTS`). Generic helper names must not leak: `mean`, `interpolate`, `offset`, `shuffle`, `broadcast*`, `traverse`, `squish` and friends would shadow whatever the user imported before Algan.
 
-A name that belongs to the Manim compatibility layer goes in `algan/manim/` and stays out of `algan.__all__` entirely; if it is something an author reaches for directly and Algan has no native version, give it a root spelling through `algan/mobs/manim_adapters.py` instead of exporting the wrapper.
+A name that belongs to the Manim compatibility layer goes in `algan/manim/` and stays out of `algan.__all__` entirely; if it is something an author reaches for directly and Algan has no native version, give it a root spelling through `algan/mobs/manim_adapters.py` instead of exporting the wrapper. That is where `manim_fov`, `manim_shader` and `ManimMaterial` live: each means "Manim's version of this", so `algan.manim` is their home and `use_manim_defaults()` installs all three at once.
+
+`algan.manim.__all__` is curated the same way, by `_INTERNAL_MANIM_EXPORTS`: the `OpenGL*` aliases and the `MANIM_*_NAMES` parity registry stay reachable as attributes (`tests/unit_tests/test_manim_mobject_parity.py` reads them) but are not part of that module's documented surface — one is ~40 second spellings of classes already there, the other is inventory data.
+
+**A root spelling is not a delegation.** An adapter carries its own `__signature__` and its own docstring, built in `manim_adapters._root_signature` / `_root_docstring`: displayed angle defaults are in degrees, the displayed `stroke_width` default is in Algan's unit, Manim's type aliases are dropped from the annotations, and Manim's prose is *replaced* rather than appended to, so no `.. manim::` block (a `class X(Scene)` calling `self.play`) reaches Algan's reference pages. Those bodies are generated from Manim's summary line plus the converted parameter list, and their `Notes` section says so; a hand-written one goes in `_WRAPPER_DOCSTRINGS` in `algan/mobs/manim_compat.py` (`MathTex` and `Title` have them) and is used in preference.
+
+A supplied angle that is a non-integer float smaller than a full turn warns with `ApproximationWarning`, because `Arc(angle=PI/2)` is a legal 1.57 degree sliver and nothing else in the system would say so. Whole numbers never warn.
 
 When you add a name, decide which side it is on. Public mobs, animations, contexts, materials, shaders, constants and settings belong in the namespace; tensor utilities, mixins, primitive builders, registries and dev tooling do not. `../tests/unit_tests/test_ux_regressions.py` asserts both directions.
 
@@ -229,6 +263,6 @@ The daemon refuses such a run. Most renderer toggles become module-level default
 
 ## Asset paths
 
-`ImageMob`, `set_texture` and `background_color` all route through `file_utils.get_image` → `resolve_asset_path`, which
+`ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
 tries the working directory and then the main script's directory, so an image beside your script loads regardless of
 where you launch Python.

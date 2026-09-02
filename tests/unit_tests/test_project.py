@@ -12,7 +12,8 @@ from algan.utils.algan_utils import RenderResult, algan_scene
 
 
 class _SilentClip:
-    runtime = 0
+    # ``duration`` is moviepy's attribute name, which is what ``Audio`` reads.
+    duration = 0
 
 
 @pytest.fixture(autouse=True)
