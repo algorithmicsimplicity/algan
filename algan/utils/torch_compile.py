@@ -162,7 +162,28 @@ def _is_compile_failure(exc: BaseException) -> bool:
     except Exception:  # noqa: BLE001
         pass
     module = type(exc).__module__ or ""
-    return module.startswith(("torch._dynamo", "torch._inductor", "torch.fx"))
+    if module.startswith(("torch._dynamo", "torch._inductor", "torch.fx")):
+        return True
+    # A backend can also fail *inside the code it generated*: torch 2.7's
+    # Metal backend emitted a wrapper that referenced an undefined symbol
+    # (``NameError: name 'ps0' is not defined``, from a file under the
+    # ``torchinductor_*`` cache), which is a plain Python exception raised at
+    # call time rather than a compiler exception. Attribute the error by where
+    # it was raised: the innermost frame of a compiler failure is in the
+    # compiler or its generated code, while the function's own error is
+    # raised from the function's own source.
+    innermost = None
+    trace = exc.__traceback__
+    while trace is not None:
+        innermost = trace.tb_frame.f_code.co_filename
+        trace = trace.tb_next
+    if not innermost:
+        return False
+    path = innermost.replace("\\", "/")
+    return "torchinductor" in path or any(
+        marker in path
+        for marker in ("/torch/_inductor/", "/torch/_dynamo/", "/torch/_functorch/")
+    )
 
 
 def _plain_tensor(value):

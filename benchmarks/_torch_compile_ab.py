@@ -106,6 +106,12 @@ def main():
     args = parser.parse_args()
 
     _register_test_fonts()
+    # Absolute before the chdir below, so a relative --scene, --output-dir or
+    # --json given from the repository root still means what it said.
+    args.scene = args.scene.resolve()
+    args.output_dir = args.output_dir.resolve()
+    if args.json is not None:
+        args.json = args.json.resolve()
 
     import torch
 

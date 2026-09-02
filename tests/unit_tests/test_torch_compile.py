@@ -208,3 +208,32 @@ def test_a_tensor_subclass_argument_is_traced_as_a_plain_tensor():
     assert type(out) is torch.Tensor
     assert torch.equal(out, f.eager(color.as_subclass(torch.Tensor), 0.2))
     assert not _wrapped_state(f).failed
+
+
+def test_a_backend_that_fails_when_its_code_runs_is_demoted(monkeypatch, tmp_path):
+    """torch 2.7's Metal backend generated a wrapper that raised NameError at
+    call time -- not a compiler exception, but the compiler's failure.
+    """
+    generated = tmp_path / "torchinductor_test" / "kernel.py"
+    generated.parent.mkdir()
+    generated.write_text("def call(*args):\n    return ps0\n")
+    namespace = {}
+    exec(compile(generated.read_text(), str(generated), "exec"), namespace)
+
+    def backend(gm, example_inputs):
+        return namespace["call"]
+
+    monkeypatch.setattr(tc, "_BACKEND", backend)
+    SETTINGS.computing.set(torch_compile=True)
+
+    @tc.compiled
+    def f(x):
+        return x + 1
+
+    x = torch.zeros(2)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert torch.equal(f(x), x + 1)
+    assert [w for w in caught if w.category is AlganWarning]
+    assert _wrapped_state(f).failed
+    assert "NameError" in _wrapped_state(f).reason
