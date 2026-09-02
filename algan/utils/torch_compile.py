@@ -165,6 +165,22 @@ def _is_compile_failure(exc: BaseException) -> bool:
     return module.startswith(("torch._dynamo", "torch._inductor", "torch.fx"))
 
 
+def _plain_tensor(value):
+    """Strip a tensor subclass off an argument on its way into a compiled call.
+
+    ``Color`` (``algan.constants.color``) is a ``torch.Tensor`` subclass with
+    its own ``__torch_function__``, and the merged scene's vertex array
+    arrives as one. Dynamo traces such an object as a user-defined variable
+    and refuses the first comparison it meets (``NotImplementedError:
+    UserDefinedObjectVariable(Color)``), which demoted the projection to eager
+    on every backend. The arithmetic is the same on the plain view, so the
+    boundary takes it -- one type check per argument, no copy.
+    """
+    if isinstance(value, torch.Tensor) and type(value) is not torch.Tensor:
+        return value.as_subclass(torch.Tensor)
+    return value
+
+
 class _CompiledFunction:
     """One pipeline function, compiled lazily and demoted to eager on failure."""
 
@@ -213,6 +229,9 @@ class _CompiledFunction:
         except Exception as exc:  # noqa: BLE001 -- see _demote
             self._demote(exc)
             return self.fn(*args, **kwargs)
+        args = tuple(_plain_tensor(arg) for arg in args)
+        if kwargs:
+            kwargs = {name: _plain_tensor(arg) for name, arg in kwargs.items()}
         try:
             return compiled(*args, **kwargs)
         except Exception as exc:

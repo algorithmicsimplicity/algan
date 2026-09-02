@@ -153,6 +153,21 @@ jobs:
             --json "torch_compile_ab-${{ matrix.label }}.json" \
             | tee ab-output.txt
 
+      # The fast scene has no PN surfaces, so it never reaches the compiled
+      # patch evaluation in logical_pn.py; this fixture is spheres, a torus
+      # and a cylinder, moving, which does.
+      - name: Run the A/B on the PN-geometry scene
+        if: always()
+        run: |
+          set -o pipefail
+          uv run python -u benchmarks/_torch_compile_ab.py \
+            --scene benchmarks/_pn_geometry_scene.py \
+            --output-dir benchmarks/algan_outputs/torch_compile_ab_pn \
+            --runs "${{ inputs.runs || '3' }}" \
+            --quality "${{ inputs.quality || 'PREVIEW' }}" \
+            --json "torch_compile_ab_pn-${{ matrix.label }}.json" \
+            | tee ab-output-pn.txt
+
       - name: Publish the report to the job summary
         if: always()
         shell: bash
@@ -163,6 +178,12 @@ jobs:
             echo '```'
             cat ab-output.txt 2>/dev/null || echo "(the harness produced no output)"
             echo '```'
+            echo
+            echo "### PN-geometry scene"
+            echo
+            echo '```'
+            cat ab-output-pn.txt 2>/dev/null || echo "(the harness produced no output)"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the results
@@ -172,6 +193,8 @@ jobs:
           name: torch-compile-ab-${{ matrix.label }}
           path: |
             torch_compile_ab-${{ matrix.label }}.json
+            torch_compile_ab_pn-${{ matrix.label }}.json
             ab-output.txt
+            ab-output-pn.txt
           if-no-files-found: warn
           retention-days: 30

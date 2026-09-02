@@ -191,3 +191,20 @@ def test_the_cli_health_check_reports_the_switch(capsys):
     _cmd_check(None)
     out = capsys.readouterr().out
     assert "torch.compile" in out
+
+
+def test_a_tensor_subclass_argument_is_traced_as_a_plain_tensor():
+    """The merged scene hands the projection a ``Color``; Dynamo refuses it."""
+    from algan.constants.color import Color
+
+    SETTINGS.computing.set(torch_compile=True)
+
+    @tc.compiled
+    def f(x, floor):
+        return torch.where(x < floor, floor, x) * 2
+
+    color = Color([0.1, 0.5, 0.9, 1.0])
+    out = f(color, 0.2)
+    assert type(out) is torch.Tensor
+    assert torch.equal(out, f.eager(color.as_subclass(torch.Tensor), 0.2))
+    assert not _wrapped_state(f).failed

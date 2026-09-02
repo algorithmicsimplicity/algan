@@ -192,6 +192,21 @@ def _aa_dump_emit(tag, buf):
         )
 
 
+def _floor(tensor, floor):
+    """:func:`~algan.rendering.mps_compat.clamp_floor` for a compiled region.
+
+    ``clamp_floor`` asks :func:`~algan.rendering.mps_compat.mps_friendly` which
+    spelling to use, and that read -- ``SETTINGS`` through the environment --
+    is not something Dynamo can trace: on the Apple GPU it surfaced as
+    ``NotImplementedError: UserDefinedObjectVariable(Color)`` and demoted the
+    whole projection to eager. ``clamp_floor``'s own docstring establishes
+    that its ``where`` form is ``clamp_min`` bit for bit on every backend, so
+    a compiled region can take that form unconditionally: fused, the compare
+    and select cost nothing, and no setting is read inside the graph.
+    """
+    return torch.where(tensor < floor, floor, tensor)
+
+
 @compiled(dynamic=True)
 def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
     """The projection record's arithmetic, from gathered inputs to the packed
@@ -233,7 +248,7 @@ def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
         ro[:, None, None, :] + (big_d[:, None, None, None] / safe_denom[..., None]) * d
     )
     rel = hit - sp[:, None, None, :]
-    safe_n2 = clamp_floor(n2, 1e-30)
+    safe_n2 = _floor(n2, 1e-30)
     u = (torch.linalg.cross(rel, pby[:, None, None, :]) * nvec[:, None, None, :]).sum(
         -1
     ) / safe_n2[:, None, None]
@@ -257,7 +272,7 @@ def _triangle_projection_fused(verts, ro, sp, pbx, pby, half_w, half_h, wide):
         elen = torch.sqrt(ex * ex + ey * ey)
         inv_len = torch.where(
             valid[..., None] & (elen > 1e-12),
-            1.0 / clamp_floor(elen, 1e-12),
+            1.0 / _floor(elen, 1e-12),
             torch.zeros_like(elen),
         )
         parts.append(inv_len)
