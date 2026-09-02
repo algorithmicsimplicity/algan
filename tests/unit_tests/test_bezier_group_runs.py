@@ -183,7 +183,7 @@ def test_run_splitting_leaves_the_rendered_frame_unchanged(tmp_path, monkeypatch
     what byte-identity rests on and only the merge downstream of these
     collections can speak for it.
     """
-    import torchvision
+    from PIL import Image
 
     def frame(runs):
         monkeypatch.setenv("ALGAN_BEZIER_GROUP_RUNS", runs)
@@ -191,7 +191,8 @@ def test_run_splitting_leaves_the_rendered_frame_unchanged(tmp_path, monkeypatch
         with Scene() as scene:
             _clash_scene(scene)
             scene.save_frame(str(path), video_settings=LD)
-        return torchvision.io.read_image(str(path)).permute(1, 2, 0).numpy()
+        with Image.open(path) as image:
+            return np.asarray(image)
 
     reverted = frame("0")
     split = frame("1")
