@@ -39,7 +39,12 @@ _RADIANS_TO_DEGREES = 180.0 / math.pi
 
 
 def _reject_renamed_keywords(
-    owner: str, kwargs, renames=None, *, manim_alternative: str | None = None
+    owner: str,
+    kwargs,
+    renames=None,
+    *,
+    manim_alternative: str | None = None,
+    hints: dict[str, str] | None = None,
 ) -> None:
     """Raise if ``kwargs`` carries a superseded spelling, naming the new one.
 
@@ -47,6 +52,9 @@ def _reject_renamed_keywords(
     class or function the caller actually typed. ``manim_alternative`` is the
     ``algan.manim`` name to point at, for the root spellings of Manim classes
     that have one; Algan's own animations do not, and must not claim to.
+    ``hints`` adds one sentence per old name, for the renames where the new
+    spelling does not take the same *kind* of value as the old one and so needs
+    saying outright.
     """
     for old, new in (renames or _ROOT_KEYWORD_RENAMES).items():
         if old in kwargs:
@@ -56,9 +64,10 @@ def _reject_renamed_keywords(
                 if manim_alternative is not None
                 else ""
             )
+            hint = f" {hints[old]}" if hints and old in hints else ""
             raise AlganConfigurationError(
                 f"{owner}() has no `{old}` argument: Algan spells it `{new}`. "
-                f"Pass `{new}=` instead{pointer}."
+                f"Pass `{new}=` instead{pointer}.{hint}"
             )
 
 

@@ -17,6 +17,7 @@ Mobs
    ~algan.mobs.shapes_3d
    ~algan.mobs.point_cloud
    ~algan.mobs.surfaces.surface
+   ~algan.mobs.surfaces.procedural_textures
    ~algan.mobs.three_d_models
    ~algan.mobs.three_d_models.mesh
    ~algan.mobs.three_d_models.model_mob

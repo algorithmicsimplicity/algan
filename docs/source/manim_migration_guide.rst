@@ -528,10 +528,11 @@ that namespace's whole purpose.
        ``CurvesAsChildren``
    * - ``Cone(base_radius=..., show_base=..., u_min=...)``,
        ``Cylinder(show_ends=...)``, ``checkerboard_colors=``
-     - ``radius``, ``closed``, ``u_range``, ``checkered_color`` -- one
-       vocabulary across ``Sphere``, ``Cone``, ``Cylinder``, ``Torus`` and
-       ``Surface``, with ``direction`` defaulting to ``UP`` on both ``Cone``
-       and ``Cylinder``
+     - ``radius``, ``closed``, ``u_range`` -- one vocabulary across
+       ``Sphere``, ``Cone``, ``Cylinder``, ``Torus`` and ``Surface``, with
+       ``direction`` defaulting to ``UP`` on both ``Cone`` and ``Cylinder``.
+       The checkerboard is a texture map rather than a second vertex colour:
+       ``color_texture=get_checkerboard((BLUE, BLUE_E))``
    * - ``RegularPolygon(num_vertices=...)``
      - ``RegularPolygon(n=...)``
    * - ``Dot(point=...)``

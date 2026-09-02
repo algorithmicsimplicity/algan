@@ -74,12 +74,11 @@ with Off():
         Torus(ring_radius=0.55, tube_radius=0.22).set_material(
             MeshStandardMaterial(color=TEAL, roughness=0.4, metalness=0.2)
         ),
-        # An odd grid makes the checkerboard read as diagonal banding, which is
-        # far easier to eyeball than a per-vertex checker at auto resolution.
+        # A coarse board so the squares survive the thumbnail-sized tile this
+        # solid occupies in the frame.
         Surface(
             saddle,
-            color=MAROON,
-            checkered_color=YELLOW,
+            color_texture=get_checkerboard((MAROON, YELLOW), 4),
             grid_width=9,
             grid_height=9,
         )

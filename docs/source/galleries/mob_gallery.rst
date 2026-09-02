@@ -209,7 +209,8 @@ space:
         y = uv[..., 1:] * 4 - 2
         return torch.cat((x, y, torch.cos(torch.sqrt(x ** 2 + y ** 2) * 3) * 0.4), -1)
 
-    Surface(ripple, checkered_color=BLUE).rotate(60, RIGHT).spawn()
+    checker = get_checkerboard((BLUE, BLUE_E))
+    Surface(ripple, color_texture=checker).rotate(60, RIGHT).spawn()
 
     Scene.save_video()
 

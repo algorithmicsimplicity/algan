@@ -358,6 +358,14 @@ cosine_color
 depth_shader
 easings
 fresnel_rim
+get_bricks
+get_checkerboard
+get_gradient
+get_grid_lines
+get_noise
+get_polka_dots
+get_radial_gradient
+get_stripes
 glass_ball
 lambert_shader
 matcap_shader

@@ -11,9 +11,10 @@ import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.constants.color import BLUE, GREEN, RED, YELLOW
+from algan.constants.color import BLUE, GREEN, RED, WHITE, YELLOW
 from algan.constants.spatial import OUT, UP
 from algan.mobs.shapes_3d import Dot3D, Sphere
+from algan.mobs.surfaces.procedural_textures import get_checkerboard
 from algan.scene import Scene
 from algan.scene_manager import SceneManager
 from algan.utils.mob_utils import BatchedMobViewSequence, batch_mobs
@@ -125,11 +126,11 @@ def test_rgba_colors_match_a_dot3d_batch():
 def test_from_batches_rejects_colors_it_cannot_honour():
     SceneManager.reset()
     with Scene() as scene, Off():
-        with pytest.raises(ValueError, match="checkered_color"):
+        with pytest.raises(ValueError, match="color_texture"):
             Sphere.from_batches(
                 CENTERS,
                 colors=torch.zeros((4, 3)),
-                checkered_color=RED,
+                color_texture=get_checkerboard((RED, WHITE)),
                 add_to_scene=False,
                 scene=scene,
                 **KWARGS,

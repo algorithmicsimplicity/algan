@@ -160,6 +160,7 @@ from algan.mobs.manim_mob import *
 from algan.mobs.numeric_display import DecimalNumber
 from algan.mobs.shapes_2d import *
 from algan.mobs.shapes_3d import *
+from algan.mobs.surfaces.procedural_textures import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
 from algan.mobs.three_d_models import Model3D, TriangleMesh

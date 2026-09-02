@@ -47,6 +47,7 @@ from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
+from algan.mobs.surfaces.procedural_textures import get_checkerboard
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_per_patch,
@@ -64,7 +65,6 @@ from algan.utils.tensor_utils import (
     dot_product,
     squish,
     texture_u8_provenance,
-    unsqueeze_left,
     unsquish,
 )
 
@@ -829,10 +829,6 @@ class Surface(Mob):
     grid_width
         Number of sampled points along the ``u`` axis. Defaults to ``None``, as
         ``grid_height`` does; giving only one of the two uses it for both.
-    checkered_color
-        Second color, applied to alternating vertices of the grid to give the
-        surface a checkerboard. Accepts anything ``color`` does. Defaults to
-        ``None``, meaning the surface is a single flat ``color``.
     ignore_normals
         Whether to draw the surface as flat, faceted triangles instead of
         smoothing it. Defaults to ``False``, meaning smooth vertex normals are
@@ -891,6 +887,9 @@ class Surface(Mob):
         Optional color texture map ``[W, H, 5]`` -- one image, sampled
         bilinearly in-kernel by the ray tracer. It is an ordinary animatable
         attribute: assign a new map of the same shape to animate it.
+        :mod:`~algan.mobs.surfaces.procedural_textures` generates the common
+        patterns, so a checkerboard is
+        ``color_texture=get_checkerboard((BLUE, WHITE))``.
     reflectivity_texture, roughness_texture, refractive_index_texture
         Optional per-texel material property maps, each ``[W, H, 1]`` (or
         ``[W, H]``). Like ``color_texture`` they are
@@ -938,6 +937,8 @@ class Surface(Mob):
     See Also
     --------
     :class:`~algan.mobs.shapes_3d.Sphere` : And ``Cylinder`` / ``Cone`` / ``Torus``, the built-in surfaces.
+    :func:`~algan.mobs.surfaces.procedural_textures.get_checkerboard` : And its
+        siblings, which build the ``color_texture`` for a procedural pattern.
     :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_function` : Color it by a function of ``(u, v)``.
     :meth:`~algan.mobs.surfaces.surface.Surface.set_location_by_function` : Reshape it after construction.
 
@@ -957,7 +958,9 @@ class Surface(Mob):
             y = uv[..., 1:] * 4 - 2
             return torch.cat((x, y, (x ** 2 - y ** 2) * 0.4), -1)
 
-        Surface(saddle, checkered_color=BLUE).rotate(60, RIGHT).spawn()
+        Surface(
+            saddle, color_texture=get_checkerboard((BLUE, BLUE_E))
+        ).rotate(60, RIGHT).spawn()
 
         Scene.save_video()
     """
@@ -1027,7 +1030,6 @@ class Surface(Mob):
         coord_function=None,
         grid_height=None,
         grid_width=None,
-        checkered_color=None,
         color_texture=None,
         reflectivity_texture=None,
         roughness_texture=None,
@@ -1054,7 +1056,15 @@ class Surface(Mob):
         _reject_renamed_keywords(
             type(self).__name__,
             kwargs,
-            {"checkerboard_colors": "checkered_color"},
+            {"checkerboard_colors": "color_texture"},
+            hints={
+                "checkerboard_colors": (
+                    "A checkerboard is a texture map here rather than a second "
+                    "vertex color, so its detail does not depend on the "
+                    "tessellation: "
+                    "`color_texture=get_checkerboard((BLUE, BLUE_E))`."
+                )
+            },
         )
         self.u_range = (0, 1) if u_range is None else tuple(u_range)
         self.v_range = (0, 1) if v_range is None else tuple(v_range)
@@ -1103,14 +1113,21 @@ class Surface(Mob):
         # color of its own. Read off a Manim instance by
         # ``settings.shape_style_profiles``, which is where Manim's own
         # ``checkerboard_colors`` default is translated into ``color`` and
-        # ``checkered_color``. Injected here so both the Mob's own color
+        # ``checker_color``. Injected here so both the Mob's own color
         # attribute and the grid child built below carry it.
         if "color" not in kwargs:
             style = _manim_shape_style_for(type(self))
             if style is not None and style["color"] is not None:
                 kwargs["color"] = style["color"]
-                if checkered_color is None and style.get("checker_color") is not None:
-                    checkered_color = style["checker_color"]
+                if color_texture is None and style.get("checker_color") is not None:
+                    # Manim paints its two-tone solids face by face, so its
+                    # checkerboard is whatever its tessellation happens to be.
+                    # Algan's goes in a color map instead, where the pattern is
+                    # a property of the shape rather than of the grid the
+                    # renderer chose for it.
+                    color_texture = get_checkerboard(
+                        (style["color"], style["checker_color"])
+                    )
         super().__init__(*args, **kwargs)
         kwargs["scene"] = self.scene
         # Texture timelines are keyed by texel count. AttributeTimeline fixes
@@ -1205,11 +1222,6 @@ class Surface(Mob):
         color = to_color(
             kwargs["color"] if "color" in kwargs else self.get_default_color()
         )
-        checkered_color = to_color(checkered_color)
-        if checkered_color is None:
-            checkered_color = color
-        else:
-            checkered_color = unsqueeze_left(checkered_color, color)
 
         if color_texture is not None:
             tex = color_texture
@@ -1235,17 +1247,10 @@ class Surface(Mob):
                 vertex_color_texture = tex
             color = squish(vertex_color_texture, -3, -2)
         else:
-            color_grid = (
-                (BLACK * 0)
-                .view(1, -1)
-                .expand((self.grid_width * self.grid_height, -1))
-                .contiguous()
-            )
-            color_grid[::2] = color
-            color_grid[1::2] = checkered_color
-            color_grid = color_grid.view(self.grid_height, self.grid_width, 5)
-            color = squish(color_grid, -3, -2)
-        # color = grid_to_triangle_vertices(color)
+            # One row per vertex even for a flat fill: the grid's color is a
+            # per-vertex attribute, and set_color_by_function / the morphs
+            # write into it row by row.
+            color = color.reshape(1, -1).expand(self.grid_width * self.grid_height, -1)
         kwargs["color"] = color
         kwargs["location"] = grid_points
         self.grid = Mob(**kwargs)
@@ -1380,11 +1385,6 @@ class Surface(Mob):
         surface_overrides = {"location": centers.unsqueeze(0)}
 
         if colors is not None:
-            if kwargs.get("checkered_color") is not None:
-                raise ValueError(
-                    "from_batches cannot combine per-member colors with a "
-                    "shared checkered_color"
-                )
             if mob._has_color_texture:
                 raise ValueError(
                     "from_batches cannot combine per-member colors with a "
@@ -1397,11 +1397,9 @@ class Surface(Mob):
                 .contiguous()
                 .view(1, count, points_per_grid, grid_color.shape[-1])
             )
-            # __init__ lays a grid out as alternating color / checkered-color
-            # rows. Substitute per-member values into that same layout instead
-            # of rebuilding it, so the two constructions cannot drift apart.
-            packed[:, :, ::2] = member_colors.view(1, count, 1, -1)
-            packed[:, :, 1::2] = member_colors.view(1, count, 1, -1)
+            # Substituted into the layout __init__ built rather than rebuilt
+            # from scratch, so the two constructions cannot drift apart.
+            packed[:] = member_colors.view(1, count, 1, -1)
             grid_overrides["color"] = packed.view(1, count * points_per_grid, -1)
             surface_overrides["color"] = member_colors.unsqueeze(0)
 
