@@ -106,8 +106,14 @@ jobs:
       # Named explicitly rather than left to `import algan`, because these are
       # exactly the files a packaging mistake drops and imports do not touch:
       # the two SMAA lookup textures the anti-aliasing pass loads at render
-      # time, and the py.typed marker that makes the annotations visible to a
-      # type checker downstream. An import-only check passes without them.
+      # time, and the vendored manim config the compatibility layer reads. An
+      # import-only check passes without them.
+      #
+      # No `py.typed` here on purpose. Algan ships no PEP 561 marker, so its
+      # annotations are invisible to a downstream type checker by design --
+      # adding the marker would make them authoritative for users' mypy and
+      # pyright runs, which is a promise to make deliberately and not as a
+      # side effect of a packaging check.
       - name: Check the installed package is complete
         run: |
           /tmp/wheel-env/bin/python - <<'PY'
@@ -116,7 +122,6 @@ jobs:
           print("algan", algan.__version__ if hasattr(algan, "__version__") else "(no __version__)")
           root = res.files("algan")
           required = [
-              "py.typed",
               "rendering/post_processing/anti_aliasing/AreaTex.png",
               "rendering/post_processing/anti_aliasing/SearchTex.png",
               "external_libraries/manim/_config/default.cfg",
