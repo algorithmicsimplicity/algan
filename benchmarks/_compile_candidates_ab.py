@@ -170,6 +170,9 @@ class Candidate:
         self.worst_difference = 0.0
         self.failure = ""
         self.wrapper = None
+        #: The last call's arguments, for the replay phase.
+        self.captured = None
+        self.replay = None
 
     def install(self):
         from algan.utils.torch_compile import compiled
@@ -195,6 +198,7 @@ class Candidate:
             self.mismatches += not same
             self.worst_difference = max(self.worst_difference, difference)
             self.calls += 1
+            self.captured = (args, kwargs)
             # The render consumes the EAGER result, so installing the probe
             # cannot change a single pixel of the frames it measures on.
             return eager
@@ -221,6 +225,46 @@ class Candidate:
             setattr(self.owner, self.attribute, self.raw)
         for module in getattr(self, "rebound", ()):
             setattr(module, self.attribute, self.original)
+
+    def replay_captured(self, repeats):
+        """Re-time both arms on the last call's arguments, ``repeats`` times.
+
+        The in-render timings answer "what did this cost in this render", and
+        for a function the render calls three times that is dominated by
+        Dynamo specializing on three different shapes. This answers the other
+        half -- **what does a warm call cost** -- by holding the shape still:
+        one shape, both arms alternating, medians over the repeats after a
+        discarded first pair. A function whose shape genuinely changes on
+        every call in production does not get to keep this number; it is the
+        ceiling, and the in-render column is the floor.
+        """
+        if self.captured is None or self.failure or repeats < 2:
+            return
+        args, kwargs = self.captured
+        eager_times = []
+        compiled_times = []
+        for index in range(repeats):
+            started = time.perf_counter()
+            self.original(*args, **kwargs)
+            eager = time.perf_counter() - started
+            started = time.perf_counter()
+            self.wrapper(*args, **kwargs)
+            comp = time.perf_counter() - started
+            if index:  # the first pair pays whatever warm-up is left
+                eager_times.append(eager)
+                compiled_times.append(comp)
+        self.replay = {
+            "repeats": repeats,
+            "eager_ms": statistics.median(eager_times) * 1e3,
+            "compiled_ms": statistics.median(compiled_times) * 1e3,
+            "shapes": [tuple(a.shape) for a in args if hasattr(a, "shape")],
+        }
+        self.replay["speedup"] = (
+            self.replay["eager_ms"] / self.replay["compiled_ms"]
+            if self.replay["compiled_ms"]
+            else float("nan")
+        )
+        self.captured = None
 
     def summary(self):
         """Warm per-call medians, excluding each arm's first (compiling) call."""
@@ -254,6 +298,7 @@ class Candidate:
             if record["calls"]
             else 0.0
         )
+        record["replay"] = self.replay
         return record
 
 
@@ -267,6 +312,12 @@ def main():
         "--candidate", action="append", default=[], help="extra module:qualname"
     )
     parser.add_argument("--quality", default="PREVIEW", help="a video preset name")
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=20,
+        help="warm re-timings of each candidate's last captured call (0 = skip)",
+    )
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--list", action="store_true", help="print the groups and exit")
     parser.add_argument(
@@ -348,6 +399,10 @@ def main():
     elapsed = time.perf_counter() - started
     print(f"render (both arms on every call): {elapsed:.2f}s\n", flush=True)
 
+    if args.repeats:
+        for candidate in candidates:
+            candidate.replay_captured(args.repeats)
+
     records = [candidate.summary() for candidate in candidates]
     header = (
         f"{'candidate':<62}{'calls':>6}{'eager ms':>10}{'comp ms':>9}"
@@ -372,6 +427,25 @@ def main():
             f"{record['eager_ms']:>10.3f}{record['compiled_ms']:>9.3f}"
             f"{record['speedup']:>9.2f}{record['saved_total_ms']:>10.1f}  {parity}"
         )
+
+    replayed = [r for r in records if r["replay"]]
+    if replayed:
+        print(
+            f"\nheld at one shape ({args.repeats} alternating repeats of the last "
+            "call, medians):"
+        )
+        print(
+            f"{'candidate':<62}{'eager ms':>10}{'comp ms':>9}{'speedup':>9}  "
+            "argument shapes"
+        )
+        for record in sorted(replayed, key=lambda r: -r["replay"]["speedup"]):
+            replay = record["replay"]
+            shapes = " ".join(str(shape) for shape in replay["shapes"][:3])
+            print(
+                f"{record['candidate'].split(':')[-1]:<62}"
+                f"{replay['eager_ms']:>10.3f}{replay['compiled_ms']:>9.3f}"
+                f"{replay['speedup']:>9.2f}  {shapes}"
+            )
 
     if args.json is not None:
         args.json.write_text(
