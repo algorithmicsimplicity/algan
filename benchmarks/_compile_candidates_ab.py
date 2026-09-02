@@ -291,11 +291,15 @@ class Candidate:
             if record["compiled_ms"]
             else float("nan")
         )
+        # What compiling this function would take off (or add to) a render's
+        # CPU, from the WARM medians of both arms only. Mixing the eager arm's
+        # total -- which carries its first, cold call -- against a warm
+        # compiled median reads as a saving on a function that is slower per
+        # call, which is how the first draft of this script scored
+        # ``_query_row_states`` at +317 ms while it measured 0.48x.
         record["saved_total_ms"] = (
-            record["eager_total_ms"]
-            - record["compiled_ms"] * max(0, record["calls"] - 1)
-            - record["eager_ms"]
-            if record["calls"]
+            (record["eager_ms"] - record["compiled_ms"]) * max(0, record["calls"] - 1)
+            if record["calls"] and record["compiled_ms"] == record["compiled_ms"]
             else 0.0
         )
         record["replay"] = self.replay
