@@ -436,8 +436,7 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "            self.apply_style_to_mobject(mob, shape)\n",
         )
         cut(
-            "    @staticmethod\n"
-            "    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
+            "    @staticmethod\n    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
             "    @staticmethod\n"
             "    def image_to_mobject(img: se.Image) -> Rectangle:\n"
             '        temp_file = "manim_temp_m98Jg98asmmxn.png"\n'

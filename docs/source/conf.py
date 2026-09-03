@@ -42,7 +42,7 @@ extensions = [
     "algan.utils.docbuild.algan_directive",
     "algan.utils.docbuild.autocolor_directive",
     "algan.utils.docbuild.autoaliasattr_directive",
-    #"algan.utils.docbuild.manim_example_directive",
+    # "algan.utils.docbuild.manim_example_directive",
     "sphinx.ext.graphviz",
     "sphinx.ext.inheritance_diagram",
     "sphinxcontrib.programoutput",

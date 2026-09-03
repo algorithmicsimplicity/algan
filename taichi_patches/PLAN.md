@@ -389,6 +389,49 @@ patched file. Keep patches 0001 and 0002 unchanged.
 
 ### 7.3 Track B — if rebasing onto Quadrants
 
+**Prerequisite 0 — pre-Volta CUDA support. Quadrants 1.3.0 cannot `qd.init(qd.gpu)` on a GPU older
+than sm_70, which includes this repository's development machine (GTX 1050, sm_61).** Measured
+2026-09-03 against the PyPI wheel 1.3.0 (commit `ab9a58ab`, LLVM 22.1.0), driver 576.52. This is
+not a general Pascal gap — Quadrants detects the device and emits correct `.version 5.0 /
+.target sm_61` PTX — but two unrelated, small defects, both fixable in ~4 lines:
+
+* **(a) `.sys`-scope atomics.** `qd.init` dies with `CUDA_ERROR_NOT_SUPPORTED ... cuModuleLoadDataEx`
+  loading the *runtime* module, because of one instruction: `atom.sys.cas.b64`, emitted for the
+  `__atomic_compare_exchange_n` in `runtime_eval_adstack_max_reduce`
+  (`quadrants/runtime/llvm/runtime_module/adstack_runtime.cpp`). Its default (system) memory scope is
+  lowered to `.sys` by LLVM 22's NVPTX backend; LLVM 15 did not, which is why Taichi 1.7.4 is
+  unaffected. Module load is all-or-nothing, so a function Algan never calls takes the whole runtime
+  down. **Probed directly against the driver: `.sys` is the only rejected scope — `atom.gpu`,
+  `atom.cta` and unscoped `atom` all load on sm_61.** Fix: give that cmpxchg `syncscope("device")`,
+  and change `quadrants/runtime/llvm/kernel_atomic_syncscope.h:29` (returns `SyncScope::System` for
+  CUDA, `"agent"` only for AMDGPU) to `"device"`, at least for `cap < 70` — kernel-side CAS atomics
+  (i64 max, f32 min) hit the same wall. That header is already shared by both emit sites
+  (`codegen_llvm.cpp`, `llvm_context.cpp`), so it is one line.
+* **(b) `llvm.nvvm.activemask`.** Kernels then fail to compile with `LLVM Fatal Error: Cannot select:
+  intrinsic %llvm.nvvm.activemask`, reached from `codegen_cuda.cpp:369 optimized_reduction`
+  (warp-aggregated reductions) via `llvm_context.cpp:441`'s
+  `patch_intrinsic("cuda_active_mask", Intrinsic::nvvm_activemask)`. The *hardware* is fine —
+  `activemask.b32` is sm_30+ — it is LLVM 22's NVPTX instruction selection that is gated to sm_70+.
+  Fix: gate `optimized_reduction` on `cap >= 70` and fall back to plain atomics, mirroring the
+  `cap >= 60` half2 check 30 lines below it in the same function.
+
+**Evidence these are the only two:** with (a) emulated by an inline hook on `cuModuleLoadDataEx` that
+rewrites `.sys` out of the PTX, and (b) emulated by `make_thread_local=False`, Algan renders a
+90-frame video and a frame on Quadrants on this GPU, bit-identical to the Taichi arm
+(0 of 419,904 pixels differ). Five `.sys` instructions are patched per render: one in the runtime
+module, four in the wavefront megakernels.
+
+**That hook (`debug/_qd/hook.py`) is a diagnostic, not a solution.** It rewrites the PTX in flight by
+inline-patching `nvcuda.dll`'s `cuModuleLoadDataEx` with a jump to a Python callback: Windows-only,
+x86-64-only, unsafe against concurrent module loads, and silently dependent on the exact instruction
+text and on Quadrants continuing to load modules through that one entry point. It is the right tool
+for answering "is this the only blocker" and the wrong one for shipping. **Fix it in the compiler.**
+Prefer upstreaming all three edits over carrying them: each is defensible on its own merits (device
+scope is more correct *and* faster than system scope; the cc gate copies a pattern Quadrants already
+applies to `match_any_sync` and half2), none touches a non-sm_61 path, and a permanent fork delta is
+a rebase tax for nothing. Fork only as a stopgap while an upstream PR lands. If neither happens,
+Track B is blocked on any pre-Volta machine, which today includes the primary dev box.
+
 1. Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
    (all 11 target files exist at renamed paths; `MetalDevice::import_mtl_buffer` still at
    `quadrants/rhi/metal/metal_device.mm:1280`; `MetalShaderResourceSet::rw_buffer` still honours
@@ -411,7 +454,20 @@ patched file. Keep patches 0001 and 0002 unchanged.
 3. Rewrite `taichi_fast_launch.py` against `quadrants.lang.kernel.Kernel` (prefer hooking
    `launch_kernel` over `__call__`, which now carries checkpoint/`qd.Tensor`/stream stages); re-run
    `benchmarks/_taichi_fast_launch_check.py` with verify on. Trim `taichi_warmstart.py` to the
-   source-retrieval memo (`get_pos_info` is memoised upstream, `ast_transformer_utils.py:408-424`).
+   source-retrieval memo (`get_pos_info` is memoised upstream, `ast_transformer_utils.py:408-424`)
+   — **but only on a build that has it.** Verified 2026-09-04: that memo is on `main`
+   (`get_pos_info` at `:417`, with a comment giving the same reasoning as Algan's patch) and is
+   **absent from the released PyPI wheel 1.3.0** (commit `ab9a58ab`), where `get_pos_info` still
+   builds a `TextWrapper`-wrapped source excerpt per node. Measured on 1.3.0: **617,152 calls,
+   67.3 s, ~41% of the profiled frontend time, versus 0 calls on Taichi** — because
+   `taichi_warmstart.apply()` version-gates to `(1, 7)` (`taichi_warmstart.py:70`) and silently
+   no-ops elsewhere. Consequence: a Track B build pinned to 1.3.0 pays a frontend cost Algan
+   already solved on Taichi (measured whole-process kernel materialize: ~107 s vs ~30 s for the
+   same 27 kernels). Either pin a Quadrants build that contains the upstream memo, or port the
+   memo rather than trimming it. Quadrants additionally builds each kernel AST **twice**
+   (`get_tree_and_ctx` 2.00x per kernel — a pruning pass then an enforcing pass; the first is
+   skipped only on a fastcache hit), which the memo does not address: node visits measured at
+   505,978 vs Taichi's 252,989, `build_Name` 203,288 vs 101,644.
 4. `mps_zero_copy.py`: replace the per-launch sync pair with
    `qd.init(external_metal_command_queue=quadrants.interop.get_mps_command_queue(), external_metal_command_queue_is_torch_queue=True)`.
 5. CI: rewrite `taichi_build.yaml` from `quadrants-src/.github/workflows/scripts_new/`

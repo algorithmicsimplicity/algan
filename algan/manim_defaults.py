@@ -40,10 +40,10 @@ import math
 
 import torch
 
+from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import BLACK, WHITE
 from algan.constants.spatial import ORIGIN, OUTWARD
 from algan.settings import SETTINGS
-from algan.animation_timeline.animation_contexts import Off
 
 #: Height of Manim's frame in world units. Manim pins the vertical extent and
 #: derives the width from the aspect ratio, exactly as Algan's vertical ``fov``
@@ -151,7 +151,6 @@ def apply_manim_defaults(
     stroke_geometry: bool = True,
 ):
     """Point ``scene`` at Manim's defaults. See :meth:`~algan.scene.Scene.use_manim_defaults`."""
-    from algan.animation_timeline.animation_contexts import Off
     from algan.rendering.lights import PointLight
     from algan.rendering.shaders.materials import ManimMaterial
     from algan.settings.video_settings import VideoSettings
