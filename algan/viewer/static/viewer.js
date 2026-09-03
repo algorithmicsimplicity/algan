@@ -26,8 +26,22 @@ const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
 /* ---------- server ---------- */
 
+/* This viewer session's key to its own API.
+ *
+ * Every route but the page and its static files requires it, because binding
+ * to 127.0.0.1 does not keep other pages out: any origin can POST to a
+ * localhost URL, which is all it takes to hit /api/shutdown. It arrives in the
+ * URL the viewer printed, so a reload keeps it and a bookmark of the bare port
+ * does not. */
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+
+/* ``path`` with the token added, whichever separator it needs. */
+function api(path) {
+  return path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
+}
+
 async function getJSON(url) {
-  const response = await fetch(url);
+  const response = await fetch(api(url));
   if (!response.ok) throw new Error((await response.json()).error || response.statusText);
   return response.json();
 }
@@ -62,7 +76,7 @@ function frameImage(index) {
     image.onerror = () => { state.images.delete(index); reject(new Error("not ready")); };
     // The epoch busts both caches after a resolution change: this map's, and
     // the browser's own, which is told frames are immutable for a day.
-    image.src = `/frame/${index}.png?v=${state.epoch}`;
+    image.src = api(`/frame/${index}.png?v=${state.epoch}`);
   });
   state.images.set(index, promise);
   // The cache is a convenience, not a store: an hour of video would be a lot of
@@ -197,7 +211,7 @@ async function tick() {
 async function seek(index) {
   stop();
   index = Math.max(0, Math.min(Math.round(index), state.totalFrames - 1));
-  fetch(`/api/prefetch?frame=${index}`).catch(() => {});
+  fetch(api(`/api/prefetch?frame=${index}`)).catch(() => {});
   const drawn = await showFrame(index);
   if (!drawn) {
     // The frame request blocks server-side until the worker reaches it, so a
@@ -464,7 +478,7 @@ async function changeResolution(name) {
   select.disabled = true;
   setStatus("re-rendering at the new resolution…", "busy");
   try {
-    const response = await fetch(`/api/resolution?name=${encodeURIComponent(name)}`,
+    const response = await fetch(api(`/api/resolution?name=${encodeURIComponent(name)}`),
                                  { method: "POST" });
     if (!response.ok) throw new Error((await response.json()).error || response.statusText);
     const data = await response.json();

@@ -11,6 +11,7 @@ from algan.animatable_base.animatable import _rejecting_timing_kwargs
 from algan.animation_timeline.animation_contexts import NoExtra, Off, Seq, Sync
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants import easings
+from algan.errors import AlganConfigurationError
 from algan.logging.logger import PERF, get_logger
 from algan.utils.tensor_utils import cast_to_tensor, mid_point, squish, unsquish
 
@@ -1653,9 +1654,23 @@ class MobMorphMixin:
         replaced source; reacquire them from the returned Mob when it is text.
         """
         if strategy not in {"auto", "morph", "dissolve"}:
-            raise ValueError("strategy must be 'auto', 'morph', or 'dissolve'")
+            raise AlganConfigurationError(
+                f"strategy must be 'auto', 'morph', or 'dissolve'; got {strategy!r}"
+            )
+        # Checked before anything is read off it: `become(None)` otherwise
+        # surfaces as an AttributeError about `.scene`, which names neither
+        # become nor the argument that was wrong.
+        from algan.animatable_base.mob import Mob as _Mob
+
+        if not isinstance(other_mob, _Mob):
+            raise AlganConfigurationError(
+                "become() takes the Mob to turn into; got "
+                f"{other_mob!r}. To make a Mob vanish, use despawn()."
+            )
         if other_mob.scene is not self.scene:
-            raise ValueError("become requires source and target Mobs in the same Scene")
+            raise AlganConfigurationError(
+                "become requires source and target Mobs in the same Scene"
+            )
         if (
             strategy == "morph"
             and self._morph_kind != other_mob._morph_kind

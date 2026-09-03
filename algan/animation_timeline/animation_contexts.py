@@ -366,7 +366,9 @@ def animation_manager_for(*owners):
     for owner in owners:
         collect(owner)
     if len(managers) > 1:
-        raise ValueError("One animation context cannot span multiple Scenes")
+        raise AlganConfigurationError(
+            "One animation context cannot span multiple Scenes"
+        )
     return managers[0] if managers else _active_animation_manager()
 
 

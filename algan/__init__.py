@@ -284,6 +284,50 @@ from algan.scenes.default_scene import default_scene_initializer
 # module-level render call).
 SceneManager.set_scene_class(Scene, default_scene_initializer)
 
+
+def _report_a_script_that_rendered_nothing():
+    """At exit of a plain ``python scene.py`` run, say if nothing was rendered.
+
+    Algan is lazy, so a script missing its ``Scene.save_video()`` runs to
+    completion, writes no file and exits 0 -- the user then goes looking for
+    output that was never going to exist. Registered only for a run that is
+    plainly a scene script (``is_scene_script_run``): a REPL, a notebook or a
+    test suite that renders nothing is not a mistake. The daemon and
+    ``algan render``'s in-process path do the same check themselves, because
+    ``atexit`` handlers do not run under either.
+    """
+    import atexit
+
+    from algan.daemon_client import is_scene_script_run, script_of
+    from algan.environment import env_flag
+    from algan.scene import renders_requested, warn_if_nothing_rendered
+
+    if env_flag("ALGAN_DAEMON_CHILD", False) or not is_scene_script_run():
+        return
+
+    script = script_of()
+    before = renders_requested()
+    # A script that died has already said why; "it rendered nothing" on top of
+    # its traceback would only misdescribe the failure. atexit cannot see how
+    # the interpreter is ending, so note it as it happens.
+    crashed = []
+    previous_hook = sys.excepthook
+
+    def _note_crash(*exc_info):
+        crashed.append(True)
+        previous_hook(*exc_info)
+
+    sys.excepthook = _note_crash
+
+    def _report():
+        if not crashed:
+            warn_if_nothing_rendered(script, before)
+
+    atexit.register(_report)
+
+
+_report_a_script_that_rendered_nothing()
+
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.
 # Curate star imports. ``from algan import *`` is the documented entry point,
 # so it is effectively the public API: it must expose mobs, animations,
@@ -460,7 +504,19 @@ _INTERNAL_EXPORT_NAMES = frozenset(
 # Public names that the rules above would otherwise miss.
 # FragmentStage instances are neither callable nor upper-case, so the rules
 # below do not pick them up.
-_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "easings")
+_EXTRA_EXPORTS = (
+    "cosine_color",
+    "fresnel_rim",
+    "glass_ball",
+    "easings",
+    # The Side members. ``Side`` itself is a class, so the rules above export
+    # it; these three are enum members -- neither callable nor upper-case --
+    # and they are the spelling Three.js uses and the material docstrings and
+    # warnings name, so a reader who writes ``side=DoubleSide`` must have it.
+    "FrontSide",
+    "BackSide",
+    "DoubleSide",
+)
 
 
 def _is_root_export(name, value):

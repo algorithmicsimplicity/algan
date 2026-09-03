@@ -32,6 +32,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.easings import identity
+from algan.errors import AlganConfigurationError
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
@@ -187,7 +188,9 @@ class Model3D(Mob):
 
         if scene_data is None:
             if file_path is None:
-                raise ValueError("Model3D requires a file_path or scene_data")
+                raise AlganConfigurationError(
+                    "Model3D requires a file_path or scene_data"
+                )
             scene_data = _load_scene_for(file_path)
         self.scene_data = scene_data
         self.source_path = scene_data.source_path or (file_path or "")
@@ -235,7 +238,9 @@ class Model3D(Mob):
                     self.parts.setdefault(node_name, []).append(mob)
 
         if not self.mesh_mobs:
-            raise ValueError(f"No renderable meshes found in {self.source_path!r}")
+            raise AlganConfigurationError(
+                f"No renderable meshes found in {self.source_path!r}"
+            )
 
         self.add_children(self.mesh_mobs)
 
@@ -458,7 +463,9 @@ class Model3D(Mob):
     def _resolve_clip(self, name):
         clips = self.scene_data.animations
         if not clips:
-            raise ValueError(f"model {self.source_path!r} carries no animation clips")
+            raise AlganConfigurationError(
+                f"model {self.source_path!r} carries no animation clips"
+            )
         if name is None:
             return clips[0]
         for clip in clips:
