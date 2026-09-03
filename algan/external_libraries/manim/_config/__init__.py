@@ -1,61 +1,70 @@
-"""Set the global config and logger."""
+"""The global Manim config object.
+
+Upstream also builds a ``rich``-backed logger here and installs it on the
+*root* logger at import time. Algan owns its own console output and must not
+have a library reconfigure logging out from under the importing application,
+so this copy hands out a plain :mod:`logging` logger with a ``NullHandler``
+and a ``console`` that is a thin ``print`` wrapper. That is everything the
+vendored geometry subset asks for, and it keeps ``rich`` out of Algan's
+dependency set.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from .cli_colors import parse_cli_ctx
-
-# from .logger_utils import make_logger
 from .utils import ManimConfig, ManimFrame, make_config_parser
 
 __all__ = [
     "config",
+    "console",
+    "error_console",
     "frame",
+    "logger",
     "tempconfig",
-    "cli_ctx_settings",
 ]
 
+_RICH_MARKUP = re.compile(r"\[/?[a-z_ ]+\]")
+
+
+class _Console:
+    """The sliver of ``rich.console.Console`` the vendored subset calls."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.pop("style", None)
+        text = " ".join(_RICH_MARKUP.sub("", str(a)) for a in args)
+        print(text, file=self._stream, **kwargs)
+
+
+#: Reachable as ``manim.logger`` or ``logging.getLogger("manim")``.
+logger = logging.getLogger("manim")
+logger.addHandler(logging.NullHandler())
+
+console = _Console(sys.stdout)
+error_console = _Console(sys.stderr)
+
 parser = make_config_parser()
-
-# The logger can be accessed from anywhere as manim.logger, or as
-# logging.getLogger("manim").  The console must be accessed as manim.console.
-# Throughout the codebase, use manim.console.print() instead of print().
-# Use error_console to print errors so that it outputs to stderr.
-cli_ctx_settings = parse_cli_ctx(parser["CLI_CTX"])
-# TODO: temporary to have a clean terminal output when working with PIL or matplotlib
-logging.getLogger("PIL").setLevel(logging.INFO)
-logging.getLogger("matplotlib").setLevel(logging.INFO)
-
 config = ManimConfig().digest_parser(parser)
-# TODO: to be used in the future - see PR #620
-# https://github.com/ManimCommunity/manim/pull/620
 frame = ManimFrame(config)
 
 
-# This has to go here because it needs access to this module's config
 @contextmanager
 def tempconfig(temp: ManimConfig | dict[str, Any]) -> Generator[None, None, None]:
-    """Context manager that temporarily modifies the global ``config`` object.
+    """Temporarily modify the global ``config`` object.
 
-    Inside the ``with`` statement, the modified config will be used.  After
-    context manager exits, the config will be restored to its original state.
-
-    Parameters
-    ----------
-    temp
-        Object whose keys will be used to temporarily update the global
-        ``config``.
+    Inside the ``with`` statement the modified config is in force; on exit the
+    original values are restored.
 
     Examples
     --------
-
-    Use ``with tempconfig({...})`` to temporarily change the default values of
-    certain config options.
-
     .. code-block:: pycon
 
        >>> config["frame_height"]
@@ -65,19 +74,16 @@ def tempconfig(temp: ManimConfig | dict[str, Any]) -> Generator[None, None, None
        100.0
        >>> config["frame_height"]
        8.0
-
     """
     global config
     original = config.copy()
 
     temp = {k: v for k, v in temp.items() if k in original}
 
-    # In order to change the config that every module has access to, use
-    # update(), DO NOT use assignment.  Assigning config = some_dict will just
-    # make the local variable named config point to a new dictionary, it will
-    # NOT change the dictionary that every module has a reference to.
+    # update(), never assignment: every module holds a reference to this one
+    # object, and rebinding the name here would not reach any of them.
     config.update(temp)
     try:
         yield
     finally:
-        config.update(original)  # update, not assignment!
+        config.update(original)

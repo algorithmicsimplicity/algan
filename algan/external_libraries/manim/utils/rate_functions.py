@@ -34,6 +34,8 @@ for the non-standard ones
                                 .next_to(plot_bg, UP, buff=0.1)
                             )
                             x.add(VGroup(plot_bg, plot, plot_title))
+                        except Exception: # because functions `not_quite_there`, `function squish_rate_func` are not working.
+                            pass
             x.arrange_in_grid(cols=8)
             x.height = config.frame_height
             x.width = config.frame_width
@@ -109,7 +111,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from algan.external_libraries.manim.utils.simple_functions import sigmoid
+from ..utils.simple_functions import sigmoid
 
 
 # TODO: rewrite this to use ParamSpec when Python 3.9 is out of life

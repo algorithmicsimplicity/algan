@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
+from ..._compat import zip_strict as _zip
+
 __all__ = ["PMobject", "Mobject1D", "Mobject2D", "PGroup", "PointCloudDot", "Point"]
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import (
-    OpenGLPMobject,
-)
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
 
 from ...constants import *
 from ...mobject.mobject import Mobject
 from ...utils.bezier import interpolate
 from ...utils.color import (
     BLACK,
+    PURE_YELLOW,
     WHITE,
-    YELLOW,
     ManimColor,
     ParsableManimColor,
     color_gradient,
@@ -33,13 +32,18 @@ from ...utils.iterables import stretch_array_to_length
 __all__ = ["PMobject", "Mobject1D", "Mobject2D", "PGroup", "PointCloudDot", "Point"]
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any
+    from ..._compat import Self
 
     import numpy.typing as npt
-    from typing_extensions import Self
 
-    from algan.external_libraries.manim.typing import ManimFloat, Point3DLike, Vector3D
+    from ...typing import (
+        FloatRGBA_Array,
+        FloatRGBALike_Array,
+        ManimFloat,
+        Point3D_Array,
+        Point3DLike,
+        Point3DLike_Array,
+    )
 
 
 class PMobject(Mobject, metaclass=ConvertToOpenGL):
@@ -76,8 +80,8 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         super().__init__(**kwargs)
 
     def reset_points(self) -> Self:
-        self.rgbas = np.zeros((0, 4))
-        self.points = np.zeros((0, 3))
+        self.rgbas: FloatRGBA_Array = np.zeros((0, 4))
+        self.points: Point3D_Array = np.zeros((0, 3))
         return self
 
     def get_array_attrs(self) -> list[str]:
@@ -85,10 +89,10 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
 
     def add_points(
         self,
-        points: npt.NDArray,
-        rgbas: npt.NDArray | None = None,
+        points: Point3DLike_Array,
+        rgbas: FloatRGBALike_Array | None = None,
         color: ParsableManimColor | None = None,
-        alpha: float = 1,
+        alpha: float = 1.0,
     ) -> Self:
         """Add points.
 
@@ -108,7 +112,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         return self
 
     def set_color(
-        self, color: ParsableManimColor = YELLOW, family: bool = True
+        self, color: ParsableManimColor = PURE_YELLOW, family: bool = True
     ) -> Self:
         rgba = color_to_rgba(color)
         mobs = self.family_members_with_points() if family else [self]
@@ -128,7 +132,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
 
     def set_color_by_gradient(self, *colors: ParsableManimColor) -> Self:
         self.rgbas = np.array(
-            list(map(color_to_rgba, color_gradient(*colors, len(self.points)))),
+            list(map(color_to_rgba, color_gradient(colors, len(self.points)))),
         )
         return self
 
@@ -170,7 +174,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         for mob in self.family_members_with_points():
             num_points = self.get_num_points()
             mob.apply_over_attr_arrays(
-                lambda arr, n=num_points: arr[np.arange(0, n, factor)],
+                lambda arr, n=num_points: arr[np.arange(0, n, factor)],  # type: ignore[misc]
             )
         return self
 
@@ -180,7 +184,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         """Function is any map from R^3 to R"""
         for mob in self.family_members_with_points():
             indices = np.argsort(np.apply_along_axis(function, 1, mob.points))
-            mob.apply_over_attr_arrays(lambda arr, idx=indices: arr[idx])
+            mob.apply_over_attr_arrays(lambda arr, idx=indices: arr[idx])  # type: ignore[misc]
         return self
 
     def fade_to(
@@ -197,7 +201,7 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
     def ingest_submobjects(self) -> Self:
         attrs = self.get_array_attrs()
         arrays = list(map(self.get_merged_array, attrs))
-        for attr, array in zip(attrs, arrays):
+        for attr, array in _zip(attrs, arrays, strict=True):
             setattr(self, attr, array)
         self.submobjects = []
         return self
@@ -214,11 +218,12 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         return PMobject
 
     # Alignment
-    def align_points_with_larger(self, larger_mobject: Mobject) -> None:
+    def align_points_with_larger(self, larger_mobject: Mobject) -> Self:
         assert isinstance(larger_mobject, PMobject)
         self.apply_over_attr_arrays(
             lambda a: stretch_array_to_length(a, larger_mobject.get_num_points()),
         )
+        return self
 
     def get_point_mobject(self, center: Point3DLike | None = None) -> Point:
         if center is None:
@@ -238,12 +243,13 @@ class PMobject(Mobject, metaclass=ConvertToOpenGL):
         )
         return self
 
-    def pointwise_become_partial(self, mobject: Mobject, a: float, b: float) -> None:
+    def pointwise_become_partial(self, mobject: Mobject, a: float, b: float) -> Self:
         lower_index, upper_index = (int(x * mobject.get_num_points()) for x in (a, b))
         for attr in self.get_array_attrs():
             full_array = getattr(mobject, attr)
             partial_array = full_array[lower_index:upper_index]
             setattr(self, attr, partial_array)
+        return self
 
 
 # TODO, Make the two implementations below non-redundant
@@ -258,7 +264,7 @@ class Mobject1D(PMobject, metaclass=ConvertToOpenGL):
         start: npt.NDArray,
         end: npt.NDArray,
         color: ParsableManimColor | None = None,
-    ) -> None:
+    ) -> Self:
         start, end = list(map(np.array, [start, end]))
         length = np.linalg.norm(end - start)
         if length == 0:
@@ -269,6 +275,8 @@ class Mobject1D(PMobject, metaclass=ConvertToOpenGL):
                 [interpolate(start, end, t) for t in np.arange(0, 1, epsilon)]
             )
         self.add_points(points, color=color)
+
+        return self
 
 
 class Mobject2D(PMobject, metaclass=ConvertToOpenGL):
@@ -353,11 +361,11 @@ class PointCloudDot(Mobject1D):
 
     def __init__(
         self,
-        center: Vector3D = ORIGIN,
+        center: Point3DLike = ORIGIN,
         radius: float = 2.0,
         stroke_width: int = 2,
         density: int = DEFAULT_POINT_DENSITY_1D,
-        color: ManimColor = YELLOW,
+        color: ManimColor = PURE_YELLOW,
         **kwargs: Any,
     ) -> None:
         self.radius = radius
@@ -367,11 +375,12 @@ class PointCloudDot(Mobject1D):
         )
         self.shift(center)
 
-    def init_points(self) -> None:
+    def init_points(self) -> Self:
         self.reset_points()
         self.generate_points()
+        return self
 
-    def generate_points(self) -> None:
+    def generate_points(self) -> Self:
         self.add_points(
             np.array(
                 [
@@ -386,6 +395,7 @@ class PointCloudDot(Mobject1D):
                 ]
             ),
         )
+        return self
 
 
 class Point(PMobject):
@@ -410,15 +420,17 @@ class Point(PMobject):
     """
 
     def __init__(
-        self, location: Vector3D = ORIGIN, color: ManimColor = BLACK, **kwargs: Any
+        self, location: Point3DLike = ORIGIN, color: ManimColor = BLACK, **kwargs: Any
     ) -> None:
         self.location = location
         super().__init__(color=color, **kwargs)
 
-    def init_points(self) -> None:
+    def init_points(self) -> Self:
         self.reset_points()
         self.generate_points()
         self.set_points([self.location])
+        return self
 
-    def generate_points(self) -> None:
+    def generate_points(self) -> Self:
         self.add_points(np.array([self.location]))
+        return self

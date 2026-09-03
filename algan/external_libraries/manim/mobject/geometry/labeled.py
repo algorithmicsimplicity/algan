@@ -4,29 +4,25 @@ from __future__ import annotations
 
 __all__ = ["Label", "LabeledLine", "LabeledArrow", "LabeledPolygram"]
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.geometry.line import Arrow, Line
-from algan.external_libraries.manim.mobject.geometry.polygram import Polygram
-from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
+from ...constants import *
+from ...mobject.geometry.line import Arrow, Line
+from ...mobject.geometry.polygram import Polygram
+from ...mobject.geometry.shape_matchers import (
     BackgroundRectangle,
     SurroundingRectangle,
 )
-from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
-
-# from algan.external_libraries.manim.mobject.text.text_mobject import Text
-Text = None
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup
-from algan.external_libraries.manim.utils.color import WHITE
-from algan.external_libraries.manim.utils.polylabel import polylabel
+from ...mobject.text.tex_mobject import MathTex
+from ...mobject.text.text_mobject import Text
+from ...mobject.types.vectorized_mobject import VGroup
+from ...utils.color import WHITE
+from ...utils.polylabel import polylabel
 
 if TYPE_CHECKING:
-    from typing import Any
-
-    from algan.external_libraries.manim.typing import Point3DLike_Array
+    from ...typing import ManimTextLabel, Point3DLike_Array
 
 
 class Label(VGroup):
@@ -65,7 +61,7 @@ class Label(VGroup):
 
     def __init__(
         self,
-        label: str | Tex | MathTex | Text,
+        label: str | ManimTextLabel,
         label_config: dict[str, Any] | None = None,
         box_config: dict[str, Any] | None = None,
         frame_config: dict[str, Any] | None = None,
@@ -98,13 +94,15 @@ class Label(VGroup):
         frame_config = default_frame_config | (frame_config or {})
 
         # Determine the type of label and instantiate the appropriate object
-        self.rendered_label: MathTex | Tex | Text
+        self.rendered_label: ManimTextLabel
         if isinstance(label, str):
             self.rendered_label = MathTex(label, **label_config)
-        elif isinstance(label, (MathTex, Tex, Text)):
+        elif isinstance(label, (MathTex, Text)):
             self.rendered_label = label
         else:
-            raise TypeError("Unsupported label type. Must be MathTex, Tex, or Text.")
+            raise TypeError(
+                "Unsupported label type. Must be MathTex, Tex, or Text."
+            )
 
         # Add a background box
         self.background_rect = BackgroundRectangle(self.rendered_label, **box_config)
@@ -159,7 +157,7 @@ class LabeledLine(Line):
 
     def __init__(
         self,
-        label: str | Tex | MathTex | Text,
+        label: str | ManimTextLabel,
         label_position: float = 0.5,
         label_config: dict[str, Any] | None = None,
         box_config: dict[str, Any] | None = None,
@@ -347,7 +345,7 @@ class LabeledPolygram(Polygram):
     def __init__(
         self,
         *vertex_groups: Point3DLike_Array,
-        label: str | Tex | MathTex | Text,
+        label: str | ManimTextLabel,
         precision: float = 0.01,
         label_config: dict[str, Any] | None = None,
         box_config: dict[str, Any] | None = None,

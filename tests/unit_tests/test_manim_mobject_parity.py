@@ -11,8 +11,8 @@ import algan.manim as mn
 from algan.errors import AlganConfigurationError
 
 
-def test_all_manim_0201_mobjects_are_exported():
-    assert mn.MANIM_COMMUNITY_VERSION == "0.20.1"
+def test_all_manim_0210_mobjects_are_exported():
+    assert mn.MANIM_COMMUNITY_VERSION == "0.21.0"
     assert len(mn.MANIM_MOBJECT_NAMES) == 188
     assert len(set(mn.MANIM_MOBJECT_NAMES)) == 188
     assert mn.missing_manim_mobjects(vars(mn)) == ()
@@ -20,7 +20,46 @@ def test_all_manim_0201_mobjects_are_exported():
     assert all(
         inspect.isclass(getattr(mn, name)) and issubclass(getattr(mn, name), algan.Mob)
         for name in mn.MANIM_MOBJECT_NAMES
+        if name in vars(mn)
     )
+
+
+def test_the_vendored_manim_is_the_one_that_is_imported():
+    """``import manim`` must reach Algan's vendored subset, not a separate one.
+
+    The compatibility layer needs a single Manim identity: ``ManimMob`` checks
+    ``isinstance(submob, manim.ImageMobject)`` against classes
+    ``algan.manim`` holds, and a second copy of Manim in the process answers
+    ``False`` to every one of those. Aliasing the top-level package is not
+    enough on its own -- a submodule imported through the alias would execute
+    a second time and define a second set of classes -- so this pins the
+    identity of a submodule as well as the package.
+    """
+    import manim
+    import manim.mobject.svg.brace
+
+    import algan.external_libraries.manim as vendored
+    import algan.external_libraries.manim.mobject.svg.brace as vendored_brace
+
+    assert manim is vendored
+    assert manim.mobject.svg.brace is vendored_brace
+    assert manim.__version__ == mn.MANIM_COMMUNITY_VERSION
+
+
+def test_unvendored_and_pango_mobjects_are_declared_not_silently_absent():
+    """The two ways a Manim Mobject can be missing are both named.
+
+    ``Typst``/``MathTypst`` are dropped from the vendored subset outright;
+    ``Text``/``MarkupText``/``Paragraph`` need the optional ``manimpango``.
+    Neither may just quietly not be in the manifest.
+    """
+    assert set(mn.MANIM_UNVENDORED_MOBJECT_NAMES).isdisjoint(mn.MANIM_MOBJECT_NAMES)
+    assert set(mn.MANIM_PANGO_MOBJECT_NAMES) <= set(mn.MANIM_MOBJECT_NAMES)
+    for name in mn.MANIM_UNVENDORED_MOBJECT_NAMES:
+        assert not hasattr(mn, name)
+    # Present as a set or absent as a set -- never a partial Pango install.
+    present = [name for name in mn.MANIM_PANGO_MOBJECT_NAMES if hasattr(mn, name)]
+    assert len(present) in (0, len(mn.MANIM_PANGO_MOBJECT_NAMES))
 
 
 def test_manim_backed_graphing_and_mutation_api():

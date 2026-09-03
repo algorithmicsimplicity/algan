@@ -2,6 +2,8 @@ r"""Mobjects that are simple geometric shapes."""
 
 from __future__ import annotations
 
+from ..._compat import zip_strict as _zip
+
 __all__ = [
     "Polygram",
     "Polygon",
@@ -18,44 +20,31 @@ __all__ = [
 
 
 from math import ceil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.geometry.arc import ArcBetweenPoints
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
-    VGroup,
-    VMobject,
-)
-from algan.external_libraries.manim.utils.color import BLUE, WHITE, ParsableManimColor
-from algan.external_libraries.manim.utils.iterables import (
-    adjacent_n_tuples,
-    adjacent_pairs,
-)
-from algan.external_libraries.manim.utils.qhull import QuickHull
-from algan.external_libraries.manim.utils.space_ops import (
-    angle_between_vectors,
-    normalize,
-    regular_vertices,
-)
+from ...constants import *
+from ...mobject.geometry.arc import ArcBetweenPoints
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.types.vectorized_mobject import VGroup, VMobject
+from ...utils.color import BLUE, WHITE, ParsableManimColor
+from ...utils.iterables import adjacent_n_tuples, adjacent_pairs
+from ...utils.qhull import QuickHull
+from ...utils.space_ops import angle_between_vectors, normalize, regular_vertices
 
 if TYPE_CHECKING:
-    from typing import Any, Literal
+    from ..._compat import Self
 
     import numpy.typing as npt
-    from typing_extensions import Self
 
-    from algan.external_libraries.manim.typing import (
+    from ...typing import (
         Point3D,
         Point3D_Array,
         Point3DLike,
         Point3DLike_Array,
     )
-    from algan.external_libraries.manim.utils.color import ParsableManimColor
+    from ...utils.color import ParsableManimColor
 
 
 class Polygram(VMobject, metaclass=ConvertToOpenGL):
@@ -164,7 +153,9 @@ class Polygram(VMobject, metaclass=ConvertToOpenGL):
         # TODO: If any of the original vertex groups contained the starting vertex N
         # times, then .get_vertex_groups() splits it into N vertex groups.
         group = []
-        for start, end in zip(self.get_start_anchors(), self.get_end_anchors()):
+        for start, end in _zip(
+            self.get_start_anchors(), self.get_end_anchors(), strict=True
+        ):
             group.append(start)
 
             if self.consider_points_equals(end, group[0]):
@@ -250,8 +241,8 @@ class Polygram(VMobject, metaclass=ConvertToOpenGL):
             else:
                 radius_list = radius * ceil(len(vertex_group) / len(radius))
 
-            for current_radius, (v1, v2, v3) in zip(
-                radius_list, adjacent_n_tuples(vertex_group, 3)
+            for current_radius, (v1, v2, v3) in _zip(
+                radius_list, adjacent_n_tuples(vertex_group, 3), strict=True
             ):
                 vect1 = v2 - v1
                 vect2 = v3 - v2
@@ -264,6 +255,15 @@ class Polygram(VMobject, metaclass=ConvertToOpenGL):
 
                 # Distance between vertex and start of the arc
                 cut_off_length = current_radius * np.tan(angle / 2)
+
+                # Clamp the cut-off length so that a (near) 180 degree turn
+                # between consecutive edges - which makes ``tan(angle / 2)``
+                # diverge to infinity - cannot push the arc endpoints to
+                # infinity.  This also bounds the rounded corner to at most half
+                # of the shorter adjacent edge, matching the expected behavior
+                # for degenerate collinear polygons (see issue #3052).
+                max_cut_off = min(np.linalg.norm(vect1), np.linalg.norm(vect2)) / 2
+                cut_off_length = np.clip(cut_off_length, -max_cut_off, max_cut_off)
 
                 # Determines counterclockwise vs. clockwise
                 sign = np.sign(np.cross(vect1, vect2)[2])
@@ -292,7 +292,7 @@ class Polygram(VMobject, metaclass=ConvertToOpenGL):
 
             # To ensure that we loop through starting with last
             arcs = [arcs[-1], *arcs[:-1]]
-            from manim.mobject.geometry.line import Line
+            from ...mobject.geometry.line import Line
 
             for arc1, arc2 in adjacent_pairs(arcs):
                 new_points.extend(arc1.points)
@@ -563,7 +563,7 @@ class Star(Polygon):
         )
 
         vertices: list[npt.NDArray] = []
-        for pair in zip(outer_vertices, inner_vertices):
+        for pair in _zip(outer_vertices, inner_vertices, strict=True):
             vertices.extend(pair)
 
         super().__init__(*vertices, **kwargs)
@@ -651,7 +651,7 @@ class Rectangle(Polygon):
         self.grid_lines = VGroup()
 
         if grid_xstep or grid_ystep:
-            from manim.mobject.geometry.line import Line
+            from ...mobject.geometry.line import Line
 
             v = self.get_vertices()
 

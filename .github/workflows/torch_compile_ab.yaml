@@ -91,7 +91,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg \
+          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg \
             texlive-latex-base texlive-latex-extra texlive-fonts-recommended latexmk
 
       - name: Install system dependencies (macOS)

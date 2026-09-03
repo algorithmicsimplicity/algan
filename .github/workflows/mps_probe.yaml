@@ -120,21 +120,20 @@ jobs:
       - name: Create venv
         run: uv venv
 
-      # pycairo publishes no manylinux wheel, so `uv sync` builds it from
-      # source on Linux and meson needs a system cairo to build against -- the
-      # first run of this workflow died here with `Dependency "cairo" not found
-      # (tried pkg-config and cmake)`. Pango comes along because manimpango
-      # links the same stack.
+      # `--all-extras` below includes `pango`, and manimpango publishes no
+      # manylinux wheel, so `uv sync` builds it from source on Linux and meson
+      # needs a system pango to build against. (Cairo used to be here too, for
+      # pycairo; `manim` is no longer a dependency, so nothing pulls it now.)
       #
       # There is deliberately no macOS counterpart. The wheel exists there, and
       # the measurement says so: the same step installed the whole locked
       # environment on macos-latest in 18 seconds, building nothing. LaTeX and
       # ffmpeg are absent on both, because the probe renders nothing.
-      - name: Install cairo and pango headers (Linux)
+      - name: Install pango headers (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+          sudo apt-get install -y libpango1.0-dev pkg-config
 
       # The full locked environment, matching the test job, so the torch and
       # taichi versions the probe reports are the ones Algan actually ships
@@ -245,13 +244,13 @@ jobs:
       - name: Create venv
         run: uv venv
 
-      # Same reason as in the probe job: pycairo has no manylinux wheel and
-      # builds from source against a system cairo. macOS needs nothing.
-      - name: Install cairo and pango headers (Linux)
+      # Same reason as in the probe job: manimpango has no manylinux wheel and
+      # builds from source against a system pango. macOS needs nothing.
+      - name: Install pango headers (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
+          sudo apt-get install -y libpango1.0-dev pkg-config
 
       # The locked environment rather than a bare `uv pip install torch`, so the
       # torch version measured is the one Algan actually ships against.
@@ -375,7 +374,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg
+          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg
 
       - name: Install system dependencies for manimpango (macOS)
         if: runner.os == 'macOS'

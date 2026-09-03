@@ -46,8 +46,23 @@ TEST_FONT = "Algan Test Sans"
 
 
 def _register_test_fonts():
-    """Make the vendored faces visible to Pango for this process."""
-    import manimpango
+    """Make the vendored faces visible to Pango for this process.
+
+    ``manimpango`` is an optional extra for users of Algan (see
+    ``algan/external_libraries/manim/VENDORING.md``) but a hard requirement
+    here: the render baselines were typeset with Pango, so a suite run without
+    it would compare LaTeX-typeset text against them and fail everywhere for a
+    reason that has nothing to do with the change under test.
+    """
+    try:
+        import manimpango
+    except ImportError as exc:
+        raise RuntimeError(
+            "Algan's test suite needs the optional `pango` extra: the render "
+            "baselines are Pango-typeset. Install the development environment "
+            "with `uv sync --all-extras --dev`, or add manimpango on its own "
+            'with `pip install "algan[pango]"`.'
+        ) from exc
 
     for face in sorted(FONT_DIR.glob("*.ttf")):
         if not manimpango.register_font(str(face)):

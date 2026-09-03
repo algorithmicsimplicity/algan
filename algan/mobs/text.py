@@ -288,8 +288,9 @@ class Tex(Mob):
         else:
             if not hasattr(mn, "Text"):
                 raise RuntimeError(
-                    "Plain Text rendering requires Manim's optional Pango support; "
-                    "use algan.Text, which provides a LaTeX fallback."
+                    "Pango text rendering needs the optional `manimpango` "
+                    'package: `pip install "algan[pango]"`. Or use algan.Text, '
+                    "which typesets through LaTeX's text mode without it."
                 )
             t = mn.Text(
                 delimiter.join(self.tex_strings),

@@ -20,23 +20,22 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
 import numpy as np
 
-from algan.external_libraries.manim import constants
-from algan.external_libraries.manim.constants import RendererType
-from algan.external_libraries.manim.utils.color import ManimColor
-from algan.external_libraries.manim.utils.tex import TexTemplate
+from .. import constants
+from ..constants import RendererType
+from ..utils.color import ManimColor
+from ..utils.tex import TexTemplate
 
 if TYPE_CHECKING:
     from enum import EnumMeta
+    from .._compat import Self
 
-    from typing_extensions import Self
-
-    from algan.external_libraries.manim.typing import StrPath, Vector3D
+    from ..typing import StrPath, Vector3D
 
 __all__ = ["config_file_paths", "make_config_parser", "ManimConfig", "ManimFrame"]
 
@@ -122,16 +121,20 @@ def make_config_parser(
     # read_file() before calling read() for any optional files."
     # https://docs.python.org/3/library/configparser.html#configparser.ConfigParser.read
     parser = configparser.ConfigParser()
+    logger.info(f"Reading config file: {library_wide}")
     with library_wide.open() as file:
         parser.read_file(file)  # necessary file
 
     other_files = [user_wide, Path(custom_file) if custom_file else folder_wide]
+    for path in other_files:
+        if path.exists():
+            logger.info(f"Reading config file: {path}")
     parser.read(other_files)  # optional files
 
     return parser
 
 
-def _determine_quality(qual: str) -> str:
+def _determine_quality(qual: str | None) -> str:
     for quality, values in constants.QUALITIES.items():
         if values["flag"] is not None and values["flag"] == qual:
             return quality
@@ -180,8 +183,8 @@ class ManimConfig(MutableMapping):
     .. code-block:: pycon
 
         >>> from manim import WHITE
-        >>> config.background = WHITE
-        >>> config["background"] = WHITE
+        >>> config.background_color = WHITE
+        >>> config["background_color"] = WHITE
 
     The former is preferred; the latter is provided mostly for backwards
     compatibility.
@@ -198,7 +201,7 @@ class ManimConfig(MutableMapping):
         10.0
 
     There are many ways of interacting with config options.  Take for example
-    the config option ``background``.  There are three ways to change it:
+    the config option ``background_color``.  There are three ways to change it:
     via a config file, via CLI flags, or programmatically.
 
     To set the background color via a config file, save the following
@@ -207,7 +210,7 @@ class ManimConfig(MutableMapping):
     .. code-block::
 
        [CLI]
-       background = WHITE
+       background_color = WHITE
 
     In order to have this ``.cfg`` file apply to a manim scene, it needs to be
     placed in the same directory as the script,
@@ -243,9 +246,9 @@ class ManimConfig(MutableMapping):
 
     .. code-block:: python
 
-        from manim import *
+        from .. import *
 
-        config.background = RED
+        config.background_color = RED
 
 
         class MyScene(Scene): ...
@@ -257,12 +260,13 @@ class ManimConfig(MutableMapping):
 
     _OPTS = {
         "assets_dir",
-        "background",
+        "background_color",
         "background_opacity",
         "custom_folders",
         "disable_caching",
         "disable_caching_warning",
         "dry_run",
+        "encoder_queue_size",
         "enable_wireframe",
         "ffmpeg_loglevel",
         "format",
@@ -280,6 +284,7 @@ class ManimConfig(MutableMapping):
         "log_dir",
         "log_to_file",
         "max_files_cached",
+        "max_inflight_encoders",
         "media_dir",
         "movie_file_extension",
         "notify_outdated_version",
@@ -296,6 +301,7 @@ class ManimConfig(MutableMapping):
         "save_last_frame",
         "save_pngs",
         "scene_names",
+        "seed",
         "show_in_file_browser",
         "tex_dir",
         "tex_template",
@@ -334,6 +340,7 @@ class ManimConfig(MutableMapping):
 
     def __contains__(self, key: object) -> bool:
         try:
+            assert isinstance(key, str)
             self.__getitem__(key)
             return True
         except AttributeError:
@@ -424,7 +431,7 @@ class ManimConfig(MutableMapping):
         # Deepcopying the underlying dict is enough because all properties
         # either read directly from it or compute their value on the fly from
         # values read directly from it.
-        c._d = copy.deepcopy(self._d, memo)
+        c._d = copy.deepcopy(self._d, memo)  # type: ignore[arg-type]
         return c
 
     # helper type-checking methods
@@ -591,6 +598,7 @@ class ManimConfig(MutableMapping):
             "enable_wireframe",
             "force_window",
             "no_latex_cleanup",
+            "dry_run",
         ]:
             setattr(self, key, parser["CLI"].getboolean(key, fallback=False))
 
@@ -599,9 +607,12 @@ class ManimConfig(MutableMapping):
             "from_animation_number",
             "upto_animation_number",
             "max_files_cached",
+            "max_inflight_encoders",
+            "encoder_queue_size",
             # the next two must be set BEFORE digesting frame_width and frame_height
             "pixel_height",
             "pixel_width",
+            "seed",
             "window_monitor",
             "zero_pad",
         ]:
@@ -622,9 +633,10 @@ class ManimConfig(MutableMapping):
             "input_file",
             "output_file",
             "movie_file_extension",
-            "background",
+            "background_color",
             "renderer",
             "window_position",
+            "preview_command",
         ]:
             setattr(self, key, parser["CLI"].get(key, fallback="", raw=True))
 
@@ -648,13 +660,15 @@ class ManimConfig(MutableMapping):
             "window_size"
         ]  # if not "default", get a tuple of the position
         if window_size != "default":
-            window_size = tuple(map(int, re.split(r"[;,\-]", window_size)))
-        self.window_size = window_size
+            window_size_numbers = tuple(map(int, re.split(r"[;,\-]", window_size)))
+            self.window_size = window_size_numbers
+        else:
+            self.window_size = window_size
 
         # plugins
         plugins = parser["CLI"].get("plugins", fallback="", raw=True)
-        plugins = [] if plugins == "" else plugins.split(",")
-        self.plugins = plugins
+        plugin_list = [] if plugins is None or plugins == "" else plugins.split(",")
+        self.plugins = plugin_list
         # the next two must be set AFTER digesting pixel_width and pixel_height
         self["frame_height"] = parser["CLI"].getfloat("frame_height", 8.0)
         width = parser["CLI"].getfloat("frame_width", None)
@@ -664,31 +678,31 @@ class ManimConfig(MutableMapping):
             self["frame_width"] = width
 
         # other logic
-        val = parser["CLI"].get("tex_template_file")
-        if val:
-            self.tex_template_file = val
+        tex_template_file = parser["CLI"].get("tex_template_file")
+        if tex_template_file:
+            self.tex_template_file = Path(tex_template_file)
 
-        val = parser["CLI"].get("progress_bar")
-        if val:
-            self.progress_bar = val
+        progress_bar = parser["CLI"].get("progress_bar")
+        if progress_bar:
+            self.progress_bar = progress_bar
 
-        val = parser["ffmpeg"].get("loglevel")
-        if val:
-            self.ffmpeg_loglevel = val
+        ffmpeg_loglevel = parser["ffmpeg"].get("loglevel")
+        if ffmpeg_loglevel:
+            self.ffmpeg_loglevel = ffmpeg_loglevel
 
         try:
-            val = parser["jupyter"].getboolean("media_embed")
+            media_embed = parser["jupyter"].getboolean("media_embed")
         except ValueError:
-            val = None
-        self.media_embed = val
+            media_embed = None
+        self.media_embed = media_embed
 
-        val = parser["jupyter"].get("media_width")
-        if val:
-            self.media_width = val
+        media_width = parser["jupyter"].get("media_width")
+        if media_width:
+            self.media_width = media_width
 
-        val = parser["CLI"].get("quality", fallback="", raw=True)
-        if val:
-            self.quality = _determine_quality(val)
+        quality = parser["CLI"].get("quality", fallback="", raw=True)
+        if quality:
+            self.quality = _determine_quality(quality)
 
         return self
 
@@ -756,7 +770,7 @@ class ManimConfig(MutableMapping):
             "scene_names",
             "verbosity",
             "renderer",
-            "background",
+            "background_color",
             "enable_gui",
             "fullscreen",
             "use_projection_fill_shaders",
@@ -767,6 +781,9 @@ class ManimConfig(MutableMapping):
             "dry_run",
             "no_latex_cleanup",
             "preview_command",
+            "seed",
+            "max_inflight_encoders",
+            "encoder_queue_size",
         ]:
             if hasattr(args, key):
                 attr = getattr(args, key)
@@ -1036,11 +1053,11 @@ class ManimConfig(MutableMapping):
         logger.setLevel(val)
 
     @property
-    def format(self) -> str:
+    def format(self) -> str | None:
         """File format; "png", "gif", "mp4", "webm" or "mov"."""
         return self._d["format"]
 
-    @format.setter
+    @format.setter  # noqa: A003
     def format(self, val: str) -> None:
         self._set_from_list(
             "format",
@@ -1068,7 +1085,7 @@ class ManimConfig(MutableMapping):
         logging.getLogger("libav").setLevel(self.ffmpeg_loglevel)
 
     @property
-    def media_embed(self) -> bool:
+    def media_embed(self) -> bool | None:
         """Whether to embed videos in Jupyter notebook."""
         return self._d["media_embed"]
 
@@ -1104,8 +1121,10 @@ class ManimConfig(MutableMapping):
         self._set_pos_number("pixel_height", value, False)
 
     @property
-    def aspect_ratio(self) -> int:
+    def aspect_ratio(self) -> float:
         """Aspect ratio (width / height) in pixels (--resolution, -r)."""
+        assert isinstance(self._d["pixel_width"], int)
+        assert isinstance(self._d["pixel_height"], int)
         return self._d["pixel_width"] / self._d["pixel_height"]
 
     @property
@@ -1129,22 +1148,22 @@ class ManimConfig(MutableMapping):
     @property
     def frame_y_radius(self) -> float:
         """Half the frame height (no flag)."""
-        return self._d["frame_height"] / 2
+        return self._d["frame_height"] / 2  # type: ignore[operator]
 
     @frame_y_radius.setter
     def frame_y_radius(self, value: float) -> None:
-        self._d.__setitem__("frame_y_radius", value) or self._d.__setitem__(
+        self._d.__setitem__("frame_y_radius", value) or self._d.__setitem__(  # type: ignore[func-returns-value]
             "frame_height", 2 * value
         )
 
     @property
     def frame_x_radius(self) -> float:
         """Half the frame width (no flag)."""
-        return self._d["frame_width"] / 2
+        return self._d["frame_width"] / 2  # type: ignore[operator]
 
     @frame_x_radius.setter
     def frame_x_radius(self, value: float) -> None:
-        self._d.__setitem__("frame_x_radius", value) or self._d.__setitem__(
+        self._d.__setitem__("frame_x_radius", value) or self._d.__setitem__(  # type: ignore[func-returns-value]
             "frame_width", 2 * value
         )
 
@@ -1179,13 +1198,13 @@ class ManimConfig(MutableMapping):
 
     # TODO: This was parsed before maybe add ManimColor(val), but results in circular import
     @property
-    def background(self) -> ManimColor:
+    def background_color(self) -> ManimColor:
         """Background color of the scene (-c)."""
-        return self._d["background"]
+        return self._d["background_color"]
 
-    @background.setter
-    def background(self, value: Any) -> None:
-        self._d.__setitem__("background", ManimColor(value))
+    @background_color.setter
+    def background_color(self, value: Any) -> None:
+        self._d.__setitem__("background_color", ManimColor(value))
 
     @property
     def from_animation_number(self) -> int:
@@ -1213,6 +1232,37 @@ class ManimConfig(MutableMapping):
     @max_files_cached.setter
     def max_files_cached(self, value: int) -> None:
         self._set_pos_number("max_files_cached", value, True)
+
+    @property
+    def max_inflight_encoders(self) -> int:
+        """Maximum number of partial movie files encoded concurrently while the
+        scene continues rendering. 1 encodes each animation's file before the
+        next animation starts; values > 1 overlap encoding with rendering
+        (4 is a good value on typical hardware) (--max-inflight-encoders).
+        """
+        return self._d["max_inflight_encoders"]
+
+    @max_inflight_encoders.setter
+    def max_inflight_encoders(self, value: int) -> None:
+        if isinstance(value, int) and value >= 1:
+            self._d.__setitem__("max_inflight_encoders", value)
+        else:
+            raise ValueError("max_inflight_encoders must be a positive integer")
+
+    @property
+    def encoder_queue_size(self) -> int:
+        """Maximum number of pending frame buffers held by each encoder when
+        parallel encoding is enabled. Ignored when ``max_inflight_encoders`` is
+        1 (--encoder-queue-size).
+        """
+        return self._d["encoder_queue_size"]
+
+    @encoder_queue_size.setter
+    def encoder_queue_size(self, value: int) -> None:
+        if isinstance(value, int) and value >= 1:
+            self._d.__setitem__("encoder_queue_size", value)
+        else:
+            raise ValueError("encoder_queue_size must be a positive integer")
 
     @property
     def window_monitor(self) -> int:
@@ -1277,7 +1327,7 @@ class ManimConfig(MutableMapping):
 
     @frame_size.setter
     def frame_size(self, value: tuple[int, int]) -> None:
-        self._d.__setitem__("pixel_width", value[0]) or self._d.__setitem__(
+        self._d.__setitem__("pixel_width", value[0]) or self._d.__setitem__(  # type: ignore[func-returns-value]
             "pixel_height", value[1]
         )
 
@@ -1287,7 +1337,7 @@ class ManimConfig(MutableMapping):
         keys = ["pixel_width", "pixel_height", "frame_rate"]
         q = {k: self[k] for k in keys}
         for qual in constants.QUALITIES:
-            if all(q[k] == constants.QUALITIES[qual][k] for k in keys):
+            if all(q[k] == constants.QUALITIES[qual][k] for k in keys):  # type: ignore[literal-required]
                 return qual
         return None
 
@@ -1304,6 +1354,7 @@ class ManimConfig(MutableMapping):
     @property
     def transparent(self) -> bool:
         """Whether the background opacity is less than 1.0 (-t)."""
+        assert isinstance(self._d["background_opacity"], float)
         return self._d["background_opacity"] < 1.0
 
     @transparent.setter
@@ -1361,10 +1412,16 @@ class ManimConfig(MutableMapping):
         if isinstance(value, str):
             value = value.lower()
         renderer = RendererType(value)
+        if renderer == RendererType.OPENGL:
+            raise ValueError(
+                "Algan's vendored Manim subset ships no renderer, so config."
+                "renderer cannot be set to 'opengl'. Algan renders "
+                "Manim geometry with its own ray tracer."
+            )
         try:
-            from manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-            from manim.mobject.opengl.opengl_mobject import OpenGLMobject
-            from manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
+            from ..mobject.opengl.opengl_compatibility import ConvertToOpenGL
+            from ..mobject.opengl.opengl_mobject import OpenGLMobject
+            from ..mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
 
             from ..mobject.mobject import Mobject
             from ..mobject.types.vectorized_mobject import VMobject
@@ -1413,12 +1470,12 @@ class ManimConfig(MutableMapping):
         self._d.__setitem__("window_position", value)
 
     @property
-    def window_size(self) -> str:
+    def window_size(self) -> str | tuple[int, ...]:
         """The size of the opengl window. 'default' to automatically scale the window based on the display monitor."""
         return self._d["window_size"]
 
     @window_size.setter
-    def window_size(self, value: str) -> None:
+    def window_size(self, value: str | tuple[int, ...]) -> None:
         self._d.__setitem__("window_size", value)
 
     def resolve_movie_file_extension(self, is_transparent: bool) -> None:
@@ -1447,7 +1504,7 @@ class ManimConfig(MutableMapping):
         self._set_boolean("enable_gui", value)
 
     @property
-    def gui_location(self) -> tuple[Any]:
+    def gui_location(self) -> tuple[int, ...]:
         """Location parameters for the GUI window (e.g., screen coordinates or layout settings)."""
         return self._d["gui_location"]
 
@@ -1631,6 +1688,7 @@ class ManimConfig(MutableMapping):
         all_args["quality"] = f"{self.pixel_height}p{self.frame_rate:g}"
 
         path = self._d[key]
+        assert isinstance(path, str)
         while "{" in path:
             try:
                 path = path.format(**all_args)
@@ -1730,7 +1788,7 @@ class ManimConfig(MutableMapping):
         self._set_dir("custom_folders", value)
 
     @property
-    def input_file(self) -> str:
+    def input_file(self) -> str | Path:
         """Input file name."""
         return self._d["input_file"]
 
@@ -1759,7 +1817,7 @@ class ManimConfig(MutableMapping):
     @property
     def tex_template(self) -> TexTemplate:
         """Template used when rendering Tex.  See :class:`.TexTemplate`."""
-        if not hasattr(self, "_tex_template") or not self._tex_template:
+        if not hasattr(self, "_tex_template") or not self._tex_template:  # type: ignore[has-type]
             fn = self._d["tex_template_file"]
             if fn:
                 self._tex_template = TexTemplate.from_file(fn)
@@ -1795,8 +1853,19 @@ class ManimConfig(MutableMapping):
         return self._d["plugins"]
 
     @plugins.setter
-    def plugins(self, value: list[str]):
+    def plugins(self, value: list[str]) -> None:
         self._d["plugins"] = value
+
+    @property
+    def seed(self) -> int | None:
+        """Random seed for reproducibility. None means no seed is set."""
+        return self._d["seed"]
+
+    @seed.setter
+    def seed(self, value: int | None) -> None:
+        if value is None:
+            return
+        self._set_pos_number("seed", value, False)
 
 
 # TODO: to be used in the future - see PR #620
@@ -1842,7 +1911,7 @@ class ManimFrame(Mapping):
         self.__dict__["_c"] = c
 
     # there are required by parent class Mapping to behave like a dict
-    def __getitem__(self, key: str | int) -> Any:
+    def __getitem__(self, key: str) -> Any:
         if key in self._OPTS:
             return self._c[key]
         elif key in self._CONSTANTS:
@@ -1850,7 +1919,7 @@ class ManimFrame(Mapping):
         else:
             raise KeyError(key)
 
-    def __iter__(self) -> Iterable[str]:
+    def __iter__(self) -> Iterator[Any]:
         return iter(list(self._OPTS) + list(self._CONSTANTS))
 
     def __len__(self) -> int:
@@ -1868,4 +1937,4 @@ class ManimFrame(Mapping):
 
 
 for opt in list(ManimFrame._OPTS) + list(ManimFrame._CONSTANTS):
-    setattr(ManimFrame, opt, property(lambda self, o=opt: self[o]))
+    setattr(ManimFrame, opt, property(lambda self, o=opt: self[o]))  # type: ignore[misc]

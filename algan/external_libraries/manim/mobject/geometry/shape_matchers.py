@@ -5,29 +5,23 @@ from __future__ import annotations
 __all__ = ["SurroundingRectangle", "BackgroundRectangle", "Cross", "Underline"]
 
 from typing import Any
+from ..._compat import Self
 
-from typing_extensions import Self
-
-from algan.external_libraries.manim._config import config
-from algan.external_libraries.manim.constants import (
+from ... import logger
+from ..._config import config
+from ...constants import (
     DOWN,
     LEFT,
     RIGHT,
     SMALL_BUFF,
     UP,
 )
-from algan.external_libraries.manim.mobject.geometry.line import Line
-from algan.external_libraries.manim.mobject.geometry.polygram import RoundedRectangle
-from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup
-from algan.external_libraries.manim.utils.color import (
-    BLACK,
-    RED,
-    YELLOW,
-    ManimColor,
-    ParsableManimColor,
-)
+from ...mobject.geometry.line import Line
+from ...mobject.geometry.polygram import RoundedRectangle
+from ...mobject.mobject import Mobject
+from ...mobject.opengl.opengl_mobject import OpenGLMobject
+from ...mobject.types.vectorized_mobject import VGroup
+from ...utils.color import BLACK, PURE_YELLOW, RED, ParsableManimColor
 
 
 class SurroundingRectangle(RoundedRectangle):
@@ -57,23 +51,29 @@ class SurroundingRectangle(RoundedRectangle):
     def __init__(
         self,
         *mobjects: Mobject,
-        color: ParsableManimColor = YELLOW,
-        buff: float = SMALL_BUFF,
+        color: ParsableManimColor = PURE_YELLOW,
+        buff: float | tuple[float, float] = SMALL_BUFF,
         corner_radius: float = 0.0,
         **kwargs: Any,
     ) -> None:
-        from algan.external_libraries.manim.mobject.mobject import Group
+        from ...mobject.mobject import Group
 
         if not all(isinstance(mob, (Mobject, OpenGLMobject)) for mob in mobjects):
             raise TypeError(
                 "Expected all inputs for parameter mobjects to be a Mobjects"
             )
 
+        if isinstance(buff, tuple):
+            buff_x = buff[0]
+            buff_y = buff[1]
+        else:
+            buff_x = buff_y = buff
+
         group = Group(*mobjects)
         super().__init__(
             color=color,
-            width=group.width + 2 * buff,
-            height=group.height + 2 * buff,
+            width=group.width + 2 * buff_x,
+            height=group.height + 2 * buff_y,
             corner_radius=corner_radius,
             **kwargs,
         )
@@ -113,11 +113,11 @@ class BackgroundRectangle(SurroundingRectangle):
         stroke_width: float = 0,
         stroke_opacity: float = 0,
         fill_opacity: float = 0.75,
-        buff: float = 0,
+        buff: float | tuple[float, float] = 0,
         **kwargs: Any,
     ) -> None:
         if color is None:
-            color = config.background
+            color = config.background_color
 
         super().__init__(
             *mobjects,
@@ -143,13 +143,12 @@ class BackgroundRectangle(SurroundingRectangle):
             fill_color=BLACK,
             fill_opacity=fill_opacity,
         )
+        if len(kwargs) > 0:
+            logger.info(
+                "Argument %s is ignored in BackgroundRectangle.set_style.",
+                kwargs,
+            )
         return self
-
-    def get_fill_color(self) -> ManimColor:
-        # The type of the color property is set to Any using the property decorator
-        # vectorized_mobject.py#L571
-        temp_color: ManimColor = self.color
-        return temp_color
 
 
 class Cross(VGroup):

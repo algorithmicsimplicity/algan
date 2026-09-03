@@ -13,23 +13,19 @@ __all__ = [
     "StealthTip",
 ]
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.geometry.arc import Circle
-from algan.external_libraries.manim.mobject.geometry.polygram import Square, Triangle
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
-from algan.external_libraries.manim.utils.space_ops import angle_of_vector
+from ...constants import *
+from ...mobject.geometry.arc import Circle
+from ...mobject.geometry.polygram import Square, Triangle
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.types.vectorized_mobject import VMobject
+from ...utils.space_ops import angle_of_vector
 
 if TYPE_CHECKING:
-    from typing import Any
-
-    from algan.external_libraries.manim.typing import Point3D, Vector3D
+    from ...typing import Point3D, Vector3D
 
 
 class ArrowTip(VMobject, metaclass=ConvertToOpenGL):

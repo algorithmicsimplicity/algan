@@ -24,7 +24,7 @@ compile native extensions from source:
 
          sudo apt update
          sudo apt install build-essential python3-dev pkg-config \
-                          libcairo2-dev libpango1.0-dev \
+                          libpango1.0-dev \
                           texlive-latex-base texlive-latex-extra \
                           texlive-fonts-recommended latexmk \
                           ffmpeg
@@ -34,29 +34,31 @@ compile native extensions from source:
       .. code-block:: bash
 
          sudo dnf install gcc gcc-c++ python3-devel pkg-config \
-                          cairo-devel pango-devel ffmpeg
+                          pango-devel ffmpeg
          # plus a LaTeX installation -- see the installation guide
 
    .. tab-item:: macOS
 
       .. code-block:: bash
 
-         brew install cairo pkg-config ffmpeg
+         brew install pkg-config ffmpeg
          # plus MacTeX -- see the installation guide
 
    .. tab-item:: Windows
 
       Install `MiKTeX <https://miktex.org>`__ and add an `FFmpeg build
-      <https://ffmpeg.org/download.html>`__ to your ``PATH``. Cairo and Pango
-      headers are not required because ``pycairo`` and ``manimpango`` ship
-      pre-built Windows wheels.
+      <https://ffmpeg.org/download.html>`__ to your ``PATH``. Pango headers are
+      not required because ``manimpango`` ships pre-built Windows wheels.
 
 Why each dependency is needed:
 
-* **A C compiler, Python headers, pkg-config, Cairo and Pango headers** —
-  ``manimpango`` publishes no Linux wheels at all and ``pycairo`` may also
-  build from source, so both are compiled during the install. Without the
-  Pango headers the install fails with ``Package 'pangocairo' was not found``.
+* **A C compiler, Python headers, pkg-config and Pango headers** — only for
+  ``manimpango``, which the development environment installs because
+  ``uv sync --all-extras`` includes the ``pango`` extra and the render tests
+  compare against Pango-typeset baselines. It publishes no Linux wheel, so it
+  is compiled during the install; without the Pango headers that fails with
+  ``Package 'pangocairo' was not found``. A plain ``pip install algan`` needs
+  none of this -- see :doc:`/installation/uv`.
 * **LaTeX** — required for ``Tex`` and ``Text``. See
   :ref:`the LaTeX step <installation-optional-latex>` for what a minimal
   installation needs.

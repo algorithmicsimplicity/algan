@@ -8,8 +8,8 @@ __all__ = ["deprecated", "deprecated_params"]
 import inspect
 import logging
 import re
-from collections.abc import Iterable
-from typing import Any, Callable, TypeVar, overload
+from collections.abc import Callable, Iterable
+from typing import Any, TypeVar, overload
 
 from decorator import decorate, decorator
 
@@ -128,7 +128,7 @@ def deprecated(
     --------
     Basic usage::
 
-        from manim.utils.deprecation import deprecated
+        from ..utils.deprecation import deprecated
 
 
         @deprecated
@@ -157,7 +157,7 @@ def deprecated(
 
     You can specify additional information for a more precise warning::
 
-        from manim.utils.deprecation import deprecated
+        from ..utils.deprecation import deprecated
 
 
         @deprecated(
@@ -172,7 +172,7 @@ def deprecated(
 
     You may also use dates instead of versions::
 
-        from manim.utils.deprecation import deprecated
+        from ..utils.deprecation import deprecated
 
 
         @deprecated(since="05/01/2021", until="06/01/2021")
@@ -253,7 +253,7 @@ def deprecated(
         # The following line raises this mypy error:
         # Accessing "__init__" on an instance is unsound, since instance.__init__
         # could be from an incompatible subclass  [misc]</pre>
-        func.__init__ = decorate(func.__init__, deprecate)  # type: ignore[misc]
+        func.__init__ = decorate(func.__init__, deprecate)
         return func
 
     func = decorate(func, deprecate)
@@ -316,7 +316,7 @@ def deprecated_params(
     --------
     Basic usage::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(params="a, b, c")
@@ -332,7 +332,7 @@ def deprecated_params(
 
     You can also specify additional information for a more precise warning::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(
@@ -350,7 +350,7 @@ def deprecated_params(
 
     Basic parameter redirection::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(
@@ -370,7 +370,7 @@ def deprecated_params(
 
     Redirecting using a calculated value::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(
@@ -386,7 +386,7 @@ def deprecated_params(
 
     Redirecting multiple parameter values to one::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(
@@ -402,14 +402,16 @@ def deprecated_params(
 
     Redirect one parameter to multiple::
 
-        from manim.utils.deprecation import deprecated_params
+        from ..utils.deprecation import deprecated_params
 
 
         @deprecated_params(
             redirections=[
-                lambda buff=1: {"buff_x": buff[0], "buff_y": buff[1]}
-                if isinstance(buff, tuple)
-                else {"buff_x": buff, "buff_y": buff}
+                lambda buff=1: (
+                    {"buff_x": buff[0], "buff_y": buff[1]}
+                    if isinstance(buff, tuple)
+                    else {"buff_x": buff, "buff_y": buff}
+                )
             ]
         )
         def foo(**kwargs):
@@ -524,10 +526,7 @@ def deprecated_params(
             arguments.
 
         """
-        used = []
-        for param in params:
-            if param in kwargs:
-                used.append(param)
+        used = [param for param in params if param in kwargs]
 
         if len(used) > 0:
             logger.warning(warning_msg(func, used))

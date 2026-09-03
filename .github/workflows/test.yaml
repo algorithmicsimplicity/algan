@@ -95,7 +95,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
+          sudo apt-get install -y libpango1.0-dev pkg-config
 
       # The macOS ManimPango wheel bundles its own Pango, but the Pango stack
       # still resolves family names through fontconfig, and tests/conftest.py

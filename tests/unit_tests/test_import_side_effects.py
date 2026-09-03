@@ -64,22 +64,32 @@ def test_the_import_says_nothing_at_info():
     assert result.stderr == ""
 
 
-def test_pydub_is_quiet_and_pointed_at_the_bundled_ffmpeg():
-    """pydub probes PATH at its own import and warned on every `import algan`.
+def test_the_import_is_quiet_without_ffmpeg_on_path():
+    """No dependency may probe PATH for ffmpeg while it is being imported.
 
-    Everything worked anyway -- Algan encodes through imageio-ffmpeg's bundled
-    build -- so the warning was pure noise, and pydub's own converter was left
-    pointing at a name PATH cannot resolve.
+    pydub did, arriving with the ``manim`` distribution, and warned "Couldn't
+    find ffmpeg or avconv" on every ``import algan`` on a machine carrying only
+    the build imageio-ffmpeg bundles -- which is every machine that installed
+    Algan and nothing else. Algan encodes through that bundled build and worked
+    the whole time, so the warning was pure noise, and ``algan/__init__.py``
+    carried a filter plus a converter fix-up to undo it.
+
+    Both are gone with the dependency: the vendored Manim subset carries none
+    of Manim's audio code (see ``algan/external_libraries/manim/VENDORING.md``).
+    So this pins the outcome rather than the workaround -- nothing says
+    anything, and pydub is not in the process to say it.
     """
     env = dict(os.environ, PATH="/nonexistent")
     result = _fresh_python(
-        "import algan, sys\nprint(sys.modules['pydub'].AudioSegment.converter)\n",
-        env=env,
+        "import algan, sys\nprint('pydub' in sys.modules)\n", env=env
     )
     assert result.returncode == 0, result.stderr
     assert "Couldn't find ffmpeg" not in result.stderr
-    assert result.stdout.strip() != "ffmpeg", "pydub still has no usable binary"
-    assert os.path.isfile(result.stdout.strip())
+    assert result.stdout.strip() == "False", (
+        "pydub is back in the dependency set; it probes PATH for ffmpeg at its "
+        "own import, so `import algan` will warn again on a machine that has "
+        "only the imageio-ffmpeg build"
+    )
 
 
 def test_a_render_leaves_the_scene_mutable(tmp_path):

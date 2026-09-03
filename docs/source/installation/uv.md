@@ -87,10 +87,12 @@ and widely used typesetting system allowing you to write formulas like
 \end{equation*}
 
 Algan provides two ways to render text:
-- **`Text`**: Standard typography rendered via system fonts and Pango. **Does not require LaTeX.**
+- **`Text`**: Prose. Typeset through LaTeX's text mode by default, or through
+  system fonts and Pango if you install the optional `pango` extra (see
+  [Optional: Pango text](#optional-pango-text) below).
 - **`Tex` and `MathTex`**: High-quality mathematical equations and formulas rendered using LaTeX.
 
-If you only plan to use `Text` or geometric graphics, you can skip this step. If you plan to render mathematical equations and LaTeX formulas, follow the instructions below for your operating system.
+If you only plan to draw geometric graphics, you can skip this step. If you plan to render text or mathematical formulas, follow the instructions below for your operating system.
 
 :::::{tab-set}
 
@@ -235,34 +237,7 @@ uv pip install algan
 :::::
 
 :::::{tab-item} MacOS
-Before we can install Algan, we need to make sure that the system utilities
-`cairo` and `pkg-config` are present. They are needed for the [`pycairo` Python
-package](https://pycairo.readthedocs.io/en/latest/), a dependency of Algan.
-
-The easiest way of installing these utilities is by using [Homebrew](https://brew.sh/),
-a fairly popular 3rd party package manager for MacOS. Check whether Homebrew is
-already installed by running
-
-```bash
-brew --version
-```
-
-which will report something along the lines of `Homebrew 4.4.15-54-...`
-if it is installed, and a message `command not found: brew` otherwise. In this
-case, use the shell installer [as instructed on Homebrew's website](https://brew.sh/),
-or get a `.pkg`-installer from
-[their GitHub release page](https://github.com/Homebrew/brew/releases). Make sure to
-follow the instructions of the installer carefully, especially when prompted to
-modify your `.zprofile` to add Homebrew to your system's PATH.
-
-With Homebrew available, the required utilities can be installed by running
-
-```bash
-brew install cairo pkg-config
-```
-
-With all of this preparation out of the way, now it is time to actually install
-Algan itself!
+Nothing to prepare: every Algan dependency ships a macOS wheel.
 
 ```bash
 uv pip install algan
@@ -270,43 +245,9 @@ uv pip install algan
 :::::
 
 :::::{tab-item} Linux
-Linux requires some additional dependencies to build 
-[ManimPango](https://github.com/ManimCommunity/ManimPango)
-(and potentially [pycairo](https://pycairo.readthedocs.io/en/latest/))
-from source. More specifically, this includes:
+Nothing to prepare: every Algan dependency ships a Linux wheel, so there is
+nothing to compile and no system package to install first.
 
-- A C compiler,
-- Python's development headers,
-- the `pkg-config` tool,
-- Pango and its development headers,
-- and Cairo and its development headers.
-
-Instructions for popular systems / package managers are given below.
-
-::::{tab-set}
-
-:::{tab-item} Debian-based / apt
-```bash
-sudo apt update
-sudo apt install build-essential python3-dev libpango1.0-dev libcairo2-dev pkg-config
-```
-:::
-
-:::{tab-item} Fedora / dnf
-```bash
-sudo dnf install python3-devel pkg-config cairo-devel pango-devel
-```
-:::
-
-:::{tab-item} Arch Linux / pacman
-```bash
-sudo pacman -Syu base-devel cairo pango
-```
-:::
-
-::::
-
-As soon as the required dependencies are installed, you can run
 ```bash
 uv pip install algan
 ```
@@ -320,6 +261,46 @@ If you prefer to manage your dependencies through your project's
 `pyproject.toml` (the recommended `uv` workflow), you can run
 `uv add algan` instead of `uv pip install algan`.
 :::
+
+### Optional: Pango text
+
+`Text` typesets through LaTeX's text mode by default, which needs no extra
+install. Pango gives it system fonts instead, plus per-span font, weight and
+slant styling, and adds Manim's `MarkupText` and `Paragraph` to
+`algan.manim`. To use it, install the `pango` extra:
+
+```bash
+uv pip install "algan[pango]"
+```
+
+It is an extra rather than a dependency because
+[ManimPango](https://github.com/ManimCommunity/ManimPango) publishes no Linux
+wheel. On Windows and macOS it installs a wheel and there is nothing else to
+do; on Linux it builds from source and wants a C compiler, Python's
+development headers, `pkg-config`, and Pango's development headers first:
+
+::::{tab-set}
+
+:::{tab-item} Debian-based / apt
+```bash
+sudo apt update
+sudo apt install build-essential python3-dev libpango1.0-dev pkg-config
+```
+:::
+
+:::{tab-item} Fedora / dnf
+```bash
+sudo dnf install python3-devel pkg-config pango-devel
+```
+:::
+
+:::{tab-item} Arch Linux / pacman
+```bash
+sudo pacman -Syu base-devel pango
+```
+:::
+
+::::
 
 If you completed the installation instructions with no errors, then you are ready to Alganimate!
 

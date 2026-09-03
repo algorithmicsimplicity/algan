@@ -10,19 +10,22 @@ __all__ = [
 
 import itertools as it
 import random
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from math import ceil, floor
-from typing import Callable
+from typing import TYPE_CHECKING
+from .._compat import Self
 
 import numpy as np
 from PIL import Image
 
-from algan.external_libraries.manim.mobject.geometry.line import Vector
-from algan.external_libraries.manim.mobject.graphing.coordinate_systems import (
-    CoordinateSystem,
-)
+from ..animation.updaters.update import UpdateFromAlphaFunc
+from ..mobject.geometry.line import Vector
+from ..mobject.graphing.coordinate_systems import CoordinateSystem
 
 from .. import config
+from ..animation.composition import AnimationGroup, Succession
+from ..animation.creation import Create
+from ..animation.indication import ShowPassingFlash
 from ..constants import OUT, RIGHT, UP, RendererType
 from ..mobject.mobject import Mobject
 from ..mobject.types.vectorized_mobject import VGroup
@@ -40,6 +43,15 @@ from ..utils.color import (
 )
 from ..utils.rate_functions import ease_out_sine, linear
 from ..utils.simple_functions import sigmoid
+
+if TYPE_CHECKING:
+    from ..typing import (
+        FloatRGB,
+        FloatRGB_Array,
+        FloatRGBA_Array,
+        Point3D,
+        Vector3D,
+    )
 
 DEFAULT_SCALAR_FIELD_COLORS: list = [BLUE_E, GREEN, YELLOW, RED]
 
@@ -72,9 +84,9 @@ class VectorField(VGroup):
 
     def __init__(
         self,
-        func: Callable[[np.ndarray], np.ndarray],
+        func: Callable[[Point3D], Vector3D],
         color: ParsableManimColor | None = None,
-        color_scheme: Callable[[np.ndarray], float] | None = None,
+        color_scheme: Callable[[Vector3D], float] | None = None,
         min_color_scheme_value: float = 0,
         max_color_scheme_value: float = 2,
         colors: Sequence[ParsableManimColor] = DEFAULT_SCALAR_FIELD_COLORS,
@@ -86,13 +98,13 @@ class VectorField(VGroup):
             self.single_color = False
             if color_scheme is None:
 
-                def color_scheme(p):
-                    return np.linalg.norm(p)
+                def color_scheme(vec: Vector3D) -> float:
+                    return np.linalg.norm(vec)
 
             self.color_scheme = color_scheme  # TODO maybe other default for direction?
-            self.rgbs = np.array(list(map(color_to_rgb, colors)))
+            self.rgbs: FloatRGB_Array = np.array(list(map(color_to_rgb, colors)))
 
-            def pos_to_rgb(pos: np.ndarray) -> tuple[float, float, float, float]:
+            def pos_to_rgb(pos: Point3D) -> FloatRGB:
                 vec = self.func(pos)
                 color_value = np.clip(
                     self.color_scheme(vec),
@@ -105,8 +117,8 @@ class VectorField(VGroup):
                     color_value,
                 )
                 alpha *= len(self.rgbs) - 1
-                c1 = self.rgbs[int(alpha)]
-                c2 = self.rgbs[min(int(alpha + 1), len(self.rgbs) - 1)]
+                c1: FloatRGB = self.rgbs[int(alpha)]
+                c2: FloatRGB = self.rgbs[min(int(alpha + 1), len(self.rgbs) - 1)]
                 alpha %= 1
                 return interpolate(c1, c2, alpha)
 
@@ -176,7 +188,7 @@ class VectorField(VGroup):
         """
         return lambda p: func(p * scalar)
 
-    def fit_to_coordinate_system(self, coordinate_system: CoordinateSystem):
+    def fit_to_coordinate_system(self, coordinate_system: CoordinateSystem) -> Self:
         """Scale the vector field to fit a coordinate system.
 
         This method is useful when the vector field is defined in a coordinate system
@@ -191,6 +203,7 @@ class VectorField(VGroup):
 
         """
         self.apply_function(lambda pos: coordinate_system.coords_to_point(*pos))
+        return self
 
     def nudge(
         self,
@@ -198,7 +211,7 @@ class VectorField(VGroup):
         dt: float = 1,
         substeps: int = 1,
         pointwise: bool = False,
-    ) -> VectorField:
+    ) -> Self:
         """Nudge a :class:`~.Mobject` along the vector field.
 
         Parameters
@@ -282,7 +295,7 @@ class VectorField(VGroup):
         dt: float = 1,
         substeps: int = 1,
         pointwise: bool = False,
-    ) -> VectorField:
+    ) -> Self:
         """Apply a nudge along the vector field to all submobjects.
 
         Parameters
@@ -333,7 +346,7 @@ class VectorField(VGroup):
         self,
         speed: float = 1,
         pointwise: bool = False,
-    ) -> VectorField:
+    ) -> Self:
         """Start continuously moving all submobjects along the vector field.
 
         Calling this method multiple times will result in removing the previous updater created by this method.
@@ -359,7 +372,7 @@ class VectorField(VGroup):
         self.add_updater(self.submob_movement_updater)
         return self
 
-    def stop_submobject_movement(self) -> VectorField:
+    def stop_submobject_movement(self) -> Self:
         """Stops the continuous movement started using :meth:`start_submobject_movement`.
 
         Returns
@@ -416,7 +429,7 @@ class VectorField(VGroup):
         start: float,
         end: float,
         colors: Iterable[ParsableManimColor],
-    ):
+    ) -> Callable[[Sequence[float], float], FloatRGBA_Array]:
         """
         Generates a gradient of rgbas as a numpy array
 
@@ -433,9 +446,9 @@ class VectorField(VGroup):
         -------
             function to generate the gradients as numpy arrays representing rgba values
         """
-        rgbs = np.array([color_to_rgb(c) for c in colors])
+        rgbs: FloatRGB_Array = np.array([color_to_rgb(c) for c in colors])
 
-        def func(values, opacity=1):
+        def func(values: Sequence[float], opacity: float = 1.0) -> FloatRGBA_Array:
             alphas = inverse_interpolate(start, end, np.array(values))
             alphas = np.clip(alphas, 0, 1)
             scaled_alphas = alphas * (len(rgbs) - 1)
@@ -443,12 +456,14 @@ class VectorField(VGroup):
             next_indices = np.clip(indices + 1, 0, len(rgbs) - 1)
             inter_alphas = scaled_alphas % 1
             inter_alphas = inter_alphas.repeat(3).reshape((len(indices), 3))
-            result = interpolate(rgbs[indices], rgbs[next_indices], inter_alphas)
-            result = np.concatenate(
-                (result, np.full([len(result), 1], opacity)),
+            new_rgbs: FloatRGB_Array = interpolate(
+                rgbs[indices], rgbs[next_indices], inter_alphas
+            )
+            new_rgbas: FloatRGBA_Array = np.concatenate(
+                (new_rgbs, np.full([len(new_rgbs), 1], opacity)),
                 axis=1,
             )
-            return result
+            return new_rgbas
 
         return func
 
@@ -778,13 +793,13 @@ class StreamLines(VectorField):
         self.stroke_width = stroke_width
 
         half_noise = self.noise_factor / 2
-        np.random.seed(0)
+        rng = np.random.default_rng(0)
         start_points = np.array(
             [
                 (x - half_noise) * RIGHT
                 + (y - half_noise) * UP
                 + (z - half_noise) * OUT
-                + self.noise_factor * np.random.random(3)
+                + self.noise_factor * rng.random(3)
                 for n in range(self.n_repeats)
                 for x in np.arange(*self.x_range)
                 for y in np.arange(*self.y_range)
@@ -851,6 +866,225 @@ class StreamLines(VectorField):
                     line.set_stroke(width=self.stroke_width, opacity=opacity)
             self.add(line)
         self.stream_lines = [*self.submobjects]
+
+    def create(
+        self,
+        lag_ratio: float | None = None,
+        run_time: Callable[[float], float] | None = None,
+        **kwargs,
+    ) -> AnimationGroup:
+        """The creation animation of the stream lines.
+
+        The stream lines appear in random order.
+
+        Parameters
+        ----------
+        lag_ratio
+            The lag ratio of the animation.
+            If undefined, it will be selected so that the total animation length is 1.5 times the run time of each stream line creation.
+        run_time
+            The run time of every single stream line creation. The runtime of the whole animation might be longer due to the `lag_ratio`.
+            If undefined, the virtual time of the stream lines is used as run time.
+
+        Returns
+        -------
+        :class:`~.AnimationGroup`
+            The creation animation of the stream lines.
+
+        Examples
+        --------
+
+        .. manim:: StreamLineCreation
+
+            class StreamLineCreation(Scene):
+                def construct(self):
+                    func = lambda pos: (pos[0] * UR + pos[1] * LEFT) - pos
+                    stream_lines = StreamLines(
+                        func,
+                        color=YELLOW,
+                        x_range=[-7, 7, 1],
+                        y_range=[-4, 4, 1],
+                        stroke_width=3,
+                        virtual_time=1,  # use shorter lines
+                        max_anchors_per_line=5,  # better performance with fewer anchors
+                    )
+                    self.play(stream_lines.create())  # uses virtual_time as run_time
+                    self.wait()
+
+        """
+        if run_time is None:
+            run_time = self.virtual_time
+        if lag_ratio is None:
+            lag_ratio = run_time / 2 / len(self.submobjects)
+
+        animations = [
+            Create(line, run_time=run_time, **kwargs) for line in self.stream_lines
+        ]
+        random.shuffle(animations)
+        return AnimationGroup(*animations, lag_ratio=lag_ratio)
+
+    def start_animation(
+        self,
+        warm_up: bool = True,
+        flow_speed: float = 1,
+        time_width: float = 0.3,
+        rate_func: Callable[[float], float] = linear,
+        line_animation_class: type[ShowPassingFlash] = ShowPassingFlash,
+        **kwargs,
+    ) -> Self:
+        """Animates the stream lines using an updater.
+
+        The stream lines will continuously flow
+
+        Parameters
+        ----------
+        warm_up
+            If `True` the animation is initialized line by line. Otherwise it starts with all lines shown.
+        flow_speed
+            At `flow_speed=1` the distance the flow moves per second is equal to the magnitude of the vector field along its path. The speed value scales the speed of this flow.
+        time_width
+            The proportion of the stream line shown while being animated
+        rate_func
+            The rate function of each stream line flashing
+        line_animation_class
+            The animation class being used
+
+        Examples
+        --------
+
+        .. manim:: ContinuousMotion
+
+            class ContinuousMotion(Scene):
+                def construct(self):
+                    func = lambda pos: np.sin(pos[0] / 2) * UR + np.cos(pos[1] / 2) * LEFT
+                    stream_lines = StreamLines(func, stroke_width=3, max_anchors_per_line=30)
+                    self.add(stream_lines)
+                    stream_lines.start_animation(warm_up=False, flow_speed=1.5)
+                    self.wait(stream_lines.virtual_time / stream_lines.flow_speed)
+
+        """
+        for line in self.stream_lines:
+            run_time = line.duration / flow_speed
+            line.anim = line_animation_class(
+                line,
+                run_time=run_time,
+                rate_func=rate_func,
+                time_width=time_width,
+                **kwargs,
+            )
+            line.anim.begin()
+            line.time = random.random() * self.virtual_time
+            if warm_up:
+                line.time *= -1
+            self.add(line.anim.mobject)
+
+        def updater(mob, dt):
+            for line in mob.stream_lines:
+                line.time += dt * flow_speed
+                if line.time >= self.virtual_time:
+                    line.time -= self.virtual_time
+                line.anim.interpolate(np.clip(line.time / line.anim.run_time, 0, 1))
+
+        self.add_updater(updater)
+        self.flow_animation = updater
+        self.flow_speed = flow_speed
+        self.time_width = time_width
+        return self
+
+    def end_animation(self) -> AnimationGroup:
+        """End the stream line animation smoothly.
+
+        Returns an animation resulting in fully displayed stream lines without a noticeable cut.
+
+        Returns
+        -------
+        :class:`~.AnimationGroup`
+            The animation fading out the running stream animation.
+
+        Raises
+        ------
+        ValueError
+            if no stream line animation is running
+
+        Examples
+        --------
+
+        .. manim:: EndAnimation
+
+            class EndAnimation(Scene):
+                def construct(self):
+                    func = lambda pos: np.sin(pos[0] / 2) * UR + np.cos(pos[1] / 2) * LEFT
+                    stream_lines = StreamLines(
+                        func, stroke_width=3, max_anchors_per_line=5, virtual_time=1, color=BLUE
+                    )
+                    self.add(stream_lines)
+                    stream_lines.start_animation(warm_up=False, flow_speed=1.5, time_width=0.5)
+                    self.wait(1)
+                    self.play(stream_lines.end_animation())
+
+        """
+        if self.flow_animation is None:
+            raise ValueError("You have to start the animation before fading it out.")
+
+        def hide_and_wait(mob, alpha):
+            if alpha == 0:
+                mob.set_stroke(opacity=0)
+            elif alpha == 1:
+                mob.set_stroke(opacity=1)
+
+        def finish_updater_cycle(line, alpha):
+            line.time += dt * self.flow_speed
+            line.anim.interpolate(min(line.time / line.anim.run_time, 1))
+            if alpha == 1:
+                self.remove(line.anim.mobject)
+                line.anim.finish()
+
+        max_run_time = self.virtual_time / self.flow_speed
+        creation_rate_func = ease_out_sine
+        creation_staring_speed = creation_rate_func(0.001) * 1000
+        creation_run_time = (
+            max_run_time / (1 + self.time_width) * creation_staring_speed
+        )
+        # creation_run_time is calculated so that the creation animation starts at the same speed
+        # as the regular line flash animation but eases out.
+
+        dt = 1 / config["frame_rate"]
+        animations = []
+        self.remove_updater(self.flow_animation)
+        self.flow_animation = None
+
+        for line in self.stream_lines:
+            create = Create(
+                line,
+                run_time=creation_run_time,
+                rate_func=creation_rate_func,
+            )
+            if line.time <= 0:
+                animations.append(
+                    Succession(
+                        UpdateFromAlphaFunc(
+                            line,
+                            hide_and_wait,
+                            run_time=-line.time / self.flow_speed,
+                        ),
+                        create,
+                    ),
+                )
+                self.remove(line.anim.mobject)
+                line.anim.finish()
+            else:
+                remaining_time = max_run_time - line.time / self.flow_speed
+                animations.append(
+                    Succession(
+                        UpdateFromAlphaFunc(
+                            line,
+                            finish_updater_cycle,
+                            run_time=remaining_time,
+                        ),
+                        create,
+                    ),
+                )
+        return AnimationGroup(*animations)
 
 
 # TODO: Variant of StreamLines that is able to respond to changes in the vector field function

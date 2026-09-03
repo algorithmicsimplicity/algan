@@ -26,18 +26,19 @@ rebuilt only the glyph tree left the dict empty and every ``Tex`` after the very
 first (i.e. every run once this cache is warm) died on ``KeyError: 'root'``.
 The recipe therefore also stores, per group id, the indices of its members in
 the top-level glyph list, and :func:`_rebuild` reconstructs the dict from them.
-Manim 0.19 has no such attribute; the group map is simply absent there, so both
-versions round-trip through the same cache. Recipes are tagged with
-:data:`_RECIPE_TAG` so entries written by an older Algan (or under a manim that
-did not need the map) are detected and transparently re-parsed rather than
-replayed into a broken mobject.
+A Manim without that attribute simply has no group map, so either round-trips
+through the same cache. Recipes are tagged with :data:`_RECIPE_TAG` so entries
+written by an older Algan (or under a manim that did not need the map) are
+detected and transparently re-parsed rather than replayed into a broken
+mobject -- the cache key is content-addressed, not version-keyed, so a
+re-vendoring would otherwise read a recipe written by the previous version.
 
 The directory is bounded: each save evicts least-recently-used entries once the
 total exceeds a cap (default 512 MB, override via ``ALGAN_MANIM_SVG_CACHE_MB``).
 
 It is wired in by :func:`install`, which monkeypatches
-``SVGMobject.init_svg_mobject`` on the *installed* ``manim`` package (the one
-Algan actually imports).  Importing this module installs the patch once.
+``SVGMobject.init_svg_mobject`` on ``manim`` -- Algan's vendored Manim subset,
+and the only one in the process. Importing this module installs the patch once.
 """
 
 from __future__ import annotations
@@ -430,23 +431,13 @@ def _redirect_manim_dirs() -> None:
     # ``clear_cache()``, or the test suite's per-test wipe). Wrap it to
     # guarantee the directory exists, whole tree included, on every call.
     #
-    # Algan exposes its vendored Manim package through the top-level ``manim``
-    # alias. Python can consequently load ``tex_file_writing`` under both
-    # module names; MathTex may hold the vendored instance while this redirect
-    # imported the aliased instance. Patch both so a later cache wipe is safe
-    # regardless of which module owns ``tex_to_svg_file``.
-    tex_modules = [tex_file_writing]
-    with contextlib.suppress(ImportError):
-        from algan.external_libraries.manim.utils import (
-            tex_file_writing as vendored_tex_file_writing,
-        )
-
-        tex_modules.append(vendored_tex_file_writing)
-
-    for module in dict.fromkeys(tex_modules):
-        original = module.generate_tex_file
-        if getattr(original, "_algan_ensures_tex_dir", False):
-            continue
+    # One patch is enough. ``manim`` and ``algan.external_libraries.manim``
+    # name the same module objects -- ``algan.external_libraries.manim_alias``
+    # aliases the package through a meta-path finder rather than through
+    # ``sys.modules["manim"]`` alone, precisely so a module cannot be executed
+    # twice under two names and leave two ``generate_tex_file``s to patch.
+    original = tex_file_writing.generate_tex_file
+    if not getattr(original, "_algan_ensures_tex_dir", False):
 
         @wraps(original)
         def generate_tex_file_with_dir(*args, _original=original, **kwargs):
@@ -454,7 +445,7 @@ def _redirect_manim_dirs() -> None:
             return _original(*args, **kwargs)
 
         generate_tex_file_with_dir._algan_ensures_tex_dir = True
-        module.generate_tex_file = generate_tex_file_with_dir
+        tex_file_writing.generate_tex_file = generate_tex_file_with_dir
 
 
 def _configure_manim_dirs(config, *, create: bool = True) -> tuple[Path, Path]:
@@ -482,12 +473,11 @@ def _configure_manim_dirs(config, *, create: bool = True) -> tuple[Path, Path]:
 
 
 def install() -> None:
-    """Monkeypatch the installed ``manim`` to use the persistent SVG cache.
+    """Monkeypatch ``manim`` to use the persistent SVG cache.
 
-    Idempotent. Called on import of this module. We patch the *installed*
-    ``manim`` package (what Algan imports at runtime) rather than the vendored
-    copy under ``algan.external_libraries`` -- the vendored copy is only used
-    for a handful of helpers and is not on the Tex geometry path.
+    Idempotent. Called on import of this module. ``manim`` here is Algan's
+    vendored Manim subset -- there is no other one in the process, so this
+    patches the only ``SVGMobject`` the Tex geometry path can reach.
     """
     global _installed
     if _installed:

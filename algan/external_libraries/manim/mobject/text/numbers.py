@@ -2,31 +2,25 @@
 
 from __future__ import annotations
 
+from ..._compat import zip_strict as _zip
+
 __all__ = ["DecimalNumber", "Integer", "Variable"]
 
-from collections.abc import Sequence
 from typing import Any
+from ..._compat import Self
 
 import numpy as np
 
-from algan.external_libraries.manim import config
-from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.text.tex_mobject import (
-    MathTex,
-    SingleStringMathTex,
-    Tex,
-)
+from ... import config
+from ...constants import *
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.text.tex_mobject import MathTex, SingleStringMathTex, Tex
+from ...mobject.text.text_mobject import Text
+from ...mobject.types.vectorized_mobject import VMobject
+from ...mobject.value_tracker import ValueTracker
+from ...typing import Vector3DLike
 
-# from algan.external_libraries.manim.mobject.text.text_mobject import Text
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
-from algan.external_libraries.manim.mobject.value_tracker import ValueTracker
-
-string_to_mob_map = {}
-
-__all__ = ["DecimalNumber", "Integer", "Variable"]
+string_to_mob_map: dict[str, SingleStringMathTex] = {}
 
 
 class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
@@ -93,7 +87,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         self,
         number: float = 0,
         num_decimal_places: int = 2,
-        mob_class: VMobject = MathTex,
+        mob_class: type[SingleStringMathTex] = MathTex,
         include_sign: bool = False,
         group_with_commas: bool = True,
         digit_buff_per_font_unit: float = 0.001,
@@ -101,13 +95,13 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         unit: str | None = None,  # Aligned to bottom unless it starts with "^"
         unit_buff_per_font_unit: float = 0,
         include_background_rectangle: bool = False,
-        edge_to_fix: Sequence[float] = LEFT,
+        edge_to_fix: Vector3DLike = LEFT,
         font_size: float = DEFAULT_FONT_SIZE,
         stroke_width: float = 0,
         fill_opacity: float = 1.0,
-        **kwargs,
+        **kwargs: Any,
     ):
-        super().__init__(**kwargs, stroke_width=stroke_width)
+        super().__init__(**kwargs, fill_opacity=fill_opacity, stroke_width=stroke_width)
         self.number = number
         self.num_decimal_places = num_decimal_places
         self.include_sign = include_sign
@@ -144,12 +138,13 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         self.init_colors()
 
     @property
-    def font_size(self):
+    def font_size(self) -> float:
         """The font size of the tex mobject."""
-        return self.height / self.initial_height * self._font_size
+        return_value: float = self.height / self.initial_height * self._font_size
+        return return_value
 
     @font_size.setter
-    def font_size(self, font_val):
+    def font_size(self, font_val: float) -> None:
         if font_val <= 0:
             raise ValueError("font_size must be greater than 0.")
         elif self.height > 0:
@@ -160,7 +155,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
             # font_size does not depend on current size.
             self.scale(font_val / self.font_size)
 
-    def _set_submobjects_from_number(self, number):
+    def _set_submobjects_from_number(self, number: float) -> None:
         self.number = number
         self.submobjects = []
 
@@ -204,12 +199,12 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
             self.unit_sign.align_to(self, UP)
 
         # track the initial height to enable scaling via font_size
-        self.initial_height = self.height
+        self.initial_height: float = self.height
 
         if self.include_background_rectangle:
             self.add_background_rectangle()
 
-    def _get_num_string(self, number):
+    def _get_num_string(self, number: float | complex) -> str:
         if isinstance(number, complex):
             formatter = self._get_complex_formatter()
         else:
@@ -222,7 +217,12 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
 
         return num_string
 
-    def _string_to_mob(self, string: str, mob_class: VMobject | None = None, **kwargs):
+    def _string_to_mob(
+        self,
+        string: str,
+        mob_class: type[SingleStringMathTex] | None = None,
+        **kwargs: Any,
+    ) -> VMobject:
         if mob_class is None:
             mob_class = self.mob_class
 
@@ -232,7 +232,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         mob.font_size = self._font_size
         return mob
 
-    def _get_formatter(self, **kwargs):
+    def _get_formatter(self, **kwargs: Any) -> str:
         """
         Configuration is based first off instance attributes,
         but overwritten by any kew word argument.  Relevant
@@ -265,7 +265,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
             ],
         )
 
-    def _get_complex_formatter(self):
+    def _get_complex_formatter(self) -> str:
         return "".join(
             [
                 self._get_formatter(field_name="0.real"),
@@ -274,7 +274,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
             ],
         )
 
-    def set_value(self, number: float):
+    def set_value(self, number: float) -> Self:
         """Set the value of the :class:`~.DecimalNumber` to a new number.
 
         Parameters
@@ -297,7 +297,7 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         self._set_submobjects_from_number(number)
         self.font_size = old_font_size
         self.move_to(move_to_point, self.edge_to_fix)
-        for sm1, sm2 in zip(self.submobjects, old_submobjects):
+        for sm1, sm2 in _zip(self.submobjects, old_submobjects, strict=False):
             sm1.match_style(sm2)
 
         if config.renderer == RendererType.CAIRO:
@@ -311,11 +311,12 @@ class DecimalNumber(VMobject, metaclass=ConvertToOpenGL):
         self.init_colors()
         return self
 
-    def get_value(self):
+    def get_value(self) -> float:
         return self.number
 
-    def increment_value(self, delta_t=1):
+    def increment_value(self, delta_t: float = 1) -> Self:
         self.set_value(self.get_value() + delta_t)
+        return self
 
 
 class Integer(DecimalNumber):
@@ -340,7 +341,7 @@ class Integer(DecimalNumber):
     ) -> None:
         super().__init__(number=number, num_decimal_places=num_decimal_places, **kwargs)
 
-    def get_value(self):
+    def get_value(self) -> int:
         return int(np.round(super().get_value()))
 
 
@@ -450,10 +451,10 @@ class Variable(VMobject, metaclass=ConvertToOpenGL):
     def __init__(
         self,
         var: float,
-        label: str | Tex | MathTex | SingleStringMathTex,
-        var_type: DecimalNumber | Integer = DecimalNumber,
+        label: str | Tex | MathTex | Text | SingleStringMathTex,
+        var_type: type[DecimalNumber | Integer] = DecimalNumber,
         num_decimal_places: int = 2,
-        **kwargs,
+        **kwargs: Any,
     ):
         self.label = MathTex(label) if isinstance(label, str) else label
         equals = MathTex("=").next_to(self.label, RIGHT)

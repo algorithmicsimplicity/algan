@@ -6,10 +6,9 @@ from enum import Enum
 from typing import TypedDict
 
 import numpy as np
-from cloup import Context
 from PIL.Image import Resampling
 
-from algan.external_libraries.manim.typing import Vector3D
+from .typing import Vector3D
 
 __all__ = [
     "SCENE_NOT_FOUND_MESSAGE",
@@ -70,7 +69,6 @@ __all__ = [
     "QUALITIES",
     "DEFAULT_QUALITY",
     "EPILOG",
-    "CONTEXT_SETTINGS",
     "SHIFT_VALUE",
     "CTRL_VALUE",
     "RendererType",
@@ -84,7 +82,7 @@ SCENE_NOT_FOUND_MESSAGE = """
 """
 CHOOSE_NUMBER_MESSAGE = """
 Choose number corresponding to desired scene/arguments.
-(Use comma separated list for multiple entries)
+(Use comma separated list for multiple entries or use "*" to select all scenes.)
 Choice(s): """
 INVALID_NUMBER_MESSAGE = "Invalid scene numbers have been specified. Aborting."
 NO_SCENE_MESSAGE = """
@@ -111,14 +109,10 @@ ULTRAHEAVY = "ULTRAHEAVY"
 RESAMPLING_ALGORITHMS = {
     "nearest": Resampling.NEAREST,
     "none": Resampling.NEAREST,
-    "lanczos": Resampling.LANCZOS,
-    "antialias": Resampling.LANCZOS,
     "bilinear": Resampling.BILINEAR,
     "linear": Resampling.BILINEAR,
     "bicubic": Resampling.BICUBIC,
     "cubic": Resampling.BICUBIC,
-    "box": Resampling.BOX,
-    "hamming": Resampling.HAMMING,
 }
 
 # Geometry: directions
@@ -252,11 +246,6 @@ EPILOG = "Made with <3 by Manim Community developers."
 SHIFT_VALUE = 65505
 CTRL_VALUE = 65507
 
-CONTEXT_SETTINGS = Context.settings(
-    align_option_groups=True,
-    align_sections=True,
-    show_constraints=True,
-)
 
 
 class RendererType(Enum):

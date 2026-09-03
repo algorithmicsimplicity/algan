@@ -28,9 +28,13 @@ from shutil import copyfile
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from algan.external_libraries.manim.typing import StrPath
+    from ..typing import StrPath
 
-from algan.external_libraries.manim import config
+    from ..scene.scene_file_writer import SceneFileWriter
+
+from .. import __version__, config, logger
+
+from .. import console
 
 
 def is_mp4_format() -> bool:
@@ -143,19 +147,20 @@ def add_extension_if_not_present(file_name: Path, extension: str) -> Path:
 
 
 def add_version_before_extension(file_name: Path) -> Path:
-    return file_name.with_name(f"{file_name.stem}_ManimCE_v{file_name.suffix}")
+    return file_name.with_name(
+        f"{file_name.stem}_ManimCE_v{__version__}{file_name.suffix}"
+    )
 
 
 def guarantee_existence(path: Path) -> Path:
-    if not path.exists():
-        path.mkdir(parents=True)
+    path.mkdir(parents=True, exist_ok=True)
     return path.resolve(strict=True)
 
 
 def guarantee_empty_existence(path: Path) -> Path:
     if path.exists():
         shutil.rmtree(str(path))
-    path.mkdir(parents=True)
+    path.mkdir(parents=True, exist_ok=True)
     return path.resolve(strict=True)
 
 
@@ -190,9 +195,12 @@ def modify_atime(file_path: str) -> None:
 def open_file(file_path: Path, in_browser: bool = False) -> None:
     current_os = platform.system()
     if current_os == "Windows":
-        # The method os.startfile is only available in Windows,
-        # ignoring type error caused by this.
-        os.startfile(file_path if not in_browser else file_path.parent)  # type: ignore[attr-defined]
+        # os.startfile is only available on Windows, so use getattr to keep
+        # static analysis platform-independent.
+        startfile = getattr(os, "startfile", None)
+        if startfile is None:
+            raise OSError("os.startfile is unavailable on this Windows system")
+        startfile(file_path if not in_browser else file_path.parent)
     else:
         if current_os == "Linux":
             commands = ["xdg-open"]
@@ -212,7 +220,7 @@ def open_file(file_path: Path, in_browser: bool = False) -> None:
         sp.run(commands)
 
 
-def open_media_file(file_writer) -> None:
+def open_media_file(file_writer: SceneFileWriter) -> None:
     file_paths = []
 
     if config["save_last_frame"]:
@@ -227,6 +235,8 @@ def open_media_file(file_writer) -> None:
             open_file(file_path, True)
         if config["preview"]:
             open_file(file_path, False)
+
+            logger.info(f"Previewed File at: '{file_path}'")
 
 
 def get_template_names() -> list[str]:
@@ -289,5 +299,7 @@ def copy_template_files(
         raise FileNotFoundError(f"{template_scene_path} : file does not exist")
 
     copyfile(template_cfg_path, Path.resolve(project_dir / "manim.cfg"))
+    console.print("\n\t[green]copied[/green] [blue]manim.cfg[/blue]\n")
     copyfile(template_scene_path, Path.resolve(project_dir / "main.py"))
+    console.print("\n\t[green]copied[/green] [blue]main.py[/blue]\n")
     add_import_statement(Path.resolve(project_dir / "main.py"))

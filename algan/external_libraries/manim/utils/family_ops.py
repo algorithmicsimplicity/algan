@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools as it
 
-from manim.mobject.mobject import Mobject
+from ..mobject.mobject import Mobject
 
 __all__ = [
     "extract_mobject_family_members",

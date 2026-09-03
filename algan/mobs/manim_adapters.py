@@ -710,12 +710,27 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
     return adapter
 
 
+#: Compatibility classes that exist only when Pango does.
+#:
+#: The vendored Manim subset exports ``Text``, ``MarkupText`` and ``Paragraph``
+#: only if ``manimpango`` imports, and that is an optional extra
+#: (``pip install "algan[pango]"``) because it publishes no Linux wheel. All
+#: three are :data:`_NATIVE` -- Algan has its own, and ``algan.Text`` falls back
+#: to LaTeX's text mode -- so their absence costs the ``mn.`` spelling and
+#: nothing else. See ``algan/external_libraries/manim/VENDORING.md``.
+_PANGO_ONLY: frozenset[str] = frozenset({"MarkupText", "Paragraph", "Text"})
+
+
 def _adapted_names() -> tuple[str, ...]:
-    stray = sorted((set(_NATIVE) | set(_NOT_ADAPTED)) - set(_MANIM_WRAPPER_REGISTRY))
+    stray = sorted(
+        (set(_NATIVE) | set(_NOT_ADAPTED)) - set(_MANIM_WRAPPER_REGISTRY) - _PANGO_ONLY
+    )
     if stray:
         raise RuntimeError(
             "manim_adapters exclusion lists name classes the compatibility layer "
-            f"does not wrap: {stray}"
+            f"does not wrap: {stray}. Algan's vendored Manim subset is in "
+            "algan/external_libraries/manim; if these names moved or were "
+            "removed upstream, the exclusion lists here need the same edit."
         )
     overlap = sorted(set(_NATIVE) & set(_NOT_ADAPTED))
     if overlap:

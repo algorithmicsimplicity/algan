@@ -9,13 +9,20 @@ for the small slice of each that Algan actually uses:
     pull in sympy transitively, which (at least on Windows) requires the Microsoft Visual
     Studio build tools to be installed (all 7GB of it!) -- to use a handful of triangulation
     and geometry-primitive functions.
-  - manim/ here is the SVG/Tex rendering subset (LaTeX-to-path parsing, SVG path data,
-    the small piece of Manim's Mobject machinery those need), not a full copy of Manim.
-    Note that `manim` is, as of this writing, *also* still a direct dependency in
-    pyproject.toml for the rest of Algan's Manim-compatibility layer (see RELEASE_AUDIT.md
-    #2 for the resulting two-Manims situation and the pending decision on it); this
-    directory's copy exists so the SVG/Tex subset doesn't require anything beyond what is
-    vendored here, independent of whichever way that decision goes.
+  - manim pulls pycairo and manimpango, and neither publishes a Linux wheel, so depending
+    on it put a from-source build of Cairo and Pango in front of every `pip install algan`
+    on Linux. Algan needs none of that: it uses Manim to *build Bezier geometry* and renders
+    that with its own ray tracer, so what is vendored here is Manim Community's geometry
+    subset -- the Mobject graph, the Bezier and SVG/LaTeX machinery, and the shape, graphing,
+    text and 3-D classes on top of them -- with the animations, scenes, cameras, renderers,
+    CLI and plugin system left out. `manim` is *not* a dependency in pyproject.toml; this
+    directory is the only Manim in an Algan process, registered under the top-level name
+    `manim` by algan/external_libraries/manim_alias.py so `import manim` in a user script
+    reaches exactly the classes the compatibility layer checks against.
+
+    manim/ is not hand-maintained: `scripts/vendor_manim.py` regenerates it from an upstream
+    sdist, and manim/VENDORING.md lists the version, what is kept, what is dropped, and every
+    edit made to upstream source.
 
 To make the Algan install experience easier and consistent across operating systems,
 we copy pasted the relevant code from these modules to Algan so that

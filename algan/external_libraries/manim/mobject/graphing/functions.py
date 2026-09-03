@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
+from ..._compat import zip_strict as _zip
+
 __all__ = ["ParametricFunction", "FunctionGraph", "ImplicitFunction"]
 
 
-from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 from isosurfaces import plot_isoline
 
-from algan.external_libraries.manim import config
-from algan.external_libraries.manim.mobject.graphing.scale import LinearBase, _ScaleBase
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
+from ... import config
+from ...mobject.graphing.scale import LinearBase, _ScaleBase
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.types.vectorized_mobject import VMobject
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from typing import Any
+    from ..._compat import Self
 
-    from algan.external_libraries.manim.typing import Point3D, Point3DLike
+    from ...typing import Point3D, Point3DLike
+    from ...utils.color import ParsableManimColor
 
-from algan.external_libraries.manim.utils.color import YELLOW
+from ...utils.color import PURE_YELLOW
 
 
 class ParametricFunction(VMobject, metaclass=ConvertToOpenGL):
@@ -113,7 +115,7 @@ class ParametricFunction(VMobject, metaclass=ConvertToOpenGL):
         discontinuities: Iterable[float] | None = None,
         use_smoothing: bool = True,
         use_vectorized: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ):
         def internal_parametric_function(t: float) -> Point3D:
             """Wrap ``function``'s output inside a NumPy array."""
@@ -145,20 +147,20 @@ class ParametricFunction(VMobject, metaclass=ConvertToOpenGL):
                 lambda t: self.t_min <= t <= self.t_max,
                 self.discontinuities,
             )
-            discontinuities = np.array(list(discontinuities))
+            discontinuities_array = np.array(list(discontinuities))
             boundary_times = np.array(
                 [
                     self.t_min,
                     self.t_max,
-                    *(discontinuities - self.dt),
-                    *(discontinuities + self.dt),
+                    *(discontinuities_array - self.dt),
+                    *(discontinuities_array + self.dt),
                 ],
             )
             boundary_times.sort()
         else:
             boundary_times = [self.t_min, self.t_max]
 
-        for t1, t2 in zip(boundary_times[0::2], boundary_times[1::2]):
+        for t1, t2 in _zip(boundary_times[0::2], boundary_times[1::2], strict=True):
             t_range = np.array(
                 [
                     *self.scaling.function(np.arange(t1, t2, self.t_step)),
@@ -181,7 +183,9 @@ class ParametricFunction(VMobject, metaclass=ConvertToOpenGL):
             self.make_smooth()
         return self
 
-    init_points = generate_points
+    def init_points(self) -> Self:
+        self.generate_points()
+        return self
 
 
 class FunctionGraph(ParametricFunction):
@@ -213,19 +217,27 @@ class FunctionGraph(ParametricFunction):
                 self.add(cos_func, sin_func_1, sin_func_2)
     """
 
-    def __init__(self, function, x_range=None, color=YELLOW, **kwargs):
+    def __init__(
+        self,
+        function: Callable[[float], Any],
+        x_range: tuple[float, float] | tuple[float, float, float] | None = None,
+        color: ParsableManimColor = PURE_YELLOW,
+        **kwargs: Any,
+    ) -> None:
         if x_range is None:
-            x_range = np.array([-config["frame_x_radius"], config["frame_x_radius"]])
+            x_range = (-config["frame_x_radius"], config["frame_x_radius"])
 
         self.x_range = x_range
-        self.parametric_function = lambda t: np.array([t, function(t), 0])
-        self.function = function
+        self.parametric_function: Callable[[float], Point3D] = lambda t: np.array(
+            [t, function(t), 0]
+        )
+        self.function = function  # type: ignore[assignment]
         super().__init__(self.parametric_function, self.x_range, color=color, **kwargs)
 
-    def get_function(self):
+    def get_function(self) -> Callable[[float], Any]:
         return self.function
 
-    def get_point_from_function(self, x):
+    def get_point_from_function(self, x: float) -> Point3D:
         return self.parametric_function(x)
 
 
@@ -238,7 +250,7 @@ class ImplicitFunction(VMobject, metaclass=ConvertToOpenGL):
         min_depth: int = 5,
         max_quads: int = 1500,
         use_smoothing: bool = True,
-        **kwargs,
+        **kwargs: Any,
     ):
         """An implicit function.
 
@@ -297,7 +309,7 @@ class ImplicitFunction(VMobject, metaclass=ConvertToOpenGL):
 
         super().__init__(**kwargs)
 
-    def generate_points(self):
+    def generate_points(self) -> Self:
         p_min, p_max = (
             np.array([self.x_range[0], self.y_range[0]]),
             np.array([self.x_range[1], self.y_range[1]]),
@@ -319,4 +331,6 @@ class ImplicitFunction(VMobject, metaclass=ConvertToOpenGL):
             self.make_smooth()
         return self
 
-    init_points = generate_points
+    def init_points(self) -> Self:
+        self.generate_points()
+        return self

@@ -1,6 +1,6 @@
-"""Utilities for building the Manim documentation.
+"""Utilities for building the Algan documentation.
 
-For more information about the Manim documentation building, see:
+For more information about the Algan documentation build, see:
 
 -   :doc:`/contributing/development`, specifically the ``Documentation``
     bullet point under :ref:`polishing-changes-and-submitting-a-pull-request`
@@ -9,9 +9,10 @@ For more information about the Manim documentation building, see:
 .. autosummary::
    :toctree: ../reference
 
+   algan_directive
    autoaliasattr_directive
    autocolor_directive
-   manim_directive
+   manim_example_directive
    module_parsing
 
 """

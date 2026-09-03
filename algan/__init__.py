@@ -36,49 +36,22 @@ from algan.daemon_client import maybe_handoff as _maybe_handoff
 
 _maybe_handoff()
 
-# The project vendors the subset of Manim Community used for SVG/Tex and
-# compatibility Mobs.  Expose it under Manim's normal top-level package name
-# before importing any Algan mob modules; those modules intentionally use the
-# public ``manim`` import path.
-#
-# That import drags in pydub, which probes PATH for ffmpeg while *it* is
-# imported and warns "Couldn't find ffmpeg or avconv" when there is none -- on
-# every `import algan`, although Algan encodes through imageio-ffmpeg's bundled
-# binary and works perfectly well. Silence that one warning here, then hand
-# pydub the bundled binary below so a conversion that does reach it works too.
-import warnings as _warnings
+# The project vendors the geometry subset of Manim Community that the
+# compatibility layer converts (see algan/external_libraries/manim/VENDORING.md
+# for what is in it and why it is not the manim distribution). Expose it under
+# Manim's normal top-level package name before importing any Algan mob module;
+# those modules intentionally use the public ``manim`` import path, and so do
+# user scripts that build Mobjects to hand to ManimMob.
+from algan.external_libraries import manim_alias as _manim_alias
 
-with _warnings.catch_warnings():
-    _warnings.filterwarnings(
-        "ignore", message="Couldn't find ffmpeg or avconv", category=RuntimeWarning
-    )
-    from algan.external_libraries import manim as _vendored_manim
-
-sys.modules.setdefault("manim", _vendored_manim)
+_vendored_manim = _manim_alias.install()
 
 
-def _point_pydub_at_bundled_ffmpeg():
-    """Give pydub the binary Algan encodes with when PATH has none.
-
-    pydub resolves its converter once, at import, and falls back to the bare
-    name ``"ffmpeg"`` -- which fails at the first conversion on a machine that
-    only has the wheel-bundled build. Everything else in Algan already prefers
-    that build (``algan.utils.video_encoding``), so point pydub at it too.
-    """
-    import shutil as _shutil
-
-    try:
-        audio_segment = sys.modules["pydub"].AudioSegment
-        if _shutil.which(audio_segment.converter) is not None:
-            return
-        import imageio_ffmpeg
-
-        audio_segment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:  # noqa: BLE001 -- a convenience, never an import failure
-        pass
-
-
-_point_pydub_at_bundled_ffmpeg()
+# A warning filter and a pydub converter fix-up used to sit here: the `manim`
+# distribution dragged pydub in, and pydub probes PATH for ffmpeg as it is
+# imported, so every `import algan` warned "Couldn't find ffmpeg or avconv" on
+# a machine carrying only the build imageio-ffmpeg bundles. Nothing in Algan's
+# dependency set imports pydub any more, so both are gone.
 
 # Taichi prints "[Taichi] version ..." to *stdout* the moment it is imported
 # (taichi/_lib/utils.py), so a script whose stdout is data got the banner mixed
@@ -468,8 +441,10 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "MANIM_COMMUNITY_VERSION",
         "MANIM_MOBJECT_NAMES",
         "MANIM_OPENGL_MOBJECT_NAMES",
+        "MANIM_PANGO_MOBJECT_NAMES",
         "MANIM_PRIVATE_MOBJECT_NAMES",
         "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
+        "MANIM_UNVENDORED_MOBJECT_NAMES",
         # Helpers that are genuinely useful when writing custom animations, but
         # too specialised to spend a name in every user's namespace. They stay
         # importable from the module that defines them -- see

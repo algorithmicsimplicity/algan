@@ -43,6 +43,7 @@ import torch
 from algan.constants.color import BLACK, WHITE
 from algan.constants.spatial import ORIGIN, OUTWARD
 from algan.settings import SETTINGS
+from algan.animation_timeline.animation_contexts import Off
 
 #: Height of Manim's frame in world units. Manim pins the vertical extent and
 #: derives the width from the aspect ratio, exactly as Algan's vertical ``fov``

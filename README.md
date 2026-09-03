@@ -32,17 +32,6 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ## Installation
 
-Algan depends on Manim, which needs `pycairo` and `manimpango` built from source
-on Linux and macOS. Install their system packages first:
-
-```bash
-# Linux (Debian/Ubuntu)
-sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
-
-# macOS
-brew install pango cairo pkg-config
-```
-
 Install via [uv](https://docs.astral.sh/uv/) (recommended):
 
 ```bash
@@ -55,8 +44,26 @@ Or via `pip`:
 pip install algan
 ```
 
-The installed footprint is large (~5 GB, mostly the CUDA build of `torch` and
-its NVIDIA dependencies).
+Every dependency ships wheels, so there is nothing to build and no system
+package to install first. The installed footprint is large (~5 GB, mostly the
+CUDA build of `torch` and its NVIDIA dependencies).
+
+### Optional: Pango text
+
+`Text` typesets through LaTeX's text mode by default. For Pango instead — which
+gives you system fonts, per-span font/weight/slant styling, and Manim's
+`MarkupText` and `Paragraph` — add the `pango` extra:
+
+```bash
+pip install "algan[pango]"
+```
+
+It is an extra rather than a dependency because `manimpango` publishes no Linux
+wheel; on Linux it builds from source and wants Pango's headers first:
+
+```bash
+sudo apt-get install -y libpango1.0-dev pkg-config
+```
 
 For detailed platform-specific prerequisites (FFmpeg, GPU acceleration, optional LaTeX for formulas), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation/uv.html).
 

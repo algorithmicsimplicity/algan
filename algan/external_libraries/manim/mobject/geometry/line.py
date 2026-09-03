@@ -14,48 +14,26 @@ __all__ = [
     "RightAngle",
 ]
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 
-from algan.external_libraries.manim import config
-from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.geometry.arc import (
-    Arc,
-    ArcBetweenPoints,
-    Dot,
-    TipableVMobject,
-)
-from algan.external_libraries.manim.mobject.geometry.tips import ArrowTriangleFilledTip
-from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
-    ConvertToOpenGL,
-)
-from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
-    DashedVMobject,
-    VGroup,
-    VMobject,
-)
-from algan.external_libraries.manim.utils.color import WHITE
-from algan.external_libraries.manim.utils.space_ops import (
-    angle_of_vector,
-    line_intersection,
-    normalize,
-)
+from ... import config
+from ...constants import *
+from ...mobject.geometry.arc import Arc, ArcBetweenPoints, Dot, TipableVMobject
+from ...mobject.geometry.tips import ArrowTip, ArrowTriangleFilledTip
+from ...mobject.mobject import Mobject
+from ...mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from ...mobject.opengl.opengl_mobject import OpenGLMobject
+from ...mobject.types.vectorized_mobject import DashedVMobject, VGroup, VMobject
+from ...utils.color import WHITE
+from ...utils.space_ops import angle_of_vector, line_intersection, normalize
 
 if TYPE_CHECKING:
-    from typing import Any
+    from ..._compat import Self, TypeAlias
 
-    from typing_extensions import Literal, Self, TypeAlias
-
-    from algan.external_libraries.manim.typing import (
-        Point2DLike,
-        Point3D,
-        Point3DLike,
-        Vector3D,
-    )
-    from algan.external_libraries.manim.utils.color import ParsableManimColor
+    from ...typing import Point3D, Point3DLike, Vector2DLike, Vector3D, Vector3DLike
+    from ...utils.color import ParsableManimColor
 
     from ..matrix import Matrix  # Avoid circular import
 
@@ -128,13 +106,14 @@ class Line(TipableVMobject):
         self._set_start_and_end_attrs(start, end)
         super().__init__(**kwargs)
 
-    def generate_points(self) -> None:
+    def generate_points(self) -> Self:
         self.set_points_by_ends(
             start=self.start,
             end=self.end,
             buff=self.buff,
             path_arc=self.path_arc,
         )
+        return self
 
     def set_points_by_ends(
         self,
@@ -142,7 +121,7 @@ class Line(TipableVMobject):
         end: Point3DLike | Mobject,
         buff: float = 0,
         path_arc: float = 0,
-    ) -> None:
+    ) -> Self:
         """Sets the points of the line based on its start and end points.
         Unlike :meth:`put_start_and_end_on`, this method respects `self.buff` and
         Mobject bounding boxes.
@@ -166,8 +145,11 @@ class Line(TipableVMobject):
             self.set_points_as_corners(np.asarray([self.start, self.end]))
 
         self._account_for_buff(buff)
+        return self
 
-    init_points = generate_points
+    def init_points(self) -> Self:
+        self.generate_points()
+        return self
 
     def _account_for_buff(self, buff: float) -> None:
         if buff <= 0:
@@ -195,7 +177,7 @@ class Line(TipableVMobject):
     def _pointify(
         self,
         mob_or_point: Mobject | Point3DLike,
-        direction: Vector3D | None = None,
+        direction: Vector3DLike | None = None,
     ) -> Point3D:
         """Transforms a mobject into its corresponding point. Does nothing if a point is passed.
 
@@ -216,9 +198,10 @@ class Line(TipableVMobject):
                 return mob.get_boundary_point(direction)
         return np.array(mob_or_point)
 
-    def set_path_arc(self, new_value: float) -> None:
+    def set_path_arc(self, new_value: float) -> Self:
         self.path_arc = new_value
         self.init_points()
+        return self
 
     def put_start_and_end_on(
         self,
@@ -545,7 +528,7 @@ class Arrow(Line):
     .. manim:: ArrowExample
         :save_last_frame:
 
-        from manim.mobject.geometry.tips import ArrowSquareTip
+        from ...mobject.geometry.tips import ArrowSquareTip
         class ArrowExample(Scene):
             def construct(self):
                 arrow_1 = Arrow(start=RIGHT, end=LEFT, color=GOLD)
@@ -669,9 +652,11 @@ class Arrow(Line):
         self._set_stroke_width_from_length()
 
         if has_tip:
-            self.add_tip(tip=old_tips[0])
+            # error: Argument "tip" to "add_tip" of "TipableVMobject" has incompatible type "VMobject"; expected "ArrowTip | None"  [arg-type]
+            self.add_tip(tip=cast(ArrowTip, old_tips[0]))
         if has_start_tip:
-            self.add_tip(tip=old_tips[1], at_start=True)
+            # error: Argument "tip" to "add_tip" of "TipableVMobject" has incompatible type "VMobject"; expected "ArrowTip | None"  [arg-type]
+            self.add_tip(tip=cast(ArrowTip, old_tips[1]), at_start=True)
         return self
 
     def get_normal_vector(self) -> Vector3D:
@@ -758,7 +743,7 @@ class Vector(Arrow):
 
     def __init__(
         self,
-        direction: Point2DLike | Point3DLike = RIGHT,
+        direction: Vector2DLike | Vector3DLike = RIGHT,
         buff: float = 0,
         **kwargs: Any,
     ) -> None:
@@ -851,7 +836,7 @@ class DoubleArrow(Arrow):
     .. manim:: DoubleArrowExample
         :save_last_frame:
 
-        from manim.mobject.geometry.tips import ArrowCircleFilledTip
+        from ...mobject.geometry.tips import ArrowCircleFilledTip
         class DoubleArrowExample(Scene):
             def construct(self):
                 circle = Circle(radius=2.0)
@@ -1012,10 +997,27 @@ class Angle(VMobject, metaclass=ConvertToOpenGL):
         self.quadrant = quadrant
         self.dot_distance = dot_distance
         self.elbow = elbow
-        inter = line_intersection(
-            [line1.get_start(), line1.get_end()],
-            [line2.get_start(), line2.get_end()],
-        )
+        try:
+            inter = line_intersection(
+                [line1.get_start(), line1.get_end()],
+                [line2.get_start(), line2.get_end()],
+            )
+        except ValueError:
+            lines_are_in_xy_plane = all(
+                point[2] == 0
+                for line in (line1, line2)
+                for point in (line.get_start(), line.get_end())
+            )
+            directions_are_parallel = (
+                np.cross(line1.get_vector(), line2.get_vector())[2] == 0
+            )
+            if not (lines_are_in_xy_plane and directions_are_parallel):
+                raise
+            # When the two lines are parallel or collinear there is no
+            # unique intersection point.  Rather than raising, Angle
+            # becomes an empty Mobject (see issue #1930).
+            self.angle_value = 0.0
+            return
 
         if radius is None:
             if quadrant[0] == 1:

@@ -1,28 +1,23 @@
+"""The ``ConvertToOpenGL`` metaclass, minus the renderer swap."""
+
 from __future__ import annotations
 
 from abc import ABCMeta
-
-# from algan.external_libraries.manim import config
-# from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-# from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
-# from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
-
-from ...constants import RendererType
+from typing import Any
 
 __all__ = ["ConvertToOpenGL"]
 
 
 class ConvertToOpenGL(ABCMeta):
-    """Metaclass for swapping (V)Mobject with its OpenGL counterpart at runtime
-    depending on config.renderer. This metaclass should only need to be inherited
-    on the lowest order inheritance classes such as Mobject and VMobject.
+    """Upstream swaps a class's bases for their OpenGL counterparts here when
+    ``config.renderer`` is OpenGL. The vendored subset ships no OpenGL
+    renderer -- ``ManimConfig.renderer`` rejects ``"opengl"`` outright -- so
+    this is the Cairo branch alone: an ``ABCMeta`` that records the classes
+    built with it, because that registry is still walked by the config setter.
     """
 
-    _converted_classes = []
+    _converted_classes: list[type] = []
 
-    def __new__(mcls, name, bases, namespace):  # noqa: B902
-        return super().__new__(mcls, name, bases, namespace)
-
-    def __init__(cls, name, bases, namespace):  # noqa: B902
+    def __init__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
         super().__init__(name, bases, namespace)
         cls._converted_classes.append(cls)

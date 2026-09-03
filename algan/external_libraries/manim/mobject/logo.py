@@ -4,12 +4,22 @@ from __future__ import annotations
 
 __all__ = ["ManimBanner"]
 
+from typing import Any
+from .._compat import Self
+
 import svgelements as se
 
-from algan.external_libraries.manim.mobject.geometry.arc import Circle
-from algan.external_libraries.manim.mobject.geometry.polygram import Square, Triangle
+from ..animation.updaters.update import UpdateFromAlphaFunc
+from ..mobject.geometry.arc import Circle
+from ..mobject.geometry.polygram import Square, Triangle
+from ..mobject.mobject import Mobject
+from ..typing import Vector3D
 
 from .. import constants as cst
+from ..animation.animation import override_animation
+from ..animation.composition import AnimationGroup, Succession
+from ..animation.creation import Create, SpiralIn
+from ..animation.fading import FadeIn
 from ..mobject.svg.svg_mobject import VMobjectFromSVGPath
 from ..mobject.types.vectorized_mobject import VGroup
 from ..utils.rate_functions import ease_in_out_cubic, smooth
@@ -123,7 +133,7 @@ class ManimBanner(VGroup):
 
         class LightThemeBanner(Scene):
             def construct(self):
-                self.camera.background = "#ece6e2"
+                self.camera.background_color = "#ece6e2"
                 banner = ManimBanner(dark_theme=False)
                 self.play(banner.create())
                 self.play(banner.expand())
@@ -141,7 +151,7 @@ class ManimBanner(VGroup):
         m_height_over_anim_height = 0.75748
 
         self.font_color = "#ece6e2" if dark_theme else "#343434"
-        self.scale_factor = 1
+        self.scale_factor = 1.0
 
         self.M = VMobjectFromSVGPath(MANIM_SVG_PATHS[0]).flip(cst.RIGHT).center()
         self.M.set(stroke_width=0).scale(
@@ -175,7 +185,7 @@ class ManimBanner(VGroup):
         # and thus not yet added to the submobjects of self.
         self.anim = anim
 
-    def scale(self, scale_factor: float, **kwargs) -> ManimBanner:
+    def scale(self, scale_factor: float, **kwargs: Any) -> Self:
         """Scale the banner by the specified scale factor.
 
         Parameters
@@ -193,3 +203,136 @@ class ManimBanner(VGroup):
         if self.anim not in self.submobjects:
             self.anim.scale(scale_factor, **kwargs)
         return super().scale(scale_factor, **kwargs)
+
+    @override_animation(Create)
+    def create(self, run_time: float = 2) -> AnimationGroup:
+        """The creation animation for Manim's logo.
+
+        Parameters
+        ----------
+        run_time
+            The run time of the animation.
+
+        Returns
+        -------
+        :class:`~.AnimationGroup`
+            An animation to be used in a :meth:`.Scene.play` call.
+        """
+        return AnimationGroup(
+            SpiralIn(self.shapes, run_time=run_time),
+            FadeIn(self.M, run_time=run_time / 2),
+            lag_ratio=0.1,
+        )
+
+    def expand(self, run_time: float = 1.5, direction: str = "center") -> Succession:
+        """An animation that expands Manim's logo into its banner.
+
+        The returned animation transforms the banner from its initial
+        state (representing Manim's logo with just the icons) to its
+        expanded state (showing the full name together with the icons).
+
+        See the class documentation for how to use this.
+
+        .. note::
+
+            Before calling this method, the text "anim" is not a
+            submobject of the banner object. After the expansion,
+            it is added as a submobject so subsequent animations
+            to the banner object apply to the text "anim" as well.
+
+        Parameters
+        ----------
+        run_time
+            The run time of the animation.
+        direction
+            The direction in which the logo is expanded.
+
+        Returns
+        -------
+        :class:`~.Succession`
+            An animation to be used in a :meth:`.Scene.play` call.
+
+        Examples
+        --------
+        .. manim:: ExpandDirections
+
+            class ExpandDirections(Scene):
+                def construct(self):
+                    banners = [ManimBanner().scale(0.5).shift(UP*x) for x in [-2, 0, 2]]
+                    self.play(
+                        banners[0].expand(direction="right"),
+                        banners[1].expand(direction="center"),
+                        banners[2].expand(direction="left"),
+                    )
+
+        """
+        if direction not in ["left", "right", "center"]:
+            raise ValueError("direction must be 'left', 'right' or 'center'.")
+
+        m_shape_offset = 6.25 * self.scale_factor
+        shape_sliding_overshoot = self.scale_factor * 0.8
+        m_anim_buff = 0.06
+        self.anim.next_to(self.M, buff=m_anim_buff).align_to(self.M, cst.DOWN)
+        self.anim.set_opacity(0)
+        self.shapes.save_state()
+        m_clone = self.anim[-1].copy()
+        self.add(m_clone)
+        m_clone.move_to(self.shapes)
+
+        self.M.save_state()
+        left_group = VGroup(self.M, self.anim, m_clone)
+
+        def shift(vector: Vector3D) -> None:
+            self.shapes.restore()
+            left_group.align_to(self.M.saved_state, cst.LEFT)
+            if direction == "right":
+                self.shapes.shift(vector)
+            elif direction == "center":
+                self.shapes.shift(vector / 2)
+                left_group.shift(-vector / 2)
+            elif direction == "left":
+                left_group.shift(-vector)
+
+        def slide_and_uncover(mob: Mobject, alpha: float) -> None:
+            shift(alpha * (m_shape_offset + shape_sliding_overshoot) * cst.RIGHT)
+
+            # Add letters when they are covered
+            for letter in mob.anim:
+                if mob.square.get_center()[0] > letter.get_center()[0]:
+                    letter.set_opacity(1)
+                    self.add_to_back(letter)
+
+            # Finish animation
+            if alpha == 1:
+                self.remove(*[self.anim])
+                self.add_to_back(self.anim)
+                mob.shapes.set_z_index(0)
+                mob.shapes.save_state()
+                mob.M.save_state()
+
+        def slide_back(mob: Mobject, alpha: float) -> None:
+            if alpha == 0:
+                m_clone.set_opacity(1)
+                m_clone.move_to(mob.anim[-1])
+                mob.anim.set_opacity(1)
+
+            shift(alpha * shape_sliding_overshoot * cst.LEFT)
+
+            if alpha == 1:
+                mob.remove(m_clone)
+                mob.add_to_back(mob.shapes)
+
+        return Succession(
+            UpdateFromAlphaFunc(
+                self,
+                slide_and_uncover,
+                run_time=run_time * 2 / 3,
+                rate_func=ease_in_out_cubic,
+            ),
+            UpdateFromAlphaFunc(
+                self,
+                slide_back,
+                run_time=run_time * 1 / 3,
+                rate_func=smooth,
+            ),
+        )

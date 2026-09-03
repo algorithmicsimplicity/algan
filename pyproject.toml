@@ -26,15 +26,24 @@ classifiers = [
 requires-python = ">=3.9,<3.14"
 
 dependencies = [
-    # from manim
-    "cloup>=2.0.0",
+    # Needed by the vendored Manim geometry subset in
+    # algan/external_libraries/manim (see VENDORING.md there). Every one of
+    # these publishes wheels for the platforms Algan supports; `manim` itself
+    # is deliberately *not* a dependency, because it pulls pycairo and
+    # manimpango, neither of which has a Linux wheel -- so depending on it put
+    # a from-source build of Cairo and Pango in front of every Linux install.
     "decorator>=4.3.2",
     "beautifulsoup4>=4.12",
     "pygments>=2.0.0",
     "isosurfaces>=0.1.0",
     "skia-pathops>=0.7.0",
     "mapbox-earcut>=1.0.0",
-    "manim>=0.18.0",
+    # manim.mobject.graph (the Graph / DiGraph compatibility classes).
+    "networkx>=2.6",
+    # TypeIs / override / TypeVar defaults, used at runtime by the vendored
+    # manim.utils.color.core and manim.utils.config_ops, and by the Self and
+    # TypeAlias fallbacks in manim/_compat.py on Python below 3.11.
+    "typing-extensions>=4.12.0",
     # for algan
 
     "taichi>=1.7.4",
@@ -55,14 +64,13 @@ dependencies = [
     "svgelements>=1.0.0",
     "torch>=2.0.0",
     # Imported at module scope by algan.rendering.post_processing.anti_aliasing.smaa
-    # and algan.mobs.image_compat, and used for all image decoding in
-    # algan.utils.file_utils / algan.mobs.three_d_models.model_mob. It also
-    # already arrives transitively via manim, but Algan imports it directly so
-    # it is declared directly.
+    # and algan.mobs.image_compat, used for all image decoding in
+    # algan.utils.file_utils / algan.mobs.three_d_models.model_mob, and by the
+    # vendored Manim subset's ImageMobject.
     "pillow>=9.0",
-    # Render progress bar (algan.render_loop). Already arrives transitively via
-    # manim and moviepy's proglog; named here because Algan imports it directly.
-    # 4.51 is where tqdm.contrib.logging.logging_redirect_tqdm appeared.
+    # Render progress bar (algan.render_loop). Also arrives transitively via
+    # moviepy's proglog; named here because Algan imports it directly. 4.51 is
+    # where tqdm.contrib.logging.logging_redirect_tqdm appeared.
     "tqdm>=4.51.0",
     # glTF/glB/OBJ/PLY parsing for ThreeDModelMob (algan.mobs.three_d_models).
     # Unlike the FBX path this needs no native library, so it is a core
@@ -99,6 +107,15 @@ audio = [
 # (conda-forge assimp, apt libassimp5, brew assimp, or assimp*.dll on PATH).
 fbx = [
     "pyassimp>=5.0",
+]
+# Pango text rendering. Without it `algan.Text` typesets its content through
+# LaTeX's text mode instead, and Manim's `mn.Text` / `mn.MarkupText` /
+# `mn.Paragraph` are absent from the compatibility layer -- everything else in
+# it is unaffected. manimpango publishes no Linux wheel, so this is an extra
+# rather than a dependency: making it one would put a from-source build of
+# Pango in front of every Linux `pip install algan`.
+pango = [
+    "manimpango>=0.5.0",
 ]
 dev = [
     # Tests and benchmarks decode rendered frames and probe video metadata
@@ -137,11 +154,10 @@ packages = ["algan"]
 exclude = [
   # Working-design notes, not user-facing documentation.
   "algan/**/DESIGN_*.md",
-  # Import sphinx / pytest / matplotlib respectively; nothing shipped imports
-  # them (docs/source/conf.py and tests/conftest.py reach them from the repo
-  # checkout, not from an installed wheel).
+  # Sphinx extensions: they import sphinx and docutils, and nothing shipped
+  # imports them (docs/source/conf.py reaches them from the repo checkout, not
+  # from an installed wheel).
   "algan/utils/docbuild/**",
-  "algan/utils/testing/**",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -149,6 +165,9 @@ include = [
   "/algan",
   "/tests",
   "/taichi_patches",
+  # scripts/vendor_manim.py regenerates algan/external_libraries/manim, and
+  # that directory's VENDORING.md tells a reader to run it.
+  "/scripts",
   "/pyproject.toml",
   "/README.md",
   "/LICENSE",

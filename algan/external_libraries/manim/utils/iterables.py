@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .._compat import zip_strict as _zip
+
 __all__ = [
     "adjacent_n_tuples",
     "adjacent_pairs",
@@ -20,6 +22,7 @@ __all__ = [
 
 import itertools as it
 from collections.abc import (
+    Callable,
     Collection,
     Generator,
     Hashable,
@@ -27,7 +30,7 @@ from collections.abc import (
     Reversible,
     Sequence,
 )
-from typing import TYPE_CHECKING, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, TypeVar, overload
 
 import numpy as np
 
@@ -57,7 +60,7 @@ def adjacent_n_tuples(objects: Sequence[T], n: int) -> zip[tuple[T, ...]]:
         >>> list(adjacent_n_tuples([1, 2, 3, 4], 3))
         [(1, 2, 3), (2, 3, 4), (3, 4, 1), (4, 1, 2)]
     """
-    return zip(*([*objects[k:], *objects[:k]] for k in range(n)))
+    return _zip(*([*objects[k:], *objects[:k]] for k in range(n)), strict=True)
 
 
 def adjacent_pairs(objects: Sequence[T]) -> zip[tuple[T, ...]]:

@@ -1119,11 +1119,17 @@ class _BooleanOps(ManimCompatMob):
     _manim_class = _ManimBooleanOps
 
 
+from manim.mobject.geometry import arc as _manim_arc
 from manim.mobject.svg.brace import BraceText as _ManimBraceText
 
 
 class BraceText(ManimCompatMob):
-    """Brace with a plain-text label, matching Manim 0.20.1."""
+    """Brace with a plain-text label.
+
+    Not re-exported by Manim's top-level package, so it is wrapped by name
+    from its own module rather than picked up by
+    :data:`_WRAPPED_MANIM_CLASS_NAMES`.
+    """
 
     _manim_class = _ManimBraceText
 
@@ -1132,78 +1138,27 @@ BraceText.__signature__ = inspect.signature(_ManimBraceText)
 _MANIM_WRAPPER_REGISTRY["BraceText"] = BraceText
 
 
-_ManimLabeledDot = _manim.LabeledDot
+# ``LabeledDot`` and ``TangentialArc`` were both reimplemented here, because
+# the Manim copy vendored at the time had neither ``LabeledDot``'s ``buff``
+# parameter nor ``TangentialArc`` at all. The vendored subset is Manim 0.21.0
+# and carries both, so these are ordinary wrappers again -- ``LabeledDot``
+# through :data:`_WRAPPED_MANIM_CLASS_NAMES` above, ``TangentialArc`` here
+# because it is not one of Manim's top-level exports.
+class TangentialArc(ManimCompatMob):
+    """An arc tangent to two intersecting lines.
 
-
-class LabeledDot(ManimCompatMob):
-    """A dot containing a centered label, matching Manim 0.20.1.
-
-    Manim 0.20 added the ``buff`` parameter after the version vendored by
-    Algan.  Supplying the computed radius to the vendored implementation
-    preserves the new sizing rule without duplicating its remaining geometry.
+    Not re-exported by Manim's top-level package, so it is wrapped by hand
+    rather than by name; the geometry is entirely
+    :class:`manim.mobject.geometry.arc.TangentialArc`'s.
     """
 
-    _manim_class = _ManimLabeledDot
-
-    def __init__(self, label, radius=None, buff=_manim.SMALL_BUFF, **kwargs):
-        converted_label = to_manim(label)
-        if radius is None:
-            if isinstance(converted_label, str):
-                converted_label = _manim.MathTex(converted_label, color=_manim.BLACK)
-            radius = float(buff) + float(
-                np.linalg.norm([converted_label.width, converted_label.height]) / 2
-            )
-        super().__init__(converted_label, radius=radius, **kwargs)
+    _manim_class = _manim_arc.TangentialArc
 
 
-LabeledDot.__signature__ = inspect.Signature(
-    parameters=[
-        inspect.Parameter("label", inspect.Parameter.POSITIONAL_OR_KEYWORD),
-        inspect.Parameter(
-            "radius", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None
-        ),
-        inspect.Parameter(
-            "buff",
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default=_manim.SMALL_BUFF,
-        ),
-        inspect.Parameter("kwargs", inspect.Parameter.VAR_KEYWORD),
-    ]
-)
-_MANIM_WRAPPER_REGISTRY["LabeledDot"] = LabeledDot
-
-
-class TangentialArc(ArcBetweenPoints):
-    """An arc tangent to two intersecting lines (Manim 0.20 API)."""
-
-    def __init__(self, line1, line2, radius, corner=(1, 1), **kwargs):
-        def point(value):
-            if isinstance(value, torch.Tensor):
-                value = value.detach().cpu().numpy()
-            return np.asarray(value, dtype=float).reshape(-1, 3)[0]
-
-        p1, p2 = point(line1.get_start()), point(line1.get_end())
-        p3, p4 = point(line2.get_start()), point(line2.get_end())
-        d1, d2 = p2 - p1, p4 - p3
-        cross = d1[0] * d2[1] - d1[1] * d2[0]
-        if abs(cross) < 1e-12:
-            raise ValueError("TangentialArc requires intersecting, non-parallel lines")
-        delta = p3 - p1
-        t = (delta[0] * d2[1] - delta[1] * d2[0]) / cross
-        intersection = p1 + t * d1
-        d1 = d1 / np.linalg.norm(d1)
-        d2 = d2 / np.linalg.norm(d2)
-        s1, s2 = corner
-        u1, u2 = s1 * d1, s2 * d2
-        angle = np.arccos(np.clip(np.dot(u1, u2), -1.0, 1.0))
-        distance = radius / np.tan(angle / 2)
-        tangent1 = intersection + distance * u1
-        tangent2 = intersection + distance * u2
-        cross_u = u1[0] * u2[1] - u1[1] * u2[0]
-        start, end = (tangent1, tangent2) if cross_u < 0 else (tangent2, tangent1)
-        self.line1 = line1
-        self.line2 = line2
-        super().__init__(start=start, end=end, radius=radius, **kwargs)
+TangentialArc.__signature__ = inspect.signature(_manim_arc.TangentialArc)
+# Deliberately *not* in _MANIM_WRAPPER_REGISTRY: that registry is what
+# manim_adapters adapts, and adding a name to it adds a root spelling to
+# `from algan import *`. TangentialArc has always been `mn.`-only.
 
 
 class ValueTracker(Mob):
@@ -1273,9 +1228,9 @@ _MANIM_WRAPPER_REGISTRY["ValueTracker"] = ValueTracker
 _MANIM_WRAPPER_REGISTRY["ComplexValueTracker"] = ComplexValueTracker
 
 
-# Current Manim 0.20.1 introduced this marker class for MathTex pieces.  It has
-# no constructor of its own, so the vendored SingleStringMathTex behavior is the
-# closest meaningful compatibility type.
+# Manim's marker class for the pieces of a MathTex. It has no constructor of
+# its own, so the vendored SingleStringMathTex behaviour is the closest
+# meaningful compatibility type.
 if "SingleStringMathTex" in globals():
 
     class MathTexPart(SingleStringMathTex):
@@ -1336,6 +1291,12 @@ def install_opengl_aliases(namespace: Mapping[str, Any] | dict[str, Any]):
     return tuple(installed)
 
 
+#: The registry, not :data:`_WRAPPED_MANIM_CLASS_NAMES`. The two differ by
+#: exactly the Pango classes -- ``Text``, ``MarkupText`` and ``Paragraph``,
+#: which the vendored Manim subset exports only when the optional
+#: ``manimpango`` is installed, so no wrapper was built for them here. Naming
+#: them in ``__all__`` regardless would break ``import algan.manim`` outright,
+#: since that module resolves every name in this one's ``__all__``.
 __all__ = [
     "ManimCompatMob",
     "to_manim",
@@ -1346,5 +1307,5 @@ __all__ = [
     "BraceText",
     "TangentialArc",
     "_BooleanOps",
-    *_WRAPPED_MANIM_CLASS_NAMES,
+    *(name for name in _WRAPPED_MANIM_CLASS_NAMES if name in _MANIM_WRAPPER_REGISTRY),
 ]
