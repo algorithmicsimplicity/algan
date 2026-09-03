@@ -13,6 +13,7 @@ lives in `agent_guidance/`, split by topic so you read only what your task touch
 | `ManualMemory`, batch sizing, optimization work, A/B parity fixtures | `agent_guidance/memory_perf.md` |
 | public names, `SETTINGS`, output paths, `ALGAN_` variables | `agent_guidance/api_settings.md` |
 | Manim compatability | `agent_guidance/manim_compat.md` |
+| measuring on a GPU (Mac runner, Kaggle T4) | `agent_guidance/gpu_harnesses.md` |
 | `*_taichi.py` | `agent_guidance/taichi.md` |
 
 When the docs disagree, the source code wins.

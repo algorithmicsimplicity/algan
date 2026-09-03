@@ -1,0 +1,8 @@
+{
+  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
+  "command": "uv run python scripts/gpu_smoke.py --runs 2",
+  "arms": ["mac-mps", "linux-cpu"],
+  "env": {},
+  "latex": false,
+  "timeout_minutes": 60
+}
