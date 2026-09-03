@@ -10,6 +10,7 @@ from algan.render_loop import (
     _prepare_background_for_chunk,
 )
 from algan.rendering.raytracing.scene_builder import _prefill_background
+from algan.utils.memory_utils import InsufficientMemoryException
 
 
 def test_animation_duration_search_uses_the_true_maximum():
@@ -477,3 +478,104 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
     # immediately. The remaining four frames form the next batch.
     assert rendered_durations == [4, 4]
     assert [len(frame) for frame in frames] == rendered_durations
+
+
+def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
+    monkeypatch,
+):
+    """A batch that fails part-way is shrunk from where it got to.
+
+    ``_render_primitive_batch`` yields each chunk as it renders, so a window
+    long enough to split has already emitted frames by the time a later one
+    runs out of arena. The retry used to stand down on exactly that
+    (``if produced_output ... raise``), which left nothing able to shrink the
+    batch: the chunk split inside the tracer shrinks the *trace*, while the
+    merged geometry that did not fit is fixed by the window. Rendering
+    tests/full_renders' materials_and_lighting on CPU reached
+    ``OutOfRenderMemory`` that way, on a window whose scene alone held three
+    quarters of the arena.
+
+    The frames already handed out are final, so the retry resumes at the first
+    frame that is not and halves what remains -- and no frame is rendered
+    twice or dropped.
+    """
+    monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "0")
+    monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
+    monkeypatch.setattr(
+        render_loop_module, "release_torch_memory", lambda force_gc=False: None
+    )
+    monkeypatch.setattr(
+        render_loop_module, "get_num_available_bytes", lambda _device: 1000
+    )
+
+    class NullOff:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(render_loop_module, "Off", NullOff)
+
+    rendered_windows = []
+
+    class Primitive:
+        _rt_device_scene = None
+        _rt_prepared_host_scene = None
+        _rt_merged_scene = None
+
+    class Scene(RenderLoopMixin):
+        def background_is_transparent(self):
+            return False
+
+        def _get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
+            primitive = Primitive()
+            primitive.duration = end_ind - start_ind
+            return [primitive], end_ind, {"lights": []}
+
+        def _prewarm_render_batch(self, _primitives, _render_state):
+            pass
+
+        def _prepared_batch_fits_render_arena(self, *_args, **_kwargs):
+            return True
+
+        def _reset_render_arena_after_failure(self):
+            pass
+
+        def _render_primitive_batch(
+            self, _primitives, start_ind, end_ind, *_args, **_kwargs
+        ):
+            rendered_windows.append((start_ind, end_ind))
+            # Two frames per chunk, and the window 0:8 runs out of arena once
+            # it has emitted four of them -- the shape the full-render scene
+            # failed in.
+            chunk = 2
+            current = start_ind
+            while current < end_ind:
+                new = min(current + chunk, end_ind)
+                if end_ind - start_ind == 8 and current >= 4:
+                    raise InsufficientMemoryException
+                yield torch.zeros((new - current, 1, 1, 3), dtype=torch.uint8)
+                self._last_emitted_time_ind = new
+                current = new
+
+    scene = Scene.__new__(Scene)
+    scene.background_frame = torch.ones(4)
+    scene.memory = None
+    scene.light_sources = []
+    scene.camera = SimpleNamespace(screen=SimpleNamespace())
+    scene.timeline_manager = SimpleNamespace(clear_buffers=lambda: None)
+    scene.animation_manager = SimpleNamespace()
+    scene.actors = [[]]
+    scene.frames_per_second = 1
+
+    frames = list(scene.get_frames(0, 8, post_processes=(), manual_memory=False))
+
+    # The first window emitted frames 0:4 and then failed; the retry picks up
+    # at 4 rather than re-rendering from 0, and halves the four that are left.
+    assert rendered_windows[0] == (0, 8)
+    assert rendered_windows[1][0] == 4
+    assert sum(len(frame) for frame in frames) == 8
