@@ -8,7 +8,7 @@
   <a href="https://algorithmicsimplicity.github.io/algan"><img src="https://img.shields.io/badge/docs-algorithmicsimplicity.github.io%2Falgan-blue.svg" alt="Documentation" /></a>
   <a href="https://pypi.org/project/algan/"><img src="https://img.shields.io/pypi/v/algan.svg" alt="PyPI version" /></a>
   <a href="https://pypi.org/project/algan/"><img src="https://img.shields.io/pypi/pyversions/algan.svg" alt="Python versions" /></a>
-  <a href="https://discord.gg/NvarFmvXKm"><img src="https://img.shields.io/discord/1122334455?color=7289da&label=Discord" alt="Discord Community" /></a>
+  <a href="https://discord.gg/NvarFmvXKm"><img src="https://img.shields.io/badge/Discord-chat-7289da.svg?logo=discord&logoColor=white" alt="Discord Community" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
 </p>
 

@@ -22,6 +22,10 @@ uv sync --locked --all-extras --dev
 That skips the system dependencies, which differ per platform and which the
 install will fail without — the development guide lists them.
 
+Versioning, the `master` → `stable` release flow and how a release is cut and
+tagged are in the "Versioning and releases" section of that same development
+guide.
+
 Before making a large change, open or review an issue on the
 [issue tracker](https://github.com/algorithmicsimplicity/algan/issues) so the
 design and scope can be discussed.
