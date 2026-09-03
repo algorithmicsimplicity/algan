@@ -32,6 +32,7 @@ from algan.constants import easings
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.spatial import OUTWARD, UP
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import get_rotation_around_axis
 from algan.utils.api_renames import _renamed_keywords
 from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
@@ -755,7 +756,7 @@ def Circumscribe(
             filled=False,
         )
     else:
-        raise ValueError("shape should be either Rectangle or Circle.")
+        raise AlganConfigurationError("shape should be either Rectangle or Circle.")
 
     if fade_in and fade_out:
         with Seq(animation_manager=animation_manager):

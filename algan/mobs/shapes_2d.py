@@ -33,6 +33,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.constants.color import *
 from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.settings import SETTINGS
@@ -41,6 +42,7 @@ from algan.settings.shape_style_profiles import _manim_shape_style_for
 from algan.utils.api_renames import _reject_renamed_keywords
 from algan.utils.tensor_utils import (
     broadcast_all,
+    cast_to_direction,
     cast_to_tensor,
     mean,
     unsquish,
@@ -598,7 +600,7 @@ class Polygon(BezierCircuitCubic):
         if not vertex_locations:
             # ``torch.stack([])`` below would answer "stack expects a
             # non-empty TensorList", which says nothing about polygons.
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"{type(self).__name__} needs its vertices: pass them as "
                 f"points ({type(self).__name__}(LEFT, RIGHT, UP)) or as one "
                 f"[N, 3] tensor."
@@ -616,7 +618,7 @@ class Polygon(BezierCircuitCubic):
                 dim=0,
             )
         if corner_locations.shape[-2] < 3:
-            raise ValueError("Polygon requires at least three vertices")
+            raise AlganConfigurationError("Polygon requires at least three vertices")
         control_points = []
         for line_start, line_end in zip(
             corner_locations, corner_locations.roll(-1, -2)
@@ -675,7 +677,7 @@ class RegularPolygon(Polygon):
             manim_alternative="RegularPolygon",
         )
         if n < 3:
-            raise ValueError("RegularPolygon requires n >= 3")
+            raise AlganConfigurationError("RegularPolygon requires n >= 3")
         if start_angle is None:
             # Preserve Algan's original topology and orientation: the first
             # vertex is at the top and the closing vertex is repeated.  The
@@ -768,7 +770,7 @@ class Rectangle(Quad):
             * 0.5
         )
         if "location" in kwargs:
-            corners = corners + cast_to_tensor(kwargs["location"])
+            corners = corners + cast_to_direction("location", kwargs["location"])
             del kwargs["location"]
         super().__init__(corners, **kwargs)
 
@@ -819,7 +821,9 @@ class SurroundingRectangle(Quad):
         **kwargs,
     ):
         if not mobjects:
-            raise ValueError("SurroundingRectangle requires at least one Mobject")
+            raise AlganConfigurationError(
+                "SurroundingRectangle requires at least one Mobject"
+            )
         if buffer is not None:
             buff = buffer
         elif buff is None:

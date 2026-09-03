@@ -574,7 +574,7 @@ class Group(Mob):
                     if j * num_cols < len(self.children)
                 ]
             else:
-                raise ValueError("tight_axis must be 0, 1, or None")
+                raise AlganConfigurationError("tight_axis must be 0, 1, or None")
 
         start = self.location - (
             row_direction * sum(buf_dist1) * 0.5

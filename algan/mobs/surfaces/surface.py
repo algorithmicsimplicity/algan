@@ -43,6 +43,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
@@ -80,7 +81,7 @@ def _as_member_colors(colors, count):
     if len(colors) == 1 and count > 1:
         colors = colors.expand(count, -1)
     if len(colors) != count:
-        raise ValueError(
+        raise AlganConfigurationError(
             f"expected {count} colors to match {count} centers, got {len(colors)}"
         )
     channels = colors.shape[-1]
@@ -93,7 +94,7 @@ def _as_member_colors(colors, count):
         return torch.cat((colors[..., :3], zeros, colors[..., 3:4]), -1).contiguous()
     if channels == 3:
         return torch.cat((colors, zeros, ones), -1).contiguous()
-    raise ValueError(
+    raise AlganConfigurationError(
         f"colors must have 3 (RGB), 4 (RGBA) or 5 channels, got {channels}"
     )
 
@@ -1098,13 +1099,15 @@ class Surface(Mob):
         self._pending_auto_resolution = None
         self._resolution_update_in_progress = True
         if not np.isfinite(self._geometry_tolerance):
-            raise ValueError("geometry_tolerance must be finite")
+            raise AlganConfigurationError("geometry_tolerance must be finite")
         if self._geometry_tolerance <= 0:
-            raise ValueError("geometry_tolerance must be greater than zero")
+            raise AlganConfigurationError(
+                "geometry_tolerance must be greater than zero"
+            )
         if self._min_grid_resolution < 2:
-            raise ValueError("min_grid_resolution must be at least 2")
+            raise AlganConfigurationError("min_grid_resolution must be at least 2")
         if self._max_grid_resolution < self._min_grid_resolution:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "max_grid_resolution must be greater than or equal to "
                 "min_grid_resolution"
             )
@@ -1349,7 +1352,7 @@ class Surface(Mob):
         centers = cast_to_tensor(centers).reshape(-1, 3)
         count = len(centers)
         if count == 0:
-            raise ValueError("from_batches requires at least one centre")
+            raise AlganConfigurationError("from_batches requires at least one centre")
 
         # One representative member through the ordinary constructor, at the
         # first centre. The resolution search, color grid, textures and
@@ -1386,7 +1389,7 @@ class Surface(Mob):
 
         if colors is not None:
             if mob._has_color_texture:
-                raise ValueError(
+                raise AlganConfigurationError(
                     "from_batches cannot combine per-member colors with a "
                     "color_texture, which the whole pack shares"
                 )
@@ -1557,7 +1560,7 @@ class Surface(Mob):
             # assigning a new image, not by handing over a sequence of them.
             # This used to be accepted here and then fail deep in
             # materialization with an unrelated tensor-size error.
-            raise ValueError(
+            raise AlganConfigurationError(
                 "color_texture must be a single image [W, H, 5], not a sequence "
                 f"of them; got {tuple(texture.shape)}. To animate it, assign a "
                 "new [W, H, 5] image of the same resolution and Algan will "
@@ -1570,7 +1573,7 @@ class Surface(Mob):
                 if self._has_color_texture
                 else ""
             )
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"color_texture must have shape [W, H, 5], got "
                 f"{tuple(texture.shape)}.{current}"
             )
@@ -1809,7 +1812,9 @@ class Surface(Mob):
             colorscale = kwargs.pop("colors")
         if kwargs:
             unsupported = ", ".join(sorted(kwargs))
-            raise ValueError(f"Unsupported keyword argument(s): {unsupported}")
+            raise AlganConfigurationError(
+                f"Unsupported keyword argument(s): {unsupported}"
+            )
         if colorscale is None:
             return self
 
@@ -3149,7 +3154,7 @@ class Surface(Mob):
         """
         t = self._normalize_texture_shape(tex, channels).to(self.location.device)
         if t.shape[0] != 1:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "glow textures must be static (no time "
                 f"dimension), got {tuple(t.shape)}"
             )
@@ -3961,14 +3966,14 @@ class Surface(Mob):
             Scene.save_video()
         """
         if self._packed_grid_count() is not None:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "get_texture_locations is not defined for a packed surface: the "
                 "members built by from_batches share one texture, so a texel "
                 "has one position per member. Build the members separately to "
                 "texture them by world position."
             )
         if self.grid_width < 2 or self.grid_height < 2:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "get_texture_locations needs at least 2 grid points on each "
                 f"axis, got grid_width={self.grid_width}, "
                 f"grid_height={self.grid_height}"
@@ -3987,7 +3992,7 @@ class Surface(Mob):
         else:
             width = height = int(resolution)
         if width < 1 or height < 1:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"resolution must be positive on both axes, got {(width, height)}"
             )
 

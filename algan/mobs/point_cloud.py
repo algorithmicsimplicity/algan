@@ -17,6 +17,7 @@ import torch
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from algan.constants.color import BLACK, WHITE, YELLOW, Color
 from algan.constants.spatial import ORIGIN
+from algan.errors import AlganConfigurationError
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Point
 from algan.mobs.shapes_3d import Dot3D
@@ -115,7 +116,7 @@ class PMobject(Group):
                 cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
             )
             if len(self.rgbas) != len(self.points):
-                raise ValueError("points and rgbas must have same length")
+                raise AlganConfigurationError("points and rgbas must have same length")
         self.point_color = color
         if kwargs.get("scene") is None:
             kwargs["scene"] = active_scene_for_new_mob()
@@ -225,7 +226,7 @@ class PMobject(Group):
                 cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
             )
             if len(rgbas) != len(points):
-                raise ValueError("points and rgbas must have same length")
+                raise AlganConfigurationError("points and rgbas must have same length")
         self.points = torch.cat((self.points, points), 0)
         self.rgbas = torch.cat((self.rgbas, rgbas.to(self.rgbas.device)), 0)
         return self._rebuild_geometry()
@@ -427,7 +428,7 @@ class Mobject2D(PMobject):
 class PGroup(PMobject):
     def __init__(self, *pmobs, **kwargs):
         if not all(isinstance(mob, PMobject) for mob in pmobs):
-            raise ValueError("All submobjects must be of type PMobject")
+            raise AlganConfigurationError("All submobjects must be of type PMobject")
         super().__init__(points=None, **kwargs)
         self.replace_children(pmobs)
 

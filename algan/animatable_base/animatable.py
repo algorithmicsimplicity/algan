@@ -53,7 +53,11 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     _opt_disabled,
 )
 from algan.constants.color import BLACK, Color
-from algan.errors import DespawnedMobWarning, HierarchyError
+from algan.errors import (
+    AlganConfigurationError,
+    DespawnedMobWarning,
+    HierarchyError,
+)
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
@@ -255,6 +259,26 @@ def attr_ranges_for_mob(attr_timeline, mob):
     return ranges if ranges is not None else RowRanges(None, tensor=selected)
 
 
+def _unexpected_keywords_message(owner, unexpected) -> str:
+    """Word the error for constructor keywords no Algan class takes.
+
+    ``_MANIM_CONSTRUCTOR_HINTS`` lives in ``mob.py``, which imports this
+    module, so it is read on demand rather than at import.
+    """
+    from algan.animatable_base.mob import _MANIM_CONSTRUCTOR_HINTS
+
+    names = sorted(unexpected)
+    listed = ", ".join(f"`{name}`" for name in names)
+    plural = "s" if len(names) > 1 else ""
+    hints = [
+        f"`{name}`: {_MANIM_CONSTRUCTOR_HINTS[name]}"
+        for name in names
+        if name in _MANIM_CONSTRUCTOR_HINTS
+    ]
+    tail = (" -- " + "; ".join(hints) + ".") if hints else "."
+    return f"{owner.__name__}() got unexpected keyword argument{plural}: {listed}{tail}"
+
+
 class Animatable:
     """Anything whose state can change over the course of a video.
 
@@ -336,7 +360,14 @@ class Animatable:
         data_sub_inds: torch.Tensor | None = None,
         parent_batch_sizes: torch.Tensor | None = None,
         is_primitive: bool = False,
+        **unexpected,
     ):
+        # Every Mob constructor forwards its surplus keywords down to here, so
+        # this is where a name no Algan class takes finally lands. Collected
+        # rather than left to Python so the message can name the class the user
+        # typed -- not this base -- and, for a Manim spelling, the Algan one.
+        if unexpected:
+            raise TypeError(_unexpected_keywords_message(type(self), unexpected))
         if not hasattr(self, "animatable_attrs"):
             self.animatable_attrs = []
 
@@ -697,7 +728,24 @@ class Animatable:
             most recently added updater.
         """
         timeline = self.scene.timeline_manager
-        event = timeline.function_timeline.updaters[updater_id]
+        updaters = timeline.function_timeline.updaters
+        # An updater id is an index into that list, so a wrong one is an
+        # IndexError from deep inside the timeline. The id came from
+        # add_updater, so say how many there are to have.
+        if not isinstance(updater_id, int) or isinstance(updater_id, bool):
+            raise AlganConfigurationError(
+                "updater_id must be an int returned by add_updater(); "
+                f"got {updater_id!r}"
+            )
+        if not -len(updaters) <= updater_id < len(updaters):
+            have = (
+                f"the valid ids are 0 to {len(updaters) - 1}, "
+                "or -1 for the most recently added"
+                if updaters
+                else "this Scene has no updaters -- add_updater() returns the id"
+            )
+            raise AlganConfigurationError(f"No updater with id {updater_id}: {have}.")
+        event = updaters[updater_id]
         if event.time.end_event is not None:
             # Already removed.
             return
@@ -822,7 +870,9 @@ class Animatable:
     @animation_manager.setter
     def animation_manager(self, manager):
         if manager is not self.scene.animation_manager:
-            raise ValueError("A Mob must use the AnimationManager owned by its Scene")
+            raise AlganConfigurationError(
+                "A Mob must use the AnimationManager owned by its Scene"
+            )
 
     def is_animating(self) -> bool:
         """Whether changes to this Mob would currently be recorded as animation.

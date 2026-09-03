@@ -6,8 +6,8 @@ towards the viewer, so it is ``(0, 0, 1)`` and the +z axis runs *towards* the
 viewer, out of the scene. ``CAMERA_ORIGIN`` is correspondingly at positive z.
 This is the same sign convention as Manim, Three.js and glTF, so a scene ported
 from any of them keeps its z coordinates as written. Each constant is a unit
-tensor of shape ``(1, 1, 3)``, so they compose by ordinary arithmetic:
-``UP * 2 + LEFT``.
+tensor of shape ``(3,)``, so they compose by ordinary arithmetic:
+``UP * 2 + LEFT``. (``DEFAULT_BASIS``, being a matrix, is ``(3, 3)``.)
 
 ``(RIGHT, UP, OUTWARD)`` is therefore a right-handed basis, and a rotation of a
 positive angle about an axis is counter-clockwise seen from the tip of that

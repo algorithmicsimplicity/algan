@@ -18,13 +18,26 @@ Routes:
 ``GET /api/fragments?frame=&x=&y=`` the fragment list behind one pixel
 ``POST /api/resolution?name=``      re-render everything at another resolution
 ``POST /api/shutdown``              stop serving
+
+Everything but the page itself and its own static files carries a per-session
+token, minted when the server is built and handed to the browser in the URL
+:meth:`ViewerServer.url` returns. Binding to ``127.0.0.1`` is not on its own
+enough to keep other pages out: a page on any origin can POST to a localhost
+URL without being allowed to read the answer, which is all it takes to hit
+``/api/shutdown``, and a name that resolves to 127.0.0.1 (DNS rebinding) turns
+the whole API into same-origin for that page. The token closes the first --
+it is unguessable and not in a cookie, so a cross-site request cannot carry it
+-- and the ``Host`` check closes the second, because a rebound page reaches
+here under its own hostname rather than ``localhost``.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
+import secrets
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +45,32 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 STATIC = Path(__file__).parent / "static"
+
+#: Hostnames a request may name in its ``Host`` header. A browser reaching the
+#: viewer by its address uses one of these; anything else is another name that
+#: has been pointed at this machine.
+_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+def _host_is_local(host_header: str | None) -> bool:
+    """Whether ``Host`` names this machine rather than a rebound domain."""
+    if not host_header:
+        # HTTP/1.1 requires it; a client that omits it is not a browser.
+        return False
+    host = host_header.rsplit(":", 1)[0] if _has_port(host_header) else host_header
+    if host in _ALLOWED_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _has_port(host_header: str) -> bool:
+    """Whether ``Host`` carries a ``:port`` suffix, IPv6 brackets allowed."""
+    if host_header.startswith("["):
+        return host_header.rfind("]") < host_header.rfind(":")
+    return host_header.count(":") == 1
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -45,10 +84,38 @@ class _Handler(BaseHTTPRequestHandler):
     def session(self):
         return self.server.session
 
+    def _refused(self, route, query) -> bool:
+        """Whether this request was refused; the refusal is already sent.
+
+        The page and its static files are answered to anyone who can reach the
+        port: they carry no Scene data and do nothing. Everything else needs
+        the session token.
+        """
+        if not _host_is_local(self.headers.get("Host")):
+            self._error(
+                HTTPStatus.FORBIDDEN,
+                "the Algan viewer answers only to localhost; this request "
+                f"named the host {self.headers.get('Host')!r}",
+            )
+            return True
+        if route == "/" or route.startswith("/static/"):
+            return False
+        token = (query.get("t") or [""])[0]
+        if not secrets.compare_digest(token, self.server.token):
+            self._error(
+                HTTPStatus.FORBIDDEN,
+                "missing or wrong viewer session token; open the URL the "
+                "viewer printed, which carries one",
+            )
+            return True
+        return False
+
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
         query = parse_qs(url.query)
         route = url.path
+        if self._refused(route, query):
+            return None
         try:
             if route == "/":
                 return self._file(STATIC / "index.html")
@@ -117,6 +184,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
+        if self._refused(url.path, parse_qs(url.query)):
+            return None
         if url.path == "/api/shutdown":
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -194,8 +263,28 @@ class ViewerServer(ThreadingHTTPServer):
     def __init__(self, session, host="127.0.0.1", port=0):
         super().__init__((host, port), _Handler)
         self.session = session
+        #: This session's key to its own API. Minted per server, never
+        #: persisted, and reachable only by whoever was given the URL.
+        self.token = secrets.token_urlsafe(16)
 
     @property
     def url(self):
+        """The address to open, token included -- what the viewer prints."""
+        return self.url_for("/")
+
+    @property
+    def origin(self):
+        """The scheme, host and port, with no path and no token."""
         host, port = self.server_address[:2]
-        return f"http://{host}:{port}/"
+        return f"http://{host}:{port}"
+
+    def url_for(self, path):
+        """One route's full URL, with this session's token attached.
+
+        The token is what every route but the page needs, so building a
+        request URL by concatenating onto :attr:`url` does not work -- that one
+        already carries a query string. This is the way to address a route from
+        outside the browser.
+        """
+        separator = "&" if "?" in path else "?"
+        return f"{self.origin}{path}{separator}t={self.token}"

@@ -56,6 +56,7 @@ from algan.animation_timeline.animation_contexts import (
 )
 from algan.constants.color import to_color
 from algan.constants.spatial import *
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
     get_rotation_between_bases,
     map_global_to_local_coords,
@@ -66,6 +67,7 @@ from algan.utils.tensor_utils import (
     cast_to_direction,
     cast_to_tensor,
     dot_product,
+    reject_non_finite,
     squish,
     unsquish,
 )
@@ -163,6 +165,31 @@ _MANIM_METHOD_HINTS = {
     "restore": "become(the clone you saved)",
     "rotate_about_origin": "rotate(..., about=ORIGIN)",
     "flip": "rotate(180, axis)",
+}
+
+
+#: Constructor keywords a reader arriving from Manim writes, and what Algan
+#: takes instead. The counterpart of ``_MANIM_METHOD_HINTS`` for the other half
+#: of the same migration: these names do not exist on any Algan Mob, so the
+#: bare ``TypeError: Animatable.__init__() got an unexpected keyword argument
+#: 'side_length'`` names an internal base class and says nothing about the
+#: spelling that works. Only names that are wrong on *every* Algan Mob belong
+#: here -- ``start_angle`` is a real ``RegularPolygon`` argument, so pointing a
+#: user away from it would be worse than the TypeError.
+_MANIM_CONSTRUCTOR_HINTS = {
+    "side_length": "Square takes `size`; Rectangle takes `width` and `height`",
+    "arc_center": "pass `location=`",
+    "center": "pass `location=`",
+    "point": "pass `location=`",
+    "about_point": "`about=` on the transform methods (rotate, scale, ...)",
+    "buff": "Algan spells the spacing `buffer=`",
+    "mobject": "Algan spells it `mob=`",
+    "mobjects": "Algan spells it `mobs=`, or pass them positionally",
+    "run_time": "timing is a context in Algan: `with Seq(runtime=2): ...`",
+    "duration": "timing is a context in Algan: `with Seq(runtime=2): ...`",
+    "rate_func": "easing is a context in Algan: `with Seq(easing=...): ...`",
+    "lag_ratio": "staggering is a context in Algan: `with Lag(ratio=0.5): ...`",
+    "scale_factor": "build it, then call `.scale(2)`",
 }
 
 
@@ -442,7 +469,10 @@ class Mob(
         if color is None:
             color = self.get_default_color()
 
-        self._init_default_attr("location", cast_to_tensor(location))
+        # Same funnel as the `location` property setter, so `Square(location=(1,
+        # 2))` says what it wanted instead of surfacing a tensor-shape
+        # RuntimeError from the first broadcast that meets it.
+        self._init_default_attr("location", cast_to_direction("location", location))
         # The timeline stores a basis flattened to (*, 9), but a user writing one
         # out has a 3x3 matrix in hand and should not have to know that. Accept
         # both spellings; only the trailing two axes are inspected, so a batched
@@ -452,8 +482,10 @@ class Mob(
             basis = squish(basis, -2, -1)
         self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
-        self._init_default_attr("opacity", cast_to_tensor(opacity))
-        self._init_default_attr("glow", cast_to_tensor(glow))
+        self._init_default_attr(
+            "opacity", reject_non_finite("opacity", cast_to_tensor(opacity))
+        )
+        self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
         self.num_points_per_object = 1
         self.shader = None
 
@@ -1247,7 +1279,7 @@ class Mob(
             key, default=None, include_descendants=False
         )
         if current_value.shape[-2] != 1:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"Attempting to set {key} which currently has value of shape {current_value.shape}"
                 f"to new value with shape {value.shape}, which is not broadcastable."
             )
@@ -1349,6 +1381,11 @@ class Mob(
             recursive = False
         value = _coerce_if_color(attr, value)
         value = cast_to_tensor(value)
+        # The funnel every animatable write reaches -- assignment, `set`,
+        # `scale` -- and the one place a NaN can still be traced back to the
+        # line that wrote it. Checked here rather than in `_apply_change`,
+        # which replay re-enters once per frame batch.
+        reject_non_finite(attr, value)
 
         if self._writes_through_property_setter(attr):
             # The generic path below writes timeline rows, which for these
@@ -1470,7 +1507,7 @@ class Mob(
         current = self.get_animated_attribute(attr, include_descendants=True, copy=True)
         target = cast_to_tensor(func(current))
         if target.shape != current.shape:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"map_animated_attribute({attr!r}, ...): func must return the "
                 f"shape it was given, {tuple(current.shape)}, but returned "
                 f"{tuple(target.shape)}."
@@ -1545,6 +1582,9 @@ class Mob(
     @basis.setter
     def basis(self, basis: torch.Tensor):
         value = cast_to_tensor(basis)
+        # The other authoring funnel beside set_animated_attribute: rotate,
+        # scale and scale_coefficient all land here rather than there.
+        reject_non_finite("basis", value)
         inverse_relation = self.attr_to_relations["basis"][1]
         # Convert the absolute target into a relative change against the
         # current basis, so that concurrent basis writers (e.g. a rotate and a
@@ -1748,7 +1788,7 @@ class Mob(
             This Mob, so calls can be chained.
         """
         # Calculate the new absolute scale coefficient
-        scale_factor = cast_to_tensor(scale_factor)
+        scale_factor = reject_non_finite("scale_factor", cast_to_tensor(scale_factor))
         new_scale = scale_factor * self.scale_coefficient
         # Use the 'set' method to apply the new scale coefficient, which handles animation and recursion
         return (

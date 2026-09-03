@@ -38,14 +38,12 @@ def viewer(fresh_scene):
 
 
 def fetch(handle, path, *, raw=False, timeout=300):
-    with urllib.request.urlopen(handle.url.rstrip("/") + path, timeout=timeout) as r:
+    with urllib.request.urlopen(handle.url_for(path), timeout=timeout) as r:
         return r.read() if raw else json.load(r)
 
 
 def post(handle, path, *, timeout=300):
-    request = urllib.request.Request(
-        handle.url.rstrip("/") + path, data=b"", method="POST"
-    )
+    request = urllib.request.Request(handle.url_for(path), data=b"", method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as r:
         return json.load(r)
 
@@ -287,3 +285,50 @@ def test_default_settings_keep_the_scenes_frame_rate(fresh_scene):
         assert tuple(handle.session.video_settings.resolution) == PREVIEW.resolution
     finally:
         handle.stop()
+
+
+def _status(url, *, method="GET", host=None):
+    """The status code a raw request gets, error responses included."""
+    request = urllib.request.Request(
+        url, data=b"" if method == "POST" else None, method=method
+    )
+    if host is not None:
+        request.add_header("Host", host)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status
+    except urllib.error.HTTPError as refused:
+        return refused.code
+
+
+def test_the_api_needs_the_session_token(viewer):
+    """Binding to 127.0.0.1 is not a permission check.
+
+    Any page, on any origin, can POST to a localhost URL without being allowed
+    to read the answer -- which is all it takes to stop a viewer through
+    ``/api/shutdown``. The token is not a cookie, so a cross-site request
+    cannot carry it.
+    """
+    origin = viewer.url.split("/?", 1)[0]
+    assert _status(f"{origin}/api/state") == 403
+    assert _status(f"{origin}/api/state?t=wrong") == 403
+    assert _status(f"{origin}/api/shutdown", method="POST") == 403
+    assert _status(f"{origin}/frame/0.png") == 403
+    # The page and its static files carry no Scene data and do nothing, so they
+    # stay reachable -- a reload of the bare address still gets the app, which
+    # then reads its token from the address bar.
+    assert _status(f"{origin}/") == 200
+    # And the viewer is still serving: the refused shutdown did not land.
+    assert fetch(viewer, "/api/state")["total_frames"] > 0
+
+
+def test_a_rebound_hostname_is_refused(viewer):
+    """A name pointed at 127.0.0.1 makes the API same-origin for that page.
+
+    The request still arrives naming the attacker's host, which is what this
+    check reads -- and it applies to the page itself, before any token.
+    """
+    origin = viewer.url.split("/?", 1)[0]
+    assert _status(viewer.url_for("/api/state"), host="evil.example.com") == 403
+    assert _status(f"{origin}/", host="evil.example.com") == 403
+    assert _status(f"{origin}/", host="localhost:1234") == 200

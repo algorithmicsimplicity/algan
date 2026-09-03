@@ -28,7 +28,11 @@ from __future__ import annotations
 import warnings
 
 from algan.environment import env_flag, env_float, env_int, env_is_set, env_str
-from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.errors import (
+    AlganConfigurationError,
+    UnsupportedFeatureError,
+    UnsupportedFeatureWarning,
+)
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.settings._startup import render_device
@@ -2601,7 +2605,9 @@ def set_analytic_aa(
         analytic_aa_one_mesh = bool(one_mesh)
     if run_rule is not None:
         if run_rule not in ANALYTIC_AA_RUN_RULES:
-            raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")
+            raise AlganConfigurationError(
+                f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}"
+            )
         analytic_aa_run_rule = run_rule
     analytic_aa = bool(enabled)
     if bezier is not None:
@@ -2612,7 +2618,9 @@ def set_analytic_aa(
         analytic_aa_seam = bool(seam)
     if sliver is not None:
         if sliver not in ANALYTIC_AA_SLIVER_MODES:
-            raise ValueError(f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}")
+            raise AlganConfigurationError(
+                f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}"
+            )
         analytic_aa_sliver = sliver
 
 
@@ -3119,7 +3127,7 @@ def set_tonemap_method(method):
     """Set the tonemapping method ("neutral" or "agx")."""
     global tonemap_method
     if method not in ("neutral", "agx"):
-        raise ValueError("tonemap_method must be 'neutral' or 'agx'")
+        raise AlganConfigurationError("tonemap_method must be 'neutral' or 'agx'")
     tonemap_method = str(method)
 
 

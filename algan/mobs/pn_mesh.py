@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
+from algan.errors import AlganConfigurationError
 from algan.rendering.logical_pn import (
     TOLERANCE_REFERENCE_HEIGHT,
     normalize_pixel_tolerance,
@@ -45,11 +46,13 @@ class PNMesh(Mob):
         corners = cast_to_tensor(corners)
         normals = cast_to_tensor(normals).to(corners)
         if corners.shape[-1] != 3 or corners.shape[-2] % 3:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "PNMesh corners must contain complete groups of 3 vertices"
             )
         if normals.shape != corners.shape:
-            raise ValueError("PNMesh normals must have the same shape as corners")
+            raise AlganConfigurationError(
+                "PNMesh normals must have the same shape as corners"
+            )
 
         super().__init__(location=corners, **kwargs)
         self.register_attrs_as_animatable(["normals"], PNMesh)
