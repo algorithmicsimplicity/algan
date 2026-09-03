@@ -100,6 +100,21 @@ mcp__github__actions_get   method=get_workflow_run resource_id=<run id>
 the `pipefail`/`tee` in the run step is what makes that true; without it a
 pipeline reports only its last command and a crashed script goes green.
 
+> ### Status is stale; the log is not
+>
+> **Both** of these APIs served `in_progress` for an hour after the run had
+> finished, with per-step timestamps frozen mid-job. The first run of this
+> harness looked like a 60-minute hang in the render; it had actually finished
+> in 100 seconds. Kaggle does the same thing — `get_notebook_session_status`
+> answered `RUNNING` long after its notebook had exited 0.
+>
+> So do not diagnose from a status field. **Try to read the output**: on
+> GitHub, `get_job_logs` 404s while a job genuinely runs and returns the whole
+> transcript the moment it does not; on Kaggle,
+> `list_notebook_session_output` returns the log of a finished run. A
+> `cancel_workflow_run` answering *"Cannot cancel a workflow run that is
+> completed"* is the same tell.
+
 ### Read
 
 ```
@@ -176,11 +191,16 @@ than redone. `--force` re-runs everything.
 ### Wait
 
 ```
-mcp__Kaggle__get_notebook_session_status  {"userName": "<you>", "kernelSlug": "algan-<tag>"}
+mcp__Kaggle__get_notebook_session_status  {"userName": "algorithmicsimp", "kernelSlug": "algan-<tag>"}
 ```
 
+The Kaggle user is **`algorithmicsimp`** (not the GitHub name), and the slug is
+`algan-<tag>` — that is what `--tag` is for.
+
 Nothing notifies you — arm a background timer (`sleep 420` as a background Bash
-task) and poll when it fires.
+task) and poll when it fires. And see **Status is stale; the log is not**
+above: `RUNNING` here has been observed an hour after a run finished, so read
+the output rather than believing the status.
 
 > **The batch GPU session limit is 2, and a *queued* run holds one.**
 > `get_notebook_session_status` returns `{}` for a queued run, which is
@@ -203,7 +223,7 @@ Both are read the same way.
 ### Read
 
 ```
-mcp__Kaggle__list_notebook_session_output  {"userName": "<you>", "kernelSlug": "algan-<tag>", "pageSize": 1}
+mcp__Kaggle__list_notebook_session_output  {"userName": "algorithmicsimp", "kernelSlug": "algan-<tag>", "pageSize": 1}
 ```
 
 **Pass `pageSize: 1`.** It trims the `files` list to one entry and does not
@@ -244,6 +264,23 @@ Then grep `/tmp/run.log` for whatever the run was about.
   the GPU.** Free VRAM at job start sets the arena size, which sets tile sizes
   and batch windows; a concurrent job changes the pixels. Check `nvidia-smi`
   (the harness prints it) before trusting a comparison.
+
+**The T4 picks NVENC by itself.** The first run's encoder line read
+`Encoding video with h264_nvenc`. That is the right default for throughput and
+the wrong one for comparing against an x264-encoded baseline, so pin
+`ALGAN_VIDEO_ENCODER=software` whenever the output bytes are the measurement.
+
+### Both harnesses, verified
+
+Each harness's first run rendered `scripts/gpu_smoke.py --runs 2` on the branch
+that added it. Use these as the "the plumbing works" reference, not as
+performance numbers — one moving square at PREVIEW is not a benchmark:
+
+| Arm | device / Taichi arch | cold | warm | job |
+| --- | --- | --- | --- | --- |
+| Kaggle T4 | `cuda`, `arch=cuda`, torch 2.10.0+cu128, py3.12 | 26.9 s | 0.93 s | 133 s total |
+| mac-mps | `mps`, `arch=metal`, torch 2.7.1, patched wheel | 32.3 s | 1.40 s | ~85 s |
+| linux-cpu (control) | `cpu`, `arch=x64` | 17.2 s | 0.76 s | ~100 s |
 
 Reference numbers, Kaggle T4, master @ `95271dac`, warm RUN 2:
 `nn_scene_UHD.py` **29.90 s** (30 frames @ 3840×2160; cold 85.85 s),

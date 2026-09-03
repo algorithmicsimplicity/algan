@@ -283,10 +283,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: run-on-mac-${{ matrix.label }}
+          # `**/algan_outputs/**` rather than the two obvious paths: Algan's
+          # `output_root` defaults to the *running script's own directory*, so
+          # `scripts/gpu_smoke.py` writes to `scripts/algan_outputs/`. The
+          # first run of this workflow uploaded a 523-byte artifact for that
+          # reason.
           path: |
             run-output.txt
-            algan_outputs/**
-            benchmarks/algan_outputs/**
+            **/algan_outputs/**
             ${{ needs.plan.outputs.artifacts }}
           if-no-files-found: warn
           retention-days: 30

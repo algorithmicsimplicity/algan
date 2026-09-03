@@ -115,13 +115,16 @@ def _hash_outputs(repo: Path) -> dict[str, str]:
     single file off the box.
     """
     digests: dict[str, str] = {}
-    # Only the output directories a run writes into. `tests/` is deliberately
-    # excluded: its expected-output trees hold hundreds of committed frames
-    # that no step produced, and hashing them says nothing while costing
-    # seconds and drowning the ones that matter.
-    for root in ("algan_outputs", "benchmarks/algan_outputs"):
-        base = repo / root
-        if not base.is_dir():
+    # EVERY `algan_outputs` in the tree, not the two obvious ones: Algan's
+    # `output_root` defaults to *the running script's own directory*, so a step
+    # that runs `scripts/foo.py` writes to `scripts/algan_outputs/`. The first
+    # T4 run recorded an empty `sha256` map for exactly that reason.
+    #
+    # `tests/` is skipped deliberately: its expected-output trees hold hundreds
+    # of committed frames that no step produced, and hashing them says nothing
+    # while costing seconds and drowning the ones that matter.
+    for base in sorted(repo.glob("**/algan_outputs")):
+        if not base.is_dir() or "tests" in base.relative_to(repo).parts:
             continue
         for path in sorted(base.rglob("*")):
             if path.suffix.lower() not in (".mp4", ".png") or not path.is_file():
