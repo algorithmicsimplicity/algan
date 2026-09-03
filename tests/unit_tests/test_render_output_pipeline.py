@@ -29,7 +29,12 @@ def render_scene(tmp_path):
         scene = Scene()
         with scene:
             with Off():
-                Square(size=1.5, color=BLUE).spawn()
+                # Sized against the default camera's frame (8 world units
+                # tall), not against a number that once looked big: the square
+                # has to be most of a 32x32 frame for the channel assertions
+                # below to be about the post-process rather than about how
+                # libx264's chroma subsampling smears a handful of pixels.
+                Square(size=5.0, color=BLUE).spawn()
             scene.wait(0.5)
         return scene
 

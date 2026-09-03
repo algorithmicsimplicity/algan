@@ -85,6 +85,7 @@ def test_deterministic_shadows_accumulate_every_blocker_opacity(
         one_image = _render_shadow_luminance(tmp_path, "one", (0.25, 0.0))
         two_image = _render_shadow_luminance(tmp_path, "two", (0.25, 0.5))
         opaque_image = _render_shadow_luminance(tmp_path, "opaque", (1.0, 0.0))
+        second_opaque_image = _render_shadow_luminance(tmp_path, "second", (0.0, 1.0))
     finally:
         SETTINGS.restore(snapshot)
         SceneManager.reset()
@@ -102,8 +103,19 @@ def test_deterministic_shadows_accumulate_every_blocker_opacity(
     # an encoded value is byte 26. An absolute "< 80" silently selected nothing
     # at all under the linear space.
     floor = float(opaque_image[center].min())
+    # And only where the *second* blocker covers as well. The two blockers sit
+    # at slightly different distances, so their umbras are offset: a pixel
+    # inside the first's and outside the second's sees the same light in the
+    # "one" and "two" renders, and averaging those in makes the halfway
+    # assertion below a statement about how the camera happens to frame the
+    # wall rather than about shadow accumulation. Its own render, with only the
+    # second blocker opaque, is what says where that umbra is.
+    second_floor = float(second_opaque_image[center].min())
     shared_shadow = (
-        center & (opaque_image <= floor + 2.0) & (one_image - opaque_image > 10.0)
+        center
+        & (opaque_image <= floor + 2.0)
+        & (second_opaque_image <= second_floor + 2.0)
+        & (one_image - opaque_image > 10.0)
     )
     assert shared_shadow.sum() >= 9
 

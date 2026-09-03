@@ -292,7 +292,7 @@ def test_circuit_material_metadata_matches_kernel_layout():
     primitive._build_circuit_geometry(corners, chords)
 
     meta = primitive._rt_circuit_meta
-    assert meta.shape[-1] == _M_WIDTH == 24
+    assert meta.shape[-1] == _M_WIDTH == 25
     assert torch.equal(
         meta[..., _M_REFLECTIVITY : _M_REFLECTIVITY + 1], primitive.reflectivity
     )
