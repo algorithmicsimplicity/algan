@@ -40,8 +40,19 @@ ERRORS_DIR = HERE / "output_errors"
 # skips the comparisons.
 DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
-EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
+# Where a rebaseline *writes*: always the tree, never the cache. The author of
+# a rendering change reviews the new mp4s here and packages them from here
+# (scripts/package_baselines.py), so a downloaded set can never become the
+# input to the next release's baselines.
+LOCAL_EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
+
+# Where the comparison *reads* from -- the tree while these baselines are
+# still committed, otherwise the release asset pinned in tests/baselines.json.
+# See tests/baseline_store.py for the full resolution order.
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
+from baseline_store import resolve_baseline_dir  # noqa: E402, I001
 
 
 # Frames are compared by the ``assert_video_matches_baseline`` fixture in
@@ -186,14 +197,18 @@ def test_full_render_scene(
     assert output_path.exists()
     assert output_path.stat().st_size > 0
 
-    expected_path = EXPECTED_DIR / output_path.name
     if UPDATE_BASELINES:
-        EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(output_path, expected_path)
+        LOCAL_EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
-    if not EXPECTED_DIR.exists():
+
+    expected_dir = resolve_baseline_dir(
+        "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
+    )
+    if expected_dir is None:
         pytest.skip(f"no {BASELINE_KEY} full-render baselines are available")
 
+    expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (
         f"Missing baseline for {scene_path.name}. Re-run with "
         "ALGAN_UPDATE_FULL_RENDER_BASELINES=1 after reviewing the render."

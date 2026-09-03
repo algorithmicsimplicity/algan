@@ -58,8 +58,16 @@ ERRORS_DIR = HERE / "output_errors"
 # ``tests/fast/test_fast_render.py``.
 DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
-EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
+# Written by a rebaseline; read from only while the mp4s are committed. The
+# split is explained in tests/full_renders/test_full_renders.py and the
+# resolution order in tests/baseline_store.py.
+LOCAL_EXPECTED_DIR = HERE / f"expected_outputs_{BASELINE_KEY}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_PATH_TRACED_BASELINES") == "1"
+
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
+from baseline_store import resolve_baseline_dir  # noqa: E402, I001
+
 LOG_FILE = HERE / "pytest.log"
 
 # Small on purpose: the path tracer pays per (pixel, sample, frame) and this
@@ -249,14 +257,16 @@ def test_path_traced_scene(
         f"the wrong renderer"
     )
 
-    expected_path = EXPECTED_DIR / output_path.name
     if UPDATE_BASELINES:
-        EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(output_path, expected_path)
+        LOCAL_EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
-    if not EXPECTED_DIR.exists():
+
+    expected_dir = resolve_baseline_dir("path_traced", BASELINE_KEY, LOCAL_EXPECTED_DIR)
+    if expected_dir is None:
         pytest.skip(f"no {BASELINE_KEY} path-traced baselines are available")
 
+    expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (
         f"Missing baseline for {scene_path.name}. Re-run with "
         "ALGAN_UPDATE_PATH_TRACED_BASELINES=1 after reviewing the render."
