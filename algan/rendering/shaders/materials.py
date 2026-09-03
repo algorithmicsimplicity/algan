@@ -436,6 +436,13 @@ def _to_color5(value):
 
     Accepts a hex int (``0xff0000``), a hex string (``"#ff0000"``), an RGB tuple
     in ``[0, 1]``, or an existing :class:`Color` / tensor.
+
+    Every color-valued material property is stored through this, so
+    ``material.emissive`` reads back as a :class:`Color` whichever spelling
+    built it. Three.js's bare hex int stays a legal thing to *write* -- it is
+    what a transcribed material says -- but it is not what Algan keeps: a
+    property whose type depended on how it was assigned would be worse than
+    either type on its own.
     """
     if isinstance(value, Color):
         return value
@@ -610,7 +617,7 @@ class DiffuseMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.env_map_intensity = env_map_intensity
 
@@ -668,15 +675,15 @@ class SpecularMaterial(Material):
         *,
         emissive=BLACK,
         emissive_intensity=1.0,
-        specular=0x111111,
+        specular=Color("#111111"),
         shininess=30.0,
         env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
-        self.specular = specular
+        self.specular = _to_color5(specular)
         self.shininess = shininess
         self.env_map_intensity = env_map_intensity
 
@@ -713,7 +720,7 @@ class PBRMaterial(Material):
         super().__init__(color, **kwargs)
         self.roughness = roughness
         self.metalness = metalness
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.env_map_intensity = env_map_intensity
 
@@ -773,14 +780,14 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             self.reflectivity = reflectivity
             self.ior = (1.0 + 0.4 * reflectivity) / (1.0 - 0.4 * reflectivity)
         self.specular_intensity = specular_intensity
-        self.specular_color = specular_color
+        self.specular_color = _to_color5(specular_color)
         self.sheen = sheen
         self.sheen_roughness = sheen_roughness
-        self.sheen_color = sheen_color
+        self.sheen_color = _to_color5(sheen_color)
         self.transmission = transmission
         # Stored for API parity; not used by the per-vertex approximation.
         self.thickness = thickness
-        self.attenuation_color = attenuation_color
+        self.attenuation_color = _to_color5(attenuation_color)
         self.attenuation_distance = attenuation_distance
         self.iridescence = iridescence
         self.iridescence_ior = iridescence_ior
@@ -834,7 +841,7 @@ class MeshToonMaterial(Material):
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.bands = bands
 

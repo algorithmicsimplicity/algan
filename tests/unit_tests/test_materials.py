@@ -14,7 +14,7 @@ import warnings
 import torch
 
 import algan
-from algan.constants.color import WHITE
+from algan.constants.color import BLACK, WHITE
 from algan.constants.material_presets import (
     BRUSHED_METAL,
     CERAMIC,
@@ -130,14 +130,25 @@ def test_base_defaults():
     print("ok: base material defaults")
 
 
+def _is_color(value, expected):
+    """Whether a color-valued material property equals ``expected``.
+
+    Every one of them is stored as a ``Color``, whichever spelling built it --
+    a bare hex int is still a legal thing to write, but ``==`` on the stored
+    value is elementwise, so it needs comparing as a color rather than as an
+    int.
+    """
+    return bool(torch.equal(_to_color5(value), _to_color5(expected)))
+
+
 def test_material_defaults():
-    assert MeshLambertMaterial().emissive == 0x000000
+    assert _is_color(MeshLambertMaterial().emissive, BLACK)
     assert MeshLambertMaterial().emissive_intensity == 1.0
 
     p = MeshPhongMaterial()
-    assert p.specular == 0x111111
+    assert _is_color(p.specular, 0x111111)
     assert p.shininess == 30.0
-    assert p.emissive == 0x000000
+    assert _is_color(p.emissive, BLACK)
 
     s = MeshStandardMaterial()
     assert s.roughness == 1.0
@@ -150,10 +161,10 @@ def test_material_defaults():
     assert ph.clearcoat_roughness == 0.0
     assert ph.ior == 1.5
     assert ph.specular_intensity == 1.0
-    assert ph.specular_color == 0xFFFFFF
+    assert _is_color(ph.specular_color, WHITE)
     assert ph.sheen == 0.0
     assert ph.sheen_roughness == 1.0
-    assert ph.sheen_color == 0x000000
+    assert _is_color(ph.sheen_color, BLACK)
     assert ph.transmission == 0.0
     assert ph.iridescence == 0.0
     # Inherits Standard defaults.
