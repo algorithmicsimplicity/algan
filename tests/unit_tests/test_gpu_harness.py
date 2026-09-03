@@ -1,0 +1,221 @@
+"""The GPU measurement harnesses' offline halves.
+
+Neither harness can be exercised end to end from here -- one needs an Apple
+GPU, the other a Kaggle session -- so what is testable is everything that runs
+*before* the expensive part: the request resolver that decides a run's matrix,
+and the notebook generator whose output is transmitted inline and then executed
+on a box that costs a quota slot to reach.
+
+Both failure modes these guard against are silent and late. A resolver that
+emits an empty matrix produces a green run that measured nothing; a notebook
+body with a formatting error fails after apt, clone and install have already
+been paid for.
+
+See `agent_guidance/gpu_harnesses.md`.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load(path: Path, name: str):
+    """Import a module that is not on the import path (a workflow helper)."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def resolver():
+    return _load(
+        REPO_ROOT / ".github" / "workflows" / "scripts" / "resolve_gpu_request.py",
+        "resolve_gpu_request",
+    )
+
+
+@pytest.fixture(scope="module")
+def make_notebook():
+    return _load(REPO_ROOT / "scripts" / "kaggle" / "make_notebook.py", "make_notebook")
+
+
+@pytest.fixture(scope="module")
+def runner():
+    return _load(REPO_ROOT / "scripts" / "kaggle" / "runner.py", "kaggle_runner")
+
+
+class TestResolveGpuRequest:
+    def test_dispatch_inputs_win_over_the_request_file(self, resolver):
+        out = resolver.resolve(
+            {"IN_COMMAND": "echo dispatched", "IN_ARMS": "mac-cpu"},
+            {"command": "echo from-file", "arms": ["mac-mps"]},
+        )
+        assert out["command"] == "echo dispatched"
+        assert json.loads(out["matrix"]) == [
+            {"os": "macos-latest", "device": "cpu", "label": "mac-cpu"}
+        ]
+
+    def test_the_request_file_is_used_when_no_input_was_given(self, resolver):
+        out = resolver.resolve(
+            {},
+            {
+                "command": "uv run python benchmarks/_foo.py",
+                "arms": ["mac-mps", "linux-cpu"],
+                "env": {"ALGAN_VIDEO_ENCODER": "software"},
+                "latex": True,
+                "timeout_minutes": 90,
+            },
+        )
+        assert out["command"] == "uv run python benchmarks/_foo.py"
+        assert [a["label"] for a in json.loads(out["matrix"])] == [
+            "mac-mps",
+            "linux-cpu",
+        ]
+        assert out["env"] == "ALGAN_VIDEO_ENCODER=software"
+        assert out["latex"] == "true"
+        assert out["timeout"] == "90"
+
+    def test_a_run_with_no_command_is_refused(self, resolver):
+        with pytest.raises(SystemExit):
+            resolver.resolve({}, None)
+
+    def test_an_unknown_arm_is_refused_rather_than_dropped(self, resolver):
+        # Dropping it would leave a smaller matrix that still runs and reports
+        # green, which is the expensive way to learn about a typo.
+        with pytest.raises(SystemExit):
+            resolver.resolve({"IN_COMMAND": "echo hi", "IN_ARMS": "mac-metal"}, None)
+
+    def test_an_unticked_latex_checkbox_does_not_override_the_file(self, resolver):
+        # A checkbox arrives as the string "false", not as an empty value, so a
+        # naive "input wins if non-empty" would make the file's `latex: true`
+        # unreachable from the push entry point.
+        out = resolver.resolve({"IN_LATEX": "false"}, {"command": "x", "latex": True})
+        assert out["latex"] == "false"
+        out = resolver.resolve({}, {"command": "x", "latex": True})
+        assert out["latex"] == "true"
+
+    def test_a_non_numeric_timeout_is_refused(self, resolver):
+        # `timeout-minutes: ${{ fromJSON(...) }}` would fail the whole workflow
+        # with a parse error naming neither the field nor the value.
+        with pytest.raises(SystemExit):
+            resolver.resolve({"IN_COMMAND": "x", "IN_TIMEOUT": "an hour"}, None)
+
+    def test_the_wheel_defaults_but_can_be_opted_out_of(self, resolver):
+        assert resolver.resolve({"IN_COMMAND": "x"}, None)["wheel"].isdigit()
+        assert (
+            resolver.resolve({"IN_COMMAND": "x", "IN_WHEEL": "none"}, None)["wheel"]
+            == "none"
+        )
+
+    def test_multiline_values_use_the_heredoc_form(self, resolver):
+        text = resolver.format_outputs({"env": "A=1\nB=2", "timeout": "60"})
+        assert "env<<ghadelim_" in text
+        assert "timeout=60" in text
+        # A bare `env=A=1\nB=2` would silently truncate to `A=1`.
+        assert "env=A=1" not in text
+
+
+class TestKaggleNotebook:
+    def _body(self, make_notebook, tmp_path, extra=()):
+        out = tmp_path / "body.py"
+        make_notebook.main(
+            [
+                "--tag",
+                "smoke",
+                "--branch",
+                "some/branch",
+                "--step",
+                "one:python -c 'print(1)'",
+                "--out",
+                str(out),
+                *extra,
+            ]
+        )
+        return out.read_text(encoding="utf-8")
+
+    def test_the_generated_body_is_valid_python(self, make_notebook, tmp_path):
+        # It is executed on a box that costs a GPU quota slot to reach, after
+        # ~75 s of apt and pip; a SyntaxError there is the dearest possible
+        # place to find one.
+        ast.parse(self._body(make_notebook, tmp_path))
+
+    def test_the_body_carries_the_spec_and_the_branch(self, make_notebook, tmp_path):
+        body = self._body(make_notebook, tmp_path)
+        assert "some/branch" in body
+        tree = ast.parse(body)
+        spec = next(
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "SPEC"
+        )
+        assert spec["tag"] == "smoke"
+        assert spec["steps"] == [{"name": "one", "command": "python -c 'print(1)'"}]
+
+    def test_the_body_hands_over_to_the_in_repo_runner(self, make_notebook, tmp_path):
+        # The split is the design: if the body ever grows the run logic back,
+        # every launch pays for it inline and nobody reviews it.
+        body = self._body(make_notebook, tmp_path)
+        assert "scripts" in body
+        assert "runner.py" in body
+        assert len(body) < 4000, (
+            "the bootstrap body has grown; keep the logic in runner.py"
+        )
+
+    def test_a_step_needs_a_name_and_a_command(self, make_notebook):
+        import argparse
+
+        assert make_notebook.parse_step("uhd:python x.py") == {
+            "name": "uhd",
+            "command": "python x.py",
+        }
+        # The name becomes a log filename.
+        for bad in ("no-colon", ":command", "name:", "a/b:cmd"):
+            with pytest.raises(argparse.ArgumentTypeError):
+                make_notebook.parse_step(bad)
+
+    def test_a_command_containing_a_colon_keeps_it(self, make_notebook):
+        step = make_notebook.parse_step("t:python -c 'a:b'")
+        assert step["command"] == "python -c 'a:b'"
+
+
+class TestKaggleRunner:
+    def test_the_results_prefix_is_a_single_greppable_token(self, runner):
+        assert runner.RESULTS_PREFIX == "RESULTS "
+
+    def test_a_non_cuda_device_aborts_unless_it_was_asked_for(
+        self, runner, monkeypatch
+    ):
+        # The trap this exists for: a wrong `machineShape` is dropped silently
+        # and Kaggle hands back a P100, on which torch.cuda.is_available() is
+        # True but Algan renders on the CPU. Every number in such a run is a CPU
+        # number on a notebook titled "t4"; two rounds were collected that way.
+        class Completed:
+            returncode = 0
+            stdout = "ALGAN_DEVICE cpu\nTORCH 2.7.1 cuda=True\n"
+            stderr = ""
+
+        monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: Completed())
+        with pytest.raises(SystemExit) as excinfo:
+            runner.check_render_device(Path("."), allow_cpu=False)
+        assert "NvidiaTeslaT4" in str(excinfo.value)
+        assert runner.check_render_device(Path("."), allow_cpu=True) == "cpu"
+
+    def test_a_cuda_device_is_accepted(self, runner, monkeypatch):
+        class Completed:
+            returncode = 0
+            stdout = "ALGAN_DEVICE cuda\nGPU Tesla T4\n"
+            stderr = ""
+
+        monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: Completed())
+        assert runner.check_render_device(Path("."), allow_cpu=False) == "cuda"
