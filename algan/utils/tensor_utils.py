@@ -100,6 +100,46 @@ def cast_to_tensor(x):
         return x
 
 
+def reject_non_finite(name, value, given=None):
+    """Raise if ``value`` holds a NaN or an infinity.
+
+    A NaN reaching an animatable attribute is not caught anywhere downstream:
+    it propagates through the basis, the projection and the rasterizer, and
+    the symptom is a black frame (or a mob that silently disappears) with
+    nothing in it pointing back at the line that wrote it. Checked once, where
+    the value is authored, rather than per replayed frame.
+
+    Parameters
+    ----------
+    name
+        The user-facing parameter or attribute name, used in the message.
+    value
+        The already-cast tensor to check. Non-tensors pass through.
+    given
+        What the user actually wrote, when it reads better than the tensor.
+
+    Returns
+    -------
+    The value, unchanged, so this can wrap a cast.
+
+    Raises
+    ------
+    AlganConfigurationError
+        If any element is NaN or infinite.
+    """
+    if torch.is_tensor(value) and value.is_floating_point():
+        finite = torch.isfinite(value)
+        if not bool(finite.all()):
+            what = "NaN" if bool(torch.isnan(value).any()) else "infinite"
+            shown = value if given is None else given
+            raise AlganConfigurationError(
+                f"{name} must be finite; got a {what} value: {shown!r}. A "
+                f"non-finite value propagates through every later frame and "
+                f"renders as a blank or missing shape rather than raising."
+            )
+    return value
+
+
 def cast_to_direction(name, x):
     """Cast a user-supplied 3-D vector argument to a ``[1, N, 3]`` tensor.
 
@@ -126,7 +166,7 @@ def cast_to_direction(name, x):
             f"{name} must be a 3-D vector of shape (*, 3), such as RIGHT, "
             f"UP * 2 or [1, 0, 0]; got {x!r}"
         )
-    return value
+    return reject_non_finite(name, value, given=x)
 
 
 def cast_to_tensor_single(x):

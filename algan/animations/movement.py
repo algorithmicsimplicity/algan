@@ -22,6 +22,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Sync, animation_manager_for
 from algan.constants import easings
 from algan.constants.spatial import ORIGIN
+from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.api_renames import _renamed_keywords
@@ -79,7 +80,7 @@ def _coerce_mapping_result(result: Any, reference: torch.Tensor) -> torch.Tensor
         try:
             result = result.expand_as(reference)
         except RuntimeError as exc:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "Point mapping functions must return the same shape as their input; "
                 f"got {tuple(result.shape)} for {tuple(reference.shape)}."
             ) from exc
@@ -248,7 +249,7 @@ def ApplyMatrix(
         full_matrix[:2, :2] = matrix
         matrix = full_matrix
     elif matrix.shape != (3, 3):
-        raise ValueError("matrix must have shape (2, 2) or (3, 3)")
+        raise AlganConfigurationError("matrix must have shape (2, 2) or (3, 3)")
 
     return ApplyPointwiseFunction(
         mob,
@@ -429,7 +430,7 @@ def PhaseFlow(
     """
     mob, function = _resolve_mob_and_callable(mob, function, function_name="PhaseFlow")
     if integration_steps < 1:
-        raise ValueError("integration_steps must be at least 1")
+        raise AlganConfigurationError("integration_steps must be at least 1")
     with Sync(
         runtime=runtime,
         easing=easing,
@@ -463,7 +464,9 @@ def _path_control_points(path: Mob) -> torch.Tensor:
     ]
     result = torch.cat(expanded, dim=-2)
     if result.shape[-2] % 4 != 0:
-        raise ValueError("Bezier path control-point count must be divisible by four.")
+        raise AlganConfigurationError(
+            "Bezier path control-point count must be divisible by four."
+        )
     return result
 
 
@@ -566,7 +569,7 @@ def MoveAlongPath(
     if not isinstance(mob, Mob) or not isinstance(path, Mob):
         raise TypeError("MoveAlongPath expects two Mobs.")
     if samples_per_curve < 2:
-        raise ValueError("samples_per_curve must be at least 2")
+        raise AlganConfigurationError("samples_per_curve must be at least 2")
     # Validate eagerly so a malformed path fails while defining the scene.
     _path_control_points(path)
     with Sync(

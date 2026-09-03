@@ -38,6 +38,7 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import WHITE
 from algan.constants.math import DEGREES_TO_RADIANS, PI
 from algan.constants.spatial import LEFT, ORIGIN, OUTWARD, RIGHT, UP
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import get_orthonormal_vector
 from algan.mobs.group import Group
 from algan.mobs.surfaces.surface import Surface
@@ -1188,7 +1189,9 @@ class Arrow3D(Mob):
         vector = end - start
         length = vector.norm(p=2, dim=-1, keepdim=True)
         if float(length.reshape(-1)[0]) <= tip_length:
-            raise ValueError("Arrow3D length must be greater than its tip_length")
+            raise AlganConfigurationError(
+                "Arrow3D length must be greater than its tip_length"
+            )
         direction = F.normalize(vector, p=2, dim=-1)
         shaft_end = end - direction * tip_length
         super().__init__(*args, location=(start + end) * 0.5, color=color, **kwargs)
@@ -2310,7 +2313,9 @@ class ConvexHull3D(Polyhedron):
 
         array = np.asarray(points, dtype=float)
         if len(array) < 4:
-            raise ValueError("ConvexHull3D requires at least four non-coplanar points")
+            raise AlganConfigurationError(
+                "ConvexHull3D requires at least four non-coplanar points"
+            )
         hull = ConvexHull(array, qhull_options=f"QJ{tolerance}")
         vertex_ids = sorted({int(i) for i in hull.simplices.reshape(-1)})
         remap = {old: new for new, old in enumerate(vertex_ids)}

@@ -505,6 +505,22 @@ def should_try(main_module=None):
         return False
     if not env_flag("ALGAN_USE_DAEMON", True):
         return False
+    if not is_scene_script_run(main_module):
+        return False
+    # Last, because it is the one condition that explains itself out loud: a
+    # process that was never a handoff candidate must not be told why it is not
+    # being handed off.
+    return not _declines_for_a_debugger()
+
+
+def is_scene_script_run(main_module=None):
+    """Whether this process is plainly ``python foo.py`` on a scene script.
+
+    The shape test ``should_try`` is built on, minus its two environment
+    switches: turning the daemon off does not stop a run being a scene script.
+    Also what says whether "this script rendered nothing" is worth reporting
+    -- a REPL or a test suite that renders nothing is not a mistake.
+    """
     if sys.flags.interactive:
         return False
     # Test runners and notebooks import algan as a library, not as a script.
@@ -523,12 +539,7 @@ def should_try(main_module=None):
     path = getattr(main_module, "__file__", None)
     if not isinstance(path, str) or not path.endswith(".py"):
         return False
-    if not os.path.isfile(path):
-        return False
-    # Last, because it is the one condition that explains itself out loud: a
-    # process that was never a handoff candidate must not be told why it is not
-    # being handed off.
-    return not _declines_for_a_debugger()
+    return os.path.isfile(path)
 
 
 def script_of(main_module=None):

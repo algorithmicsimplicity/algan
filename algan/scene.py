@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import sys
 import time
 from collections.abc import Callable, Sequence
 from functools import wraps
@@ -106,6 +107,50 @@ class active_scene_method:
             call_on_active_scene.__signature__ = self._unbound_signature
             self._class_accessor = call_on_active_scene
         return self._class_accessor
+
+
+#: How many times this process has been asked to produce something a user can
+#: look at -- a video, a still, or a viewer session. Counted so a runner can
+#: tell a script that rendered from one that only built a Scene and stopped:
+#: `algan render` on a script with no ``save_video()`` in it otherwise exits 0
+#: having written nothing and said nothing. Never reset, so a runner takes the
+#: count before the script and compares after.
+_RENDERS_REQUESTED = 0
+
+
+def renders_requested() -> int:
+    """The number of renders this process has been asked for so far."""
+    return _RENDERS_REQUESTED
+
+
+def _note_render_requested() -> None:
+    global _RENDERS_REQUESTED
+    _RENDERS_REQUESTED += 1
+
+
+def warn_if_nothing_rendered(script_path, renders_before: int) -> bool:
+    """Say so, on stderr, if a script ran to completion and rendered nothing.
+
+    Algan is lazy: a script builds a Scene and only ``save_video`` turns it
+    into a file. A script that forgets the last line therefore runs perfectly,
+    writes nothing, and exits 0 -- and the user is left looking for an output
+    file that was never going to exist. Called by the runners that exist to
+    produce one.
+
+    Returns whether the message was printed.
+    """
+    if renders_requested() > renders_before:
+        return False
+    script = Path(str(script_path))
+    print(
+        f"[algan] {script.name} finished without rendering anything: it never "
+        f"called Scene.save_video(), Scene.save_frame() or Scene.view(). "
+        f"Algan records animations as the script runs and renders only when "
+        f'asked -- add `Scene.save_video("{script.stem}")` at the end of the '
+        f"script.",
+        file=sys.stderr,
+    )
+    return True
 
 
 class Scene(RenderLoopMixin):
@@ -612,7 +657,7 @@ class Scene(RenderLoopMixin):
         byte_ranged = byte_ranged or not torch.is_floating_point(env)
         env = env.float()
         if env.dim() != 3 or env.shape[-1] < 3:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "Environment map must have shape [height, width, >=3], got "
                 f"{tuple(env.shape)}"
             )
@@ -1128,11 +1173,26 @@ class Scene(RenderLoopMixin):
 
         return frames
 
-    def _frame_index_for_timestamp(self, time_stamp):
+    def _frame_index_for_timestamp(self, time_stamp, given=None):
+        """The frame index for a timestamp already resolved to the timeline.
+
+        ``given``, when the caller has one, is the value the user actually
+        wrote. A negative ``at`` is an offset back from the authoring cursor,
+        so it is resolved before it gets here, and reporting only the resolved
+        number tells someone who wrote ``at=-1`` that they passed ``-0.8``.
+        """
         time_stamp = float(time_stamp)
         if not math.isfinite(time_stamp) or time_stamp < 0:
+            wrote = ""
+            if given is not None and float(given) != time_stamp:
+                wrote = (
+                    f" ({given} counts backwards from the current authoring time, "
+                    f"{self.animation_manager.context.timespan.current_time:g}s, "
+                    f"which lands before the start of the Scene)"
+                )
             raise AlganConfigurationError(
-                f"Frame timestamp must be finite and non-negative, got {time_stamp}"
+                f"Frame timestamp must be finite and non-negative, "
+                f"got {time_stamp}{wrote}"
             )
         return round(time_stamp * self.video_settings.frames_per_second)
 
@@ -1150,8 +1210,9 @@ class Scene(RenderLoopMixin):
 
     def _render_still(self, destination, time_stamp, post_processes=None):
         """Render one frame at ``time_stamp`` and write it to ``destination``."""
+        given = time_stamp
         time_stamp = self._resolve_still_timestamp(time_stamp)
-        time_ind = self._frame_index_for_timestamp(time_stamp)
+        time_ind = self._frame_index_for_timestamp(time_stamp, given)
         # get_frames owns the post-processing default, so only forward an
         # explicit choice rather than restating it here.
         extra = {} if post_processes is None else {"post_processes": post_processes}
@@ -1243,6 +1304,7 @@ class Scene(RenderLoopMixin):
             Scene.save_frame("previous.png", at=-0.5)
             Scene.save_frame("contact_sheet", at=[0, 1, 2])
         """
+        _note_render_requested()
         project_run = self._project_run
         if project_run is None:
             from algan.project import _get_active_project_run
@@ -1415,6 +1477,7 @@ class Scene(RenderLoopMixin):
             print(handle.url)
             handle.stop()
         """
+        _note_render_requested()
         from algan.viewer import _view
 
         return _view(
@@ -1612,6 +1675,7 @@ class Scene(RenderLoopMixin):
             Scene.save_video("my_video", HD)  # one-off quality override
             Scene.save_video("renders/final.mov")  # explicit directory
         """
+        _note_render_requested()
         project_run = self._project_run
         if project_run is None:
             from algan.project import _get_active_project_run

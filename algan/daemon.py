@@ -152,6 +152,7 @@ os.environ["ALGAN_DAEMON_CHILD"] = "1"
 import algan  # noqa: E402, F401  (the whole point: pay the import once, up front)
 from algan import SceneManager
 from algan import daemon_client as _dc
+from algan import scene as scene_module
 from algan.environment import env_flag, env_int, env_str
 from algan.logging.logger import apply_environment_logging
 from algan.settings import SETTINGS
@@ -1214,7 +1215,9 @@ def main(argv=None):
             sys.argv = [path] + list(script_args)
             with contextlib.suppress(OSError):
                 os.chdir(cwd)
+            renders_before = scene_module.renders_requested()
             runpy.run_path(path, run_name="__main__")
+            scene_module.warn_if_nothing_rendered(path, renders_before)
             _say(f"run #{run_count} finished in {time.perf_counter() - started:.1f} s")
         except SystemExit as e:
             code = 0 if e.code is None else (e.code if isinstance(e.code, int) else 1)

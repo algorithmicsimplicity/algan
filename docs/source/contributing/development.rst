@@ -221,3 +221,63 @@ Opening a pull request
 diff cannot show: what the change is for, whether rendered output moved, which
 suites you ran and on what hardware, and which documentation pages moved with
 it.
+
+Versioning and releases
+=======================
+
+Where the version lives
+-----------------------
+
+``[project] version`` in ``pyproject.toml`` is the single source of truth.
+``algan.__version__`` resolves lazily through ``importlib.metadata``, so it
+reports what is *installed* rather than what is in the working tree -- in an
+editable install the two agree only after a re-sync.
+
+What the number promises
+------------------------
+
+Algan is pre-1.0, so the middle number carries the breakage: while the version
+is ``0.x.y``, an ``x`` bump may change or remove public API and a ``y`` bump may
+not. The public surface is what ``algan.__all__`` exports, the ``algan.manim``
+compatibility layer, the ``SETTINGS`` sections and their public fields, and the
+documented CLI. Explicitly *outside* it, and free to move in any release: the
+``experimental`` settings section, the ``ALGAN_`` kernel and performance gates
+(see :doc:`../advanced_user_tutorials/settings`), anything named with a leading
+underscore, and ``algan.external_libraries``.
+
+Rendered output is not covered by the version at all. A renderer change that
+moves pixels within the baselines' tolerance is a patch release like any other;
+what changes with it is the expected-output set, not the API.
+
+Branch flow
+-----------
+
+``master`` is where development happens. ``stable`` carries the latest released
+version, and a release is a pull request from ``master`` into ``stable``.
+``.github/workflows/test.yaml`` and ``docs.yaml`` both list ``stable`` as a
+trigger branch precisely so that PR is gated: ``pull_request`` filters on the
+*base* branch, so leaving it out would skip CI at the moment it matters most.
+
+Cutting a release
+-----------------
+
+#. Pick a commit on ``master`` that has **its own green run** in the Actions
+   tab. A green run on a later commit does not vouch for an earlier one, and
+   the release is cut from a commit, not from a branch tip.
+#. Bump ``[project] version`` and run the full suite (``uv run -m pytest -q``,
+   not ``--fast``) on a machine with a GPU if the release touches the renderer
+   -- no CI leg has one.
+#. Open the ``master`` -> ``stable`` pull request and let both workflows finish.
+#. After merge, tag the released commit ``v<version>`` -- ``v0.2.2``, not
+   ``BETA_v0.0.63``, which is the one legacy tag and is not the pattern to
+   follow -- and create a GitHub release from that tag.
+#. Build and check the artifacts before uploading::
+
+      uv build
+      uv run twine check dist/*
+
+   Publishing to PyPI is manual today; there is no release workflow.
+
+A version that has been uploaded to PyPI cannot be edited, only yanked, so the
+metadata in ``pyproject.toml`` -- URLs, classifiers, license files, dependency
+bounds -- is worth re-reading in the release PR rather than after it.

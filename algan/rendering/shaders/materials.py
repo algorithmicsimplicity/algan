@@ -66,14 +66,17 @@ warns, both where the shader is set and once per render.
 
 from __future__ import annotations
 
+import enum
 import math
 import warnings
 
-from algan.constants.color import Color
+from algan.constants.color import BLACK, WHITE, Color
+from algan.errors import AlganConfigurationError
 from algan.rendering.shaders import material_shaders as ms
 from algan.utils.tensor_utils import cast_to_tensor
 
 __all__ = [
+    "Side",
     "FrontSide",
     "BackSide",
     "DoubleSide",
@@ -95,10 +98,28 @@ __all__ = [
     "MeshDepthMaterial",
 ]
 
-# Three.js Side constants.
-FrontSide = 0
-BackSide = 1
-DoubleSide = 2
+
+# Three.js Side constants. An IntEnum rather than three bare ints so that a
+# signature default, a repr and the reference all read ``Side.FRONT`` instead
+# of ``0``, while every place that compares or stores one keeps working: an
+# IntEnum member *is* its int, so ``side=0``, a pickled 0 and a JSON 0 all
+# still mean FrontSide.
+class Side(enum.IntEnum):
+    """Which faces of a surface a material is for -- Three.js's ``side``.
+
+    Algan renders all faces, so this is carried for API parity and warned
+    about; whether a back-facing hit is lit from the viewer's side is decided
+    by the geometry, through ``Mob.two_sided``.
+    """
+
+    FRONT = 0
+    BACK = 1
+    DOUBLE = 2
+
+
+FrontSide = Side.FRONT
+BackSide = Side.BACK
+DoubleSide = Side.DOUBLE
 
 # Image slots the renderer has a sampler for. ``set_material`` forwards these
 # onto the geometry (``Mob._accept_material_textures``), which is where Algan's
@@ -182,7 +203,7 @@ def _as_texture_stack(tex, channels):
     tex = torch.as_tensor(tex).float()
     if tex.dim() == 2:
         if channels != 1:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"a 2-D texture is only valid for single-channel "
                 f"properties, expected {channels} channels"
             )
@@ -190,7 +211,7 @@ def _as_texture_stack(tex, channels):
     if tex.dim() == 3:
         tex = tex.unsqueeze(0)
     if tex.dim() != 4 or tex.shape[-1] != channels:
-        raise ValueError(
+        raise AlganConfigurationError(
             f"texture must have shape [W, H, {channels}] or "
             f"[T, W, H, {channels}], got {tuple(tex.shape)}"
         )
@@ -244,7 +265,7 @@ def _load_material_image(value, slot):
 
     image = get_image(value)
     if image.dim() != 3:
-        raise ValueError(
+        raise AlganConfigurationError(
             f"{slot} must be an image [H, W, C] (or a path to one), got shape "
             f"{tuple(image.shape)}"
         )
@@ -415,6 +436,13 @@ def _to_color5(value):
 
     Accepts a hex int (``0xff0000``), a hex string (``"#ff0000"``), an RGB tuple
     in ``[0, 1]``, or an existing :class:`Color` / tensor.
+
+    Every color-valued material property is stored through this, so
+    ``material.emissive`` reads back as a :class:`Color` whichever spelling
+    built it. Three.js's bare hex int stays a legal thing to *write* -- it is
+    what a transcribed material says -- but it is not what Algan keeps: a
+    property whose type depended on how it was assigned would be worse than
+    either type on its own.
     """
     if isinstance(value, Color):
         return value
@@ -462,7 +490,18 @@ class Material:
         self.opacity = opacity
         self.transparent = transparent
         self.visible = visible
-        self.side = side
+        # Normalized to a Side member so the attribute reads back as a name,
+        # whether it was given one or Three.js's bare 0/1/2. An unknown value
+        # is a typo the warning below would never surface: it is not
+        # ``FrontSide``, so it warns about an unsupported side rather than
+        # about a value that means nothing.
+        try:
+            self.side = Side(side)
+        except ValueError:
+            raise AlganConfigurationError(
+                f"side must be one of {', '.join(f'Side.{s.name}' for s in Side)} "
+                f"(FrontSide, BackSide, DoubleSide); got {side!r}"
+            ) from None
         self.flat_shading = flat_shading
         self.vertex_colors = vertex_colors
         self.wireframe = wireframe
@@ -572,13 +611,13 @@ class DiffuseMaterial(Material):
         self,
         color=None,
         *,
-        emissive=0x000000,
+        emissive=BLACK,
         emissive_intensity=1.0,
         env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.env_map_intensity = env_map_intensity
 
@@ -634,17 +673,17 @@ class SpecularMaterial(Material):
         self,
         color=None,
         *,
-        emissive=0x000000,
+        emissive=BLACK,
         emissive_intensity=1.0,
-        specular=0x111111,
+        specular=Color("#111111"),
         shininess=30.0,
         env_map_intensity=1.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
-        self.specular = specular
+        self.specular = _to_color5(specular)
         self.shininess = shininess
         self.env_map_intensity = env_map_intensity
 
@@ -673,7 +712,7 @@ class PBRMaterial(Material):
         *,
         roughness=1.0,
         metalness=0.0,
-        emissive=0x000000,
+        emissive=BLACK,
         emissive_intensity=1.0,
         env_map_intensity=1.0,
         **kwargs,
@@ -681,7 +720,7 @@ class PBRMaterial(Material):
         super().__init__(color, **kwargs)
         self.roughness = roughness
         self.metalness = metalness
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.env_map_intensity = env_map_intensity
 
@@ -715,13 +754,13 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         ior=1.5,
         reflectivity=None,
         specular_intensity=1.0,
-        specular_color=0xFFFFFF,
+        specular_color=WHITE,
         sheen=0.0,
         sheen_roughness=1.0,
-        sheen_color=0x000000,
+        sheen_color=BLACK,
         transmission=0.0,
         thickness=0.0,
-        attenuation_color=0xFFFFFF,
+        attenuation_color=WHITE,
         attenuation_distance=math.inf,
         iridescence=0.0,
         iridescence_ior=1.3,
@@ -741,14 +780,14 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             self.reflectivity = reflectivity
             self.ior = (1.0 + 0.4 * reflectivity) / (1.0 - 0.4 * reflectivity)
         self.specular_intensity = specular_intensity
-        self.specular_color = specular_color
+        self.specular_color = _to_color5(specular_color)
         self.sheen = sheen
         self.sheen_roughness = sheen_roughness
-        self.sheen_color = sheen_color
+        self.sheen_color = _to_color5(sheen_color)
         self.transmission = transmission
         # Stored for API parity; not used by the per-vertex approximation.
         self.thickness = thickness
-        self.attenuation_color = attenuation_color
+        self.attenuation_color = _to_color5(attenuation_color)
         self.attenuation_distance = attenuation_distance
         self.iridescence = iridescence
         self.iridescence_ior = iridescence_ior
@@ -796,13 +835,13 @@ class MeshToonMaterial(Material):
         self,
         color=None,
         *,
-        emissive=0x000000,
+        emissive=BLACK,
         emissive_intensity=1.0,
         bands=3.0,
         **kwargs,
     ):
         super().__init__(color, **kwargs)
-        self.emissive = emissive
+        self.emissive = _to_color5(emissive)
         self.emissive_intensity = emissive_intensity
         self.bands = bands
 

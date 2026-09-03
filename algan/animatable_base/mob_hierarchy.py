@@ -14,7 +14,7 @@ from algan.animation_timeline.timeline import (
     _opt_disabled,
     bump_hierarchy_version,
 )
-from algan.errors import HierarchyError
+from algan.errors import AlganConfigurationError, HierarchyError
 from algan.utils.python_utils import traverse
 
 if TYPE_CHECKING:
@@ -418,5 +418,7 @@ class MobHierarchyMixin:
             If ``mob`` is not a child of this Mob.
         """
         if not self._drop_child(mob):
-            raise ValueError("The requested Mob is not a child of this Mob")
+            raise AlganConfigurationError(
+                "The requested Mob is not a child of this Mob"
+            )
         return self

@@ -44,6 +44,7 @@ BLUE_C
 BLUE_D
 BLUE_E
 BRUSHED_METAL
+BackSide
 BackgroundRectangle
 BarChart
 BezierCircuitCubic
@@ -106,6 +107,7 @@ Dodecahedron
 Dot
 Dot3D
 DoubleArrow
+DoubleSide
 DrawBorderThenFill
 Elbow
 Ellipse
@@ -113,6 +115,7 @@ Exclusion
 Flash
 FocusOn
 FragmentStage
+FrontSide
 FullScreenRectangle
 FunctionGraph
 GIGABYTES
@@ -292,6 +295,7 @@ Settings
 SettingsSnapshot
 ShowPassingFlash
 ShowPassingFlashWithThinningStrokeWidth
+Side
 SlideShow
 SpecularMaterial
 Speech

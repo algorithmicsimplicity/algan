@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Pointer to the render baselines hosted as GitHub release assets, for the",
+    "suites that do not gate CI and are per machine (tests/full_renders and",
+    "tests/path_traced). tests/fast is deliberately absent: it stays in git so",
+    "an ordinary clone and an ordinary CI run never fetch anything.",
+    "",
+    "'tag' is null until the assets are uploaded. While it is null -- and",
+    "while the mp4s are still committed -- nothing here is consulted: the",
+    "in-repo expected_outputs_<key>/ answers first. See tests/baseline_store.py",
+    "for the resolution order and scripts/package_baselines.py for how the",
+    "sha256s below are produced (reproducibly, so any machine can check them)."
+  ],
+  "base_url": "https://github.com/algorithmicsimplicity/algan/releases/download",
+  "tag": null,
+  "archives": {
+    "full_renders/cpu": {
+      "file": "full_renders-cpu.tar.gz",
+      "sha256": "653719fa96c7685ca3b4df420c10daf63a0c4b841a5288c4e0799715435bac58",
+      "size": 10392984
+    },
+    "full_renders/cuda": {
+      "file": "full_renders-cuda.tar.gz",
+      "sha256": "6fb8e3349b62a8d21883a353d39a3ce6c0dad7aaddc93aa338f4d7770ddc86fd",
+      "size": 10396816
+    },
+    "path_traced/cpu": {
+      "file": "path_traced-cpu.tar.gz",
+      "sha256": "31b66ff10dac006d753aba6042f83bf271c4b032cf3857791ad62e84b41164da",
+      "size": 36042
+    }
+  }
+}

@@ -375,6 +375,36 @@ value of ``SETTINGS.raytracing.experimental.hdr_buffer_f16`` (the frame buffer
 dtype is chosen when the buffer is allocated, so nothing bakes it in); both
 settings own their value from then on and are settable between renders.
 
+What the ``ALGAN_`` prefix is, and is not
+=========================================
+
+Algan declares around two hundred ``ALGAN_`` names, and that number is not the
+size of its supported interface. They fall into three groups, all listed in
+``algan/environment.py``:
+
+* The **initialization-only** variables above. These are the supported way to
+  configure process startup, and they are documented here because there is no
+  settings object that can own them.
+* The **live** variables -- the daemon controls (``ALGAN_USE_DAEMON``,
+  ``ALGAN_DAEMON_TIMEOUT``, ...), ``ALGAN_LOG_LEVEL``, ``ALGAN_PROGRESS``,
+  ``ALGAN_VIDEO_ENCODER`` and the profiling switches. Each is read at the point
+  of use, so setting one between two renders in the same process takes effect
+  on the next read. The ones meant for you are documented in these tutorials;
+  the rest are development instrumentation.
+* Roughly a hundred and fifty **import-time kernel and performance gates**
+  (``ALGAN_WAVEFRONT_*``, ``ALGAN_SHEET_*``, ``ALGAN_BVH_*``, ...). These are
+  the environment defaults behind ``SETTINGS.raytracing.experimental`` and are
+  **not a supported interface**: they exist so a benchmark can flip one arm of
+  an A/B, they are read once when their module is imported, and any of them may
+  be renamed or removed in a patch release without notice. Reach for the
+  ``experimental`` section instead, which at least has stable identity and a
+  snapshot/restore round trip.
+
+An ``ALGAN_`` variable this version does not know is **ignored**, not rejected.
+Algan does not police the whole prefix -- a wrapper script or CI job is free to
+keep its own variables under it -- so only a name close enough to a declared one
+to look like a typo of it produces a warning, naming the variable it resembles.
+
 See Also
 ========
 

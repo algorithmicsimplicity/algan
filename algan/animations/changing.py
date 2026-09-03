@@ -10,6 +10,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants import easings
 from algan.constants.color import BLUE_B, BLUE_D, BLUE_E, GREY_BROWN, Color
+from algan.errors import AlganConfigurationError
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.utils.tensor_utils import cast_to_tensor
@@ -116,7 +117,7 @@ class AnimatedBoundary(Group):
         if not isinstance(vmobject, Mob):
             raise TypeError("AnimatedBoundary expects an Algan Mob.")
         if not colors:
-            raise ValueError("colors must contain at least one color")
+            raise AlganConfigurationError("colors must contain at least one color")
         source_paths = _bezier_family(vmobject)
         if not source_paths:
             raise TypeError("AnimatedBoundary requires cubic Bezier geometry.")

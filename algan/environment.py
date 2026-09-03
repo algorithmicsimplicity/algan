@@ -72,12 +72,15 @@ _DAEMON_ADOPTED_STARTUP_VARIABLES = ("ALGAN_RENDER_DEVICE",)
 #: ``CLAUDE.md``, ``tests/README.md`` and the contributing docs tell them to
 #: -- does not get told it is unknown on every import.
 _HARNESS_VARIABLES = (
+    "ALGAN_BASELINE_DIR",
+    "ALGAN_NO_BASELINE_DOWNLOAD",
     "ALGAN_RUN_DOC_RENDERS",
     "ALGAN_RUN_FULL_RENDERS",
     "ALGAN_RUN_GLOSSY_CRAWL",
     "ALGAN_UPDATE_API_SNAPSHOT",
     "ALGAN_UPDATE_FAST_BASELINE",
     "ALGAN_UPDATE_FULL_RENDER_BASELINES",
+    "ALGAN_UPDATE_PATH_TRACED_BASELINES",
 )
 
 #: Variables whose value is consumed while the module that owns them is

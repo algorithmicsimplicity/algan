@@ -146,17 +146,17 @@ class MobMovementMixin:
         angle_degrees = cast_to_tensor(arc_angle).to(device=device, dtype=dtype)
 
         if not torch.all(torch.isfinite(target)):
-            raise ValueError("point must contain only finite values")
+            raise AlganConfigurationError("point must contain only finite values")
         if not torch.all(torch.isfinite(angle_degrees)):
-            raise ValueError("arc_angle must contain only finite values")
+            raise AlganConfigurationError("arc_angle must contain only finite values")
         if not torch.all(torch.isfinite(normal)):
-            raise ValueError("arc_normal must contain only finite values")
+            raise AlganConfigurationError("arc_normal must contain only finite values")
 
         # A circular rotation around ``normal`` preserves the coordinate along
         # that axis, so the chord must lie in the perpendicular plane.
         normal_length = normal.norm(p=2, dim=-1, keepdim=True)
         if torch.any(normal_length == 0):
-            raise ValueError("arc_normal must be a non-zero vector")
+            raise AlganConfigurationError("arc_normal must be a non-zero vector")
         normal = normal / normal_length
 
         chord = target - start
@@ -166,7 +166,7 @@ class MobMovementMixin:
             torch.maximum(torch.ones_like(chord_length), chord_length) * 1e-5
         )
         if torch.any(coplanar_error > coplanar_tolerance):
-            raise ValueError(
+            raise AlganConfigurationError(
                 "The start and target points must lie in a plane "
                 "perpendicular to arc_normal"
             )
@@ -178,7 +178,7 @@ class MobMovementMixin:
         )
         invalid_whole_turn = exact_whole_turn & ~coincident
         if torch.any(invalid_whole_turn):
-            raise ValueError(
+            raise AlganConfigurationError(
                 "Distinct endpoints cannot be connected by an exact non-zero "
                 "multiple-of-360-degree circular arc"
             )

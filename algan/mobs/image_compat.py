@@ -10,6 +10,7 @@ from PIL.Image import Resampling
 
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color
+from algan.errors import AlganConfigurationError
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.file_utils import get_image
@@ -82,7 +83,7 @@ class AbstractImageMobject(ImageMob):
 
     def set_resampling_algorithm(self, resampling_algorithm):
         if not isinstance(resampling_algorithm, int):
-            raise ValueError(
+            raise AlganConfigurationError(
                 "resampling_algorithm has to be an int Pillow resampling constant"
             )
         self.resampling_algorithm = resampling_algorithm

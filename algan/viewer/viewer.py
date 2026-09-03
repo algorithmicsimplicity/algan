@@ -27,8 +27,17 @@ class ViewerHandle:
 
     @property
     def url(self) -> str:
-        """The address the viewer is served at."""
+        """The address the viewer is served at, session token included."""
         return self._server.url
+
+    def url_for(self, path: str) -> str:
+        """One route's full URL, with this session's token attached.
+
+        Every route but the page itself needs the token, and :attr:`url`
+        already carries a query string, so a script or a test addressing the
+        API asks for its URL here rather than concatenating onto that one.
+        """
+        return self._server.url_for(path)
 
     @property
     def session(self) -> ViewerSession:

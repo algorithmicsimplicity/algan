@@ -628,6 +628,47 @@ class Tex(Mob):
         return self
 
 
+#: The Pango style and weight names, as ``manimpango`` spells them. Read once
+#: at first use rather than at import, since manimpango is imported lazily.
+_PANGO_NAMES: dict[str, tuple[str, ...]] = {}
+
+
+def _pango_names(kind: str) -> tuple[str, ...]:
+    """Every name Pango accepts for ``slant`` or ``weight``."""
+    if kind not in _PANGO_NAMES:
+        import manimpango
+
+        source = manimpango.Style if kind == "slant" else manimpango.Weight
+        _PANGO_NAMES[kind] = tuple(
+            sorted(n for n in dir(source) if not n.startswith("_"))
+        )
+    return _PANGO_NAMES[kind]
+
+
+def _pango_style(kind: str, value):
+    """Normalize a ``slant``/``weight`` name, rejecting one Pango does not know.
+
+    Pango takes these as strings, and an unknown one is not an error there: it
+    silently falls back to the default, so ``Text("hi", weight="BOLDER")``
+    renders in the regular face and nothing anywhere says why. Case is the
+    caller's to write however they like; the name has to be real.
+    """
+    if not isinstance(value, str):
+        return value
+    upper = value.upper()
+    names = _pango_names(kind)
+    if upper not in names:
+        import difflib
+
+        close = difflib.get_close_matches(upper, names, n=1)
+        did_you_mean = f" Did you mean {close[0]!r}?" if close else ""
+        raise AlganConfigurationError(
+            f"{kind} must be one of {', '.join(repr(n) for n in names)}; "
+            f"got {value!r}.{did_you_mean}"
+        )
+    return upper
+
+
 def _to_pango_hex(color, color_map):
     """Convert a color spec (algan Color/tensor, hex/named string, or manim
     color) to an RGB hex string that manim's Pango renderer accepts.
@@ -716,11 +757,14 @@ class Text(Tex):
         Font family name, as installed on the system. Defaults to ``""``,
         meaning Pango's default family.
     slant
-        ``"NORMAL"``, ``"ITALIC"`` or ``"OBLIQUE"``. Defaults to ``"NORMAL"``.
+        ``"NORMAL"``, ``"ITALIC"`` or ``"OBLIQUE"``, in any case. Defaults to
+        ``"NORMAL"``. A name Pango does not know raises, rather than silently
+        rendering in the default face.
     weight
         A Pango weight name -- ``"THIN"``, ``"LIGHT"``, ``"NORMAL"``,
-        ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, and the rest.
-        Defaults to ``"NORMAL"``.
+        ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, and the rest --
+        in any case. Defaults to ``"NORMAL"``. As with ``slant``, an unknown
+        name raises.
     color_map
         Maps a substring to the color its glyphs take. Color
         values may be Algan colors (glow and opacity survive), hex strings, or
@@ -812,8 +856,8 @@ class Text(Tex):
         # Pango wants these upper-cased ("BOLD", "ITALIC"); accept whatever
         # case the caller wrote and normalize at the boundary rather than
         # changing what Pango is sent.
-        slant = slant.upper() if isinstance(slant, str) else slant
-        weight = weight.upper() if isinstance(weight, str) else weight
+        slant = _pango_style("slant", slant)
+        weight = _pango_style("weight", weight)
         self.slant = slant
         self.weight = weight
         self.line_spacing = line_spacing
@@ -848,13 +892,11 @@ class Text(Tex):
                 pango_kwargs["t2f"] = dict(font_map)
             if slant_map:
                 pango_kwargs["t2s"] = {
-                    k: v.upper() if isinstance(v, str) else v
-                    for k, v in slant_map.items()
+                    k: _pango_style("slant", v) for k, v in slant_map.items()
                 }
             if weight_map:
                 pango_kwargs["t2w"] = {
-                    k: v.upper() if isinstance(v, str) else v
-                    for k, v in weight_map.items()
+                    k: _pango_style("weight", v) for k, v in weight_map.items()
                 }
             if color_map:
                 pango_kwargs["t2c"] = {
@@ -1074,7 +1116,9 @@ class Paragraph(Group):
                 None: None,
             }.get(alignment)
             if alignment not in {None, "left", "center", "right"}:
-                raise ValueError("alignment must be 'left', 'center', 'right', or None")
+                raise AlganConfigurationError(
+                    "alignment must be 'left', 'center', 'right', or None"
+                )
             self.arrange_in_line(
                 DOWN,
                 buffer=buffer,
@@ -1143,7 +1187,9 @@ class Code(Group):
         add_to_scene = kwargs.pop("add_to_scene", True)
         if code_string is None:
             if code_file is None:
-                raise ValueError("either code_file or code_string must be provided")
+                raise AlganConfigurationError(
+                    "either code_file or code_string must be provided"
+                )
             code_string = pathlib.Path(code_file).read_text(encoding="utf-8")
         source_lines = str(code_string).expandtabs(tab_width).splitlines() or [""]
         paragraph_config = dict(paragraph_config or {})
@@ -1206,7 +1252,9 @@ class Code(Group):
                 frame, dots, scene=self.scene, add_to_scene=add_to_scene
             )
         elif background not in {None, False}:
-            raise ValueError("background must be 'rectangle', 'window', or None")
+            raise AlganConfigurationError(
+                "background must be 'rectangle', 'window', or None"
+            )
         if self.background_mobject is not None:
             self.add(self.background_mobject)
 

@@ -44,6 +44,7 @@ from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUTWARD, RIGHT, UP
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import rotate_vector_around_axis
 from algan.mobs.nonplanar_circuit import (
     build_render_primitives as build_nonplanar_render_primitives,
@@ -790,12 +791,14 @@ class BezierCircuitCubic(Mob):
             cast_to_tensor(points).reshape(-1, 3) for points in control_point_batches
         ]
         if not batches:
-            raise ValueError("from_batches requires at least one bezier circuit")
+            raise AlganConfigurationError(
+                "from_batches requires at least one bezier circuit"
+            )
         point_counts = torch.tensor(
             [len(points) for points in batches], dtype=torch.long
         )
         if bool((point_counts % 4 != 0).any()):
-            raise ValueError(
+            raise AlganConfigurationError(
                 "every cubic bezier circuit must contain a multiple of 4 points"
             )
 
@@ -1085,7 +1088,7 @@ class BezierCircuitCubic(Mob):
         colors = Color.add_defaults(cast_to_tensor(colors))
         colors = colors.reshape(-1, colors.shape[-1])
         if colors.shape[-2] != self.num_texture_points:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"{what} must return one color per texel: expected "
                 f"{self.num_texture_points} "
                 f"({self.grid_width} x {self.grid_height}), got {colors.shape[-2]}"
@@ -1107,7 +1110,7 @@ class BezierCircuitCubic(Mob):
     def _require_texture_grid(self, method):
         """Internal: refuse to paint a circuit that has nowhere to paint."""
         if self.num_texture_points < 2:
-            raise ValueError(
+            raise AlganConfigurationError(
                 f"{type(self).__name__}.{method} needs a texture grid with more "
                 "than one texel, but this circuit has "
                 f"{self.num_texture_points}. The grid is the resolution of "
@@ -1614,7 +1617,9 @@ class BezierCircuitCubic(Mob):
                 return value.reshape(1)
             values = value.reshape(value.shape[0], -1)
             if values.shape[1] != 1:
-                raise ValueError(f"{name} must contain one value per frame")
+                raise AlganConfigurationError(
+                    f"{name} must contain one value per frame"
+                )
             return values[:, 0]
 
         start_t = frame_values(start_t, "start_t")
@@ -1623,17 +1628,17 @@ class BezierCircuitCubic(Mob):
         if full_control_points.shape[0] == 1:
             full_control_points = full_control_points.expand(num_frames, -1, -1)
         elif full_control_points.shape[0] != num_frames:
-            raise ValueError(
+            raise AlganConfigurationError(
                 "full_control_points must have one row or one row per frame"
             )
         if start_t.numel() == 1:
             start_t = start_t.expand(num_frames)
         elif start_t.numel() != num_frames:
-            raise ValueError("start_t must have one value per frame")
+            raise AlganConfigurationError("start_t must have one value per frame")
         if end_t.numel() == 1:
             end_t = end_t.expand(num_frames)
         elif end_t.numel() != num_frames:
-            raise ValueError("end_t must have one value per frame")
+            raise AlganConfigurationError("end_t must have one value per frame")
 
         total_control_points = full_control_points.shape[-2]
 

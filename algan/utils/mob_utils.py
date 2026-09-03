@@ -28,6 +28,7 @@ from collections.abc import Sequence
 import torch
 
 from algan.animation_timeline.animation_contexts import *
+from algan.errors import AlganConfigurationError
 from algan.utils.python_utils import traverse
 
 
@@ -215,7 +216,7 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
         return None
     scene = mobs[0].scene
     if any(mob.scene is not scene for mob in mobs[1:]):
-        raise ValueError("Cannot batch Mobs from multiple Scenes")
+        raise AlganConfigurationError("Cannot batch Mobs from multiple Scenes")
     with Off(
         record_funcs=False,
         record_attr_modifications=False,

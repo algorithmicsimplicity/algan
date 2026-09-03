@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.constants.color import WHITE, Color
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.settings.renderer_settings import (
     effective_triangle_primitive,
@@ -52,7 +53,7 @@ def image_to_texture_map(image):
     """
     image = cast_to_tensor(image).float()
     if image.dim() != 3:
-        raise ValueError(
+        raise AlganConfigurationError(
             f"texture image must be [H, W, C], got shape {tuple(image.shape)}"
         )
     if image.shape[-1] > 1 and image.shape[-1] <= 4:
@@ -76,7 +77,7 @@ def image_to_normal_map(image, flip_green=True):
     """
     image = cast_to_tensor(image).float()
     if image.dim() != 3 or image.shape[-1] < 3:
-        raise ValueError(
+        raise AlganConfigurationError(
             f"normal map must be [H, W, >=3], got shape {tuple(image.shape)}"
         )
     n = image[..., :3] * 2.0 - 1.0
@@ -213,7 +214,7 @@ class TriangleMesh(Mob):
         )
         if has_any_texture:
             if self._authored_uvs is None:
-                raise ValueError(
+                raise AlganConfigurationError(
                     "TriangleMesh with a texture/material/normal map requires "
                     "per-vertex `uvs`"
                 )

@@ -89,6 +89,17 @@ into the color you assign:
 Algan ships the full Manim color palette: ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
 on, plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
+.. note::
+
+    **The two spellings compose, but they do not read each other back.** A glow
+    or an opacity baked into a color lands in that color's own channel, so
+    ``circle.glow`` still reports ``0.0`` after ``circle.color =
+    GREEN.set_glow(0.5)`` -- read ``circle.color[..., 3]`` for the glow the
+    color carries, and ``[..., 4]`` for its opacity. What is rendered is
+    correct either way, and setting one does not undo the other: assigning
+    ``circle.opacity`` after a color with its own opacity leaves the color's
+    channel where it was.
+
 .. seealso::
 
     * :doc:`../advanced_user_tutorials/images_and_textures` -- painting a

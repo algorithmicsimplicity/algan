@@ -366,8 +366,12 @@ def _run_here(target: Path, args: argparse.Namespace, quality: str | None) -> in
     old_argv, old_path = sys.argv, list(sys.path)
     sys.argv = [str(target), *(args.extra_args or [])]
     sys.path.insert(0, str(target.parent))  # as `python scene.py` would
+    from algan.scene import renders_requested, warn_if_nothing_rendered
+
+    before = renders_requested()
     try:
         runpy.run_path(str(target), run_name="__main__")
+        warn_if_nothing_rendered(target, before)
     except SystemExit as exiting:
         code = exiting.code
         return 0 if code is None else (code if isinstance(code, int) else 1)

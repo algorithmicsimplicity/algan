@@ -129,7 +129,8 @@ html_theme_options = {
     "source_repository": "https://github.com/algorithmicsimplicity/algan/",
     "source_branch": "main",
     "source_directory": "docs/source/",
-    # Placeholder marks -- swap the two SVGs in _static for real Algan artwork.
+    # Placeholder wordmarks -- swap the two SVGs in _static for real Algan
+    # artwork. Keep their viewBox aspect ratio when you do.
     "light_logo": "algan-logo-sidebar.svg",
     "dark_logo": "algan-logo-sidebar-dark.svg",
     "light_css_variables": {
