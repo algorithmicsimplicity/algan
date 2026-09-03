@@ -26,12 +26,14 @@ from algan import LD, Scene, Square
 
 
 def _fresh_python(code, env=None):
+    clean_env = dict(os.environ if env is None else env)
+    clean_env.pop("PYCHARM_HOSTED", None)
     return subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
         check=False,
-        env=env,
+        env=clean_env,
     )
 
 

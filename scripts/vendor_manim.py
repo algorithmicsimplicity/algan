@@ -389,6 +389,144 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "from manimpango import MarkupUtils, PangoUtils, TextSetting\n",
             "from ..._pango import MarkupUtils, PangoUtils, TextSetting\n",
         )
+        cut(
+            "from ...mobject.svg.svg_mobject import SVGMobject\n",
+            "from ...mobject.mobject import Group\n"
+            "from ...mobject.svg.svg_mobject import SVGMobject\n",
+        )
+        cut(
+            "        self.chars = self.get_group_class()(*self.submobjects)\n",
+            "        self.chars = self.get_group_class()(*[_ for _ in self.submobjects if isinstance(_, VMobject)])\n"
+            "        self.imgs = Group(*[_ for _ in self.submobjects if not isinstance(_, VMobject)])\n",
+        )
+
+    elif module == "mobject.svg.svg_mobject":
+        cut(
+            '__all__ = ["SVGMobject", "VMobjectFromSVGPath"]\n',
+            '__all__ = ["SVGMobject", "VMobjectFromSVGPath", "SVG_GLOBALS"]\n\n\n'
+            "class SVGGlobals:\n"
+            "    def __init__(self):\n"
+            "        self.image_class = None\n\n\n"
+            "SVG_GLOBALS = SVGGlobals()\n",
+        )
+        cut(
+            "                        se.Polygon,\n"
+            "                        se.Polyline,\n"
+            "                        se.Text,\n"
+            "                    ),\n",
+            "                        se.Polygon,\n"
+            "                        se.Polyline,\n"
+            "                        se.Text,\n"
+            "                        se.Image,\n"
+            "                    ),\n",
+        )
+        cut(
+            "        elif isinstance(shape, se.Text):\n"
+            "            mob = self.text_to_mobject(shape)\n"
+            "        else:\n",
+            "        elif isinstance(shape, se.Text):\n"
+            "            mob = self.text_to_mobject(shape)\n"
+            "        elif isinstance(shape, se.Image):\n"
+            "            mob = self.image_to_mobject(shape)\n"
+            "        else:\n",
+        )
+        cut(
+            "        self.apply_style_to_mobject(mob, shape)\n",
+            '        if hasattr(mob, "stroke_width"):\n'
+            "            self.apply_style_to_mobject(mob, shape)\n",
+        )
+        cut(
+            "    @staticmethod\n"
+            "    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
+            "    @staticmethod\n"
+            "    def image_to_mobject(img: se.Image) -> Rectangle:\n"
+            '        temp_file = "manim_temp_m98Jg98asmmxn.png"\n'
+            '        with open(temp_file, "wb") as f:\n'
+            "            f.write(img.data)\n"
+            "        mob = SVG_GLOBALS.image_class(\n"
+            '            temp_file, scale_to_resolution=config["frame_height"]\n'
+            "        )\n"
+            "        try:\n"
+            "            os.remove(temp_file)\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "        mob.shift(\n"
+            "            _convert_point_to_3d(img.x + img.width / 2, img.y + img.height / 2)\n"
+            "        )\n"
+            "        return mob\n\n"
+            "    @staticmethod\n"
+            "    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
+        )
+
+    elif module == "mobject.types.vectorized_mobject":
+        cut(
+            "    def _assert_valid_submobjects(self, submobjects: Iterable[VMobject]) -> Self:\n"
+            "        return self._assert_valid_submobjects_internal(submobjects, VMobject)\n",
+            "    def _assert_valid_submobjects(self, submobjects: Iterable[VMobject]) -> Self:\n"
+            "        return self\n",
+        )
+        cut(
+            "        if family:\n"
+            "            for submobject in self.submobjects:\n"
+            "                submobject.set_fill(color, opacity, family)\n",
+            "        if family:\n"
+            "            for submobject in self.submobjects:\n"
+            "                if not isinstance(submobject, VMobject):\n"
+            "                    continue\n"
+            "                submobject.set_fill(color, opacity, family)\n",
+        )
+        cut(
+            "        if family:\n"
+            "            for submobject in self.submobjects:\n"
+            "                submobject.set_stroke(color, width, opacity, background, family)\n",
+            "        if family:\n"
+            "            for submobject in self.submobjects:\n"
+            "                if not isinstance(submobject, VMobject):\n"
+            "                    continue\n"
+            "                submobject.set_stroke(color, width, opacity, background, family)\n",
+        )
+        cut(
+            "        if family:\n"
+            "            for submob in self.get_family():\n"
+            "                submob.sheen_direction = rotate_vector(\n"
+            "                    submob.sheen_direction,\n"
+            "                    angle,\n"
+            "                    axis,\n"
+            "                )\n"
+            "        else:\n"
+            "            self.sheen_direction = rotate_vector(self.sheen_direction, angle, axis)\n",
+            "        if family:\n"
+            "            for submob in self.get_family():\n"
+            '                if not hasattr(submob, "sheen_direction"):\n'
+            "                    continue\n"
+            "                submob.sheen_direction = rotate_vector(\n"
+            "                    submob.sheen_direction,\n"
+            "                    angle,\n"
+            "                    axis,\n"
+            "                )\n"
+            "        else:\n"
+            '            if not hasattr(self, "sheen_direction"):\n'
+            "                return self\n"
+            "            self.sheen_direction = rotate_vector(self.sheen_direction, angle, axis)\n",
+        )
+        cut(
+            "        if family:\n"
+            "            for submob in self.submobjects:\n"
+            "                submob.set_sheen(factor, direction, family)\n",
+            "        if family:\n"
+            "            for submob in self.submobjects:\n"
+            "                if not isinstance(submob, VMobject):\n"
+            "                    continue\n"
+            "                submob.set_sheen(factor, direction, family)\n",
+        )
+        cut(
+            "        return np.array(\n"
+            "            tuple(it.chain(*(sm.get_anchors() for sm in self.get_family())))\n"
+            "        )\n",
+            "        return np.array(\n"
+            "            tuple(it.chain(*(sm.get_anchors() if isinstance(sm, VMobject) else sm.points for sm in self.get_family())))\n"
+            "        )\n",
+        )
 
     return text
 
@@ -1093,6 +1231,8 @@ from .utils.simple_functions import *
 from .utils.space_ops import *
 from .utils.tex import *
 from .utils.tex_templates import *
+
+SVG_GLOBALS.image_class = ImageMobject
 
 #: Whether Pango-rendered text is available.
 #:

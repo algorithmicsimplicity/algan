@@ -70,6 +70,7 @@ from ..._pango import MarkupUtils, PangoUtils, TextSetting
 from ... import config, logger
 from ...constants import *
 from ...mobject.geometry.arc import Dot
+from ...mobject.mobject import Group
 from ...mobject.svg.svg_mobject import SVGMobject
 from ...mobject.types.vectorized_mobject import VGroup, VMobject
 from ...typing import Point3D
@@ -552,7 +553,8 @@ class Text(SVGMobject):
         self.text = text
         if self.disable_ligatures:
             self.submobjects = [*self._gen_chars()]
-        self.chars = self.get_group_class()(*self.submobjects)
+        self.chars = self.get_group_class()(*[_ for _ in self.submobjects if isinstance(_, VMobject)])
+        self.imgs = Group(*[_ for _ in self.submobjects if not isinstance(_, VMobject)])
         self.text = text_without_tabs.replace(" ", "").replace("\n", "")
         nppc = self.n_points_per_curve
         for each in self:

@@ -592,6 +592,8 @@ class Tex(Mob):
                 direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
                 opacity=opacity,
             )
+            for im in self.image_mobs:
+                im.opacity = opacity
         return self
 
     def on_destroy(self):
@@ -615,6 +617,8 @@ class Tex(Mob):
             self.wave_color(
                 None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0
             )
+            for im in self.image_mobs:
+                im.opacity = 0
             old_ct = self.animation_manager.context.timespan.current_time
             self.animation_manager.context.timespan.current_time = (
                 self.animation_manager.context.timespan.original_end

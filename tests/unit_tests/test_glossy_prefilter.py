@@ -314,6 +314,7 @@ def _render_calib_arm(out_dir, suffix, *, glossy, prefilter):
         "ALGAN_GLOSSY_REFLECTION",
         "ALGAN_GLOSSY_PREFILTER",
         "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
     ):
         env.pop(name, None)
     env["ALGAN_USE_DAEMON"] = "0"
@@ -343,6 +344,10 @@ def _render_calib_arm(out_dir, suffix, *, glossy, prefilter):
     )
     if proc.returncode != 0:
         raise AssertionError(f"arm {suffix!r} failed:\n{proc.stderr[-2000:]}")
+    for line in reversed(proc.stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            return Path(json.loads(line)["output"])
     return Path(json.loads(proc.stdout.strip().splitlines()[-1])["output"])
 
 
@@ -544,6 +549,7 @@ def test_a_creases_siblings_share_the_pixels_prefiltered_claim(tmp_path):
         "ALGAN_GLOSSY_REFLECTION",
         "ALGAN_GLOSSY_PREFILTER",
         "ALGAN_GLOSSY_INTERLEAVE",
+        "PYCHARM_HOSTED",
     ):
         env.pop(name, None)
     env["ALGAN_USE_DAEMON"] = "0"

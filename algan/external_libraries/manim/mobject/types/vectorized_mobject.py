@@ -174,7 +174,7 @@ class VMobject(Mobject):
             self.stroke_color = ManimColor.parse(stroke_color)
 
     def _assert_valid_submobjects(self, submobjects: Iterable[VMobject]) -> Self:
-        return self._assert_valid_submobjects_internal(submobjects, VMobject)
+        return self
 
     def __iter__(self) -> Iterator[VMobject]:
         return cast(Iterator[VMobject], super().__iter__())
@@ -324,6 +324,8 @@ class VMobject(Mobject):
         """
         if family:
             for submobject in self.submobjects:
+                if not isinstance(submobject, VMobject):
+                    continue
                 submobject.set_fill(color, opacity, family)
         self.update_rgbas_array("fill_rgbas", color, opacity)
         self.fill_rgbas: FloatRGBA_Array
@@ -341,6 +343,8 @@ class VMobject(Mobject):
     ) -> Self:
         if family:
             for submobject in self.submobjects:
+                if not isinstance(submobject, VMobject):
+                    continue
                 submobject.set_stroke(color, width, opacity, background, family)
         if background:
             array_name = "background_stroke_rgbas"
@@ -707,12 +711,16 @@ class VMobject(Mobject):
         """
         if family:
             for submob in self.get_family():
+                if not hasattr(submob, "sheen_direction"):
+                    continue
                 submob.sheen_direction = rotate_vector(
                     submob.sheen_direction,
                     angle,
                     axis,
                 )
         else:
+            if not hasattr(self, "sheen_direction"):
+                return self
             self.sheen_direction = rotate_vector(self.sheen_direction, angle, axis)
         return self
 
@@ -742,6 +750,8 @@ class VMobject(Mobject):
         """
         if family:
             for submob in self.submobjects:
+                if not isinstance(submob, VMobject):
+                    continue
                 submob.set_sheen(factor, direction, family)
         self.sheen_factor: float = factor
         if direction is not None:
@@ -1795,7 +1805,7 @@ class VMobject(Mobject):
     def get_points_defining_boundary(self) -> Point3D_Array:
         # Probably returns all anchors, but this is weird regarding  the name of the method.
         return np.array(
-            tuple(it.chain(*(sm.get_anchors() for sm in self.get_family())))
+            tuple(it.chain(*(sm.get_anchors() if isinstance(sm, VMobject) else sm.points for sm in self.get_family())))
         )
 
     def get_arc_length(self, sample_points_per_curve: int | None = None) -> float:

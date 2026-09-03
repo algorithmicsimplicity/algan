@@ -71,6 +71,8 @@ from .utils.space_ops import *
 from .utils.tex import *
 from .utils.tex_templates import *
 
+SVG_GLOBALS.image_class = ImageMobject
+
 #: Whether Pango-rendered text is available.
 #:
 #: ``Text``, ``MarkupText`` and ``Paragraph`` are the only classes that need

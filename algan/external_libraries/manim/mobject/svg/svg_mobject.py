@@ -24,8 +24,15 @@ from ..geometry.polygram import Polygon, Rectangle, RoundedRectangle
 from ..opengl.opengl_compatibility import ConvertToOpenGL
 from ..types.vectorized_mobject import VGroup, VMobject
 
-__all__ = ["SVGMobject", "VMobjectFromSVGPath"]
+__all__ = ["SVGMobject", "VMobjectFromSVGPath", "SVG_GLOBALS"]
 
+
+class SVGGlobals:
+    def __init__(self):
+        self.image_class = None
+
+
+SVG_GLOBALS = SVGGlobals()
 
 SVG_HASH_TO_MOB_MAP: dict[int, SVGMobject] = {}
 
@@ -310,6 +317,7 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
                         se.Polygon,
                         se.Polyline,
                         se.Text,
+                        se.Image,
                     ),
                 ):
                     mob = self.get_mob_from_shape_element(element)
@@ -337,12 +345,15 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
             mob = self.polyline_to_mobject(shape)
         elif isinstance(shape, se.Text):
             mob = self.text_to_mobject(shape)
+        elif isinstance(shape, se.Image):
+            mob = self.image_to_mobject(shape)
         else:
             logger.warning(f"Unsupported element type: {type(shape)}")
             mob = None
         if mob is None or not mob.has_points():
             return None
-        self.apply_style_to_mobject(mob, shape)
+        if hasattr(mob, "stroke_width"):
+            self.apply_style_to_mobject(mob, shape)
         if isinstance(shape, se.Transformable) and shape.apply:
             self.handle_transform(mob, shape.transform)
         return mob
@@ -408,6 +419,23 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
             start=_convert_point_to_3d(line.x1, line.y1),
             end=_convert_point_to_3d(line.x2, line.y2),
         )
+
+    @staticmethod
+    def image_to_mobject(img: se.Image) -> Rectangle:
+        temp_file = "manim_temp_m98Jg98asmmxn.png"
+        with open(temp_file, "wb") as f:
+            f.write(img.data)
+        mob = SVG_GLOBALS.image_class(
+            temp_file, scale_to_resolution=config["frame_height"]
+        )
+        try:
+            os.remove(temp_file)
+        except OSError:
+            pass
+        mob.shift(
+            _convert_point_to_3d(img.x + img.width / 2, img.y + img.height / 2)
+        )
+        return mob
 
     @staticmethod
     def rect_to_mobject(rect: se.Rect) -> Rectangle:
