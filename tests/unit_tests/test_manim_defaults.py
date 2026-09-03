@@ -285,11 +285,27 @@ def ManimMobFor(manim_mob, scene):
     return ManimMob(manim_mob, scene=scene, add_to_scene=False).control_points.location
 
 
-def test_reset_restores_algans_own_camera(scene):
+def test_reset_restores_algans_own_defaults(scene):
+    """``reset(rebuild_timeline=False)`` re-runs the scene initializer.
+
+    The camera is no longer what says so: Algan's own default camera now sits
+    where Manim's does, so ``use_manim_defaults()`` leaves it where the
+    initializer would put it anyway. The lighting still differs -- Manim lights
+    from ``MANIM_LIGHT_SOURCE``, Algan's initializer from beside the camera --
+    so that is what shows the initializer ran again.
+    """
     scene.use_manim_defaults()
+    manim_light = scene.get_light_sources()[0].location.flatten().tolist()
+    assert manim_light == pytest.approx(list(MANIM_LIGHT_SOURCE))
+
     scene.reset(rebuild_timeline=False)
-    # reset(rebuild_timeline=False) re-runs the initializer, restoring Algan's
-    # own camera and lighting.
-    assert scene.get_camera().location.flatten().tolist() != pytest.approx(
+
+    lights = scene.get_light_sources()
+    assert len(lights) == 1
+    assert lights[0].location.flatten().tolist() != pytest.approx(
+        list(MANIM_LIGHT_SOURCE)
+    )
+    # And the camera the initializer restores is Algan's own, which is Manim's.
+    assert scene.get_camera().location.flatten().tolist() == pytest.approx(
         [0.0, 0.0, MANIM_FOCAL_DISTANCE]
     )

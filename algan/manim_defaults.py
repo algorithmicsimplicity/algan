@@ -151,6 +151,7 @@ def apply_manim_defaults(
     stroke_geometry: bool = True,
 ):
     """Point ``scene`` at Manim's defaults. See :meth:`~algan.scene.Scene.use_manim_defaults`."""
+    from algan.animation_timeline.animation_contexts import Off
     from algan.rendering.lights import PointLight
     from algan.rendering.shaders.materials import ManimMaterial
     from algan.settings.video_settings import VideoSettings

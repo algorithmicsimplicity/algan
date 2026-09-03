@@ -294,7 +294,7 @@ Two changes are refused rather than silently mishandled:
   re-asks afterwards. Choose the device before creating one.
 
 Fusing the pipeline's arithmetic with ``torch.compile``
-======================================================
+=======================================================
 
 Between the ray-tracing kernels, a render is a long chain of small PyTorch
 operations: the timeline materialized at every frame, vertices projected and

@@ -17,6 +17,8 @@ frame, which a mob left behind by the previous test would quietly change.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 import torch
 
@@ -25,6 +27,28 @@ from algan.rendering import fragment_capture
 from algan.viewer.pixels import PixelRecord
 
 TINY = PREVIEW.set(resolution=(64, 36))
+
+
+def pixel_when_ready(session, frame, x, y, timeout=300.0):
+    """``session.pixel`` with the poll the page itself does.
+
+    An inspection is computed on a thread and reported over however many
+    requests it takes: ``Session.pixel`` answers ``{"pending": True}`` once its
+    ``wait`` elapses rather than holding the request open, because the first
+    inspection of a session compiles a Taichi kernel variant for the
+    capture-armed render path (measured at 12 s idle, 67 s while a render is
+    still running -- and longer on a slow CPU-only machine). A test that read
+    ``answer["available"]`` off the first reply therefore passed or raised
+    ``KeyError`` depending on how fast the machine was.
+    """
+    deadline = time.monotonic() + float(timeout)
+    while True:
+        answer = session.pixel(frame, x, y, wait=10.0)
+        if not answer.get("pending"):
+            return answer
+        assert time.monotonic() < deadline, (
+            f"the inspector never answered for pixel ({x}, {y}) of frame {frame}"
+        )
 
 
 def last_frame(scene, settings=TINY):
@@ -249,7 +273,7 @@ def test_view_reports_fragments_for_a_clicked_pixel(fresh_scene):
         found = None
         for y in range(0, session.height, 2):
             for x in range(0, session.width, 2):
-                answer = session.pixel(image_frame, x, y)
+                answer = pixel_when_ready(session, image_frame, x, y)
                 if answer["available"] and answer["fragments"]:
                     found = answer
                     break

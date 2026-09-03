@@ -93,6 +93,18 @@ _ACTOR_SHARE_RETREAT = 0.5
 #: successor batch that prepares while this one renders.
 _RENDER_PREP_FRACTION = 0.4
 
+#: Share of the arena's remaining bytes above which a batch's *scene* is
+#: considered to leave too little for frames whose cost has not been measured
+#: yet (see RenderLoopMixin._prepared_batch_fits_render_arena). Below it, a
+#: first batch keeps the full window the geometry allows.
+_UNMEASURED_SCENE_SHARE = 0.5
+
+#: Frames such a batch is held to until the chunk model has measured one. Long
+#: enough to batch usefully, short enough that a window sized against a zero
+#: frame cost cannot commit the render to geometry it will not be able to
+#: trace over.
+_UNMEASURED_PROBE_FRAMES = 8
+
 
 @contextlib.contextmanager
 def _render_progress(total):
@@ -547,13 +559,25 @@ class RenderLoopMixin:
         out-of-memory retry, which is exact.
         """
         device = self.memory.data.device
-        if device.type != "cuda":
-            return float("inf")
-        override = SETTINGS.computing.available_memory_override
-        if override is not None:
-            total_bytes = int(override)
+        if device.type == "cuda":
+            override = SETTINGS.computing.available_memory_override
+            if override is not None:
+                total_bytes = int(override)
+            else:
+                _, total_bytes = torch.cuda.mem_get_info(device)
+        elif device.type == "cpu":
+            # A CPU render has a ceiling too -- ``max_cpu_memory_used``, which
+            # is what the arena itself is a fraction of -- so the merge has the
+            # same finite headroom outside the arena that a card does.
+            # Returning infinity here left the CPU with no window-shrinking
+            # lever at all: every budget that bounds a batch before it is built
+            # was CUDA-only, so CPU took the largest window the geometry alone
+            # allowed and met the arena's limit mid-render instead.
+            total_bytes = int(SETTINGS.computing.max_cpu_memory_used)
         else:
-            _, total_bytes = torch.cuda.mem_get_info(device)
+            # MPS sizes its own headroom elsewhere (DESIGN_mps_support.md);
+            # leave it as it was rather than guess at a figure here.
+            return float("inf")
         return int(max(0, total_bytes - len(self.memory)) * 0.9)
 
     @staticmethod
@@ -1154,9 +1178,37 @@ class RenderLoopMixin:
             num_triangles=merged_host.get("num_triangles", 0),
             num_circuits=merged_host.get("num_circuits", 0),
         )
-        forward_bytes = self._chunk_memory_model.predict(signature, 1) or 0
+        modelled_forward = self._chunk_memory_model.predict(signature, 1)
+        forward_bytes = modelled_forward or 0
         need_bytes = scene_bytes + forward_bytes
         self._last_arena_preflight = (need_bytes, bytes_remaining)
+        # With no measurement yet, the frame term above is *zero*, so a first
+        # batch is sized on its geometry alone. That is affordable while the
+        # scene is a small part of the arena -- whatever the frame turns out to
+        # cost, there is room for it -- and reckless once the scene is most of
+        # it, because what remains has to cover every frame in the window and
+        # the scene may densify later in that window. So while the frame cost
+        # is unmeasured and the scene is over ``_UNMEASURED_SCENE_SHARE`` of
+        # what is left, hold the window down to a probe length: those frames
+        # measure the line, and every batch afterwards is sized against a
+        # measurement rather than against a zero. Deliberately gated on the
+        # share, so an arena with room to spare keeps its full first window.
+        if (
+            modelled_forward is None
+            and require_estimates_fit
+            and num_frames > _UNMEASURED_PROBE_FRAMES
+            and scene_bytes > _UNMEASURED_SCENE_SHARE * max(1, bytes_remaining)
+        ):
+            logger.debug(
+                "Arena preflight: %s-frame window with an unmeasured frame "
+                "cost and a scene of %.1f MB in %.1f MB remaining; probing at "
+                "%s frames first.",
+                num_frames,
+                scene_bytes / 1e6,
+                bytes_remaining / 1e6,
+                _UNMEASURED_PROBE_FRAMES,
+            )
+            return False
         # Refine the arena term now that the frame cost is known: it is the
         # scene, not the frame buffers, that the frame count scales.
         self._note_batch_cost(
@@ -1434,6 +1486,11 @@ class RenderLoopMixin:
             bytes_remaining = self.memory.get_num_bytes_remaining()
 
             current_ind = start_ind
+            # How far this batch has actually handed frames to the caller.
+            # A chunk that fails after earlier chunks were emitted leaves the
+            # render resumable from here rather than having to be abandoned;
+            # see the render-failure handler in ``get_frames``.
+            self._last_emitted_time_ind = start_ind
             while True:
                 if getattr(self.memory, "managed", False):
                     duration = model.plan(
@@ -1501,6 +1558,10 @@ class RenderLoopMixin:
                     memory=self.memory,
                     post_processes=post_processes,
                 )
+                # Control is back, so the caller has taken every frame up to
+                # ``new_ind``: those are final and a later chunk's failure
+                # must not re-render them.
+                self._last_emitted_time_ind = new_ind
                 # The chunk rendered, so its peak is now known exactly. This is
                 # the whole memory model: no allocation is described anywhere,
                 # only what the arena actually reached.
@@ -2047,13 +2108,19 @@ class RenderLoopMixin:
         budget does.
         """
         device = render_device()
-        if device.type != "cuda":
-            return float("inf")
-        override = SETTINGS.computing.available_memory_override
-        if override is not None:
-            total_bytes = int(override)
+        if device.type == "cuda":
+            override = SETTINGS.computing.available_memory_override
+            if override is not None:
+                total_bytes = int(override)
+            else:
+                _, total_bytes = torch.cuda.mem_get_info(device)
+        elif device.type == "cpu":
+            # Same reasoning as ``_gpu_merge_headroom_bytes``: the CPU's
+            # ceiling is ``max_cpu_memory_used``, and leaving this infinite
+            # meant a CPU fetch was bounded only by the animation device.
+            total_bytes = int(SETTINGS.computing.max_cpu_memory_used)
         else:
-            _, total_bytes = torch.cuda.mem_get_info(device)
+            return float("inf")
         outside_arena = total_bytes * (
             1.0 - float(SETTINGS.computing.rendering_memory_fraction)
         )
@@ -3265,7 +3332,38 @@ class RenderLoopMixin:
                                 (InsufficientMemoryException, OutOfRenderMemory),
                             ) and not is_cuda_oom(render_exc):
                                 raise
-                            if produced_output or duration <= 1:
+                            # Frames already handed to the caller are final, so
+                            # the retry resumes from the first one that is not
+                            # rather than re-rendering the window from its
+                            # start. Without this, a batch that emitted even
+                            # one chunk could not be shrunk at all: the chunk
+                            # split inside the tracer only shrinks the *trace*,
+                            # while the batch's merged geometry -- the term
+                            # that actually did not fit -- is fixed by the
+                            # window. Every long batch densifying later in its
+                            # window therefore reached "insufficient memory to
+                            # ray trace a single frame" with the designed
+                            # backstop standing down, which is exactly the case
+                            # the backstop exists for. Measured on
+                            # tests/full_renders' materials_and_lighting: a
+                            # 123-frame window whose 625 MB scene left 234 MB
+                            # of an 819 MB arena for the frame.
+                            resume_ind = int(
+                                getattr(
+                                    self, "_last_emitted_time_ind", current_time_ind
+                                )
+                            )
+                            resume_ind = max(current_time_ind, resume_ind)
+                            if produced_output and resume_ind > current_time_ind:
+                                remaining = new_time_ind - resume_ind
+                                current_time_ind = resume_ind
+                                duration = max(1, remaining)
+                            elif produced_output:
+                                # Nothing survived the batch, so there is no
+                                # prefix to keep and no smaller window that
+                                # this failure justifies.
+                                raise
+                            if duration <= 1:
                                 raise
                             self._note_render_arena_underestimate()
                             # Not a failure: the model sizes a chunk from
