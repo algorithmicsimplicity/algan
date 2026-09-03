@@ -382,8 +382,11 @@ ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
 ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest tests/path_traced -q
 ```
 
-These variables are read by the harnesses rather than by the package, so
-`import algan` warns that it does not recognise them. That is expected.
+These variables are read by the harnesses rather than by the package, which is
+why they are declared in `_HARNESS_VARIABLES` in `algan/environment.py`:
+exporting one must not make every `import algan` warn about it. A rebaseline
+always writes to the **tree**, never to the download cache — see the next
+section for what to do with the result.
 
 Frames are compared channel-wise with a tolerance of 2 by the
 `assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
@@ -408,6 +411,64 @@ floor.
 
 On Windows, run render work **one process at a time** — a killed or timed-out
 run orphans children that keep the output mp4s locked.
+
+## Where the heavy baselines live
+
+`tests/full_renders` and `tests/path_traced` carry ~21 MB of mp4s that are
+re-committed whole on every rebaseline, and they are the repository's weight
+problem: most of the blobs in its history. They are also the baselines **CI
+never compares against** — they gate locally, on the machine that rendered
+them — so every clone pays for an artifact almost no clone uses.
+
+They are therefore hosted as **GitHub release assets** rather than carried in
+every clone. `tests/fast` is deliberately not: it is 368 KB and it is the one
+render baseline CI does compare, so keeping it in git means an ordinary clone
+and an ordinary CI run never fetch anything.
+
+`tests/baseline_store.py` resolves a suite's baseline directory in this order,
+and its module docstring is the contract:
+
+1. `ALGAN_BASELINE_DIR` — a directory of `<suite>/<key>/` trees, for a machine
+   that keeps its own or has no network. **Final**: if it holds nothing for
+   this suite, the comparison is skipped rather than downloaded.
+2. the in-repo `expected_outputs_<key>/`, when it exists and has files;
+3. the verified cache under `~/.algan/cache/baselines/<tag>/`;
+4. a one-time download of the release asset pinned in `tests/baselines.json`.
+
+Any failure warns once and returns "no baselines", which every suite turns into
+a skip. That is the same state as an unbaselined device — so the standing
+warning applies with more force than before: **a render suite that skipped
+compared nothing.** Check for skips before believing a green run.
+
+`ALGAN_NO_BASELINE_DOWNLOAD=1` forbids step 4 (offline, or a machine that must
+not fetch).
+
+### After a rebaseline
+
+The mp4s in the tree are the source of truth; the release asset is a copy of
+them. So a rebaseline is not finished when it is committed:
+
+```bash
+uv run python scripts/package_baselines.py --tag baselines-YYYY-MM-DD
+gh release create baselines-YYYY-MM-DD dist/baselines/*.tar.gz --title ...
+git add tests/baselines.json  # the new tag and sha256s
+```
+
+Upload **before** pushing the pointer: a tag with no assets behind it makes
+every fetch warn and every comparison skip. The tarballs are byte-reproducible
+(sorted members, normalized mtimes and modes, zeroed gzip header), so the
+pinned sha256 is a fact about the baselines rather than about the machine that
+packaged them, and anyone can re-derive it from an uploaded asset.
+
+`scripts/package_baselines.py --verify` re-packages into a temporary directory
+and reports whether `tests/baselines.json` still describes the working tree.
+`tests/unit_tests/test_baseline_store.py` runs it, so a rebaseline that is
+committed but never uploaded fails a test instead of going unnoticed until the
+mp4s leave the tree.
+
+While the mp4s are still committed, step 2 answers and none of this runs; the
+pointer's `tag` is `null` until the first upload, which the resolver treats
+exactly like an offline machine, silently.
 
 ## The unit suite
 
