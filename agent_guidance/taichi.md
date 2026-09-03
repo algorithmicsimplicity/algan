@@ -1,4 +1,9 @@
 # Taichi gotchas (these cost real debugging time)
+
+> **Importing the compiler.** Never write `import taichi` inside `algan/`. Use
+> `from algan.taichi_compat import ti` (and `submodule("lang.impl")` for a submodule):
+> `ALGAN_TAICHI_BACKEND` selects taichi 1.7.x or the Quadrants fork, and the layer exists
+> so both can never be live in one process. See `agent_guidance/api_settings.md`.
 - The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cached_kernels()`.
 - Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.

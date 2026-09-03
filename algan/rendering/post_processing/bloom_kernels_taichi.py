@@ -1,7 +1,8 @@
 """Workspace-free separable bloom kernels."""
 
-import taichi as ti
 import torch
+
+from algan.taichi_compat import ti
 
 # Taichi is NOT initialized here. The arch depends on
 # ``SETTINGS.computing.render_device``, which a script may still change at

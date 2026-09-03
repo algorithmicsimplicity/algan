@@ -85,7 +85,10 @@ live in modules that store settings.
 import sys
 
 import torch
-from taichi.lang import impl as _ti_impl
+
+from algan.taichi_compat import submodule as _ti_submodule
+
+_ti_impl = _ti_submodule("lang.impl")
 
 #: dtype -> the tag used in an arena parameter's name (``arena_f32``, ...).
 #: Ordered: a kernel's arena parameters appear in this order, so both sides

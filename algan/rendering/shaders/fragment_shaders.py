@@ -23,8 +23,6 @@ as fragment shaders and compose with custom ones, e.g.
 with a cosine wave and then lights the result with Blinn-Phong.
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _stage_lambert,
@@ -35,6 +33,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_unlit,
     make_pipeline_func,
 )
+from algan.taichi_compat import ti
 
 
 class FragmentStage:

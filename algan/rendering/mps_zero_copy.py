@@ -112,8 +112,9 @@ def zero_copy_available() -> bool:
         return _AVAILABLE
     _AVAILABLE = False
     try:
-        import taichi as ti
-        from taichi.lang import impl as _impl
+        from algan.taichi_compat import submodule, ti
+
+        _impl = submodule("lang.impl")
 
         if not hasattr(ti.lang._ndarray, "ExternalMetalNdarray"):
             return _AVAILABLE
@@ -157,8 +158,9 @@ def unavailable_reason() -> str:
 
 def _taichi_dtype(torch_dtype):
     """The Taichi element type for a torch dtype, or None if it has no ndarray."""
-    import taichi as ti
     import torch
+
+    from algan.taichi_compat import ti
 
     return {
         torch.float32: ti.f32,
@@ -231,7 +233,9 @@ def import_tensor(tensor, element_shape=()):
         if hit is not None:
             return hit[0]
 
-    from taichi.lang._ndarray import ExternalMetalNdarray
+    from algan.taichi_compat import submodule
+
+    ExternalMetalNdarray = submodule("lang._ndarray").ExternalMetalNdarray
 
     array = ExternalMetalNdarray(
         dtype, list(outer_shape), handle, offset, element_shape=element_shape
@@ -295,9 +299,11 @@ def _ndarray_positions(kernel):
         return cached
     positions = {}
     try:
-        from taichi.lang import kernel_impl as _ki
-        from taichi.lang.enums import Layout
-        from taichi.lang.matrix import MatrixType
+        from algan.taichi_compat import submodule
+
+        _ki = submodule("lang.kernel_impl")
+        Layout = submodule("lang.enums").Layout
+        MatrixType = submodule("lang.matrix").MatrixType
 
         ndarray_annotation = _ki.ndarray_type.NdarrayType
         scalar_type_ids = _ki.primitive_types.type_ids
@@ -418,9 +424,11 @@ def install_zero_copy_launch():
     global _INSTALLED
     if _INSTALLED or not zero_copy_available():
         return
-    import taichi as ti
     import torch
-    from taichi.lang.kernel_impl import Kernel
+
+    from algan.taichi_compat import submodule, ti
+
+    Kernel = submodule("lang.kernel_impl").Kernel
 
     previous_call = Kernel.__call__
 

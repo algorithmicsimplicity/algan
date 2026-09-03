@@ -55,8 +55,6 @@ Coplanar-surface layer order is bezier circuits < triangles, with each type's
 primitive index breaking ties within the type.
 """
 
-import taichi as ti
-
 from algan.environment import env_float, env_int
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
@@ -82,6 +80,7 @@ from algan.rendering.raytracing.shading_taichi import (
     max_shadow_lights,  # noqa: F401
 )
 from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16, bvh_leaf_size
+from algan.taichi_compat import ti
 
 
 def rgb_shadow_tint():

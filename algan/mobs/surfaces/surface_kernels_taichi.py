@@ -60,7 +60,7 @@ formulation reproduces it. ``benchmarks/_grid_normals_kernel_ab.py`` measures
 both the deviation and the speedup.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 @ti.kernel

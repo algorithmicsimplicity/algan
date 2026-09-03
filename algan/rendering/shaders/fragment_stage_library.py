@@ -32,9 +32,8 @@ environment map bright in the directions the camera cannot see (see
 want the look without authoring an environment, or want it stylised.
 """
 
-import taichi as ti
-
 from algan.rendering.shaders.fragment_shaders import FragmentStage
+from algan.taichi_compat import ti
 
 __all__ = ["fresnel_rim", "glass_ball"]
 

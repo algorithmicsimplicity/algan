@@ -18,11 +18,10 @@ Nothing here runs unless ``glossy_reflection_mode() == 3``; the host does not
 allocate the buffers otherwise.
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_pixel_color,
 )
+from algan.taichi_compat import ti
 
 # A box filter of width w has standard deviation w / sqrt(12) = 0.2887 w, so
 # mip level L -- a box of 2^L level-0 pixels -- prefilters at sigma =

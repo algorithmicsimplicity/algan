@@ -54,6 +54,7 @@ _STARTUP_VARIABLES = (
     "ALGAN_TI_DEBUG",
     "ALGAN_TAICHI_WARMSTART",
     "ALGAN_TAICHI_FAST_LAUNCH",
+    "ALGAN_TAICHI_BACKEND",
 )
 
 #: The startup variables a warm daemon can take from a client after all,

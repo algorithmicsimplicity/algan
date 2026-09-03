@@ -70,7 +70,6 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext, suppress
 
-import taichi as ti
 import torch
 
 # ``import algan`` initializes the Taichi runtime (via the rasterizer modules)
@@ -93,6 +92,7 @@ from algan.scene import Scene
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
 from algan.scene_manager import SceneManager
+from algan.taichi_compat import ti
 from algan.utils.memory_utils import peak_allocated, reset_peak_floor
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
@@ -813,7 +813,11 @@ def _collect_taichi_kernel_gpu():
     if not KERNEL_PROFILER:
         return []
     try:
-        from taichi.profiler.kernel_profiler import get_default_kernel_profiler
+        from algan.taichi_compat import submodule
+
+        get_default_kernel_profiler = submodule(
+            "profiler.kernel_profiler"
+        ).get_default_kernel_profiler
 
         kp = get_default_kernel_profiler()
         kp._update_records()

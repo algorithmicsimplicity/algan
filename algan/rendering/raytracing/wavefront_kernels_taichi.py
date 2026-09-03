@@ -24,8 +24,6 @@ Between iterations the host compacts the still-active rays with the
 (see ``tracer._ArenaRayCompactor``), so each launch processes only rays that
 still have work -- warps refill as rays drop out, which is the divergence fix.
 """
-import taichi as ti
-
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
@@ -76,6 +74,7 @@ from algan.rendering.raytracing.shading_taichi import (
     light_vis_index,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
+from algan.taichi_compat import ti
 
 # Per-ray status codes (rs_int column 2).
 _ACTIVE = 0

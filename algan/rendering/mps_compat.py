@@ -382,7 +382,7 @@ def taichi_accumulate_dtype():
     both. A ``ti.static`` gate is resolved once, at the first compile, and the
     second arm would silently reuse the first arm's code (``CLAUDE.md``).
     """
-    import taichi as ti
+    from algan.taichi_compat import ti
 
     return ti.f32 if mps_friendly() else ti.f64
 
@@ -395,7 +395,7 @@ def taichi_reduction_index_dtype():
     with ``Assertion failed: (p != nullptr), function bind_pipeline`` rather
     than with an error (§1.2).
     """
-    import taichi as ti
+    from algan.taichi_compat import ti
 
     return ti.i32 if mps_friendly() else ti.i64
 

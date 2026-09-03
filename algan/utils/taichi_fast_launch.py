@@ -88,10 +88,13 @@ def apply():
         return
     try:
         import numpy as np
-        import taichi
-        import taichi.lang.kernel_impl as _ki
         import torch
-        from taichi.lang import impl as _impl
+
+        from algan.taichi_compat import submodule
+        from algan.taichi_compat import ti as taichi
+
+        _ki = submodule("lang.kernel_impl")
+        _impl = submodule("lang.impl")
     except Exception:
         return
     if tuple(getattr(taichi, "__version__", ()))[:2] != (1, 7):

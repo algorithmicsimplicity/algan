@@ -30,6 +30,7 @@ import torch
 
 from algan.environment import env_int, env_str
 from algan.errors import AlganConfigurationError
+from algan.taichi_compat import BACKEND as _KERNEL_BACKEND
 
 #: Memoized answer of :func:`_cuda_is_usable`. The probe allocates on the
 #: device, and since ``render_device`` became a settings field this runs on
@@ -163,8 +164,13 @@ _ALGAN_HOME = Path(env_str("ALGAN_HOME") or Path.home() / ".algan").expanduser()
 _CACHE_DIRECTORY = Path(
     env_str("ALGAN_CACHE_DIR") or _ALGAN_HOME / "cache"
 ).expanduser()
+# One cache directory per kernel compiler. The two write different artifact
+# formats under different cache keys, so a shared directory would let one
+# backend's entries sit in the other's LRU budget and be pruned by it. The
+# default backend keeps the historical ``cache/taichi`` path, so an existing
+# cache survives this split.
 _TAICHI_CACHE_DIRECTORY = Path(
-    env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / "taichi"
+    env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / _KERNEL_BACKEND
 ).expanduser()
 
 # Baked into the shade kernels at compile time (a ti.static fan length), so

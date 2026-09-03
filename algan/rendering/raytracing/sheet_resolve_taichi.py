@@ -33,8 +33,6 @@ the shading pass share every line of transport, which is what retires the
 old design's hand-maintained walk/shadow-walk lockstep.
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
@@ -110,6 +108,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _tri_ior_transmission_g,
     _tri_normal_g,
 )
+from algan.taichi_compat import ti
 
 
 @ti.kernel

@@ -65,14 +65,13 @@ color as the albedo (the renderer's vertex path overwrites the color per
 light), which is identical to a single light -- the common case.
 """
 
-import taichi as ti
-
 from algan.environment import env_int
 from algan.rendering.raytracing.color_space_taichi import (
     linear_to_srgb_v3,
     srgb_to_linear_f,
     srgb_to_linear_v3,
 )
+from algan.taichi_compat import ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
 MAT_W = 34

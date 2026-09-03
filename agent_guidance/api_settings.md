@@ -151,7 +151,20 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`.
+- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`;
+- `ALGAN_TAICHI_BACKEND`.
+
+`ALGAN_TAICHI_BACKEND` selects which Taichi-language compiler builds the kernels:
+`taichi` (the default, 1.7.x) or `quadrants`, the maintained fork. Every engine module
+reaches the compiler through `algan.taichi_compat` (`from algan.taichi_compat import ti`,
+and `submodule("lang.impl")` for a submodule) rather than importing `taichi` directly, so
+the choice is made once and a process with **both** live -- two runtimes, two CUDA
+contexts, two kernel caches -- cannot be spelled. Do not add a bare `import taichi` to
+`algan/`. Each backend gets its own offline-cache directory (`cache/<backend>`), and
+`algan.taichi_compat` owns the places where the two spell the same thing differently
+(`kernel_specializations()` for `compiled_kernels` vs `materialized_kernels`).
+It is startup-only in the strictest sense -- the kernels in the process are already
+compiled by the chosen backend -- so the daemon refuses a client whose value differs.
 
 `ALGAN_HDR_BUFFER_F16` is **not** one of them any more either. It seeds `SETTINGS.raytracing.experimental.hdr_buffer_f16`, and `hdr_frame_dtype()` reads that when the frame buffer is allocated — no kernel specializes on it, so there was never anything for the import to bake in.
 

@@ -18,7 +18,7 @@ import threading
 import pytest
 
 import algan
-from algan import SETTINGS, cli
+from algan import SETTINGS, cli, taichi_compat
 
 # --------------------------------------------------------------------------
 # Scripts that report what the CLI did to them, instead of rendering
@@ -412,7 +412,10 @@ def test_check_reports_the_environment(capsys):
     assert cli.main(["check"]) == 0
     printed = capsys.readouterr().out
     assert "PyTorch" in printed
-    assert "Taichi" in printed
+    # The kernel compiler is named, not just versioned: taichi and quadrants
+    # report unrelated version numbers (see algan.taichi_compat).
+    assert "Kernel compiler:" in printed
+    assert taichi_compat.BACKEND in printed
     assert algan.__version__ in printed
     # Its help says "paths", and "where did my video go" is what it is run for.
     assert "output:" in printed

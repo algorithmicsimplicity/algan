@@ -101,9 +101,8 @@ gated (``raster_fused_gather``, ``sheet_mask_kernel``, ``sheet_rank_kernel``,
 passes stay runnable as the A/B arm.
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
+from algan.taichi_compat import ti
 
 # Taichi is NOT initialized here. The arch depends on
 # ``SETTINGS.computing.render_device``, which a script may still change at

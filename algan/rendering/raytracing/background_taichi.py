@@ -1,6 +1,6 @@
 """Taichi kernels for procedural render backgrounds."""
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 @ti.kernel

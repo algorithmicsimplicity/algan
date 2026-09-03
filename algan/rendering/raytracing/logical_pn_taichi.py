@@ -35,7 +35,7 @@ rounding.
 ``ALGAN_PN_CRITERION_KERNEL=0`` restores the torch path for A/B.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 # Taichi is NOT initialized here. The arch depends on
 # ``SETTINGS.computing.render_device``, which a script may still change at

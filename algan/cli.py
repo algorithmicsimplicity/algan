@@ -117,11 +117,13 @@ def _cmd_check(_args: argparse.Namespace) -> int:
 
     # 3. Taichi runtime
     try:
-        import taichi as ti
+        from algan.taichi_compat import BACKEND, describe_backend
 
-        print(f"Taichi: {ti.__version__}")
+        # Names the implementation, not just the version: the two report
+        # unrelated version numbers, so "1.3.0" alone would read as a downgrade.
+        print(f"Kernel compiler: {describe_backend()} (ALGAN_TAICHI_BACKEND={BACKEND})")
     except ImportError:
-        print("  [ERROR] Taichi is not installed.")
+        print("  [ERROR] No kernel compiler (taichi / quadrants) is installed.")
 
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()

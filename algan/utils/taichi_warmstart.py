@@ -56,10 +56,14 @@ def apply():
         return
 
     try:
-        import taichi
-        import taichi.lang.ast.ast_transformer_utils as _atu
-        import taichi.lang.kernel_impl as _ki
-        from taichi.lang._wrap_inspect import getsourcefile, getsourcelines
+        from algan.taichi_compat import submodule
+        from algan.taichi_compat import ti as taichi
+
+        _atu = submodule("lang.ast.ast_transformer_utils")
+        _ki = submodule("lang.kernel_impl")
+        _wrap_inspect = submodule("lang._wrap_inspect")
+        getsourcefile = _wrap_inspect.getsourcefile
+        getsourcelines = _wrap_inspect.getsourcelines
     except Exception:
         return
 

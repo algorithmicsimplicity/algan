@@ -38,8 +38,6 @@ and candidate-parallel block kernels. PN patches, custom scatter, near
 clipping, and in-place supersampling still route to the classic frontend
 without changing geometry construction.
 """
-import taichi as ti
-
 from algan.environment import env_int
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
@@ -90,6 +88,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _write_ior_stack,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
+from algan.taichi_compat import ti
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
 # most this many pixels, bounding load imbalance for large bboxes. Purely a

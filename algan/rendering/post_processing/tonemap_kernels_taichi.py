@@ -16,13 +16,12 @@ NOTE: filename ends in ``_taichi`` so ruff never injects
 compilation).
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.color_space_taichi import linear_to_srgb_v3
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     agx_tonemap,
     pbr_neutral_tonemap,
 )
+from algan.taichi_compat import ti
 
 
 @ti.kernel

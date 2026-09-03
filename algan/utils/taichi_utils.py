@@ -1,4 +1,4 @@
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 def elementwise(user_fn):

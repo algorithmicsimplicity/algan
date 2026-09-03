@@ -85,8 +85,6 @@ pair                         use
 ===========================  ==================================================
 """
 
-import taichi as ti
-
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
@@ -150,6 +148,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _tri_normal_g,
     _write_ior_stack,
 )
+from algan.taichi_compat import ti
 
 # Sampler dimension pairs (see the module docstring's table).
 PAIR_PIXEL = 0

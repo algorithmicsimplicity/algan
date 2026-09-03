@@ -10,7 +10,7 @@ an import cycle.
 Kept deliberately free of any other import so it stays a leaf.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 # The sRGB knee, in encoded and in linear terms respectively.
 SRGB_LINEAR_CUTOFF = 0.04045

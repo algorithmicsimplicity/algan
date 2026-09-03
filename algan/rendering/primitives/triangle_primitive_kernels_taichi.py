@@ -49,7 +49,7 @@ Dispatched only when Taichi's arch is the CPU -- see
 :func:`algan.rendering.taichi_runtime.cpu_prep_kernel_enabled`.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 @ti.kernel

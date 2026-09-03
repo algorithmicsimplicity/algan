@@ -34,11 +34,11 @@ import os
 import threading
 import time
 
-import taichi as ti
 import torch
 
 from algan.environment import env_flag, env_int, env_str
 from algan.settings._startup import _TAICHI_CACHE_DIRECTORY, render_device
+from algan.taichi_compat import ti
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
@@ -214,19 +214,23 @@ def _install_taichi_compile_logger():
     the specialization becomes launchable. With an empty cache the backend time
     is cold compilation time; with a populated cache it is cache lookup/load time.
     """
-    from taichi.lang import impl as _ti_impl
-    from taichi.lang.kernel_impl import Kernel as _TaichiKernel
+    from algan.taichi_compat import kernel_specializations, submodule
+
+    _ti_impl = submodule("lang.impl")
+    _TaichiKernel = submodule("lang.kernel_impl").Kernel
 
     if not getattr(_TaichiKernel, "_algan_compile_timing_wrapped", False):
         original_materialize = _TaichiKernel.materialize
 
-        def timed_materialize(self, key=None, args=None, arg_features=None):
+        # Everything but ``key`` is forwarded untouched: the backends disagree
+        # on what the argument tuple is called (Taichi ``args``, Quadrants
+        # ``py_args``) and this wrapper has no use for it, so it never names it.
+        def timed_materialize(self, key=None, **kwargs):
             if key is None:
                 key = (self.func, 0, self.autodiff_mode)
-            if key in self.compiled_kernels:
-                return original_materialize(
-                    self, key=key, args=args, arg_features=arg_features
-                )
+            specializations = kernel_specializations(self)
+            if key in specializations:
+                return original_materialize(self, key=key, **kwargs)
 
             name = _kernel_timing_name(self, key)
             started_wall = (
@@ -244,9 +248,7 @@ def _install_taichi_compile_logger():
                 }
             )
             try:
-                result = original_materialize(
-                    self, key=key, args=args, arg_features=arg_features
-                )
+                result = original_materialize(self, key=key, **kwargs)
             except Exception:
                 elapsed = time.perf_counter() - started
                 _emit_compile_record(
@@ -265,7 +267,7 @@ def _install_taichi_compile_logger():
                 raise
 
             frontend_seconds = time.perf_counter() - started
-            compiled = self.compiled_kernels.get(key)
+            compiled = specializations.get(key)
             if compiled is not None:
                 with _COMPILE_LOG_LOCK:
                     _COMPILE_FRONTEND[id(compiled)] = {
@@ -764,7 +766,9 @@ def install_render_arch_guard():
     wrapper it replaced, so a guard installed *under* it would be skipped on
     exactly the repeat launches that most need checking.
     """
-    from taichi.lang.kernel_impl import Kernel
+    from algan.taichi_compat import submodule
+
+    Kernel = submodule("lang.kernel_impl").Kernel
 
     if getattr(Kernel, "_algan_arch_guard_installed", False):
         return
