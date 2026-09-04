@@ -1,10 +1,17 @@
 # Taichi fork roadmap: what to take from Quadrants, what to build, and on which base
 
-Status: **plan, not implemented.** Written 2026-09-03 from a read-only survey of Taichi v1.7.4, the
-Quadrants fork at `b9e953111` (2026-09-02), and this repository. It is self-contained: a fresh session
-can execute it from §0 without any other context. Every claim carries the file, commit or measurement
-it rests on; "verified" means read in source, "measured" means run on the stated machine,
-"projected" means an estimate.
+Status: **written 2026-09-03 as a plan; §6's gate was run and Track B begun on 2026-09-04.**
+Quadrants is now the default compiler and carries its own patch set. **`MIGRATION.md` is the record
+of what was executed and what it measured** — read it first if you want the current state; read this
+for the design, the survey it rests on, and the items still untaken. §6.1 holds the gate's results,
+and the "done" markers through §7.3 say which steps are closed and what closed them.
+
+Written from a read-only survey of Taichi v1.7.4, the Quadrants fork at `b9e953111` (2026-09-02),
+and this repository. It is self-contained: a fresh session can execute it from §0 without any other
+context. Every claim carries the file, commit or measurement it rests on; "verified" means read in
+source, "measured" means run on the stated machine, "projected" means an estimate. Nine of those
+claims were falsified by running them — each is corrected in place, and `MIGRATION.md` §4 lists them
+together.
 
 ## 0. How to use this document
 
@@ -556,6 +563,14 @@ Three costs the gate found that §6's "what B costs" list did not:
 
 ### 7.1 Track C — common to both bases (do first)
 
+> **Not taken, 2026-09-04, with one exception.** The base decision and Track B's first steps were
+> done instead. The exception is row 47's banner (`ENABLE_QUADRANTS_HEADER_PRINT` beside the Taichi
+> one, `algan/__init__.py`), which the flip forced: `import algan` must print nothing to stdout and
+> Quadrants prints its version line at import. Everything else below — the six stale cache claims,
+> the `gpu_max_reg` docstring, `_inside_class`, `TI_SKIP_VERSION_CHECK`, `cfg_optimization=False`,
+> the stale `ticache.lock` rule, `enable_fallback=False`, the eviction comment and the 64-argument
+> belief — is untouched and still worth doing on the new base.
+
 Order chosen so that each step is independently mergeable and measurable.
 
 1. **Docs and no-fork wins** (one PR, Algan only): fix the six stale "cache ignores `@ti.func` edits"
@@ -610,6 +625,18 @@ Algan's own release assets; persist `~/.cache/ti-build-cache` with `actions/cach
 patched file. Keep patches 0001 and 0002 unchanged.
 
 ### 7.3 Track B — if rebasing onto Quadrants
+
+> **Taken, 2026-09-04. Steps 1, 2 and 4 are done; 3, 5, 6 and 7 are not.** Quadrants is the default
+> compiler (`quadrants>=1.3.0,<1.4`, `BACKENDS[0]`), `quadrants_patches/` carries three patches,
+> and Prerequisite 0 is written as `0003` — compiled, never run on pre-Volta hardware. The per-step
+> markers below say what closed each one and what it cost; `MIGRATION.md` is the whole account,
+> including two defects in the ported Metal patch that only a real Apple GPU could have found.
+>
+> The one step whose shape changed: **step 3 is not "rewrite `taichi_fast_launch.py`"** any more.
+> The warm-start memoization was ported instead (`taichi_warmstart.py`, both compilers, 2.3× on a
+> warm render) because no Quadrants *release* carries the upstream `get_pos_info` memo. Fast-launch
+> remains version-gated to Taichi 1.7 and no-ops on Quadrants, which is a cost this migration has
+> not paid down and step 3 still owns.
 
 **Prerequisite 0 — pre-Volta CUDA support. Quadrants 1.3.0 cannot `qd.init(qd.gpu)` on a GPU older
 than sm_70, which includes this repository's development machine (GTX 1050, sm_61).** Measured
@@ -684,13 +711,13 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
 > refusal was measured on a single sm_61 **Windows** box, so whether the discriminator is compute
 > capability, WDDM, or `hostNativeAtomicSupported` is unestablished. `cap < 70` is safe either way.
 
-1. Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
+1. **[done]** Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
    (all 11 target files exist at renamed paths; `MetalDevice::import_mtl_buffer` still at
    `quadrants/rhi/metal/metal_device.mm:1280`; `MetalShaderResourceSet::rw_buffer` still honours
    `ptr.offset`, `:292-305`; the one `export_lang.cpp` binding becomes nanobind; the gfx bind site
    moved to `runtime/gfx/runtime.cpp:698`); port 0002 minus the cast hunk; add the `ContinueStmt`
    test.
-2. Python glue, the 13 breaking differences: `import quadrants as ti` (84 sites);
+2. **[done, and two of the thirteen did not apply]** Python glue: `import quadrants as ti` (84 sites);
    `get_runtime().prog` → `._prog` (the property now raises when unset, `lang/impl.py:443-447`;
    `taichi_runtime.py:376,400`, seven sites in `tests/unit_tests/test_taichi_runtime_config.py`);
    delete `gpu_max_reg` from `taichi_init_kwargs` (a `KeyError` in Quadrants); `TI_OFFLINE_CACHE_FILE_PATH`
@@ -703,7 +730,7 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
    **set `QD_KERNEL_COVERAGE=0` in `test.yaml` before `--cov`** (Quadrants' pytest plugin otherwise
    instruments every kernel under pytest-cov, changing memory layout); `prog.compile_kernel` returns
    `CompileResult` (take `.compiled_kernel_data`).
-3. Rewrite `taichi_fast_launch.py` against `quadrants.lang.kernel.Kernel` (prefer hooking
+3. **[not done — superseded in part; see the note above]** Rewrite `taichi_fast_launch.py` against `quadrants.lang.kernel.Kernel` (prefer hooking
    `launch_kernel` over `__call__`, which now carries checkpoint/`qd.Tensor`/stream stages); re-run
    `benchmarks/_taichi_fast_launch_check.py` with verify on. Trim `taichi_warmstart.py` to the
    source-retrieval memo (`get_pos_info` is memoised upstream, `ast_transformer_utils.py:408-424`)
@@ -725,14 +752,14 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
    (`get_tree_and_ctx` 2.00x per kernel — a pruning pass then an enforcing pass; the first is
    skipped only on a fastcache hit), which the memo does not address: node visits measured at
    505,978 vs Taichi's 252,989, `build_Name` 203,288 vs 101,644.
-4. `mps_zero_copy.py`: replace the per-launch sync pair with
+4. **[done — the module needed no change; `taichi_compat` absorbed it]** `mps_zero_copy.py`: replace the per-launch sync pair with
    `qd.init(external_metal_command_queue=quadrants.interop.get_mps_command_queue(), external_metal_command_queue_is_torch_queue=True)`.
-5. CI: rewrite `taichi_build.yaml` from `quadrants-src/.github/workflows/scripts_new/`
+5. **[not done — `scripts/gate/*_build.sh` build wheels on demand, but no release workflow ships one]** CI: rewrite `taichi_build.yaml` from `quadrants-src/.github/workflows/scripts_new/`
    (macOS, manylinux x86_64/aarch64, Windows); `QD_WITH_VULKAN=OFF` on macOS drops the MoltenVK
    dependency; enable `QD_WITH_CUDA=ON` on Linux/Windows.
-6. Re-baseline `tests/fast` and `tests/full_renders` with the diffs inspected; record warm
+6. **[outstanding, and now known to be necessary — §6.1's correction: four scenes move by up to 158 channel values]** Re-baseline `tests/fast` and `tests/full_renders` with the diffs inspected; record warm
    `save_frame` timings before/after; delete `ALGAN_GPU_MAX_REG`.
-7. Then Track C items on the new base: item 1 reuses `Program.load_fast_cache` and the
+7. **[not started]** Then Track C items on the new base: item 1 reuses `Program.load_fast_cache` and the
    FunctionDef-only path instead of new pybinds; items 13–15, 18, 20 unchanged; item 2 and the
    Metal copies are already present.
 

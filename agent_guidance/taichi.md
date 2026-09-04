@@ -9,7 +9,8 @@
 > mixed-compiler process, and one of the two that existed was a real failure under Quadrants
 > (a `DataTypeCxx` compared against a `DataType`).
 - **Which base the fork should sit on was gated on 2026-09-04; the gate passed for Quadrants.**
-  Measured, in `taichi_patches/PLAN.md` §6.1: `tests/fast` renders **byte-identical** under
+  Measured, in `taichi_patches/PLAN.md` §6.1, with `taichi_patches/MIGRATION.md` the record of
+  the migration itself (what shipped, what it corrected, what is still unverified): `tests/fast` renders **byte-identical** under
   Quadrants 1.3.0 on Linux x64 (0 of 37.6 M channel samples differ, same md5 as the baseline) and
   pixel-identical on Windows CUDA, so LLVM 15 → 22 needs no re-baseline on x86-64; stock Quadrants
   builds clean on `macos-latest` in 12.5 min with a working Metal wheel, where Taichi 1.7.4 plus

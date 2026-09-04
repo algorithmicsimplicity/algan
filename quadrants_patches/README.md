@@ -14,7 +14,9 @@ and why Quadrants is the base is `taichi_patches/PLAN.md` §6.1 — measured, no
 argued: byte-identical pixels, a clean macOS build where Taichi 1.7.4 no longer
 builds at all, and one upstream Metal miscompile that Quadrants does not have.
 
-`PORTING-NOTES.md` is the per-hunk record: what ported unchanged, what had to be
+`../taichi_patches/MIGRATION.md` is the account of the migration these came out
+of — what was measured, what the measurements corrected, and what is still not
+verified. `PORTING-NOTES.md` is the per-hunk record: what ported unchanged, what had to be
 rewritten and into what, what was **dropped because Quadrants already fixes it**,
 and the ranked list of things to watch on the first real build. Read it before
 touching a patch.
