@@ -34,6 +34,7 @@ from algan.rendering.mps_compat import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
+from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
 from algan.settings import SETTINGS
 from algan.utils.torch_compile import compiled
 
@@ -1169,7 +1170,11 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     # fragment's border/fill blend weight, not part of the circuit id.
     bez_layer = bez_code >> _BEZ_BORDER_BITS
     tri_layer = frag_ref + int(layer_offset_triangles)
-    layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int64)
+    # int32, not int64: the sort below is a radix sort, so its cost is
+    # proportional to the key width, and this key cannot leave int32 -- both
+    # arms are derived from ``frag_ref`` (an int32 primitive index) plus a
+    # primitive-count offset. Same values, same stable order, half the passes.
+    layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
     del is_bez, bez_code, bez_layer, tri_layer
     layer_order = torch.argsort(layer, descending=True, stable=True)
     del layer
@@ -1813,12 +1818,29 @@ def prepare_sparse_raster_coverage(
         frag_cov_u = _arena_tensor(memory, (num_frags,), torch.float32, 1.0)
         frag_msk_u = _arena_tensor(memory, (num_frags,), torch.int32, AA_MASK_ALL)
         opaque_u = _arena_tensor(memory, (num_frags,), torch.bool, False)
+        # Where each spec's fragments start, read in ONE host transfer before
+        # the launch loop. This used to be an ``int(counts.sum().item())`` per
+        # spec *inside* the loop, i.e. up to four hard syncs that each made the
+        # host wait out the WRITE kernel it had just queued before it could
+        # queue the next one. ``prefix`` already holds every boundary: a spec's
+        # fragments run from ``prefix`` at its first pair to ``prefix`` at the
+        # next spec's first pair (``num_frags`` for the last).
+        _pair_starts = []
+        _at = 0
+        for _kind, _pairs, *_rest in count_parts:
+            _pair_starts.append(_at)
+            _at += int(_pairs.shape[0])
+        frag_bounds = prefix[_pair_starts].tolist()
+        frag_bounds.append(num_frags)
+
         pair_cursor = 0
-        frag_cursor = 0
-        for kind, pairs, opaque, counts, accepts in count_parts:
+        for spec_index, (kind, pairs, opaque, _counts, accepts) in enumerate(
+            count_parts
+        ):
             npairs = int(pairs.shape[0])
             offsets = prefix[pair_cursor : pair_cursor + npairs].to(torch.int32)
-            n_spec = int(counts.to(torch.int64).sum().item())
+            frag_cursor = frag_bounds[spec_index]
+            n_spec = frag_bounds[spec_index + 1] - frag_cursor
             if kind == "bez":
                 raster_bez_write(
                     pairs,
@@ -1864,7 +1886,6 @@ def prepare_sparse_raster_coverage(
             if opaque and n_spec:
                 opaque_u[frag_cursor : frag_cursor + n_spec].fill_(True)
             pair_cursor += npairs
-            frag_cursor += n_spec
 
         order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
@@ -1979,10 +2000,13 @@ def prepare_sparse_raster_coverage(
         # mask word as data; every reader masks with AA_MASK_ALL or tests named
         # flag bits, so it is inert where unread.
         if rt_settings.sheet_sample_depth and num_frags:
-            msk_s = msk_s | torch.where(
-                mat_opaque_s & (ref_s >= 0),
-                torch.full_like(msk_s, AA_MAT_OPAQUE_BIT),
-                torch.zeros_like(msk_s),
+            # Set the bit where the predicate holds, rather than selecting
+            # between two materialized [n] constants: ``full_like`` and
+            # ``zeros_like`` were two whole int32 fragment streams allocated,
+            # filled and freed per chunk (14.6 MB each at 4K) to carry one
+            # scalar and one zero into a ``where``. Same bits out.
+            msk_s = msk_s | (
+                (mat_opaque_s & (ref_s >= 0)).to(torch.int32) * AA_MAT_OPAQUE_BIT
             )
 
         num_covered = int(covered.numel())
@@ -2250,6 +2274,9 @@ def shade_sparse_raster_coverage(
         light_pos,
         light_col,
         int(num_lights),
+        # Light slots the lvis payload carries: what this batch needs,
+        # bucketed, rather than the 16-light compile-time cap.
+        shadow_vis_slots(num_lights),
         layer_offsets,
         int(frag_flag),
         frag_pipelines,

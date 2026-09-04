@@ -65,7 +65,7 @@ color as the albedo (the renderer's vertex path overwrites the color per
 light), which is identical to a single light -- the common case.
 """
 
-from algan.environment import env_int
+from algan.environment import env_flag, env_int
 from algan.rendering.raytracing.color_space_taichi import (
     linear_to_srgb_v3,
     srgb_to_linear_f,
@@ -279,6 +279,44 @@ def light_vis_index(li, c):
 # truly unbounded (runtime) count would need the per-fragment visibilities in
 # a global scratch buffer instead of a stack vector.
 max_shadow_lights = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
+
+
+def shadow_vis_slots(num_lights: int) -> int:
+    """How many light slots a kernel variant's visibility vector carries.
+
+    ``max_shadow_lights`` is the *cap*; this is what a given batch actually
+    needs, and it is what the three shading kernels size their ``vis``/``lvis``
+    vector by. The vector is indexed by a runtime light ordinal, and a
+    dynamically indexed ``ti.Vector`` does not stay in registers -- it becomes
+    a per-thread local-memory array, re-initialised on every drained surface.
+    At the 16-light cap that is 192 bytes per thread to carry, for the default
+    one-light rig, twelve.
+
+    Rounded up to a power of two so the number of compiled kernel variants
+    stays bounded (1, 2, 4, 8, 16 at the default cap) rather than growing with
+    every distinct light count a scene happens to have.
+
+    **The result is never below the batch's light count** unless the cap itself
+    is, which is what keeps this invisible: every light that had a slot before
+    still has one, and a batch over the cap truncates exactly as it always did
+    (``tracer`` warns and the past-the-cap lights render fully lit). So the
+    in-kernel bound ``li < slots`` accepts precisely the lights
+    ``li < max_shadow_lights`` accepted.
+
+    ``ALGAN_SHADOW_VIS_EXACT=0`` restores the old behaviour -- every variant
+    carries the full cap -- which is the A/B arm, and the kill switch if a
+    scene is ever found whose light count moves between launches of one batch
+    in a way this does not follow. Read live, so both arms run in one process
+    on the host side; the kernels still specialise per slot count, which is
+    the point.
+    """
+    if not env_flag("ALGAN_SHADOW_VIS_EXACT", True):
+        return max_shadow_lights
+    wanted = max(1, int(num_lights))
+    slots = 1
+    while slots < wanted and slots < max_shadow_lights:
+        slots *= 2
+    return min(slots, max_shadow_lights)
 
 
 @ti.func
@@ -811,7 +849,13 @@ def _light_vis(shadows: ti.template(), vis, li):
     """
     v = ti.math.vec3(1.0, 1.0, 1.0)
     if ti.static(shadows != 0):
-        if li < max_shadow_lights:
+        # The bound comes off the payload itself rather than from
+        # ``max_shadow_lights``: the caller sizes ``vis`` by what its batch
+        # needs (``shadow_vis_slots``), and a vector's length is a
+        # compile-time constant, so this stays one static comparison and needs
+        # no extra parameter threaded down here. Identical acceptance either
+        # way -- the slot count is never below the batch's light count.
+        if li < ti.static(vis.n // SHADOW_VIS_CHANNELS):
             base = light_vis_index(li, 0)
             v = ti.math.vec3(vis[base], vis[base + 1], vis[base + 2])
     return v

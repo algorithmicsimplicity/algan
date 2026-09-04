@@ -17,6 +17,11 @@ sec1       ``ALGAN_ANALYTIC_AA_SECONDARY=1`` (set in the environment, this
 b1         ``max_bounces=1``
 b0         ``max_bounces=0`` -- no continuations at all, so the sheet resolve
            alone; the floor this scene could reach
+ovl        ``prefetch_gpu_prep=True`` -- run the batch's projection and GPU
+           merge on the prefetch worker, beside the previous batch's render,
+           instead of on the render thread between batches. Output-identical by
+           construction (same builds, same inputs, same device), so this arm's
+           video digest is the parity check as well as the timing.
 """
 
 import os
@@ -41,6 +46,8 @@ def scene():
         SETTINGS.raytracing.set(max_bounces=1)
     elif ARM == "b0":
         SETTINGS.raytracing.set(max_bounces=0)
+    elif ARM == "ovl":
+        SETTINGS.computing.set(prefetch_gpu_prep=True)
 
     with Off():
         nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
@@ -51,22 +58,46 @@ def scene():
             .spawn()
         )
 
-    with Sync(duration=duration):
+    with Sync(runtime=duration):
         nn.move(UP)
         x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)
 
 
+# Codegen knobs ride in the output tag, not just in the log. Every step of a
+# harness run writes into one `algan_outputs/`, so two arms that share a tag
+# also share their video filenames -- and the digests the runner reports then
+# all come from whichever step ran last, which silently destroys the parity
+# half of an A/B. Most of these change only how the kernels are COMPILED, so
+# the frames must come out identical, and that is exactly the claim the digest
+# is there to check. ``ALGAN_SHADOW_ANYHIT`` is the exception -- it selects a
+# different shadow-query algorithm, documented as sharing the ordered march's
+# output up to one seam-merge corner -- so there the digest is the question
+# rather than the assertion.
+_CODEGEN_ENV = (
+    ("ALGAN_SHADOW_ANYHIT", "ah"),
+    ("ALGAN_SHADOW_VIS_EXACT", "vis"),
+    ("ALGAN_GPU_MAX_REG", "reg"),
+    ("ALGAN_OPT_LEVEL", "opt"),
+    ("ALGAN_ADV_OPT", "adv"),
+    ("ALGAN_ANALYTIC_AA_SECONDARY", "sec"),
+)
+_SUFFIX = "".join(
+    f"_{short}{os.environ[name]}" for name, short in _CODEGEN_ENV if name in os.environ
+)
+
 print(
-    f"ARM={ARM}  QUALITY={QUALITY}  ALGAN_ANALYTIC_AA_SECONDARY="
-    f"{os.environ.get('ALGAN_ANALYTIC_AA_SECONDARY', '(default)')}",
+    f"ARM={ARM}  QUALITY={QUALITY}  "
+    + "  ".join(
+        f"{name}={os.environ.get(name, '(default)')}" for name, _ in _CODEGEN_ENV
+    ),
     flush=True,
 )
 _PRESETS = {"UHD": UHD, "HD": HD, "PREVIEW": PREVIEW, "MD": MD, "LD": LD}
 profile_scene(
     scene,
     _PRESETS[QUALITY],
-    f"nn_abl_{ARM}_{QUALITY}",
+    f"nn_abl_{ARM}_{QUALITY}{_SUFFIX}",
     runs=2,
     kernel_profiler=False,
     save_video_kwargs={"ffmpeg_params": ["-crf", "17", "-preset", "ultrafast"]},

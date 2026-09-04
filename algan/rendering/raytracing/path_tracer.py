@@ -85,6 +85,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_LAMBERT,
     _MID_PHYSICAL,
     ALL_PIDS,
+    shadow_vis_slots,
 )
 from algan.rendering.raytracing.truncation import record_truncation
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -538,8 +539,10 @@ def path_trace_render(
                 while active.numel() > 0 and it < max_iters:
                     na = int(active.numel())
                     with memory.temp():
-                        hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                        hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                        # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                        # traverse kernel's stores and shade's gathers coalesce.
+                        hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                        hit_i = memory.get_tensor((kbuf, 2, na), i32)
                         wavefront_traverse_events(
                             active,
                             na,
@@ -630,6 +633,7 @@ def path_trace_render(
                             int(has_tri),
                             int(has_bez),
                             int(shadows),
+                            shadow_vis_slots(num_lights),
                             frag_pipelines,
                             ALL_PIDS,
                             seed_root,
