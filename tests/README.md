@@ -258,6 +258,14 @@ Regenerate with `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and
 `ALGAN_UPDATE_PATH_TRACED_BASELINES=1` (see the invocations in each suite's test
 module), on a machine of each device, and look at the result before committing.
 
+**`tests/path_traced`'s CPU set was regenerated on 2026-09-04** (on the same
+cloud CPU container class it was first rendered on, where the old set still
+passed 4/4 before the change), for the path tracer's new fixed-seed default
+(`pt_animated_seed = False`, `raytracing/DESIGN_path_tracer_roadmap.md` §0.3):
+frame 0 of every scene is byte-identical to before and later frames re-roll
+nothing, which is why the three videos came out at less than half their old
+size. `tests/full_renders` and the CUDA path-traced set are still pending.
+
 ## Baselines are per device
 
 Each render suite keeps one baseline directory per device —
