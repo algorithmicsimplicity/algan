@@ -19,16 +19,25 @@ name: Quadrants from source (Linux)
 # no timing here -- the runner is shared, 4-core and has no GPU, so a number
 # taken on it would be noise. The wheel is uploaded so the timing can happen on
 # a real box.
+# Hand dispatch only, like `taichi_build.yaml` and the MPS probe: this is a
+# ~20-minute build that guards no regression, so it runs when someone wants a
+# wheel or wants the patch re-checked, not on every push that touches it.
+#
+# The cost of that choice is one-time and worth stating plainly, because it bites
+# exactly when the job is most wanted. GitHub reads `workflow_dispatch` from the
+# **default branch**, not from the ref being dispatched, so until this file is on
+# `master` the job cannot be launched at all -- not from the Actions tab, not
+# through the API. A patch developed on a feature branch therefore cannot be
+# built until this file merges, whatever the patch's own branch contains.
+#
+# Two ways through that, both worth knowing:
+#   * Merge this file to `master` first; afterwards a dispatch can name any ref,
+#     and the run uses the workflow file *from that ref* -- so later edits to
+#     this job still take effect on a branch without re-merging.
+#   * Re-run a previous run (`rerun_workflow_run`), which needs no default-branch
+#     presence. It re-runs that run's commit, so it is for retrying a flake, not
+#     for testing a new patch.
 on:
-  # Unfiltered on branches on purpose: a patch under `taichi_patches/quadrants/`
-  # is unverifiable until this runs, so it should run on whatever branch the
-  # patch is being written on, not only on the default one.
-  push:
-    paths:
-      - "taichi_patches/quadrants/**"
-      - ".github/workflows/quadrants_build.yaml"
-  # Only takes effect once this file is on the default branch: GitHub reads
-  # workflow_dispatch from there, not from the ref being dispatched.
   workflow_dispatch:
     inputs:
       apply_patches:
@@ -88,7 +97,7 @@ jobs:
       # patch that has drifted from the tag fails here, loudly, rather than half
       # applying and producing a wheel whose behaviour nobody can account for.
       - name: Apply the Algan patches
-        if: ${{ github.event_name == 'push' || inputs.apply_patches }}
+        if: ${{ inputs.apply_patches }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -107,7 +116,7 @@ jobs:
           git -c core.pager=cat diff --stat
 
       - name: Note that this is a stock build
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.apply_patches }}
+        if: ${{ !inputs.apply_patches }}
         run: echo "PATCHED=0" >> "$GITHUB_ENV"
 
       # The LLVM 22 archive and the sccache binary both land here, and the
