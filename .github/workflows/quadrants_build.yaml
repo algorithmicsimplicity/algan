@@ -374,7 +374,7 @@ jobs:
           if-no-files-found: warn
 
   publish:
-    name: Publish algan-quadrants ${{ env.ALGAN_QUADRANTS_VERSION }}
+    name: Publish algan-quadrants 1.3.0.post1
     needs: [plan, linux, macos, windows]
     if: >-
       ${{ always() && inputs.publish && inputs.apply_patches &&
