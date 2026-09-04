@@ -67,6 +67,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MAT_NO_SHADOW_RECEIVE,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
+    SHADOW_VIS_CHANNELS,
     _orient_hit_normals,
     _reflect_frame,
     _shadow_terminator_delta,
@@ -225,7 +226,8 @@ _PI = 3.141592653589793
 # separate shadow kernel having measured slower than inline shadows) pack a
 # per-(K-buffer hit, light) occlusion bit into a single int32, so at most
 # 32 // kbuf lights fit.
-# The inline (default) shadow path uses the full ``max_shadow_lights``; only
+# The inline (default) shadow path sizes its payload per batch
+# (``shadow_vis_slots``, bounded by ``max_shadow_lights``); only
 # the deferred bit-packing is bounded here (lights past it stay lit in
 # deferred mode -- a no-op unless a user both enables deferred shadows and
 # uses more than 32 // kbuf lights).
@@ -2206,6 +2208,10 @@ def wavefront_shade_arena(
         # truncation: the commit block below deposits its accumulated color
         # + leftover throughput exactly as for any other retirement.
         weight_floor_exit: ti.template(),
+        # Light slots this variant's ``vis`` payload carries -- what the batch
+        # needs, not the ``max_shadow_lights`` cap. See shading_taichi.
+        # shadow_vis_slots.
+        vis_lights: ti.template(),
         num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
@@ -2478,7 +2484,7 @@ def wavefront_shade_arena(
                 # direct-light add-back further down is a sibling ti.static
                 # block, and Taichi scopes a name to the block it is bound in.
                 vis = ti.Vector([1.0]
-                                * (3 * max_shadow_lights))
+                                * (SHADOW_VIS_CHANNELS * vis_lights))
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
                 # fragment. Bezier circuits (htype 0) keep their sampled color.
@@ -2592,7 +2598,7 @@ def wavefront_shade_arena(
                                     lifted = 1
                             tl = f % light_pos.shape[0]
                             for li in range(num_lights):
-                                if (li < max_shadow_lights) and (
+                                if (li < vis_lights) and (
                                         (fan_exact == 1)
                                         or (light_col[tl, li, 0] != 0.0)
                                         or (light_col[tl, li, 1] != 0.0)
@@ -3545,8 +3551,8 @@ _WAVEFRONT_SHADE_PARAMS = (
     "frag_scatters", "tri_pids", "shadows", "refraction", "ior_stack",
     "refit", "has_tri", "has_bez", "deferred_shadows", "shadow_term",
     "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
-    "first_iter", "compact", "weight_floor_exit", "tri_mat_id", "tri_mat",
-    "light_pos", "light_col", "num_lights", "time_start", "width", "height",
+    "first_iter", "compact", "weight_floor_exit", "vis_lights", "tri_mat_id",
+    "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
     "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin",
 )

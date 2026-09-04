@@ -83,6 +83,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     ALL_PIDS,
     max_shadow_lights,
+    shadow_vis_slots,
 )
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -2700,6 +2701,9 @@ def raytrace_render_wavefront(
                         # (a ti.template() gate: flipping it mid-process
                         # compiles the other variant rather than reusing one).
                         int(rt_settings.weight_floor_exit),
+                        # Light slots the vis payload carries: what this batch
+                        # needs, bucketed, not the 16-light cap.
+                        shadow_vis_slots(num_lights),
                         a_matid,
                         a_mat,
                         light_pos,
@@ -3371,6 +3375,9 @@ def raytrace_render_wavefront(
                     # Post-loop weight-floor exit, read live per batch (see
                     # the sparse drain call site).
                     int(rt_settings.weight_floor_exit),
+                    # Light slots the vis payload carries: what this batch
+                    # needs, bucketed, not the 16-light cap.
+                    shadow_vis_slots(num_lights),
                     a_matid,
                     a_mat,
                     light_pos,

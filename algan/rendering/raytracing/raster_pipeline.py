@@ -34,6 +34,7 @@ from algan.rendering.mps_compat import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
+from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
 from algan.settings import SETTINGS
 from algan.utils.torch_compile import compiled
 
@@ -2273,6 +2274,9 @@ def shade_sparse_raster_coverage(
         light_pos,
         light_col,
         int(num_lights),
+        # Light slots the lvis payload carries: what this batch needs,
+        # bucketed, rather than the 16-light compile-time cap.
+        shadow_vis_slots(num_lights),
         layer_offsets,
         int(frag_flag),
         frag_pipelines,

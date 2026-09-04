@@ -85,6 +85,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_LAMBERT,
     _MID_PHYSICAL,
     ALL_PIDS,
+    shadow_vis_slots,
 )
 from algan.rendering.raytracing.truncation import record_truncation
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -632,6 +633,7 @@ def path_trace_render(
                             int(has_tri),
                             int(has_bez),
                             int(shadows),
+                            shadow_vis_slots(num_lights),
                             frag_pipelines,
                             ALL_PIDS,
                             seed_root,
