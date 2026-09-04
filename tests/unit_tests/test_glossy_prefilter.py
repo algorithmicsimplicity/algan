@@ -31,7 +31,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import taichi as ti
 import torch
 
 # Importing algan is what initialises Taichi and Torch for this process.
@@ -42,6 +41,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _material_reflectance,
     _mirror_share,
 )
+from algan.taichi_compat import ti
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _AUDIT_DIR = _REPO_ROOT / "benchmarks" / "renderer_audit"

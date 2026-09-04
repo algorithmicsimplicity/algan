@@ -144,10 +144,21 @@ def unavailable_reason() -> str:
 
     Kept beside :func:`zero_copy_available` so the message and the condition
     cannot drift apart.
+
+    It names the compiler this process actually bound, because both of them
+    have a fork and they are not interchangeable: a patched Taichi wheel in a
+    Quadrants process is not installed as far as Algan is concerned, and the
+    old wording -- which said "Taichi" unconditionally -- sent a Quadrants user
+    to build the wrong one. Reading ``BACKEND`` does not import the compiler,
+    which matters here: this runs while Algan is still importing.
     """
+    from algan.taichi_compat import BACKEND
+
+    compiler = "Quadrants" if BACKEND == "quadrants" else "Taichi"
+    patches = f"{BACKEND if BACKEND == 'quadrants' else 'taichi'}_patches/"
     return (
-        "rendering on MPS needs the patched Taichi build (see taichi_patches/ "
-        "and DESIGN_mps_zero_copy.md): stock Taichi copies every kernel "
+        f"rendering on MPS needs the patched {compiler} build (see {patches} "
+        "and DESIGN_mps_zero_copy.md): a stock build copies every kernel "
         "argument through the host, which is not merely slow but wrong for "
         "Algan's arena convention -- two dtype views of one buffer come back "
         "with one of them reverted, and the render draws a black frame. "
@@ -299,15 +310,19 @@ def _ndarray_positions(kernel):
         return cached
     positions = {}
     try:
-        from algan.taichi_compat import submodule
+        from algan.taichi_compat import kernel_arguments, submodule
 
-        _ki = submodule("lang.kernel_impl")
-        Layout = submodule("lang.enums").Layout
+        # Reached under ``types.`` rather than through ``lang.kernel_impl``'s
+        # re-exports, because both backends put them there under the same
+        # names while the re-exports differ (Quadrants has no
+        # ``lang.kernel_impl.ndarray_type`` and no ``lang.enums`` at all).
+        _ndarray_type = submodule("types.ndarray_type")
+        Layout = _ndarray_type.Layout
+        ndarray_annotation = _ndarray_type.NdarrayType
+        scalar_type_ids = submodule("types.primitive_types").type_ids
         MatrixType = submodule("lang.matrix").MatrixType
 
-        ndarray_annotation = _ki.ndarray_type.NdarrayType
-        scalar_type_ids = _ki.primitive_types.type_ids
-        for index, argument in enumerate(kernel.arguments):
+        for index, argument in enumerate(kernel_arguments(kernel)):
             annotation = argument.annotation
             if not isinstance(annotation, ndarray_annotation):
                 continue

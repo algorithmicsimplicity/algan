@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import os
 import re
 import sys
 import time
@@ -29,6 +30,19 @@ import pytest
 
 from algan import SETTINGS
 from algan.scene_manager import SceneManager
+
+# Quadrants ships a pytest plugin that turns kernel coverage on by itself
+# whenever pytest-cov is loaded, and instrumented kernels are not the kernels
+# Algan ships: it rewrites every kernel and ``ti.func`` AST to write probes into
+# an extra field, which changes the memory layout the render suites compare
+# pixels from. CI runs the suite with ``--cov``, so the opt-out has to live
+# where every run sees it rather than in one command line
+# (``taichi_patches/PLAN.md`` §7.3, item 2).
+#
+# This is an initial conftest, so it is imported while pytest builds its config
+# -- before the plugin's ``pytest_configure`` does its own ``setdefault`` --
+# and ``setdefault`` here leaves a deliberate ``QD_KERNEL_COVERAGE=1`` alone.
+os.environ.setdefault("QD_KERNEL_COVERAGE", "0")
 
 # The render scenes name this family explicitly instead of taking Pango's
 # default, because ``Text`` resolves ``font=""`` through fontconfig and the

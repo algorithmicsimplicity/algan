@@ -36,6 +36,32 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from algan.taichi_compat import BACKEND  # noqa: E402
+
+
+def _require_taichi_backend():
+    """Refuse to run under any backend but Taichi.
+
+    Like its siblings ``_arena_arg_packing_ab.py`` / ``_arena_view_perf_ab.py``,
+    this harness times ``algan.utils.taichi_fast_launch`` (gated to taichi
+    1.7.x, a silent no-op elsewhere), reads Taichi-specific internals
+    (``ti.lang.impl``, ``ti.profiler``), and splices ``from taichi.lang
+    import impl as _ti_impl`` directly into the AST-generated arena variant
+    (``VIEW_SRC`` below) -- all of it via the literal ``taichi`` package
+    rather than ``algan.taichi_compat``. Running that alongside algan
+    modules that bind Quadrants (the default) would load both compilers
+    into one process -- the mixed-compiler process
+    ``algan/taichi_compat.py`` exists to prevent -- so refuse outright.
+    """
+    if BACKEND != "taichi":
+        raise SystemExit(
+            f"_arena_view_real_kernel_ab.py is Taichi-only (it exercises "
+            f"taichi_fast_launch and Taichi internals directly). Current "
+            f"backend is {BACKEND!r}; re-run with "
+            f"ALGAN_TAICHI_BACKEND=taichi."
+        )
+
+
 KERNEL_NAME = "sheet_resolve_shade"
 SRC_REL = "algan/rendering/raytracing/sheet_resolve_taichi.py"
 
@@ -391,6 +417,9 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role", "fi
     """
     import importlib
 
+    # Deliberately the literal Taichi package, not `algan.taichi_compat` --
+    # see `_require_taichi_backend`'s docstring. `main` has already checked
+    # `BACKEND == "taichi"` before calling this.
     import taichi as ti
     import torch
 
@@ -629,6 +658,9 @@ def run_both(cap_path, cache_dir, reps, blocks=6, policies=("dtype", "role", "fi
 
 def run_arm(arm, cap_path, cache_dir, reps, tag="", policy="dtype"):
     global _OFFS
+    # Deliberately the literal Taichi package, not `algan.taichi_compat` --
+    # see `_require_taichi_backend`'s docstring. `main` has already checked
+    # `BACKEND == "taichi"` before calling this.
     import taichi as ti
     import torch
 
@@ -799,6 +831,7 @@ def main():
         "back-to-back, the original behaviour)",
     )
     a = ap.parse_args()
+    _require_taichi_backend()
 
     global ALIGN_BYTES
     ALIGN_BYTES = a.align

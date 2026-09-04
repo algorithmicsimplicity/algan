@@ -55,8 +55,9 @@ def main():
 
     enable_taichi_kernel_profiler()
 
-    import taichi as ti
     from _arena_view_real_capture import build_scene  # noqa: E402
+
+    from algan.taichi_compat import ti
 
     import algan  # noqa: F401
     from algan import Scene

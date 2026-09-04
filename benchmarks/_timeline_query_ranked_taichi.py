@@ -44,7 +44,7 @@ written as zeros rather than multiplied by a mask, so a recorded ``inf``/``NaN``
 cannot leak.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 @ti.func

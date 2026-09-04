@@ -14,7 +14,6 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Multimedia :: Video",
     "Topic :: Multimedia :: Graphics",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -22,8 +21,11 @@ classifiers = [
     "Natural Language :: English",
     ]
 
-# Upper bound tracks taichi, which publishes no Python 3.14 wheels yet.
-requires-python = ">=3.9,<3.14"
+# Both bounds are the kernel compiler's. Quadrants publishes cp310-cp313
+# wheels: no cp39 (which is why the floor moved up from 3.9 -- the maintainer
+# confirmed no user is on it, and `algan` is not on PyPI yet, so nobody can
+# have installed it there through the documented channel) and no cp314 yet.
+requires-python = ">=3.10,<3.14"
 
 dependencies = [
     # Needed by the vendored Manim geometry subset in
@@ -46,7 +48,19 @@ dependencies = [
     "typing-extensions>=4.12.0",
     # for algan
 
-    "taichi>=1.7.4",
+    # The kernel compiler every `*_taichi.py` module is compiled by, reached as
+    # `from algan.taichi_compat import ti`. Quadrants is the maintained fork of
+    # taichi 1.7.x; `taichi_patches/PLAN.md` §6.1 is the measurement that chose
+    # it, and taichi itself is still supported as the other arm -- see the
+    # `taichi` extra below.
+    #
+    # Capped at the minor. Two things in the tree replicate Quadrants 1.3
+    # internals verbatim -- `algan/utils/taichi_warmstart.py`'s frontend
+    # memoization and the glue in `algan/taichi_compat.py` -- so a minor bump is
+    # a thing to read the diff for, not to pick up silently. The upstream
+    # policy this pin follows is to track public releases (no pinned commits,
+    # no vendored fork), so lifting the cap is a deliberate, tested edit.
+    "quadrants>=1.3.0,<1.4",
     "pyttsx3>=2.0",
     "moviepy>=2.2.0",
     "dendroid>=1.6.0",
@@ -117,6 +131,19 @@ fbx = [
 pango = [
     "manimpango>=0.5.0",
 ]
+# The other kernel compiler. Algan compiles with Quadrants by default; setting
+# `ALGAN_TAICHI_BACKEND=taichi` selects this one instead, and `algan/` needs no
+# change either way (`algan/taichi_compat.py`).
+#
+# It is an extra rather than a dependency because a default install must not
+# carry two ~56 MB compilers, and it is not merely legacy: it is the A/B control
+# every "did the compiler do this?" question is answered against, and it is the
+# only compiler with a *patched* Metal wheel (`taichi_patches/`,
+# `.github/workflows/taichi_build.yaml`), which the zero-copy MPS path needs.
+# `uv sync --all-extras` installs it, so CI and a dev session get both arms.
+taichi = [
+    "taichi>=1.7.4",
+]
 dev = [
     # Tests and benchmarks decode rendered frames and probe video metadata
     # with OpenCV. The library itself no longer imports cv2 (its one image
@@ -142,7 +169,10 @@ dev = [
     "types-pygments>=2.19.0.20250107",
     "psutil>=6.1.1",
     "requests>=2.32.3",
-    "algan[audio,fbx]",
+    # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
+    # no extras still has to be able to run the A/B control arm
+    # (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every backend report.
+    "algan[audio,fbx,taichi]",
 ]
 
 [build-system]
@@ -165,6 +195,7 @@ include = [
   "/algan",
   "/tests",
   "/taichi_patches",
+  "/quadrants_patches",
   # scripts/vendor_manim.py regenerates algan/external_libraries/manim, and
   # that directory's VENDORING.md tells a reader to run it.
   "/scripts",
@@ -206,7 +237,7 @@ exclude_lines = ["pragma: no cover"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 extend-exclude = [
   ".github",
   ".hg",
@@ -241,6 +272,24 @@ select = [
 ]
 
 ignore = [
+  # Both of these switched on by themselves when `target-version` moved from
+  # py39 to py310 (Quadrants publishes no cp39 wheel, so the floor moved with
+  # it). Neither is about anything the compiler change touched, and taking
+  # either fix would have been a 100+ site mechanical rewrite buried in that
+  # change -- so they are declined here, with the reason, rather than applied
+  # unread.
+  #
+  # B905, `zip()` without an explicit `strict=`: 107 sites. The available fix
+  # writes `strict=False`, which is what the code does today, so it would be a
+  # large diff that changes nothing and asserts at every one of those sites
+  # that ragged input is intended -- which is exactly the question the rule
+  # wants answered, and answering it is its own piece of work.
+  "B905",
+  # UP038, `isinstance(x, A | B)`: 57 sites, and **ruff itself deprecated the
+  # rule** -- PEP 604 in an isinstance call is slower than the tuple, and it
+  # wrongly implies other typing syntaxes work there. Several of these sit on
+  # per-primitive and per-attribute paths.
+  "UP038",
   # (sub)module shadows standard library module
   "A005",
   # mutable argument defaults (too many changes)

@@ -34,7 +34,6 @@ import os
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
 import numpy as np  # noqa: E402
-import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
@@ -55,6 +54,7 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_SLIVER_BIT,
 )
 from algan.settings import SETTINGS  # noqa: E402
+from algan.taichi_compat import ti  # noqa: E402
 
 EXPERIMENTAL = SETTINGS.raytracing.experimental
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -1,11 +1,11 @@
 import pytest
-import taichi as ti
 import torch
 
 from algan.render_loop import _prepare_background_for_chunk
 from algan.rendering.raytracing.scene_builder import _prefill_background
 from algan.scene import Scene
 from algan.settings.video_settings import SMOKE_TEST
+from algan.taichi_compat import ti
 
 
 @ti.func

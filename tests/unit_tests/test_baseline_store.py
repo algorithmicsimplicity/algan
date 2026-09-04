@@ -285,7 +285,7 @@ def test_baseline_dir_override_is_final(tmp_path, monkeypatch):
 
 
 def test_an_archive_cannot_write_outside_its_destination(tmp_path):
-    """Defence in depth: extractall on 3.9 would happily follow ``..``."""
+    """Defence in depth: extractall on 3.10 would happily follow ``..``."""
     escaping = tmp_path / "escaping.tar.gz"
     with tarfile.open(escaping, "w:gz") as archive:
         payload = tmp_path / "payload"

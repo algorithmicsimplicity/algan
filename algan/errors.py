@@ -23,7 +23,7 @@ def _user_stacklevel(default: int = 2) -> int:
     points the warning at the user's own line either way.
 
     (``warnings.warn``'s ``skip_file_prefixes`` would do this directly, but it
-    is Python 3.12+ and Algan supports 3.9.)
+    is Python 3.12+ and Algan supports 3.10.)
     """
     frame = sys._getframe(1)
     level = 1

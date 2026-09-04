@@ -351,7 +351,17 @@ Supported initialization variables include:
     Base and content-cache locations.
 
 ``TI_OFFLINE_CACHE_FILE_PATH``
-    Taichi offline kernel-cache location.
+    Offline kernel-cache location for the compiler. Unset, each compiler gets
+    its own directory under ``ALGAN_CACHE_DIR`` (``cache/quadrants``,
+    ``cache/taichi``), so switching between them does not invalidate either.
+
+``ALGAN_TAICHI_BACKEND``
+    Which compiler builds Algan's kernels: ``quadrants`` (the default, and what
+    ``pip install algan`` brings) or ``taichi`` (``pip install algan[taichi]``).
+    Both compile the same kernel sources and render the same frames. Every
+    kernel in a process is built by whichever one is chosen here, so it cannot
+    be re-selected afterwards, and the render daemon refuses a client whose
+    value differs rather than serving it from the wrong compiler.
 
 ``ALGAN_SOFT_SHADOW_SAMPLES``
     Length of the deterministic soft-shadow fan, baked into the shade kernels
