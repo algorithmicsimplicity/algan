@@ -34,7 +34,6 @@ from __future__ import annotations
 import os
 
 import pytest
-import taichi as ti
 import torch
 
 from algan import LD, OUTWARD, RIGHT, UP, Off, Scene, Sphere, Square
@@ -54,6 +53,7 @@ from algan.rendering.mps_compat import (
     taichi_reduction_index_dtype,
 )
 from algan.settings import SETTINGS
+from algan.taichi_compat import ti
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 

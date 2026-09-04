@@ -26,12 +26,12 @@ out for ``*_taichi.py`` files; ``tests/*`` already exempts ``I002``.
 import math
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _material_reflectance,
 )
+from algan.taichi_compat import ti
 
 IOR = 1.5
 CRITICAL_ANGLE = math.degrees(math.asin(1.0 / IOR))  # 41.81 degrees

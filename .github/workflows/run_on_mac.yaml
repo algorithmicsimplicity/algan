@@ -228,6 +228,14 @@ jobs:
           from taichi.lang._ndarray import ExternalMetalNdarray
           print('taichi', ti.__version__, '-- patched (ExternalMetalNdarray present)')
           "
+          # Quadrants is the default kernel compiler now, so installing a
+          # patched *taichi* wheel is not enough to be running on it -- the run
+          # has to select it, or the wheel sits in the environment unused and
+          # the MPS arm silently measures a different compiler. Written to
+          # GITHUB_ENV rather than the job's `env:` so it applies exactly when
+          # a wheel was installed, and so a request's own `env:` (exported
+          # inside the run step) still wins over it.
+          echo "ALGAN_TAICHI_BACKEND=taichi" >> "$GITHUB_ENV"
 
       # In the clear, before any number is taken: which device Algan actually
       # resolved. An MPS arm that quietly fell back to the CPU is the failure

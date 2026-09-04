@@ -166,9 +166,10 @@ _CACHE_DIRECTORY = Path(
 ).expanduser()
 # One cache directory per kernel compiler. The two write different artifact
 # formats under different cache keys, so a shared directory would let one
-# backend's entries sit in the other's LRU budget and be pruned by it. The
-# default backend keeps the historical ``cache/taichi`` path, so an existing
-# cache survives this split.
+# backend's entries sit in the other's LRU budget and be pruned by it. Each
+# name is the backend's own (``cache/quadrants``, ``cache/taichi``), so
+# switching arms with ``ALGAN_TAICHI_BACKEND`` keeps both caches warm rather
+# than making each switch a cold build.
 _TAICHI_CACHE_DIRECTORY = Path(
     env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / _KERNEL_BACKEND
 ).expanduser()

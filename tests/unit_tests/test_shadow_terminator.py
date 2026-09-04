@@ -90,7 +90,7 @@ def _delta(normals, bary, p, snrm, prim=0, norm_prims=1):
     ``tri_pos`` reproduces the trimmed needs-normal prefix of the classic
     wavefront path, which is what defect 1's guard is for.
     """
-    import taichi as ti
+    from algan.taichi_compat import ti
 
     k = _kernels()
     w0, a, b = (np.float32(x) for x in bary)

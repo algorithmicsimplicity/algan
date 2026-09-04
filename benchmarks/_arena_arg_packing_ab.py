@@ -37,6 +37,35 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from algan.taichi_compat import BACKEND  # noqa: E402
+
+
+def _require_taichi_backend():
+    """Refuse to run under any backend but Taichi.
+
+    This harness times ``algan.utils.taichi_fast_launch``
+    (``fast_launch_hits``/``fast_launch_misses`` below), a patch to
+    ``Kernel.__call__`` that is version-gated to taichi 1.7.x and silently
+    no-ops on any other backend -- under Quadrants (the default) its numbers
+    would just be zero forever, which is not what this harness measures. It
+    also imports the literal ``taichi`` package directly (``run_arm`` below,
+    and the header this file writes into each generated arm module), rather
+    than going through ``algan.taichi_compat`` -- while every algan module it
+    also imports (``algan.rendering.taichi_runtime``) binds whatever backend
+    ``ALGAN_TAICHI_BACKEND`` selects. Left unguarded, running this under the
+    Quadrants default would load both compilers into one process, which is
+    exactly the mixed-compiler process ``algan/taichi_compat.py`` exists to
+    prevent -- so refuse outright instead.
+    """
+    if BACKEND != "taichi":
+        raise SystemExit(
+            f"_arena_arg_packing_ab.py is Taichi-only (it exercises "
+            f"taichi_fast_launch, gated to taichi 1.7.x, and imports the "
+            f"literal `taichi` package directly). Current backend is "
+            f"{BACKEND!r}; re-run with ALGAN_TAICHI_BACKEND=taichi."
+        )
+
+
 # Geometry of the synthetic kernel. NF/NI bracket the real megakernels:
 # sheet_resolve_shade takes 49 ndarrays, wavefront_shade 41,
 # wavefront_traverse_events 34.
@@ -143,6 +172,9 @@ def build_arena(scalar_offsets):
 
 
 def run_arm(arm, cache_dir, reps):
+    # Deliberately the literal Taichi package, not `algan.taichi_compat` --
+    # see `_require_taichi_backend`'s docstring. `main` has already checked
+    # `BACKEND == "taichi"` before calling this.
     import taichi as ti
     import torch
 
@@ -185,7 +217,7 @@ def run_arm(arm, cache_dir, reps):
     os.makedirs(mod_dir, exist_ok=True)
     header = "\n".join(
         [
-            "import taichi as ti",
+            "import taichi as ti",  # deliberately literal Taichi; see _require_taichi_backend
             f"MASK = {SZ - 1}",
             f"IMASK = {ISZ - 1}",
             f"NF = {NF}",
@@ -300,6 +332,7 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--variant", choices=["alias", "plain"], default="alias")
     args = ap.parse_args()
+    _require_taichi_backend()
 
     global ALIAS
     ALIAS = args.variant == "alias"

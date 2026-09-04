@@ -32,9 +32,12 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 # Printed verbatim as the last line of a successful run. `read_output.py` and
@@ -161,19 +164,39 @@ def run_step(
             text=True,
             errors="replace",
             bufsize=1,
+            # Its own process group, so the kill below reaches the whole tree.
+            # ``shell=True`` means the child is a shell; killing only the shell
+            # leaves the python it spawned holding the GPU.
+            start_new_session=True,
         )
-        try:
+
+        # The output pump has to be on its own thread. Draining the pipe from
+        # this one -- ``for line in process.stdout`` -- blocks until the child
+        # CLOSES stdout, which is to say until it exits; ``wait(timeout=...)``
+        # was then only ever reached after the process had already finished, so
+        # the timeout could not fire on the one case it exists for. A step that
+        # hung ran until the Kaggle session itself timed out and took every
+        # later step in the sweep with it.
+        def _pump():
             assert process.stdout is not None
             for line in process.stdout:
                 sys.stdout.write(line)
                 sys.stdout.flush()
                 log_file.write(line)
+
+        reader = threading.Thread(target=_pump, name=f"pump-{name}", daemon=True)
+        reader.start()
+        try:
             returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
+            _log(f"!! step {name} exceeded its {timeout}s timeout; killing it")
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             process.wait()
             returncode = -9
-            _log(f"!! step {name} exceeded its {timeout}s timeout and was killed")
+        # Before leaving the ``with``: the pump writes to ``log_file``, and the
+        # kill above closes the pipe, so this returns promptly.
+        reader.join(timeout=30)
     seconds = time.time() - started
 
     status = "ok" if returncode == 0 else "failed"

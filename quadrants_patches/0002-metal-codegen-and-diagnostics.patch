@@ -1,0 +1,313 @@
+diff --git a/quadrants/codegen/spirv/spirv_codegen.cpp b/quadrants/codegen/spirv/spirv_codegen.cpp
+index dc3fd4a59..e5cf1799a 100644
+--- a/quadrants/codegen/spirv/spirv_codegen.cpp
++++ b/quadrants/codegen/spirv/spirv_codegen.cpp
+@@ -2029,8 +2029,35 @@ void TaskCodegen::visit(ContinueStmt *stmt) {
+   } else {
+     ir_->make_inst(spv::OpBranch, current_continue_label());
+   }
+-  gen_label_ = true;  // Only ContinueStmt will cause duplicate OpBranch,
+-                      // which should be eliminated
++  // A `continue` terminates its block, and SPIR-V has no way to carry on
++  // inside a block that has already been terminated -- whatever follows needs a
++  // new OpLabel. Setting `gen_label_` here (and having `visit(IfStmt)` consume
++  // it) only opened that label because a ContinueStmt was ASSUMED to be the
++  // last statement of an if-branch, which is the shape Python's
++  // `if cond: continue` produces.
++  //
++  // `if qd.static(cond): continue` does not produce it. A static condition is
++  // resolved by the AST transformer, which emits the branch's statements inline
++  // and leaves no IfStmt at all -- so the ContinueStmt is a bare statement of
++  // the loop body, there is no boundary left to reach, and every statement
++  // after it is emitted into the terminated block:
++  //
++  //     %merge = OpLabel
++  //              OpBranch %return
++  //          %x = OpLoad %bool %y      <- "Load must appear in a block"
++  //
++  // The module is invalid, and only some consumers say so: LLVM does not care
++  // (the CPU and CUDA backends render it correctly), spirv-opt declines to
++  // optimize and Quadrants carries on with the unoptimized module, Metal hands
++  // back a nil compute pipeline and Vulkan reports
++  // `vkCreateComputePipelines failed`.
++  //
++  // Opening the block here covers every shape rather than the one the flag
++  // assumed. When the ContinueStmt IS last in an if-branch this leaves an empty
++  // unreachable block, terminated by the OpBranch that `visit(IfStmt)` now
++  // emits because `gen_label_` is never set, and spirv-opt's dead-branch
++  // elimination removes it.
++  ir_->start_label(ir_->new_label());
+ }
+ 
+ void TaskCodegen::emit_headers() {
+diff --git a/quadrants/rhi/metal/metal_device.mm b/quadrants/rhi/metal/metal_device.mm
+index 6457622d0..993f0678c 100644
+--- a/quadrants/rhi/metal/metal_device.mm
++++ b/quadrants/rhi/metal/metal_device.mm
+@@ -6,9 +6,86 @@
+ 
+ #include <cstdlib>
+ 
++// For log_msl_source_context and dump_shader_artifact below.
++#include <algorithm>
++#include <cctype>
++#include <fstream>
++#include <set>
++#include <string>
++#include <vector>
++
+ namespace quadrants::lang {
+ namespace metal {
+ 
++namespace {
++
++// Where a generated shader may be written for inspection, or "" if nobody
++// asked. Metal reports `program_source:<line>:<col>` against MSL that nothing
++// has ever printed, and a shader that fails BEFORE any MSL exists -- SPIR-V
++// spirv-cross declines to parse, say -- leaves even less than that behind. So
++// when QD_SHADER_DUMP_DIR names a directory, both halves go to disk under the
++// task's own name and every failure below says where. (`QD_DUMP_MSL` prints the
++// MSL of a shader that compiled; this is for the ones that did not.)
++std::string shader_dump_dir() {
++  const char *dir = std::getenv("QD_SHADER_DUMP_DIR");
++  return dir == nullptr ? std::string() : std::string(dir);
++}
++
++std::string sanitize_shader_name(const std::string &name) {
++  std::string out;
++  for (char c : name) {
++    const bool keep = isalnum((unsigned char)c) || c == '_' || c == '.' || c == '-';
++    out.push_back(keep ? c : '_');
++  }
++  return out;
++}
++
++// Write `size` bytes to <QD_SHADER_DUMP_DIR>/<name><suffix>; returns the path
++// written, or "" when no directory was named or the write failed. Never raises:
++// a diagnostic that can take down the thing it instruments is worse than no
++// diagnostic.
++std::string dump_shader_artifact(const std::string &name, const char *suffix, const void *bytes, size_t size) {
++  const std::string dir = shader_dump_dir();
++  if (dir.empty()) {
++    return std::string();
++  }
++  const std::string path = dir + "/" + sanitize_shader_name(name) + suffix;
++  std::ofstream out(path, std::ios::binary);
++  if (!out) {
++    return std::string();
++  }
++  out.write(reinterpret_cast<const char *>(bytes), static_cast<std::streamsize>(size));
++  return out ? path : std::string();
++}
++
++// One line naming the task, how far it got, and where its shader was written.
++// Every "could not build a pipeline" path ends here, because the failure this
++// exists for arrives at `bind_pipeline` as a null pointer with no name attached
++// and the name is most of what a reader needs.
++//
++// QD_WARN rather than QD_ERROR, for the reason the nil-pipeline-state branch of
++// `create_compute_pipeline` already spells out: QD_ERROR throws a `std::string`,
++// every caller of this reaches it through `MetalDevice::create_pipeline`, which
++// is `noexcept` and catches only `std::exception`, so the throw would trip
++// `std::terminate` instead of the clean `RhiResult::error -> Python
++// RuntimeError` translation.
++void log_pipeline_failure(const std::string &name, const char *stage, const std::string &detail, size_t msl_bytes,
++                          const std::string &dump_path) {
++  std::string report = "cannot build a compute pipeline for task '" + name + "': " + stage;
++  if (!detail.empty()) {
++    report += ": " + detail;
++  }
++  if (msl_bytes != 0) {
++    report += " [msl " + std::to_string(msl_bytes) + " bytes]";
++  }
++  if (!dump_path.empty()) {
++    report += " [dumped to " + dump_path + "]";
++  }
++  QD_WARN("[metal_device.mm] {}", report.c_str());
++}
++
++}  // namespace
++
+ #include "quadrants/rhi/metal/metal_rhi_enum_mappings.h"
+ 
+ MetalMemory::MetalMemory(MTLBuffer_id mtl_buffer, bool can_map) : mtl_buffer_(mtl_buffer), can_map_(can_map) {}
+@@ -99,6 +176,11 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+                                                       size_t spv_size, const std::string &name) {
+   RHI_ASSERT((size_t)spv_data % sizeof(uint32_t) == 0);
+   RHI_ASSERT(spv_size % sizeof(uint32_t) == 0);
++  // Before anything can throw. The CompilerMSL constructor parses the module,
++  // and a parse error there propagates out of this function to a caller that
++  // reports only an RhiResult -- so the SPIR-V has to be on disk already, or
++  // the one failure with nothing else to show for it also has nothing to show.
++  const std::string spv_dump = dump_shader_artifact(name, ".spv", spv_data, spv_size);
+   spirv_cross::CompilerMSL compiler(spv_data, spv_size / sizeof(uint32_t));
+   spirv_cross::CompilerMSL::Options options{};
+   options.enable_decoration_binding = true;
+@@ -132,9 +214,7 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+   try {
+     msl = compiler.compile();
+   } catch (const spirv_cross::CompilerError &e) {
+-    std::array<char, 4096> msgbuf;
+-    snprintf(msgbuf.data(), msgbuf.size(), "(spirv-cross compiler) %s: %s", name.c_str(), e.what());
+-    RHI_LOG_ERROR(msgbuf.data());
++    log_pipeline_failure(name, "spirv-cross would not lower it to MSL", e.what(), 0, spv_dump);
+     return nullptr;
+   }
+ 
+@@ -143,9 +223,14 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+       fprintf(stderr, "=== MSL for kernel '%s' ===\n%s\n=== END MSL ===\n", name.c_str(), msl.c_str());
+     }
+   }
++  const std::string msl_dump = dump_shader_artifact(name, ".metal", msl.data(), msl.size());
+ 
+   MTLLibrary_id mtl_library = device.get_mtl_library(msl);
+   if (mtl_library == nil) {
++    // `get_mtl_library` names the Metal diagnostic and prints the MSL lines it
++    // points at; this names the task, which is the half the reader needs to act
++    // on and which nothing below `create_pipeline` knows.
++    log_pipeline_failure(name, "Metal would not compile the MSL", "", msl.size(), msl_dump);
+     return nullptr;
+   }
+ 
+@@ -153,6 +238,7 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+   if (mtl_function == nil) {
+     // Avoid -[MTLComputePipelineDescriptorInternal setComputeFunction:]: `computeFunction must not
+     // be nil` which hard-aborts the process (Abort trap: 6) instead of returning RhiResult::error.
++    log_pipeline_failure(name, "the library has no 'main0' entry point", "", msl.size(), msl_dump);
+     return nullptr;
+   }
+ 
+@@ -196,7 +282,17 @@ MetalPipeline *MetalPipeline::create_compute_pipeline(const MetalDevice &device,
+       // translation path with a fatal process abort. The detailed message above
+       // is logged at warn level; the caller's `runtime.cpp:298 QD_ERROR_IF(res
+       // != success, ...)` then raises the kernel-name-bearing Python error.
+-      QD_WARN("[metal_device.mm] {}", msgbuf.data());
++      //
++      // Plus where the MSL went, when QD_SHADER_DUMP_DIR asked for it. The MSL
++      // compiled to a library on the way here, so this failure is about the AIR
++      // and the pipeline state rather than a line of source: there is nothing
++      // for `log_msl_source_context` to point at, and the whole file on disk is
++      // the only artifact worth having.
++      std::string report = msgbuf.data();
++      if (!msl_dump.empty()) {
++        report += " [dumped to " + msl_dump + "]";
++      }
++      QD_WARN("[metal_device.mm] {}", report.c_str());
+       return nullptr;
+     }
+   }
+@@ -1380,9 +1476,18 @@ void MetalDevice::unmap(DeviceAllocation ptr) {}
+ RhiResult MetalDevice::create_pipeline(Pipeline **out_pipeline, const PipelineSourceDesc &src, std::string name,
+                                        PipelineCache *cache) noexcept {
+   RHI_ASSERT(src.type == PipelineSourceType::spirv_binary);
++  *out_pipeline = nullptr;
+   try {
+     *out_pipeline = MetalPipeline::create_compute_pipeline(*this, (const uint32_t *)src.data, src.size, name);
+   } catch (const std::exception &e) {
++    // The spirv-cross MSL *constructor* runs outside create_compute_pipeline's
++    // own try -- it parses the module, and a module it cannot parse throws from
++    // there -- so this is the only place that failure is visible at all, and
++    // the text used to be discarded here.
++    log_pipeline_failure(name, "the backend raised while building it", e.what(), 0, std::string());
++    return RhiResult::error;
++  } catch (...) {
++    log_pipeline_failure(name, "the backend raised a non-std exception while building it", "", 0, std::string());
+     return RhiResult::error;
+   }
+   // `create_compute_pipeline` returns nullptr on any rejection by Apple's MSL
+@@ -1520,6 +1625,62 @@ MTLFunction_id MetalDevice::get_mtl_function(MTLLibrary_id mtl_lib, const std::s
+   return mtl_function;
+ }
+ 
++namespace {
++
++// Print the lines of `source` that `diagnostic` names, with context.
++//
++// Metal's messages carry `program_source:<line>:<col>`; each one gets a
++// numbered +/-6 line window. A message that names no line at all falls back to
++// the first 40 lines, which at least identifies the shader.
++void log_msl_source_context(const std::string &source, const std::string &diagnostic) {
++  std::vector<std::string> lines;
++  std::string current;
++  for (char c : source) {
++    if (c == '\n') {
++      lines.push_back(current);
++      current.clear();
++    } else {
++      current.push_back(c);
++    }
++  }
++  lines.push_back(current);
++
++  std::set<int> wanted;
++  const std::string marker = "program_source:";
++  for (size_t at = diagnostic.find(marker); at != std::string::npos;
++       at = diagnostic.find(marker, at + marker.size())) {
++    size_t digits = at + marker.size();
++    int line = 0;
++    while (digits < diagnostic.size() && isdigit((unsigned char)diagnostic[digits])) {
++      line = line * 10 + (diagnostic[digits] - '0');
++      ++digits;
++    }
++    if (line > 0) {
++      for (int i = std::max(1, line - 6); i <= std::min((int)lines.size(), line + 6); ++i) {
++        wanted.insert(i);
++      }
++    }
++  }
++  if (wanted.empty()) {
++    for (int i = 1; i <= std::min((int)lines.size(), 40); ++i) {
++      wanted.insert(i);
++    }
++  }
++
++  std::string report = "the MSL Metal rejected (" + std::to_string(lines.size()) + " lines total):";
++  int previous = 0;
++  for (int line : wanted) {
++    if (previous != 0 && line != previous + 1) {
++      report += "\n  ...";
++    }
++    report += "\n  " + std::to_string(line) + " | " + lines[line - 1];
++    previous = line;
++  }
++  QD_WARN("[metal_device.mm] {}", report.c_str());
++}
++
++}  // namespace
++
+ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+   MTLLibrary_id mtl_library = nil;
+   NSError *err = nil;
+@@ -1541,11 +1702,13 @@ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+ 
+   if (mtl_library == nil) {
+     std::array<char, 4096> msgbuf;
++    std::string description;
+     if (err != nil) {
++      description = err.localizedDescription.UTF8String;
+       snprintf(msgbuf.data(), msgbuf.size(),
+                "cannot compile metal library from source (msl_bytes=%zu): %s "
+                "(code=%d)",
+-               source.size(), err.localizedDescription.UTF8String, (int)err.code);
++               source.size(), description.c_str(), (int)err.code);
+     } else {
+       // Apple's `com.apple.MTLCompilerService` returned nil library + nil
+       // NSError - the XPC service dropped its connection during MSL -> AIR
+@@ -1567,6 +1730,17 @@ MTLLibrary_id MetalDevice::get_mtl_library(const std::string &source) const {
+     // noexcept-boundary rationale. Caller converts the nullptr return to a
+     // `RhiResult::error` which then surfaces as a Python `RuntimeError`.
+     QD_WARN("[metal_device.mm] {}", msgbuf.data());
++    // And the source it is complaining about. Metal reports
++    // `program_source:<line>:<col>` against generated MSL that nothing has ever
++    // printed, so a codegen bug otherwise surfaces as an error message with no
++    // way to see what produced it. Print a window around every line the message
++    // names rather than the whole shader, which runs to thousands of lines for
++    // a Quadrants megakernel. Skipped when Apple gave us no diagnostic at all
++    // (the XPC branch above): there is no line to point at, and the first 40
++    // lines of a translated megakernel say nothing about why it failed.
++    if (!description.empty()) {
++      log_msl_source_context(source, description);
++    }
+     return nil;
+   }
+   return mtl_library;

@@ -360,7 +360,7 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
-def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
+def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None):
     """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
 
     Returns int64 in ``[0, _SHADE_CLASS_BASE)``: 0 for smooth-shaded
@@ -369,12 +369,18 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri):
     kernel's ``_triangle_normal`` exactly: a triangle shades FLAT when its
     three vertex normals are equal (declared flat) or all degenerate (the
     kernel then substitutes the geometric cross-product normal).
+
+    ``tri_present`` is ``bool(is_tri.any())`` when the caller already has it;
+    the reduction is an ``[n]`` pass and a hard sync, and ``compact_sheets``
+    asks the same question up to three times per compaction.
     """
     n = safe_ref.numel()
     device = safe_ref.device
     tri_norm = merged.get("tri_norm")
     tri_pos = merged.get("tri_pos")
-    if tri_norm is None or tri_pos is None or not bool(is_tri.any()):
+    if tri_present is None:
+        tri_present = bool(is_tri.any())
+    if tri_norm is None or tri_pos is None or not tri_present:
         return torch.zeros(n, dtype=torch.int64, device=device)
     # Everything here is [n, 3] or [n, 3, 3] over the whole fragment stream --
     # 42 and 126 MB at 4K -- and the function was the compaction's allocation
@@ -1118,9 +1124,19 @@ def compact_sheets(
     # the class only SUBDIVIDES that band below (see ``_sibling_weights``).
     gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
     del sid, facing
+    # "Does this stream hold any triangle at all?" is asked by three separate
+    # rules below (the shading-class split, the primitive band rule, and the
+    # closed-shell alpha cap), and each ask was an [n] reduction AND a hard
+    # sync on an answer that cannot change once ``frag_ref`` is fixed. Asked
+    # once here instead. Eager rather than memoized behind a closure, because
+    # ``is_tri`` is deleted further down to free the [n] flags early and a
+    # closure would hold it past that -- and the first consumer, the shading
+    # class, is on by default, so the reduction is not new work.
+    tri_present = bool(is_tri.any())
+
     cls = None
     if shade_split:
-        cls = _shade_class(merged, frame_rel, time_start, safe_ref, is_tri)
+        cls = _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present)
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
     order = _lexsort(pix, gkey, t)
@@ -1135,7 +1151,7 @@ def compact_sheets(
     del g_o
 
     band_start = new_group.clone()
-    if band_rule == "prim" and n > 1 and bool(is_tri.any()):
+    if band_rule == "prim" and n > 1 and tri_present:
         split_after = _prim_split_after(
             merged,
             cam_origin,
@@ -1195,7 +1211,7 @@ def compact_sheets(
     closed_s = None
     shell_sid = shell_back = None
     tri_closed_arr = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
-    if tri_closed_arr is not None and bool(is_tri.any()):
+    if tri_closed_arr is not None and tri_present:
         closed_flag = (
             tri_closed_arr[
                 _rows(tri_closed_arr, frame_rel, time_start), safe_ref
@@ -1304,13 +1320,13 @@ def compact_sheets(
         # Order each segment by TRUE DEPTH instead: the near crossing spends
         # first, whichever bit it carries. (The cap itself is unaffected --
         # ``max(front, back)`` is symmetric under the swap.)
-        t_all = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
         # ``frag_key`` is the ORIGINAL stream; every other operand here is in
-        # the compaction's sorted order, so the depth key must be gathered to
-        # match before it can break ties within a segment.
-        t_all = t_all.index_select(0, order)
-        o2 = _lexsort(key, t_all)
-        del t_all
+        # the compaction's sorted order, so the depth key must be in sorted
+        # order to break ties within a segment. That is exactly ``t_o``, which
+        # the sample-depth block below keeps live anyway -- so this used to
+        # rebuild it: the same mask-shift-view over [n] plus the same gather,
+        # for a bit-identical copy of a tensor already in hand.
+        o2 = _lexsort(key, t_o)
         # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
         # prefix comes out of a cub scan, and a serial register walk cannot
         # reproduce its reassociation bitwise (measured on the real nn-scene

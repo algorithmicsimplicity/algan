@@ -35,7 +35,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from algan.taichi_compat import (
+    BACKEND,
+    PROGRAM_ATTR,
+    kernel_specializations,
+    program,
+    submodule,
+)
 
 _REPOSITORY_ROOT = Path(__file__).parents[2]
 
@@ -47,15 +53,23 @@ _RUNTIME_MODULE = _REPOSITORY_ROOT / "algan" / "rendering" / "taichi_runtime.py"
 _SCANNED_ROOTS = ("algan", "tests", "docs")
 
 
+#: Names the kernel compiler is bound to anywhere in the tree. ``ti`` is the one
+#: this project writes (``from algan.taichi_compat import ti``); the other three
+#: are the spellings a module that imported an implementation directly would
+#: use, and the rule below is about the *call*, so it has to recognise all of
+#: them rather than trusting the import to be the sanctioned one.
+_COMPILER_BINDINGS = frozenset({"ti", "taichi", "qd", "quadrants"})
+
+
 def _is_taichi_init(node):
-    """``ti.init(...)`` / ``taichi.init(...)``, however the module is bound."""
+    """``ti.init(...)``, however the compiler module happens to be bound."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "init"
-        and (isinstance(func.value, ast.Name) and func.value.id in {"ti", "taichi"})
+        and (isinstance(func.value, ast.Name) and func.value.id in _COMPILER_BINDINGS)
     )
 
 
@@ -104,14 +118,13 @@ def test_init_taichi_does_not_reinitialize_a_running_program():
     A second ``ti.init`` would discard every kernel compiled so far, so a test
     that just wants Taichi up must be able to say so without paying for it.
     """
-    ti = pytest.importorskip("taichi")
     from algan.rendering.taichi_runtime import init_taichi
 
     init_taichi()
-    program = ti.lang.impl.get_runtime().prog
-    assert program is not None
+    live = program()
+    assert live is not None
     init_taichi()
-    assert ti.lang.impl.get_runtime().prog is program
+    assert program() is live
 
 
 def test_ensure_taichi_for_render_leaves_a_matching_arch_alone():
@@ -121,14 +134,13 @@ def test_ensure_taichi_for_render_leaves_a_matching_arch_alone():
     free when there is nothing to do -- otherwise each render would pay a
     kernel-preparation pass.
     """
-    ti = pytest.importorskip("taichi")
     from algan.rendering.taichi_runtime import ensure_taichi_for_render
 
     ensure_taichi_for_render()
-    program = ti.lang.impl.get_runtime().prog
-    assert program is not None
+    live = program()
+    assert live is not None
     assert ensure_taichi_for_render() is False
-    assert ti.lang.impl.get_runtime().prog is program
+    assert program() is live
 
 
 def test_ensure_taichi_for_render_reinitializes_when_the_arch_changes(monkeypatch):
@@ -140,19 +152,17 @@ def test_ensure_taichi_for_render_reinitializes_when_the_arch_changes(monkeypatc
     the kernels compiled against the old one must be dropped rather than
     silently reused on the wrong device.
     """
-    ti = pytest.importorskip("taichi")
     from algan.rendering import taichi_runtime
 
     taichi_runtime.ensure_taichi_for_render()
-    program = ti.lang.impl.get_runtime().prog
-    assert program is not None
+    live = program()
+    assert live is not None
 
     monkeypatch.setattr(taichi_runtime, "_arch_matches_render_device", lambda: False)
     assert taichi_runtime.ensure_taichi_for_render() is True
-    assert ti.lang.impl.get_runtime().prog is not program
-    assert all(
-        not kernel.compiled_kernels for kernel in ti.lang.impl.get_runtime().kernels
-    )
+    assert program() is not live
+    runtime = submodule("lang.impl").get_runtime()
+    assert all(not kernel_specializations(kernel) for kernel in runtime.kernels)
 
     # Leave the process on the arch the rest of the suite expects.
     monkeypatch.undo()
@@ -173,11 +183,19 @@ def test_importing_algan_does_not_start_taichi():
     Run in a subprocess with ``ti.init`` stubbed out, so a module that quietly
     starts needing a program at import fails here instead of re-pinning the
     device to whatever the environment said.
+
+    The compiler is named by ``importlib`` rather than reached through
+    ``algan.taichi_compat``, because importing anything under ``algan`` runs
+    ``algan/__init__.py`` -- which is the very import the stub has to be in
+    place before. The backend name is resolved here and pinned into the child's
+    environment so the two processes cannot disagree about it.
     """
-    pytest.importorskip("taichi")
-    probe = """
-import taichi as ti
-import taichi.lang.misc as _misc
+    probe = f"""
+import importlib
+
+ti = importlib.import_module({BACKEND!r})
+_misc = importlib.import_module({BACKEND!r} + ".lang.misc")
+_impl = importlib.import_module({BACKEND!r} + ".lang.impl")
 
 _calls = []
 ti.init = _misc.init = lambda *a, **k: _calls.append(k.get("arch"))
@@ -185,10 +203,10 @@ ti.init = _misc.init = lambda *a, **k: _calls.append(k.get("arch"))
 import algan  # noqa: F401
 
 print("CALLS", len(_calls))
-print("PROG", ti.lang.impl.get_runtime().prog is not None)
-print("KERNELS", len(ti.lang.impl.get_runtime().kernels))
+print("PROG", getattr(_impl.get_runtime(), {PROGRAM_ATTR!r}, None) is not None)
+print("KERNELS", len(_impl.get_runtime().kernels))
 """
-    environment = dict(os.environ, ALGAN_USE_DAEMON="0")
+    environment = dict(os.environ, ALGAN_USE_DAEMON="0", ALGAN_TAICHI_BACKEND=BACKEND)
     result = subprocess.run(
         [sys.executable, "-c", probe],
         capture_output=True,

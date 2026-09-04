@@ -56,8 +56,9 @@ or report the problem on our
 ### Step 1: Installing Python
 
 We first need to check that an appropriate version of Python is available
-on your machine. Algan supports Python 3.9 through 3.13 (Python 3.14 is not
-supported yet). Open a terminal to run
+on your machine. Algan supports Python 3.10 through 3.13 (Python 3.14 is not
+supported yet -- both ends are the kernel compiler's wheel range). Open a
+terminal to run
 ```bash
 uv python install 3.13
 ```
@@ -262,6 +263,7 @@ If you prefer to manage your dependencies through your project's
 `uv add algan` instead of `uv pip install algan`.
 :::
 
+(optional-pango-text)=
 ### Optional: Pango text
 
 `Text` typesets through LaTeX's text mode by default, which needs no extra

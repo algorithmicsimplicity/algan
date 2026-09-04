@@ -52,11 +52,18 @@ def test_autograd_still_works_after_the_import():
 
 
 def test_the_import_prints_nothing_to_stdout():
-    """A piped script's data must not have a Taichi banner in it."""
+    """A piped script's data must not have a compiler banner in it.
+
+    Both spellings are named rather than only the selected backend's: the
+    banner is suppressed by setting *both* opt-out variables unconditionally
+    (``algan/__init__.py``), so this catches the case where the arrangement
+    survives on the arm that happens to be running and has rotted on the other.
+    """
     result = _fresh_python("import algan")
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert "[Taichi]" not in result.stdout + result.stderr
+    assert "[Quadrants]" not in result.stdout + result.stderr
 
 
 def test_the_import_says_nothing_at_info():

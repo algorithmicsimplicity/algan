@@ -8,9 +8,72 @@ from algan.render_loop import (
     RenderLoopMixin,
     _max_duration_that_fits,
     _prepare_background_for_chunk,
+    _render_device_pool_bytes,
 )
 from algan.rendering.raytracing.scene_builder import _prefill_background
+from algan.settings import SETTINGS
 from algan.utils.memory_utils import InsufficientMemoryException
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda", "mps", "xpu"])
+def test_no_device_gets_an_unbounded_out_of_arena_budget(device, monkeypatch):
+    # Both out-of-arena budgets used to answer float("inf") for any device that
+    # was neither CUDA nor CPU, which meant MPS. That does not fail loudly: it
+    # makes every guard they feed unsatisfiable, so a Metal render sized its
+    # frame windows against the arena alone while the merge and projection
+    # scratch outside it were bounded by nothing -- and materials_and_lighting
+    # died two thirds of the way through on a 7 GB Mac
+    # (DESIGN_mps_support.md 1.4). An unknown device is in here too: the bug
+    # was the fallthrough, not MPS in particular.
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda _device: (2 << 30, 4 << 30), raising=False
+    )
+    monkeypatch.setattr(
+        torch.mps, "recommended_max_memory", lambda: 5 << 30, raising=False
+    )
+
+    pool = _render_device_pool_bytes(torch.device(device))
+
+    assert pool > 0
+    assert pool != float("inf")
+    # int() of an infinity raises rather than returning one, so the callers
+    # that scale the budget are only safe while this stays finite.
+    assert int(pool * 0.5) > 0
+
+
+def test_mps_pool_is_metals_recommended_working_set(monkeypatch):
+    monkeypatch.setattr(
+        torch.mps, "recommended_max_memory", lambda: 5 << 30, raising=False
+    )
+    monkeypatch.setattr(SETTINGS.computing, "available_memory_override", None)
+
+    assert _render_device_pool_bytes(torch.device("mps")) == 5 << 30
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+def test_a_pinned_pool_pins_the_measured_devices(device, monkeypatch):
+    # available_memory_override exists so a run's frame windows do not move
+    # with the box (get_num_available_bytes honours it for the same reason).
+    # A budget that measured the device anyway would re-introduce the drift.
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda _device: (2 << 30, 4 << 30), raising=False
+    )
+    monkeypatch.setattr(
+        torch.mps, "recommended_max_memory", lambda: 5 << 30, raising=False
+    )
+    monkeypatch.setattr(SETTINGS.computing, "available_memory_override", 1536 << 20)
+
+    assert _render_device_pool_bytes(torch.device(device)) == 1536 << 20
+
+
+def test_cpu_pool_is_its_own_ceiling(monkeypatch):
+    monkeypatch.setattr(SETTINGS.computing, "available_memory_override", 1536 << 20)
+    monkeypatch.setattr(SETTINGS.computing, "max_cpu_memory_used", 3 << 30)
+
+    # The override is for the *measured* devices only: the CPU branch already
+    # returns a setting, so routing it through the override too would retune
+    # the CPU's windows behind a knob meant for a GPU pool.
+    assert _render_device_pool_bytes(torch.device("cpu")) == 3 << 30
 
 
 def test_animation_duration_search_uses_the_true_maximum():

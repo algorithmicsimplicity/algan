@@ -115,7 +115,7 @@ def _cmd_check(_args: argparse.Namespace) -> int:
     except ImportError:
         print("  [ERROR] PyTorch is not installed.")
 
-    # 3. Taichi runtime
+    # 3. The kernel compiler
     try:
         from algan.taichi_compat import BACKEND, describe_backend
 
@@ -124,6 +124,22 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         print(f"Kernel compiler: {describe_backend()} (ALGAN_TAICHI_BACKEND={BACKEND})")
     except ImportError:
         print("  [ERROR] No kernel compiler (taichi / quadrants) is installed.")
+
+    # The warm-start memoization is worth tens of seconds per process, and it
+    # is version-gated to the compiler internals it patches -- so a compiler
+    # release it does not recognise turns it off. That has already happened
+    # once and went unnoticed (`taichi_patches/PLAN.md` §6.1), because a silent
+    # no-op reads exactly like a slow machine. Reported separately from the
+    # compiler line above so an import failure here cannot be mistaken for the
+    # compiler itself being missing.
+    from algan.utils.taichi_warmstart import skipped_reason
+
+    warmstart_off = skipped_reason()
+    if warmstart_off is not None:
+        print(
+            f"  [WARNING] Kernel warm-start memoization is off: {warmstart_off}. "
+            "Every render pays the compiler's full Python frontend cost."
+        )
 
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()

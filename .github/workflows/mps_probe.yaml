@@ -346,6 +346,15 @@ jobs:
       # the render device". An arm that forced it would prove the substitutions
       # work and say nothing about whether a Mac user gets them.
       ALGAN_MPS_FRIENDLY: ${{ matrix.friendly }}
+      # Pinned to taichi, and it has to be pinned since Quadrants became the
+      # default compiler. This job is about *Taichi's* Metal path: the wheel it
+      # installs below is a patched `taichi` wheel, and `mps_zero_copy` reaches
+      # for `taichi.lang._ndarray.ExternalMetalNdarray`, which only that wheel
+      # has. Left on the default, the wheel would be installed and then never
+      # compiled against, and the arm would silently measure something else.
+      # Quadrants' own Metal support is a separate question, answered by its
+      # build's `metal ok` smoke test (`taichi_patches/PLAN.md` §6.1, step 2).
+      ALGAN_TAICHI_BACKEND: taichi
 
     steps:
       - uses: actions/checkout@v4

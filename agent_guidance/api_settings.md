@@ -155,14 +155,20 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_TAICHI_BACKEND`.
 
 `ALGAN_TAICHI_BACKEND` selects which Taichi-language compiler builds the kernels:
-`taichi` (the default, 1.7.x) or `quadrants`, the maintained fork. Every engine module
+`quadrants` (**the default**, 1.3.x, and the only one `pip install algan` brings) or
+`taichi` (1.7.x, the dormant upstream, installed by the `taichi` extra and kept as the
+A/B control and the patched-Metal-wheel path). `BACKENDS[0]` in `algan/taichi_compat.py`
+is what picks the default, so that tuple's order is the decision. Every engine module
 reaches the compiler through `algan.taichi_compat` (`from algan.taichi_compat import ti`,
 and `submodule("lang.impl")` for a submodule) rather than importing `taichi` directly, so
 the choice is made once and a process with **both** live -- two runtimes, two CUDA
 contexts, two kernel caches -- cannot be spelled. Do not add a bare `import taichi` to
-`algan/`. Each backend gets its own offline-cache directory (`cache/<backend>`), and
-`algan.taichi_compat` owns the places where the two spell the same thing differently
-(`kernel_specializations()` for `compiled_kernels` vs `materialized_kernels`).
+`algan/`, **and not to `tests/` or `benchmarks/` either** — a test that declares a
+`@ti.func` with a directly imported compiler is a mixed process. Each backend gets its own
+offline-cache directory (`cache/<backend>`), and `algan.taichi_compat` owns the places
+where the two spell the same thing differently: `kernel_specializations()` for
+`compiled_kernels` vs `materialized_kernels`, and `program()` for `get_runtime().prog`,
+which is `None` before `init` on taichi and *raises* on Quadrants.
 It is startup-only in the strictest sense -- the kernels in the process are already
 compiled by the chosen backend -- so the daemon refuses a client whose value differs.
 

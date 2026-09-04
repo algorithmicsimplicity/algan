@@ -34,27 +34,33 @@ jobs:
       # needs a real second platform, so it runs on both. `python-version` is
       # the "do the classifiers in pyproject.toml tell the truth" question,
       # and that is answered by the ends of the supported range rather than by
-      # every point in it -- so 3.9 and 3.13 are added on Linux only, where
+      # every point in it -- so the ceiling is added on Linux only, where
       # runner minutes are free and unlimited for public repositories.
       #
-      # 3.9 is `requires-python`'s floor and the one most likely to break:
-      # it is the version that has no PEP 604 `X | Y` and no PEP 585 `list[int]`
-      # at runtime. Ruff already guards the annotations (`target-version =
-      # "py39"` plus a mandatory `from __future__ import annotations`), but
-      # nothing guarded that the package actually imports and runs there.
+      # The floor is 3.10 and is the base of the matrix, so it already runs on
+      # both platforms; there is no `include` for it. It used to be 3.9, with
+      # its own Linux leg, and the floor moved when Quadrants became the kernel
+      # compiler -- it publishes cp310-cp313 wheels and no cp39. The reason to
+      # keep testing the floor at all is unchanged and is not a formality: it
+      # is the version whose standard library is missing things a contributor's
+      # editor will happily offer (`zip(strict=)` is 3.10, `typing.Self` and
+      # `tomllib` are 3.11, `warnings.warn(skip_file_prefixes=)` and
+      # `tarfile`'s `filter="data"` are 3.12 -- the last two are declined by
+      # name in `algan/errors.py` and `tests/baseline_store.py`). Ruff guards
+      # the annotations (`target-version = "py310"` plus a mandatory
+      # `from __future__ import annotations`); nothing but this guards that the
+      # package actually imports and runs there.
       #
-      # 3.13 is the ceiling below `<3.14`, and it is not a formality: pydub --
-      # reached at import time through manim's scene_file_writer -- imports
-      # `audioop`, which was REMOVED from the standard library in 3.13. What
-      # makes that work is `audioop-lts`, which uv.lock carries with a
+      # 3.13 is the ceiling below `<3.14`, and it is not a formality either:
+      # pydub -- reached at import time through manim's scene_file_writer --
+      # imports `audioop`, which was REMOVED from the standard library in 3.13.
+      # What makes that work is `audioop-lts`, which uv.lock carries with a
       # `python_full_version >= '3.13'` marker. A job here is what keeps a
       # future lock update from quietly dropping it.
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10"]
         include:
-          - os: ubuntu-latest
-            python-version: "3.9"
           - os: ubuntu-latest
             python-version: "3.13"
 
@@ -164,6 +170,12 @@ jobs:
       - name: Create venv
         run: uv venv
 
+      # `--all-extras` matters here beyond LaTeX/Pango: `taichi` is an extra now
+      # that Quadrants is the default kernel compiler, and this is what puts the
+      # A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`) on the runner. The
+      # default backend itself needs nothing special -- `quadrants` is a plain
+      # runtime dependency, so a bare `uv sync` already installs what the suite
+      # compiles its kernels with.
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
@@ -215,8 +227,8 @@ jobs:
       # The name carries the platform AND the Python version, because artifact
       # names have to be unique within a run and upload-artifact@v4 fails the
       # job on a collision rather than merging. The platform alone was unique
-      # while the matrix held one Python; adding 3.9 and 3.13 made three Linux
-      # jobs that would all have claimed `fast-render-ubuntu-latest`.
+      # while the matrix held one Python; adding the 3.13 leg made two Linux
+      # jobs that would both have claimed `fast-render-ubuntu-latest`.
       - name: Upload the fast render and any difference video
         if: always()
         uses: actions/upload-artifact@v4
@@ -234,7 +246,7 @@ jobs:
       #
       # The Python version is pinned in this condition as well as the OS, and
       # has to be: `runner.os == 'Linux'` alone was a single job when the
-      # matrix held one Python, and became three the moment 3.9 and 3.13 were
+      # matrix held one Python, and became two the moment the 3.13 leg was
       # added.
       - name: Upload coverage to Codecov
         if: runner.os == 'Linux' && matrix.python-version == '3.10'

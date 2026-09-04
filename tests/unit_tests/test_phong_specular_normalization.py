@@ -33,11 +33,11 @@ them stops the kernel compiling.
 import math
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering.raytracing.settings import _MAT_DEFAULTS, _MAT_SLOTS
 from algan.rendering.raytracing.shading_taichi import MAT_W, _stage_phong
+from algan.taichi_compat import ti
 
 # One white light, one white surface, straight-on geometry unless stated.
 LIGHT_RGB = (1.0, 1.0, 1.0)

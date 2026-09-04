@@ -79,7 +79,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _generate_ray,
     _sample_circuit_color_blend,
     _shade_tri_hit,
-    max_shadow_lights,
     max_surfaces_per_ray,
     min_alpha,
     min_hit_distance,
@@ -89,6 +88,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MAT_NO_SHADOW_RECEIVE,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
+    SHADOW_VIS_CHANNELS,
     _reflect_frame,
     _shadow_terminator_delta,
     direct_specular_lobe,
@@ -116,6 +116,10 @@ def sheet_resolve_shade_arena(
         num_covered: int,
         num_colored_triangles: ti.i32,
         num_lights: int,
+        # Light slots this variant's ``lvis`` payload carries -- what the batch
+        # needs, not the ``max_shadow_lights`` cap (shading_taichi.
+        # shadow_vis_slots).
+        vis_lights: ti.template(),
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_pids: ti.template(),
         refraction: ti.template(),
@@ -475,7 +479,7 @@ def sheet_resolve_shade_arena(
             # scope rather than inside the shading branch that fills it,
             # because the reflected lobe's direct-light add-back reads it
             # again further down, once the surface normal is known.
-            lvis = ti.Vector([1.0] * (3 * max_shadow_lights))
+            lvis = ti.Vector([1.0] * (SHADOW_VIS_CHANNELS * vis_lights))
             prim = 0
             circuit = 0
             fetched_bez = False
@@ -530,7 +534,7 @@ def sheet_resolve_shade_arena(
                         event_id = sheet_event_id[idx]
                         if event_id >= 0:
                             for li in range(num_lights):
-                                if li < max_shadow_lights:
+                                if li < vis_lights:
                                     base = light_vis_index(li, 0)
                                     for c in ti.static(range(3)):
                                         lvis[base + c] = \
@@ -1350,7 +1354,7 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
     "num_colored_triangles", "col_row", "tri_mat_id", "tri_mat",
     "circuit_meta", "circuit_colors", "circuit_border_colors", "light_pos",
-    "light_col", "num_lights", "layer_offsets", "frag_shading",
+    "light_col", "num_lights", "vis_lights", "layer_offsets", "frag_shading",
     "frag_pipelines", "tri_pids", "refraction", "ior_stack",
     "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
     "env_in_composite", "direct_spec", "mode", "shadow_term", "memo",

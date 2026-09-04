@@ -214,9 +214,8 @@ def _install_taichi_compile_logger():
     the specialization becomes launchable. With an empty cache the backend time
     is cold compilation time; with a populated cache it is cache lookup/load time.
     """
-    from algan.taichi_compat import kernel_specializations, submodule
+    from algan.taichi_compat import kernel_specializations, program, submodule
 
-    _ti_impl = submodule("lang.impl")
     _TaichiKernel = submodule("lang.kernel_impl").Kernel
 
     if not getattr(_TaichiKernel, "_algan_compile_timing_wrapped", False):
@@ -280,10 +279,10 @@ def _install_taichi_compile_logger():
         _TaichiKernel.materialize = timed_materialize
         _TaichiKernel._algan_compile_timing_wrapped = True
 
-    program = _ti_impl.get_runtime().prog
-    if program is None:
+    live_program = program()
+    if live_program is None:
         return
-    program_type = type(program)
+    program_type = type(live_program)
     if getattr(program_type, "_algan_compile_timing_wrapped", False):
         return
     original_compile_kernel = program_type.compile_kernel
@@ -374,8 +373,10 @@ def _sync_devices():
 
 
 def _already_initialized():
+    from algan.taichi_compat import program
+
     try:
-        return ti.lang.impl.get_runtime().prog is not None
+        return program() is not None
     except Exception:
         return False
 
@@ -396,10 +397,12 @@ def _taichi_arch():
 
 def _live_arch():
     """The arch of the running Taichi program, or ``None`` if there is none."""
+    from algan.taichi_compat import program
+
     if not _already_initialized():
         return None
     with contextlib.suppress(Exception):
-        return ti.lang.impl.get_runtime().prog.config().arch
+        return program().config().arch
     return None
 
 

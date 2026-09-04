@@ -36,10 +36,9 @@ def _hit_counts(origins):
     Rays travel along -z from above, so the shared edge lies exactly under the
     rays whose y is 0.
     """
-    import taichi as ti
-
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
     from algan.rendering.taichi_runtime import init_taichi
+    from algan.taichi_compat import ti
 
     # Algan's own init, never a bare ``ti.init``: that is process-global and
     # takes Taichi's *defaults* for every kwarg it is not given, which would

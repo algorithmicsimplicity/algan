@@ -83,6 +83,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     ALL_PIDS,
     max_shadow_lights,
+    shadow_vis_slots,
 )
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -2589,8 +2590,10 @@ def raytrace_render_wavefront(
             bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
                 with _stage("wavefront:   - drain scratch"):
-                    hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                    hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                    # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                    # traverse kernel's stores and shade's gathers coalesce.
+                    hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                    hit_i = memory.get_tensor((kbuf, 2, na), i32)
                 with _stage(f"wavefront:   - {bounce} traverse", items=na):
                     wavefront_traverse_events(
                         active,
@@ -2698,6 +2701,9 @@ def raytrace_render_wavefront(
                         # (a ti.template() gate: flipping it mid-process
                         # compiles the other variant rather than reusing one).
                         int(rt_settings.weight_floor_exit),
+                        # Light slots the vis payload carries: what this batch
+                        # needs, bucketed, not the 16-light cap.
+                        shadow_vis_slots(num_lights),
                         a_matid,
                         a_mat,
                         light_pos,
@@ -3261,8 +3267,10 @@ def raytrace_render_wavefront(
             # secondary radiance state while preserving the existing four-hit
             # traversal/shading behavior.
             with memory.temp():
-                hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                # traverse kernel's stores and shade's gathers coalesce.
+                hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                hit_i = memory.get_tensor((kbuf, 2, na), i32)
                 wavefront_traverse_events(
                     active,
                     na,
@@ -3367,6 +3375,9 @@ def raytrace_render_wavefront(
                     # Post-loop weight-floor exit, read live per batch (see
                     # the sparse drain call site).
                     int(rt_settings.weight_floor_exit),
+                    # Light slots the vis payload carries: what this batch
+                    # needs, bucketed, not the 16-light cap.
+                    shadow_vis_slots(num_lights),
                     a_matid,
                     a_mat,
                     light_pos,

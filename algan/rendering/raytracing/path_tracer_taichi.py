@@ -115,6 +115,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_PHYSICAL,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
+    SHADOW_VIS_CHANNELS,
     _d_charlie,
     _ggx_distribution,
     _ibl_sheen_brdf,
@@ -125,7 +126,6 @@ from algan.rendering.raytracing.shading_taichi import (
     _smith_geometry,
     _v_neubelt,
     light_vis_index,
-    max_shadow_lights,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
@@ -1024,6 +1024,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              layer_offset_triangles: ti.f32,
              refit: ti.template(), has_tri: ti.template(),
              has_bez: ti.template(), shadows: ti.template(),
+             # Light slots this variant's ``vis`` payload carries -- what the
+             # batch needs, not the cap (shading_taichi.shadow_vis_slots).
+             vis_lights: ti.template(),
              frag_pipelines: ti.template(), tri_pids: ti.template(),
              seed_root: ti.u32, sample_base: ti.i32, tile_pixels: ti.i32,
              rr_start: ti.i32, firefly_clamp: ti.f32,
@@ -1166,12 +1169,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             kb_a = ti.Vector([0.0] * kbuf)
             kb_b = ti.Vector([0.0] * kbuf)
             for q in ti.static(range(kbuf)):
-                kb_t[q] = hit_f[i, q, 0]
-                kb_layer[q] = hit_f[i, q, 1]
-                kb_a[q] = hit_f[i, q, 2]
-                kb_b[q] = hit_f[i, q, 3]
-                kb_prim[q] = hit_i[i, q, 0]
-                kb_flags[q] = hit_i[i, q, 1]
+                kb_t[q] = hit_f[q, 0, i]
+                kb_layer[q] = hit_f[q, 1, i]
+                kb_a[q] = hit_f[q, 2, i]
+                kb_b[q] = hit_f[q, 3, i]
+                kb_prim[q] = hit_i[q, 0, i]
+                kb_flags[q] = hit_i[q, 1, i]
 
             done = False
             bounced = False
@@ -1608,7 +1611,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
                 elif authored and (suppressed == 0):
-                    vis = ti.Vector([1.0] * (3 * max_shadow_lights))
+                    vis = ti.Vector([1.0] * (SHADOW_VIS_CHANNELS * vis_lights))
                     if ti.static(shadows != 0):
                         recv_a = 1
                         if pid < _USER_PIPELINE_BASE:
@@ -1623,7 +1626,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             sorigin_a = hit_p + offs_a \
                                 * (10.0 * min_hit_distance)
                             for li in range(num_lights):
-                                if li < max_shadow_lights:
+                                if li < vis_lights:
                                     u1 = _pt_rng(seed_root, key, s_index,
                                                  processed * 64 + li, 2)
                                     u2 = _pt_rng(seed_root, key, s_index,
@@ -2065,7 +2068,8 @@ _PT_SHADE_PARAMS = (
     "circuit_border_colors", "edges_2d", "edge_accel", "tri_mat_id",
     "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
     "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
-    "shadows", "frag_pipelines", "tri_pids", "seed_root", "sample_base",
+    "shadows", "vis_lights", "frag_pipelines", "tri_pids", "seed_root",
+    "sample_base",
     "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",

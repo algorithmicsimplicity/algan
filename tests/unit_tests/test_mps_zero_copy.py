@@ -20,10 +20,10 @@ annotations into strings, and Taichi reads them raw
 (``Invalid type annotation (argument 0) of Taichi kernel: ti.i32``).
 """
 
-import taichi as ti
 import torch
 
 from algan.rendering.mps_zero_copy import _ndarray_positions, import_tensor
+from algan.taichi_compat import kernel_arguments, ti
 
 
 def _kernel_of(wrapped):
@@ -88,7 +88,7 @@ def test_the_bvh_node_argument_of_a_real_kernel_is_importable():
     kernel = _kernel_of(raster_taichi.raster_shadow_trace_arena)
     node_positions = [
         index
-        for index, argument in enumerate(kernel.arguments)
+        for index, argument in enumerate(kernel_arguments(kernel))
         if argument.annotation is rk.NODE_ARG
     ]
     assert node_positions, "this kernel no longer takes a NODE_ARG"
