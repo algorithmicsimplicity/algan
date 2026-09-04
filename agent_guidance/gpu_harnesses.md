@@ -85,7 +85,12 @@ Things worth setting deliberately:
 * **`quadrants_wheel`**. The Quadrants counterpart: a `quadrants_build.yaml`
   run id (its `quadrants-wheel-macos-py3.11` artifact) or a release-asset URL.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
-  run; it wins over the Taichi wheel when both are given.
+  run; it wins over the Taichi wheel when both are given. It also sets
+  `UV_NO_SYNC=1` for the rest of the job, because the patched wheel's
+  `1.3.1.dev0+g…` version does not satisfy the lockfile's `quadrants==1.3.0`
+  and the sync `uv run` does first would put the stock wheel back (the Taichi
+  wheel survives only because its version matches the lock). A script that
+  installs its own wheel must use `.venv/bin/python`, as the gate scripts do.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
   built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
   the run id.

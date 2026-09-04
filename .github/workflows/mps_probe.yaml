@@ -491,11 +491,17 @@ jobs:
           esac
           echo "installing $wheel"
           uv pip install --no-deps --reinstall-package quadrants "$wheel"
-          uv run python -c "
+          # `.venv/bin/python`, never `uv run`, from here on: the patched
+          # wheel's `1.3.1.dev0+g...` version does not satisfy the lockfile's
+          # `quadrants==1.3.0`, so `uv run`'s sync reinstalls stock Quadrants
+          # over it (`run_on_mac.yaml` has the same note and the log that
+          # found it). Later steps go through `uv run`, hence UV_NO_SYNC.
+          .venv/bin/python -c "
           import quadrants as qd
           from quadrants.lang._ndarray import ExternalMetalNdarray
           print('quadrants', qd.__version__, 'patched: ExternalMetalNdarray present')
           "
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
 
       # Reports the device Algan resolved and whether LaTeX is on PATH. On the
       # macOS arm this is also the first thing that would fail if `mps` were
