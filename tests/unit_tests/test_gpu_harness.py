@@ -19,6 +19,9 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -219,3 +222,86 @@ class TestKaggleRunner:
 
         monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: Completed())
         assert runner.check_render_device(Path("."), allow_cpu=False) == "cuda"
+
+
+# ---------------------------------------------------------------------------
+# runner.run_step's step timeout
+# ---------------------------------------------------------------------------
+def test_step_timeout_kills_a_hung_step(runner, tmp_path):
+    """A step that stops producing output must still hit its deadline.
+
+    The timeout used to be applied to ``process.wait()`` *after* draining the
+    child's stdout to EOF -- which is to say after the child had already
+    exited -- so it could never fire on a hung step. One Taichi compile that
+    wedged then ran until the Kaggle session itself timed out, taking every
+    later step of the sweep with it and costing the whole session.
+    """
+    started = time.monotonic()
+    result = runner.run_step(
+        name="hang",
+        command=f"{sys.executable} -c 'import time; time.sleep(120)'",
+        repo=REPO_ROOT,
+        out_dir=tmp_path,
+        env={},
+        timeout=2,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result["status"] == "failed"
+    assert result["returncode"] == -9
+    # Generous, but far below the 120 s the child asked for: the point is that
+    # the deadline fired at all, not how precisely.
+    assert elapsed < 60, f"step ran {elapsed:.1f}s despite a 2s timeout"
+
+
+def test_step_timeout_kills_the_whole_process_tree(runner, tmp_path):
+    """Killing the shell is not enough -- the grandchild holds the GPU.
+
+    ``shell=True`` means the immediate child is a shell and the render is its
+    grandchild, so a kill aimed at ``process.pid`` alone leaves the render
+    running: it keeps its VRAM, and the next step of the sweep then measures a
+    card that is still busy. The kill goes to the process group instead.
+    """
+    marker = tmp_path / "grandchild.pid"
+    script = tmp_path / "grandchild.py"
+    script.write_text(
+        "import os, sys, time\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "time.sleep(120)\n"
+    )
+    result = runner.run_step(
+        name="tree",
+        command=f"sh -c '{sys.executable} {script} {marker}'",
+        repo=REPO_ROOT,
+        out_dir=tmp_path,
+        env={},
+        timeout=5,
+    )
+    assert result["status"] == "failed"
+    assert result["returncode"] == -9
+    assert marker.exists(), "the grandchild never started; the test proves nothing"
+
+    pid = int(marker.read_text())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail(f"grandchild {pid} survived the step timeout")
+
+
+def test_a_quick_step_is_unaffected_by_the_timeout(runner, tmp_path):
+    """The ordinary path still captures output and reports success."""
+    result = runner.run_step(
+        name="quick",
+        command=f"{sys.executable} -c 'print(\"hello from the step\")'",
+        repo=REPO_ROOT,
+        out_dir=tmp_path,
+        env={},
+        timeout=60,
+    )
+    assert result["status"] == "ok"
+    assert result["returncode"] == 0
+    assert "hello from the step" in (tmp_path / "quick.log").read_text()
