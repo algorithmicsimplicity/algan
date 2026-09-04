@@ -68,10 +68,14 @@ def scene():
 # harness run writes into one `algan_outputs/`, so two arms that share a tag
 # also share their video filenames -- and the digests the runner reports then
 # all come from whichever step ran last, which silently destroys the parity
-# half of an A/B. These four change only how the kernels are COMPILED, so the
-# frames must come out identical, and that is exactly the claim the digest is
-# there to check.
+# half of an A/B. Most of these change only how the kernels are COMPILED, so
+# the frames must come out identical, and that is exactly the claim the digest
+# is there to check. ``ALGAN_SHADOW_ANYHIT`` is the exception -- it selects a
+# different shadow-query algorithm, documented as sharing the ordered march's
+# output up to one seam-merge corner -- so there the digest is the question
+# rather than the assertion.
 _CODEGEN_ENV = (
+    ("ALGAN_SHADOW_ANYHIT", "ah"),
     ("ALGAN_GPU_MAX_REG", "reg"),
     ("ALGAN_OPT_LEVEL", "opt"),
     ("ALGAN_ADV_OPT", "adv"),
