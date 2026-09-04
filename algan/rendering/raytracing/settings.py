@@ -170,6 +170,43 @@ pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
 # escapes -- the A/B arm for the sampler, still unbiased, just noisier for
 # concentrated maps (a sun disc).
 pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
+# Let the path tracer's next-event visibility rays take the opaque any-hit
+# shadow query (``_shadow_occluded`` mode 3, the ordered march compiled out)
+# on a batch that provably holds no translucent and no transmissive geometry
+# -- the same host-side decision ``tracer`` makes for the deterministic
+# renderer, reduced to {3 when provably all-opaque, else 1}. Mode 2 (the
+# deferred any-hit for mixed batches) is deliberately NOT offered: it measured
+# as a loss there. A shadow ray on such a batch only ever asks "is anything in
+# the way", so the march's per-surface peel is pure cost. Off restores the
+# ordered march for every batch.
+pt_shadow_anyhit = env_flag("ALGAN_PT_SHADOW_ANYHIT", True)
+# Let the path tracer gather only the NEAREST surface per traversal on a batch
+# whose every visible primitive is opaque (``all_visible_opaque``): with no
+# translucent surface to pass through, the peel ends at the first crossing, so
+# the k-buffer's remaining kbuf-1 slots are filled and drained for nothing.
+# Same ``opaque_closest`` template the deterministic wavefront takes, and it
+# walks the MAIN trees (only ``opaque_prepass``, which the path tracer never
+# enables, reads the dedicated opaque-only ones). Off keeps the full gather.
+pt_opaque_closest = env_flag("ALGAN_PT_OPAQUE_CLOSEST", True)
+# Pack the direction-less light rows (ambient / hemisphere -- the kernel's
+# deterministic fill, never next-event-sampled) into the tail of ``nee_ref``
+# host-side, so ``pt_shade`` visits exactly those rows instead of re-scanning
+# every packed light row's type column at every lit crossing. Off restores the
+# linear scan. Byte-identical either way: the same rows in the same ascending
+# order, and a row's type column is frame-invariant (``Light._build_aux``
+# fills it from the class attribute).
+pt_ambient_rows = env_flag("ALGAN_PT_AMBIENT_ROWS", True)
+# Whether the path tracer's sampler key includes the frame. Off (the default)
+# keys every frame as frame 0, so a static region draws the IDENTICAL sample
+# set each frame: its Monte Carlo error becomes a fixed noise texture that
+# sits still instead of shimmering, which is what a viewer reads as "grain"
+# rather than "boiling" (Blender Cycles defaults the same way). Nothing about
+# convergence changes -- each frame's estimate is as unbiased as before, and
+# the error is only correlated ACROSS frames, so a moving object still
+# decorrelates where it moves. True restores the per-frame decorrelation,
+# which averages away under temporal accumulation and is what a denoiser with
+# a temporal pass wants.
+pt_animated_seed = env_flag("ALGAN_PT_ANIMATED_SEED", False)
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer

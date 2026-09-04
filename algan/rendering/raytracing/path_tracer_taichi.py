@@ -57,9 +57,17 @@ Hash-based Owen-scrambled Sobol after Burley, "Practical Hash-based Owen
 Scrambling" (JCGT 2020). Only the 2D Sobol (0,2) pair is evaluated directly;
 higher dimensions are *padded*: each logical 2D pair reuses the base pair
 under an Owen shuffle of the sample index plus per-dimension Owen scrambles,
-all seeded by hashes of ``(pt_seed, frame, pixel, pair)``. Every sample is a
-pure function of those inputs -- independent of tile, wave, batch and chunk
-splits, and of thread scheduling. Decisions whose count per path is unbounded
+all seeded by hashes of ``(pt_seed, frame-or-0, pixel, pair)``. Every sample
+is a pure function of ``(pt_seed, frame-or-0, pixel, pair, index)`` --
+independent of tile, wave, batch and chunk splits, and of thread scheduling.
+"frame-or-0" is the sampler's one animation choice
+(``rt_settings.pt_animated_seed``, off by default): with the frame folded out
+of the key every frame draws the same sample set, so a static region's error
+is a fixed noise texture rather than per-frame shimmer; on, each frame is
+decorrelated from its neighbours. Both ends -- ``pt_generate`` and
+``pt_shade`` -- take the choice as a runtime value and must agree, so it is
+carried to the first as a plain argument and to the second in ``nee_meta``
+(``_NM_ANIM_SEED``). Decisions whose count per path is unbounded
 (the pass/scatter choice at each crossed surface, per-light soft-shadow
 jitter) draw from a hash RNG keyed on the same inputs plus the peel step, so
 they stay reproducible without consuming Sobol dimensions.
@@ -215,10 +223,16 @@ _SHELL_RING_SLOTS = 4
 _NEE_LIGHT_ROW = 0
 _NEE_EMISSIVE_TRI = 1
 _NEE_ENV = 2
+# Not a selectable entry: the ambient / hemisphere rows the kernel's
+# deterministic fill visits, appended AFTER the ``E`` sampled entries so the
+# CDF search (which takes ``num_nee``) never sees them. ``ref`` is the packed
+# light row's index; they are stored in ascending row order, which is the
+# order the linear scan they replace visited them in.
+_NEE_AMBIENT_ROW = 3
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 11
+NEE_META_WIDTH = 14
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -230,6 +244,9 @@ _NM_ENV_CDF_H = 7  # env CDF bin-grid dimensions
 _NM_ENV_CDF_W = 8
 _NM_AOV = 9  # 1 = accumulate the denoiser's albedo/normal AOVs (pt_aov)
 _NM_FAR_CLIP = 10  # camera.far in world units (0 = no far plane)
+_NM_AMBIENT_PACKED = 11  # 1 = the ambient rows ride nee_ref's tail ...
+_NM_AMBIENT_COUNT = 12  # ... and there are this many of them
+_NM_ANIM_SEED = 13  # 1 = the sampler key includes the frame (pt_animated_seed)
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -324,6 +341,10 @@ def _pt_key(f: ti.i32, pixel: ti.i32) -> ti.u32:
     """Per-(frame, pixel) sampler key. ``f`` is the absolute frame and
     ``pixel`` the frame-local pixel index, so the key -- and with it every
     sample -- is independent of how the render was split into chunks.
+
+    Callers that honour ``pt_animated_seed`` pass ``f * animated_seed``, which
+    is the frame itself when the flag is 1 and frame 0 for every frame when it
+    is 0 (see the module docstring's sampler section).
     """
     return _pt_hash_combine(ti.cast(f, ti.u32), ti.cast(pixel, ti.u32))
 
@@ -778,8 +799,8 @@ def pt_env_pdf_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
 
 @ti.kernel
 def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
-                seed_root: ti.u32, time_start: ti.i32, width: ti.i32,
-                height: ti.i32, tile_start: ti.i32,
+                seed_root: ti.u32, animated_seed: ti.i32, time_start: ti.i32,
+                width: ti.i32, height: ti.i32, tile_start: ti.i32,
                 half_screen_w: ti.f32, half_screen_h: ti.f32,
                 cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
                 pixel_basis_x: ti.types.ndarray(),
@@ -796,6 +817,10 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     coalesced-fill reasoning as the deterministic ``const_fill`` path) --
     except ``base_dist`` under a near clip, which varies per ray and is
     written here over the host's broadcast zero.
+
+    ``animated_seed`` is ``rt_settings.pt_animated_seed`` as 1 / 0 and folds
+    the frame out of the sampler key when it is 0; ``pt_shade`` reads the same
+    value from ``nee_meta[_NM_ANIM_SEED]`` and the two must agree.
     """
     pixels_per_frame = width * height
     for slot in range(num_slots):
@@ -807,7 +832,8 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
         f = time_start + f_rel
         py = p // width
         px = p - py * width
-        jitter = pt_sample_2d(seed_root, _pt_key(f, p), PAIR_PIXEL, s)
+        jitter = pt_sample_2d(seed_root, _pt_key(f * animated_seed, p),
+                              PAIR_PIXEL, s)
         ro, rd = _generate_ray(f, px, py, jitter[0], jitter[1],
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
@@ -832,7 +858,8 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
 
 
 @ti.func
-def _pt_nee_visibility(refit: ti.template(), has_tri: ti.template(),
+def _pt_nee_visibility(refit: ti.template(), anyhit: ti.template(),
+                       has_tri: ti.template(),
                        has_bez: ti.template(),
                        sorigin, wi, ldist, f, ff,
                        pixel_size_per_t, base_dist, layer_offset_triangles,
@@ -849,11 +876,17 @@ def _pt_nee_visibility(refit: ti.template(), has_tri: ti.template(),
                        circuit_border_colors: ti.template(),
                        edges_2d: ti.template(), edge_accel: ti.template()):
     """RGB visibility of one NEE shadow ray: 1 - occlusion via the shared
-    ordered shadow march (translucent blockers tint, ``casts_shadows`` is
-    honored by the leaf test inside the walk).
+    shadow query (translucent blockers tint, ``casts_shadows`` is honored by
+    the leaf test inside the walk).
+
+    ``anyhit`` is the host's compile-time shadow mode
+    (``rt_settings.pt_shadow_anyhit``, decided in ``path_trace_render``): 1 is
+    the ordered march, 3 the opaque any-hit walk with the march compiled out
+    -- valid only on a batch with no translucent and no transmissive
+    geometry, where every blocker occludes fully. See ``_shadow_occluded``.
     """
     occ = _shadow_occluded(
-        refit, 1, sorigin, wi, f, ff,
+        refit, anyhit, sorigin, wi, f, ff,
         ldist - 20.0 * min_hit_distance,
         pixel_size_per_t, base_dist, layer_offset_triangles,
         has_tri, has_bez,
@@ -1015,6 +1048,42 @@ def _pt_direct_response(pid, params: ti.template(), f, prim, albedo,
     return out
 
 
+@ti.func
+def _pt_meta_escape(nee_meta: ti.template()):
+    """The ``nee_meta`` words EVERY path reads, hit or not: the environment
+    map's placement and its sampling geometry, the light-sample count and the
+    AOV gate. Returns ``(n_ls, env_off, env_w, env_h, env_intensity,
+    env_share, cdf_h, cdf_w, aov_on)``.
+    """
+    return (
+        ti.max(ti.cast(nee_meta[_NM_LIGHT_SAMPLES] + 0.5, ti.i32), 1),
+        ti.cast(nee_meta[_NM_ENV_OFF] + 0.5, ti.i32),
+        ti.cast(nee_meta[_NM_ENV_W] + 0.5, ti.i32),
+        ti.cast(nee_meta[_NM_ENV_H] + 0.5, ti.i32),
+        nee_meta[_NM_ENV_INTENSITY],
+        nee_meta[_NM_ENV_SHARE],
+        ti.cast(nee_meta[_NM_ENV_CDF_H] + 0.5, ti.i32),
+        ti.cast(nee_meta[_NM_ENV_CDF_W] + 0.5, ti.i32),
+        nee_meta[_NM_AOV] > 0.5,
+    )
+
+
+@ti.func
+def _pt_meta_hit(nee_meta: ti.template()):
+    """The ``nee_meta`` words only a path with a surface event reads: the
+    next-event table size, the far plane, the packed ambient-row window and
+    the sampler's frame gate. Returns ``(num_nee, far_clip, amb_packed,
+    amb_count, anim_seed)``.
+    """
+    return (
+        ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32),
+        nee_meta[_NM_FAR_CLIP],
+        nee_meta[_NM_AMBIENT_PACKED] > 0.5,
+        ti.cast(nee_meta[_NM_AMBIENT_COUNT] + 0.5, ti.i32),
+        ti.cast(nee_meta[_NM_ANIM_SEED] + 0.5, ti.i32),
+    )
+
+
 @ti.kernel
 def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              t_nodes: NODE_ARG, t_first_leaf: ti.i32,
@@ -1024,6 +1093,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              layer_offset_triangles: ti.f32,
              refit: ti.template(), has_tri: ti.template(),
              has_bez: ti.template(), shadows: ti.template(),
+             # Compile-time shadow-query mode of every visibility ray this
+             # kernel spawns (rt_settings.pt_shadow_anyhit): 1 = the ordered
+             # march, 3 = opaque any-hit. Decided host-side per batch, exactly
+             # as the deterministic renderer decides its own.
+             shadow_mode: ti.template(),
              # Light slots this variant's ``vis`` payload carries -- what the
              # batch needs, not the cap (shading_taichi.shadow_vis_slots).
              vis_lights: ti.template(),
@@ -1111,25 +1185,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
         r = active[i]
         num_hits = rs_int[r, 3]
         # Next-event table + environment metadata (runtime words, so one
-        # compiled kernel serves every scene shape).
-        num_nee = ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32)
-        env_share = nee_meta[_NM_ENV_SHARE]
-        n_ls = ti.max(ti.cast(nee_meta[_NM_LIGHT_SAMPLES] + 0.5, ti.i32), 1)
-        env_off = ti.cast(nee_meta[_NM_ENV_OFF] + 0.5, ti.i32)
-        env_w = ti.cast(nee_meta[_NM_ENV_W] + 0.5, ti.i32)
-        env_h = ti.cast(nee_meta[_NM_ENV_H] + 0.5, ti.i32)
-        env_intensity = nee_meta[_NM_ENV_INTENSITY]
-        cdf_h = ti.cast(nee_meta[_NM_ENV_CDF_H] + 0.5, ti.i32)
-        cdf_w = ti.cast(nee_meta[_NM_ENV_CDF_W] + 0.5, ti.i32)
-        far_clip = nee_meta[_NM_FAR_CLIP]
-        # AOV accumulation for the denoiser (every pt_aov access is gated on
-        # this: with it off the tensor is a [1, PT_AOV_WIDTH] dummy).
-        aov_on = nee_meta[_NM_AOV] > 0.5
+        # compiled kernel serves every scene shape). ``aov_on`` gates every
+        # pt_aov access: with it off the tensor is a [1, PT_AOV_WIDTH] dummy.
+        # The words are decoded inside the branches that read them -- an
+        # escaping path reads the environment half only.
         if num_hits > 0:
+            (n_ls, env_off, env_w, env_h, env_intensity, env_share,
+             cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
+            (num_nee, far_clip, amb_packed, amb_count,
+             anim_seed) = _pt_meta_hit(nee_meta)
             g = ray_offset + rs_pix[r]
             f = time_start + g // pixels_per_frame
             p = g - (g // pixels_per_frame) * pixels_per_frame
-            key = _pt_key(f, p)
+            key = _pt_key(f * anim_seed, p)
             s_index = sample_base + r // tile_pixels
             ff = ti.cast(f, ti.f32)
             pixel_size_per_t = pixel_world_scale[f]
@@ -1445,7 +1513,21 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # Deterministic fill from the direction-less rows -- the
                     # literal ambient / hemisphere semantics of the stages,
                     # never a visibility ray, never in the sampled table.
-                    if light_col.shape[2] > 3:
+                    # Their row indexes ride the tail of ``nee_ref`` when the
+                    # host packed them (``pt_ambient_rows``), so this visits
+                    # exactly those rows in the same ascending order the scan
+                    # below walks them in; the scan is the fallback.
+                    if amb_packed:
+                        for j in range(amb_count):
+                            li = nee_ref[num_nee + j, 1]
+                            ld, lc, spec_w, _frac = _light_eval(
+                                light_pos, light_col, f, li, hit_p, shade_n)
+                            if (lc[0] != 0.0) or (lc[1] != 0.0) \
+                                    or (lc[2] != 0.0):
+                                direct += _pt_direct_response(
+                                    pid, tri_mat, f, prim, albedo3,
+                                    shade_n, -rd, ld, lc, spec_w)
+                    elif light_col.shape[2] > 3:
                         tl_f = f % light_col.shape[0]
                         for li in range(num_lights):
                             lt_row = ti.cast(light_col[tl_f, li, 3] + 0.5,
@@ -1584,7 +1666,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     if recv == 1:
                                         if shade_n.dot(wi_vis) > 1e-4:
                                             vis3 = _pt_nee_visibility(
-                                                refit, has_tri, has_bez,
+                                                refit, shadow_mode,
+                                                has_tri, has_bez,
                                                 sorigin, wi_vis, ldist,
                                                 f, ff,
                                                 pixel_size_per_t,
@@ -1636,7 +1719,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         u1, u2)
                                     if valid == 1:
                                         v3 = _pt_nee_visibility(
-                                            refit, has_tri, has_bez,
+                                            refit, shadow_mode,
+                                            has_tri, has_bez,
                                             sorigin_a, wi, ldist, f, ff,
                                             pixel_size_per_t, base_dist,
                                             layer_offset_triangles,
@@ -1969,6 +2053,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
         else:
             # No surface this segment: the path escapes to the background
             # (or, with an environment map, to the map in its direction).
+            (n_ls, env_off, env_w, env_h, env_intensity, env_share,
+             cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
             leftover_e = ti.math.vec4(pt_thru[r, 0], pt_thru[r, 1],
                                       pt_thru[r, 2], pt_thru[r, 3])
             t_alpha_e = rs_sca[r, 0]
@@ -2068,7 +2154,8 @@ _PT_SHADE_PARAMS = (
     "circuit_border_colors", "edges_2d", "edge_accel", "tri_mat_id",
     "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
     "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
-    "shadows", "vis_lights", "frag_pipelines", "tri_pids", "seed_root",
+    "shadows", "shadow_mode",
+    "vis_lights", "frag_pipelines", "tri_pids", "seed_root",
     "sample_base",
     "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",

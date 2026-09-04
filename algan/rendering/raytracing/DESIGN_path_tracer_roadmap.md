@@ -222,12 +222,23 @@ to — which is what makes them cheap to land without a re-baseline:
   `all_visible_opaque` gate the deterministic renderer uses. Acceptance:
   byte-identical, since the nearest hit of an opaque batch is the first
   k-buffer entry.
+  Both opaque gates are host decisions on the merged batch's flags, so a
+  single translucent primitive takes them off for the whole batch — and
+  `Cube` ships `fill_opacity=0.75` (Manim's default), so a scene with a
+  default cube is a mixed batch. `benchmarks/_pt_shadow_anyhit_check.py`
+  reports what the host handed the kernels for exactly this reason: a pass
+  where both arms ran mode 1 proved nothing. The pure-code-motion item that
+  first shipped alongside these (decoding `nee_meta` under the hit test)
+  is kept, but *without* a switch: it is byte-identical by construction
+  and a template gate for it would have doubled the variant count for
+  nothing, which is contract 2's whole concern.
 * **The ambient / hemisphere fill scanned every light row per lit crossing**
   (the first bullet of §6a-bis). The host now appends the direction-less
   rows after the `E` sampled entries of `nee_ref` with their own kind, and
   their count rides `nee_meta`; the kernel loops the count. Byte-identical.
 * **`nee_meta` was decoded per path per launch before the hit test**, so a
-  path with no hits paid eleven loads for nothing. Moved under the test.
+  path with no hits paid eleven loads for nothing. Moved under the test
+  (no switch, see above).
 * **Sampler overhead per draw.** `pt_sample_2d` re-derives the
   `(seed_root, key)` half of its seed on every call although it is constant
   for the whole path; the roulette draw computes a full 2-D pair and keeps

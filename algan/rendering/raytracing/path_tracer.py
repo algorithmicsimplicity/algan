@@ -46,9 +46,13 @@ import torch
 from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.path_tracer_taichi import (
+    _NEE_AMBIENT_ROW,
     _NEE_EMISSIVE_TRI,
     _NEE_ENV,
     _NEE_LIGHT_ROW,
+    _NM_AMBIENT_COUNT,
+    _NM_AMBIENT_PACKED,
+    _NM_ANIM_SEED,
     _NM_AOV,
     _NM_COUNT,
     _NM_ENV_CDF_H,
@@ -78,8 +82,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.refit_bvh import RefitBVH
 from algan.rendering.raytracing.shading_taichi import (
+    _LT_AMBIENT,
     _LT_AREA_SAMPLE,
     _LT_DIRECTIONAL,
+    _LT_HEMISPHERE,
     _LT_POINT,
     _LT_SPOT,
     _MID_LAMBERT,
@@ -212,10 +218,14 @@ def _build_nee_tables(
     on. Light-row weights take the max over frames so a light dark at frame
     0 but lit later is still sampled (rows have no MIS backstop).
 
-    Returns arena tensors ``(nee_cdf [E], nee_ref [E, 2], nee_meta
+    Returns arena tensors ``(nee_cdf [E], nee_ref [E + A, 2], nee_meta
     [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1])`` -- every
     selection probability the kernels divide by or MIS against comes from
-    these, so both ends of each MIS pair see identical numbers.
+    these, so both ends of each MIS pair see identical numbers. The ``A``
+    ambient-like rows sit AFTER the ``E`` sampled entries and are not part of
+    the CDF (which the kernel searches at ``num_nee``): they are the
+    deterministic fill's row indexes, packed here so ``pt_shade`` need not
+    rescan every light row's type column at every lit crossing.
     """
     from algan.rendering.raytracing.tracer import _arena_copy, _arena_values
 
@@ -225,10 +235,23 @@ def _build_nee_tables(
     powers = []
     kinds = []
     refs = []
+    # Row indexes of the direction-less (ambient / hemisphere) rows, packed
+    # onto the table's tail for the kernel's deterministic fill -- see
+    # ``_NEE_AMBIENT_ROW``. Ascending, which is the order the linear scan they
+    # replace visited them in, and read at frame 0 because a row's type column
+    # is frame-invariant (``Light._build_aux`` fills it from the class
+    # attribute). The compact packing has no type column at all: every row is
+    # a point light there, so there is nothing to find.
+    amb_rows = None
     if num_lights > 0:
         row_power = light_col[..., :3].amax(0).amax(-1).to(acc)
         if light_col.shape[2] > 3:
             ltypes = (light_col[0, :, 3] + 0.5).to(i64)
+            if rt_settings.pt_ambient_rows:
+                amb = (ltypes == _LT_AMBIENT) | (ltypes == _LT_HEMISPHERE)
+                found = amb.nonzero(as_tuple=False).flatten()
+                if found.numel():
+                    amb_rows = found
         else:
             ltypes = torch.zeros(num_lights, dtype=i64, device=device)
         sampled = (
@@ -295,23 +318,36 @@ def _build_nee_tables(
     else:
         num_entries = 0
 
+    num_ambient = 0 if amb_rows is None else int(amb_rows.numel())
     with memory.scope(
-        "pt_nee_tables", entries=max(num_entries, 1), emitters=max(n_tri, 1)
+        "pt_nee_tables",
+        entries=max(num_entries + num_ambient, 1),
+        emitters=max(n_tri, 1),
     ):
         emit_prob = memory.get_tensor((max(n_tri, 1),), torch.float32)
         emit_prob.zero_()
         if num_entries > 0:
             nee_cdf = _arena_copy(memory, cdf.float())
-            nee_ref = _arena_copy(
-                memory,
-                torch.stack((kind, ref), -1).to(torch.int32),
-            )
             emissive_rows = kind == _NEE_EMISSIVE_TRI
             if bool(emissive_rows.any().item()):
                 emit_prob[ref[emissive_rows]] = prob[emissive_rows].float()
         else:
             nee_cdf = memory.get_tensor((1,), torch.float32)
             nee_cdf.zero_()
+            kind = torch.zeros(0, dtype=i64, device=device)
+            ref = torch.zeros(0, dtype=i64, device=device)
+        if num_entries > 0 or num_ambient > 0:
+            # The ambient rows go AFTER the ``num_entries`` sampled ones: the
+            # CDF search is bounded by ``num_nee`` and never sees them, and
+            # the kernel walks them at ``nee_ref[num_nee + j]``.
+            if num_ambient > 0:
+                kind = torch.cat((kind, torch.full_like(amb_rows, _NEE_AMBIENT_ROW)))
+                ref = torch.cat((ref, amb_rows))
+            nee_ref = _arena_copy(
+                memory,
+                torch.stack((kind, ref), -1).to(torch.int32),
+            )
+        else:
             nee_ref = memory.get_tensor((1, 2), torch.int32)
             nee_ref.zero_()
         if env_cdf_host is not None:
@@ -335,6 +371,12 @@ def _build_nee_tables(
         # argument: pt_shade is close to Taichi's 64-argument ceiling, and a
         # per-render scalar is exactly what this vector is for.
         meta[_NM_FAR_CLIP] = float(max(0.0, far_clip))
+        # ``pt_ambient_rows`` off packs nothing and the kernel keeps its
+        # linear scan; the count alone cannot say so (0 packed rows is a real
+        # answer -- a scene with no ambient light), hence the separate word.
+        meta[_NM_AMBIENT_PACKED] = 1.0 if rt_settings.pt_ambient_rows else 0.0
+        meta[_NM_AMBIENT_COUNT] = float(num_ambient)
+        meta[_NM_ANIM_SEED] = 1.0 if rt_settings.pt_animated_seed else 0.0
         nee_meta = _arena_values(memory, meta, torch.float32)
     return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf
 
@@ -440,7 +482,43 @@ def path_trace_render(
         return
     samples = int(samples)
     seed_root = int(rt_settings.pt_seed) & 0xFFFFFFFF
+    animated_seed = 1 if rt_settings.pt_animated_seed else 0
     bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
+    # Compile-time shadow mode of every visibility ray pt_shade spawns, the
+    # deterministic renderer's decision (tracer.py) reduced to the two modes
+    # worth having here: 3 = opaque any-hit (the ordered march compiled out)
+    # when the batch provably holds nothing a shadow ray could pass partly
+    # through, else 1 = the ordered march. Mode 2, the deferred any-hit for
+    # mixed batches, is left out on purpose -- it measured as a loss on the
+    # deterministic renderer. A transmissive surface is alpha 1 (so it never
+    # reads as translucent) and passes light rather than blocking it, and an
+    # uncertain texture alpha is attenuation only the march can evaluate;
+    # both keep the march. With shadows off the query is compiled out
+    # entirely, so the mode is pinned at 1 to avoid a second kernel variant.
+    shadow_mode = 1
+    if int(shadows) and rt_settings.pt_shadow_anyhit:
+        provably_opaque = not (
+            merged.get("has_transmissive", True)
+            or merged.get("tri_has_translucent", True)
+            or merged.get("bez_has_translucent", True)
+            or merged.get("has_uncertain_texture_alpha", True)
+        )
+        if provably_opaque:
+            shadow_mode = 3
+    # Closest-hit traversal: with every visible primitive opaque, a path's
+    # peel ends at its first crossing (there is no pass-through), so the
+    # k-buffer's remaining slots are filled and drained for nothing. The
+    # shared traverse kernel's ``opaque_closest`` walks the MAIN trees --
+    # ``merged["opaque_bvh_skipped"]`` (the merge aliasing the dedicated
+    # opaque-only trees, which is the default while no deterministic rollout
+    # walks them) gates ``opaque_prepass`` only, and the path tracer never
+    # enables that. pt_shade's completion test needs no change: a gather of
+    # at most one hit still satisfies ``num_hits < kbuf``, so a path that
+    # neither scattered nor retired is finished exactly as the deterministic
+    # ``wavefront_shade`` finishes it under the same template.
+    opaque_closest = int(
+        rt_settings.pt_opaque_closest and merged.get("all_visible_opaque", False)
+    )
 
     with memory.scope("pt_metadata"):
         # The traverse kernel rebuilds each pixel's primary ray from
@@ -517,6 +595,7 @@ def path_trace_render(
                     int(tp),
                     int(sample_base),
                     seed_root,
+                    animated_seed,
                     int(time_start),
                     int(width),
                     int(height),
@@ -575,7 +654,7 @@ def path_trace_render(
                             bvh_refit,
                             int(has_tri),
                             int(has_bez),
-                            0,  # opaque_closest: deterministic-only rollout
+                            opaque_closest,
                             0,  # opaque_prepass: deterministic-only rollout
                             int(time_start),
                             int(width),
@@ -633,6 +712,7 @@ def path_trace_render(
                             int(has_tri),
                             int(has_bez),
                             int(shadows),
+                            shadow_mode,
                             shadow_vis_slots(num_lights),
                             frag_pipelines,
                             ALL_PIDS,

@@ -39,6 +39,8 @@ from algan import (
     SMOKE_TEST,
     UP,
     WHITE,
+    AmbientLight,
+    HemisphereLight,
     MeshLambertMaterial,
     MeshStandardMaterial,
     Off,
@@ -1007,6 +1009,116 @@ def test_author_order_and_depth_compose_like_the_deterministic_route(tmp_path):
         f"swapping the spawn order did not change the overlap composite "
         f"(mean channel delta {float(delta.mean()):.1f}) -- the scene cannot "
         f"see the author-order tie-break"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Throughput switches that must not move a pixel
+# ---------------------------------------------------------------------------
+
+
+def _lit_shadowed_scene(scene):
+    """A lit, shadowed, all-opaque scene: a floor, a blocker above it and one
+    point light, plus the two direction-less rows (ambient + hemisphere) that
+    the packed-ambient-row path exists for.
+    """
+    scene.set_background(BLACK)
+    Scene.clear_lights()
+    PointLight(location=OUT * 6.0 + UP * 2.0, color=WHITE, intensity=1.0).spawn(
+        animate=False
+    )
+    AmbientLight(color=WHITE, intensity=0.15).spawn(animate=False)
+    HemisphereLight(color=WHITE, ground_color=BLUE, intensity=0.1).spawn(animate=False)
+    floor = Prism(width=7.0, height=7.0, depth=0.1)
+    floor.set_material(MeshLambertMaterial(color=WHITE))
+    floor.spawn(animate=False)
+    blocker = Prism(width=2.0, height=2.0, depth=0.1)
+    blocker.set_material(MeshLambertMaterial(color=BLUE))
+    blocker.move(OUT * 2.0)
+    blocker.spawn(animate=False)
+
+
+def test_packed_ambient_rows_render_exactly_as_the_scan(tmp_path):
+    """``pt_ambient_rows`` moves the ambient / hemisphere row lookup out of
+    the kernel's per-crossing type scan and into a host-packed list on the
+    tail of ``nee_ref``. Same rows, same ascending order, same arithmetic --
+    so the frame must not move by a bit.
+
+    Both arms run in one process on purpose: this switch is a runtime word in
+    ``nee_meta``, not a ``ti.static`` gate, so one compiled kernel serves both
+    (which is also what makes the comparison cheap).
+    """
+    packed, _ = _render_scene_result(
+        tmp_path,
+        "ambient_packed.png",
+        _lit_shadowed_scene,
+        8,
+        experimental={"pt_ambient_rows": True},
+        shadows=True,
+    )
+    scanned, _ = _render_scene_result(
+        tmp_path,
+        "ambient_scanned.png",
+        _lit_shadowed_scene,
+        8,
+        experimental={"pt_ambient_rows": False},
+        shadows=True,
+    )
+    assert torch.equal(packed, scanned), (
+        "packing the ambient rows changed the image by up to "
+        f"{int((packed - scanned).abs().max())} of 255"
+    )
+
+
+def _render_raw_frames(frames, **experimental):
+    """The first ``frames`` raw rendered frames of the static lit scene.
+
+    Through ``Scene.get_frames`` rather than ``save_frame``: the frame index
+    the sampler keys on is the one INSIDE the render job (``render_loop``
+    hands the kernels ``current_ind - start_ind``), so a still rendered at a
+    later timestamp is still frame 0 to the sampler and could not tell the
+    two seed policies apart. Raw, so nothing is compared through a lossy
+    video codec.
+    """
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=8, denoise=False, shadows=True)
+        for key, value in experimental.items():
+            SETTINGS.raytracing.experimental.set(**{key: value})
+        with Scene(video_settings=STACK_SETTINGS) as scene:
+            with Off():
+                _lit_shadowed_scene(scene)
+            out = torch.cat([f.cpu() for f in scene.get_frames(0, frames)])
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    assert out.shape[0] == frames
+    return out.to(torch.int32)
+
+
+def test_a_static_scene_draws_the_same_noise_every_frame():
+    """``pt_animated_seed`` (off by default) folds the frame out of the
+    sampler key, so a region that does not move draws the IDENTICAL samples
+    at every frame: its Monte Carlo error is a fixed grain rather than
+    per-frame shimmer. Nothing in this scene moves, so two frames of it must
+    come out bit-identical -- and must stop being so with the switch on,
+    which is what says the frame reaches the key at all.
+    """
+    fixed = _render_raw_frames(2, pt_animated_seed=False)
+    assert torch.equal(fixed[0], fixed[1]), (
+        "a static scene rendered two frames differently under the fixed "
+        "sampler seed: the frame is still reaching the key (max channel "
+        f"delta {int((fixed[0] - fixed[1]).abs().max())})"
+    )
+    animated = _render_raw_frames(2, pt_animated_seed=True)
+    assert torch.equal(fixed[0], animated[0]), (
+        "frame 0 must render identically under either seed policy (max "
+        f"channel delta {int((fixed[0] - animated[0]).abs().max())})"
+    )
+    assert not torch.equal(fixed[1], animated[1]), (
+        "pt_animated_seed=True did not change frame 1, so the switch does "
+        "not reach the sampler"
     )
 
 
