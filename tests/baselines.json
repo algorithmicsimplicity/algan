@@ -21,13 +21,13 @@
     },
     "full_renders/cuda": {
       "file": "full_renders-cuda.tar.gz",
-      "sha256": "6fb8e3349b62a8d21883a353d39a3ce6c0dad7aaddc93aa338f4d7770ddc86fd",
-      "size": 10396816
+      "sha256": "794063db8982a365819f618a606e6b63f136196d519a10dd8a3c2fc16f0ab91f",
+      "size": 10386701
     },
     "path_traced/cpu": {
       "file": "path_traced-cpu.tar.gz",
-      "sha256": "31b66ff10dac006d753aba6042f83bf271c4b032cf3857791ad62e84b41164da",
-      "size": 36042
+      "sha256": "47112bd58fdb448bdbab04162a3d373a33de8f745bad61edf2378e98ef8f2e2c",
+      "size": 16091
     }
   }
 }
