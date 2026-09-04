@@ -17,6 +17,11 @@ sec1       ``ALGAN_ANALYTIC_AA_SECONDARY=1`` (set in the environment, this
 b1         ``max_bounces=1``
 b0         ``max_bounces=0`` -- no continuations at all, so the sheet resolve
            alone; the floor this scene could reach
+ovl        ``prefetch_gpu_prep=True`` -- run the batch's projection and GPU
+           merge on the prefetch worker, beside the previous batch's render,
+           instead of on the render thread between batches. Output-identical by
+           construction (same builds, same inputs, same device), so this arm's
+           video digest is the parity check as well as the timing.
 """
 
 import os
@@ -41,6 +46,8 @@ def scene():
         SETTINGS.raytracing.set(max_bounces=1)
     elif ARM == "b0":
         SETTINGS.raytracing.set(max_bounces=0)
+    elif ARM == "ovl":
+        SETTINGS.computing.set(prefetch_gpu_prep=True)
 
     with Off():
         nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
