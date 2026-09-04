@@ -168,6 +168,17 @@ free_disk() { df -h / 2>/dev/null | awk 'NR==2 {print $4}'; }
 # pipeline's status is not a way to ask "did that match anything"; this is.
 show_or() { local out; out="$(cat)"; if [ -n "$out" ]; then printf '%s\n' "$out"; else printf '%s\n' "$1"; fi; }
 
+# Every warning flag clang named in a log, one per line, minus the bare
+# `-Werror`. Clang spells a fatal warning `[-Werror,-Wsome-flag]` and a
+# non-fatal one `[-Wsome-flag]`, so the bracket group has to be taken whole and
+# then split; matching `\[-W...\]` directly finds only the second form.
+# Quadrants also builds `-Werror` under clang
+# (`cmake/QuadrantsCXXFlags.cmake:79-82`), so this is as relevant here.
+werror_flags() {
+  grep -oE '\[-W[^]]*\]' "$1" 2>/dev/null | tr -d '[]' | tr ',' '\n' \
+    | sed 's/^ *//; s/ *$//' | grep -v '^-Werror$' | grep -v '^$'
+}
+
 # Run a long command with its output in a file and a heartbeat on stdout, so a
 # truncated job log still shows where it got to.  Returns the command's status.
 run_logged() {
@@ -202,7 +213,7 @@ diagnose() {
   echo "--- first 40 compiler/linker errors"
   grep -nE '(error|fatal error|Undefined symbols|ld: )' "$log" 2>/dev/null | head -40 | show_or "(no line matched an error pattern)"
   echo "--- distinct -W diagnostics (count, flag)"
-  grep -oE '\[-W[A-Za-z0-9_+-]+\]' "$log" 2>/dev/null | sort | uniq -c | sort -rn | head -40 | show_or "(clang named no warning flags)"
+  werror_flags "$log" | sort | uniq -c | sort -rn | head -40 | show_or "(clang named no warning flags)"
   echo "--- CMake / configure failures"
   grep -nE 'CMake Error|Could NOT find|FATAL_ERROR|is not a full path' "$log" 2>/dev/null | head -20 | show_or "(none)"
   echo "--- last 40 lines"
@@ -254,7 +265,7 @@ QD_WITH_METAL=ON QD_BUILD_TESTS=$( [ "$WITH_TESTS" = 1 ] && echo ON || echo OFF 
     df -h / 2>&1 | head -3 || true
   else
     rule "BUILD LOG: distinct -W diagnostics that were NOT fatal"
-    grep -oE '\[-W[A-Za-z0-9_+-]+\]' "$BUILD_LOG" 2>/dev/null | sort | uniq -c | sort -rn | head -20 \
+    werror_flags "$BUILD_LOG" | sort | uniq -c | sort -rn | head -20 \
       | show_or "(none -- clang named no warning flags at all)"
   fi
 
@@ -270,12 +281,17 @@ QD_WITH_METAL=ON QD_BUILD_TESTS=$( [ "$WITH_TESTS" = 1 ] && echo ON || echo OFF 
   "artifacts": ["gate-logs/**"]
 }
 JSON
+  # Same field as the Taichi sibling prints, so the two result lines can be
+  # diffed rather than read.
+  local flags
+  flags="$(werror_flags "$BUILD_LOG" | sort -u | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$flags" ] || flags="none"
   echo
   echo "GATE-RESULT: gate=quadrants_macos_build ref=$QD_REF status=$STATUS phase=$FAILED_PHASE \
 clone=${SEC_CLONE:--}s submodules=${SEC_SUBMODULES:--}s pip=${SEC_PIP:--}s brew=${SEC_BREW:--}s \
 build=${SEC_BUILD:--}s total=${SECONDS}s wheel=${WHEEL_NAME:-none} bytes=${WHEEL_BYTES:-0} \
 vulkan=$( [ "$WITH_VULKAN" = 1 ] && echo on || echo off ) tests=$( [ "$WITH_TESTS" = 1 ] && echo on || echo off ) \
-jobs=$JOBS smoke_cpu=$SMOKE_CPU smoke_metal=$SMOKE_METAL"
+jobs=$JOBS smoke_cpu=$SMOKE_CPU smoke_metal=$SMOKE_METAL werror_flags=$flags"
 }
 trap report EXIT
 
@@ -378,7 +394,7 @@ fi
 python3 -m pip install numpy >>"$PIP_LOG" 2>&1 || die pip "numpy install failed"
 SEC_PIP=$(( SECONDS - _t ))
 say "cmake: $(cmake --version 2>&1 | head -1)   ninja: $(ninja --version 2>&1 | head -1)"
-say "nanobind: $(python3 -c 'import nanobind,sys;print(nanobind.__version__)' 2>&1)"
+say "nanobind: $(python3 -c 'import nanobind;print(nanobind.__version__)' 2>&1 | tail -1)"
 
 rule "5. brew install llvm@22 (this is CLANG_EXECUTABLE, not the linked LLVM)"
 FAILED_PHASE="brew"
