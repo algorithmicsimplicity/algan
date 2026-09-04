@@ -1,0 +1,223 @@
+name: Quadrants from source (Linux)
+
+# Builds Quadrants v1.3.0 with `taichi_patches/quadrants/` applied, on the free
+# Linux runner, and then checks that the patch did what it claims.
+#
+# It exists because `taichi_patches/quadrants/0001-invariant-load-argument-loads.patch`
+# was written on a machine with no LLVM 22 toolchain and no GPU, so "it applies
+# clean" was the only thing that could be said about it. This job is what turns
+# that into "it compiles, the metadata lands, and the loads leave the loop".
+#
+# It is deliberately NOT the macOS `taichi_build.yaml`'s Linux twin. That one
+# builds Taichi v1.7.4 with the two Metal patches, which are a different base
+# and a different patch set; the two share nothing but a directory. The glob in
+# that job (`taichi_patches/[0-9]*.patch`) is flat and does not reach
+# `taichi_patches/quadrants/`, so neither job can pick up the other's patches.
+#
+# `PLAN.md` §5 is the order of work this follows: reproduce the build, confirm
+# in the IR that the argument loads moved, and only then time anything. There is
+# no timing here -- the runner is shared, 4-core and has no GPU, so a number
+# taken on it would be noise. The wheel is uploaded so the timing can happen on
+# a real box.
+# Hand dispatch only, like `taichi_build.yaml` and the MPS probe: this is a
+# ~20-minute build that guards no regression, so it runs when someone wants a
+# wheel or wants the patch re-checked, not on every push that touches it.
+#
+# The cost of that choice is one-time and worth stating plainly, because it bites
+# exactly when the job is most wanted. GitHub reads `workflow_dispatch` from the
+# **default branch**, not from the ref being dispatched, so until this file is on
+# `master` the job cannot be launched at all -- not from the Actions tab, not
+# through the API. A patch developed on a feature branch therefore cannot be
+# built until this file merges, whatever the patch's own branch contains.
+#
+# Two ways through that, both worth knowing:
+#   * Merge this file to `master` first; afterwards a dispatch can name any ref,
+#     and the run uses the workflow file *from that ref* -- so later edits to
+#     this job still take effect on a branch without re-merging.
+#   * Re-run a previous run (`rerun_workflow_run`), which needs no default-branch
+#     presence. It re-runs that run's commit, so it is for retrying a flake, not
+#     for testing a new patch.
+on:
+  workflow_dispatch:
+    inputs:
+      apply_patches:
+        description: "Apply taichi_patches/quadrants/ (off = stock v1.3.0)"
+        type: boolean
+        default: true
+
+# Queue behind an in-flight run rather than cancelling it: this is a build
+# whose whole value is the artifact at the end, and a half-finished one has
+# already spent the runner minutes it costs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The base the patches are written against. Not `main`: Quadrants' PR #866
+  # (`91c590563`, AMDGPU address-space tagging) postdates this tag and edits the
+  # same two functions, so a build against `main` would fail to apply rather
+  # than fail to compile, and would say nothing about the patch.
+  QUADRANTS_REF: v1.3.0
+
+jobs:
+  build:
+    name: Quadrants v1.3.0 + patches (ubuntu-22.04, cp311)
+    # Quadrants' own CI builds Linux on ubuntu-22.04 and says developing on
+    # ubuntu-arm is unsupported outside a manylinux container, so this follows
+    # the configuration they actually test.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      # Algan itself, for `taichi_patches/`.
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+        with:
+          path: algan
+
+      - name: Runner facts
+        run: |
+          uname -a
+          nproc
+          free -m
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clone Quadrants at ${{ env.QUADRANTS_REF }}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
+            --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
+          git -C quadrants-src log -1 --format='%H %d %s'
+
+      # `git apply` is strict on purpose -- no fuzz, no 3-way merge -- so a
+      # patch that has drifted from the tag fails here, loudly, rather than half
+      # applying and producing a wheel whose behaviour nobody can account for.
+      - name: Apply the Algan patches
+        if: ${{ inputs.apply_patches }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=("$GITHUB_WORKSPACE"/algan/taichi_patches/quadrants/[0-9]*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no patches in taichi_patches/quadrants/ -- refusing to build a"
+            echo "wheel that would look patched and not be"
+            exit 1
+          fi
+          cd quadrants-src
+          for patch in "${patches[@]}"; do
+            echo "--- applying $(basename "$patch")"
+            git apply --verbose "$patch"
+          done
+          echo "PATCHED=1" >> "$GITHUB_ENV"
+          git -c core.pager=cat diff --stat
+
+      - name: Note that this is a stock build
+        if: ${{ !inputs.apply_patches }}
+        run: echo "PATCHED=0" >> "$GITHUB_ENV"
+
+      # The LLVM 22 archive and the sccache binary both land here, and the
+      # download is a fixed multi-minute cost that has nothing to do with the
+      # patch. sccache's own object cache lives under the same root and is
+      # allowed to ride along, but it is not what the key is for: Quadrants sets
+      # SCCACHE_CACHE_SIZE=40G from inside its build script, well over GitHub's
+      # 10 GB per-repo cache limit, so a save that gets too large simply fails
+      # and the next run pays a cold build rather than a broken one.
+      - name: Cache the Quadrants build deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/qd-build-cache
+          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
+          restore-keys: |
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-
+
+      - name: Prerequisites
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          python -m pip install -U pip
+          pip install --group dev
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      # Leaner than Quadrants' own CI, which turns Vulkan, AMDGPU and the C++
+      # test suite on. None of the three can reach the patched code: it is in
+      # the shared LLVM codegen, and the backends that consume it here are CPU
+      # and CUDA. CUDA stays ON because it is the backend the measurement in
+      # `DESIGN_taichi_argument_loads.md` was taken on and the one the uploaded
+      # wheel exists to be A/B'd on; it needs no CUDA toolkit at build time,
+      # only the driver at run time.
+      - name: Build the wheel
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          LLVM_DIR=$(python download_llvm.py | tail -n 1)
+          export PATH=${LLVM_DIR}/bin:$PATH
+          chmod +x ${LLVM_DIR}/bin/* || true
+          clang --version
+          export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
+          time ./build.py wheel
+          ls -la dist/
+
+      - name: Install it
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          pip install dist/*.whl
+          pip install numpy
+          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
+
+      # The compile is necessary but not sufficient: a patch that compiles and
+      # emits nothing would pass every step above. These two arms are the actual
+      # claim. They run in separate processes because they differ by a
+      # CompileConfig field -- and because that field is in the offline cache
+      # key, they could not share a compiled artifact even if they did.
+      - name: Verify the metadata lands and the loads hoist
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          V="$GITHUB_WORKSPACE/algan/taichi_patches/quadrants/verify_invariant_load.py"
+          # Result path as an argument, not a stdout redirect: qd.init() prints a
+          # banner to stdout that a redirect would fold into the JSON.
+          python "$V" on  "$GITHUB_WORKSPACE/arm_on.json"
+          python "$V" off "$GITHUB_WORKSPACE/arm_off.json"
+          python "$V" --compare "$GITHUB_WORKSPACE/arm_on.json" "$GITHUB_WORKSPACE/arm_off.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The gate has to gate from Python too, or the A/B the patch exists to
+      # enable cannot be run. A stock wheel raises KeyError here.
+      - name: Check the qd.init kwarg and the env var
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          python -c "
+          import quadrants as qd
+          from quadrants.lang import impl
+          qd.init(arch=qd.cpu, invariant_arg_loads=False)
+          assert impl.current_cfg().invariant_arg_loads is False, 'kwarg ignored'
+          print('qd.init(invariant_arg_loads=False) OK')"
+          QD_INVARIANT_ARG_LOADS=0 python -c "
+          import quadrants as qd
+          from quadrants.lang import impl
+          qd.init(arch=qd.cpu)
+          assert impl.current_cfg().invariant_arg_loads is False, 'env var ignored'
+          print('QD_INVARIANT_ARG_LOADS=0 OK')"
+
+      - name: Upload the wheel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quadrants-wheel-${{ env.QUADRANTS_REF }}-patched
+          path: quadrants-src/dist/*.whl
+          if-no-files-found: warn
+
+      - name: Upload the IR arm reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariant-load-arms
+          path: arm_*.json
+          if-no-files-found: warn

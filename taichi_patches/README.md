@@ -6,6 +6,14 @@ checkout of that tag. They are the source of truth for the forked wheel
 a stock install, and Algan runs on a stock wheel without them (see "What Algan
 does without them" below).
 
+**Two bases, two directories.** `../quadrants_patches/` holds the patches
+against **Quadrants v1.3.0**, the base `PLAN.md` recommends rebasing onto and
+`MIGRATION.md` records the migration to. They are not interchangeable with
+these — different tree layout (`quadrants/` not `taichi/`), different
+identifiers, LLVM 22 not 15 — and nothing applies both sets. Each directory's
+build job globs only its own (`taichi_patches/[0-9]*.patch` here), so neither
+wheel is affected by the other's patches.
+
 `.github/workflows/taichi_build.yaml` is the executable version of everything
 that follows: it clones the tag, applies these, builds a wheel on the free
 Apple-silicon runner and publishes it as an artifact.
