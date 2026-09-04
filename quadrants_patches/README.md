@@ -66,6 +66,93 @@ patches were authored in — but a patch that fails to apply has drifted from th
 tag rather than been applied out of order. Fix the patch; do not loosen the
 apply. `PORTING-NOTES.md` says what each hunk is anchored on.
 
+## Getting a wheel
+
+`.github/workflows/quadrants_build.yaml` builds the patched wheel on all three
+platforms Algan supports and, when asked, publishes the set as a GitHub
+release. It is hand-dispatched: it guards no regression, it produces a
+deliverable.
+
+**Dispatch.** From the Actions tab ("Quadrants wheels" → Run workflow), or:
+
+    gh workflow run quadrants_build.yaml --ref master \
+        -f quadrants_ref=v1.3.0 -f apply_patches=true \
+        -f python_versions=3.10,3.11,3.12,3.13 -f platforms=macos,linux,windows \
+        -f release_tag=quadrants-v1.3.0-algan.1
+
+| input | default | what it does |
+| --- | --- | --- |
+| `quadrants_ref` | `v1.3.0` | the tag the patches are applied to (they are written against v1.3.0) |
+| `apply_patches` | `true` | off builds stock Quadrants -- the control arm when a build breaks and the question is whether the patches or the toolchain are at fault |
+| `python_versions` | `3.11` | comma list from 3.10-3.13, one leg per version per platform |
+| `platforms` | `macos,linux,windows` | which legs to run |
+| `release_tag` | empty | empty = wheels stay as run artifacts (60 days); set = a GitHub release holding every wheel. Must be `quadrants-v<X.Y.Z>-algan.<N>` with `<X.Y.Z>` equal to `quadrants_ref`; bump `N` for each rebuild of the same base |
+
+The `--ref` is the branch whose workflow file *and* patches are used, and it can
+only be dispatched at all once the file is on `master` (GitHub reads
+`workflow_dispatch` from the default branch), which is why the file keeps its
+name across rewrites.
+
+**What a run does.** A `plan` job applies the patches once, strictly, so a
+drifted patch fails in a minute rather than on three runners twenty minutes
+in. Then one leg per platform, each following Quadrants' own CI scripts
+(`quadrants-src/.github/workflows/scripts_new/`, cited step by step in the
+workflow): **macOS arm64** on `macos-latest` with Metal on and Vulkan off,
+smoked with `qd.init(cpu)` and `qd.init(metal)` on the runner's real Apple GPU;
+**Linux x86_64** inside the `manylinux_2_28` container Quadrants' release
+wheels come from, CUDA on, passed through `auditwheel repair`, and then the
+0004 checks -- `verify_invariant_load.py` over the optimized IR in one process
+per arm, and the `qd.init(invariant_arg_loads=)` kwarg and
+`QD_INVARIANT_ARG_LOADS` env var; **Windows x64** on `windows-2025`, CUDA on,
+MSVC. Every CUDA leg asserts `_lib/runtime/runtime_cuda.bc` is in the installed
+package, and every patched leg asserts `quadrants.lang._ndarray.ExternalMetalNdarray`
+imports. Artifacts are named `quadrants-wheel-<macos-arm64|manylinux-x86_64|win-amd64>-<cpNNN>`.
+
+**What the release contains.** One wheel per (platform, Python) built from one
+tree, and a body giving the base commit, the patch list with per-patch and
+combined diffstats, and each wheel's size and sha256. The release is created
+with `--latest=false`, so it never becomes this repository's "latest" (that is
+Algan's own, and the render baselines are fetched from release assets too), and
+re-running with the same tag replaces its wheels and notes. The wheel's
+distribution version is `<X.Y.Z>.post<N>` -- `1.3.0.post1` for the tag above --
+because the git-derived `1.3.1.dev0+gab9a58ab5` carries a `+`, GitHub rewrites
+`+` to `.` in asset names, and pip refuses the renamed wheel. `qd.__version__`
+is unaffected (`(1, 3, 0)`; CMake takes the leading digits), so nothing in
+Algan that reads the tuple changes, and `pip show quadrants` says it is not
+stock. Artifact-only runs keep the git-derived version.
+
+**Installing it.** Install Algan first, so its own `quadrants>=1.3.0,<1.4`
+requirement is resolved from PyPI, then replace that wheel with the release
+asset for your platform and Python (the wheel is a `cp3NN` build, so the
+interpreter must match):
+
+    pip install --force-reinstall --no-deps \
+        https://github.com/algorithmicsimplicity/algan/releases/download/quadrants-v1.3.0-algan.1/quadrants-1.3.0.post1-cp311-cp311-macosx_13_0_arm64.whl
+
+    # uv-managed environment
+    uv pip install --reinstall-package quadrants --no-deps \
+        https://github.com/algorithmicsimplicity/algan/releases/download/quadrants-v1.3.0-algan.1/<wheel>
+
+`--no-deps` because Algan's install already resolved the wheel's dependencies;
+the reinstall flag because pip and uv otherwise treat the requirement as
+already satisfied. Note that `uv sync` against Algan's lockfile puts the stock
+wheel back -- install the patched one *after* syncing, as
+`.github/workflows/run_on_mac.yaml` does.
+
+**This wheel is what the Apple-GPU path detects.** `algan/rendering/mps_zero_copy.py`'s
+`zero_copy_available()` answers True exactly when the running compiler has
+`lang._ndarray.ExternalMetalNdarray`, which only a build carrying `0001` has;
+on stock Quadrants Algan refuses to render on MPS
+(`unavailable_reason()` points here) and falls back to the CPU. So on a Mac
+this wheel is the difference between rendering on the GPU and not, and `algan
+check` reports which it found. On Linux and Windows the wheel is what makes
+`qd.init(qd.gpu)` work on pre-Volta CUDA (`0003`) and carries the argument-load
+hoist (`0004`); on every platform it is the tree the gate checks above ran on.
+
+`.github/workflows/mps_probe.yaml` and `run_on_mac.yaml` take a
+`quadrants_wheel` input -- a `quadrants_build.yaml` run id or a release-asset
+URL -- to run against a given wheel on the Mac runner.
+
 ## What has been verified, and what has not
 
 **They apply, and they compile.** "Applying them" above is the apply half. The
@@ -287,10 +374,10 @@ to land `!invariant.load` alone and confirm the hoist before stacking anything
 on it.
 
 **Built, and the hoist is confirmed. Not yet timed.**
-`.github/workflows/quadrants_build.yaml` builds it on the free Linux runner
-(clone `v1.3.0`, apply, `./build.py wheel`, ~20 minutes) and then runs
-`verify_invariant_load.py` (beside this README) in one process per arm. On **LLVM 22 / clang,
-x64 CPU backend**, over an eight-ndarray sum kernel:
+The Linux leg of `.github/workflows/quadrants_build.yaml` builds it on the free
+Linux runner (clone `v1.3.0`, apply, `./build.py wheel`, ~20 minutes) and then
+runs `verify_invariant_load.py` (beside this README) in one process per arm. On
+**LLVM 22 / clang, x64 CPU backend**, over an eight-ndarray sum kernel:
 
 | | `off` | `on` |
 | --- | --- | --- |

@@ -82,6 +82,11 @@ Things worth setting deliberately:
   GPU is refused and Algan renders on the CPU**, so an MPS arm without a wheel
   silently duplicates the CPU arm. `"none"` opts out on purpose — which is a
   real thing to measure, since it is what an unpatched Mac user gets.
+* **`quadrants_wheel`**. The Quadrants counterpart: a `quadrants_build.yaml`
+  run id (its macOS cp311 artifact) or a release-asset URL. Installed on every
+  Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the run; it wins over
+  the Taichi wheel when both are given. `quadrants_patches/README.md`
+  ("Getting a wheel") is how one gets built.
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
 
