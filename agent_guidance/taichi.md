@@ -32,6 +32,15 @@
   unnoticed. After a compiler upgrade, run `algan check`: it names the reason when the accelerator
   is off. `benchmarks/_taichi_warmstart_check.py` is the audit (three arms, one of them recomputing
   every memoized value the original way and comparing).
+- **So is the launch-plan dispatcher** (`algan/utils/taichi_fast_launch.py`, both compilers since
+  2026-09-04): a warm launch of a 20-ndarray kernel is ~300 µs on either compiler, of which ~260 µs is
+  Python re-validating arguments above `prog.launch_kernel`; a plan hit is ~90 µs. Quadrants' own
+  `LaunchContextBufferCache` never engages for Algan (a raw torch tensor is non-cacheable, and a tuple
+  template argument disables its mapper cache outright), which is why Algan carries its own.
+  `algan check` reports it the same way, `benchmarks/_taichi_fast_launch_check.py` is the audit
+  (off / on / verify arms, pixel-identical and `STATS` proving the fast path ran), and
+  `benchmarks/_quadrants_launch_overhead.py` is the measurement. It disengages on MPS by design:
+  a non-torch ndarray argument always takes the compiler's own path.
 - **The offline kernel cache does invalidate on `@ti.func` edits.** Its key is a SHA-256 over the compile config, the device capabilities and the kernel's *frontend IR* — which already contains every inlined `@ti.func` body and every captured global — so any edit that changes what is compiled misses the cache by itself (probe-verified on both compilers, 2026-09-04: edit only a func body, kernel source untouched, and Quadrants' `CompileResult.cache_hit` goes `False`; a cache hit costs 1 ms of backend time, the miss 40–60 ms for a trivial kernel). Older notes here and in several DESIGN files said the opposite and were wrong. `clear_cached_kernels()` is for a measurement that needs a **cold** compile (a compile-time A/B, a first-run timing), not for correctness. What *does* need one process per arm is a `ti.static` gate, below.
 - Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.
