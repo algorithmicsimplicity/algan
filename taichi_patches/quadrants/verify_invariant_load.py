@@ -18,8 +18,6 @@ from the argument buffer on every iteration unless LICM can hoist it, and LICM
 cannot until `!invariant.load` tells it the buffer is never written.
 """
 
-from __future__ import annotations
-
 import glob
 import json
 import os
@@ -27,6 +25,23 @@ import re
 import shutil
 import sys
 import tempfile
+
+import numpy as np
+
+# Both imports are module-level, and NEITHER is incidental.
+#
+# There is no `from __future__ import annotations` in this file, and there must
+# not be: a kernel's parameter annotations are evaluated at *runtime*, so the
+# future import turns `qd.types.ndarray()` into the string "qd.types.ndarray()"
+# and decoration dies with "Invalid type annotation ... name 'qd' is not
+# defined". This is the same hazard `CLAUDE.md` records for `*_taichi.py` files,
+# where ruff's I002 is switched off for exactly this reason.
+#
+# And `qd` is bound here rather than inside `measure()` because annotations
+# resolve against the enclosing function's *globals*, not its locals -- a
+# function-local `import quadrants as qd` fails the same way even without the
+# future import.
+import quadrants as qd
 
 NARR = 8
 N = 4096
@@ -74,10 +89,7 @@ def _loop_body(ir_text):
 
 
 def measure(arm):
-    dump_dir = _dump_dir()
-    import numpy as np
-    import quadrants as qd
-
+    dump_dir = _dump_dir()  # chdir first: the CPU IR dump lands in the CWD
     qd.init(
         arch=qd.cpu,
         offline_cache=False,               # force a real compile so IR is emitted
