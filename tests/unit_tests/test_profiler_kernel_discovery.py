@@ -19,6 +19,7 @@ and the profiler's own probe treats a raising ``__getattr__`` as "not a kernel".
 import pytest
 
 from algan.external_libraries.manim import _pango
+from algan.taichi_compat import FUNC_MARKER_ATTR
 from algan.utils.profiling_utils import _flag, _is_taichi_func, _is_taichi_kernel
 
 
@@ -63,7 +64,9 @@ def test_kernel_probe_still_recognizes_a_kernel_and_a_func():
             pass
 
     class _Func:
-        _is_taichi_function = True
+        pass
+
+    setattr(_Func, FUNC_MARKER_ATTR, True)
 
     assert _is_taichi_kernel(_Kernel()) is True
     assert _is_taichi_func(_Func()) is True
