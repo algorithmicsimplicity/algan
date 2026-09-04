@@ -129,12 +129,20 @@ frame: the residual is the float32-accumulator drift MPS-friendly mode produces
 on both compilers, not anything the port does differently. **The Apple path
 works on Quadrants.**
 
-What is still not covered, and should not be read as covered: one scene, one
+What is still not covered, and should not be read as covered: **one scene**, one
 Apple GPU (a virtualized M1 whose per-launch numbers are not trustworthy even
-though its compute is), and `zero_copy_available()` is not the same claim as
-"every argument took the zero-copy path" — the probe now prints
-`mps_zero_copy.report()` so the next run says how many launches converted and
-what, if anything, is still crossing the bus.
+though its compute is). Zero-copy engagement is no longer among the unknowns —
+a later run reported `converted=29 launches (155 args), passthrough=0, 0 staged,
+0 host`, so every argument took the path.
+
+The attempt to widen it to a denser scene found a **pre-existing Algan bug
+rather than a port one**: `materials_and_lighting` dies on Metal at frame 119 of
+179 with `Trace/BPT trap: 5`, printing nothing — and the patched *Taichi* wheel
+fails identically, same frame, same signal. That is filed as
+`../algan/rendering/DESIGN_mps_support.md` §1.4 and is not this patch set's to
+answer; it does mean the port's correctness on a bloom/glow/surface-heavy scene
+is still unmeasured, because the scene chosen to measure it cannot render on
+either compiler.
 
 ### The second defect: the cache that drops the offsets
 

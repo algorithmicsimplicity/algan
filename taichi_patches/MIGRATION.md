@@ -13,7 +13,8 @@ the ledger of verified-versus-not, and how to re-run any of it.
 
 **Status in one line: the base decision is made and executed on CPU and CUDA;
 the Apple path is fixed and verified on one scene, and one heavier scene
-currently crashes on Metal on a compiler that has never rendered it.**
+currently crashes on Metal — on *both* compilers, so that one is Algan's, not
+the migration's.**
 
 ---
 
@@ -192,30 +193,42 @@ backend it landed on.** `../quadrants_patches/README.md` has the full account.
 | Quadrants renders CUDA pixels identical | **verified** by the maintainer, Windows, before this session |
 | Both patch sets compile | **verified**, two runner images, one leg each |
 | The Apple GPU renders correctly on the patched Quadrants wheel | **verified on one scene** (`shapes_and_timeline`), one virtualized M1 |
-| …on a scene using bloom, glow, surfaces or glossy prefilter | **NOT verified** — `materials_and_lighting` currently crashes on Metal, see below |
+| …on a scene using bloom, glow, surfaces or glossy prefilter | **NOT verified** — the scene picked for it crashes on Metal on *both* compilers, see below; a lighter one that still reaches those kernels is needed |
 | Defect 2's fix works | **NOT verified on hardware** — the run that would have shown it is the one that crashed |
 | pre-Volta CUDA works on sm_61 | **NOT verified** — compile-only; needs the maintainer's GTX 1050 |
 | `tests/full_renders` on CPU | **known to differ**, re-baseline outstanding (§4) |
 
-**The open crash.** Rendering `materials_and_lighting` on Metal dies at frame
-119 of 179 with `Trace/BPT trap: 5` and prints nothing at all — no assert text,
-no traceback, no Metal error. The CPU arm of the same scene completes in 198 s.
-It is not obviously the new asserts in `copy()`: those check the destination
-context is fresh, so they would fire on the first cache hit in the opening
-frames, not after thousands of launches. Both Metal scripts now capture the
-macOS `.ips` crash report, and the attributing experiment — the same scene on
-**Taichi's** patched wheel, which has never rendered it either — was in flight
-when this was written. If Taichi also dies there, this is a pre-existing limit
-of Algan's Apple path on the heaviest scene (7 GB, and the log shows the arena
-binary-searching for a fitting batch twice before the trap), not the port.
+**The crash, attributed: it is not the port, and it is not new.** Rendering
+`materials_and_lighting` on Metal dies at frame 119 of 179 with
+`Trace/BPT trap: 5`, printing nothing at all — no assert text, no traceback, no
+Metal error. **Taichi 1.7.4 with its own patched wheel fails identically**: same
+scene, same hardware, the same `Trace/BPT trap: 5`, at the same frame 119 of
+179. The CPU arm completes on both.
+
+So this is a **pre-existing defect in Algan's Apple path**, independent of the
+migration, and it had never been seen because nothing renders that scene on
+Metal: `tests/full_renders` skips every comparison on a Mac, and no probe before
+this session rendered anything heavier than a moving square there. Both arms log
+`Prepared batch does not fit the render arena; binary-searching the largest
+fitting runtime` twice before dying, so memory pressure on the 7 GB virtualized
+runner is the first place to look; it stops at the same frame on both compilers,
+which says deterministic rather than a race. No `.ips` report was written, which
+points at the process being killed rather than faulting.
+
+It is filed in `../algan/rendering/DESIGN_mps_support.md` beside the other Metal
+failure modes, because that is where a Metal bug belongs and not here.
 
 ## 7. What to do next, in order
 
-1. **Attribute the `materials_and_lighting` crash** (run queued; the Taichi arm
-   is the control). Until it is attributed, "the Apple path works" is a
-   one-scene claim.
+1. **Fix the pre-existing Metal crash** on `materials_and_lighting` — attributed
+   now: Taichi fails identically at the same frame, so it is Algan's Apple path,
+   not the port. It is the reason "the Apple path works" is still a one-scene
+   claim, and it means **no Mac user can render that scene today** on either
+   compiler. `DESIGN_mps_support.md` has what is known.
 2. **Verify defect 2's fix on hardware**, on a scene that reaches the
-   always-cacheable kernels — `apply_glow_and_opacity`, `gloss_pyramid_level`,
+   always-cacheable kernels *and does not trip item 1* — `solids_and_camera` is
+   the next candidate, being lighter than `materials_and_lighting` while still
+   using surfaces and materials. The kernels to reach are — `apply_glow_and_opacity`, `gloss_pyramid_level`,
    `bloom_conv1d_f32`, `bloom_upsample_bilinear_f32`,
    `grid_normals_sides_crosses`.
 3. **Re-baseline `tests/full_renders`** on CPU, scene by scene, then
