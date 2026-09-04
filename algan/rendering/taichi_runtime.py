@@ -72,6 +72,8 @@ def _emit_compile_record(record):
             f"backend={record['backend_seconds']:.3f}s, "
             f"total={record['total_seconds']:.3f}s"
         )
+        if record.get("source_key") == "hit":
+            message += " (fast-cache hit: AST transform skipped)"
     else:
         message = (
             f"[Taichi compile] {status} {name} at {stamp} after "
@@ -267,13 +269,34 @@ def _install_taichi_compile_logger():
 
             frontend_seconds = time.perf_counter() - started
             compiled = specializations.get(key)
-            if compiled is not None:
-                with _COMPILE_LOG_LOCK:
-                    _COMPILE_FRONTEND[id(compiled)] = {
+            if compiled is None:
+                return result
+            # A source-key hit (utils/taichi_source_key.py) loads the kernel
+            # data inside materialize and never reaches compile_kernel, so
+            # the record the backend wrapper below would emit has to be
+            # written here: its whole cost is the frontend it just paid.
+            if getattr(self, "compiled_kernel_data_by_key", {}).get(key) is not None:
+                _emit_compile_record(
+                    {
+                        "phase": "complete",
+                        "status": "complete",
                         "kernel": name,
+                        "timestamp": _datetime.datetime.now(_datetime.timezone.utc)
+                        .astimezone()
+                        .isoformat(timespec="milliseconds"),
                         "frontend_seconds": frontend_seconds,
-                        "started_perf": started,
+                        "backend_seconds": 0.0,
+                        "total_seconds": frontend_seconds,
+                        "source_key": "hit",
                     }
+                )
+                return result
+            with _COMPILE_LOG_LOCK:
+                _COMPILE_FRONTEND[id(compiled)] = {
+                    "kernel": name,
+                    "frontend_seconds": frontend_seconds,
+                    "started_perf": started,
+                }
             return result
 
         _TaichiKernel.materialize = timed_materialize
@@ -742,6 +765,11 @@ def render_job_holding_the_arch():
             from algan.rendering.mps_zero_copy import clear_import_cache
 
             clear_import_cache()
+            # The source-keyed index's hit/miss/poison counters, beside the
+            # per-kernel compile records they summarize.
+            from algan.utils.taichi_source_key import report_if_logging
+
+            report_if_logging()
 
 
 def render_is_active():

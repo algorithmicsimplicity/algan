@@ -110,10 +110,15 @@ from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 # compiled in this process benefits (see utils/taichi_warmstart.py), plus
 # the cached fast launcher that skips Taichi's per-launch Python argument
 # re-validation on repeat launches (see utils/taichi_fast_launch.py).
+from algan.utils.taichi_source_key import apply as _apply_taichi_source_key
 from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
 
 _apply_taichi_warmstart()
 _apply_taichi_fast_launch()
+# The source-keyed cache index, which lets a warm process skip the AST
+# transform outright on a kernel it has compiled before (see
+# utils/taichi_source_key.py). Opt-in until its verify mode is clean on CUDA.
+_apply_taichi_source_key()
 # The MPS zero-copy conversion, which turns torch MPS tensors into ndarrays
 # over their own MTLBuffer so Taichi binds them instead of copying them through
 # the host (see rendering/mps_zero_copy.py). A no-op on every machine but a Mac
