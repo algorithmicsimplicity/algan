@@ -538,8 +538,10 @@ def path_trace_render(
                 while active.numel() > 0 and it < max_iters:
                     na = int(active.numel())
                     with memory.temp():
-                        hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                        hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                        # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                        # traverse kernel's stores and shade's gathers coalesce.
+                        hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                        hit_i = memory.get_tensor((kbuf, 2, na), i32)
                         wavefront_traverse_events(
                             active,
                             na,

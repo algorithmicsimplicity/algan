@@ -1166,12 +1166,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             kb_a = ti.Vector([0.0] * kbuf)
             kb_b = ti.Vector([0.0] * kbuf)
             for q in ti.static(range(kbuf)):
-                kb_t[q] = hit_f[i, q, 0]
-                kb_layer[q] = hit_f[i, q, 1]
-                kb_a[q] = hit_f[i, q, 2]
-                kb_b[q] = hit_f[i, q, 3]
-                kb_prim[q] = hit_i[i, q, 0]
-                kb_flags[q] = hit_i[i, q, 1]
+                kb_t[q] = hit_f[q, 0, i]
+                kb_layer[q] = hit_f[q, 1, i]
+                kb_a[q] = hit_f[q, 2, i]
+                kb_b[q] = hit_f[q, 3, i]
+                kb_prim[q] = hit_i[q, 0, i]
+                kb_flags[q] = hit_i[q, 1, i]
 
             done = False
             bounced = False

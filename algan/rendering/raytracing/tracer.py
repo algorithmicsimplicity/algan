@@ -2589,8 +2589,10 @@ def raytrace_render_wavefront(
             bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
                 with _stage("wavefront:   - drain scratch"):
-                    hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                    hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                    # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                    # traverse kernel's stores and shade's gathers coalesce.
+                    hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                    hit_i = memory.get_tensor((kbuf, 2, na), i32)
                 with _stage(f"wavefront:   - {bounce} traverse", items=na):
                     wavefront_traverse_events(
                         active,
@@ -3261,8 +3263,10 @@ def raytrace_render_wavefront(
             # secondary radiance state while preserving the existing four-hit
             # traversal/shading behavior.
             with memory.temp():
-                hit_f = memory.get_tensor((na, kbuf, 4), f32)
-                hit_i = memory.get_tensor((na, kbuf, 2), i32)
+                # [kbuf, channel, num_active]: the ray ordinal is LAST so the
+                # traverse kernel's stores and shade's gathers coalesce.
+                hit_f = memory.get_tensor((kbuf, 4, na), f32)
+                hit_i = memory.get_tensor((kbuf, 2, na), i32)
                 wavefront_traverse_events(
                     active,
                     na,

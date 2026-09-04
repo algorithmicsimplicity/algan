@@ -2054,14 +2054,24 @@ def wavefront_traverse_events_arena(
         if num_hits > 0:
             # Surface events are indexed by compacted active-queue ordinal,
             # not by the sparse ray-pool slot.  The host releases this exact
-            # [num_active, kbuf] batch immediately after shade consumes it.
+            # batch immediately after shade consumes it.
+            #
+            # LAYOUT: [kbuf, channel, num_active] -- the ray ordinal is the
+            # FASTEST axis, and the two slower ones are ti.static here, so a
+            # warp's 32 lanes write 32 adjacent words and the store coalesces
+            # into one transaction. Under the natural [num_active, kbuf, ch]
+            # the same 24 stores were 16 floats apart lane to lane, i.e. 24
+            # fully scattered 4-byte transactions per ray, paid again on the
+            # shade kernel's gather. Both readers (wavefront shade and the
+            # path tracer's) index the same way; the three allocation sites
+            # spell the shape out.
             for q in ti.static(range(kbuf)):
-                hit_f[i, q, 0] = kb_t[q]
-                hit_f[i, q, 1] = kb_layer[q]
-                hit_f[i, q, 2] = kb_a[q]
-                hit_f[i, q, 3] = kb_b[q]
-                hit_i[i, q, 0] = kb_prim[q]
-                hit_i[i, q, 1] = kb_flags[q]
+                hit_f[q, 0, i] = kb_t[q]
+                hit_f[q, 1, i] = kb_layer[q]
+                hit_f[q, 2, i] = kb_a[q]
+                hit_f[q, 3, i] = kb_b[q]
+                hit_i[q, 0, i] = kb_prim[q]
+                hit_i[q, 1, i] = kb_flags[q]
 
 
 #: What ``wavefront_traverse_events`` binds through the arena, in offset-table order:
@@ -2349,12 +2359,12 @@ def wavefront_shade_arena(
             kb_a = ti.Vector([0.0] * kbuf)
             kb_b = ti.Vector([0.0] * kbuf)
             for q in ti.static(range(kbuf)):
-                kb_t[q] = hit_f[i, q, 0]
-                kb_layer[q] = hit_f[i, q, 1]
-                kb_a[q] = hit_f[i, q, 2]
-                kb_b[q] = hit_f[i, q, 3]
-                kb_prim[q] = hit_i[i, q, 0]
-                kb_flags[q] = hit_i[i, q, 1]
+                kb_t[q] = hit_f[q, 0, i]
+                kb_layer[q] = hit_f[q, 1, i]
+                kb_a[q] = hit_f[q, 2, i]
+                kb_b[q] = hit_f[q, 3, i]
+                kb_prim[q] = hit_i[q, 0, i]
+                kb_flags[q] = hit_i[q, 1, i]
 
             bounced = False
             done = False
