@@ -1,0 +1,423 @@
+diff --git a/docs/source/user_guide/gpu_execution_model.md b/docs/source/user_guide/gpu_execution_model.md
+index a49d4fd61..413d777e7 100644
+--- a/docs/source/user_guide/gpu_execution_model.md
++++ b/docs/source/user_guide/gpu_execution_model.md
+@@ -23,7 +23,7 @@ A subgroup (a warp on NVIDIA, a wavefront or wave on AMD, and a subgroup on Vulk
+ 
+ ## Block
+ 
+-A block comprises one or more [subgroups](#subgroup). A block can also be referred to as a thread block, a CUDA cooperative thread array or CTA, or a workgroup on AMD, Vulkan, and Metal. It is a set of threads that launch together and can cooperate closely: they can wait for each other at a barrier (a point every thread in the block must reach before any thread moves past it) and share fast on-chip [shared memory](#shared-memory). You set how many threads a block has with `qd.loop_config(block_dim=N)`. A block's shared memory and its block barrier only reach the threads of that one block; coordinating across blocks needs coarser tools such as a device-scope memory fence or a separate kernel launch (see [grid](grid.md)).
++A block comprises one or more [subgroups](#subgroup). A block can also be referred to as a thread block, a CUDA cooperative thread array or CTA, or a workgroup on AMD, Vulkan, and Metal. It is a set of threads that launch together and can cooperate closely: they can wait for each other at a barrier (a point every thread in the block must reach before any thread moves past it) and share fast on-chip [shared memory](#shared-memory). You set how many threads a block has with `qd.loop_config(block_dim=N)`. On CUDA, `qd.loop_config(max_reg=N)` additionally caps the registers each thread of that loop's kernel may use (the PTX `.maxnreg` directive): a smaller cap lets more blocks share a streaming multiprocessor at the cost of spilling to local memory once the code needs more, and a per-loop cap overrides the process-wide `qd.init(gpu_max_reg=N)`. A block's shared memory and its block barrier only reach the threads of that one block; coordinating across blocks needs coarser tools such as a device-scope memory fence or a separate kernel launch (see [grid](grid.md)).
+ 
+ ## Lane
+ 
+diff --git a/python/quadrants/lang/misc.py b/python/quadrants/lang/misc.py
+index 081818a1b..8f03c7881 100644
+--- a/python/quadrants/lang/misc.py
++++ b/python/quadrants/lang/misc.py
+@@ -632,6 +632,11 @@ def _block_dim(dim):
+     get_runtime().compiling_callable.ast_builder().block_dim(dim)
+ 
+ 
++def _max_reg(max_reg):
++    """Cap the registers per thread of the next loop's GPU kernel at `max_reg` (CUDA only; other backends ignore it)."""
++    get_runtime().compiling_callable.ast_builder().max_reg(max_reg)
++
++
+ def _block_dim_adaptive(block_dim_adaptive):
+     """Enable/Disable backends set block_dim adaptively."""
+     if get_runtime().prog.config().arch != cpu:
+@@ -648,6 +653,7 @@ def _bit_vectorize():
+ def loop_config(
+     *,
+     block_dim=None,
++    max_reg=None,
+     serialize=False,
+     parallelize=None,
+     block_dim_adaptive=True,
+@@ -658,6 +664,10 @@ def loop_config(
+ 
+     Args:
+         block_dim (int): The number of threads in a block on GPU
++        max_reg (int): CUDA only. Cap on the registers each thread of this loop's kernel may use, emitted as the PTX
++            `.maxnreg` directive of that kernel alone. A cap below what the code needs makes ptxas spill to local
++            memory; a well-chosen one raises occupancy. Overrides the process-wide `qd.init(gpu_max_reg=N)` for this
++            loop. Ignored by every other backend.
+         serialize (bool): Whether to let the for loop execute serially, `serialize=True` equals to `parallelize=1`
+         parallelize (int): The number of threads to use on CPU
+         block_dim_adaptive (bool): Whether to allow backends set block_dim adaptively, enabled by default
+@@ -707,6 +717,9 @@ def loop_config(
+     if block_dim is not None:
+         _block_dim(block_dim)
+ 
++    if max_reg is not None:
++        _max_reg(max_reg)
++
+     if serialize:
+         _parallelize(1)
+     elif parallelize is not None:
+diff --git a/quadrants/analysis/gen_offline_cache_key.cpp b/quadrants/analysis/gen_offline_cache_key.cpp
+index 560e1aac6..2c7ac530d 100644
+--- a/quadrants/analysis/gen_offline_cache_key.cpp
++++ b/quadrants/analysis/gen_offline_cache_key.cpp
+@@ -382,6 +382,9 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
+     emit(stmt->strictly_serialized);
+     emit(stmt->mem_access_opt);
+     emit(stmt->block_dim);
++    // Changes the kernel's PTX (`.maxnreg`) without changing anything else in the AST, so it has to be in the key or
++    // two loops differing only in `max_reg` would share a cached artifact.
++    emit(stmt->max_reg);
+     // This for-loop's graph-region tags (see emit_graph_region_key): graph_do_while / graph_parallel_context emit no
+     // loop IR of their own, so these loose ints are the only record in the key of which loop level / stream_parallel
+     // group / region / checkpoint the loop belongs to. Wrap them in a temporary tag so they route through the same
+diff --git a/quadrants/codegen/cuda/codegen_cuda.cpp b/quadrants/codegen/cuda/codegen_cuda.cpp
+index 20abf1fa9..eb513c95e 100644
+--- a/quadrants/codegen/cuda/codegen_cuda.cpp
++++ b/quadrants/codegen/cuda/codegen_cuda.cpp
+@@ -692,6 +692,7 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {
+         current_task->grid_dim = num_SMs * query_max_block_per_sm;
+       }
+       current_task->block_dim = stmt->block_dim;
++      current_task->max_reg = stmt->max_reg;
+       current_task->dynamic_shared_array_bytes = dynamic_shared_array_bytes;
+       current_task->stream_parallel_group_id = stmt->stream_parallel_group_id;
+       current_task->graph_parallel_region_id = stmt->graph_parallel_region_id;
+diff --git a/quadrants/codegen/llvm/codegen_llvm.cpp b/quadrants/codegen/llvm/codegen_llvm.cpp
+index ece67acf2..d6743f46d 100644
+--- a/quadrants/codegen/llvm/codegen_llvm.cpp
++++ b/quadrants/codegen/llvm/codegen_llvm.cpp
+@@ -3241,7 +3241,7 @@ LLVMCompiledTask TaskCodeGenLLVM::run_compilation() {
+     for (const auto &task : offloaded_tasks) {
+       llvm::Function *func = module->getFunction(task.name);
+       QD_ASSERT(func);
+-      tlctx->mark_function_as_cuda_kernel(func, task.block_dim);
++      tlctx->mark_function_as_cuda_kernel(func, task.block_dim, task.max_reg);
+     }
+   } else if (compile_config.arch == Arch::amdgpu) {
+     for (const auto &task : offloaded_tasks) {
+diff --git a/quadrants/codegen/llvm/llvm_compiled_data.h b/quadrants/codegen/llvm/llvm_compiled_data.h
+index f71593eb5..d3ba042f6 100644
+--- a/quadrants/codegen/llvm/llvm_compiled_data.h
++++ b/quadrants/codegen/llvm/llvm_compiled_data.h
+@@ -115,6 +115,10 @@ class OffloadedTask {
+  public:
+   std::string name;
+   int block_dim{0};
++  // Per-task register cap (`OffloadedStmt::max_reg`, 0 = none), only ever read inside the codegen run that set it:
++  // `run_compilation` turns it into the kernel's `.maxnreg` via `mark_function_as_cuda_kernel`, and from then on the
++  // LLVM module carries it. Deliberately not in `QD_IO_DEF` below -- a cached artifact already holds the metadata.
++  int max_reg{0};
+   int grid_dim{0};
+   int dynamic_shared_array_bytes{0};
+   int stream_parallel_group_id{0};
+diff --git a/quadrants/ir/frontend_ir.cpp b/quadrants/ir/frontend_ir.cpp
+index 23525af92..f7fcdfb3a 100644
+--- a/quadrants/ir/frontend_ir.cpp
++++ b/quadrants/ir/frontend_ir.cpp
+@@ -110,6 +110,7 @@ FrontendForStmt::FrontendForStmt(const FrontendForStmt &o)
+       strictly_serialized(o.strictly_serialized),
+       mem_access_opt(o.mem_access_opt),
+       block_dim(o.block_dim),
++      max_reg(o.max_reg),
+       stream_parallel_group_id(o.stream_parallel_group_id),
+       graph_parallel_region_id(o.graph_parallel_region_id),
+       graph_do_while_level_id(o.graph_do_while_level_id),
+@@ -122,6 +123,7 @@ void FrontendForStmt::init_config(Arch arch, const ForLoopConfig &config) {
+   strictly_serialized = config.strictly_serialized;
+   mem_access_opt = config.mem_access_opt;
+   block_dim = config.block_dim;
++  max_reg = config.max_reg;
+   stream_parallel_group_id = config.stream_parallel_group_id;
+   graph_parallel_region_id = config.graph_parallel_region_id;
+   graph_do_while_level_id = config.graph_do_while_level_id;
+diff --git a/quadrants/ir/frontend_ir.h b/quadrants/ir/frontend_ir.h
+index ff1801693..cbacd52b5 100644
+--- a/quadrants/ir/frontend_ir.h
++++ b/quadrants/ir/frontend_ir.h
+@@ -22,6 +22,9 @@ struct ForLoopConfig {
+   bool strictly_serialized{false};
+   MemoryAccessOptions mem_access_opt;
+   int block_dim{0};
++  // `qd.loop_config(max_reg=N)`: cap on the registers per thread of the CUDA kernel this loop becomes, emitted as the
++  // PTX `.maxnreg` directive (0 = no per-loop cap; the module-wide `CompileConfig::gpu_max_reg` still applies).
++  int max_reg{0};
+   bool uniform{false};
+   int stream_parallel_group_id{0};
+   // Per-kernel id of the enclosing `qd.graph_parallel_context()` region (0 outside any region). Assigned by the AST
+@@ -212,6 +215,7 @@ class FrontendForStmt : public Stmt {
+   bool strictly_serialized;
+   MemoryAccessOptions mem_access_opt;
+   int block_dim;
++  int max_reg{0};
+   int stream_parallel_group_id{0};
+   int graph_parallel_region_id{0};
+   int graph_do_while_level_id{-1};
+@@ -933,6 +937,7 @@ class ASTBuilder {
+       config.uniform = false;
+       config.mem_access_opt.clear();
+       config.block_dim = 0;
++      config.max_reg = 0;
+       config.strictly_serialized = false;
+       config.stream_parallel_group_id = 0;
+       config.graph_parallel_region_id = 0;
+@@ -1086,6 +1091,11 @@ class ASTBuilder {
+     for_loop_dec_.config.block_dim = v;
+   }
+ 
++  void max_reg(int v) {
++    QD_ASSERT(v >= 0);
++    for_loop_dec_.config.max_reg = v;
++  }
++
+   void set_loop_name(const std::string &loop_name) {
+     for_loop_dec_.config.loop_name = loop_name;
+   }
+diff --git a/quadrants/ir/statements.cpp b/quadrants/ir/statements.cpp
+index 1911f71f7..0a36e7960 100644
+--- a/quadrants/ir/statements.cpp
++++ b/quadrants/ir/statements.cpp
+@@ -222,6 +222,7 @@ std::unique_ptr<Stmt> RangeForStmt::clone() const {
+   auto new_stmt = std::make_unique<RangeForStmt>(begin, end, body->clone(), is_bit_vectorized, num_cpu_threads,
+                                                  block_dim, strictly_serialized);
+   new_stmt->reversed = reversed;
++  new_stmt->max_reg = max_reg;
+   new_stmt->stream_parallel_group_id = stream_parallel_group_id;
+   new_stmt->graph_parallel_region_id = graph_parallel_region_id;
+   new_stmt->checkpoint_id = checkpoint_id;
+@@ -246,6 +247,7 @@ StructForStmt::StructForStmt(SNode *snode,
+ 
+ std::unique_ptr<Stmt> StructForStmt::clone() const {
+   auto new_stmt = std::make_unique<StructForStmt>(snode, body->clone(), is_bit_vectorized, num_cpu_threads, block_dim);
++  new_stmt->max_reg = max_reg;
+   new_stmt->mem_access_opt = mem_access_opt;
+   new_stmt->stream_parallel_group_id = stream_parallel_group_id;
+   new_stmt->graph_parallel_region_id = graph_parallel_region_id;
+@@ -274,6 +276,7 @@ MeshForStmt::MeshForStmt(mesh::Mesh *mesh,
+ std::unique_ptr<Stmt> MeshForStmt::clone() const {
+   auto new_stmt = std::make_unique<MeshForStmt>(mesh, major_from_type, body->clone(), is_bit_vectorized,
+                                                 num_cpu_threads, block_dim);
++  new_stmt->max_reg = max_reg;
+   new_stmt->major_to_types = major_to_types;
+   new_stmt->minor_relation_types = minor_relation_types;
+   new_stmt->mem_access_opt = mem_access_opt;
+@@ -369,6 +372,7 @@ std::unique_ptr<Stmt> OffloadedStmt::clone() const {
+   new_stmt->end_value = end_value;
+   new_stmt->grid_dim = grid_dim;
+   new_stmt->block_dim = block_dim;
++  new_stmt->max_reg = max_reg;
+   new_stmt->reversed = reversed;
+   new_stmt->is_bit_vectorized = is_bit_vectorized;
+   new_stmt->num_cpu_threads = num_cpu_threads;
+diff --git a/quadrants/ir/statements.h b/quadrants/ir/statements.h
+index 9ad6b688c..1c31d3f37 100644
+--- a/quadrants/ir/statements.h
++++ b/quadrants/ir/statements.h
+@@ -974,6 +974,10 @@ class RangeForStmt : public Stmt {
+   bool is_bit_vectorized;
+   int num_cpu_threads;
+   int block_dim;
++  // Per-loop register cap from `qd.loop_config(max_reg=N)` (0 = none). Propagated from `FrontendForStmt::max_reg` by
++  // `lower_ast.cpp` and on to `OffloadedStmt::max_reg` by `offload.cpp`, where the CUDA codegen turns it into the PTX
++  // `.maxnreg` directive of that task's kernel.
++  int max_reg{0};
+   bool strictly_serialized;
+   std::string range_hint;
+   int stream_parallel_group_id{0};
+@@ -1017,6 +1021,7 @@ class RangeForStmt : public Stmt {
+                      is_bit_vectorized,
+                      num_cpu_threads,
+                      block_dim,
++                     max_reg,
+                      strictly_serialized,
+                      stream_parallel_group_id,
+                      graph_parallel_region_id,
+@@ -1039,6 +1044,8 @@ class StructForStmt : public Stmt {
+   bool is_bit_vectorized;
+   int num_cpu_threads;
+   int block_dim;
++  // See `RangeForStmt::max_reg` -- same lifecycle.
++  int max_reg{0};
+   MemoryAccessOptions mem_access_opt;
+   int stream_parallel_group_id{0};
+   // See `RangeForStmt::graph_parallel_region_id` -- same lifecycle.
+@@ -1065,6 +1072,7 @@ class StructForStmt : public Stmt {
+                      is_bit_vectorized,
+                      num_cpu_threads,
+                      block_dim,
++                     max_reg,
+                      mem_access_opt,
+                      stream_parallel_group_id,
+                      graph_parallel_region_id,
+@@ -1083,6 +1091,8 @@ class MeshForStmt : public Stmt {
+   bool is_bit_vectorized;
+   int num_cpu_threads;
+   int block_dim;
++  // See `RangeForStmt::max_reg` -- same lifecycle.
++  int max_reg{0};
+   mesh::MeshElementType major_from_type;
+   std::unordered_set<mesh::MeshElementType> major_to_types{};
+   std::unordered_set<mesh::MeshRelationType> minor_relation_types{};
+@@ -1106,6 +1116,7 @@ class MeshForStmt : public Stmt {
+                      is_bit_vectorized,
+                      num_cpu_threads,
+                      block_dim,
++                     max_reg,
+                      major_from_type,
+                      major_to_types,
+                      minor_relation_types,
+@@ -1385,6 +1396,9 @@ class OffloadedStmt : public Stmt {
+   int32 end_value{0};
+   int grid_dim{1};
+   int block_dim{1};
++  // Per-task register cap (`qd.loop_config(max_reg=N)`, 0 = none), carried from the for-loop this task was offloaded
++  // from. CUDA codegen emits it as the kernel's `.maxnreg`; no other backend reads it.
++  int max_reg{0};
+   bool reversed{false};
+   bool is_bit_vectorized{false};
+   int num_cpu_threads{1};
+@@ -1470,6 +1484,7 @@ class OffloadedStmt : public Stmt {
+                      end_value,
+                      grid_dim,
+                      block_dim,
++                     max_reg,
+                      reversed,
+                      num_cpu_threads,
+                      index_offsets,
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index 5d3c21fa9..a59acb6d0 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -317,6 +317,7 @@ void export_lang(nb::module_ &m) {
+       .def("parallelize", &ASTBuilder::parallelize)
+       .def("strictly_serialize", &ASTBuilder::strictly_serialize)
+       .def("block_dim", &ASTBuilder::block_dim)
++      .def("max_reg", &ASTBuilder::max_reg)
+       .def("insert_snode_access_flag", &ASTBuilder::insert_snode_access_flag)
+       .def("reset_snode_access_flag", &ASTBuilder::reset_snode_access_flag)
+       .def("begin_stream_parallel", &ASTBuilder::begin_stream_parallel)
+diff --git a/quadrants/runtime/llvm/llvm_context.cpp b/quadrants/runtime/llvm/llvm_context.cpp
+index 7ade2ba01..d2cb1d6f7 100644
+--- a/quadrants/runtime/llvm/llvm_context.cpp
++++ b/quadrants/runtime/llvm/llvm_context.cpp
+@@ -1055,7 +1055,7 @@ void QuadrantsLLVMContext::insert_nvvm_annotation(llvm::Function *func, std::str
+   func->getParent()->getOrInsertNamedMetadata("nvvm.annotations")->addOperand(md_node);
+ }
+ 
+-void QuadrantsLLVMContext::mark_function_as_cuda_kernel(llvm::Function *func, int block_dim) {
++void QuadrantsLLVMContext::mark_function_as_cuda_kernel(llvm::Function *func, int block_dim, int max_reg) {
+   // Mark kernel function as a CUDA __global__ function.
+   // Use the ptx_kernel calling convention so the kernel marker survives
+   // optimization passes (nvvm.annotations metadata gets stripped by O3).
+@@ -1067,6 +1067,15 @@ void QuadrantsLLVMContext::mark_function_as_cuda_kernel(llvm::Function *func, in
+     insert_nvvm_annotation(func, "maxntidx", block_dim);
+     insert_nvvm_annotation(func, "minctasm", 2);
+   }
++  if (max_reg != 0) {
++    // Per-kernel register cap (`qd.loop_config(max_reg=N)`), the PTX `.maxnreg` directive. Stated both ways on purpose:
++    // since LLVM 21 the NVPTX backend reads the `"nvvm.maxnreg"` function attribute, and it only converts a legacy
++    // `nvvm.annotations` entry into that attribute when a module comes in through the text or bitcode reader
++    // (AutoUpgrade) -- a module built in memory, which is what a fresh compile hands the JIT, gets no such pass. The
++    // annotation is kept beside `maxntidx` so both limits are visible in one place in the IR dump.
++    insert_nvvm_annotation(func, "maxnreg", max_reg);
++    func->addFnAttr("nvvm.maxnreg", std::to_string(max_reg));
++  }
+ }
+ 
+ void QuadrantsLLVMContext::mark_function_as_amdgpu_kernel(llvm::Function *func) {
+diff --git a/quadrants/runtime/llvm/llvm_context.h b/quadrants/runtime/llvm/llvm_context.h
+index 407e69775..8f95648e1 100644
+--- a/quadrants/runtime/llvm/llvm_context.h
++++ b/quadrants/runtime/llvm/llvm_context.h
+@@ -103,7 +103,8 @@ class QuadrantsLLVMContext {
+   static void eliminate_unused_functions(llvm::Module *module,
+                                          std::function<bool(const std::string &)> export_indicator);
+ 
+-  void mark_function_as_cuda_kernel(llvm::Function *func, int block_dim = 0);
++  // `max_reg` > 0 caps the kernel's registers per thread (PTX `.maxnreg`); 0 leaves the module-wide setting in force.
++  void mark_function_as_cuda_kernel(llvm::Function *func, int block_dim = 0, int max_reg = 0);
+ 
+   void mark_function_as_amdgpu_kernel(llvm::Function *func);
+ 
+diff --git a/quadrants/runtime/llvm/llvm_runtime_executor.cpp b/quadrants/runtime/llvm/llvm_runtime_executor.cpp
+index c541b6af3..7e9bf849f 100644
+--- a/quadrants/runtime/llvm/llvm_runtime_executor.cpp
++++ b/quadrants/runtime/llvm/llvm_runtime_executor.cpp
+@@ -173,7 +173,13 @@ QuadrantsLLVMContext *LlvmRuntimeExecutor::get_llvm_context() {
+ }
+ 
+ JITModule *LlvmRuntimeExecutor::create_jit_module(std::unique_ptr<llvm::Module> module) {
+-  return jit_session_->add_module(std::move(module));
++  // `gpu_max_reg` is the module-wide register cap (`CU_JIT_MAX_REGISTERS` in JITSessionCUDA::add_module). It was never
++  // passed here, which left the config field inert: read by the Python setter and the offline-cache key, consumed by
++  // nothing. Only the CUDA session takes it -- the CPU session asserts a zero and AMDGPU ignores it -- so every other
++  // arch keeps the old call. A kernel with a per-loop `qd.loop_config(max_reg=N)` carries its own `.maxnreg`
++  // directive, which is per-entry and takes precedence over this module-wide option.
++  const int max_reg = config_.arch == Arch::cuda ? config_.gpu_max_reg : 0;
++  return jit_session_->add_module(std::move(module), max_reg);
+ }
+ 
+ JITModule *LlvmRuntimeExecutor::get_runtime_jit_module() {
+diff --git a/quadrants/transforms/lower_ast.cpp b/quadrants/transforms/lower_ast.cpp
+index 31a5b29b2..c5f1a13c1 100644
+--- a/quadrants/transforms/lower_ast.cpp
++++ b/quadrants/transforms/lower_ast.cpp
+@@ -230,6 +230,7 @@ class LowerAST : public IRVisitor {
+       auto &&new_for = std::make_unique<StructForStmt>(snode, std::move(stmt->body), stmt->is_bit_vectorized,
+                                                        stmt->num_cpu_threads, stmt->block_dim);
+       new_for->loop_name = stmt->loop_name;
++      new_for->max_reg = stmt->max_reg;
+       new_for->index_offsets = offsets;
+       new_for->stream_parallel_group_id = stmt->stream_parallel_group_id;
+       new_for->graph_parallel_region_id = stmt->graph_parallel_region_id;
+@@ -269,6 +270,7 @@ class LowerAST : public IRVisitor {
+                                                       stmt->num_cpu_threads, stmt->block_dim, stmt->strictly_serialized,
+                                                       /*range_hint=*/fmt::format("arg ({})", fmt::join(arg_id, ", ")),
+                                                       /*loop_name=*/stmt->loop_name);
++      new_for->max_reg = stmt->max_reg;
+       new_for->stream_parallel_group_id = stmt->stream_parallel_group_id;
+       new_for->graph_parallel_region_id = stmt->graph_parallel_region_id;
+       new_for->checkpoint_id = stmt->checkpoint_id;
+@@ -287,6 +289,7 @@ class LowerAST : public IRVisitor {
+     } else if (stmt->mesh) {
+       auto &&new_for = std::make_unique<MeshForStmt>(stmt->mesh, stmt->element_type, std::move(stmt->body),
+                                                      stmt->is_bit_vectorized, stmt->num_cpu_threads, stmt->block_dim);
++      new_for->max_reg = stmt->max_reg;
+       new_for->graph_do_while_level_id = stmt->graph_do_while_level_id;
+       new_for->body->insert(std::make_unique<LoopIndexStmt>(new_for.get(), 0), 0);
+       new_for->body->local_var_to_stmt[stmt->loop_var_ids[0]] = new_for->body->statements[0].get();
+@@ -307,6 +310,7 @@ class LowerAST : public IRVisitor {
+                                                         stmt->is_bit_vectorized, stmt->num_cpu_threads, stmt->block_dim,
+                                                         stmt->strictly_serialized, /*range_hint=*/"",
+                                                         /*loop_name=*/stmt->loop_name);
++        new_for->max_reg = stmt->max_reg;
+         new_for->stream_parallel_group_id = stmt->stream_parallel_group_id;
+         new_for->graph_parallel_region_id = stmt->graph_parallel_region_id;
+         new_for->checkpoint_id = stmt->checkpoint_id;
+diff --git a/quadrants/transforms/offload.cpp b/quadrants/transforms/offload.cpp
+index 36ec81ead..f40f677b4 100644
+--- a/quadrants/transforms/offload.cpp
++++ b/quadrants/transforms/offload.cpp
+@@ -168,6 +168,7 @@ class Offloader {
+         } else {
+           offloaded->block_dim = s->block_dim;
+         }
++        offloaded->max_reg = s->max_reg;
+         if (auto val = s->begin->cast<ConstStmt>()) {
+           offloaded->const_begin = true;
+           offloaded->begin_value = val->val.val_int32();
+@@ -214,6 +215,7 @@ class Offloader {
+         } else {
+           offloaded->block_dim = st->block_dim;
+         }
++        offloaded->max_reg = st->max_reg;
+         offloaded->num_cpu_threads = std::min(st->num_cpu_threads, config.cpu_max_num_threads);
+         replace_all_usages_with(st, st, offloaded.get());
+         for (int j = 0; j < (int)st->body->statements.size(); j++) {
+@@ -303,6 +305,7 @@ class Offloader {
+         offloaded_struct_for->block_dim = for_stmt->block_dim;
+       }
+     }
++    offloaded_struct_for->max_reg = for_stmt->max_reg;
+ 
+     replace_all_usages_with(for_stmt, for_stmt, offloaded_struct_for.get());
+ 
