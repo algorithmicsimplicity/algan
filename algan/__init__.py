@@ -112,7 +112,11 @@ from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 # that skips Taichi's per-launch Python argument re-validation on repeat
 # launches (see utils/taichi_fast_launch.py); no kernel has launched yet.
 from algan.utils.taichi_source_key import apply as _apply_taichi_source_key
+from algan.utils.taichi_early_return import apply as _apply_taichi_early_return
 
+# The early-return rewrite for inlined funcs wraps the source-to-AST step the
+# warm-start memoized, so it goes on after it (see utils/taichi_early_return.py).
+_apply_taichi_early_return()
 _apply_taichi_fast_launch()
 # The source-keyed cache index, which lets a warm process skip the AST
 # transform outright on a kernel it has compiled before (see

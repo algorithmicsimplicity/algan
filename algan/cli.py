@@ -166,6 +166,18 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         print("  Kernel source-keyed cache index: ON (ALGAN_TAICHI_SOURCE_KEY=1)")
     else:
         print(f"  [INFO] Kernel source-keyed cache index is off: {source_key_off}.")
+    # Same shape of hazard for the early-return rewrite: version-gated to the
+    # compiler it wraps, and when it is off the only symptom is a shader
+    # stage that used to compile now failing with the compiler's own message.
+    from algan.utils.taichi_early_return import skipped_reason as _early_return_off
+
+    early_return_off = _early_return_off()
+    if early_return_off is not None:
+        print(
+            f"  [WARNING] Early `return` in inlined @ti.func bodies is off: "
+            f"{early_return_off}. A `return` under a runtime if/for/while in "
+            "a shader stage will be rejected by the compiler."
+        )
 
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()
