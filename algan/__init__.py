@@ -105,14 +105,12 @@ from algan.settings.video_settings import *
 from algan.utils.memory_utils import ManualMemory
 from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
-# Taichi is imported (via the rendering modules above) but no kernel has
-# materialized yet -- install the warm-start memoization now so every kernel
-# compiled in this process benefits (see utils/taichi_warmstart.py), plus
-# the cached fast launcher that skips Taichi's per-launch Python argument
-# re-validation on repeat launches (see utils/taichi_fast_launch.py).
-from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
-
-_apply_taichi_warmstart()
+# The warm-start memoization (utils/taichi_warmstart.py) is already installed:
+# algan.taichi_compat applies it the moment it binds the compiler, because one
+# of its patches runs when a kernel is *defined*, and the kernel modules were
+# defined by the imports above. What goes on here is the cached fast launcher
+# that skips Taichi's per-launch Python argument re-validation on repeat
+# launches (see utils/taichi_fast_launch.py); no kernel has launched yet.
 _apply_taichi_fast_launch()
 # The MPS zero-copy conversion, which turns torch MPS tensors into ndarrays
 # over their own MTLBuffer so Taichi binds them instead of copying them through
@@ -240,18 +238,21 @@ from algan import manim as _manim_namespace  # noqa: E402, F401
 def clear_cache(include_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
+    The CUDA driver's JIT cache (``cache/cuda``, see ``settings/_startup.py``)
+    goes with them; it is seconds to rebuild.
+
     The Taichi offline kernel cache lives inside the cache directory too
     (the environment-selected Taichi cache directory) but is spared by default:
-    it holds compiled kernels (minutes to rebuild), is version-keyed, and is
-    never invalidated by scene-content changes.
+    it holds compiled kernels (minutes to rebuild), is keyed on the compiled
+    kernel's own IR and compile config, and is never invalidated by
+    scene-content changes.
 
     Parameters
     ----------
     include_kernels
         Whether to wipe the compiled Taichi kernels as well. Defaults to False.
         :func:`clear_cached_kernels` is the same thing said outright, and is
-        what to reach for before A/B-benchmarking a kernel edit -- the offline
-        cache does not invalidate on ``@ti.func`` changes.
+        what to reach for when a measurement needs a cold compile.
     """
     f = SETTINGS.paths.cache_directory
     if not os.path.exists(f):
@@ -275,9 +276,12 @@ def clear_cache(include_kernels=False):
 def clear_cached_kernels():
     """Delete the compiled Taichi kernels, and Algan's content caches with them.
 
-    The offline kernel cache does not invalidate when an imported ``@ti.func``
-    changes, so a kernel edit A/B-benchmarked against a warm cache measures the
-    old kernel. Clearing costs a cold compile of minutes.
+    Not needed for correctness after a kernel edit: the offline cache is keyed
+    on a hash of the kernel's frontend IR -- inlined ``@ti.func`` bodies and
+    captured globals included -- plus the compile config, so any edit that
+    changes what is compiled misses the cache by itself. Clear it when a
+    measurement needs a *cold* compile (a compile-time A/B, a "first run"
+    timing), or to reclaim the disk. Clearing costs a cold compile of minutes.
 
     This is :func:`clear_cache` with ``include_kernels=True``; the kernel cache
     lives inside the same directory, so there is no way to drop one without the
