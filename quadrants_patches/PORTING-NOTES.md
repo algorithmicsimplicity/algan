@@ -174,6 +174,34 @@ because getting it wrong is a wrong picture rather than an error.
 `ptr.offset` — `quadrants/rhi/metal/metal_device.mm:292-305`, `rsc.buffer.offset
 = ptr.offset` at `:300`. Confirmed at v1.3.0, as PLAN §7.3 item 1 says.
 
+**And a second bind site the Taichi patch has no counterpart for — this is the
+one that made the first Metal render wrong** (`:127-144` → the address
+substitution in `HostDeviceContextBlitter::host_to_device`). Quadrants' Metal
+device sets `spirv_has_physical_storage_buffer` under `feature_64_bit_integer_math`
+(`rhi/metal/metal_device.mm:1195-1197`), which is `family_apple3` and therefore
+true on every Apple GPU; Taichi 1.7.4's Metal sets only `spirv_has_int64` at the
+same place. Under that capability `TaskCodegen::visit(ExternalPtrStmt)`
+(`codegen/spirv/spirv_codegen.cpp:903-923`) does not address the ndarray through
+its `ExtArr` descriptor: it loads a raw u64 out of the args buffer's `DATA_PTR`
+slot, adds the in-array linear offset, and `at_buffer` (`:2405-2425`) dereferences
+that. No `ExtArr` binding is emitted at all on this path — `buffer_binding_map_`
+is written only by `get_buffer_value`, which only the descriptor branch calls —
+so the bind-site hunk above is **dead code on Apple silicon**, and the offset
+reached nothing. The address itself comes from
+`device_->get_memory_physical_pointer(ext_arrays.at(arg_id))` (`runtime.cpp:133`),
+which `MetalDevice` implements as `[mtl_buffer gpuAddress]` (`:1399-1405`): the
+base of the whole buffer, with no offset. The port now adds `array_byte_offsets`
+there too. The two arms cannot both fire — the same capability decides which the
+codegen emits and which the runtime binds — so there is no double offset, and
+residency is already handled for imported buffers by the blanket
+`track_physical_buffer` over `any_arrays` at `runtime.cpp:1025-1031`.
+
+Two sites deliberately **not** given the offset, because Algan reaches neither:
+`adstack_max_reducer_launch.cpp:285` and `program/adstack/device_bytecode.cpp:730`
+take `get_memory_physical_pointer` of an SNode tree root, not of an ndarray
+argument. If Quadrants' autodiff is ever pointed at an imported ndarray they will
+need the same treatment.
+
 **`quadrants/program/program.cpp`** (`:376` → `:448`). Body ported unchanged
 apart from the renames and the 120-column reflow. `program_impl_->get_compute_device()`,
 `ndarrays_.insert({arr_ptr, std::move(arr)})` and the three-argument
@@ -379,6 +407,13 @@ plain C++ (`quadrants/python/dlpack_funcs.cpp`, `metal_program.h`).
 
 Ranked by how likely they are to bite, and all of them are compile-or-first-run
 questions rather than design ones.
+
+**Superseded, and the reason to distrust this list's ordering.** The first Metal
+render was wrong, and it was none of these: the offset was carried to the `ExtArr`
+descriptor and this backend does not read ndarrays through it (§1, "a second bind
+site"). The list below asked "does the recording reach the binding the patch
+edits?" and answered yes; the question it did not ask was whether that binding is
+the one the shader uses. Item 2 in particular reads as settled and was not.
 
 1. **The nanobind default argument `nb::arg("byte_offset") = uint64_t(0)`.**
    v1.3.0 has no integer-typed `nb::arg` default anywhere in `quadrants/python/`

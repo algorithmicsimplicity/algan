@@ -35,7 +35,7 @@ small, concrete form of "the fork's patch set shrinks on the newer base".
 
 **They apply, and they compile.** All three apply cleanly and **in sequence**
 with strict `git apply` (no fuzz, no 3-way) onto pristine v1.3.0 — 15 files,
-+480/−8 — and 0002 is authored against a tree that already has 0001, exactly as
++492/−8 — and 0002 is authored against a tree that already has 0001, exactly as
 the Taichi pair is, because they share `metal_device.mm`.
 
 Compilation takes two legs, and it has to be two because no single machine can
@@ -56,10 +56,10 @@ and only if the build had CUDA on — and dies when it is absent. (Not
 `qd._lib.core.with_cuda()`: that also probes for `libcuda.so`, so it is False on
 every GPU-less runner however the binary was built.)
 
-### The Metal port renders, and renders wrong
+### The Metal port rendered wrong, and why
 
-**Measured 2026-09-04 on the Mac runner's real Apple GPU, and this is the state
-of 0001/0002 today.** A wheel built from these patches installs, Algan resolves
+**Measured 2026-09-04 on the Mac runner's real Apple GPU, before the fix below.**
+A wheel built from these patches installs, Algan resolves
 `device=mps`, `zero_copy_available()` is **True**, and renders complete
 (`gpu_smoke.py`: 16.4 s cold, 0.92 s warm). Then the picture is wrong.
 
@@ -78,14 +78,45 @@ about **a third as bright**, which is why the control mattered: one number from
 one compiler could not have told these apart, and the first reading was nearly
 written up as a black frame it is not.
 
-A third of the brightness with the geometry apparently present is the signature
-of one channel of three surviving, which points at element shape or offset on
-the imported buffer rather than at the kernels — `ExternalMetalNdarray`'s
-`element_shape`, and the `set_args_ndarray` interaction §5 already ranks first.
-The next run reports per-channel means, which confirms or kills that in one
-step. Until it is fixed, **Track B's Apple path is not usable**, and that is a
-patch defect rather than a verdict on Quadrants: the same wheel is correct on
-CPU, and Taichi's port of the same idea is correct on Metal.
+**The cause: the offset was recorded where this backend never reads it.** It is
+not element shape, and it is not the kernels. Quadrants' Metal device advertises
+a capability Taichi 1.7.4's does not —
+
+    // rhi/metal/metal_device.mm, collect_metal_device_caps
+    if (feature_64_bit_integer_math) {          // == family_apple3, so every Apple GPU
+      caps.set(DeviceCapability::spirv_has_int64, 1);
+      caps.set(DeviceCapability::spirv_has_physical_storage_buffer, 1);   // Quadrants only
+    }
+
+— and under that capability an ndarray is **not addressed through its `ExtArr`
+descriptor at all**. `TaskCodegen::visit(ExternalPtrStmt)` loads a raw 64-bit GPU
+address out of the args buffer's `DATA_PTR` slot and `at_buffer` dereferences it
+(`OpConvertUToPtr` + `OpPtrAccessChain`); no `ExtArr` binding is even emitted,
+because `buffer_binding_map_` is only populated by the descriptor branch this
+path skips. The address is published host-side by `HostDeviceContextBlitter::
+host_to_device` as `get_memory_physical_pointer(...)`, which on Metal is
+`[mtl_buffer gpuAddress]` — **the base of the whole `MTLBuffer`**.
+
+So `Ndarray::buffer_offset` never reached the GPU. 0001 carried it to the
+descriptor bind site, faithfully porting the Taichi hunk, and on Apple silicon
+that bind site is dead code. Every imported torch tensor with a non-zero
+`storage_offset()` — which, per `taichi_patches/README.md` §0001, is every ray-state
+slice `sheet_resolve_shade` takes and every array the raster and compaction
+kernels touch — was read and written **at the base of its arena**, so the
+aliasing views collapsed onto each other. Taichi is correct on the same hardware
+for exactly one reason: its Metal backend never sets the capability, so its
+ndarrays go through the descriptor its patch does offset.
+
+0001 now adds the offset to the published address as well (`runtime/gfx/
+runtime.cpp`, in `host_to_device`). The two arms are mutually exclusive — the
+same `spirv_has_physical_storage_buffer` decides which the codegen emits and
+which the runtime binds — so nothing is offset twice, and the descriptor arm
+stays as the correct path for a device without the capability.
+
+**Not yet re-measured on hardware.** The prediction is that MPS matches CPU to
+Taichi's own margin (order 0.01 % of pixels, at edges); mean brightness is the
+one-number check. If brightness moves but does not land, the remaining suspects
+are unchanged and §5 still ranks them.
 
 **Still unverified: that the CUDA half works.** A compile check cannot tell you
 that an sm_61 card loads the runtime module.

@@ -334,10 +334,29 @@ index fa786d0dd..6457622d0 100644
    RHI_ASSERT(handle.device == this);
    memory_allocs_.release(&get_memory(handle.alloc_id));
 diff --git a/quadrants/runtime/gfx/runtime.cpp b/quadrants/runtime/gfx/runtime.cpp
-index 76486be7e..8dc0ef953 100644
+index 76486be7e..157918f5b 100644
 --- a/quadrants/runtime/gfx/runtime.cpp
 +++ b/quadrants/runtime/gfx/runtime.cpp
-@@ -694,7 +694,20 @@ void GfxRuntime::launch_kernel(KernelHandle handle, LaunchContextBuilder &host_c
+@@ -131,6 +131,18 @@ class HostDeviceContextBlitter {
+             device_->get_caps().get(DeviceCapability::spirv_has_physical_storage_buffer)) {
+           ArgArrayPtrKey grad_ptr_idx{arg_id, TypeFactory::GRAD_PTR_POS_IN_NDARRAY};
+           uint64_t addr = device_->get_memory_physical_pointer(ext_arrays.at(arg_id));
++          // An ndarray built over an imported buffer may start part-way into it -- torch's tensors are views of
++          // one allocation -- and `get_memory_physical_pointer` returns the base address of the whole buffer.
++          // On a device that advertises `spirv_has_physical_storage_buffer` (Metal does on every Apple-silicon
++          // GPU: `collect_metal_device_caps` sets it under `feature_64_bit_integer_math`, i.e. family_apple3+)
++          // the shader does NOT read the ndarray through its ExtArr descriptor at all -- `visit(ExternalPtrStmt)`
++          // loads this u64 out of the args buffer and `at_buffer` dereferences it -- so this address, not the
++          // binding below, is what the offset has to reach. Without it every imported slice is read and written
++          // at the base of its arena and the aliasing views collapse onto each other.
++          auto offset_it = host_ctx_.array_byte_offsets.find(arg_id);
++          if (offset_it != host_ctx_.array_byte_offsets.end()) {
++            addr += offset_it->second;
++          }
+           auto grad_it = ext_array_grads.find(arg_id);
+           uint64_t grad_addr = 0;
+           if (grad_it != ext_array_grads.end()) {
+@@ -694,7 +706,20 @@ void GfxRuntime::launch_kernel(KernelHandle handle, LaunchContextBuilder &host_c
        if (bind.buffer.type == BufferType::ExtArr) {
          const auto &src = bind.buffer.is_grad ? ext_array_grads : any_arrays;
          auto it = src.find(bind.buffer.root_id);
