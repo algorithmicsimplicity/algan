@@ -1,52 +1,52 @@
-"""What the render loop lets a batch cost when the render device is MPS.
+"""What a render holds on, and where it holds it, when the device is MPS.
 
 `DESIGN_mps_support.md` §1.4: `materials_and_lighting` dies on Metal after
-roughly two thirds of its frames, silently, on both kernel compilers, having
-logged the arena binary-searching twice. This script asks whether that is a
-Metal fault at all -- and it can ask on a box with no Metal in it, because the
-suspicion is about *batch sizing*, and batch sizing is device-branched Python.
+roughly two thirds of its frames, silently, on both kernel compilers. This
+script found out why, and it is a **leak on the device**, not a batch that is
+too big:
 
-The two budgets that bound what a frame window may cost **outside** the arena
-are `RenderLoopMixin._gpu_merge_headroom_bytes` and `_render_device_prep_budget`.
-Both used to branch on the device, return a real figure for `cuda` and for
-`cpu`, and return `float("inf")` for everything else -- which is MPS. Every
-guard they feed is a comparison against that figure:
+    batch 0:8      mps_alloc=0.64GB  mps_driver=0.68GB
+    batch 56:64    mps_alloc=2.28GB  mps_driver=3.54GB
+    batch 96:104   mps_alloc=4.59GB  mps_driver=6.12GB
+    batch 120:128  mps_alloc=6.74GB  mps_driver=8.27GB   <- Trace/BPT trap: 5
 
-    if require_estimates_fit and estimated_merge_peak > headroom:  # never true
-    upper = _max_duration_that_fits(total_frames, project_fits)    # always all
+`mps_alloc` is `torch.mps.current_allocated_memory()`: bytes torch considers
+**live**. It rises monotonically and never falls, past the 7 GB the runner has,
+on a machine `sysctl` reports as having no swap at all. Host RSS stayed under
+1.2 GB throughout, which is why every host-side measurement here missed it.
 
-So on Metal the window was bounded by the arena alone, while the merge and the
-projection scratch -- which do not live in the arena -- were bounded by nothing.
-`_render_device_pool_bytes` is the fix; these two arms are its A/B:
+The leak is `rendering/mps_zero_copy.py`'s import cache. It holds a torch
+storage per buffer it has handed a kernel -- it must, since Taichi's imported
+ndarray keeps no reference of its own -- and it was released once, at the end
+of the render job. The arena is one storage the job reuses, so that looked
+sufficient; every *other* kernel argument is a fresh allocation on every batch,
+and each was pinned until the last frame. `release_torch_memory` now clears it,
+which is also what makes `torch.mps.empty_cache()` mean anything on Metal.
 
-    native    what the engine does now, on whatever device this box has
-    inf       the defect reinstated: both budgets forced back to infinity
+The arms:
 
-Nothing else differs -- same scene, same 1536 MiB pool the gate pins, same
-arena fraction -- and the `inf` arm restores the old branch rather than the
-`native` arm computing a bound of its own, so no arithmetic in this file can
-flatter the fix.
+    (default)      the engine as it stands
+    --leak-cache   the defect reinstated: the cache never released mid-render
+    --headroom inf a second, unrelated defect, kept for the record (below)
+    --max-window N cap every frame window, which is NOT the lever (below)
 
-**And the answer is no: that defect is not §1.4.** Measured on Linux CPU, the
-two arms take the *same* three windows -- 58, 47 and 74 frames -- and peak at
-4.79 GB (`inf`) against 5.03 GB (`native`). The headroom the fix bounds is only
-consulted by guards that `merge_on_gpu_active` / `project_on_gpu_active` gate
-on a CUDA device, so on Metal almost nothing reads it; the fix closes a real
-hole (nothing should hand a device an unsatisfiable budget) and closes nothing
-that was killing this render.
+Read `pinned=` in the batch lines against `mps_alloc=`: that is the cache's
+share of what torch holds live, and the two moving together is the claim.
 
-What the same measurement *does* establish is the size of the thing: this scene
-wants ~5 GB of host memory at PREVIEW behind a 1536 MiB pool, and it wants it in
-the third window -- which is exactly where §1.4 saw Metal stop, on a runner with
-7 GB shared between host and GPU. So `--max-window` is the discriminator, not
-`--headroom`: a render that survives at 8 frames per window and dies at 74 died
-of what a window costs.
+**Two measured negatives, kept because they cost a day between them.**
+`--headroom inf` restores the `float("inf")` that `_gpu_merge_headroom_bytes`
+and `_render_device_prep_budget` used to return for any device that was not
+CUDA or CPU. That is a real hole -- an infinite budget makes every guard it
+feeds unsatisfiable -- and `_render_device_pool_bytes` closes it, but it is not
+§1.4: on Linux CPU both arms take the same three windows (58, 47, 74 frames)
+and peak at 4.79 GB against 5.03 GB. And `--max-window 8`, which looked like
+the discriminator, dies on Metal at the same *frame* as an unbounded window,
+because a leak proportional to frames rendered does not care how they were
+grouped.
 
 Usage:
-  uv run python benchmarks/_mps_batch_budget_repro.py --headroom inf
-  uv run python benchmarks/_mps_batch_budget_repro.py --headroom native
-  # the discriminator:
-  uv run python benchmarks/_mps_batch_budget_repro.py --max-window 8
+  uv run python benchmarks/_mps_batch_budget_repro.py --leak-cache
+  uv run python benchmarks/_mps_batch_budget_repro.py
   # what a Mac user gets, with no gate pinning the pool around them:
   uv run python benchmarks/_mps_batch_budget_repro.py --no-pin-pool
 
@@ -55,8 +55,7 @@ real render (a failed commit segfaults inside native code rather than raising),
 so this samples RSS and kills the process on the way past the ceiling, which
 leaves the peak readable rather than taking the box down with it. Pass `0` to
 disable it, which is what a Metal arm wants -- there the memory that matters is
-not all the process's own to sample, and a watchdog would fire on the wrong
-thing.
+not the process's own to sample, and a watchdog would fire on the wrong thing.
 """
 
 from __future__ import annotations
@@ -106,18 +105,29 @@ def _rss_bytes():
 
 
 def _device_memory_note():
-    """One line of whatever the render device will admit to holding."""
+    """One line of whatever the render device will admit to holding.
+
+    ``mps_alloc`` is the one that mattered: torch's *live* MPS bytes, which on
+    a healthy render rise and fall with a batch and which §1.4 found rising
+    monotonically to 6.74 GB on a 7 GB machine. ``pinned`` is the import
+    cache's share of it, so the two can be compared rather than correlated by
+    eye.
+    """
     import torch
 
     try:
-        if torch.backends.mps.is_available():
-            return (
-                f" mps_alloc={torch.mps.current_allocated_memory() / 1e9:.2f}GB"
-                f" mps_driver={torch.mps.driver_allocated_memory() / 1e9:.2f}GB"
-            )
+        if not torch.backends.mps.is_available():
+            return ""
+        note = (
+            f" mps_alloc={torch.mps.current_allocated_memory() / 1e9:.2f}GB"
+            f" mps_driver={torch.mps.driver_allocated_memory() / 1e9:.2f}GB"
+        )
+        from algan.rendering.mps_zero_copy import cache_stats
+
+        entries, storages, pinned = cache_stats()
+        return f"{note} pinned={pinned / 1e9:.2f}GB({entries}e/{storages}s)"
     except Exception:
-        pass
-    return ""
+        return ""
 
 
 #: Name of the render phase the sampler should credit what it sees to, and the
@@ -173,10 +183,23 @@ def report_phases():
         print(f"  {peak / 1e9:6.2f} GB  {name}", flush=True)
 
 
-def install_probes(headroom_mode, pin_pool):
-    """Trace every batch, and branch the two out-of-arena budgets by arm."""
+def install_probes(headroom_mode, pin_pool, leak_cache=False):
+    """Trace every batch, and reinstate whichever defect this arm is about."""
     from algan.render_loop import RenderLoopMixin
     from algan.utils import memory_utils
+
+    if leak_cache:
+        # The §1.4 defect reinstated: the zero-copy import cache never released
+        # while the render runs. Patched on the module rather than
+        # reimplemented here, and both callers import the name inside the
+        # function, so this arm is the engine minus exactly one behaviour.
+        # It neutralises `taichi_runtime`'s end-of-job clear too, which is
+        # faithful rather than sloppy: that clear ran after the last frame, so
+        # over one render job it never freed a byte the render could use, and
+        # this arm renders one job.
+        from algan.rendering import mps_zero_copy
+
+        mps_zero_copy.clear_import_cache = lambda: None
 
     # Only the CPU needs this: `available_memory_override` already sizes the
     # arena on a measured device, but the CPU branch reads `max_cpu_memory_used`
@@ -251,6 +274,14 @@ def install_probes(headroom_mode, pin_pool):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headroom", choices=("native", "inf"), default="native")
+    parser.add_argument(
+        "--leak-cache",
+        action="store_true",
+        help=(
+            "reinstate the §1.4 defect: never release the MPS zero-copy import "
+            "cache while the render runs. The arm that dies"
+        ),
+    )
     parser.add_argument("--scene", default="materials_and_lighting")
     parser.add_argument(
         "--ceiling-gb",
@@ -283,7 +314,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     start_rss_watchdog(args.ceiling_gb)
-    install_probes(args.headroom, args.pin_pool)
+    install_probes(args.headroom, args.pin_pool, leak_cache=args.leak_cache)
 
     import importlib.util
     from pathlib import Path
@@ -312,7 +343,8 @@ def main(argv=None):
     SceneManager.reset()
 
     print(
-        f"ARM headroom={args.headroom} scene={args.scene} "
+        f"ARM headroom={args.headroom} cache={'LEAKED' if args.leak_cache else 'released'} "
+        f"scene={args.scene} "
         f"pool={'pinned-1536MiB' if args.pin_pool else 'measured'} "
         f"window<={args.max_window or 'unbounded'} "
         f"device={_startup.render_device().type} backend={describe_backend()}",
