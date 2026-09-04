@@ -262,6 +262,7 @@ If you prefer to manage your dependencies through your project's
 `uv add algan` instead of `uv pip install algan`.
 :::
 
+(optional-pango-text)=
 ### Optional: Pango text
 
 `Text` typesets through LaTeX's text mode by default, which needs no extra
