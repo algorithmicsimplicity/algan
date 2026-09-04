@@ -1,18 +1,24 @@
 name: Quadrants from source (Linux)
 
-# Builds Quadrants v1.3.0 with `taichi_patches/quadrants/` applied, on the free
-# Linux runner, and then checks that the patch did what it claims.
+# Builds Quadrants v1.3.0 with `quadrants_patches/` applied, on the free Linux
+# runner, and then checks that the argument-load patch did what it claims.
 #
-# It exists because `taichi_patches/quadrants/0001-invariant-load-argument-loads.patch`
+# It exists because `quadrants_patches/0004-llvm-invariant-load-kernel-args.patch`
 # was written on a machine with no LLVM 22 toolchain and no GPU, so "it applies
 # clean" was the only thing that could be said about it. This job is what turns
 # that into "it compiles, the metadata lands, and the loads leave the loop".
 #
+# It applies the whole directory in numeric order, not just 0004, because that
+# is the set a Quadrants wheel is meant to carry and the order the patches are
+# authored against each other (`quadrants_patches/README.md`, "Applying them").
+# 0001-0002 are Metal-only in effect -- their code is guarded, and this build has
+# `QD_WITH_METAL` off -- so what they contribute here is proof that they still
+# apply and still compile beside 0003 and 0004.
+#
 # It is deliberately NOT the macOS `taichi_build.yaml`'s Linux twin. That one
-# builds Taichi v1.7.4 with the two Metal patches, which are a different base
-# and a different patch set; the two share nothing but a directory. The glob in
-# that job (`taichi_patches/[0-9]*.patch`) is flat and does not reach
-# `taichi_patches/quadrants/`, so neither job can pick up the other's patches.
+# builds Taichi v1.7.4 with `taichi_patches/`, a different base and a different
+# patch set; the two directories share nothing. Each job globs only its own
+# (`taichi_patches/[0-9]*.patch` there), so neither can pick up the other's.
 #
 # `PLAN.md` §5 is the order of work this follows: reproduce the build, confirm
 # in the IR that the argument loads moved, and only then time anything. There is
@@ -41,7 +47,7 @@ on:
   workflow_dispatch:
     inputs:
       apply_patches:
-        description: "Apply taichi_patches/quadrants/ (off = stock v1.3.0)"
+        description: "Apply quadrants_patches/ (off = stock v1.3.0)"
         type: boolean
         default: true
 
@@ -101,9 +107,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          patches=("$GITHUB_WORKSPACE"/algan/taichi_patches/quadrants/[0-9]*.patch)
+          patches=("$GITHUB_WORKSPACE"/algan/quadrants_patches/[0-9]*.patch)
           if [ ${#patches[@]} -eq 0 ]; then
-            echo "no patches in taichi_patches/quadrants/ -- refusing to build a"
+            echo "no patches in quadrants_patches/ -- refusing to build a"
             echo "wheel that would look patched and not be"
             exit 1
           fi
@@ -179,7 +185,7 @@ jobs:
         if: ${{ env.PATCHED == '1' }}
         run: |
           set -euxo pipefail
-          V="$GITHUB_WORKSPACE/algan/taichi_patches/quadrants/verify_invariant_load.py"
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_invariant_load.py"
           # Result path as an argument, not a stdout redirect: qd.init() prints a
           # banner to stdout that a redirect would fold into the JSON.
           python "$V" on  "$GITHUB_WORKSPACE/arm_on.json"

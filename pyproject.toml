@@ -195,6 +195,7 @@ include = [
   "/algan",
   "/tests",
   "/taichi_patches",
+  "/quadrants_patches",
   # scripts/vendor_manim.py regenerates algan/external_libraries/manim, and
   # that directory's VENDORING.md tells a reader to run it.
   "/scripts",

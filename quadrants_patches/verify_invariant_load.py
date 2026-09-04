@@ -1,6 +1,6 @@
-"""Prove `quadrants/0001-invariant-load-argument-loads.patch` did what it claims.
+"""Prove `0004-llvm-invariant-load-kernel-args.patch` did what it claims.
 
-`PLAN.md` §5 step 2: confirm the argument loads have left the loop body
+`../taichi_patches/PLAN.md` §5 step 2: confirm the argument loads have left the loop body
 **before timing anything**. This is that check, on the CPU backend, where it
 needs no GPU and the optimized LLVM IR is dumped by the same flag CUDA uses.
 
@@ -22,9 +22,15 @@ from the argument buffer on every iteration unless LICM can hoist it, and LICM
 cannot until `!invariant.load` tells it the buffer is never written.
 """
 
+# ruff: noqa: I002 -- I002 would insert `from __future__ import annotations`,
+# which breaks this file. The comment above the `quadrants` import below says
+# why. It is the same hazard `pyproject.toml` disables I002 for in `*_taichi.py`;
+# this file is not named that way because it is a standalone gate script rather
+# than an Algan module, so the suffix-keyed config does not reach it.
 import glob
 import json
 import os
+import pathlib
 import re
 import shutil
 import sys
@@ -114,7 +120,7 @@ def measure(arm):
     sum8(N, *arrs)
 
     files = _collect_ir(dump_dir)
-    text = "\n".join(open(f).read() for f in files)
+    text = "\n".join(pathlib.Path(f).read_text() for f in files)
     body = _loop_body(text)
     result = {
         "arm": arm,
@@ -138,8 +144,8 @@ def measure(arm):
 
 
 def compare(on_path, off_path):
-    on = json.load(open(on_path))
-    off = json.load(open(off_path))
+    on = json.loads(pathlib.Path(on_path).read_text())
+    off = json.loads(pathlib.Path(off_path).read_text())
     print(f"{'':24s} {'off':>8s} {'on':>8s}")
     for k in ("invariant_load_total", "dereferenceable_total", "loop_base_ptr_loads",
               "loop_data_loads", "loop_vector_loads", "loop_lines"):

@@ -11,6 +11,12 @@
 # defaults to ON with `QD_WITH_CUDA_TOOLKIT=OFF`, so the CUDA backend is built
 # from LLVM's NVPTX target and talks to the driver API loaded at runtime.
 #
+# It applies the whole directory in numeric order (`[0-9]*.patch`), so since
+# `0004-llvm-invariant-load-kernel-args.patch` joined it this build compiles
+# that patch's `codegen_llvm.cpp` changes too. What proves 0004 *worked* is
+# `.github/workflows/quadrants_build.yaml`, which builds the same set and then
+# runs `quadrants_patches/verify_invariant_load.py` over the optimized IR.
+#
 # So this is a **compile check, not a behaviour check**. It answers "do the
 # patched files still build", which is the half that can be automated. The half
 # that cannot is whether sm_61 now loads the runtime module and runs a kernel;
