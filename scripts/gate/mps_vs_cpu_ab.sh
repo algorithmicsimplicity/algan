@@ -96,6 +96,15 @@ for device in mps cpu; do
     ARMS="$ARMS$device=FAILED "
     say "$device arm failed; last 60 lines:"
     tail -n 60 "$arm_log" | sed 's/^/    /'
+    # A render killed by a signal prints nothing; macOS writes the report it
+    # could not. The faulting thread and signal are what attribute a trap.
+    say "macOS crash reports written in the last 10 minutes:"
+    find "$HOME/Library/Logs/DiagnosticReports" -name '*.ips' -mmin -10 2>/dev/null \
+      | while IFS= read -r crash; do
+          say "  --- $crash"
+          head -c 4000 "$crash" | sed 's/^/      /'
+          cp "$crash" "$LOGDIR/" 2>/dev/null || true
+        done
   fi
   cp "$WORKDIR/$device/$SCENE.mp4" "$LOGDIR/mpsab-$device-$SCENE.mp4" 2>/dev/null || true
 done

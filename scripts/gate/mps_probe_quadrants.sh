@@ -219,6 +219,20 @@ for device in mps cpu; do
     arm_status="$arm_status$device=FAILED "
     say "the $device arm failed; last 60 lines of $arm_log:"
     tail -n 60 "$arm_log" | sed 's/^/    /'
+    # A render that dies of a signal prints nothing at all -- the first time
+    # this happened the whole dump was 60 lines of render progress ending at
+    # frame 119 of 179. macOS writes the report the process could not: the
+    # faulting thread, the signal, and the top frames, which is what says
+    # whether this was our own assert, a Metal fault, or memory.
+    say "macOS crash reports written in the last 10 minutes:"
+    find "$HOME/Library/Logs/DiagnosticReports" -name '*.ips' -mmin -10 2>/dev/null \
+      | while IFS= read -r crash; do
+          say "  --- $crash"
+          head -c 4000 "$crash" | sed 's/^/      /'
+          cp "$crash" "$LOGDIR/" 2>/dev/null || true
+        done
+    find "$HOME/Library/Logs/DiagnosticReports" -name '*.ips' -mmin -10 2>/dev/null \
+      | head -1 | grep -q . || say "  (none -- the process may have been killed rather than faulting)"
   fi
 done
 say "pixel arms: $arm_status"
