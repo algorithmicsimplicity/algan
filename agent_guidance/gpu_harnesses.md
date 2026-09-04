@@ -294,8 +294,11 @@ Then grep `/tmp/run.log` for whatever the run was about.
   band. Taichi's advanced optimization is superlinear in statement count and
   these kernels inline a whole shading + traversal call graph into one body.
   Do not spend a session on it; the sweep is recorded in
-  `benchmarks/performance/reports/t4_2026_09/`, which also shows every
-  `ALGAN_GPU_MAX_REG` cap coming out *worse* than letting ptxas choose.
+  `benchmarks/performance/reports/t4_2026_09/`. (The same sweep's
+  `ALGAN_GPU_MAX_REG` arms all landed within noise of the base, and the reason
+  is now known: the knob never reached ptxas on either compiler -- the field
+  was read only by the cache key -- so it has been removed. A per-kernel
+  register cap is a compiler patch, `taichi_patches/PLAN.md` row 14.)
 * **Never take a determinism or pixel reading while another process is using
   the GPU.** Free VRAM at job start sets the arena size, which sets tile sizes
   and batch windows; a concurrent job changes the pixels. Check `nvidia-smi`

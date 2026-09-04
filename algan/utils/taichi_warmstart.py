@@ -27,6 +27,14 @@ position, so :func:`apply` memoizes them from outside the compiler:
   AST nodes in place (``node.ptr``), so a tree must never be shared between
   transforms.
 
+A third patch is paid at kernel *definition* rather than materialization: the
+``@ti.kernel`` / ``@ti.func`` decorators ask ``_inside_class`` whether they are
+being applied inside a class body, and its ``inspect.getframeinfo`` call walks
+every entry in ``sys.modules`` per decoration (:func:`_make_fast_inside_class`).
+It has to be installed before the first kernel module imports, which is why
+:func:`apply` is called by ``algan.taichi_compat`` the moment it binds the
+compiler, not by ``algan/__init__.py`` afterwards.
+
 Byte-identical by construction -- the memoized values are exactly the strings
 the original code recomputes (validated against a live run: 0 mismatches over
 136k calls, and hash-identical rendered output). ``ALGAN_TAICHI_WARMSTART=0``
@@ -49,6 +57,8 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import inspect
+import linecache
 import sys
 import textwrap
 
@@ -291,6 +301,91 @@ def _install_pos_info_memo(ctx_cls, guard_src_bounds):
     ctx_cls.get_pos_info = _memoized_get_pos_info
 
 
+def _make_fast_inside_class(original, patterns, verify):
+    """The decorators' ``_inside_class``, without the ``sys.modules`` walk.
+
+    Both compilers answer "is this kernel being defined inside a class body?"
+    the same way: take the frame *enclosing* the one that applies the decorator
+    (``sys._getframe(level)``), read its current source line through
+    ``inspect.getframeinfo``, and match it against ``class `` /
+    ``@data_oriented``. ``getframeinfo`` gets that line from
+    ``inspect.findsource``, which calls ``inspect.getmodule`` to find the
+    module whose ``__dict__`` to hand ``linecache`` -- and ``getmodule`` walks
+    every entry in ``sys.modules`` (``getabsfile`` on each) on every call. With
+    torch loaded that walk is ~2.7 ms, and Algan defines ~250 kernels and
+    funcs: 0.6-0.8 s per process, measured 2026-09-04 on both compilers, a
+    quarter (taichi) to a half (quadrants) of what importing the kernel
+    modules costs once the compiler itself is up.
+
+    This is the same computation with the walk left out. The module dict
+    ``getmodule`` goes looking for is the frame's own globals, so ``linecache``
+    is handed ``frame.f_globals`` directly. The line is chosen exactly as
+    ``getframeinfo`` chooses it -- the instruction's position line when the
+    code object records one, else ``f_lineno``, clamped to the file the way
+    ``context=1`` clamps -- and the same failures (no frame at that depth, no
+    source on disk, a ``<string>`` with nothing in ``linecache``) return
+    ``False`` the way the original's bare ``except`` does. Only a ``bool`` is
+    returned either way, so ``verify`` compares the two answers outright.
+    """
+    get_code_position = getattr(inspect, "_get_code_position", None)
+
+    def _fast_inside_class(level_of_class_stackframe):
+        answer = False
+        try:
+            frame = sys._getframe(level_of_class_stackframe)
+            lineno = frame.f_lineno
+            if get_code_position is not None:
+                position_line = get_code_position(frame.f_code, frame.f_lasti)[0]
+                if position_line is not None:
+                    lineno = position_line
+            file = inspect.getsourcefile(frame)
+            if file:
+                linecache.checkcache(file)
+            else:
+                file = inspect.getfile(frame)
+                if not (file.startswith("<") and file.endswith(">")):
+                    raise OSError("source code not available")
+            lines = linecache.getlines(file, frame.f_globals)
+            if not lines:
+                raise OSError("could not get source code")
+            start = max(0, min(lineno - 1, len(lines) - 1))
+            first_statement = lines[start].strip()
+            answer = any(pattern.match(first_statement) for pattern in patterns)
+        except Exception:
+            answer = False
+        if verify:
+            # One frame deeper than the caller's ``level`` counted on.
+            reference = original(level_of_class_stackframe + 1)
+            if reference != answer:
+                raise RuntimeError(
+                    "taichi_warmstart _inside_class mismatch at level "
+                    f"{level_of_class_stackframe}: fast={answer!r} ref={reference!r}"
+                )
+        return answer
+
+    _fast_inside_class._algan_original = original
+    return _fast_inside_class
+
+
+def _install_inside_class_patch(kernel_impl):
+    """Rebind ``kernel_impl._inside_class`` to the walk-free version.
+
+    The decorators look the name up in their module's globals at each call,
+    so rebinding the attribute is enough; the two regexes it matches against
+    are read from the same module, so a compiler that changes them changes
+    this too.
+    """
+    original = getattr(kernel_impl, "_inside_class", None)
+    patterns = getattr(kernel_impl, "_KERNEL_CLASS_STACKFRAME_STMT_RES", None)
+    if not callable(original) or not patterns:
+        return False
+    if getattr(original, "_algan_original", None) is not None:
+        return True
+    verify = env_flag("ALGAN_TAICHI_WARMSTART_VERIFY", False)
+    kernel_impl._inside_class = _make_fast_inside_class(original, patterns, verify)
+    return True
+
+
 def _apply_taichi(version):
     """taichi 1.7.x: the pos-info memo, and the source half of the transform."""
     from algan.taichi_compat import submodule
@@ -317,6 +412,8 @@ def _apply_taichi(version):
         or not hasattr(_ki, "_get_global_vars")
     ):
         return _skip("taichi 1.7's transformer entry points have moved")
+    if not _install_inside_class_patch(_ki):
+        return _skip("taichi 1.7's decorator internals have moved")
 
     _install_pos_info_memo(ctx_cls, guard_src_bounds=False)
 
@@ -393,6 +490,7 @@ def _apply_quadrants(version):
 
     try:
         _atu = submodule("lang.ast.ast_transformer_utils")
+        _ki = submodule("lang.kernel_impl")
         _wrap_inspect = submodule("lang._wrap_inspect")
         _func_base = submodule("lang._func_base")
     except Exception:
@@ -411,6 +509,8 @@ def _apply_quadrants(version):
         # When a release carries it, ours is redundant rather than wrong --
         # stand down rather than stacking two caches on one function.
         return _skip("quadrants memoizes get_pos_info itself on this build")
+    if not _install_inside_class_patch(_ki):
+        return _skip("quadrants 1.3's decorator internals have moved")
 
     _install_pos_info_memo(ctx_cls, guard_src_bounds=True)
 

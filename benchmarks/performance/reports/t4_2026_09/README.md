@@ -111,6 +111,15 @@ a local optimum on that tradeoff and are *not* occupancy-limited in any way
 `-maxrregcount` reaches. The `gpu_max_reg` docstring's tuning was done on the
 author's Pascal card; on Turing the answer is "leave it alone".
 
+> **Correction (2026-09-04).** The five cap arms are the *same* compiled code
+> as the base: `gpu_max_reg` never reached ptxas on either compiler (Taichi
+> 1.7.4's `JITSession::add_module(M, max_reg)` is only ever called without the
+> argument; the field is read by the cache key alone), so each arm was a cold
+> recompile of an identical kernel and the +0.7–2.3 % spread is run-to-run
+> noise, not a register-pressure result. `ALGAN_GPU_MAX_REG` has been removed;
+> the reading "not occupancy-limited in any way `-maxrregcount` reaches" is
+> unmeasured. A real per-kernel cap is `taichi_patches/PLAN.md` row 14.
+
 `ALGAN_ADV_OPT=1` is worth its own warning. It **compiled for 2661 seconds** —
 Taichi's full IR pipeline (whole-kernel CSE, alias analysis) is superlinear in
 statement count, and these megakernels inline an entire shading and traversal

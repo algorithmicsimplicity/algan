@@ -136,6 +136,32 @@ def _parse_device(env_name: str, default: str | torch.device) -> torch.device:
     return coerce_device(env_str(env_name, str(default)), env_name)
 
 
+_ALGAN_HOME = Path(env_str("ALGAN_HOME") or Path.home() / ".algan").expanduser()
+_CACHE_DIRECTORY = Path(
+    env_str("ALGAN_CACHE_DIR") or _ALGAN_HOME / "cache"
+).expanduser()
+# The CUDA driver's own JIT cache (PTX -> SASS, the half of a kernel build the
+# compiler's offline cache does not hold) goes beside Algan's other caches
+# rather than into the driver's shared per-user default, where every other
+# CUDA program's entries compete with Algan's several hundred MB for the same
+# LRU budget. Has to be in the environment before the first CUDA context, which
+# the device probe below creates; ``setdefault`` so an explicit user value
+# always wins. ``clear_cache()`` removes it with the content caches -- it is
+# seconds to rebuild, not the minutes a compiled kernel costs.
+os.environ.setdefault("CUDA_CACHE_PATH", str(_CACHE_DIRECTORY / "cuda"))
+# One cache directory per kernel compiler. The two write different artifact
+# formats under different cache keys, so a shared directory would let one
+# backend's entries sit in the other's LRU budget and be pruned by it. Each
+# name is the backend's own (``cache/quadrants``, ``cache/taichi``), so
+# switching arms with ``ALGAN_TAICHI_BACKEND`` keeps both caches warm rather
+# than making each switch a cold build. ``TI_OFFLINE_CACHE_FILE_PATH`` wins
+# when set; ``taichi_runtime.taichi_init_kwargs`` passes this value on to the
+# compiler, which matters on Quadrants (it reads ``QD_``-prefixed variables
+# and would never see the ``TI_`` name by itself).
+_TAICHI_CACHE_DIRECTORY = Path(
+    env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / _KERNEL_BACKEND
+).expanduser()
+
 _ANIMATION_DEVICE = _parse_device("ALGAN_ANIMATION_DEVICE", "cpu")
 
 #: What ``SETTINGS.computing.render_device`` starts at. Read once, here; every
@@ -159,20 +185,6 @@ def render_device() -> torch.device:
 
     return SETTINGS.computing.render_device
 
-
-_ALGAN_HOME = Path(env_str("ALGAN_HOME") or Path.home() / ".algan").expanduser()
-_CACHE_DIRECTORY = Path(
-    env_str("ALGAN_CACHE_DIR") or _ALGAN_HOME / "cache"
-).expanduser()
-# One cache directory per kernel compiler. The two write different artifact
-# formats under different cache keys, so a shared directory would let one
-# backend's entries sit in the other's LRU budget and be pruned by it. Each
-# name is the backend's own (``cache/quadrants``, ``cache/taichi``), so
-# switching arms with ``ALGAN_TAICHI_BACKEND`` keeps both caches warm rather
-# than making each switch a cold build.
-_TAICHI_CACHE_DIRECTORY = Path(
-    env_str("TI_OFFLINE_CACHE_FILE_PATH") or _CACHE_DIRECTORY / _KERNEL_BACKEND
-).expanduser()
 
 # Baked into the shade kernels at compile time (a ti.static fan length), so
 # there is no runtime object that could own it -- unlike the HDR buffer dtype,

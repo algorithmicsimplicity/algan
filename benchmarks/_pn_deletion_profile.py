@@ -14,9 +14,10 @@ are measured on the GPU and are insensitive to host-side drift, plus the
 per-batch BVH build time and the offline-cache entry count (ss4.4's compile
 surface).
 
-Run it in BOTH trees, each with its own Taichi cache -- the offline cache does
-not invalidate on ``@ti.func`` edits and the two trees share kernel *names*, so
-one cache would serve the wrong compiled code::
+Run it in BOTH trees. A Taichi cache per tree is optional: the offline cache is
+keyed on the compiled IR, not on kernel names, so the two trees' kernels cannot
+be confused in one cache -- but a separate one makes the entry count this
+reports (ss4.4's compile surface) the tree's own::
 
     git worktree add ../algan-pre efb3a95
     cp benchmarks/_pn_deletion_profile.py ../algan-pre/benchmarks/
