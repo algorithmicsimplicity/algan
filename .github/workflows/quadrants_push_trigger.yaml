@@ -1,0 +1,31 @@
+name: Trigger Quadrants wheels on branch push
+
+# Temporary branch-only wrapper used to exercise the workflow through a push.
+# The build workflow is workflow_dispatch-based, so dispatch it with explicit
+# inputs; workflow_dispatch defaults are not populated for a plain push event.
+on:
+  push:
+    branches:
+      - quadrants-pypi-distribution
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch patched Quadrants wheel build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/quadrants_build.yaml/dispatches" \
+            -f "ref=${GITHUB_REF_NAME}" \
+            -f "inputs[platforms]=linux,macos,windows" \
+            -f "inputs[python_versions]=3.11" \
+            -f "inputs[apply_patches]=true" \
+            -f "inputs[publish]=false" \
+            -f "inputs[run_tag]=push-${GITHUB_RUN_ID}"
