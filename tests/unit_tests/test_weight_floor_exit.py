@@ -54,7 +54,9 @@ from algan.settings import SETTINGS
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 46
-_EXPECTED_SHADE_ARGS = 68
+# 69 since the per-batch ``vis_lights`` slot count joined the list at index 47,
+# directly after the gate (the shadow-visibility payload sizing).
+_EXPECTED_SHADE_ARGS = 69
 
 
 def test_experimental_setting_surfaces_and_drives_the_legacy_global():
