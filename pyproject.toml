@@ -19,48 +19,27 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Natural Language :: English",
-    ]
-
-# Both bounds are the kernel compiler's. Quadrants publishes cp310-cp313
-# wheels: no cp39 (which is why the floor moved up from 3.9 -- the maintainer
-# confirmed no user is on it, and `algan` is not on PyPI yet, so nobody can
-# have installed it there through the documented channel) and no cp314 yet.
+]
 requires-python = ">=3.10,<3.14"
 
 dependencies = [
-    # Needed by the vendored Manim geometry subset in
-    # algan/external_libraries/manim (see VENDORING.md there). Every one of
-    # these publishes wheels for the platforms Algan supports; `manim` itself
-    # is deliberately *not* a dependency, because it pulls pycairo and
-    # manimpango, neither of which has a Linux wheel -- so depending on it put
-    # a from-source build of Cairo and Pango in front of every Linux install.
     "decorator>=4.3.2",
     "beautifulsoup4>=4.12",
     "pygments>=2.0.0",
     "isosurfaces>=0.1.0",
     "skia-pathops>=0.7.0",
     "mapbox-earcut>=1.0.0",
-    # manim.mobject.graph (the Graph / DiGraph compatibility classes).
     "networkx>=2.6",
-    # TypeIs / override / TypeVar defaults, used at runtime by the vendored
-    # manim.utils.color.core and manim.utils.config_ops, and by the Self and
-    # TypeAlias fallbacks in manim/_compat.py on Python below 3.11.
     "typing-extensions>=4.12.0",
-    # for algan
 
-    # The kernel compiler every `*_taichi.py` module is compiled by, reached as
-    # `from algan.taichi_compat import ti`. Quadrants is the maintained fork of
-    # taichi 1.7.x; `taichi_patches/PLAN.md` §6.1 is the measurement that chose
-    # it, and taichi itself is still supported as the other arm -- see the
-    # `taichi` extra below.
-    #
-    # Capped at the minor. Two things in the tree replicate Quadrants 1.3
-    # internals verbatim -- `algan/utils/taichi_warmstart.py`'s frontend
-    # memoization and the glue in `algan/taichi_compat.py` -- so a minor bump is
-    # a thing to read the diff for, not to pick up silently. The upstream
-    # policy this pin follows is to track public releases (no pinned commits,
-    # no vendored fork), so lifting the cap is a deliberate, tested edit.
-    "quadrants>=1.3.0,<1.4",
+    # Algan's default compiler is our patched Quadrants v1.3.0 build. The PyPI
+    # distribution is deliberately named `algan-quadrants` so it cannot be
+    # confused with or overwrite upstream's `quadrants` project; it still
+    # installs the Python package `quadrants`, so application imports do not
+    # change. Pin exactly: the wheel carries Algan-specific native patches and
+    # every downstream revision must be built and tested as a unit.
+    "algan-quadrants==1.3.0.post1",
+
     "pyttsx3>=2.0",
     "moviepy>=2.2.0",
     "dendroid>=1.6.0",
@@ -68,32 +47,13 @@ dependencies = [
     "reprit>=0.9.0",
     "decision>=0.3.0",
     "numpy>=1.20.0",
-    # torch.compile's Inductor backend builds its CPU kernels through
-    # torch.utils.cpp_extension, which imports setuptools at module level.
-    # Nothing declares it: torch does not, and a uv venv does not seed it, so
-    # on macOS arm64 (where no other dependency pulls it in) every compiled
-    # function fell back to eager with "No module named 'setuptools'".
     "setuptools>=61",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
     "torch>=2.0.0",
-    # Imported at module scope by algan.rendering.post_processing.anti_aliasing.smaa
-    # and algan.mobs.image_compat, used for all image decoding in
-    # algan.utils.file_utils / algan.mobs.three_d_models.model_mob, and by the
-    # vendored Manim subset's ImageMobject.
     "pillow>=9.0",
-    # Render progress bar (algan.render_loop). Also arrives transitively via
-    # moviepy's proglog; named here because Algan imports it directly. 4.51 is
-    # where tqdm.contrib.logging.logging_redirect_tqdm appeared.
     "tqdm>=4.51.0",
-    # glTF/glB/OBJ/PLY parsing for ThreeDModelMob (algan.mobs.three_d_models).
-    # Unlike the FBX path this needs no native library, so it is a core
-    # dependency rather than an extra.
     "trimesh>=4.0.0",
-    # glTF animation playback (algan.mobs.three_d_models.gltf_loader). Pure
-    # Python and small; without it glTF animation silently degrades to a
-    # static model instead of failing loudly, so it is core rather than an
-    # extra.
     "pygltflib>=1.16",
 ]
 
@@ -109,45 +69,20 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 "Discord" = "https://discord.gg/NvarFmvXKm"
 
 [project.optional-dependencies]
-# Word-level alignment of recorded speech audio to a transcript (used by the
-# Speech/Audio animation contexts when synchronizing to a pre-recorded audio
-# file). The default pyttsx3 text-to-speech path does not need these.
 audio = [
     "torchaudio>=2.0.0",
     "transformers>=4.30.0",
 ]
-# 3-D model import (FBX / OBJ / glTF / ...) via FBXMob. pyassimp is the Python
-# binding only; it also needs the native `assimp` library installed separately
-# (conda-forge assimp, apt libassimp5, brew assimp, or assimp*.dll on PATH).
 fbx = [
     "pyassimp>=5.0",
 ]
-# Pango text rendering. Without it `algan.Text` typesets its content through
-# LaTeX's text mode instead, and Manim's `mn.Text` / `mn.MarkupText` /
-# `mn.Paragraph` are absent from the compatibility layer -- everything else in
-# it is unaffected. manimpango publishes no Linux wheel, so this is an extra
-# rather than a dependency: making it one would put a from-source build of
-# Pango in front of every Linux `pip install algan`.
 pango = [
     "manimpango>=0.5.0",
 ]
-# The other kernel compiler. Algan compiles with Quadrants by default; setting
-# `ALGAN_TAICHI_BACKEND=taichi` selects this one instead, and `algan/` needs no
-# change either way (`algan/taichi_compat.py`).
-#
-# It is an extra rather than a dependency because a default install must not
-# carry two ~56 MB compilers, and it is not merely legacy: it is the A/B control
-# every "did the compiler do this?" question is answered against, and it is the
-# only compiler with a *patched* Metal wheel (`taichi_patches/`,
-# `.github/workflows/taichi_build.yaml`), which the zero-copy MPS path needs.
-# `uv sync --all-extras` installs it, so CI and a dev session get both arms.
 taichi = [
     "taichi>=1.7.4",
 ]
 dev = [
-    # Tests and benchmarks decode rendered frames and probe video metadata
-    # with OpenCV. The library itself no longer imports cv2 (its one image
-    # read went through PIL), so this is tooling, not a runtime dependency.
     "opencv-python-headless>=4.5,<5",
     "parameterized>=0.9.0",
     "furo>=2024.8.6",
@@ -169,9 +104,6 @@ dev = [
     "types-pygments>=2.19.0.20250107",
     "psutil>=6.1.1",
     "requests>=2.32.3",
-    # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
-    # no extras still has to be able to run the A/B control arm
-    # (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every backend report.
     "algan[audio,fbx,taichi]",
 ]
 
@@ -182,11 +114,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["algan"]
 exclude = [
-  # Working-design notes, not user-facing documentation.
   "algan/**/DESIGN_*.md",
-  # Sphinx extensions: they import sphinx and docutils, and nothing shipped
-  # imports them (docs/source/conf.py reaches them from the repo checkout, not
-  # from an installed wheel).
   "algan/utils/docbuild/**",
 ]
 
@@ -196,8 +124,6 @@ include = [
   "/tests",
   "/taichi_patches",
   "/quadrants_patches",
-  # scripts/vendor_manim.py regenerates algan/external_libraries/manim, and
-  # that directory's VENDORING.md tells a reader to run it.
   "/scripts",
   "/pyproject.toml",
   "/README.md",
@@ -210,16 +136,9 @@ exclude = [
 ]
 
 [tool.pytest.ini_options]
-# The fast suite is opt-in: --fast runs the tests marked 'fast' and nothing
-# else, so an unmarked test is automatically outside it. See tests/README.md
-# for what earns the marker.
 markers = [
   "fast: Part of the hand-curated fast suite. Selected by --fast; see tests/README.md.",
 ]
-# A marker that is not in the list above is now an error rather than a silent
-# no-op. That matters here: 'slow' used to select the fast suite by exclusion
-# and no longer exists, so a stale @pytest.mark.slow (or a typo'd 'fastt') would
-# otherwise sit in a file doing nothing and looking like it worked.
 addopts = "--strict-markers"
 testpaths = ["tests/unit_tests", "tests/fast", "tests/full_renders", "tests/path_traced"]
 
@@ -249,11 +168,6 @@ extend-exclude = [
   "algan/external_libraries",
   "benchmarks",
 ]
-# `ruff check` reports and does not rewrite. Opt in to rewriting per-invocation
-# with `ruff check --fix` (and `--unsafe-fixes` for the rest). This used to be
-# `fix = true`, which made the plain command a silent bulk-edit of the working
-# tree -- surprising on its own, and actively dangerous in a repo where a fix
-# applied to a Taichi kernel changes what the GPU compiles.
 fix = false
 
 [tool.ruff.lint]
@@ -270,45 +184,20 @@ select = [
   "SIM",
   "UP",
 ]
-
 ignore = [
-  # Both of these switched on by themselves when `target-version` moved from
-  # py39 to py310 (Quadrants publishes no cp39 wheel, so the floor moved with
-  # it). Neither is about anything the compiler change touched, and taking
-  # either fix would have been a 100+ site mechanical rewrite buried in that
-  # change -- so they are declined here, with the reason, rather than applied
-  # unread.
-  #
-  # B905, `zip()` without an explicit `strict=`: 107 sites. The available fix
-  # writes `strict=False`, which is what the code does today, so it would be a
-  # large diff that changes nothing and asserts at every one of those sites
-  # that ragged input is intended -- which is exactly the question the rule
-  # wants answered, and answering it is its own piece of work.
   "B905",
-  # UP038, `isinstance(x, A | B)`: 57 sites, and **ruff itself deprecated the
-  # rule** -- PEP 604 in an isinstance call is slower than the tuple, and it
-  # wrongly implies other typing syntaxes work there. Several of these sit on
-  # per-primitive and per-attribute paths.
   "UP038",
-  # (sub)module shadows standard library module
   "A005",
-  # mutable argument defaults (too many changes)
   "B006",
-  # No function calls in defaults
-  # ignored because np.array() and straight_path()
   "B008",
-  # docstring ignores - mostly stylistic
   "D1",
   "D203",
   "D205",
   "D212",
   "D4",
-  # due to the import * used in manim
   "F403",
   "F405",
-  # Exception too broad (this would require lots of changes + re.escape) for little benefit
   "PT011",
-  # as recommended by https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
   "D206",
   "D300",
   "E111",
@@ -316,53 +205,26 @@ ignore = [
   "E117",
   "E501",
 ]
-
-# Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = [
-  # flake8-builtins
   "A",
-  # unused expression
   "B018",
-  # unused variable
   "F841",
-  # from __future__ import annotations
   "I002",
 ]
-
 "example_scenes/*" = [
   "I002",
 ]
-
-# Taichi kernels need runtime-evaluated annotations (ti.f32, ti.types.ndarray());
-# `from __future__ import annotations` would turn them into strings and break
-# kernel compilation.
-#
-# SIM is off here because its suggestions are unsound inside a kernel, which is
-# most of what these files are. Two were measured against Taichi 1.7.4:
-#   * SIM109 rewrites `x == a or x == b` to `x in (a, b)`, and `in` is a
-#     TaichiSyntaxError -- the kernel stops compiling.
-#   * SIM102 collapses `if ti.static(gate): if runtime_cond:` to a single
-#     `and`. That turns a compile-time gate into a runtime one, so the guarded
-#     body is compiled even for a batch whose geometry is absent -- exactly the
-#     gating the has_* templates exist to do.
-# (Neither has a *safe* fix, so `fix = true` would not apply them; the ignore is
-# to stop the advice being followed by hand.) Everything else applies: F401,
-# F841, I001, D and E are the point of linting these files at all.
 "**/*_taichi.py" = [
   "I002",
   "SIM",
 ]
-
-
 "__init__.py" = [
   "F401",
   "F403",
 ]
-
-# These modules intentionally defer or stage imports after runtime setup.
 "algan/__init__.py" = ["E402"]
 "algan/animatable_base/mob_morph.py" = ["E402"]
 "algan/mobs/manim_compat.py" = ["E402"]
@@ -377,18 +239,6 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "algan/rendering/shaders/fragment_shaders.py" = ["I002"]
 "algan/rendering/shaders/fragment_stage_library.py" = ["I002"]
 "algan/utils/taichi_utils.py" = ["I002"]
-
-# Modules outside the `*_taichi.py` naming convention that still define a
-# kernel or a `@ti.func`. Listed defensively, on the same reasoning as
-# `benchmarks/*` above: the cost of the entry is nothing, and the cost of
-# noticing too late is a kernel that stops compiling.
-#
-# The hazard is specific -- it bites a kernel whose signature is evaluated at
-# runtime (`ti.template()`, `ti.types.ndarray()`, `: ti.f32`), which
-# `from __future__ import annotations` would turn into a string. render_loop,
-# raytracing/settings and scene already carry that import and compile fine,
-# because their kernels take no such annotations; the entry is here so that
-# adding one later does not silently break them.
 "algan/render_loop.py" = ["I002"]
 "algan/rendering/raytracing/settings.py" = ["I002"]
 "algan/scene.py" = ["I002"]
@@ -406,11 +256,6 @@ convention = "numpy"
 
 [tool.ruff.format]
 docstring-code-format = true
-# The linter reads the kernel files (see per-file-ignores above); the
-# formatter still does not. Reformatting a kernel body is a large rewrite of
-# code whose hand-wrapped layout is load-bearing, and `ruff format --check` is
-# the one ruff job CI gates on -- so keep the formatter's view of these files
-# exactly as it was when they were excluded outright.
 exclude = ["**/*_taichi.py"]
 
 [tool.uv.sources]
