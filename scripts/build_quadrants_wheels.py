@@ -185,8 +185,20 @@ def api(
             payload = response.read()
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:2000]
+        hint = ""
+        # Dispatching needs a scope that reading does not, so this is the one
+        # 403 that arrives *after* several successful calls -- which reads as
+        # "the script is broken" rather than "the token is too narrow".
+        if error.code == 403 and url.endswith("/dispatches"):
+            hint = (
+                "\n\nThis token can read the repository but not start a workflow:\n"
+                "dispatching needs `actions: write` (classic tokens: the `repo`\n"
+                "scope; fine-grained: Actions -> Read and write). Either widen it,\n"
+                "or start the run from the Actions tab and come back with\n"
+                "`--run-id <id>` to download the wheels."
+            )
         raise SystemExit(
-            f"GitHub API {method} {url} -> {error.code} {error.reason}\n{detail}"
+            f"GitHub API {method} {url} -> {error.code} {error.reason}\n{detail}{hint}"
         ) from error
     except urllib.error.URLError as error:
         # An artifact download is a redirect off api.github.com to blob

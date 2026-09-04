@@ -89,8 +89,16 @@ on:
 # the run it just asked for. `workflow_dispatch` returns 204 and no run id --
 # there is no other reliable way to tell your run from one someone else started
 # in the same second.
+#
+# The STOCK marker is spelled `!x && 'marker' || ''` rather than the obvious
+# `x && '' || ' (STOCK)'`, and that is not a style choice. GitHub's `a && b || c`
+# is not a ternary: it falls through to `c` whenever `b` is *falsy*, and the
+# empty string is falsy -- so the obvious spelling marks every run STOCK,
+# patched ones included. It did, on the first run of this file. The true branch
+# must never be an empty string; `${{ ... && '1' || '0' }}` below is fine
+# because '1' is not.
 run-name: >-
-  Quadrants wheels: ${{ inputs.platforms }} py${{ inputs.python_versions }}${{ inputs.apply_patches && '' || ' (STOCK)' }}${{ inputs.run_tag && format(' [{0}]', inputs.run_tag) || '' }}
+  Quadrants wheels: ${{ inputs.platforms }} py${{ inputs.python_versions }}${{ !inputs.apply_patches && ' (STOCK)' || '' }}${{ inputs.run_tag && format(' [{0}]', inputs.run_tag) || '' }}
 
 # Queue behind an in-flight run rather than cancelling it: this is a build
 # whose whole value is the artifact at the end, and a half-finished one has

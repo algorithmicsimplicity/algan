@@ -188,6 +188,18 @@ class TestWorkflowMatchesTheResolver:
     def test_the_run_name_carries_the_tag_the_driver_searches_for(self, workflow):
         assert "inputs.run_tag" in workflow["run-name"]
 
+    def test_no_expression_uses_an_empty_true_branch(self, workflow):
+        # `a && b || c` in GitHub expressions is not a ternary: it falls through
+        # to `c` whenever `b` is falsy, and '' is falsy. So `x && '' || 'MARK'`
+        # renders MARK unconditionally. The first run of this workflow labelled
+        # a patched build "(STOCK)" that way.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        offenders = re.findall(r"\$\{\{[^}]*&&\s*''\s*\|\|[^}]*\}\}", text)
+        assert not offenders, (
+            "these render their fallback unconditionally, because the true "
+            f"branch is the empty string: {offenders}"
+        )
+
 
 class TestDriver:
     def test_artifact_names_parse(self, driver):
