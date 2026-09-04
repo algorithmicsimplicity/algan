@@ -396,9 +396,34 @@ Caveat on precision, not on direction: the two jobs drew slightly different imag
 Not "≤2 and explainable" — **identical**. `tests/fast` under `ALGAN_TAICHI_BACKEND=quadrants`
 produced an mp4 **byte-identical to the committed baseline** (md5 `7d382c56588a3bbb2dc612b609e868e7`,
 182,938 bytes): 0 of 37,635,840 channel samples differ across 45 frames of 704×396. A second,
-independent `save_frame` of a `Square` in separate processes per backend: 0 of 836,352. With the
-maintainer's bit-identical Windows CUDA render, **LLVM 15 → 22 costs no re-baseline on x86-64**;
-Apple Silicon is untested and is the one arch whose full-render baselines already fail to travel.
+independent `save_frame` of a `Square` in separate processes per backend: 0 of 836,352. The
+maintainer's Windows CUDA render was bit-identical too.
+
+> **Corrected 2026-09-04, and the correction is the more important number.** This section first
+> concluded from the above that "LLVM 15 → 22 costs no re-baseline on x86-64". **That is false for
+> the dense scenes.** Running the *full* suite on both backends on one box — which the gate never
+> did, it only ran `--fast` — puts Taichi at **2964 passed, 0 failed**, so those baselines do travel
+> here, and puts Quadrants at four `tests/full_renders` scenes over tolerance:
+>
+> | scene | max channel delta (tolerance 2) |
+> | --- | --- |
+> | `complex_hierarchy_become` | 3 |
+> | `materials_and_lighting` | 12 |
+> | `solids_and_camera` | **100** |
+> | `text_and_media` | **158** |
+>
+> The two that pass are exactly the two `tests/full_renders/test_full_renders.py:76-92` names as
+> portable, and the four that fail are the ones carrying PN surfaces, shadows, refraction or glTF —
+> which is what that comment's own mechanism predicts: `fast_math` flips borderline tessellation
+> levels, and *which* levels are borderline is a property of the arithmetic. A different LLVM is a
+> different arithmetic in exactly the way a different CPU is, and the magnitudes land in the same
+> 29-204 band it measured across machines.
+>
+> So the honest statement is: **`tests/fast` and one CUDA render are byte-identical; the PN-heavy
+> full renders are not, and Track B carries a real `tests/full_renders` re-baseline on CPU**,
+> inspected scene by scene, plus the release-asset repackaging `tests/README.md` requires. §7.3
+> step 6 already asked for that; what changed is that it is now known to be necessary rather than
+> precautionary. Apple Silicon remains untested.
 
 `uv run -m pytest -q --fast`: **526 passed on both backends**, zero failures in `algan/`. The whole
 engine ran unmodified. Two test files imported the compiler directly and needed rerouting through
@@ -479,8 +504,11 @@ Python-side) and any pixel reading on Apple Silicon.
 
 #### Verdict, and what B costs that §6 did not price
 
-Criterion by criterion: macOS build **green for B, red for A**; pixel deltas **zero**, not merely
-within tolerance; the three repros **do not distinguish the bases except in B's favour**; and
+Criterion by criterion: macOS build **green for B, red for A**; pixel deltas **zero on the criterion
+the gate names** (`tests/fast`, byte-identical) but **up to 158 channel values on four of the six
+dense full-render scenes**, which the gate did not run and which the correction above measures — so
+the criterion passes and the re-baseline it was meant to rule out is real after all; the three
+repros **do not distinguish the bases except in B's favour**; and
 Python 3.9 / macOS < 13 is met on every piece of evidence in the repository — Intel Macs are
 *refuted* as a loss (Taichi 1.7.4 has never published a macOS x86_64 wheel for any Python), Quadrants
 *adds* manylinux aarch64 which Taichi never shipped, the only genuine loss is cp39 on Linux-x86_64
