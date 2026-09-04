@@ -1,0 +1,361 @@
+diff --git a/python/quadrants/lang/_ndarray.py b/python/quadrants/lang/_ndarray.py
+index a00f17bc6..a9dc4ff0d 100644
+--- a/python/quadrants/lang/_ndarray.py
++++ b/python/quadrants/lang/_ndarray.py
+@@ -13,6 +13,7 @@ _arch_metal = _qd_core.Arch.metal
+ 
+ from quadrants.lang.exception import QuadrantsIndexError
+ from quadrants.lang.util import (
++    DataTypeCxxWrapper,
+     cook_dtype,
+     get_traceback,
+     python_scope,
+@@ -582,6 +583,76 @@ class ScalarNdarray(Ndarray):
+         return "<qd.ndarray>"
+ 
+ 
++class ExternalMetalNdarray(Ndarray):
++    """A Quadrants ndarray over an ``MTLBuffer`` this process did not allocate.
++
++    Built to let a torch MPS tensor reach a kernel without the host round trip
++    the launch path otherwise does for it: an argument that arrives as an
++    ``Ndarray`` is bound by device allocation, while a torch tensor on a
++    non-matching arch is copied to the host before the launch and copied back
++    after (``set_arg_ext_array``).
++
++    Args:
++        dtype (DataType): SCALAR element type -- ``qd.f16``, not
++            ``qd.types.vector(4, qd.f16)``. A vector or matrix element is asked
++            for through ``element_shape``, exactly as ``VectorNdarray`` and
++            ``MatrixNdarray`` build theirs.
++        arr_shape (Tuple[int]): OUTER shape, in elements. For a vector-element
++            array this excludes the element dimensions, so an array a kernel
++            annotates ``ndarray(dtype=vector(4, f16), ndim=2)`` has a 2-tuple
++            here and ``element_shape=(4,)``.
++        buffer_handle (int): the ``id<MTLBuffer>`` as an integer. For torch,
++            ``tensor.untyped_storage().data_ptr()`` -- **not** ``data_ptr()``,
++            which is that object pointer with the storage offset added to it.
++        byte_offset (int): where the array starts inside the buffer. For torch,
++            ``tensor.storage_offset() * tensor.element_size()``.
++        element_shape (Tuple[int]): the element's own dimensions, ``()`` for a
++            scalar element. Quadrants type-checks an ndarray argument against
++            the annotation's element type, so an array a kernel wants as
++            ``vector(4, f16)`` is rejected outright when it arrives as ``f16``
++            -- which is why this cannot be inferred from the buffer.
++
++    The buffer is **adopted, not owned**: Quadrants will not free it, and the
++    caller has to keep the owning object alive for at least as long as this
++    ndarray, or the allocator underneath may recycle the buffer while a kernel
++    is reading it.
++    """
++
++    def __init__(self, dtype, arr_shape, buffer_handle, byte_offset=0, element_shape=()):
++        super().__init__()
++        self.dtype = cook_dtype(dtype)
++        self._element_shape = tuple(int(d) for d in element_shape)
++        if self._element_shape:
++            # The same construction VectorNdarray/MatrixNdarray use: the element
++            # type is a tensor type over the scalar dtype, and it is what
++            # `create_ndarray_from_metal_buffer` is handed. `Ndarray`'s
++            # DeviceAllocation constructor reads the element shape back off it,
++            # so the C++ side needs nothing beyond a tensor DataType here.
++            self.element_type = DataTypeCxxWrapper(
++                _qd_core.get_type_factory_instance().get_tensor_type(self._element_shape, self.dtype).get_ptr()
++            )
++        else:
++            self.element_type = dtype
++        self.arr = impl.get_runtime().prog.create_ndarray_from_metal_buffer(
++            cook_dtype(self.element_type), list(arr_shape), int(buffer_handle), int(byte_offset)
++        )
++        # `shape` is a read-only property derived from this; the base class
++        # `__del__` is what hands `self.arr` back to `Program::delete_ndarray`.
++        self._physical_shape = tuple(self.arr.shape)
++
++    @property
++    def element_shape(self):
++        return self._element_shape
++
++    def _fill_by_kernel(self, val):
++        from quadrants._kernels import fill_ndarray  # pylint: disable=C0415
++
++        fill_ndarray(self, val)
++
++    def __repr__(self):
++        return "<qd.ndarray (imported MTLBuffer)>"
++
++
+ class NdarrayHostAccessor:
+     def __init__(self, ndarray):
+         dtype = ndarray.element_data_type()
+diff --git a/quadrants/program/launch_context_builder.cpp b/quadrants/program/launch_context_builder.cpp
+index c3b2d4e64..8e77c595d 100644
+--- a/quadrants/program/launch_context_builder.cpp
++++ b/quadrants/program/launch_context_builder.cpp
+@@ -342,6 +342,14 @@ void LaunchContextBuilder::set_arg_ndarray(int arg_id, const Ndarray &arr) {
+   QD_ASSERT_INFO(arr.shape.size() <= quadrants_max_num_indices,
+                  "External array cannot have > {max_num_indices} indices");
+   set_arg_ndarray_impl(arg_id, ptr, arr.shape);
++  set_arg_ndarray_buffer_offset(arg_id, arr);
++}
++
++void LaunchContextBuilder::set_arg_ndarray_buffer_offset(int arg_id, const Ndarray &arr) {
++  if (arr.buffer_offset != 0) {
++    array_byte_offsets[arg_id] = arr.buffer_offset;
++    array_byte_sizes[arg_id] = arr.get_element_size() * arr.get_nelement();
++  }
+ }
+ 
+ void LaunchContextBuilder::set_args_ndarray(const std::vector<int> &args_id, const std::vector<Ndarray *> &arrs) {
+@@ -370,6 +378,7 @@ void LaunchContextBuilder::set_args_ndarray(const std::vector<int> &args_id, con
+       total_size *= shape[i];
+     }
+     set_array_runtime_size(arg_id, total_size);
++    set_arg_ndarray_buffer_offset(arg_id, arr);
+   }
+ }
+ 
+@@ -379,6 +388,7 @@ void LaunchContextBuilder::set_arg_ndarray_with_grad(int arg_id, const Ndarray &
+   QD_ASSERT_INFO(arr.shape.size() <= quadrants_max_num_indices,
+                  "External array cannot have > {max_num_indices} indices");
+   set_arg_ndarray_impl(arg_id, ptr, arr.shape, ptr_grad);
++  set_arg_ndarray_buffer_offset(arg_id, arr);
+ }
+ 
+ void LaunchContextBuilder::set_args_ndarray_with_grad(const std::vector<int> &args_id,
+diff --git a/quadrants/program/launch_context_builder.h b/quadrants/program/launch_context_builder.h
+index f58ce8a70..2896c433e 100644
+--- a/quadrants/program/launch_context_builder.h
++++ b/quadrants/program/launch_context_builder.h
+@@ -132,6 +132,12 @@ class LaunchContextBuilder {
+                             const std::vector<int> &shape,
+                             intptr_t devalloc_ptr_grad = 0);
+   void set_arg_ndarray(int arg_id, const Ndarray &arr);
++  // Records `arr.buffer_offset` (and the array's byte size) for `arg_id` when
++  // it is non-zero, which it is only for an ndarray built over an imported
++  // buffer that holds more than the array. A no-op on every other path, so
++  // `array_byte_offsets` / `array_byte_sizes` stay empty for kernels that take
++  // only Quadrants-allocated ndarrays.
++  void set_arg_ndarray_buffer_offset(int arg_id, const Ndarray &arr);
+   // Bulk processing of multiple individual Quadrants NDarray arguments (without
+   // any associated gradient) at the same time.
+   // See 'set_arg_float' for details.
+@@ -230,6 +236,13 @@ class LaunchContextBuilder {
+   // walk `args_type` element offsets. The args-type walk would emit spurious "Cannot treat as TensorType"
+   // diagnostics on out-of-rank axis lookups; mirroring shapes once at set-time is both cheaper and quieter.
+   std::unordered_map<int, std::vector<int>> ndarray_shapes;
++  // Byte offset and byte size of each ndarray argument inside its
++  // DeviceAllocation. Empty for every argument whose offset is zero, which is
++  // all of them unless the ndarray was built over an imported buffer that holds
++  // more than the array (see `Ndarray::buffer_offset`). Read only by the gfx
++  // runtime, which is the only backend that can bind at an offset.
++  std::unordered_map<int, uint64> array_byte_offsets;
++  std::unordered_map<int, uint64> array_byte_sizes;
+ };
+ 
+ }  // namespace quadrants::lang
+diff --git a/quadrants/program/ndarray.cpp b/quadrants/program/ndarray.cpp
+index 5bc78fd99..482f09e87 100644
+--- a/quadrants/program/ndarray.cpp
++++ b/quadrants/program/ndarray.cpp
+@@ -102,6 +102,15 @@ Ndarray::~Ndarray() {
+     // by a future Ndarray allocation. Without this, a new Ndarray that happens to occupy the same heap address
+     // would pick up the destroyed ndarray's last generation counter and could falsely match a cache snapshot.
+     prog_->adstack_cache().erase_ndarray_data_gen(const_cast<DeviceAllocation *>(&ndarray_alloc_));
++  }
++  // `owns_imported_allocation` is the third case the two constructors do not
++  // cover: no Program allocated this ndarray (so `prog_` is null and the
++  // adstack bookkeeping above does not apply), but the DeviceAllocation was
++  // minted for it by `Program::create_ndarray_from_metal_buffer` and releasing
++  // it cannot free the underlying MTLBuffer -- `import_mtl_buffer` marks that
++  // `dont_destroy`. Releasing it here reclaims the MetalMemory record instead
++  // of leaking one per imported slice.
++  if (prog_ || owns_imported_allocation) {
+     ndarray_alloc_.device->dealloc_memory(ndarray_alloc_);
+   }
+ }
+diff --git a/quadrants/program/ndarray.h b/quadrants/program/ndarray.h
+index 82f6cae58..6653e32d3 100644
+--- a/quadrants/program/ndarray.h
++++ b/quadrants/program/ndarray.h
+@@ -48,6 +48,27 @@ class QD_DLL_EXPORT Ndarray {
+                    const DebugInfo &dbg_info = DebugInfo());
+ 
+   DeviceAllocation ndarray_alloc_{kDeviceNullAllocation};
++  // Byte offset of this ndarray's data inside `ndarray_alloc_`.
++  //
++  // Zero for every ndarray Quadrants allocates itself, which is why nothing
++  // else reads it. It is non-zero only for one built over an *imported* buffer
++  // that holds more than this array -- torch hands out views of one allocation,
++  // so an imported torch tensor is a slice of the buffer that was imported.
++  // Only the gfx runtime honours it (it binds `alloc.get_ptr(offset)`); a
++  // backend that cannot take an offset should refuse a non-zero one rather than
++  // silently bind the wrong bytes.
++  std::size_t buffer_offset{0};
++  // Whether ~Ndarray should release `ndarray_alloc_` even though no Program
++  // allocated it.
++  //
++  // The DeviceAllocation constructor exists for arrays Quadrants does not own,
++  // so the destructor leaves them alone -- but an *imported* buffer is a third
++  // case: Quadrants does not own the MTLBuffer (import_mtl_buffer marks it
++  // `dont_destroy`, so releasing the allocation cannot free it) and it does own
++  // the MetalMemory record wrapping it. Without this the record leaks, one per
++  // imported slice, which for an arena handed out as hundreds of views is not a
++  // rounding error.
++  bool owns_imported_allocation{false};
+   DataType dtype;
+   // Invariant: Since ndarray indices are flattened for vector/matrix, this is
+   // always true:
+diff --git a/quadrants/program/program.cpp b/quadrants/program/program.cpp
+index d494550d1..59d80930d 100644
+--- a/quadrants/program/program.cpp
++++ b/quadrants/program/program.cpp
+@@ -34,6 +34,7 @@
+ #ifdef QD_WITH_METAL
+ #include "quadrants/runtime/program_impls/metal/metal_program.h"
+ #include "quadrants/rhi/metal/metal_api.h"
++#include "quadrants/rhi/metal/metal_device.h"
+ #endif  // QD_WITH_METAL
+ 
+ #if defined(_M_X64) || defined(__x86_64)
+@@ -469,6 +470,27 @@ Ndarray *Program::create_ndarray(const DataType type,
+   return arr_ptr;
+ }
+ 
++Ndarray *Program::create_ndarray_from_metal_buffer(const DataType type,
++                                                   const std::vector<int> &shape,
++                                                   uint64_t buffer_handle,
++                                                   uint64_t byte_offset) {
++#ifdef QD_WITH_METAL
++  Device *device = program_impl_->get_compute_device();
++  QD_ERROR_IF(device == nullptr, "no compute device: cannot import a Metal buffer");
++  DeviceAllocation devalloc = metal::import_external_mtl_buffer(device, buffer_handle);
++  QD_ERROR_IF(devalloc.device == nullptr,
++              "the compute device is not a Metal device, or the buffer handle was null: cannot import a Metal buffer");
++  auto arr = std::make_unique<Ndarray>(devalloc, type, shape);
++  arr->buffer_offset = byte_offset;
++  arr->owns_imported_allocation = true;
++  auto arr_ptr = arr.get();
++  ndarrays_.insert({arr_ptr, std::move(arr)});
++  return arr_ptr;
++#else
++  QD_ERROR("this Quadrants was built without the Metal backend");
++#endif
++}
++
+ void Program::delete_ndarray(Ndarray *ndarray) {
+   // [Note] Ndarray memory deallocation Ndarray's memory allocation is managed by Quadrants and Python can control this
+   // via Quadrants indirectly. For example, when an ndarray is GC-ed in Python, it signals Quadrants to free its memory
+diff --git a/quadrants/program/program.h b/quadrants/program/program.h
+index 566c6f00b..a1b56636c 100644
+--- a/quadrants/program/program.h
++++ b/quadrants/program/program.h
+@@ -325,6 +325,22 @@ class QD_DLL_EXPORT Program {
+   std::pair<const StructType *, size_t> get_struct_type_with_data_layout(const StructType *old_ty,
+                                                                          const std::string &layout);
+ 
++  /* Constructs an Ndarray over a buffer this process did not allocate.
++   *
++   * `buffer_handle` is an `id<MTLBuffer>` as an integer and `byte_offset` is
++   * where this array starts inside it, which is how torch describes an MPS
++   * tensor: the storage is one MTLBuffer and the tensor is a view at an
++   * offset. The buffer is adopted, not owned -- Quadrants will not free it --
++   * so the caller must keep it alive for as long as the Ndarray is used.
++   *
++   * Only available on a Metal-enabled build with a Metal compute device;
++   * raises otherwise.
++   */
++  Ndarray *create_ndarray_from_metal_buffer(const DataType type,
++                                            const std::vector<int> &shape,
++                                            uint64_t buffer_handle,
++                                            uint64_t byte_offset);
++
+   void delete_ndarray(Ndarray *ndarray);
+ 
+   intptr_t get_ndarray_data_ptr_as_int(const Ndarray *ndarray);
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index 281e0a608..df37773ad 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -414,6 +414,14 @@ void export_lang(nb::module_ &m) {
+           },
+           nb::arg("dt"), nb::arg("shape"), nb::arg("layout") = ExternalArrayLayout::kNull, nb::arg("zero_fill") = false,
+           nb::arg("dbg_info") = DebugInfo(), nb::rv_policy::reference)
++      .def(
++          "create_ndarray_from_metal_buffer",
++          [](Program *program, const DataType &dt, const std::vector<int> &shape, uint64_t buffer_handle,
++             uint64_t byte_offset) -> Ndarray * {
++            return program->create_ndarray_from_metal_buffer(dt, shape, buffer_handle, byte_offset);
++          },
++          nb::arg("dt"), nb::arg("shape"), nb::arg("buffer_handle"), nb::arg("byte_offset") = uint64_t(0),
++          nb::rv_policy::reference)
+       .def("delete_ndarray", &Program::delete_ndarray)
+       .def("get_ndarray_data_ptr_as_int",
+            [](Program *program, Ndarray *ndarray) { return program->get_ndarray_data_ptr_as_int(ndarray); })
+diff --git a/quadrants/rhi/metal/metal_device.h b/quadrants/rhi/metal/metal_device.h
+index 8e08fa438..59570b44e 100644
+--- a/quadrants/rhi/metal/metal_device.h
++++ b/quadrants/rhi/metal/metal_device.h
+@@ -586,5 +586,18 @@ class MetalDevice final : public GraphicsDevice {
+   bool is_destroyed_{false};
+ };
+ 
++// Adopt an externally-owned MTLBuffer (torch's, say) as a DeviceAllocation.
++//
++// A thin wrapper around MetalDevice::import_mtl_buffer, and it exists for a
++// linkage reason rather than a design one. `MTLBuffer_id` is `id<MTLBuffer>` in
++// an Objective-C++ translation unit and `struct MTLBuffer_t *` in a plain C++
++// one (see DEFINE_METAL_ID_TYPE at the top of this header), so the two
++// spellings of `import_mtl_buffer` mangle differently and a .cpp caller would
++// not link against the .mm definition. Taking the buffer as an integer handle
++// gives both sides the same signature.
++//
++// Returns kDeviceNullAllocation if `device` is not a MetalDevice.
++DeviceAllocation import_external_mtl_buffer(Device *device, uint64_t handle);
++
+ }  // namespace metal
+ }  // namespace quadrants::lang
+diff --git a/quadrants/rhi/metal/metal_device.mm b/quadrants/rhi/metal/metal_device.mm
+index fa786d0dd..6457622d0 100644
+--- a/quadrants/rhi/metal/metal_device.mm
++++ b/quadrants/rhi/metal/metal_device.mm
+@@ -1287,6 +1287,14 @@ DeviceAllocation MetalDevice::import_mtl_buffer(MTLBuffer_id buffer) {
+   out.alloc_id = reinterpret_cast<uint64_t>(&alloc);
+   return out;
+ }
++DeviceAllocation import_external_mtl_buffer(Device *device, uint64_t handle) {
++  MetalDevice *metal_device = dynamic_cast<MetalDevice *>(device);
++  if (metal_device == nullptr || handle == 0) {
++    return kDeviceNullAllocation;
++  }
++  return metal_device->import_mtl_buffer((MTLBuffer_id)(void *)handle);
++}
++
+ void MetalDevice::dealloc_memory(DeviceAllocation handle) {
+   RHI_ASSERT(handle.device == this);
+   memory_allocs_.release(&get_memory(handle.alloc_id));
+diff --git a/quadrants/runtime/gfx/runtime.cpp b/quadrants/runtime/gfx/runtime.cpp
+index 76486be7e..8dc0ef953 100644
+--- a/quadrants/runtime/gfx/runtime.cpp
++++ b/quadrants/runtime/gfx/runtime.cpp
+@@ -694,7 +694,20 @@ void GfxRuntime::launch_kernel(KernelHandle handle, LaunchContextBuilder &host_c
+       if (bind.buffer.type == BufferType::ExtArr) {
+         const auto &src = bind.buffer.is_grad ? ext_array_grads : any_arrays;
+         auto it = src.find(bind.buffer.root_id);
+-        bindings->rw_buffer(bind.binding, it != src.end() ? it->second : kDeviceNullAllocation);
++        // An ndarray built over an imported buffer may start part-way into it
++        // -- torch's tensors are views of one allocation -- so bind at the
++        // offset when there is one. The zero-offset case keeps the
++        // DeviceAllocation overload it always used, so nothing changes for an
++        // ndarray Quadrants allocated itself. Only the primal is offset: the
++        // offset recorded for an argument describes the ndarray that was passed
++        // for it, not whatever allocation its gradient lives in.
++        auto offset_it = host_ctx.array_byte_offsets.find(bind.buffer.root_id);
++        if (!bind.buffer.is_grad && it != src.end() && offset_it != host_ctx.array_byte_offsets.end()) {
++          bindings->rw_buffer(bind.binding, it->second.get_ptr(offset_it->second),
++                              host_ctx.array_byte_sizes.at(bind.buffer.root_id));
++        } else {
++          bindings->rw_buffer(bind.binding, it != src.end() ? it->second : kDeviceNullAllocation);
++        }
+       } else if (bind.buffer.type == BufferType::AdStackOverflow) {
+         // Two-slot u32 buffer: [overflow_signal, task_registry_id]. The SPIR-V codegen task-end emit
+         // writes a non-zero `stack_id + 1` into slot 0 via OpAtomicUMax whenever any push site overflowed
