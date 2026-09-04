@@ -83,6 +83,15 @@ so a plumbing reference and not a benchmark)::
     many_lights  0.95 s   pt_shade 10 launches / 2 waves, 15.6 ms device
     text_2d      0.35 s   pt_shade  3 launches / 2 waves,  9.3 ms device
 
+Kaggle T4 readings (2026-09-04, warm RUN 2, five frames, 16 spp, 4 bounces;
+`benchmarks/performance/reports/t4_2026_09/pt_baseline_1.md` has every arm)::
+
+    lit 1280x720   1.76 s   pt_shade 248 ms  traverse 152 ms  denoise 383 ms
+                            host 879 ms; deterministic same scene 1.03 s
+    lit 320x180    0.83 s   pt_shade  18 ms  traverse  11 ms  denoise  43 ms
+    many_lights    0.88 s   pt_shade  20 ms  (64 lights: flat)
+    text_2d 720p   1.17 s   traverse 153 ms  pt_shade 147 ms  denoise 394 ms
+
 Two things to carry into a real run from those. **At this resolution the host
 side is ~85% of the wall clock** -- geometry prep, the merge and the encode --
 so a table taken at 96x54 ranks host work, not the path tracer; use the

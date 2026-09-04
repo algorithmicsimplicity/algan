@@ -226,6 +226,35 @@ denoise_tile_size = env_int("ALGAN_DENOISE_TILE_SIZE", 512)
 # cache-and-download resolution (offline machines, pinned deployments).
 # Empty = resolve normally.
 denoise_weights = env_str("ALGAN_DENOISE_WEIGHTS", "")
+# Arithmetic precision of the denoiser's U-Net: ``"auto"`` (the default) runs
+# half precision with channels-last activations on CUDA -- what OIDN's own
+# GPU path does, and what the T4's tensor cores are for -- and float32
+# everywhere else; ``"fp16"`` / ``"fp32"`` force one. Measured before the
+# switch existed (benchmarks/performance/reports/t4_2026_09/pt_baseline_1.md):
+# the fp32 filter was the largest device-side item of a path-traced frame,
+# 77 ms per 720p frame, more than the transport kernels. Half precision moves
+# the denoised pixels by a fraction of a count, so a render that must match a
+# float32 baseline pins "fp32".
+denoise_precision = env_str("ALGAN_DENOISE_PRECISION", "auto")
+
+_DENOISE_PRECISIONS = ("auto", "fp16", "fp32")
+
+
+def set_denoise_precision(value):
+    """Select the denoiser's arithmetic precision (see ``denoise_precision``).
+
+    One of ``"auto"``, ``"fp16"`` or ``"fp32"``. Takes effect at the next
+    render; the loaded network is re-cast when the choice changes.
+    """
+    global denoise_precision
+    text = str(value).strip().lower()
+    if text not in _DENOISE_PRECISIONS:
+        raise ValueError(
+            f"denoise_precision must be one of {_DENOISE_PRECISIONS}, got {value!r}"
+        )
+    denoise_precision = text
+
+
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set

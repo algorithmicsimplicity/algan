@@ -125,6 +125,46 @@ def test_unet_runs_on_aligned_input_and_rejects_misaligned():
         net(torch.rand((1, 9, 30, 48)))
 
 
+def test_unet_half_precision_matches_float32_within_tolerance():
+    """The CUDA default runs the network in half precision (channels-last);
+    its answer must be the float32 answer to within half-float rounding,
+    and must come back as float32 whatever it ran at.
+    """
+    weights = _random_weights()
+    x = torch.rand((1, 9, 32, 48))
+    ref = OidnUNet(weights, torch.device("cpu"))(x)
+    half = OidnUNet(
+        weights, torch.device("cpu"), dtype=torch.float16, channels_last=True
+    )
+    out = half(x)
+    assert out.dtype == torch.float32
+    assert tuple(out.shape) == tuple(ref.shape)
+    scale = float(ref.abs().max())
+    assert float((out - ref).abs().max()) < 2e-2 * max(scale, 1.0)
+
+
+def test_denoise_precision_setting_resolves_per_device_and_validates():
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.settings import SETTINGS
+
+    experimental = SETTINGS.raytracing.experimental
+    try:
+        experimental.set(denoise_precision="auto")
+        assert denoise_mod.resolve_precision("cpu") == (torch.float32, False)
+        assert denoise_mod.resolve_precision("cuda") == (torch.float16, True)
+        experimental.set(denoise_precision="fp32")
+        assert denoise_mod.resolve_precision("cuda") == (torch.float32, False)
+        experimental.set(denoise_precision="FP16")
+        assert rt_settings.denoise_precision == "fp16"
+        assert denoise_mod.resolve_precision("cpu") == (torch.float16, True)
+        with pytest.raises(Exception, match="denoise_precision"):
+            experimental.set(denoise_precision="bf16")
+        assert rt_settings.denoise_precision == "fp16"
+    finally:
+        experimental.set(denoise_precision="auto")
+    assert rt_settings.denoise_precision == "auto"
+
+
 def test_unet_rejects_wrong_shapes():
     tensors = _random_weights()
     tensors["dec_conv0.weight"] = torch.randn(3, 31, 3, 3)
