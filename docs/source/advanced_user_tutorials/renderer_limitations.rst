@@ -204,6 +204,15 @@ the path tracer, which does not implement custom scatter overrides. Algan
 refuses such a combination rather than silently dropping it. See
 :ref:`renderer-capabilities` for the full table.
 
+The path tracer is the **fallback** for the scenes the deterministic renderer
+cannot render: more lights than its shadow cap (below), reflective or
+transparent geometry whose ray splitting exhausts render memory, and anything
+needing global illumination. A failure of either kind names the switch; the
+setting to reach for is a modest sample count with a short bounce budget,
+``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``, raised from
+there only if the scene needs indirect light or the denoised result is still
+noisy. See :ref:`renderer-settings` in the performance guide.
+
 Three further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
@@ -539,7 +548,12 @@ Limits and approximations
   the first render). Lights past the cap are still lit, just never shadowed, and
   **each emitter sample of a** :class:`~.RectAreaLight` **counts as one slot**, so
   a single 4x4 area light fills the default cap on its own. A render that goes
-  over the cap warns and reports the surplus (:ref:`limits-truncation`).
+  over the cap warns and reports the surplus (:ref:`limits-truncation`). The
+  deterministic renderer's cost also grows with every light, shadowed or not.
+  A scene with more lights than the cap is what the path tracer is for: it
+  samples lights instead of summing them, so every light casts a shadow and
+  the cost per shading point does not depend on how many there are
+  (``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``).
 * **One shadow query point per same-surface region per pixel.** The query is
   taken at the region's largest fragment and, by default, at four sub-pixel
   positions around it
@@ -871,7 +885,8 @@ Hard limits
    * - Shadowed lights
      - 16 (``ALGAN_MAX_SHADOW_LIGHTS``)
      - Further lights are lit but never shadowed. **Warns**
-       (:ref:`limits-truncation`).
+       (:ref:`limits-truncation`). The path tracer has no cap: it samples
+       lights instead of summing them.
    * - Overlapping layers of one surface in one pixel
      - 16
      - Further layers merge into the last, and attenuate once between them

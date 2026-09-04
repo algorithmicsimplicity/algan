@@ -118,8 +118,10 @@ _CEILING_MESSAGES = {
     "shadow_lights": (
         "{count} light slot(s) past the shadow cap of {cap} are lit but cast "
         "no shadow (each RectAreaLight emitter sample spends one slot). Raise "
-        "ALGAN_MAX_SHADOW_LIGHTS before 'import algan', or use fewer / "
-        "coarser-sampled lights."
+        "ALGAN_MAX_SHADOW_LIGHTS before 'import algan', use fewer / "
+        "coarser-sampled lights, or render with the path tracer, which "
+        "samples lights instead of summing them and has no shadow cap: "
+        "SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)."
     ),
     "sheet_layers": (
         "{count} fragment(s) overlapped their own surface more than {cap} "

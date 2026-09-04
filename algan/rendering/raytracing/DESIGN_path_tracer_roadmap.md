@@ -79,10 +79,28 @@ plainly: an area light casts no reflected image in a mirror, and its highlight
 on a glossy surface comes from the analytic stage formula rather than from
 transport. §5 covers why those two ends do not agree numerically.
 
-What follows is everything the original plan named beyond the staged table
-(§§1–4), then the divergences from the SOTA survey the redesign was specified
-against that were *decided* rather than merely deferred (§§5–8), then the
-completeness audit the fallback role demands (§9).
+What follows is the throughput baseline and the cheap wins the fallback role
+puts first (§0), then everything the original plan named beyond the staged
+table (§§1–4), then the divergences from the SOTA survey the redesign was
+specified against that were *decided* rather than merely deferred (§§5–8),
+then the completeness audit the fallback role demands (§9).
+
+**The order of work, as of 2026-09-04.** The sections are numbered by the
+history of the document, not by priority. The priority, under the purpose
+above and the constraint that a fallback the user is *told* to reach for must
+be as fast as it can be, is:
+
+1. §0 — a measured baseline, then the kernel and host wins it ranks.
+2. §0.3 — the defaults and the switch: what "turn on path tracing" means.
+3. §9 — the fallback never refuses (custom scatter as a delta lobe, the
+   never-refuses test, the failure messages that point at the switch).
+4. §2 — adaptive sampling, if the baseline confirms the camera-segment peel
+   and the unlit pixels are where the time goes.
+5. §6 + §5 — the light tree, the authored-appearance sampling fix and the
+   single BSDF, landed together as one re-baseline (§5 says why together).
+6. §3 tier 2, §7's real blue noise, §8's pools — only behind a profile.
+7. §1 and §4 are not fallback work at all (each section says why) and sit
+   behind everything above.
 
 
 ## The contract every one of these must land under
@@ -117,10 +135,18 @@ These are not preferences; each is load-bearing and tested.
    renderer; `pt_shade` drains `kbuf`-sized hit batches; per-path state lives
    in `rs_ro/rs_rd/rs_sca/rs_int/rs_pix` + `pt_thru/pt_acc/pt_aov`. One
    compiled kernel serves every scene: per-scene facts ride runtime words
-   (`nee_meta`) and runtime-gated branches, never new `ti.template()`
-   arguments (variant explosion) — and the kernel sits at 59 of Taichi's 64
-   runtime-argument ceiling, so new inputs prefer widening an existing tensor
-   over adding one.
+   (`nee_meta`) and runtime-gated branches, not new `ti.template()`
+   arguments — a template argument multiplies the cold compile, which on the
+   fallback is paid by a user who is already having a bad day. The one
+   acceptable kind is a *two-valued* gate the deterministic renderer already
+   compiles both sides of (the shadow any-hit mode, the closest-hit traverse;
+   §0.2), so no new kernel body exists that did not before.
+
+   The argument-count pressure this contract used to cite is stale: since
+   arena packing (`arena_args_taichi.py`) `pt_shade_arena` takes 40
+   parameters, not 59 of 64. New inputs still prefer widening an existing
+   tensor (`nee_meta` has spare words, `nee_ref` can carry more row kinds)
+   because that is cheaper than a parameter, not because the ceiling is near.
 3. **Bounded per-path state.** All per-path and per-scene state is accounted
    in `_PT_BYTES_PER_SLOT` / scoped allocations so the tile/wave split and the
    OOM chunk-halving retry keep working — and, more than bookkeeping, the
@@ -142,7 +168,158 @@ These are not preferences; each is load-bearing and tested.
    `2 + 6b + 4, 5` are already **reserved for volumes**.
 
 
+## 0. Throughput first: the baseline, the cheap wins, and the switch
+
+Every section after this one ranks work by *variance*: what makes a sample
+worth more. None of them asks what a sample *costs*, and until 2026-09-04
+nothing in the repository did either — there was no path-tracer benchmark,
+no recorded timing, and the denoiser had never been timed. For a renderer a
+user is told to fall back to, that is the wrong first question. This section
+is the throughput half of the plan, and it comes first because the profile it
+produces is what should order everything below.
+
+### 0.1 The baseline
+
+`benchmarks/performance/pt_baseline.py` is the harness: three scenes
+(an all-opaque lit scene, the same solids under 64 lights, and a 2-D text and
+transparency stack), a warm RUN 2 per the gpu_harnesses rules, device-side
+kernel times split into `pt_generate`, `wavefront_traverse_events`,
+`pt_shade`, `compact_ray_slots`, `pt_reduce`, `finalize_samples` and the
+denoiser, launch counts, and a `--deterministic` arm so the fallback's cost
+is quoted *relative to what the user was rendering with*. Arms are selected
+by environment variable, one process each (a `ti.static` gate is resolved at
+compile time; `agent_guidance/taichi.md`). The T4 is the box to run it on;
+the Mac's per-launch numbers are not sound (`agent_guidance/gpu_harnesses.md`).
+
+Three numbers the baseline must produce before any section below is
+scheduled: the share of a lit frame spent in traversal versus shading versus
+host round-trips; the share of a text frame spent re-peeling the camera
+segment per sample (the §2 case); and the denoiser's fixed per-frame cost,
+which is independent of spp and bounds how low spp can usefully go.
+
+### 0.2 Cheap wins the survey found in the kernel
+
+Each is a half-day to a day, each ships behind an experimental kill switch,
+and each has a byte-identical acceptance test on the scene class it applies
+to — which is what makes them cheap to land without a re-baseline:
+
+* **Shadow rays always took the full ordered march.** `_pt_nee_visibility`
+  hardcoded `anyhit = 1`. The deterministic renderer chooses mode 3 (opaque
+  any-hit, the march compiled out) when the batch is provably all-opaque
+  (`has_transmissive`, `tri_has_translucent`, `bez_has_translucent`,
+  `has_uncertain_texture_alpha` all clear — `tracer.py`'s decision). Shadow
+  rays are the majority ray type in this renderer (one per light sample per
+  lit crossing, against one continuation per bounce), so the path tracer now
+  takes the same decision (`pt_shadow_anyhit`). Mode 2, the mixed-batch
+  pre-pass, measured as a loss on the deterministic renderer and is not
+  used. Acceptance: byte-identical on an all-opaque batch, up to the two
+  corner cases `_shadow_occluded`'s docstring documents.
+* **Secondary rays gathered a four-deep k-buffer on opaque scenes.** The
+  shared traverse kernel has an `opaque_closest` mode (one nearest hit via
+  `_nearest_surface_g`) that `path_trace_render` passed 0 for as a
+  "deterministic-only rollout". A path tracer wants exactly closest-hit for
+  an opaque batch; `pt_opaque_closest` passes it under the same
+  `all_visible_opaque` gate the deterministic renderer uses. Acceptance:
+  byte-identical, since the nearest hit of an opaque batch is the first
+  k-buffer entry.
+* **The ambient / hemisphere fill scanned every light row per lit crossing**
+  (the first bullet of §6a-bis). The host now appends the direction-less
+  rows after the `E` sampled entries of `nee_ref` with their own kind, and
+  their count rides `nee_meta`; the kernel loops the count. Byte-identical.
+* **`nee_meta` was decoded per path per launch before the hit test**, so a
+  path with no hits paid eleven loads for nothing. Moved under the test.
+* **Sampler overhead per draw.** `pt_sample_2d` re-derives the
+  `(seed_root, key)` half of its seed on every call although it is constant
+  for the whole path; the roulette draw computes a full 2-D pair and keeps
+  one component; `pair_nee0` is recomputed per crossing. All hoistable, none
+  byte-identical (they move every sample), so they wait for the §5
+  re-baseline rather than earning their own.
+* **The authored-appearance shadow loop** (the second bullet of §6a-bis)
+  is the remaining linear-in-lights term and needs the interface decision
+  that section describes. It is not cheap and is listed there, not here.
+
+### 0.2-bis The host sync every iteration
+
+`_ArenaRayCompactor.select` reads `count.item()` after every traverse and
+shade pair — a device sync per iteration — and the peel loop and the bounce
+loop are fused into one host iteration (`pt_shade` performs at most one
+scatter per launch and drains at most `kbuf` crossings), so a wave costs on
+the order of *bounces plus crossings-over-four* round trips, each a sync and
+three launches. At small tiles — low resolution, or a memory budget that
+forces many waves — this is where the wavefront shape's overhead lives, not
+in the inline shadow walk §8 worries about.
+
+The fix, when the baseline shows the sync matters: allocate the hit batch
+once per wave at the pool size the budget already charges
+(`_PT_BYTES_PER_SLOT` counts `kbuf` events at `na == pool`), launch each
+iteration over the *previous* live count with the compaction kernel writing
+a `-1` sentinel over the tail and both kernels skipping `r < 0`, and read the
+count back only every few iterations to decide termination. The traverse
+kernel is shared, so its guard must be output-neutral for the deterministic
+renderer; it is a single compare. This is a "measure first" item: the T4
+number decides it, the CPU number does not (the CPU has no launch latency
+to speak of, so it cannot see the cost).
+
+### 0.3 The defaults, and what "turn on path tracing" means
+
+A fallback is reached for at the last minute, by a user whose scene just
+failed. What the switch does by default therefore matters more than any
+sampling improvement:
+
+* **Fixed seed across frames is the default** (`pt_animated_seed = False`).
+  `_pt_key` used to hash the frame into every sample, so residual noise
+  re-rolled per frame — shimmer, which the eye and the denoiser both punish,
+  and which forces spp *up*. Cycles ships the fixed seed and makes the
+  animated seed opt-in; so does this renderer now. Static regions get
+  identical estimates frame to frame; moving regions re-randomise through
+  the geometry itself. Correlated error reads as a fixed noise texture, which
+  is the better artifact for video. This was §3's tier 1, promoted from a
+  switch to the default.
+* **"Turn on path tracing" has one spelling** — LANDED as
+  `render_loop.PATH_TRACER_FALLBACK_SPELLING`:
+  `SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)`. Before,
+  it meant "pick a `samples_per_pixel`" with `max_bounces` left at 8 and
+  roulette from bounce 3 — the settings of a GI render, paid by a
+  many-lights scene that needed one bounce. A preset *object* was
+  considered and rejected: `RayTracingPreset` captures every one of the
+  section's ~106 fields, so a `PATH_TRACED` constant would overwrite the
+  user's other settings on `set(source=...)`, and the settings system has
+  no partial-preset concept to add one to. A spelling the docs and the
+  failure messages all agree on is the same affordance without a new type.
+* **The failures name the switch** — LANDED. The 16-light shadow
+  truncation warning and every one-frame `OutOfRenderMemory` now end with
+  that spelling (the OOM hint is dropped when the path tracer is already
+  the renderer that failed). The message at the failure is the
+  documentation the user actually reads.
+* **The user docs described a quality upgrade "at dramatically higher
+  cost", never a fallback** — FIXED. `renderer_limitations.rst` and
+  `performance_and_quality.rst` told the user to reach for the path tracer
+  "when you need full light transport"; neither said it is the answer to a
+  many-light scene or a scene that exhausts memory, and neither stated
+  that the deterministic renderer's cost is linear in light count. Both
+  now lead with the three failure classes and the spelling above.
+
+### 0.4 What this section deliberately leaves alone
+
+The sampler's arithmetic cost (~150–200 integer ops per 2-D draw, register
+resident) is real but is not the bottleneck while a traversal costs more
+than a hundred draws; it is on the §5 re-baseline list, not here. Kernel
+variant count is protected by contract 2 and matters for the same reason
+the defaults do: the fallback's cold compile is paid at the worst moment.
+And the megakernel-ness of `pt_shade` — NEE, the shadow walk, BSDF sampling,
+the authored pipeline, the shell ring and the AOVs in one body — is accepted
+until a profile says register pressure is what limits occupancy; splitting
+it is §8's shadow-ray queue, and §8 says why that waits.
+
+
 ## 1. Caustics
+
+**Not fallback work.** Neither renderer produces caustics, so their absence
+never leaves a scene with no renderer (the §9 test). This section is the
+plan for a *new* capability and sits behind everything in §0, §2, §5, §6
+and §9. When it lands it lands behind a switch that defaults off: MNEE adds
+an iteration loop with a visibility ray per step inside the NEE block, on
+the renderer whose cost per vertex is the thing being defended.
 
 **Why absent.** A caustic is an `L (S)+ D` connection: light reaching a
 diffuse vertex *through* specular bending. Unidirectional NEE cannot make that
@@ -201,7 +378,24 @@ range(0, samples, wave_samples)` over every pixel of the tile, and
 content is zero-variance by construction, so adaptive sampling would let text
 and vector-graphics scenes converge at the floor sample count while only lit
 3-D regions pay — likely the single biggest speed win available to the path
-tracer on Algan's actual workload.
+tracer on Algan's actual workload. That "likely" is what §0.1's text-scene
+arm exists to settle: every sample of a text pixel re-peels the camera
+segment deterministically (contract 4), so the win is the peel cost times
+the samples above the floor, and the baseline measures both factors.
+
+Two things to keep straight when it lands. With the denoiser on, the error
+target should be modest — the denoiser is what absorbs the residual, so
+driving pixels to convergence on their own is paying twice. And adaptive
+sampling does nothing for the *lit* pixels' cost per sample; for the
+many-lights scene that is §6's job, not this one's.
+
+The longer-term alternative, if the baseline says the camera-segment peel
+dominates even at the floor count, is hybrid primary visibility: resolve the
+camera segment once through the sheet route (exact analytic coverage, zero
+variance, no per-sample cost) and start paths at the first lit vertex. It
+would also give better anti-aliasing than jitter. It is a large structural
+change and it is not proposed here; it is recorded so that the option is
+weighed against adaptive sampling with numbers rather than rediscovered.
 
 Sketch, staying inside the contract:
 
@@ -242,14 +436,18 @@ residual noise re-rolls per frame — shimmer on lit 3-D content at low spp.
 
 **What it would take**, two tiers:
 
-* **Tier 1 — correlated seeding (cheap, do first).** An experimental
-  `pt_temporal_seed` mode that drops `frame` from the pair key so every frame
+* **Tier 1 — correlated seeding: LANDED, as the default.** The frame is
+  dropped from the pair key unless `pt_animated_seed` is set, so every frame
   reuses one sample set: static regions become perfectly stable (identical
   estimates), moving regions re-randomize through the geometry itself. One
-  line in `_pt_key`, no new buffers, sampler purity untouched. Trade-off to
-  document: correlated error reads as a fixed noise "texture" rather than
-  shimmer — usually the better artifact for animation, but it is a choice,
-  hence a switch rather than a new default.
+  line in `_pt_key`, no new buffers, sampler purity untouched (the key is
+  now `(pt_seed, frame-or-0, pixel, pair, index)`). An earlier draft made
+  this an opt-in switch on the grounds that correlated error is "a choice";
+  §0.3 says why it is the default instead: it is the standard configuration
+  for animation, it is what Cycles ships, and it is the cheapest quality-per
+  -spp win the renderer has. `pt_animated_seed = True` restores per-frame
+  decorrelation for the cases that want it (a still-frame Monte Carlo
+  average across frames, or a user who prefers shimmer to texture).
 * **Tier 2 — motion-vector temporal filtering (SVGF-family).** Needs a
   velocity AOV: at the same first-non-delta vertex the albedo/normal guides
   use, record `tri_obj` + barycentrics (the `pt_aov` row has width to grow),
@@ -273,6 +471,13 @@ the temporal filter unchanged).
 
 
 ## 4. Volumes and subsurface scattering
+
+**Not fallback work**, for the same reason as §1: the deterministic renderer
+has no volumes either, so nothing here is a scene the fallback refuses. It
+is the largest new capability on the list and sits behind everything the
+fallback role needs. Kept because the scaffolding decisions below (the
+reserved sampler pairs, the media stack) constrain the work that *is*
+scheduled.
 
 **Why absent.** Not started; largest scope. What *does* exist is the
 scaffolding: the refraction path carries a nested-media stack in `rs_sca`
@@ -386,6 +591,17 @@ discovered.
 `RectAreaLight` and by an emissive quad of matched radiance agree to within
 noise; the furnace tests extended to the NEE path.
 
+**Land it with the other re-baselines, as one.** This change, §7's
+stratified lobe select, the sampler hoists in §0.2, the self-intersection
+offset in the final section and §6's area-light change each move every
+sample and each say "re-baselines `tests/path_traced/`". Four separate
+re-baselines is four rounds of looking at frames and four release-asset
+uploads (`tests/README.md`, "Where the heavy baselines live"); one is one.
+Batch them behind a single branch and re-baseline once, on both devices.
+Deleting `_pt_direct_response` also removes the second `_light_eval` call
+per ambient row and shrinks the shade kernel, which is a small throughput
+win in its own right.
+
 
 ## 6. Many-light and emissive-mesh sampling
 
@@ -427,12 +643,46 @@ lighting `O(log E)` in the total emitter count, which is the property the
 "worth doing once emissive meshes are a supported look" to **required for a
 stated primary use case**.
 
-Keep a **sum-everything fast path** for tiny tables (a threshold on entry
-count, in the low tens): it is exact, has zero variance and costs less than
-descending a tree. But that is an optimization for the easy case, not the
-architecture — and the easy case is not the one the renderer exists for. Note
-too that `RectAreaLight` expands to `K` rows, so "tiny" is reached sooner than
-light count suggests: one 4x4 area light is already 16 entries.
+A **sum-everything fast path** for tiny tables (a threshold on entry count,
+in the low tens) is exact and zero-variance, but it costs `E` shadow rays per
+vertex where the tree costs one, and with a denoiser downstream one
+well-chosen sample is likely the faster route to equal perceived quality.
+Do not build it first; build it if the §0.1 baseline on a two-light scene
+asks for it.
+
+### 6a-ter. A `RectAreaLight` is one emissive quad, not `K` rows
+
+`RectAreaLight` expands to `K = k*k` cell rows carrying `1/K` of the power
+each. That packing exists for the deterministic renderer's shadow fans; the
+path tracer inherited it, and it costs the path tracer three things: `K`
+table entries per light (one 4x4 area light is already 16 entries, so
+"tiny" is reached long before the light count suggests), a per-cell jitter
+special case in `_pt_light_sample_point`, and the two gaps the top of this
+document admits — no mirror image, and a highlight from the stage formula
+rather than transport.
+
+The fix is to give the path tracer its own view of the light: **two emissive
+triangles**, flagged invisible to camera rays. They then ride the
+emissive-triangle path that already exists end to end — area sampling from
+the table, `_pt_lit_f_pdf` on both ends, power-heuristic MIS, and a BSDF
+ray that can find them, which is what puts the light in a mirror. The
+camera-invisible flag is the only new piece: a bit on the triangle, in the
+family of the `casts_shadows` leaf bit, tested where a camera-segment ray
+would accept the hit. The deterministic renderer keeps its rows untouched.
+This is a §5 re-baseline item (it moves every sample that touched an area
+light) and belongs in that batch.
+
+### 6a-quater. Build the tree per frame
+
+`light_pos` and `light_col` are per-frame tensors, and `_build_nee_tables`
+runs once per render *chunk*. A tree whose bounds are the union over a
+chunk's frames is unbiased (the pdf is whatever both MIS ends agree it is)
+but its importance heuristic degrades for anything that moves — and Algan is
+an animation engine, so lights move. `E` is small and the chunk's frame count
+is small, so build one tree per frame, indexed by `f` the way `light_pos`
+already is, rather than one union tree. The per-frame emission power the
+"frame-animated emitters" gap in the final section describes falls out of the
+same change.
 
 ### 6a-bis. Two loops that are linear in light count today
 
@@ -440,13 +690,12 @@ Independent of the tree, `pt_shade` still walks every light row twice, and
 under the purpose stated at the top of this document these are defects rather
 than inefficiencies:
 
-* **The ambient / hemisphere fill** scans all `num_lights` rows at every lit
-  crossing to find the zero-to-two direction-less rows
-  (`for li in range(num_lights)`, testing `lt_row` per row). In a 200-light
-  scene that is a 200-iteration scan per crossing per bounce to find two
-  entries. Fix host-side: pack ambient-type rows contiguously and pass their
-  offset and count in `nee_meta`, which has spare words. Small and purely
-  mechanical.
+* **The ambient / hemisphere fill — FIXED (§0.2).** It used to scan all
+  `num_lights` rows at every lit crossing to find the zero-to-two
+  direction-less rows (`for li in range(num_lights)`, testing `lt_row` per
+  row): in a 200-light scene, a 200-iteration scan per crossing per bounce
+  to find two entries. The host now appends those rows to `nee_ref` after
+  the sampled entries and the kernel loops their count from `nee_meta`.
 * **The authored-appearance branch** (manim, toon, normal, matcap, depth and
   every `set_fragment_shader` pipeline) loops all lights and traces a shadow
   ray for each up to `max_shadow_lights`, filling the `vis` vector
@@ -601,10 +850,19 @@ human eye and the denoiser's convolutional prior prefer high-frequency error.
 
 It also composes with §3's Tier-1 correlated seeding rather than competing
 with it — one changes how error is distributed across space, the other across
-time, and the pair is the standard low-spp animation configuration. Landing
-it is a permutation applied inside `_pt_key` (a small precomputed ranking
-tile, or a hash of pixel coordinates mixed into the sample index), no new
-kernel arguments and no change to the purity contract.
+time, and the pair is the standard low-spp animation configuration.
+
+**What it is not.** An earlier draft offered "a hash of pixel coordinates
+mixed into the sample index" as the cheap way to land it. That gives white
+noise with a different correlation structure, not blue noise: `_pt_key`
+already hashes the pixel, and re-hashing it cannot shape the error's
+spectrum. Blue-noise error distribution needs an *optimised* per-pixel
+permutation — Heitz et al.'s scrambling and ranking tiles, or the
+precomputed permutation of Ahmed & Wonka 2021 / Belcour & Heitz 2021 —
+which is shipped data (a 128x128 tile per dimension pair is tens of
+kilobytes), applied inside `_pt_key` with no new kernel arguments and no
+change to the purity contract. Small, but it is a table to generate and
+carry, not a hash to write.
 
 **Verification:** stratification tests as today (unchanged — they probe one
 pixel's sequence); a low-spp render's error spectrum measurably
@@ -644,6 +902,12 @@ cheapest is not the famous one:
    a considered choice there. The queue trades kernel simplicity for a
    round-trip through global memory per shadow ray, and at Algan's light
    counts the inline version may well win. Profile before building it.
+
+   And note where the wavefront overhead actually is today: not in the
+   inline walk but in the host sync every iteration (§0.2-bis). A queue
+   adds launches and syncs to a loop whose problem is launches and syncs.
+   The sync fix comes first, and only a profile taken after it can say
+   whether the shade kernel's register pressure is the next limit.
 
 2. **A dielectric split pool.** At a glass surface the path picks
    reflect-or-refract stochastically (`w_spec` vs `w_trans`); the
@@ -809,12 +1073,25 @@ mode this section exists to catch:
   renderer-wide limit. See §6a-bis for the fix and why it is an interface
   decision.
 
+* **The failures do not point at the fallback.** `record_truncation
+  ("shadow_lights", ...)` warns that lights past the cap cast no shadow and
+  stops there; `OutOfRenderMemory` at a one-frame window says the frame did
+  not fit and stops there. Neither names `samples_per_pixel`, so the user
+  who hits exactly the failure this renderer exists for is not told it
+  exists. The fix is a sentence in each message (§0.3); the docs fix is
+  the same sentence in `renderer_limitations.rst`'s hard-limits table and
+  in `performance_and_quality.rst`'s "when to use" paragraph.
+
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says
 that is not a goal) but "**can the path tracer still render a scene that uses
 it**". A feature that only one renderer supports is fine when it is the path
 tracer's; it is a hole when it is the deterministic renderer's, because the
 fallback direction only runs one way.
+
+This section outranks §§1–8 under the renderer's purpose. A missing feature
+in those sections makes a scene noisier or slower; a hole here leaves the
+user with no renderer at all.
 
 **Verification.** Two tests, one of which exists now:
 

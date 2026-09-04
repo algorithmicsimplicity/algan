@@ -80,6 +80,8 @@ Renderer Settings
 
 ``SETTINGS.raytracing`` controls what the renderer produces.
 
+.. _renderer-settings:
+
 samples_per_pixel
 -----------------
 
@@ -95,18 +97,50 @@ This is the biggest single decision, because it selects the renderer:
   noise-free, and what every example in this documentation uses.
 * Above ``1`` switches to the **path tracer**, which gives true global
   illumination, physically-correct soft shadows and rough reflections, area and
-  emissive lighting, and image-based environment lighting, at dramatically
-  higher cost. Its raw output is noisy at low sample counts, so by default it
+  emissive lighting, and image-based environment lighting, at higher cost per
+  frame. Its raw output is noisy at low sample counts, so by default it
   is **denoised** (``SETTINGS.raytracing.denoise``, on) with a neural filter
   guided by the render's own albedo and normal information; turn it off to see
   or gate the raw estimator.
 
-Reach for path tracing when you need full light transport. For flat 2-D artwork
-and text the deterministic renderer is not merely cheaper but *better*: it
-resolves those edges with exact analytic coverage, where the path tracer must
+**The path tracer is the fallback for scenes the deterministic renderer cannot
+do.** Three kinds of scene fail there and render here:
+
+* **Many lights.** The deterministic renderer's cost grows with every light
+  and it shadows at most 16 light slots (:ref:`limits-truncation`; a 4x4 area
+  light spends 16 on its own). The path tracer samples lights instead of
+  summing them, so its cost per shading point does not depend on how many
+  there are, and every light casts a shadow.
+* **Reflective and transparent geometry that exhausts render memory.** The
+  deterministic renderer splits a ray at every reflective or refractive
+  surface, so enough such surfaces make one frame not fit; the path tracer
+  never splits, so its memory per path is fixed whatever the scene does.
+* **Global illumination**: colour bleed, soft shadows from real area emitters,
+  rough reflections that see the scene.
+
+When a render fails for one of these reasons the warning or error names the
+switch. The setting to reach for is a modest sample count and a *short* bounce
+budget -- direct lighting needs one bounce, and the denoiser handles the
+residual noise:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)
+
+Raise ``max_bounces`` when the scene needs indirect light, and
+``samples_per_pixel`` when the denoised result still shows structure in the
+noise. Reach for path tracing only for these reasons: for flat 2-D artwork and
+text the deterministic renderer is not merely cheaper but *better*, since it
+resolves those edges with exact analytic coverage where the path tracer must
 estimate them by sampling. The path tracer renders at output resolution and
 anti-aliases by jittering its samples inside each pixel, so
 ``supersampling`` does not apply to it.
+
+Noise is stable from frame to frame by default: static regions of a
+path-traced animation get the same estimate every frame, so residual noise
+reads as a fixed grain rather than a shimmer. Set
+``SETTINGS.raytracing.experimental.pt_animated_seed = True`` to re-roll the
+noise every frame instead.
 
 ``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
 changing what the render converges to -- useful for checking that a feature

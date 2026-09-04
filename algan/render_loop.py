@@ -105,6 +105,39 @@ _UNMEASURED_SCENE_SHARE = 0.5
 #: trace over.
 _UNMEASURED_PROBE_FRAMES = 8
 
+#: The spelling the failure messages below point a user at. The path tracer is
+#: the renderer for the scenes the deterministic one cannot do (too many
+#: lights, a split pool that exhausts memory, global illumination --
+#: ``raytracing/DESIGN_path_tracer_roadmap.md``), and the message at the
+#: failure is the documentation the user actually reads, so each failure that
+#: the fallback exists for names the switch. Two bounces is the fallback's
+#: budget for direct lighting; a user who needs GI raises it from there.
+PATH_TRACER_FALLBACK_SPELLING = (
+    "SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)"
+)
+
+
+def _path_tracer_fallback_hint():
+    """The sentence a deterministic-renderer failure appends, or nothing
+    when the path tracer is already the renderer that failed.
+    """
+    if int(SETTINGS.raytracing.samples_per_pixel) > 1:
+        return ""
+    return (
+        " Alternatively render with the path tracer, whose memory per path "
+        "is fixed and does not grow with reflective or transparent geometry: "
+        + PATH_TRACER_FALLBACK_SPELLING
+        + "."
+    )
+
+
+def _one_frame_does_not_fit_message():
+    return (
+        "The prepared scene plus one rendered frame does not fit in the "
+        "allocated render memory. Please lower the resolution, anti-alias "
+        "level, or scene complexity." + _path_tracer_fallback_hint()
+    )
+
 
 def _render_device_pool_bytes(device):
     """Bytes the render device's memory pool is taken to hold, in total.
@@ -779,11 +812,7 @@ class RenderLoopMixin:
             return result[0], upper, result[1]
 
         if upper <= 1:
-            raise OutOfRenderMemory(
-                "The prepared scene plus one rendered frame does not fit in "
-                "the allocated render memory. Please lower the resolution, "
-                "anti-alias level, or scene complexity."
-            )
+            raise OutOfRenderMemory(_one_frame_does_not_fit_message())
 
         low = 1
         high = upper - 1
@@ -812,11 +841,7 @@ class RenderLoopMixin:
             low = duration + 1
 
         if best <= 0:
-            raise OutOfRenderMemory(
-                "The prepared scene plus one rendered frame does not fit in "
-                "the allocated render memory. Please lower the resolution, "
-                "anti-alias level, or scene complexity."
-            )
+            raise OutOfRenderMemory(_one_frame_does_not_fit_message())
 
         # The final binary-search step can be a failure immediately above the
         # best fitting runtime, so recreate that winning prefix once.
@@ -3140,8 +3165,9 @@ class RenderLoopMixin:
                     self._begin_batch_cost_measurement()
                     if new_time_ind <= current_time_ind:
                         raise OutOfRenderMemory(
-                            "Insufficient memory to render this scene,"
+                            "Insufficient memory to render this scene, "
                             "please reduce the number of Mobs used."
+                            + _path_tracer_fallback_hint()
                         )
 
                     duration = new_time_ind - current_time_ind
@@ -3240,12 +3266,7 @@ class RenderLoopMixin:
                             else duration,
                         )
                         if duration <= 1 and retry_lower_duration == 0:
-                            raise OutOfRenderMemory(
-                                "The prepared scene plus one rendered frame "
-                                "does not fit in the allocated render memory. "
-                                "Please lower the resolution, anti-alias "
-                                "level, or scene complexity."
-                            )
+                            raise OutOfRenderMemory(_one_frame_does_not_fit_message())
                         logger.warning(
                             "Prepared batch does not fit the render arena; "
                             "binary-searching the largest fitting runtime."
