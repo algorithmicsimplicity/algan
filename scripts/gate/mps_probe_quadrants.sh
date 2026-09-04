@@ -178,12 +178,35 @@ FAILED_PHASE="pixels"
 # float32 accumulators where Metal cannot run the wide ones, so a small delta
 # is expected and the number is the reading, not a pass/fail.
 ab="$REPO_ROOT/scripts/gate/backend_pixel_ab.py"
+# Both arms run even when the first fails, and each keeps its whole output.
+# The first version of this piped through `tail -3` and died on the first
+# failure, which cost a whole 18-minute run to learn only that "the mps arm
+# failed" -- the three surviving lines were the tail of an Algan advisory, not
+# the exception. A render that fails here is a finding, so it has to arrive
+# legible.
+arm_status=""
 for device in mps cpu; do
   say "rendering $SCENE on $device"
-  ALGAN_RENDER_DEVICE="$device" "$PYTHON" "$ab" --render --out "$AB_DIR/$device" \
-    --scenes "$SCENE" 2>&1 | tail -3 | sed 's/^/    /' \
-    || die pixels "the $device arm of the pixel A/B failed"
+  arm_log="$LOGDIR/ab-$device.log"
+  if ALGAN_RENDER_DEVICE="$device" "$PYTHON" "$ab" --render --out "$AB_DIR/$device" \
+      --scenes "$SCENE" >"$arm_log" 2>&1; then
+    arm_status="$arm_status$device=ok "
+    tail -n 5 "$arm_log" | sed 's/^/    /'
+  else
+    arm_status="$arm_status$device=FAILED "
+    say "the $device arm failed; last 60 lines of $arm_log:"
+    tail -n 60 "$arm_log" | sed 's/^/    /'
+  fi
 done
+say "pixel arms: $arm_status"
+
+case "$arm_status" in
+  *FAILED*)
+    PIXEL_VERDICT="ARM-FAILED"
+    die pixels "a pixel-A/B arm did not render ($arm_status) -- the dump above is why"
+    ;;
+esac
+
 compare_log="$LOGDIR/mps-vs-cpu.log"
 "$PYTHON" "$ab" --compare "$AB_DIR/mps" "$AB_DIR/cpu" 2>&1 | tee "$compare_log" | sed 's/^/    /'
 PIXEL_MAX="$(grep -oE 'max_channel_delta=[0-9]+' "$compare_log" | grep -oE '[0-9]+' | head -1)"
