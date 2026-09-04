@@ -830,8 +830,8 @@ Verified, 2026-09-04, `quadrants_build.yaml` run `33926192036` (`ubuntu-22.04`, 
 2. **The compile**, which settles items 1-3 of the list above in the patches' favour: no include is
    missing, `add_module` takes the register cap, and the `.h`/`.cpp` pairs agree. The wheel installs,
    `qd.init(gpu_max_reg=48, readonly_ndarray_ldg=True)` reads back, and the 0004 checks still pass on
-   it. That run predates the two 0006 fixes (default off, the `ExternalTensorBasePtrStmt` bail); the
-   rebuild with them is recorded in `../taichi_patches/MIGRATION.md` §9.
+   it. That run predates the two 0006 fixes (default off, the `ExternalTensorBasePtrStmt` bail); run
+   `33927637278` rebuilt with them and passed every step.
 
 Not verified — **nothing in these three has been run on a CUDA device**:
 

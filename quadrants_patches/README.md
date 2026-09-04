@@ -805,8 +805,9 @@ honoured). `qd.init(gpu_max_reg=48, readonly_ndarray_ldg=True)` is accepted
 and reads back. The "missing includes" and "`add_module` arity" findings above
 are therefore refuted; the aliasing, element-type and precedence findings are
 not touched by a compile and stand. That run predates the two 0006 fixes
-(`165914d`: default off, base-pointer bail); the run that rebuilds with them is
-recorded in `../taichi_patches/MIGRATION.md` §9.
+(`165914d`: default off, base-pointer bail); run
+[`33927637278`](https://github.com/algorithmicsimplicity/algan/actions/runs/33927637278)
+rebuilt with them and passed every step, the gate step included.
 
 **Steps 3 and 4 are not done.** No CUDA device has run
 `verify_cuda_patches.py` (the CI arms wrote `{"skipped": true}` as designed),
