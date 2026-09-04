@@ -91,7 +91,9 @@ def _cuda_available():
 
         return bool(qd_core.with_cuda())
     except Exception as exc:  # noqa: BLE001 -- the probe's absence is itself the answer
-        print(f"[verify_cuda_patches] cannot probe for CUDA ({exc!r}); treating as absent")
+        print(
+            f"[verify_cuda_patches] cannot probe for CUDA ({exc!r}); treating as absent"
+        )
         return False
 
 
@@ -134,7 +136,9 @@ def build_kernel(max_reg):
     """
 
     @qd.kernel
-    def verify_cuda_probe(n: int, a: qd.types.ndarray(), b: qd.types.ndarray(), out: qd.types.ndarray()):
+    def verify_cuda_probe(
+        n: int, a: qd.types.ndarray(), b: qd.types.ndarray(), out: qd.types.ndarray()
+    ):
         qd.loop_config(max_reg=max_reg)
         for i in range(n):
             # `a` and `b` are never written, so 0006 may fetch them through the non-coherent cache; `out` is read
@@ -146,7 +150,9 @@ def build_kernel(max_reg):
 
 def measure(arm):
     if not _cuda_available():
-        print("[verify_cuda_patches] SKIP: no CUDA driver on this machine; nothing to measure")
+        print(
+            "[verify_cuda_patches] SKIP: no CUDA driver on this machine; nothing to measure"
+        )
         return {"arm": arm, "skipped": True, "reason": "no CUDA driver"}
 
     dump_dir = _dump_dir()  # chdir first: the dumps land in the CWD
@@ -165,8 +171,14 @@ def measure(arm):
     if cfg.get("arch") != str(qd.cuda):
         os.chdir("/")
         shutil.rmtree(dump_dir, ignore_errors=True)
-        print(f"[verify_cuda_patches] SKIP: qd.init(arch=qd.cuda) landed on {cfg.get('arch')}; no CUDA device")
-        return {"arm": arm, "skipped": True, "reason": f"init fell back to {cfg.get('arch')}"}
+        print(
+            f"[verify_cuda_patches] SKIP: qd.init(arch=qd.cuda) landed on {cfg.get('arch')}; no CUDA device"
+        )
+        return {
+            "arm": arm,
+            "skipped": True,
+            "reason": f"init fell back to {cfg.get('arch')}",
+        }
 
     kernel = build_kernel(MAX_REG if on else None)
     a = np.full(N, 0.5, dtype=np.float32)
@@ -203,36 +215,65 @@ def compare(on_path, off_path):
     on = json.loads(pathlib.Path(on_path).read_text())
     off = json.loads(pathlib.Path(off_path).read_text())
     if on.get("skipped") or off.get("skipped"):
-        print(f"SKIP: {on.get('reason') or off.get('reason')} -- the CUDA patches were not exercised")
+        print(
+            f"SKIP: {on.get('reason') or off.get('reason')} -- the CUDA patches were not exercised"
+        )
         return 0
 
     print(f"{'':24s} {'off':>8s} {'on':>8s}")
-    for k in ("maxnreg_directives", "ld_global_nc", "ld_global_plain", "st_global", "fast_expf_calls", "expf_calls"):
+    for k in (
+        "maxnreg_directives",
+        "ld_global_nc",
+        "ld_global_plain",
+        "st_global",
+        "fast_expf_calls",
+        "expf_calls",
+    ):
         print(f"{k:24s} {off[k]:8d} {on[k]:8d}")
 
     failures = []
-    if not (on["ptx_found"] and off["ptx_found"] and on["ir_found"] and off["ir_found"]):
-        failures.append("a dump is missing for at least one arm; the glob or the kernel-name filter is wrong, not the patch")
+    if not (
+        on["ptx_found"] and off["ptx_found"] and on["ir_found"] and off["ir_found"]
+    ):
+        failures.append(
+            "a dump is missing for at least one arm; the glob or the kernel-name filter is wrong, not the patch"
+        )
     else:
         # 0005
         if on["maxnreg_directives"] < 1:
-            failures.append("the on arm's PTX has no .maxnreg; loop_config(max_reg=) did not reach the kernel")
+            failures.append(
+                "the on arm's PTX has no .maxnreg; loop_config(max_reg=) did not reach the kernel"
+            )
         elif str(MAX_REG) not in on["maxnreg_values"]:
-            failures.append(f"the on arm's .maxnreg is {on['maxnreg_values']}, not {MAX_REG}")
+            failures.append(
+                f"the on arm's .maxnreg is {on['maxnreg_values']}, not {MAX_REG}"
+            )
         if off["maxnreg_directives"] != 0:
-            failures.append("the off arm's PTX carries a .maxnreg; a cap leaked in from somewhere")
+            failures.append(
+                "the off arm's PTX carries a .maxnreg; a cap leaked in from somewhere"
+            )
         # 0006
         if on["ld_global_nc"] < 1:
-            failures.append("the on arm has no ld.global.nc; the read-only ndarray loads did not take the ldg path")
+            failures.append(
+                "the on arm has no ld.global.nc; the read-only ndarray loads did not take the ldg path"
+            )
         if on["ld_global_plain"] < 1:
-            failures.append("the on arm has no plain ld.global left; the read-and-written array went .nc -- unsound")
+            failures.append(
+                "the on arm has no plain ld.global left; the read-and-written array went .nc -- unsound"
+            )
         if off["ld_global_nc"] != 0:
-            failures.append("the off arm emitted ld.global.nc; readonly_ndarray_ldg=False does not gate")
+            failures.append(
+                "the off arm emitted ld.global.nc; readonly_ndarray_ldg=False does not gate"
+            )
         # 0007
         if on["fast_expf_calls"] < 1 or on["expf_calls"] != 0:
-            failures.append("the on arm does not call __nv_fast_expf (and only it); fast_math did not pick the fast exp")
+            failures.append(
+                "the on arm does not call __nv_fast_expf (and only it); fast_math did not pick the fast exp"
+            )
         if off["expf_calls"] < 1 or off["fast_expf_calls"] != 0:
-            failures.append("the off arm does not call __nv_expf (and only it); fast_math=False did not restore exact exp")
+            failures.append(
+                "the off arm does not call __nv_expf (and only it); fast_math=False did not restore exact exp"
+            )
 
     if failures:
         print("\nFAIL")

@@ -103,6 +103,7 @@ from algan.rendering.taichi_runtime import (
 from algan.scene_manager import SceneManager
 from algan.settings.video_settings import *
 from algan.utils.memory_utils import ManualMemory
+from algan.utils.taichi_early_return import apply as _apply_taichi_early_return
 from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
 # The warm-start memoization (utils/taichi_warmstart.py) is already installed:
@@ -112,7 +113,6 @@ from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 # that skips Taichi's per-launch Python argument re-validation on repeat
 # launches (see utils/taichi_fast_launch.py); no kernel has launched yet.
 from algan.utils.taichi_source_key import apply as _apply_taichi_source_key
-from algan.utils.taichi_early_return import apply as _apply_taichi_early_return
 
 # The early-return rewrite for inlined funcs wraps the source-to-AST step the
 # warm-start memoized, so it goes on after it (see utils/taichi_early_return.py).

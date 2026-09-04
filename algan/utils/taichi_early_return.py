@@ -237,7 +237,7 @@ def _owns_break_or_continue(loop):
             if isinstance(stmt, ast.If):
                 if visit(stmt.body) or visit(stmt.orelse):
                     return True
-            elif isinstance(stmt, _OPAQUE):
+            elif isinstance(stmt, _OPAQUE):  # noqa: SIM102 -- the arms below differ
                 if any(isinstance(n, (ast.Break, ast.Continue)) for n in _walk(stmt)):
                     return True
             # A nested loop owns its own break/continue.
@@ -299,9 +299,7 @@ def _const_index(node):
     if isinstance(node, ast.Tuple):
         return all(_const_index(e) for e in node.elts)
     return (
-        isinstance(node, ast.Constant)
-        and type(node.value) is int
-        and node.value >= 0
+        isinstance(node, ast.Constant) and type(node.value) is int and node.value >= 0
     )
 
 
@@ -338,13 +336,21 @@ def _hoistable(node, name_ok):
         if isinstance(callee, ast.Name):
             callee_ok = callee.id in _PURE_BUILTINS and name_ok(callee.id)
         elif isinstance(callee, ast.Attribute):
-            callee_ok = callee.attr in _PURE_CALLEES and _hoistable(callee.value, name_ok)
+            callee_ok = callee.attr in _PURE_CALLEES and _hoistable(
+                callee.value, name_ok
+            )
         else:
             callee_ok = False
         return (
             callee_ok
-            and all(not isinstance(a, ast.Starred) and _hoistable(a, name_ok) for a in node.args)
-            and all(k.arg is not None and _hoistable(k.value, name_ok) for k in node.keywords)
+            and all(
+                not isinstance(a, ast.Starred) and _hoistable(a, name_ok)
+                for a in node.args
+            )
+            and all(
+                k.arg is not None and _hoistable(k.value, name_ok)
+                for k in node.keywords
+            )
         )
     return False
 
@@ -497,7 +503,9 @@ class _Rewriter:
                 (VALUE,) if arity == 1 else tuple(f"{VALUE}{i}" for i in range(arity))
             )
             decls.extend(self._declarations(returns, arity, h, anchor))
-        decls.append(_assign(FLAG, ast.copy_location(ast.Constant(value=0), anchor), anchor))
+        decls.append(
+            _assign(FLAG, ast.copy_location(ast.Constant(value=0), anchor), anchor)
+        )
 
         converted = self._convert_block(region, None, at_function_top=True)
 
@@ -527,11 +535,19 @@ class _Rewriter:
                     raise EarlyReturnUnsupported(
                         f"a `return` inside a `{type(node).__name__.lower()}` block"
                     )
-                if isinstance(node, ast.For) and isinstance(node.iter, ast.IfExp) and _has_return(node):
+                if (
+                    isinstance(node, ast.For)
+                    and isinstance(node.iter, ast.IfExp)
+                    and _has_return(node)
+                ):
                     raise EarlyReturnUnsupported(
                         "a `return` inside a loop whose iterable is a conditional expression"
                     )
-                if _is_static_for(node) and _has_return(node) and _owns_break_or_continue(node):
+                if (
+                    _is_static_for(node)
+                    and _has_return(node)
+                    and _owns_break_or_continue(node)
+                ):
                     raise EarlyReturnUnsupported(
                         "a `return` inside a `ti.static` loop that also has its own "
                         "`break`/`continue` (the rewrite would put it under a runtime `if`)"
@@ -544,7 +560,11 @@ class _Rewriter:
                         raise EarlyReturnUnsupported("a starred tuple return")
 
     def _declarations(self, returns, arity, h, anchor):
-        if arity == 1 and self.annotation_kind is not None and self.func_def.returns is not None:
+        if (
+            arity == 1
+            and self.annotation_kind is not None
+            and self.func_def.returns is not None
+        ):
             annotation = copy.deepcopy(self.func_def.returns)
             zero = ast.copy_location(ast.Constant(value=0), anchor)
             if self.annotation_kind == "primitive":
@@ -610,7 +630,9 @@ class _Rewriter:
             for ident, element in zip(self.value_names, _return_elements(stmt)):
                 out.append(_assign(ident, element, stmt))
         if not at_function_top:
-            out.append(_assign(FLAG, ast.copy_location(ast.Constant(value=1), stmt), stmt))
+            out.append(
+                _assign(FLAG, ast.copy_location(ast.Constant(value=1), stmt), stmt)
+            )
             if loop is not None and loop.breakable:
                 out.append(ast.copy_location(ast.Break(), stmt))
         return out
