@@ -56,8 +56,39 @@ and only if the build had CUDA on — and dies when it is absent. (Not
 `qd._lib.core.with_cuda()`: that also probes for `libcuda.so`, so it is False on
 every GPU-less runner however the binary was built.)
 
-**Still unverified: that any of it works.** A compile check cannot tell you that
-an Apple GPU renders correctly or that an sm_61 card loads the runtime module.
+### The Metal port renders, and renders wrong
+
+**Measured 2026-09-04 on the Mac runner's real Apple GPU, and this is the state
+of 0001/0002 today.** A wheel built from these patches installs, Algan resolves
+`device=mps`, `zero_copy_available()` is **True**, and renders complete
+(`gpu_smoke.py`: 16.4 s cold, 0.92 s warm). Then the picture is wrong.
+
+The same scene rendered on Metal and on the same machine's CPU, same compiler,
+via `scripts/gate/mps_vs_cpu_ab.sh`:
+
+| compiler | pixels over tolerance | max delta | mean brightness, MPS vs CPU |
+| --- | --- | --- | --- |
+| Taichi 1.7.4 + `taichi_patches/` | 11,527 of 83,913,984 (**0.014 %**) | 221 | 47.62 vs 47.62 |
+| Quadrants 1.3.0 + `quadrants_patches/` | 79,913,926 of 83,913,984 (**95 %**) | 255 | **16.41** vs 47.62 |
+
+Taichi's two devices agree: a hundredth of a percent of pixels differ, at
+localised edges, which is what MPS-friendly mode's float32 accumulators
+predict. Quadrants' do not — almost every pixel differs and the Metal frame is
+about **a third as bright**, which is why the control mattered: one number from
+one compiler could not have told these apart, and the first reading was nearly
+written up as a black frame it is not.
+
+A third of the brightness with the geometry apparently present is the signature
+of one channel of three surviving, which points at element shape or offset on
+the imported buffer rather than at the kernels — `ExternalMetalNdarray`'s
+`element_shape`, and the `set_args_ndarray` interaction §5 already ranks first.
+The next run reports per-channel means, which confirms or kills that in one
+step. Until it is fixed, **Track B's Apple path is not usable**, and that is a
+patch defect rather than a verdict on Quadrants: the same wheel is correct on
+CPU, and Taichi's port of the same idea is correct on Metal.
+
+**Still unverified: that the CUDA half works.** A compile check cannot tell you
+that an sm_61 card loads the runtime module.
 The first needs `.github/workflows/mps_probe.yaml` against a wheel built from
 these; the second needs the maintainer's GTX 1050, and `PORTING-NOTES.md` §7
 lists exactly what to look for there (`atom.gpu.cas.b64` and no remaining

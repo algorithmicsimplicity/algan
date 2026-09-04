@@ -172,6 +172,13 @@ def compare(dir_a: Path, dir_b: Path) -> int:
         # near zero on one arm and not the other says which, without anyone
         # downloading a video.
         sum_a = sum_b = 0.0
+        # Per channel as well as overall, because the failure this caught first
+        # had a signature: a Metal arm at almost exactly a third of the CPU
+        # arm's brightness is what writing one channel of three looks like, and
+        # a per-channel mean says that outright instead of leaving it inferred
+        # from a ratio. cv2 hands frames back BGR.
+        channel_a = np.zeros(3)
+        channel_b = np.zeros(3)
         try:
             while True:
                 ok_a, frame_a = cap_a.read()
@@ -191,6 +198,8 @@ def compare(dir_a: Path, dir_b: Path) -> int:
                 total_pixels += difference.shape[0] * difference.shape[1]
                 sum_a += float(frame_a.mean())
                 sum_b += float(frame_b.mean())
+                channel_a += frame_a.mean(axis=(0, 1))
+                channel_b += frame_b.mean(axis=(0, 1))
                 frames += 1
         finally:
             cap_a.release()
@@ -203,6 +212,13 @@ def compare(dir_a: Path, dir_b: Path) -> int:
         print(
             f"{name:<32} {frames:>6} {max_difference:>4} {over_tolerance:>9} "
             f"{total_pixels:>11} frame {worst_frame}"
+        )
+        per_a = channel_a / frames if frames else channel_a
+        per_b = channel_b / frames if frames else channel_b
+        print(
+            f"{'':<32} per-channel BGR: "
+            f"A=({per_a[0]:5.1f},{per_a[1]:5.1f},{per_a[2]:5.1f})  "
+            f"B=({per_b[0]:5.1f},{per_b[1]:5.1f},{per_b[2]:5.1f})"
         )
         print(
             f"{'':<32} mean brightness: A={mean_a:6.2f}  B={mean_b:6.2f}"
