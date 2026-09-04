@@ -33,30 +33,37 @@ small, concrete form of "the fork's patch set shrinks on the newer base".
 
 ## What has been verified, and what has not
 
-Verified: all three apply cleanly and **in sequence** with strict `git apply`
-(no fuzz, no 3-way) onto pristine v1.3.0 — 15 files, +480/−8 — and the C++ they
-touch passes `clang-format`. 0002 is authored against a tree that already has
-0001, exactly as the Taichi pair is, because they share `metal_device.mm`.
+**They apply, and they compile.** All three apply cleanly and **in sequence**
+with strict `git apply` (no fuzz, no 3-way) onto pristine v1.3.0 — 15 files,
++480/−8 — and 0002 is authored against a tree that already has 0001, exactly as
+the Taichi pair is, because they share `metal_device.mm`.
 
-**Not verified: none of this has been compiled or run.** Nothing here was
-written on a Mac or against a GPU. Two build legs exist to close half of that,
-and they have to be two because no single machine can compile all three —
-Quadrants forces `QD_WITH_CUDA=OFF` on Apple, so the macOS build never sees a
-line of what 0003 changes:
+Compilation takes two legs, and it has to be two because no single machine can
+build all three: Quadrants forces `QD_WITH_CUDA=OFF` on Apple, so the macOS
+build never sees a line of what 0003 changes. Both passed on 2026-09-04, from
+`.github/workflows/run_on_mac.yaml` at `d295007`:
 
-    # Metal (0001, 0002) -- .github/workflows/run_on_mac.yaml, arm mac-cpu
-    command: bash scripts/gate/quadrants_macos_build.sh
-    env:     GATE_QD_PATCHES=1
+| | | result |
+| --- | --- | --- |
+| **Metal** (0001, 0002) | `bash scripts/gate/quadrants_macos_build.sh` with `GATE_QD_PATCHES=1`, arm `mac-cpu` | PASS, 781 s build, `quadrants-1.3.1.dev0+gab9a58ab5-cp311-cp311-macosx_13_0_arm64.whl` (22.3 MiB), **`qd.init(metal)=ok`**, and clang named **no warning flags at all** |
+| **CUDA** (0003) | `bash scripts/gate/quadrants_linux_build.sh`, arm `linux-cpu` | PASS, 1041 s build, `...-manylinux_2_27_x86_64.whl` (26.4 MiB), `qd.init(cpu)=ok`, `runtime_cuda.bc present -- CUDA backend compiled` |
 
-    # CUDA (0003) -- same workflow, arm linux-cpu
-    command: bash scripts/gate/quadrants_linux_build.sh
+That last field is load-bearing and was got wrong once. The first Linux run
+"passed" while proving nothing: the check grepped the build log, and
+`grep -c … || echo 0` yields `"0\n0"` on no match, so the guard could never
+fire. It now asks the wheel instead — `_lib/runtime/runtime_cuda.bc` exists if
+and only if the build had CUDA on — and dies when it is absent. (Not
+`qd._lib.core.with_cuda()`: that also probes for `libcuda.so`, so it is False on
+every GPU-less runner however the binary was built.)
 
-Both are compile checks. Neither can tell you that an Apple GPU renders
-correctly or that an sm_61 card loads the runtime module: the first needs the
-Mac probe (`.github/workflows/mps_probe.yaml`) against a wheel built from these,
-and the second needs the maintainer's GTX 1050. Until then, treat every patch
-here as unproven and read `PORTING-NOTES.md` §5 for where it is most likely to
-be wrong.
+**Still unverified: that any of it works.** A compile check cannot tell you that
+an Apple GPU renders correctly or that an sm_61 card loads the runtime module.
+The first needs `.github/workflows/mps_probe.yaml` against a wheel built from
+these; the second needs the maintainer's GTX 1050, and `PORTING-NOTES.md` §7
+lists exactly what to look for there (`atom.gpu.cas.b64` and no remaining
+`atom.sys`). Read `PORTING-NOTES.md` §5 for where the Metal port is most likely
+to be wrong — the ranked list starts with the nanobind integer default and the
+`LaunchContextBufferCache` interaction.
 
 ## Upstreaming
 
