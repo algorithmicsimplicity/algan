@@ -1,10 +1,17 @@
 # Taichi fork roadmap: what to take from Quadrants, what to build, and on which base
 
-Status: **plan, not implemented.** Written 2026-09-03 from a read-only survey of Taichi v1.7.4, the
-Quadrants fork at `b9e953111` (2026-09-02), and this repository. It is self-contained: a fresh session
-can execute it from §0 without any other context. Every claim carries the file, commit or measurement
-it rests on; "verified" means read in source, "measured" means run on the stated machine,
-"projected" means an estimate.
+Status: **written 2026-09-03 as a plan; §6's gate was run and Track B begun on 2026-09-04.**
+Quadrants is now the default compiler and carries its own patch set. **`MIGRATION.md` is the record
+of what was executed and what it measured** — read it first if you want the current state; read this
+for the design, the survey it rests on, and the items still untaken. §6.1 holds the gate's results,
+and the "done" markers through §7.3 say which steps are closed and what closed them.
+
+Written from a read-only survey of Taichi v1.7.4, the Quadrants fork at `b9e953111` (2026-09-02),
+and this repository. It is self-contained: a fresh session can execute it from §0 without any other
+context. Every claim carries the file, commit or measurement it rests on; "verified" means read in
+source, "measured" means run on the stated machine, "projected" means an estimate. Nine of those
+claims were falsified by running them — each is corrected in place, and `MIGRATION.md` §4 lists them
+together.
 
 ## 0. How to use this document
 
@@ -306,7 +313,9 @@ upstream bugs #8744/#8745/#8794 there. Under B Algan carries ~1.5 patches (0001;
 `ContinueStmt` hunk + diagnostics) instead of 2, plus the scratch items above on either base.
 
 **Recommendation: do not decide from this document. Run the fact-finding gate first (about two
-days), then choose. Default to B if the gate passes.**
+days), then choose. Default to B if the gate passes.** *The gate has since been run; §6.1 is what it
+measured, and it passes. Read §6.1 before acting on anything in §4-§5, which it corrects in seven
+places.*
 
 Fact-finding gate:
 1. Now, on the 1.7.4 fork regardless: apply the `operator""_f` whitespace fix (`taichi/common/core.h:170-201`,
@@ -330,9 +339,237 @@ Pass criteria for B: the macOS build is green; `tests/fast` pixel deltas are ≤
 explainable float-contraction drift that an inspected re-baseline accepts; the three repros do not
 reproduce (or have a bounded workaround); no Algan user depends on Python 3.9 or macOS < 13.
 
+### 6.1 Gate results (measured 2026-09-04)
+
+**All four pass criteria are met, three of them by a wider margin than the criterion asked for, and
+the gate additionally found that Track A no longer builds on a current macOS runner. The
+recommendation is B.** Everything below is measured unless it says otherwise; the CUDA arm was run
+by the maintainer in a prior session, and the Kaggle T4 was deliberately not used (a maintainer
+session held the GPU, and a concurrent job changes the pixels a determinism reading depends on —
+`agent_guidance/gpu_harnesses.md`).
+
+The switching machinery this rests on is `algan/taichi_compat.py`: every kernel module imports its
+compiler from there, `ALGAN_TAICHI_BACKEND` picks `taichi` or `quadrants`, and a mixed process is
+unrepresentable rather than merely discouraged. Both arms of everything below are that variable.
+
+#### Step 1 — `operator""_f` (done, and it is not sufficient)
+
+`taichi_patches/0003-literal-operator-whitespace.patch`: 20 declarations across
+`taichi/common/core.h` and `taichi/common/types.h`, verified applying cleanly onto a pristine v1.7.4
+after 0001 and 0002. The diagnostic and clang's suggested spelling were reproduced locally on
+clang 18 with `-Wdeprecated-literal-operator` forced on.
+
+**It works and it is not enough.** On the macOS 26 build below, `-Wdeprecated-literal-operator`
+never appears — and the build then dies on a *different* `-Werror` diagnostic:
+
+    taichi/math/linalg.h:245:12: error: first argument in call to 'memcpy' is a pointer to
+    non-trivially copyable type 'taichi::VectorND<3, float, taichi::InstSetExt::None>'
+    [-Werror,-Wnontrivial-memcall]
+
+Four occurrences, one file, at object 15 of 589 — so a `0004` would be small, but the build stopped
+too early to say it is the last one. **Taichi 1.7.4 + Algan's patches does not currently produce a
+wheel on `macos-latest`.** The `llvm@15` bottle, which was the predicted stopping point (no
+`arm64_sequoia`/`arm64_tahoe` bottle in homebrew-core), poured cleanly in 60 s — that risk is real
+but has not arrived yet.
+
+#### Step 2 — the macOS build, both bases, one runner image
+
+Run through `run_on_mac.yaml` on `macos-latest` (macOS 26, Apple clang 21.0.0), `mac-cpu`, `-j3`;
+`scripts/gate/{quadrants,taichi}_macos_build.sh` are what they ran.
+
+| | Quadrants v1.3.0 ([run 33822498217](https://github.com/algorithmicsimplicity/algan/actions/runs/33822498217)) | Taichi v1.7.4 + patches 0001-0003 ([run 33822503269](https://github.com/algorithmicsimplicity/algan/actions/runs/33822503269)) |
+|---|---|---|
+| verdict | **PASS** | **FAIL** (`phase=build`) |
+| clone / submodules | 2 s / 60 s | 63 s |
+| toolchain (`brew llvm@22` / `llvm@15`) | 60 s | 60 s |
+| cold build | 601 s | 181 s, to the error |
+| total | 748 s | 312 s |
+| wheel | `quadrants-1.3.0-cp311-cp311-macosx_13_0_arm64.whl`, 23.3 MB | none |
+| smoke test | `cpu ok`, **`metal ok`** | not reached |
+| distinct `-W` diagnostics | **none at all** | `-Wnontrivial-memcall` ×4 |
+
+So the toolchain story is as clean as Quadrants' scripts imply, which is what this experiment
+existed to answer. Two structural reasons, both verified in their tree rather than inferred: LLVM is
+an org-hosted prebuilt 22.1.0 archive (nothing builds LLVM), and `entry.py`'s
+`setup_clang(as_compiler=False)` leaves `CMAKE_C/CXX_COMPILER` on Xcode clang while
+`CLANG_EXECUTABLE` stays on brew clang-22 — the same split `taichi_build.yaml` had to discover by
+hand after `ld: library 'System' not found`, except Quadrants does it itself.
+
+Caveat on precision, not on direction: the two jobs drew slightly different images (26.6.2/cmake
+4.4.3 against 26.5.2/cmake 4.4.0) despite both asking for `macos-latest`. Apple clang was identical.
+
+#### Step 3 — CPU pixel parity and what it costs (Linux x64, the number that was to decide it)
+
+Not "≤2 and explainable" — **identical**. `tests/fast` under `ALGAN_TAICHI_BACKEND=quadrants`
+produced an mp4 **byte-identical to the committed baseline** (md5 `7d382c56588a3bbb2dc612b609e868e7`,
+182,938 bytes): 0 of 37,635,840 channel samples differ across 45 frames of 704×396. A second,
+independent `save_frame` of a `Square` in separate processes per backend: 0 of 836,352. The
+maintainer's Windows CUDA render was bit-identical too.
+
+> **Corrected 2026-09-04, and the correction is the more important number.** This section first
+> concluded from the above that "LLVM 15 → 22 costs no re-baseline on x86-64". **That is false for
+> the dense scenes.** Running the *full* suite on both backends on one box — which the gate never
+> did, it only ran `--fast` — puts Taichi at **2964 passed, 0 failed**, so those baselines do travel
+> here, and puts Quadrants at four `tests/full_renders` scenes over tolerance:
+>
+> | scene | max channel delta (tolerance 2) |
+> | --- | --- |
+> | `complex_hierarchy_become` | 3 |
+> | `materials_and_lighting` | 12 |
+> | `solids_and_camera` | **100** |
+> | `text_and_media` | **158** |
+>
+> The two that pass are exactly the two `tests/full_renders/test_full_renders.py:76-92` names as
+> portable, and the four that fail are the ones carrying PN surfaces, shadows, refraction or glTF —
+> which is what that comment's own mechanism predicts: `fast_math` flips borderline tessellation
+> levels, and *which* levels are borderline is a property of the arithmetic. A different LLVM is a
+> different arithmetic in exactly the way a different CPU is, and the magnitudes land in the same
+> 29-204 band it measured across machines.
+>
+> So the honest statement is: **`tests/fast` and one CUDA render are byte-identical; the PN-heavy
+> full renders are not, and Track B carries a real `tests/full_renders` re-baseline on CPU**,
+> inspected scene by scene, plus the release-asset repackaging `tests/README.md` requires. §7.3
+> step 6 already asked for that; what changed is that it is now known to be necessary rather than
+> precautionary. Apple Silicon remains untested.
+
+`uv run -m pytest -q --fast`: **526 passed on both backends**, zero failures in `algan/`. The whole
+engine ran unmodified. Two test files imported the compiler directly and needed rerouting through
+`taichi_compat` (`test_mps_friendly.py`, `test_ux_regressions.py`); one of them genuinely failed
+(`taichi_accumulate_dtype() is ti.f64` comparing a Quadrants `DataTypeCxx` against a Taichi
+`DataType`) and the other was quietly decorating a `@ti.func` with Taichi inside a Quadrants
+process.
+
+**The cost is 2.1× warm wall time, and it is one diagnosed problem.** Single `save_frame`, 22
+kernels, `ALGAN_LOG_TAICHI_COMPILES=1`:
+
+| arm | cold | warm | warm frontend | warm backend |
+|---|---|---|---|---|
+| taichi 1.7.4 + warmstart + fast_launch (shipped default) | 17.7 s | **5.7 s** | 3.66 s | 0.27 s |
+| taichi 1.7.4, both off | 24.7 s | 12.7 s | 10.68 s | 0.27 s |
+| quadrants 1.3.0 (both no-op there) | 40.2 s | **27.0 s** | 25.32 s | 0.24 s |
+
+The offline cache is a dead heat (0.24 s vs 0.27 s warm); the entire gap is frontend. cProfile puts
+`get_pos_info` at 478,598 calls / 25.95 s = **40.5 % of the profiled render**, and **every** frontend
+counter is exactly **2.00×** Taichi's (`get_tree_and_ctx` 11,036 vs 5,518; `build_Name` 158,074 vs
+79,037) — §7.3 item 3's "builds each kernel AST twice" reproduces on CPU. Warm `--fast` goes
+49 s → 101 s.
+
+Both halves are addressable and neither is a correctness or pixel risk: Algan already carries the
+`get_pos_info` memo in `taichi_warmstart.py` and version-gates it to Taichi 1.7, and the doubled AST
+build is untouched by that memo. See the release finding in the corrections below — **no Quadrants
+release contains the upstream memo**, so this is port-or-pin, not "upgrade later".
+
+> **Since measured: the port landed, and it halves this.** The maintainer chose Quadrants pinned to
+> public releases, so `taichi_warmstart.py` now patches both compilers rather than version-gating
+> itself off on one. Same box, same scene, warm, 22 kernels
+> (`benchmarks/_taichi_warmstart_check.py`): Quadrants **29.0 s → 12.5 s** (2.32×), Taichi
+> **15.1 s → 7.2 s** (2.11×, unchanged behaviour); `--fast` on Quadrants **106 s → 78 s**. Frames
+> are byte-identical across all three arms and across both compilers, with
+> `ALGAN_TAICHI_WARMSTART_VERIFY=1` recomputing every memoized value the original way inside a real
+> materialization. The residual ~1.7× against Taichi is the doubled AST build, which is untouched
+> and is now the only known frontend item left.
+
+New and unexplained, worth a look before adopting: every render prints, twice,
+`UserWarning: cannot create weak reference to 'DataTypeCxx' object. Template mapper caching
+disabled.` Quadrants is disabling its own template-mapper cache for Algan's kernel arguments.
+
+#### Step 4 — the three upstream repros
+
+`benchmarks/_upstream_repro_874{4,5}.py` and `_upstream_repro_8794.py`; each honours
+`REPRO_BACKEND` and `REPRO_ARCH` and prints one verdict line. None of the three was filed by this
+project; all three are open, uncommented, with no linked PR, and no Quadrants commit cites any.
+
+| issue | Taichi 1.7.4 | Quadrants 1.3.0 | where |
+|---|---|---|---|
+| #8744 dead-branch miscompile | REPRODUCES | REPRODUCES | Linux x64 (not CUDA-specific, and not `@ti.func`-specific) |
+| #8794 segfault at iteration 512 | REPRODUCES | REPRODUCES | Linux x64 (not Metal at all) |
+| #8745 Metal field-shape dependence | **REPRODUCES** | **CLEAN** | Mac runner, real Apple GPU, macOS 26.5.2 |
+
+- **#8744** is bounded, and the bound is already Algan's shipped config: `cfg_optimization=False`
+  alone fixes it, `advanced_optimization=False` fixes it, and Algan runs with the latter off. The
+  symptom `agent_guidance/taichi.md:11` documents for turning it on — `pbr_neutral_tonemap` losing
+  the rescale inside its compression branch — is the same class of failure, so #8744 is very likely
+  Algan's own known miscompile with a public repro attached. Row 17's "then re-test `ALGAN_ADV_OPT=1`"
+  stays blocked on **both** bases.
+- **#8794** is root-caused: `kMaxNumSnodeTreesLlvm` is 512, nothing bounds `tree_id` against it, and
+  the field declared after `Ptr roots[512]` / `root_mem_sizes[512]` is `Ptr thread_pool` — so
+  materializing tree 512 overwrites the pointer the next parallel launch jumps through. Algan
+  declares no `ti.field` and cannot reach it.
+- **#8745 is the one result that separates the bases**, and it separates them in B's favour. The
+  named candidate is `7a9b6cb23` (#384), which decorates every SPIR-V storage buffer `Volatile` on
+  Metal because the Metal compiler hoists storage-buffer loads out of loops and serves stale reads
+  when a buffer is written and re-read in one loop. Algan's ndarrays are storage buffers on that
+  same SPIR-V→MSL path, so this is a live correctness exposure on the Apple path today: §5's
+  "copy if" for #384 becomes a **must-copy under Track A**, and comes free under B.
+
+#### Step 5 — CUDA
+
+Covered by the maintainer's own run in a prior session: Quadrants rendered successfully and
+**pixel-identical on Windows CUDA**. The T4 was not used, per above. What remains unmeasured on CUDA
+is a warm-timing split (the frontend regression in step 3 should appear there too, since it is
+Python-side) and any pixel reading on Apple Silicon.
+
+#### Verdict, and what B costs that §6 did not price
+
+Criterion by criterion: macOS build **green for B, red for A**; pixel deltas **zero on the criterion
+the gate names** (`tests/fast`, byte-identical) but **up to 158 channel values on four of the six
+dense full-render scenes**, which the gate did not run and which the correction above measures — so
+the criterion passes and the re-baseline it was meant to rule out is real after all; the three
+repros **do not distinguish the bases except in B's favour**; and
+Python 3.9 / macOS < 13 is met on every piece of evidence in the repository — Intel Macs are
+*refuted* as a loss (Taichi 1.7.4 has never published a macOS x86_64 wheel for any Python), Quadrants
+*adds* manylinux aarch64 which Taichi never shipped, the only genuine loss is cp39 on Linux-x86_64
+and Windows, and `algan` is not on PyPI yet (live 404), so no one can have installed it through the
+documented channel. **The maintainer should still confirm no early adopter is on 3.9**; that is the
+one question the repository cannot answer about itself.
+
+Three costs the gate found that §6's "what B costs" list did not:
+
+1. **The frontend tax is real, and no Quadrants *release* fixes it** (2.1× warm; port Algan's memo
+   or pin a commit; the 2× AST build remains after that).
+2. **Track A is not free either.** It has stopped building on the current runner image, needs a
+   `0004` for `-Wnontrivial-memcall` with no guarantee that is the last, and must copy #384 to be
+   correct on Metal. "Stay on 1.7.4" is now itself accruing maintenance against a dormant upstream.
+3. **Pre-Volta is unchanged and will not fix itself**: `kernel_atomic_syncscope.h:29-34` is
+   byte-identical between v1.3.0 and `main`, nothing in the 34 commits since v1.3.0 touches
+   `.sys`-scope atomics or `activemask`, and their GPU CI is a T4 (sm_75) with an `sm70` pytest
+   marker, so pre-Volta is never exercised. §7.3's Prerequisite 0 stands exactly as written and
+   remains Track B's real blocker on the primary dev box.
+
+#### Corrections this gate makes to §2-§5 and §7.3
+
+- **§7.3 item 2, `gpu_max_reg`**: *wrong for the 1.3.0 wheel.* It raises no `KeyError` —
+  `qd.init` builds its accepted-kwarg set from `dir(cfg)` (`quadrants/lang/misc.py:435-443`), so
+  every field on `CompileConfig` is accepted and Algan's whole `taichi_init_kwargs()` dict goes
+  through verbatim.
+- **§7.3 item 2, `get_runtime().prog` → `._prog`**: needs no change in `algan/`. Both sites are
+  already inside a bare `try` / `contextlib.suppress` (`taichi_runtime.py:376-379,397-403`). The
+  seven unguarded reads are in `tests/unit_tests/test_taichi_runtime_config.py`, outside `--fast`.
+- **§7.3 item 3, the memo**: `895dd5ea1` (#858) landed 2026-08-13, two days *after* v1.3.0, and
+  `git tag --contains` finds it in **no release tag** (only `archive/po-6-combined-wip`). 1.3.0 is
+  still the newest release. "Pin a build that has it" is not available; port it or pin a commit.
+- **§7.3 item 5, `QD_WITH_VULKAN=OFF` drops MoltenVK**: true of CMake, false of `build.py`, which
+  fetches and runs the LunarG macOS SDK unconditionally on Darwin (`entry.py:65-75`,
+  `vulkan.py:41-78`).
+- **§2.3, the wheel-size comparison**: their CI turns Vulkan **on** for macOS (`2_build.sh:5`), so
+  the shipped 26.7 MB wheel carries MoltenVK. Our own Vulkan-off build is 23.3 MB.
+- **Row 30, the pending-launch valve**: keep it on its own merits, but drop the #8794 hypothesis —
+  #8794 is the LLVM runtime's snode-tree array, a path the gfx/Metal runtime does not share.
+- **§5, `7a9b6cb23` (#384)**: promote from "copy if" to must-copy under Track A (step 4 above).
+- Locators: `llvm.py:19-24` → `:22-28`; the `cap >= 60` half2 pattern row 34 says to mirror is in
+  `visit(AtomicOpStmt)` at `codegen_cuda.cpp:399`, not inside `optimized_reduction`.
+
 ## 7. Implementation plan
 
 ### 7.1 Track C — common to both bases (do first)
+
+> **Not taken, 2026-09-04, with one exception.** The base decision and Track B's first steps were
+> done instead. The exception is row 47's banner (`ENABLE_QUADRANTS_HEADER_PRINT` beside the Taichi
+> one, `algan/__init__.py`), which the flip forced: `import algan` must print nothing to stdout and
+> Quadrants prints its version line at import. Everything else below — the six stale cache claims,
+> the `gpu_max_reg` docstring, `_inside_class`, `TI_SKIP_VERSION_CHECK`, `cfg_optimization=False`,
+> the stale `ticache.lock` rule, `enable_fallback=False`, the eviction comment and the 64-argument
+> belief — is untouched and still worth doing on the new base.
 
 Order chosen so that each step is independently mergeable and measurable.
 
@@ -389,6 +626,18 @@ patched file. Keep patches 0001 and 0002 unchanged.
 
 ### 7.3 Track B — if rebasing onto Quadrants
 
+> **Taken, 2026-09-04. Steps 1, 2 and 4 are done; 3, 5, 6 and 7 are not.** Quadrants is the default
+> compiler (`quadrants>=1.3.0,<1.4`, `BACKENDS[0]`), `quadrants_patches/` carries three patches,
+> and Prerequisite 0 is written as `0003` — compiled, never run on pre-Volta hardware. The per-step
+> markers below say what closed each one and what it cost; `MIGRATION.md` is the whole account,
+> including two defects in the ported Metal patch that only a real Apple GPU could have found.
+>
+> The one step whose shape changed: **step 3 is not "rewrite `taichi_fast_launch.py`"** any more.
+> The warm-start memoization was ported instead (`taichi_warmstart.py`, both compilers, 2.3× on a
+> warm render) because no Quadrants *release* carries the upstream `get_pos_info` memo. Fast-launch
+> remains version-gated to Taichi 1.7 and no-ops on Quadrants, which is a cost this migration has
+> not paid down and step 3 still owns.
+
 **Prerequisite 0 — pre-Volta CUDA support. Quadrants 1.3.0 cannot `qd.init(qd.gpu)` on a GPU older
 than sm_70, which includes this repository's development machine (GTX 1050, sm_61).** Measured
 2026-09-03 against the PyPI wheel 1.3.0 (commit `ab9a58ab`, LLVM 22.1.0), driver 576.52. This is
@@ -432,13 +681,43 @@ applies to `match_any_sync` and half2), none touches a non-sm_61 path, and a per
 a rebase tax for nothing. Fork only as a stopgap while an upstream PR lands. If neither happens,
 Track B is blocked on any pre-Volta machine, which today includes the primary dev box.
 
-1. Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
+> **Written 2026-09-04 as `quadrants_patches/0003-pre-volta-cuda.patch`, and writing it corrected
+> the diagnosis above in two load-bearing ways** (`quadrants_patches/PORTING-NOTES.md` §7 has the
+> evidence; the patch is **unbuilt and unrun** — `scripts/gate/quadrants_linux_build.sh` is the
+> compile check, since Quadrants forces CUDA off on Apple and the macOS leg never compiles a line of
+> it, and only the maintainer's sm_61 box can answer whether it actually works):
+>
+> * **The source-level fix for (a) does not work.** `__scoped_atomic_compare_exchange_n(...,
+>   __MEMORY_SCOPE_DEVICE)` emits IR byte-identical to the unscoped builtin — no `syncscope` at all —
+>   because only the AMDGPU, NVPTX and SPIR-V backends override
+>   `TargetCodeGenInfo::getLLVMSyncScopeID`, and the runtime bitcode is compiled with no `-target`
+>   (`runtime_module/CMakeLists.txt`). The patch therefore re-scopes those atomics **in IR**, in the
+>   CUDA branch of `module_from_file` in `llvm_context.cpp` — the file that already exists to fix up
+>   host-compiled bitcode for the GPU target. Only one `.sys` survives into the loaded module because
+>   `init_runtime_module` runs `eliminate_unused_functions` keeping `runtime_*`/`LLVMRuntime_*`
+>   (`llvm_context.cpp:1158`): `runtime_eval_adstack_max_reduce` matches, and `stack_push` — which
+>   holds deliberately system-scoped overflow-flag atomics — is dropped, which is what makes the
+>   narrow rewrite both sufficient and safe.
+> * **The gate for (b) is `cap >= 75`, not 70, and sm_70/sm_72 are broken today too.** LLVM 22's
+>   predicate on `activemask` is `Requires<[hasPTX<62>, hasSM<30>]>`: the hardware bound is sm_30 and
+>   Pascal meets it — what fails is the *PTX ISA version*. Quadrants passes an empty feature string to
+>   `createTargetMachine` (`jit_cuda.cpp:265`), so LLVM defaults `PTXVersion` to
+>   `getMinPTXVersionForSM`, which is 5.0 for sm_6x, 6.0 for sm_70, 6.1 for sm_72 and 6.3 for sm_75.
+>   The `.version 5.0 / .target sm_61` observed above is direct confirmation. A `cap >= 70` gate would
+>   have left a V100 exactly as broken; gating at 75 is still a no-op from Turing up, including
+>   Quadrants' own T4 CI.
+>
+> One caveat on attribution, since it bears on how the fix should be argued upstream: the `.sys`
+> refusal was measured on a single sm_61 **Windows** box, so whether the discriminator is compute
+> capability, WDDM, or `hostNativeAtomicSupported` is unestablished. `cap < 70` is safe either way.
+
+1. **[done]** Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
    (all 11 target files exist at renamed paths; `MetalDevice::import_mtl_buffer` still at
    `quadrants/rhi/metal/metal_device.mm:1280`; `MetalShaderResourceSet::rw_buffer` still honours
    `ptr.offset`, `:292-305`; the one `export_lang.cpp` binding becomes nanobind; the gfx bind site
    moved to `runtime/gfx/runtime.cpp:698`); port 0002 minus the cast hunk; add the `ContinueStmt`
    test.
-2. Python glue, the 13 breaking differences: `import quadrants as ti` (84 sites);
+2. **[done, and two of the thirteen did not apply]** Python glue: `import quadrants as ti` (84 sites);
    `get_runtime().prog` → `._prog` (the property now raises when unset, `lang/impl.py:443-447`;
    `taichi_runtime.py:376,400`, seven sites in `tests/unit_tests/test_taichi_runtime_config.py`);
    delete `gpu_max_reg` from `taichi_init_kwargs` (a `KeyError` in Quadrants); `TI_OFFLINE_CACHE_FILE_PATH`
@@ -451,7 +730,7 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
    **set `QD_KERNEL_COVERAGE=0` in `test.yaml` before `--cov`** (Quadrants' pytest plugin otherwise
    instruments every kernel under pytest-cov, changing memory layout); `prog.compile_kernel` returns
    `CompileResult` (take `.compiled_kernel_data`).
-3. Rewrite `taichi_fast_launch.py` against `quadrants.lang.kernel.Kernel` (prefer hooking
+3. **[not done — superseded in part; see the note above]** Rewrite `taichi_fast_launch.py` against `quadrants.lang.kernel.Kernel` (prefer hooking
    `launch_kernel` over `__call__`, which now carries checkpoint/`qd.Tensor`/stream stages); re-run
    `benchmarks/_taichi_fast_launch_check.py` with verify on. Trim `taichi_warmstart.py` to the
    source-retrieval memo (`get_pos_info` is memoised upstream, `ast_transformer_utils.py:408-424`)
@@ -464,18 +743,23 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
    no-ops elsewhere. Consequence: a Track B build pinned to 1.3.0 pays a frontend cost Algan
    already solved on Taichi (measured whole-process kernel materialize: ~107 s vs ~30 s for the
    same 27 kernels). Either pin a Quadrants build that contains the upstream memo, or port the
-   memo rather than trimming it. Quadrants additionally builds each kernel AST **twice**
+   memo rather than trimming it. **Done, by porting** (2026-09-04): pinning was not on offer —
+   the memo is in no release tag (§6.1) — so `taichi_warmstart.py` now installs against either
+   compiler, memoizing `get_pos_info` and, on Quadrants, `get_source_info_and_src` and the
+   per-line `textwrap.fill` behind `get_tree_and_ctx`. It stands down by itself if a future
+   release carries upstream's own memo (`_build_pos_info`), and `algan check` now reports the
+   version gate refusing to fire rather than leaving it silent. Quadrants additionally builds each kernel AST **twice**
    (`get_tree_and_ctx` 2.00x per kernel — a pruning pass then an enforcing pass; the first is
    skipped only on a fastcache hit), which the memo does not address: node visits measured at
    505,978 vs Taichi's 252,989, `build_Name` 203,288 vs 101,644.
-4. `mps_zero_copy.py`: replace the per-launch sync pair with
+4. **[done — the module needed no change; `taichi_compat` absorbed it]** `mps_zero_copy.py`: replace the per-launch sync pair with
    `qd.init(external_metal_command_queue=quadrants.interop.get_mps_command_queue(), external_metal_command_queue_is_torch_queue=True)`.
-5. CI: rewrite `taichi_build.yaml` from `quadrants-src/.github/workflows/scripts_new/`
+5. **[not done — `scripts/gate/*_build.sh` build wheels on demand, but no release workflow ships one]** CI: rewrite `taichi_build.yaml` from `quadrants-src/.github/workflows/scripts_new/`
    (macOS, manylinux x86_64/aarch64, Windows); `QD_WITH_VULKAN=OFF` on macOS drops the MoltenVK
    dependency; enable `QD_WITH_CUDA=ON` on Linux/Windows.
-6. Re-baseline `tests/fast` and `tests/full_renders` with the diffs inspected; record warm
+6. **[outstanding, and now known to be necessary — §6.1's correction: four scenes move by up to 158 channel values]** Re-baseline `tests/fast` and `tests/full_renders` with the diffs inspected; record warm
    `save_frame` timings before/after; delete `ALGAN_GPU_MAX_REG`.
-7. Then Track C items on the new base: item 1 reuses `Program.load_fast_cache` and the
+7. **[not started]** Then Track C items on the new base: item 1 reuses `Program.load_fast_cache` and the
    FunctionDef-only path instead of new pybinds; items 13–15, 18, 20 unchanged; item 2 and the
    Metal copies are already present.
 

@@ -37,7 +37,6 @@ import logging
 
 import numpy as np
 import pytest
-import taichi as ti
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
@@ -50,6 +49,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SEC_OWNER,
     _sec_positions,
 )
+from algan.taichi_compat import ti
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 

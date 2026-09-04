@@ -18,10 +18,10 @@ around the launch. ``taichi_launch_is_local`` used to call that free.
 from __future__ import annotations
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering import taichi_runtime
+from algan.taichi_compat import ti
 
 # Deliberately not marked ``fast``. These assertions fail when
 # ``taichi_runtime`` itself changes and at no other time -- nothing elsewhere in

@@ -23,11 +23,11 @@ REPO = Path(__file__).resolve().parent.parent
 os.chdir(REPO / "tests" / "full_renders")
 
 import numpy as np  # noqa: E402
-import taichi as ti  # noqa: E402
 
 from algan import *  # noqa: E402
 from algan import HD, SETTINGS, Scene  # noqa: E402
 from algan.rendering.shaders.fragment_shaders import FragmentStage  # noqa: E402
+from algan.taichi_compat import ti  # noqa: E402
 
 OUTDIR = REPO / "benchmarks" / "_gltf_probe2_out"
 OUTDIR.mkdir(parents=True, exist_ok=True)

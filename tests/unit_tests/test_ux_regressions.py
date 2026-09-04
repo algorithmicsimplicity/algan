@@ -1385,8 +1385,6 @@ def test_an_authored_scene_reaches_the_path_tracer_capability_check(
     the check runs on host metadata before any arena reservation or kernel
     compilation.
     """
-    import taichi as ti
-
     from algan.constants.color import BLUE
     from algan.mobs.shapes_3d import Sphere
     from algan.rendering.shaders.fragment_shaders import (
@@ -1394,6 +1392,7 @@ def test_an_authored_scene_reaches_the_path_tracer_capability_check(
         FragmentStage,
     )
     from algan.settings.video_settings import SMOKE_TEST
+    from algan.taichi_compat import ti
 
     rt_settings.set_unsupported_feature_policy("error")
     scene = SceneManager.instance().current_scene

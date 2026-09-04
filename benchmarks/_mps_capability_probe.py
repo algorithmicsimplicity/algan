@@ -95,9 +95,31 @@ import sys
 import time
 from pathlib import Path
 
+# Deliberately the literal Taichi package, not `algan.taichi_compat`: this
+# probe exists to answer questions about *Taichi's* SPIR-V/Metal codegen and
+# the zero-copy MPS path (`algan.rendering.mps_zero_copy`), which needs
+# Taichi's patched Metal wheel specifically -- Quadrants is not what
+# `DESIGN_mps_support.md` / `DESIGN_metal_native_port.md` are asking about
+# (see `agent_guidance/taichi.md`). Several arms below also import
+# `algan.rendering.taichi_runtime`, which binds whatever
+# `ALGAN_TAICHI_BACKEND` selects; `_require_taichi_backend` (called from
+# `main`, before any arm runs) makes sure that is Taichi too, so this process
+# never ends up with both compilers loaded at once.
 import taichi as ti
 
 _REPO = Path(__file__).resolve().parents[1]
+
+
+def _require_taichi_backend():
+    from algan.taichi_compat import BACKEND
+
+    if BACKEND != "taichi":
+        raise SystemExit(
+            "_mps_capability_probe.py is Taichi-only: it probes Taichi's own "
+            "Metal/SPIR-V codegen and the zero-copy MPS path, which needs "
+            "Taichi's patched Metal wheel, not Quadrants. Current backend is "
+            f"{BACKEND!r}; re-run with ALGAN_TAICHI_BACKEND=taichi."
+        )
 
 #: Printed by every section, parsed by the orchestrator. A marker rather than
 #: bare stdout because Taichi writes its banner and any compile warnings to the
@@ -1735,6 +1757,7 @@ def main():
     parser.add_argument("--workload")
     parser.add_argument("--out", default=str(_REPO / "mps_probe_results.json"))
     args = parser.parse_args()
+    _require_taichi_backend()
 
     if args.section:
         _emit(_dispatch(args))

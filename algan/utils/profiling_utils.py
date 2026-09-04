@@ -270,7 +270,15 @@ def _is_taichi_kernel(obj):
 
 def _is_taichi_func(obj):
     """Best-effort detection of a ``@ti.func`` (inlined; cannot be timed)."""
-    return _flag(obj, "_is_taichi_function")
+    from algan.taichi_compat import is_compiler_func
+
+    # Asking the compat layer keeps the marker attribute right for whichever
+    # compiler is bound; the try/except is what ``_flag`` exists for -- an
+    # attribute probe on a lazy module can raise rather than answer.
+    try:
+        return is_compiler_func(obj)
+    except Exception:
+        return False
 
 
 def _import_raytracing_modules():

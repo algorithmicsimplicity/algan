@@ -67,8 +67,31 @@ def discover_kernels(explicit=None):
     return pairs or list(FALLBACK_KERNELS)
 
 
+def _require_taichi_backend():
+    """Refuse to run under any backend but Taichi.
+
+    ``ti.aot`` -- everything this module does -- does not exist on Quadrants
+    at all (``AttributeError: module 'quadrants' has no attribute 'aot'``),
+    not merely a differently-gated feature, so there is no Quadrants arm to
+    fall back to. Below, ``import taichi as ti`` is deliberately the literal
+    package rather than ``algan.taichi_compat`` for the same reason; checking
+    the backend first means that mismatch is a clear message instead of an
+    ``AttributeError`` deep inside the build, and keeps this process from
+    also binding Quadrants through ``algan.rendering.taichi_runtime``.
+    """
+    from algan.taichi_compat import BACKEND
+
+    if BACKEND != "taichi":
+        raise SystemExit(
+            "_taichi_aot_build.py is Taichi-only: it builds a `ti.aot.Module`, "
+            f"which Quadrants does not implement. Current backend is "
+            f"{BACKEND!r}; re-run with ALGAN_TAICHI_BACKEND=taichi."
+        )
+
+
 def build(out_dir: Path, explicit=None) -> dict:
     """Build one AOT module holding every requested kernel, and save it."""
+    # Deliberately the literal Taichi package; see `_require_taichi_backend`.
     import taichi as ti
 
     from algan.rendering.taichi_runtime import init_taichi
@@ -150,6 +173,7 @@ def main(argv=None) -> int:
         help="explicit kernels, bypassing the AOT_KERNELS scan",
     )
     args = parser.parse_args(argv)
+    _require_taichi_backend()
 
     # Belt and braces: the caller is expected to set this, but a build that
     # silently produced a CUDA module would be §3.3's trap all over again.

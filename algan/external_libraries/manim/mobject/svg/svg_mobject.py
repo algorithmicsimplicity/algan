@@ -34,6 +34,7 @@ class SVGGlobals:
 
 SVG_GLOBALS = SVGGlobals()
 
+
 SVG_HASH_TO_MOB_MAP: dict[int, SVGMobject] = {}
 
 

@@ -58,10 +58,10 @@ or every arm reuses, never a mix.
 import statistics
 import time
 
-import taichi as ti
 import torch
 
 from algan.rendering.taichi_runtime import init_taichi, taichi_arch_is_cpu
+from algan.taichi_compat import ti
 
 init_taichi()
 

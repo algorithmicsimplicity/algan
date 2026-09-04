@@ -1,0 +1,118 @@
+diff --git a/quadrants/codegen/cuda/codegen_cuda.cpp b/quadrants/codegen/cuda/codegen_cuda.cpp
+index 6961a9787..20abf1fa9 100644
+--- a/quadrants/codegen/cuda/codegen_cuda.cpp
++++ b/quadrants/codegen/cuda/codegen_cuda.cpp
+@@ -27,6 +27,22 @@ using namespace llvm;
+ // NVVM IR Spec:
+ // https://docs.nvidia.com/cuda/archive/10.0/pdf/NVVM_IR_Specification.pdf
+ 
++// Minimum compute capability for the warp-aggregated reduction path (`optimized_reduction` below).
++//
++// That path calls the runtime's `reduce_*` helpers, which start with `cuda_active_mask()`; `llvm_context.cpp`
++// patches that stub into `llvm.nvvm.activemask`. NVPTX only has a pattern for that intrinsic when the PTX ISA
++// version is at least 6.2, since `activemask.b32` was added in PTX ISA 6.2 (`ACTIVEMASK` in NVPTXIntrinsics.td is
++// `Requires<[hasPTX<62>, hasSM<30>]>`). Below that the intrinsic reaches instruction selection and aborts the
++// compile with "LLVM Fatal Error: Cannot select: intrinsic %llvm.nvvm.activemask".
++//
++// We build the NVPTX TargetMachine with an empty feature string (`jit_cuda.cpp`), so LLVM picks the *minimum* PTX
++// version for the target SM (`NVPTXSubtarget::getMinPTXVersionForSM`): 5.0 for sm_60/61/62, 6.0 for sm_70, 6.1 for
++// sm_72 and 6.3 for sm_75. sm_75 is therefore the first target on which the intrinsic can be selected at all. Below
++// it we fall back to the plain atomic, the same shape as the `cap >= 60` gate on the half2 atomic-add path in
++// `visit(AtomicOpStmt *)`. The hardware itself is not the limit here - `activemask.b32` is sm_30 and up - so if the
++// PTX version ever becomes explicit this bound can drop accordingly.
++constexpr int kMinComputeCapabilityForWarpReduction = 75;
++
+ static bool is_half2(DataType dt) {
+   if (dt->is<TensorType>()) {
+     auto tensor_type = dt->as<TensorType>();
+@@ -363,6 +379,11 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {
+     if (!stmt->is_reduction) {
+       return nullptr;
+     }
++    // The warp-aggregated helpers need `llvm.nvvm.activemask`, which NVPTX cannot select on these targets.
++    // See `kMinComputeCapabilityForWarpReduction`.
++    if (CUDAContext::get_instance().get_compute_capability() < kMinComputeCapabilityForWarpReduction) {
++      return nullptr;
++    }
+     QD_ASSERT(stmt->val->ret_type->is<PrimitiveType>());
+     PrimitiveTypeID prim_type = stmt->val->ret_type->cast<PrimitiveType>()->type;
+ 
+diff --git a/quadrants/runtime/llvm/kernel_atomic_syncscope.h b/quadrants/runtime/llvm/kernel_atomic_syncscope.h
+index 3314d617c..23f665b5c 100644
+--- a/quadrants/runtime/llvm/kernel_atomic_syncscope.h
++++ b/quadrants/runtime/llvm/kernel_atomic_syncscope.h
+@@ -4,6 +4,10 @@
+ 
+ #include "quadrants/rhi/arch.h"
+ 
++#if defined(QD_WITH_CUDA)
++#include "quadrants/rhi/cuda/cuda_context.h"
++#endif
++
+ namespace quadrants::lang {
+ 
+ // Pick the LLVM syncscope for a user-facing kernel atomic op (`qd.atomic_add`, `qd.atomic_xor`, ..., and the
+@@ -26,10 +30,23 @@ namespace quadrants::lang {
+ //
+ // Internal runtime atomics that touch pinned host memory (e.g. the adstack overflow flag the host polls during kernel
+ // execution) deliberately do NOT use this helper; they need System scope for correctness.
++//
++// CUDA below sm_70 is the one exception to "CUDA keeps the System default". The NVPTX backend emits an explicit scope
++// qualifier on every atomic as soon as the target is sm_60 or newer (`NVPTXSubtarget::hasAtomScope()`), so System
++// scope becomes `atom.sys.*`. On sm_61 the driver refuses a module containing `atom.sys.cas.b64` with
++// `CUDA_ERROR_NOT_SUPPORTED` at `cuModuleLoadDataEx`, and module loading is all-or-nothing, so one such instruction in
++// the runtime module takes the whole program down. The same module with `atom.gpu`, `atom.cta` or an unscoped `atom`
++// loads. Device scope is sufficient for the ops this helper covers for exactly the reason spelled out for AMDGPU
++// above, so drop to it there. sm_70 and newer keep the System default and their PTX is byte-for-byte unchanged.
+ inline llvm::SyncScope::ID kernel_atomic_syncscope(llvm::LLVMContext *ctx, Arch arch) {
+   if (arch == Arch::amdgpu) {
+     return ctx->getOrInsertSyncScopeID("agent");
+   }
++#if defined(QD_WITH_CUDA)
++  if (arch == Arch::cuda && CUDAContext::get_instance().get_compute_capability() < 70) {
++    return ctx->getOrInsertSyncScopeID("device");
++  }
++#endif
+   return llvm::SyncScope::System;
+ }
+ 
+diff --git a/quadrants/runtime/llvm/llvm_context.cpp b/quadrants/runtime/llvm/llvm_context.cpp
+index d11650357..7ade2ba01 100644
+--- a/quadrants/runtime/llvm/llvm_context.cpp
++++ b/quadrants/runtime/llvm/llvm_context.cpp
+@@ -370,6 +370,35 @@ std::unique_ptr<llvm::Module> QuadrantsLLVMContext::module_from_file(const std::
+       }
+ #endif
+ 
++      // `runtime_eval_adstack_max_reduce` ends with a `__atomic_compare_exchange_n` CAS loop that reduces the
++      // per-thread maxima into a slot in device memory. The runtime bitcode is compiled by clang for the *host*
++      // triple, where every atomic scope collapses to System (`TargetCodeGenInfo::getLLVMSyncScopeID` maps all
++      // scopes to the default one, so clang's `__scoped_atomic_*` builtins emit exactly the same IR as the plain
++      // `__atomic_*` ones). The scope therefore cannot be expressed in the C++ source; re-scope it here, where the
++      // module has already been retargeted to NVPTX, using the same policy as the kernel-side atomics. Below sm_70
++      // this turns `atom.sys.cas.b64` - which the driver rejects at `cuModuleLoadDataEx`, taking the whole runtime
++      // module with it - into `atom.gpu.cas.b64`; on sm_70 and newer `kernel_atomic_syncscope` returns System and
++      // this is a no-op. Only atomics that are still System-scoped are touched, and only in this one function, so
++      // the deliberately system-scoped runtime atomics (the adstack overflow flag the host polls mid-kernel) keep
++      // their scope. See `kernel_atomic_syncscope.h`.
++      if (auto scope = kernel_atomic_syncscope(ctx, arch_); scope != llvm::SyncScope::System) {
++        if (auto *reduce_func = module->getFunction("runtime_eval_adstack_max_reduce")) {
++          for (auto &bb : *reduce_func) {
++            for (auto &inst : bb) {
++              if (auto *cas = dyn_cast<AtomicCmpXchgInst>(&inst)) {
++                if (cas->getSyncScopeID() == llvm::SyncScope::System) {
++                  cas->setSyncScopeID(scope);
++                }
++              } else if (auto *rmw = dyn_cast<AtomicRMWInst>(&inst)) {
++                if (rmw->getSyncScopeID() == llvm::SyncScope::System) {
++                  rmw->setSyncScopeID(scope);
++                }
++              }
++            }
++          }
++        }
++      }
++
+       patch_intrinsic("thread_idx", Intrinsic::nvvm_read_ptx_sreg_tid_x);
+       patch_intrinsic("block_thread_idx", Intrinsic::nvvm_read_ptx_sreg_tid_x);
+       patch_intrinsic("cuda_clock_i64", Intrinsic::nvvm_read_ptx_sreg_clock64);

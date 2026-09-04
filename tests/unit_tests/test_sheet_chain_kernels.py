@@ -17,7 +17,6 @@ convention in ``test_sheet_compaction.py``).
 from __future__ import annotations
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering.raytracing.raster_pipeline import (
@@ -34,6 +33,7 @@ from algan.rendering.raytracing.sheet_compact_taichi import (
 )
 from algan.rendering.raytracing.sheets import _lexsort
 from algan.settings import SETTINGS
+from algan.taichi_compat import ti
 
 EXPERIMENTAL = SETTINGS.raytracing.experimental
 

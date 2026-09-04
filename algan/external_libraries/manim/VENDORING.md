@@ -54,12 +54,16 @@ Mechanical, applied to every file:
 1. Every `from manim... import` becomes relative. Nothing in the tree can
    resolve to an installed `manim`; `scripts/vendor_manim.py` fails the build
    if one survives.
-2. `typing.Self` and `typing.TypeAlias` come from `manim/_compat.py`, which
-   falls back to `typing_extensions` -- upstream requires Python 3.11, Algan
-   supports 3.9.
-3. Module-level `X: TypeAlias = A | B` becomes `Union[A, B]`, for the same
-   reason: `|` between typing objects is 3.10, and an assignment is not
-   deferred by `from __future__ import annotations`.
+2. `typing.Self` and `typing.TypeAlias` come from `manim/_compat.py`. `Self`
+   is 3.11 and falls back to `typing_extensions` there; `TypeAlias` is 3.10,
+   which is Algan's floor, so it is re-exported unchanged -- the rewrite still
+   routes both through one module so it does not have to know which is which.
+3. Module-level `X: TypeAlias = A | B` becomes `Union[A, B]`. `|` between
+   typing objects is 3.10, so the floor now covers it and this is belt and
+   braces; it stays because an assignment is not deferred by
+   `from __future__ import annotations`, so the spelling has to be valid at
+   *runtime* on the oldest interpreter the wheel claims, and undoing it would
+   rewrite the vendored tree for no gain.
 4. `np.trapezoid` goes through `manim/_compat.py`, which falls back to
    `np.trapz` -- upstream requires NumPy 2.1, Algan supports 1.20.
 5. `zip(..., strict=...)` goes through `manim/_compat.py` too; the keyword is

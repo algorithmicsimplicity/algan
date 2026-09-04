@@ -64,6 +64,7 @@ from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
 from algan.sound.audio_effect import AudioManager
+from algan.taichi_compat import is_compiler_func
 from algan.utils.file_utils import get_image
 
 logger = get_logger()
@@ -215,9 +216,7 @@ class Scene(RenderLoopMixin):
         self.background_is_set = False
         # Preserve the legacy direct-Scene constructor callback while leaving
         # a Taichi func deferred: a @ti.func can only be called from a kernel.
-        if callable(background) and not getattr(
-            background, "_is_taichi_function", False
-        ):
+        if callable(background) and not is_compiler_func(background):
             background = background(
                 torch.stack(
                     (

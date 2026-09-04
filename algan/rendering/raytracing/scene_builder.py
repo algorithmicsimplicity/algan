@@ -38,6 +38,7 @@ from algan.rendering.raytracing.utils import (
 )
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
+from algan.taichi_compat import is_compiler_func
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -103,7 +104,7 @@ class _DeferredBackground:
         self.first_frame = int(first_frame)
         self.frames_per_second = float(frames_per_second)
         self.device = torch.device(device)
-        self.is_taichi_func = bool(getattr(callback, "_is_taichi_function", False))
+        self.is_taichi_func = is_compiler_func(callback)
 
 
 def _projected_scene_device(primitives):

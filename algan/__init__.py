@@ -53,13 +53,22 @@ _vendored_manim = _manim_alias.install()
 # a machine carrying only the build imageio-ffmpeg bundles. Nothing in Algan's
 # dependency set imports pydub any more, so both are gone.
 
-# Taichi prints "[Taichi] version ..." to *stdout* the moment it is imported
-# (taichi/_lib/utils.py), so a script whose stdout is data got the banner mixed
-# into it and `algan --version` printed two versions. Its own opt-out is this
-# variable, read at that import; ``setdefault`` so anyone who wants the banner
-# can still ask for it. It is not an ALGAN_ variable, hence not declared in
-# algan/environment.py -- it belongs to Taichi, like TI_OFFLINE_CACHE_FILE_PATH.
+# Both kernel compilers print "[<name>] version ..." to *stdout* the moment
+# they are imported (taichi/_lib/utils.py, quadrants/_lib/utils.py), so a
+# script whose stdout is data got the banner mixed into it and
+# `algan --version` printed two versions. Each has its own opt-out, read at
+# that import; ``setdefault`` so anyone who wants the banner can still ask for
+# it. Neither is an ALGAN_ variable, hence neither is declared in
+# algan/environment.py -- they belong to the compilers, like
+# TI_OFFLINE_CACHE_FILE_PATH.
+#
+# Both are set whichever backend is selected, and unconditionally: reading
+# `algan.taichi_compat.BACKEND` here to set only the relevant one would gain
+# nothing (the other variable is inert) and these have to be in the
+# environment *before* the import that would print, which `taichi_compat`
+# defers to first use.
 os.environ.setdefault("ENABLE_TAICHI_HEADER_PRINT", "False")
+os.environ.setdefault("ENABLE_QUADRANTS_HEADER_PRINT", "False")
 import shutil
 
 import torch
