@@ -89,6 +89,54 @@ miss (different kernel variants per preset) or the caches not being consulted
 at all is not yet established, and it is worth more than everything else on
 this page: it is 5-7x the warm render.
 
+## The codegen knobs are a dead end (`perf-cg-codegen-sweep.log`)
+
+All eight arms in one session, so directly comparable, at UHD:
+
+| arm | cold | warm | vs base |
+| --- | --- | --- | --- |
+| base (ptxas chooses) | 108 s | **17.75 s** | — |
+| `ALGAN_GPU_MAX_REG=96` | 81 s | 17.87 s | +0.7% |
+| `=128` | 82 s | 18.02 s | +1.5% |
+| `=168` | 82 s | 18.15 s | +2.3% |
+| `=200` | 81 s | 18.02 s | +1.5% |
+| `=255` | 81 s | 17.88 s | +0.7% |
+| `ALGAN_ADV_OPT=1` | **2661 s** | 17.35 s | −2.3% |
+| `ALGAN_OPT_LEVEL=2` | — | never ran | — |
+
+**Every register cap is worse than letting ptxas choose, in both directions.**
+Capping low (96) buys occupancy by spilling and loses; capping high (255) buys
+fewer spills at lower occupancy and also loses. So these kernels already sit at
+a local optimum on that tradeoff and are *not* occupancy-limited in any way
+`-maxrregcount` reaches. The `gpu_max_reg` docstring's tuning was done on the
+author's Pascal card; on Turing the answer is "leave it alone".
+
+`ALGAN_ADV_OPT=1` is worth its own warning. It **compiled for 2661 seconds** —
+Taichi's full IR pipeline (whole-kernel CSE, alias analysis) is superlinear in
+statement count, and these megakernels inline an entire shading and traversal
+call graph into one body. The −2.3% it returned is inside the run-to-run band
+(UHD has spread 17.30–18.45 s across sessions). Not viable at any price, and
+the arm after it never ran because the wedge ate the session — which is how
+`--step-timeout` was found to be inert (fixed in `scripts/kaggle/runner.py`).
+
+Read with the k-buffer result: transposing the traverse→shade hit buffers from
+`[num_active, kbuf, ch]` to `[kbuf, ch, num_active]`, which turns 24 scattered
+4-byte accesses per ray per direction into coalesced ones, is byte-identical
+and **neutral at UHD**. So the hot kernels are neither register-bound nor
+bandwidth-bound; what is left is dependent-load latency and divergence in BVH
+traversal, which only an algorithmic change touches.
+
+## Cross-session numbers are not comparable
+
+Identical code, `nn_ablation base PREVIEW`, measured **4.69, 4.70, 4.76, 5.20,
+5.31 s** across sessions — a 13% spread. UHD is far steadier (17.63–17.75 over
+four sessions) but still moves ~3% run to run *within* a session.
+
+So: **put both arms of an A/B in one session**, and treat a single-run
+difference under ~3% at UHD (or under ~10% at PREVIEW, across sessions) as no
+reading at all. Several early conclusions in this round had to be withdrawn for
+exactly this reason.
+
 ## Reproducing
 
 ```

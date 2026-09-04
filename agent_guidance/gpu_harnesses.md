@@ -276,6 +276,21 @@ Then grep `/tmp/run.log` for whatever the run was about.
 * **Cross-step video SHAs are a free parity check.** `runner.py` records a
   sha256 per output mp4/png in `results.json` and in the `RESULTS` line, so two
   arms of a byte-identical A/B should print the same digest.
+* **Put both arms of an A/B in ONE session.** Identical code drifts between
+  sessions: `nn_ablation base PREVIEW` measured 4.69–5.31 s (13%) across five
+  sessions, and even UHD, the steadier of the two, moves ~3% run to run. A
+  cross-session comparison under those margins is not a reading. Corollary:
+  two arms that share a profile `tag` also share their output *filenames*, so
+  the digests `runner.py` reports all come from whichever step ran last —
+  encode the arm in the tag (`nn_ablation.py` does this for the knobs it
+  knows) or the parity half of the A/B is silently lost.
+* **`ALGAN_ADV_OPT=1` does not terminate in useful time on the megakernels.**
+  One arm compiled for **2661 s** and returned a difference inside the noise
+  band. Taichi's advanced optimization is superlinear in statement count and
+  these kernels inline a whole shading + traversal call graph into one body.
+  Do not spend a session on it; the sweep is recorded in
+  `benchmarks/performance/reports/t4_2026_09/`, which also shows every
+  `ALGAN_GPU_MAX_REG` cap coming out *worse* than letting ptxas choose.
 * **Never take a determinism or pixel reading while another process is using
   the GPU.** Free VRAM at job start sets the arena size, which sets tile sizes
   and batch windows; a concurrent job changes the pixels. Check `nvidia-smi`
