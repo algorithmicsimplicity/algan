@@ -330,9 +330,9 @@ accepted under R4.
 fragment; ss6 step 5 and ss13.2 both flag it as the easiest place to introduce
 a silent desync, and nothing has changed about that. The run scan and the corr
 application must land in both kernels in the same change, ideally as one
-shared `@ti.func` so they cannot drift (with the standing discipline: editing
-a `@ti.func` does NOT invalidate the offline kernel cache — clear it before
-every A/B, never edit `*_taichi.py` under a live render process).
+shared `@ti.func` so they cannot drift (with the standing discipline: never
+edit `*_taichi.py` under a live render process; the offline cache is keyed on
+the compiled IR, so the edit itself recompiles).
 
 4.7 Continuations, glossy, and the ray-cast fallback
 ----------------------------------------------------
