@@ -195,3 +195,12 @@ compile-trace.txt
 
 # Written by algan/utils/profiling_utils.py into the working directory
 algan_profile_report*.txt
+
+# The patched Quadrants wheels `scripts/build_quadrants_wheels.py` downloads.
+# 20-30 MiB each and a full matrix is twelve of them, so the bytes stay out of
+# git for the reason the render baselines do (`tests/README.md`, "Where the
+# heavy baselines live"). The manifest beside them IS committed: it carries the
+# run id, the commit and a sha256 per wheel and per patch, so which wheel a
+# measurement was taken on stays recoverable without the wheel being here.
+/quadrants_wheels/*
+!/quadrants_wheels/manifest.json

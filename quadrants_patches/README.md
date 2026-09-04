@@ -66,6 +66,42 @@ patches were authored in — but a patch that fails to apply has drifted from th
 tag rather than been applied out of order. Fix the patch; do not loosen the
 apply. `PORTING-NOTES.md` says what each hunk is anchored on.
 
+## Getting a patched wheel
+
+Nothing here builds on the machine you are reading this on: the Metal patches
+need an Apple GPU box and the CUDA ones a toolchain most checkouts do not have.
+So the build happens on GitHub's runners and the wheels come back over the API.
+One command does both:
+
+    uv run python scripts/build_quadrants_wheels.py
+
+That dispatches `.github/workflows/quadrants_build.yaml`, waits, and downloads
+every wheel it produced into `quadrants_wheels/`. Narrower, when only one
+platform is in question, or wider, for a release:
+
+    uv run python scripts/build_quadrants_wheels.py --platforms macos
+    uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13
+    uv run python scripts/build_quadrants_wheels.py --run-id <id> --install
+
+**All three platforms Algan supports**, because each is the only place part of
+this patch set can be compiled at all — Metal (0001, 0002) only exists on macOS,
+where Quadrants forces `QD_WITH_CUDA=OFF`; 0003 is for a pre-Volta card in a
+Windows box; 0004 is LLVM codegen that both CUDA legs see. One wheel per
+platform per Python, ~15-20 minutes each, `fail-fast: false` so one platform's
+failure still lands the others' wheels.
+
+The wheels themselves are **gitignored** — 20-30 MiB each, and this repository
+keeps binaries that size out of git (`tests/README.md`, "Where the heavy
+baselines live"). `quadrants_wheels/manifest.json` beside them **is** committed:
+run id, commit, and a sha256 per wheel and per patch, so which wheel a
+measurement was taken on stays recoverable from git even though the bytes are
+not. Attach the wheels to a release to share them; the manifest's digests are
+what make an uploaded asset verifiable.
+
+A patched wheel is also self-identifying, without anyone having to arrange it:
+`git apply` leaves the patches uncommitted, so `setuptools_scm` sees a dirty
+tree and stamps `1.3.1.dev0+g<sha>` rather than the `1.3.0` PyPI ships.
+
 ## What has been verified, and what has not
 
 **They apply, and they compile.** "Applying them" above is the apply half. The
@@ -287,8 +323,8 @@ to land `!invariant.load` alone and confirm the hoist before stacking anything
 on it.
 
 **Built, and the hoist is confirmed. Not yet timed.**
-`.github/workflows/quadrants_build.yaml` builds it on the free Linux runner
-(clone `v1.3.0`, apply, `./build.py wheel`, ~20 minutes) and then runs
+`.github/workflows/quadrants_build.yaml`'s Linux leg builds it on the free
+runner (clone `v1.3.0`, apply, `./build.py wheel`, ~20 minutes) and then runs
 `verify_invariant_load.py` (beside this README) in one process per arm. On **LLVM 22 / clang,
 x64 CPU backend**, over an eight-ndarray sum kernel:
 

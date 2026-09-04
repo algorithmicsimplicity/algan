@@ -1,55 +1,96 @@
-name: Quadrants from source (Linux)
+name: Quadrants wheels (patched)
 
-# Builds Quadrants v1.3.0 with `quadrants_patches/` applied, on the free Linux
-# runner, and then checks that the argument-load patch did what it claims.
+# Builds Quadrants v1.3.0 with `quadrants_patches/` applied and uploads one
+# wheel per platform per Python, for `scripts/build_quadrants_wheels.py` to
+# dispatch and bring home. That script is the front door; this file is what it
+# drives, and the two are only useful together.
 #
-# It exists because `quadrants_patches/0004-llvm-invariant-load-kernel-args.patch`
-# was written on a machine with no LLVM 22 toolchain and no GPU, so "it applies
-# clean" was the only thing that could be said about it. This job is what turns
-# that into "it compiles, the metadata lands, and the loads leave the loop".
+# It builds on **every platform Algan supports**, because each one is the only
+# place some of the patch set can be compiled at all:
 #
-# It applies the whole directory in numeric order, not just 0004, because that
-# is the set a Quadrants wheel is meant to carry and the order the patches are
-# authored against each other (`quadrants_patches/README.md`, "Applying them").
-# 0001-0002 are Metal-only in effect -- their code is guarded, and this build has
-# `QD_WITH_METAL` off -- so what they contribute here is proof that they still
-# apply and still compile beside 0003 and 0004.
+#   linux    ubuntu-22.04    CUDA on   0003 and 0004 -- the LLVM/NVPTX halves.
+#   macos    macos-26        Metal on  0001 and 0002 are Metal-only, and
+#                                      Quadrants forces QD_WITH_CUDA=OFF on
+#                                      Apple, so nothing else sees them.
+#   windows  windows-2025    CUDA on   0003 exists for a pre-Volta box that
+#                                      runs Windows (`PORTING-NOTES.md` §5),
+#                                      and this is the only job that ships a
+#                                      wheel it can be tried on.
 #
-# It is deliberately NOT the macOS `taichi_build.yaml`'s Linux twin. That one
-# builds Taichi v1.7.4 with `taichi_patches/`, a different base and a different
-# patch set; the two directories share nothing. Each job globs only its own
-# (`taichi_patches/[0-9]*.patch` there), so neither can pick up the other's.
+# The three legs are not written the same way, and the asymmetry is deliberate:
 #
-# `PLAN.md` §5 is the order of work this follows: reproduce the build, confirm
-# in the IR that the argument loads moved, and only then time anything. There is
-# no timing here -- the runner is shared, 4-core and has no GPU, so a number
-# taken on it would be noise. The wheel is uploaded so the timing can happen on
-# a real box.
+#   * **macOS reuses `scripts/gate/quadrants_macos_build.sh` verbatim.** That
+#     script is ~600 lines of things that are only learned by getting them
+#     wrong -- the LunarG SDK stub-out (`build.py` calls `setup_vulkan()` on
+#     Darwin whatever the CMake flag says), `brew install --force-bottle
+#     llvm@22`, leaving CC/CXX alone so Xcode's clang compiles while
+#     CLANG_EXECUTABLE stays on brew's. Re-expressing that in YAML would fork
+#     it. It already takes `GATE_QD_PATCHES=1` and it is the exact invocation
+#     `quadrants_patches/README.md` records as PASS (781 s, `qd.init(metal)=ok`).
+#   * **Linux stays inline**, because it carries the 0004 verification below,
+#     which is the only thing anywhere that proves that patch does what it
+#     claims rather than merely compiling.
+#   * **Windows is new** and has no gate script to reuse, so it follows
+#     Quadrants' own `scripts_new/win/{1_prerequisites,2_build}.ps1`.
+#
+# The Linux leg's original reason for existing is unchanged and still the most
+# valuable thing here: `0004-llvm-invariant-load-kernel-args.patch` was written
+# on a machine with no LLVM 22 toolchain and no GPU, so "it applies clean" was
+# the only thing that could be said about it. The verify steps turn that into
+# "it compiles, the metadata lands, and the loads leave the loop".
+#
+# Every leg applies the whole directory in numeric order, not a subset: that is
+# the set a wheel is meant to carry and the order the patches are authored
+# against each other (`quadrants_patches/README.md`, "Applying them"). Patches
+# whose code is guarded off on a given platform still contribute there -- proof
+# that they still apply and still compile beside the ones that are live.
+#
+# It is not `taichi_build.yaml`'s twin. That builds Taichi v1.7.4 with
+# `taichi_patches/`, a different base and a different patch set; the two
+# directories share nothing, and each job globs only its own, so neither can
+# pick up the other's.
+#
+# There is no timing here. The runners are shared, small and have no GPU, so a
+# number taken on one would be noise. The wheels are uploaded so that timing
+# can happen on a real box.
+#
 # Hand dispatch only, like `taichi_build.yaml` and the MPS probe: this is a
-# ~20-minute build that guards no regression, so it runs when someone wants a
-# wheel or wants the patch re-checked, not on every push that touches it.
+# ~20-minute build per wheel that guards no regression, so it runs when someone
+# wants a wheel or wants the patches re-checked, not on every push.
 #
-# The cost of that choice is one-time and worth stating plainly, because it bites
-# exactly when the job is most wanted. GitHub reads `workflow_dispatch` from the
-# **default branch**, not from the ref being dispatched, so until this file is on
-# `master` the job cannot be launched at all -- not from the Actions tab, not
-# through the API. A patch developed on a feature branch therefore cannot be
-# built until this file merges, whatever the patch's own branch contains.
-#
-# Two ways through that, both worth knowing:
-#   * Merge this file to `master` first; afterwards a dispatch can name any ref,
-#     and the run uses the workflow file *from that ref* -- so later edits to
-#     this job still take effect on a branch without re-merging.
-#   * Re-run a previous run (`rerun_workflow_run`), which needs no default-branch
-#     presence. It re-runs that run's commit, so it is for retrying a flake, not
-#     for testing a new patch.
+# One GitHub rule worth keeping in mind, because it bites exactly when the job
+# is most wanted: `workflow_dispatch` is read from the **default branch**, not
+# from the ref being dispatched. This file is on `master`, so a dispatch can
+# name any ref and the run uses the workflow file *from that ref* -- later
+# edits to this job take effect on a branch without re-merging. A brand-new
+# workflow file on a feature branch would not be dispatchable at all until it
+# merged.
 on:
   workflow_dispatch:
     inputs:
+      platforms:
+        description: "Platforms to build: any of linux,macos,windows (or 'all')"
+        type: string
+        default: "linux,macos,windows"
+      python_versions:
+        description: "Pythons to build for, comma separated (3.10-3.13)"
+        type: string
+        default: "3.11"
       apply_patches:
         description: "Apply quadrants_patches/ (off = stock v1.3.0)"
         type: boolean
         default: true
+      run_tag:
+        description: "Free-text tag echoed into the run name (the driver script uses it to find this run)"
+        type: string
+        default: ""
+
+# The tag goes in the run name so that `build_quadrants_wheels.py` can identify
+# the run it just asked for. `workflow_dispatch` returns 204 and no run id --
+# there is no other reliable way to tell your run from one someone else started
+# in the same second.
+run-name: >-
+  Quadrants wheels: ${{ inputs.platforms }} py${{ inputs.python_versions }}${{ inputs.apply_patches && '' || ' (STOCK)' }}${{ inputs.run_tag && format(' [{0}]', inputs.run_tag) || '' }}
 
 # Queue behind an in-flight run rather than cancelling it: this is a build
 # whose whole value is the artifact at the end, and a half-finished one has
@@ -66,16 +107,51 @@ env:
   QUADRANTS_REF: v1.3.0
 
 jobs:
-  build:
-    name: Quadrants v1.3.0 + patches (ubuntu-22.04, cp311)
+  # Turns the two free-text inputs into one answer. Its failure mode is what it
+  # exists to prevent: a typo'd platform or Python silently building nothing,
+  # or the wrong thing, after the minutes are spent.
+  plan:
+    name: Plan the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      linux: ${{ steps.resolve.outputs.linux }}
+      macos: ${{ steps.resolve.outputs.macos }}
+      windows: ${{ steps.resolve.outputs.windows }}
+      runner_linux: ${{ steps.resolve.outputs.runner_linux }}
+      runner_macos: ${{ steps.resolve.outputs.runner_macos }}
+      runner_windows: ${{ steps.resolve.outputs.runner_windows }}
+      pythons: ${{ steps.resolve.outputs.pythons }}
+      summary: ${{ steps.resolve.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        env:
+          IN_PLATFORMS: ${{ inputs.platforms }}
+          IN_PYTHONS: ${{ inputs.python_versions }}
+        run: python .github/workflows/scripts/resolve_wheel_matrix.py >> "$GITHUB_OUTPUT"
+      - name: Say what will be built
+        run: |
+          echo "### ${{ steps.resolve.outputs.summary }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "patched: ${{ inputs.apply_patches }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  linux:
+    name: linux / py${{ matrix.python-version }}
+    needs: plan
+    if: needs.plan.outputs.linux == 'true'
     # Quadrants' own CI builds Linux on ubuntu-22.04 and says developing on
     # ubuntu-arm is unsupported outside a manylinux container, so this follows
     # the configuration they actually test.
-    runs-on: ubuntu-22.04
+    runs-on: ${{ needs.plan.outputs.runner_linux }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.plan.outputs.pythons) }}
 
     steps:
-      # Algan itself, for `taichi_patches/`.
+      # Algan itself, for `quadrants_patches/`.
       - name: Checkout Algan
         uses: actions/checkout@v4
         with:
@@ -90,7 +166,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Clone Quadrants at ${{ env.QUADRANTS_REF }}
         run: |
@@ -136,8 +212,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/qd-build-cache
-          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
+          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
           restore-keys: |
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-
 
       - name: Prerequisites
@@ -212,11 +289,15 @@ jobs:
           assert impl.current_cfg().invariant_arg_loads is False, 'env var ignored'
           print('QD_INVARIANT_ARG_LOADS=0 OK')"
 
+      - name: Report the wheel
+        if: always()
+        run: bash algan/scripts/gate/report_wheel.sh quadrants-src/dist linux ${{ matrix.python-version }}
+
       - name: Upload the wheel
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: quadrants-wheel-${{ env.QUADRANTS_REF }}-patched
+          name: quadrants-wheel-linux-py${{ matrix.python-version }}
           path: quadrants-src/dist/*.whl
           if-no-files-found: warn
 
@@ -224,6 +305,186 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariant-load-arms
+          name: invariant-load-arms-py${{ matrix.python-version }}
           path: arm_*.json
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macos / py${{ matrix.python-version }}
+    needs: plan
+    if: needs.plan.outputs.macos == 'true'
+    runs-on: ${{ needs.plan.outputs.runner_macos }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.plan.outputs.pythons) }}
+
+    steps:
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+
+      - name: Runner facts
+        run: |
+          uname -a
+          sw_vers
+          sysctl -n hw.ncpu
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The gate script does the whole job -- clone, submodules, patches, brew
+      # llvm@22, the Vulkan stub-out, the build, and a smoke test that installs
+      # the wheel into a fresh venv and runs `qd.init` on both cpu and metal.
+      # It shells out to the `python3` on PATH, which `setup-python` has just
+      # pointed at ${{ matrix.python-version }}; that is what makes the matrix
+      # dimension real here rather than decorative.
+      - name: Build the wheel
+        env:
+          GATE_QD_REF: ${{ env.QUADRANTS_REF }}
+          GATE_QD_PATCHES: ${{ inputs.apply_patches && '1' || '0' }}
+          GATE_WORKDIR: ${{ runner.temp }}/qd-wheel
+        run: bash scripts/gate/quadrants_macos_build.sh
+
+      # Out of $RUNNER_TEMP and into the workspace: `upload-artifact` resolves
+      # paths against the workspace, and the gate script deliberately builds
+      # outside it so that it touches no repo state.
+      - name: Collect the wheel
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p wheelhouse
+          cp "${{ runner.temp }}"/qd-wheel/quadrants-src/dist/quadrants-*.whl wheelhouse/ 2>/dev/null || {
+            echo "no wheel under ${{ runner.temp }}/qd-wheel/quadrants-src/dist"
+            exit 0
+          }
+          bash scripts/gate/report_wheel.sh wheelhouse macos ${{ matrix.python-version }}
+
+      - name: Upload the wheel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quadrants-wheel-macos-py${{ matrix.python-version }}
+          path: wheelhouse/*.whl
+          if-no-files-found: warn
+
+      # The gate script's own logs, which carry the build transcript the job
+      # log only shows the tail of.
+      - name: Upload the build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quadrants-macos-logs-py${{ matrix.python-version }}
+          path: gate-logs/**
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  windows:
+    name: windows / py${{ matrix.python-version }}
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
+    runs-on: ${{ needs.plan.outputs.runner_windows }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.plan.outputs.pythons) }}
+
+    steps:
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+        with:
+          path: algan
+
+      - name: Runner facts
+        shell: bash
+        run: |
+          systeminfo | head -20 || true
+          df -h || true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Clone Quadrants at ${{ env.QUADRANTS_REF }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
+            --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
+          git -C quadrants-src log -1 --format='%H %d %s'
+
+      # Git Bash, so this is the same strict `git apply` loop the other two
+      # legs run rather than a PowerShell transliteration of it.
+      - name: Apply the Algan patches
+        if: ${{ inputs.apply_patches }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=("$GITHUB_WORKSPACE"/algan/quadrants_patches/[0-9]*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no patches in quadrants_patches/ -- refusing to build a"
+            echo "wheel that would look patched and not be"
+            exit 1
+          fi
+          cd quadrants-src
+          for patch in "${patches[@]}"; do
+            echo "--- applying $(basename "$patch")"
+            git apply --verbose "$patch"
+          done
+          git -c core.pager=cat diff --stat
+
+      # Their `1_prerequisites.ps1`. The `build.py` invocation there is expected
+      # to fail: it is how Visual Studio Build Tools get installed, and it exits
+      # with an (intentional) exception once they are in place -- hence
+      # `-ErrorAction SilentlyContinue` and no `$ErrorActionPreference` guard
+      # around it. `setup_llvm()` fetches its own LLVM on Windows, so unlike
+      # macOS there is no second toolchain to install by hand.
+      - name: Prerequisites
+        working-directory: quadrants-src
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install -U pip
+          pip install --group dev
+          Start-Process -NoNewWindow -FilePath "python" -ArgumentList "build.py" -ErrorAction SilentlyContinue -Wait
+          exit 0
+
+      # Same leaning-out as Linux, and the same reason CUDA stays on: patch 0003
+      # is the pre-Volta CUDA one, and a Windows box is where the sm_61 card
+      # that motivated it lives. Their own `2_build.ps1` turns Vulkan, AMDGPU
+      # and the C++ tests on; none of the three can reach the patched code.
+      - name: Build the wheel
+        working-directory: quadrants-src
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:CMAKE_ARGS = "-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
+          python build.py wheel
+          Get-ChildItem dist
+
+      - name: Install it
+        working-directory: quadrants-src
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pip install dist/*.whl
+          pip install numpy
+          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
+
+      - name: Report the wheel
+        if: always()
+        shell: bash
+        run: bash algan/scripts/gate/report_wheel.sh quadrants-src/dist windows ${{ matrix.python-version }}
+
+      - name: Upload the wheel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quadrants-wheel-windows-py${{ matrix.python-version }}
+          path: quadrants-src/dist/*.whl
           if-no-files-found: warn
