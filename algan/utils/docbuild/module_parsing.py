@@ -55,6 +55,15 @@ TYPEVAR_DICT: TypeVarDict = {}
 
 MANIM_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Directories under the package root that the docs build never documents, so
+# there is nothing here for autodoc to resolve a type alias against.
+# ``external_libraries`` is the vendored manim/ground/sect subtree: parsing it
+# put ~90 of manim's own type aliases into ``autodoc_type_aliases`` pointing at
+# ``algan.external_libraries.manim.typing`` pages that are never generated. It
+# is also most of the files this walk reads. Anything vendored is documented
+# upstream, not here.
+EXCLUDED_DIRECTORY_NAMES = frozenset({"external_libraries"})
+
 # In the following, we will use ``type(xyz) is xyz_type`` instead of
 # isinstance checks to make sure no subclasses of the type pass the
 # check
@@ -90,6 +99,8 @@ def parse_module_attributes() -> tuple[AliasDocsDict, DataDict, TypeVarDict]:
 
     for module_path in MANIM_ROOT.rglob("*.py"):
         module_name_t1 = module_path.resolve().relative_to(MANIM_ROOT)
+        if EXCLUDED_DIRECTORY_NAMES.intersection(module_name_t1.parts[:-1]):
+            continue
         module_name_t2 = list(module_name_t1.parts)
         module_name_t2[-1] = module_name_t2[-1].removesuffix(".py")
         module_name = ".".join(module_name_t2)

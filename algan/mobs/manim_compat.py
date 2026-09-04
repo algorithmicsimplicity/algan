@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import re
 from collections.abc import Mapping
 from functools import wraps
 from typing import Any
@@ -759,11 +760,82 @@ class ManimCompatMob(ManimMob):
 
 
 # Generated wrappers inherit their backing class's docstring, which is the right
-# default: Manim's prose describes arguments that really do work here. It is the
-# wrong answer for the LaTeX-bearing classes, whose Manim docstrings carry
-# ``.. manim::`` examples -- Manim scene code, executed and rendered into Algan's
-# own reference pages, teaching a script that will not run. Those get an
-# Algan-authored docstring instead. See DOCSTRINGS.md.
+# default: Manim's prose describes arguments that really do work here. Its
+# *examples* are the wrong answer everywhere: a ``.. manim::`` block is Manim
+# scene code written against Manim's ``Scene.construct``, and it teaches a script
+# that will not run under Algan. Algan does not register that directive either
+# (see ``docs/source/conf.py``), so leaving one in an inherited docstring is an
+# "Unknown directive type" error in the docs build. ``_strip_manim_examples``
+# takes them out; the LaTeX-bearing classes get an Algan-authored docstring
+# instead, below. See DOCSTRINGS.md.
+#
+# Manim's own docstrings are not uniform about the space before ``::``
+# (``Torus`` writes ``.. manim :: ExampleTorus``), so match either spelling.
+_MANIM_DIRECTIVE_RE = re.compile(r"^\s*\.\.\s+manim\s*::")
+
+
+def _numpydoc_section_starts(lines: list[str]) -> list[int]:
+    """Index every NumPy-style section header (``Examples`` + ``--------``)."""
+    starts = []
+    for index in range(len(lines) - 1):
+        title, underline = lines[index].strip(), lines[index + 1].strip()
+        if (
+            title
+            and underline
+            and set(underline) == {"-"}
+            and len(underline) >= len(title)
+        ):
+            starts.append(index)
+    return starts
+
+
+def _strip_manim_examples(doc: str | None) -> str | None:
+    """Remove ``.. manim::`` example blocks from an inherited Manim docstring.
+
+    An ``Examples`` section that holds one is dropped whole: its prose ("the
+    first example shows...") only describes the renders being removed. A
+    ``.. manim::`` block anywhere else is dropped on its own, along with the
+    indented body that belongs to it.
+    """
+    if not doc or not any(_MANIM_DIRECTIVE_RE.match(line) for line in doc.splitlines()):
+        return doc
+
+    lines = doc.splitlines()
+    starts = _numpydoc_section_starts(lines)
+    bounds = [
+        (start, starts[position + 1] if position + 1 < len(starts) else len(lines))
+        for position, start in enumerate(starts)
+    ]
+    drop = set()
+    for start, end in bounds:
+        if lines[start].strip() == "Examples" and any(
+            _MANIM_DIRECTIVE_RE.match(line) for line in lines[start:end]
+        ):
+            drop.update(range(start, end))
+
+    kept = [line for index, line in enumerate(lines) if index not in drop]
+
+    # Any ``.. manim::`` left over sat outside an Examples section. Drop the
+    # directive line plus everything indented under it (options and body).
+    result: list[str] = []
+    index = 0
+    while index < len(kept):
+        line = kept[index]
+        if not _MANIM_DIRECTIVE_RE.match(line):
+            result.append(line)
+            index += 1
+            continue
+        indent = len(line) - len(line.lstrip())
+        index += 1
+        while index < len(kept):
+            body = kept[index]
+            if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                break
+            index += 1
+
+    return "\n".join(result).rstrip() + "\n"
+
+
 _MATHTEX_DOC = """A LaTeX string typeset in math mode, wrapping Manim's ``MathTex``.
 
 Manim compiles the formula and builds its glyph outlines; Algan converts those
@@ -939,7 +1011,9 @@ def _make_manim_wrapper(name: str):
             "_manim_class": manim_class,
             "_needs_latex": needs_latex,
             "__module__": __name__,
-            "__doc__": _WRAPPER_DOCSTRINGS.get(name, manim_class.__doc__),
+            "__doc__": _WRAPPER_DOCSTRINGS.get(
+                name, _strip_manim_examples(manim_class.__doc__)
+            ),
         },
     )
     with contextlib.suppress(TypeError, ValueError):
