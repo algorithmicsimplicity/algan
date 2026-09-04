@@ -162,6 +162,15 @@ config the generator printed to stderr:
  "sessionTimeoutSeconds": 3600}
 ```
 
+> ### Re-launching the same tag needs the notebook's `id`
+>
+> A second `save_notebook` with the same `newTitle` and no `id` is refused —
+> *"The requested title ... is already in use"* — and that is the common case,
+> because resuming a tag is the whole point of the persistent working
+> directory. Pass the `kernel_id` the first save returned (as `id`); the save
+> then makes a new version of that notebook and runs it. Getting this wrong
+> costs nothing but a round trip, unlike everything else on this page.
+
 > ### `machineShape` must be exactly `"NvidiaTeslaT4"`
 >
 > An unrecognised value **fails silently and expensively**. Kaggle drops it,
@@ -181,6 +190,13 @@ config the generator printed to stderr:
 The generated body only bootstraps (apt ≈ 25 s, clone, `pip install -e` ≈ 50 s)
 and then hands over to `scripts/kaggle/runner.py` **in the clone**. Read that
 file to know what a run does; do not put logic in the body.
+
+The install carries the **`pango` extra** by default (`--extras`), which is what
+the apt list's Pango/Cairo headers were always there for: without `manimpango`,
+`algan.Text` falls back to LaTeX's text mode, and the image has no TeX — so any
+scene with a `Text` in it (both `nn_scene_*` benchmarks) cannot run at all. It
+builds from source (~1 min) and `site-packages` does not persist between
+sessions, so it is paid per run. `--extras ''` opts out.
 
 `/kaggle/working` persists between runs of the same notebook, which is what
 carries the clone, the Taichi kernel cache (`ALGAN_CACHE_DIR`) and the results.
