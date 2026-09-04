@@ -1,6 +1,6 @@
 # The Taichi patches Algan's Apple-GPU path needs
 
-Two patches against **Taichi v1.7.4**, applied in order onto a pristine
+Three patches against **Taichi v1.7.4**, applied in order onto a pristine
 checkout of that tag. They are the source of truth for the forked wheel
 `../algan/rendering/DESIGN_mps_zero_copy.md` §4.2 calls `algan-taichi`; nothing here is applied to
 a stock install, and Algan runs on a stock wheel without them (see "What Algan
@@ -12,12 +12,13 @@ Apple-silicon runner and publishes it as an artifact.
 
     git clone --depth 1 --branch v1.7.4 https://github.com/taichi-dev/taichi.git
     cd taichi
-    git apply ../taichi_patches/0001-*.patch ../taichi_patches/0002-*.patch
+    git apply ../taichi_patches/000*.patch
 
-Both are additive, both are guarded so a non-Metal build compiles unchanged,
-and neither touches a submodule — which matters, because the alternative for
-patch 0002 was SPIRV-Cross and a submodule fork is a different maintenance
-proposition.
+0001 and 0002 are additive, both are guarded so a non-Metal build compiles
+unchanged, and neither touches a submodule — which matters, because the
+alternative for patch 0002 was SPIRV-Cross and a submodule fork is a different
+maintenance proposition. 0003 is a whitespace fix in two headers and is what
+lets a current toolchain compile any of it.
 
 ## 0001 — zero-copy ndarrays over an imported `MTLBuffer`
 
@@ -119,6 +120,38 @@ That last group is worth having whatever happens to the rest: it is the
 difference between "the process died" and "this kernel would not compile, and
 here is how far it got".
 
+## 0003 — `operator""_f`, so a current clang can compile the fork at all
+
+**What it fixes.** Taichi spells its float literal operators with a space —
+`real constexpr operator"" _f(long double v)`. That form was deprecated in
+C++23 and clang 21 diagnoses it:
+
+    taichi/common/core.h:170:27: error: identifier '_f' preceded by whitespace
+    in a literal operator declaration is deprecated
+    [-Werror,-Wdeprecated-literal-operator]
+
+Taichi builds with `-Werror`, so a diagnostic that did not exist when the code
+was written is fatal, and the failure lands on the first header every
+translation unit includes. It is why `.github/workflows/taichi_build.yaml`
+pins `macos-15` rather than `macos-latest` (macOS 26 ships only Xcode 26 and
+Apple clang 21), and why that pin is a countdown rather than a setting: the
+image is retired on GitHub's own schedule.
+
+**What it changes.** The space, at 20 declarations across
+`taichi/common/core.h` and `taichi/common/types.h` — the `_f`, `_f32`, `_fs`,
+`_f64` and `_fd` suffixes, each declared twice (`long double` and
+`unsigned long long`). Nothing else: no behaviour, no ABI, no conditional.
+`types.h` carries a byte-identical copy of the same block, which is why the
+patch touches two files for one fix.
+
+Quadrants fixed this in its own tree (`quadrants/common/core.h:170` already
+spells `operator""_f`), which is one of the reasons its CI can run on
+`macos-26` while this fork's cannot. Under a rebase onto Quadrants this patch
+disappears rather than being ported.
+
+**Upstreaming.** The best candidate of the three: three-word diff, no
+behaviour, and every fork of Taichi on a 2026 toolchain needs it.
+
 ## What Algan does without them
 
 Nothing here is required to install or run Algan. `mps_compat` detects the
@@ -129,8 +162,14 @@ on a Mac actually does.
 
 ## Upstreaming
 
-Both are small, additive and guarded, and both are worth sending upstream —
-0002 especially, since the nested cast is a plain bug that affects any Metal or
-Vulkan user narrowing a 64-bit integer, and the nil-function check turns a
-process abort into an error on every Metal backend user's machine. If either
-lands, the fork's patch set shrinks; if both do, it disappears.
+All three are small, additive or purely textual, and all three are worth
+sending upstream — 0002 especially, since the nested cast is a plain bug that
+affects any Metal or Vulkan user narrowing a 64-bit integer, and the
+nil-function check turns a process abort into an error on every Metal backend
+user's machine. 0003 is the easiest to land and the least interesting. If they
+all land, the fork's patch set disappears.
+
+Upstream is dormant, though (last commit 2025-07-30, `taichi-dev/taichi` #8791
+unanswered), so "worth sending" is not "will be merged": Quadrants fixed 0002's
+cast (`9542c0004`) and 0003's whitespace in its own fork rather than upstream,
+and `taichi_patches/PLAN.md` is where the fork-or-rebase question is decided.
