@@ -100,7 +100,26 @@ what make an uploaded asset verifiable.
 
 A patched wheel is also self-identifying, without anyone having to arrange it:
 `git apply` leaves the patches uncommitted, so `setuptools_scm` sees a dirty
-tree and stamps `1.3.1.dev0+g<sha>` rather than the `1.3.0` PyPI ships.
+tree and stamps `1.3.1.dev0+gab9a58ab5.d<date>` rather than the `1.3.0` PyPI
+ships — the `.d` is the dirty marker, and it is the tell that a wheel came from
+here rather than from the index.
+
+**First run of all three legs: PASS** — run
+[`33850787142`](https://github.com/algorithmicsimplicity/algan/actions/runs/33850787142),
+2026-09-04, cp311, patches applied:
+
+| leg | runner | wheel |
+| --- | --- | --- |
+| linux | `ubuntu-22.04` | 26.34 MiB, and the 0004 IR arms still land (`invariant-load-arms-py3.11`) |
+| macos | `macos-26` | 22.21 MiB, via `scripts/gate/quadrants_macos_build.sh` unchanged |
+| windows | `windows-2025` | 26.51 MiB — `quadrants-1.3.1.dev0+gab9a58ab5.d20260904-cp311-cp311-win_amd64.whl`, sha256 `d6db5de8…`. **The first Windows wheel this fork has ever had**, and the only one 0003's sm_61 box can be tried on |
+
+The download half of `build_quadrants_wheels.py` is the one thing not exercised
+end to end from a sandbox: an artifact download redirects off `api.github.com`
+to blob storage, which some egress policies refuse (the script says so rather
+than raising). Everything up to the transfer — dispatch, run lookup by tag,
+artifact listing and filtering — ran against this run, and the unzip/hash/
+manifest half is covered in `tests/unit_tests/test_quadrants_wheels.py`.
 
 ## What has been verified, and what has not
 

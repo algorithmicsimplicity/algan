@@ -207,10 +207,11 @@ def api(
         # Worth naming, because the API calls before it all succeeded and the
         # obvious reading of that is "the script is broken".
         raise SystemExit(
-            f"could not reach {urlparse(url).netloc}: {error.reason}\n"
-            "The API itself is fine if the calls before this one worked; artifact\n"
-            "downloads redirect to blob storage, which a proxy or egress policy\n"
-            "may not allow. Downloading the artifact from the run page in a\n"
+            f"transport error on {method} {url}: {error.reason}\n"
+            "Note the host in that error may not be the one that refused: an\n"
+            "artifact download redirects off api.github.com to blob storage, and\n"
+            "a proxy or egress policy that allows the API can still refuse the\n"
+            "redirect target. Downloading the artifact from the run page in a\n"
             "browser is the fallback."
         ) from error
     if raw:

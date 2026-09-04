@@ -18,10 +18,11 @@
 # `0.1` means `setuptools_scm` could not see the `v1.3.0` tag and fell back.
 # The wheel still installs and still works, so nothing downstream complains;
 # what breaks is provenance, because two builds of different sources then carry
-# the same version string. A patched build normally comes out as
-# `1.3.1.dev0+g<sha>` -- setuptools_scm sees the tag *and* a dirty tree, since
-# `git apply` leaves the patches uncommitted -- and that is the version to
-# expect. It is also, usefully, one pip will never confuse with PyPI's 1.3.0.
+# the same version string. A patched build comes out as
+# `1.3.1.dev0+gab9a58ab5.d<date>` -- setuptools_scm sees the tag *and* a dirty
+# tree, since `git apply` leaves the patches uncommitted -- and that is the
+# version to expect. It is also, usefully, one pip will never confuse with
+# PyPI's 1.3.0.
 set -uo pipefail
 
 DIST_DIR="${1:?usage: report_wheel.sh <dist-dir> <platform> <python-version>}"
