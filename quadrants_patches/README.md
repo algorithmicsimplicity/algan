@@ -209,12 +209,12 @@ Replaying is exact rather than approximate — the key is argument identity,
 `Ndarray::buffer_offset` is set once at import and never mutated, so a hit
 necessarily wants the offsets the cached context already holds.
 
-**Still unverified: that the CUDA half works.** A compile check cannot tell you
-that an sm_61 card loads the runtime module.
-The first needs `.github/workflows/mps_probe.yaml` against a wheel built from
-these; the second needs the maintainer's GTX 1050, and `PORTING-NOTES.md` §7
-lists exactly what to look for there (`atom.gpu.cas.b64` and no remaining
-`atom.sys`). Read `PORTING-NOTES.md` §5 for where the Metal port is most likely
+**Still unverified: that the CUDA half works, and that the offset fix holds
+across a re-run.** A compile check cannot tell you that an sm_61 card loads the
+runtime module, and the render above predates the cache fix. The second needs
+`.github/workflows/mps_probe.yaml` against a wheel built from these; the first
+needs the maintainer's GTX 1050, and `PORTING-NOTES.md` §7 lists exactly what to
+look for there (`atom.gpu.cas.b64` and no remaining `atom.sys`). Read `PORTING-NOTES.md` §5 for where the Metal port is most likely
 to be wrong — the ranked list starts with the nanobind integer default and the
 `LaunchContextBufferCache` interaction.
 
