@@ -160,6 +160,30 @@ plane, one traversal each, not by deep peels through the shells.
   `-maxrregcount` cannot reach local memory, which is why the codegen sweep
   says nothing about it.
 
+## Sizing the shadow-visibility payload per batch (`perf-vis-payload-sizing.log`)
+
+The one structural change of this round that measured. All three shading
+kernels sized their per-fragment visibility vector by `max_shadow_lights` (16),
+so `3 * 16 = 48` floats; it is indexed by a runtime light ordinal, so it is a
+per-thread *local memory* array, re-initialised across all 48 lanes on every
+drained surface. This scene has one light. `shadow_vis_slots` sizes it per
+batch (bucketed to a power of two, so the variant count stays bounded), which
+here means 3 floats.
+
+Alternating arms, one session, `ALGAN_SHADOW_VIS_EXACT=0` being the old sizing:
+
+| | per-batch (3 floats) | cap (48 floats) | |
+| --- | --- | --- | --- |
+| UHD pair A | **17.05 s** | 17.30 s | |
+| UHD pair B | **17.35 s** | 17.48 s | |
+| UHD mean | **17.20 s** | 17.39 s | −1.1% |
+| PREVIEW | **4.68 s** | 4.92 s | −4.9% |
+
+Byte-identical in both arms (`df9086d3b323831e` / `8c755b30590d262b`). The sized
+arm is faster in **all three pairings**, which is the signal — each individual
+UHD gap is inside the ~3% band, but the direction is not. Kept as the default;
+the switch stays as the kill switch and the A/B arm.
+
 ## Cross-session numbers are not comparable
 
 Identical code, `nn_ablation base PREVIEW`, measured **4.69, 4.70, 4.76, 5.20,
