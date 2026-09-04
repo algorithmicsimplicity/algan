@@ -247,14 +247,30 @@ def _tensor_mb(t):
 # ---------------------------------------------------------------------------
 # Automatic Taichi-kernel discovery + hooking
 # ---------------------------------------------------------------------------
+def _flag(obj, name):
+    """``getattr(obj, name, False)``, but a raising ``__getattr__`` is a False.
+
+    The sweep below reads this flag off *every* value in *every* imported algan
+    module, including lazy proxies for optional dependencies, and a proxy
+    answers an attribute probe by trying to import. One such probe -- the
+    vendored manim text stack's ``manimpango`` name on a box without the
+    ``pango`` extra -- raised ImportError out of ``getattr`` and took down the
+    whole profiler before a single kernel was hooked.
+    """
+    try:
+        return bool(getattr(obj, name, False))
+    except Exception:
+        return False
+
+
 def _is_taichi_kernel(obj):
     """True for a module-level ``@ti.kernel`` (its decorator sets this flag)."""
-    return bool(getattr(obj, "_is_wrapped_kernel", False)) and callable(obj)
+    return _flag(obj, "_is_wrapped_kernel") and callable(obj)
 
 
 def _is_taichi_func(obj):
     """Best-effort detection of a ``@ti.func`` (inlined; cannot be timed)."""
-    return bool(getattr(obj, "_is_taichi_function", False))
+    return _flag(obj, "_is_taichi_function")
 
 
 def _import_raytracing_modules():
@@ -408,7 +424,7 @@ def install_kernel_hooks():
         wrapper = _make_kernel_wrapper(obj, name)
         for mod, attr in refs:
             # Skip anything already pointing at a wrapper.
-            if getattr(getattr(mod, attr, None), "_profiling_kernel_wrapper", False):
+            if _flag(getattr(mod, attr, None), "_profiling_kernel_wrapper"):
                 continue
             setattr(mod, attr, wrapper)
             _KERNEL_HOOKS.append((mod, attr, obj))
@@ -422,7 +438,7 @@ def uninstall_kernel_hooks():
     global _HOOKS_INSTALLED
     for mod, attr, orig in _KERNEL_HOOKS:
         try:
-            if getattr(getattr(mod, attr, None), "_profiling_kernel_wrapper", False):
+            if _flag(getattr(mod, attr, None), "_profiling_kernel_wrapper"):
                 setattr(mod, attr, orig)
         except Exception:
             pass

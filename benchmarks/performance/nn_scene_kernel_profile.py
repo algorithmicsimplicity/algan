@@ -14,6 +14,8 @@ never instead of it.
     python benchmarks/performance/nn_scene_kernel_profile.py UHD
 """
 
+from __future__ import annotations
+
 import os
 import sys
 

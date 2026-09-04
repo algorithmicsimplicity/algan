@@ -29,7 +29,7 @@ __all__ = ["MarkupUtils", "PangoUtils", "TextSetting", "available", "manimpango"
 _MESSAGE = (
     "Pango text rendering needs the `manimpango` package, which Algan does "
     "not install by default -- it publishes no Linux wheel, so requiring it "
-    'would mean building Pango from source. Install it with `pip install '
+    "would mean building Pango from source. Install it with `pip install "
     '"algan[pango]"` (or `pip install manimpango`). Without it, use '
     "`algan.Text`, which typesets through LaTeX's text mode instead, or "
     "`algan.Tex` / `mn.MathTex` for mathematics."
@@ -69,6 +69,16 @@ class _LazyName:
         return module if self._name is None else getattr(module, self._name)
 
     def __getattr__(self, attr: str) -> Any:
+        # A private/dunder name is never part of manimpango's top-level API, so
+        # it is always a probe -- `hasattr`, `copy`, `pickle`, `inspect`, or a
+        # framework asking "does this object carry my marker attribute". Answer
+        # those with AttributeError, which is what a probe expects: resolving
+        # instead turns every such probe on a box without the extra into an
+        # ImportError, and one of them (the profiler's `_is_wrapped_kernel`
+        # sweep over every algan module, which reaches the vendored
+        # `text_mobject`'s `manimpango` name) took the whole profiler down.
+        if attr.startswith("_"):
+            raise AttributeError(attr)
         return getattr(self._resolve(), attr)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
