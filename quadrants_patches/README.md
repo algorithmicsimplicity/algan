@@ -134,6 +134,45 @@ though its compute is), and `zero_copy_available()` is not the same claim as
 `mps_zero_copy.report()` so the next run says how many launches converted and
 what, if anything, is still crossing the bus.
 
+### The second defect: the cache that drops the offsets
+
+**Found by reading, not by rendering — and the scene above could not have seen
+it.** `shapes_and_timeline` uses no bloom, glow, surface normals or glossy
+prefilter, which are exactly the kernels the bug reaches.
+
+Quadrants has a Python-side `LaunchContextBufferCache` with no Taichi
+counterpart, keyed on argument *identity* (`lang/kernel.py:590`,
+`(id(t_kernel), *[id(arg) for arg in args])`). A hit runs
+`launch_ctx.copy(cached)` and skips the entire argument-processing block —
+`set_args_ndarray` at `kernel.py:702` with it, and so
+`set_arg_ndarray_buffer_offset` too. And `LaunchContextBuilder::copy`
+(`program/launch_context_builder.cpp:60`) replays five members; the two
+**0001 itself added** — `array_byte_offsets` and `array_byte_sizes` — were not
+among them, because 0001 added ndarray-derived launch state without extending
+the function that replays ndarray-derived launch state.
+
+So it is not a stale offset from an earlier launch. It is *no* offset: the first
+launch of a kernel binds each imported slice correctly, and **every launch after
+it binds that slice at the base of the arena**, silently.
+
+The cache is reachable only where Algan is: an `Ndarray` argument reports
+`cacheable=True` (`lang/_func_base.py:713-720`) where a torch tensor reports
+`False`, so this is the MPS-∩-Quadrants intersection again. Algan's import cache
+returns the *same* `ExternalMetalNdarray` object per slice
+(`mps_zero_copy.py:241`), so identity is stable and the hit rate is ~100 % after
+the first launch of each argument set. Of the 55 kernels, 25 take a float and
+are immune (a float is non-cacheable), 4 are unconditionally cacheable —
+`apply_glow_and_opacity`, `gloss_pyramid_level`, `bloom_conv1d_f32`,
+`bloom_upsample_bilinear_f32`, `grid_normals_sides_crosses` — and the rest are
+cacheable whenever their integer arguments fall in CPython's small-int table,
+which includes `compact_ray_slots` on the tail iterations of a wavefront.
+
+The fix is two assignments and two asserts in `copy()`, and it belongs in 0001
+rather than a patch of its own: the maps exist only because 0001 created them.
+Replaying is exact rather than approximate — the key is argument identity,
+`Ndarray::buffer_offset` is set once at import and never mutated, so a hit
+necessarily wants the offsets the cached context already holds.
+
 **Still unverified: that the CUDA half works.** A compile check cannot tell you
 that an sm_61 card loads the runtime module.
 The first needs `.github/workflows/mps_probe.yaml` against a wheel built from
