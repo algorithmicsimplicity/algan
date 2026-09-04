@@ -46,15 +46,28 @@ and the conversion is the standard structured single-exit transformation:
   already.
 * A ``return`` inside a loop is followed by ``break`` **when that loop can be
   broken**: a ``while``, or a ``for`` that is nested in another runtime loop of
-  the same body. A func's outermost ``for`` gets no ``break``: the func may be
-  inlined at a kernel's top level, where its loop *is* the outermost, offloaded
-  loop and ``break`` is a compile error on both compilers ("Cannot break in the
-  outermost loop"). Such a loop -- and every statically unrolled
-  ``for ... in ti.static(...)``, which cannot be broken from under a runtime
-  ``if`` either -- instead has its whole body wrapped in
-  ``if __algan_ret_flag == 0:``, so it runs to its end with the body skipped.
-  The result is the same; the idle iterations are the cost. A search loop
-  whose trip count after the hit matters should be a ``while``.
+  the same body. A statically unrolled ``for ... in ti.static(...)`` cannot be
+  broken from under a runtime ``if``, so its whole body is wrapped in
+  ``if __algan_ret_flag == 0:`` instead and it runs to its end with the body
+  skipped; the idle iterations are the cost, and since an unrolled loop is not
+  a parallel one, the result is the same.
+* **A ``return`` anywhere inside the func's outermost runtime ``for`` is
+  refused**, rather than broken out of or body-guarded. ``break`` there does
+  not compile ("Cannot break in the outermost loop" on both compilers), and
+  the body guard -- which does compile -- is worse than the compile error it
+  replaces: the func may be inlined at a kernel's **top level**, where that
+  loop *is* the offloaded one and its iterations run in parallel, while
+  ``__algan_ret_flag`` and ``__algan_ret_val`` are declared outside it and
+  shared across them. Measured on quadrants, one kernel over one input with
+  matches at 1000 and 50000: 20 launches, both indices returned. The pass
+  rewrites a func's source, which is parsed once per call site but decided
+  before any of them is known, so it cannot tell the offloaded case from the
+  serial one and refuses both. **A ``while`` is the spelling that works**: it
+  stays serial wherever it is inlined, its ``break`` compiles at a kernel's
+  top level, and it stops at the hit instead of idling to the end. Only a
+  ``for`` that is the *outermost runtime loop of the body* is refused -- one
+  nested in a ``while`` or in another runtime ``for`` is broken out of as
+  usual, and a ``ti.static`` loop above it does not count as one.
 
 The value variable
 ------------------
@@ -67,11 +80,14 @@ variables that do not exist yet. Two sources are accepted, in this order:
 
 1. **A return annotation** (``-> ti.f32``, ``-> ti.math.vec4``). A primitive
    declares ``__algan_ret_val: T = 0``; a vector or matrix type declares
-   ``__algan_ret_val = T(0)``. This is the robust spelling: it always works.
-2. **A hoistable return expression**: the first ``return`` in source order
-   whose expression is built only from parameters, names assigned at the top
-   level before ``h``, names never assigned in the function (module globals
-   such as ``ti``), literals, attribute reads, constant-index subscripts, the
+   ``__algan_ret_val = T(0)``. This is the robust spelling, and the only one
+   that cannot pick the wrong type -- but it is read only for a **single**
+   returned value: a ``-> tuple[...]`` annotation is not taken apart, so a
+   multi-value ``return`` still needs source 2.
+2. **A hoistable return expression**, chosen per returned position: an
+   expression built only from parameters, names assigned at the top level
+   before ``h``, names never assigned in the function (module globals such as
+   ``ti``), literals, attribute reads, constant-index subscripts, the
    arithmetic operators, and calls to a whitelist of pure compiler
    intrinsics (``ti.math.vec4``, ``ti.min``, ``ti.cast``, ``v.dot(...)``, ...).
    That expression is evaluated once at ``h`` as the initialiser -- it is
@@ -79,11 +95,22 @@ variables that do not exist yet. Two sources are accepted, in this order:
    was. ``//`` and ``%`` are excluded (an integer division by zero traps on the
    CPU), as is every call that is not on the whitelist.
 
+   Which hoistable expression is taken matters, because the initialiser fixes
+   the *type* of every answer: a hoistable expression is preferred over a bare
+   literal (``return 0`` beside ``return x`` would otherwise make an ``f32``
+   func return ``i32``, truncating every value), in source order; and when only
+   literals are available, one ``float`` among them widens an ``int``
+   initialiser rather than narrowing the others.
+
 When neither applies the body is left untouched and the compiler reports its
 usual error, preceded by an :class:`~algan.errors.AlganWarning` naming what
 this pass could not do; annotating the return type is the fix. Every
 ``return`` is cast to the type of the initialiser, as a local assigned twice
-would be. Not handled, and declined the same way: a ``return`` under ``with``,
+would be -- so a func whose only declarable initialiser is an integer literal
+(``return 0`` as the fallback of a search whose other ``return`` is an
+unhoistable ``f32``) returns integers, with nothing to show for it but the
+compiler's own "Assign may lose precision" warning. Annotate that one. Not
+handled, and declined the same way: a ``return`` under ``with``,
 ``try`` or ``match``; a loop whose iterable is an ``IfExp``; a statically
 unrolled loop that carries its own ``break``/``continue`` (the body guard
 would put it under a runtime ``if``); a ``return`` of a tuple that is not a
@@ -120,6 +147,14 @@ VALUE = "__algan_ret_val"
 
 UNTOUCHED = "untouched"
 REWRITTEN = "rewritten"
+
+#: What the hook has decided, by outcome. A body found not to need the rewrite
+#: (or refused) is remembered on the raw function and counted once; a rewritten
+#: one is counted at every call site that re-parses it, since the rewrite has
+#: to run again on each fresh tree. ``rewritten`` staying at zero across a
+#: render is the statement that this pass is inert over Algan's own kernels,
+#: which is what ``tests/unit_tests/test_taichi_early_return.py`` holds it to.
+STATS = {"rewritten": 0, "untouched": 0, "declined": 0}
 
 
 class EarlyReturnUnsupported(Exception):
@@ -227,6 +262,38 @@ def _nested_returns(body):
     return found
 
 
+def _offloadable_for_with_return(stmts, inside_runtime_loop=False):
+    """The func's outermost runtime ``for`` that contains a ``return``, if any.
+
+    "Outermost" is lexical and relative to the func body: a runtime ``for``
+    with no ``while`` and no other runtime ``for`` above it. That is the loop
+    that becomes the kernel's offloaded, parallel one when the func is inlined
+    at a kernel's top level -- which the pass cannot see from the source it is
+    rewriting -- so a ``return`` anywhere inside one is refused rather than
+    guarded. A ``ti.static`` loop above it is unrolled and does not shelter it;
+    everything below the first runtime loop is breakable and fine.
+    """
+    for stmt in stmts:
+        if isinstance(stmt, ast.While):
+            found = _offloadable_for_with_return(stmt.body, True)
+        elif isinstance(stmt, ast.For):
+            if _is_static_for(stmt):
+                found = _offloadable_for_with_return(stmt.body, inside_runtime_loop)
+            elif inside_runtime_loop:
+                found = None  # breakable, and so is every loop under it
+            else:
+                found = stmt if _has_return(stmt) else None
+        elif isinstance(stmt, ast.If):
+            found = _offloadable_for_with_return(
+                stmt.body, inside_runtime_loop
+            ) or _offloadable_for_with_return(stmt.orelse, inside_runtime_loop)
+        else:
+            found = None
+        if found is not None:
+            return found
+    return None
+
+
 def _owns_break_or_continue(loop):
     """Whether ``loop``'s body has a ``break``/``continue`` that targets *it*."""
 
@@ -292,6 +359,23 @@ _PURE_CALLEES = frozenset(
         "rotation3d", "scale", "translate",
     }
 )  # fmt: skip
+
+
+def _literal_value(node):
+    """The number ``node`` spells out, or ``None`` if it is not a literal.
+
+    ``-1`` is a ``UnaryOp`` over a ``Constant``, not a ``Constant``, and the
+    difference decides whether an expression can type the value variable, so
+    the sign is folded here rather than being taken for an expression.
+    """
+    if isinstance(node, ast.Constant) and type(node.value) in (bool, int, float):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        inner = _literal_value(node.operand)
+        if inner is None:
+            return None
+        return -inner if isinstance(node.op, ast.USub) else +inner
+    return None
 
 
 def _const_index(node):
@@ -387,6 +471,36 @@ def _bound_at(func_def, h):
         return name in declared or name not in assigned
 
     return name_ok
+
+
+def _initialiser(elements, name_ok):
+    """What to declare one value variable from, given every ``return``'s
+    expression in that position, or ``None`` when none of them will do.
+
+    Taichi types a local from its first assignment and *casts* every later
+    one, so the initialiser does not merely have to be evaluable at ``h`` --
+    it decides the type of every answer the func can give. A bare literal
+    carries no type from the function's own arithmetic (``return 0`` beside
+    ``return x`` would make an ``f32`` func return ``i32``, truncating every
+    value, with nothing but the compiler's "may lose precision" warning to
+    say so), so a hoistable expression is preferred over one, in source
+    order, and a literal is used only when it is all there is. Among
+    literals, one ``float`` answer makes the variable a float: an integer
+    literal is widened rather than narrowing the others.
+    """
+    hoistable = [e for e in elements if _hoistable(e, name_ok)]
+    if not hoistable:
+        return None
+    typed = next((e for e in hoistable if _literal_value(e) is None), None)
+    if typed is not None:
+        return copy.deepcopy(typed)
+    chosen = hoistable[0]
+    value = _literal_value(chosen)
+    if isinstance(value, int) and any(
+        isinstance(_literal_value(e), float) for e in elements
+    ):
+        return ast.copy_location(ast.Constant(value=float(value)), chosen)
+    return copy.deepcopy(chosen)
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +621,16 @@ class _Rewriter:
             _assign(FLAG, ast.copy_location(ast.Constant(value=0), anchor), anchor)
         )
 
-        converted = self._convert_block(region, None, at_function_top=True)
+        # Convert a *copy* of the region. The conversion rewrites compound
+        # statements in place as it walks, and can still refuse one it reaches
+        # (a nested scope carrying a `return` is not something
+        # `_check_supported` can see), which would otherwise leave the caller
+        # holding a half-rewritten body -- values assigned to a variable the
+        # declarations were never spliced in to declare -- and hand *that* to
+        # the compiler. Declining has to mean the body is as the user wrote it.
+        converted = self._convert_block(
+            copy.deepcopy(region), None, at_function_top=True
+        )
 
         tail = []
         if arity is not None:
@@ -529,6 +652,17 @@ class _Rewriter:
         return REWRITTEN
 
     def _check_supported(self, region):
+        offloadable = _offloadable_for_with_return(region)
+        if offloadable is not None:
+            raise EarlyReturnUnsupported(
+                "a `return` inside the func's outermost `for`. Wherever the func is "
+                "inlined at a kernel's top level that loop is the offloaded one and "
+                "its iterations run in parallel, so the flag and value this rewrite "
+                "declares outside it would be shared by iterations racing to set "
+                "them, and the answer would vary between launches; `break` there "
+                "does not compile either. Write the search as a `while`, whose "
+                "`break` keeps the loop serial and stops it at the hit"
+            )
         for stmt in region:
             for node in [stmt, *_walk(stmt)]:
                 if isinstance(node, _OPAQUE) and _has_return(node):
@@ -585,19 +719,19 @@ class _Rewriter:
                 )
                 return [_assign(VALUE, call, anchor)]
         name_ok = _bound_at(self.func_def, h)
-        for stmt in returns:
-            elements = _return_elements(stmt)
-            if all(_hoistable(e, name_ok) for e in elements):
-                return [
-                    _assign(ident, copy.deepcopy(e), anchor)
-                    for ident, e in zip(self.value_names, elements)
-                ]
-        raise EarlyReturnUnsupported(
-            "no `return` expression is pure and built only from parameters, names "
-            "assigned before the first early return, and compiler intrinsics, so the "
-            "result variable cannot be declared; annotate the return type "
-            "(`-> ti.f32`, `-> ti.math.vec4`) to give it one"
-        )
+        elements = [_return_elements(stmt) for stmt in returns]
+        decls = []
+        for position, ident in enumerate(self.value_names):
+            initialiser = _initialiser([e[position] for e in elements], name_ok)
+            if initialiser is None:
+                raise EarlyReturnUnsupported(
+                    "no `return` expression is pure and built only from parameters, "
+                    "names assigned before the first early return, and compiler "
+                    "intrinsics, so the result variable cannot be declared; annotate "
+                    "the return type (`-> ti.f32`, `-> ti.math.vec4`) to give it one"
+                )
+            decls.append(_assign(ident, initialiser, anchor))
+        return decls
 
     # -- conversion -------------------------------------------------------
 
@@ -727,8 +861,10 @@ def _rewrite_tree(tree, func):
         return  # UNTOUCHED, or declined (and already warned)
     try:
         outcome = rewrite_function_def(func_def, _annotation_kind(func))
+        STATS[outcome] += 1
     except EarlyReturnUnsupported as exc:
         outcome = f"declined: {exc}"
+        STATS["declined"] += 1
         warnings.warn(
             f"`{func_def.name}` has a `return` inside runtime control flow that "
             f"the single-exit rewrite (algan.utils.taichi_early_return) cannot "
