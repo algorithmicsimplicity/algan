@@ -299,15 +299,19 @@ def _ndarray_positions(kernel):
         return cached
     positions = {}
     try:
-        from algan.taichi_compat import submodule
+        from algan.taichi_compat import kernel_arguments, submodule
 
-        _ki = submodule("lang.kernel_impl")
-        Layout = submodule("lang.enums").Layout
+        # Reached under ``types.`` rather than through ``lang.kernel_impl``'s
+        # re-exports, because both backends put them there under the same
+        # names while the re-exports differ (Quadrants has no
+        # ``lang.kernel_impl.ndarray_type`` and no ``lang.enums`` at all).
+        _ndarray_type = submodule("types.ndarray_type")
+        Layout = _ndarray_type.Layout
+        ndarray_annotation = _ndarray_type.NdarrayType
+        scalar_type_ids = submodule("types.primitive_types").type_ids
         MatrixType = submodule("lang.matrix").MatrixType
 
-        ndarray_annotation = _ki.ndarray_type.NdarrayType
-        scalar_type_ids = _ki.primitive_types.type_ids
-        for index, argument in enumerate(kernel.arguments):
+        for index, argument in enumerate(kernel_arguments(kernel)):
             annotation = argument.annotation
             if not isinstance(annotation, ndarray_annotation):
                 continue

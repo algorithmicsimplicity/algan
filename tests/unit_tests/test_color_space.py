@@ -144,12 +144,12 @@ def test_taichi_twins_agree_with_torch():
     implementations, which is only meaningful once the checks above have
     established that the torch one is right.
     """
-    ti = pytest.importorskip("taichi")
     from algan.rendering.raytracing.color_space_taichi import (
         linear_to_srgb_f,
         srgb_to_linear_f,
     )
     from algan.rendering.taichi_runtime import init_taichi
+    from algan.taichi_compat import ti
 
     # Algan's own init, never a bare ``ti.init``. ``ti.init`` is process-global
     # and takes the *defaults* for every kwarg it is not given, so a bare call

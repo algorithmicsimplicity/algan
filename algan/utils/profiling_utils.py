@@ -254,7 +254,9 @@ def _is_taichi_kernel(obj):
 
 def _is_taichi_func(obj):
     """Best-effort detection of a ``@ti.func`` (inlined; cannot be timed)."""
-    return bool(getattr(obj, "_is_taichi_function", False))
+    from algan.taichi_compat import is_compiler_func
+
+    return is_compiler_func(obj)
 
 
 def _import_raytracing_modules():

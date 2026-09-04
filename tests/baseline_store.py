@@ -138,7 +138,7 @@ def _safe_members(archive: tarfile.TarFile, destination: Path) -> list:
     """The members of ``archive`` that may be written under ``destination``.
 
     Python 3.12's ``filter="data"`` would do this, but ``requires-python`` is
-    3.9, where ``TarFile.extractall`` still happily writes through ``..`` and
+    3.10, where ``TarFile.extractall`` still happily writes through ``..`` and
     follows a symlink out of the destination. The archive is sha256-pinned, so
     this is defence in depth rather than the only check -- but the pin is only
     as good as the pointer file, and an extractor that cannot escape its

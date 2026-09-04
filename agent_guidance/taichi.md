@@ -2,7 +2,8 @@
 
 > **Importing the compiler.** Never write `import taichi` inside `algan/`. Use
 > `from algan.taichi_compat import ti` (and `submodule("lang.impl")` for a submodule):
-> `ALGAN_TAICHI_BACKEND` selects taichi 1.7.x or the Quadrants fork, and the layer exists
+> `ALGAN_TAICHI_BACKEND` selects **Quadrants 1.3.x (the default, and the only compiler a
+> plain install carries)** or taichi 1.7.x (the `taichi` extra), and the layer exists
 > so both can never be live in one process. See `agent_guidance/api_settings.md`.
 > **The rule covers `tests/` and `benchmarks/` too** — a direct `import taichi` in a test is a
 > mixed-compiler process, and one of the two that existed was a real failure under Quadrants

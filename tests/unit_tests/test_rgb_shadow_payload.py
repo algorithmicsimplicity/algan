@@ -45,7 +45,6 @@ import subprocess
 import sys
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering.raytracing.primitives import LogicalPNTrianglePrimitive
@@ -66,6 +65,7 @@ from algan.rendering.shaders.materials import (
     MeshPhysicalMaterial,
     _attenuation_sigma,
 )
+from algan.taichi_compat import ti
 
 
 # tri_extra row for one triangle: per-corner transport in 0-11, sigma in 12-14.
@@ -331,8 +331,8 @@ def test_sigma_reaches_the_packed_extra_block():
 _GATE_OFF_PROBE = """
 import os
 assert os.environ.get("ALGAN_RGB_SHADOW_TINT") == "0"
-import taichi as ti
 import torch
+from algan.taichi_compat import ti
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _EXTRA_W, _shadow_pass_through,
 )

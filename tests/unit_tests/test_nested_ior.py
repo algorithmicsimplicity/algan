@@ -52,7 +52,7 @@ def _rows(stacks):
 
 def _relative(stacks, iors, entering, nested=1):
     """``_relative_ior`` for each (stack, material ior, side) triple."""
-    import taichi as ti
+    from algan.taichi_compat import ti
 
     k = _kernels()
     n = len(iors)
@@ -81,7 +81,7 @@ def _relative(stacks, iors, entering, nested=1):
 
 def _written(stacks, iors, entering, refracting):
     """The (depth, entries) ``_write_ior_stack`` gives each row's child."""
-    import taichi as ti
+    from algan.taichi_compat import ti
 
     k = _kernels()
     n = len(iors)

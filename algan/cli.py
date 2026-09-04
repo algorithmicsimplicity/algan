@@ -115,7 +115,7 @@ def _cmd_check(_args: argparse.Namespace) -> int:
     except ImportError:
         print("  [ERROR] PyTorch is not installed.")
 
-    # 3. Taichi runtime
+    # 3. The kernel compiler
     try:
         from algan.taichi_compat import BACKEND, describe_backend
 

@@ -117,7 +117,7 @@ The output video will be written to `algan_outputs/quickstart.mp4`.
 Algan includes a first-class CLI:
 
 ```bash
-algan check                 # Verify PyTorch, GPU acceleration, Taichi, FFmpeg, LaTeX & paths
+algan check                 # Verify PyTorch, GPU acceleration, the kernel compiler, FFmpeg, LaTeX & paths
 algan new my_scene.py       # Scaffold a new scene script
 algan render my_scene.py    # Render scene to video
 ```

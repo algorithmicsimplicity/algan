@@ -42,7 +42,6 @@ them stops the kernel compiling.
 """
 
 import pytest
-import taichi as ti
 import torch
 
 from algan.rendering.raytracing.settings import _MAT_DEFAULTS, _MAT_SLOTS
@@ -53,6 +52,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_standard,
     direct_specular_lobe,
 )
+from algan.taichi_compat import ti
 
 LIGHT_RGB = (1.0, 1.0, 1.0)
 
