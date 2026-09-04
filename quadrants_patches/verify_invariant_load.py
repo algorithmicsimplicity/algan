@@ -69,7 +69,9 @@ def _cfg_flag():
         from quadrants.lang import impl
 
         return bool(impl.current_cfg().invariant_arg_loads)
-    except Exception as exc:  # the pybind is the thing under test; do not mask its absence
+    except (
+        Exception
+    ) as exc:  # the pybind is the thing under test; do not mask its absence
         return f"unreadable: {exc!r}"
 
 
@@ -102,17 +104,25 @@ def measure(arm):
     dump_dir = _dump_dir()  # chdir first: the CPU IR dump lands in the CWD
     qd.init(
         arch=qd.cpu,
-        offline_cache=False,               # force a real compile so IR is emitted
-        advanced_optimization=False,       # the config Algan actually renders with
+        offline_cache=False,  # force a real compile so IR is emitted
+        advanced_optimization=False,  # the config Algan actually renders with
         fast_math=True,
         print_kernel_llvm_ir_optimized=True,
         invariant_arg_loads=(arm == "on"),
     )
 
     @qd.kernel
-    def sum8(n: int, a0: qd.types.ndarray(), a1: qd.types.ndarray(), a2: qd.types.ndarray(),
-             a3: qd.types.ndarray(), a4: qd.types.ndarray(), a5: qd.types.ndarray(),
-             a6: qd.types.ndarray(), a7: qd.types.ndarray()):
+    def sum8(
+        n: int,
+        a0: qd.types.ndarray(),
+        a1: qd.types.ndarray(),
+        a2: qd.types.ndarray(),
+        a3: qd.types.ndarray(),
+        a4: qd.types.ndarray(),
+        a5: qd.types.ndarray(),
+        a6: qd.types.ndarray(),
+        a7: qd.types.ndarray(),
+    ):
         for i in range(n):
             a0[i] = a0[i] + a1[i] + a2[i] + a3[i] + a4[i] + a5[i] + a6[i] + a7[i]
 
@@ -130,7 +140,9 @@ def measure(arm):
         "invariant_load_total": len(re.findall(r"!invariant\.load", text)),
         "dereferenceable_total": len(re.findall(r"!dereferenceable", text)),
         # What it is supposed to buy: pointer re-loads left inside the loop.
-        "loop_base_ptr_loads": len(re.findall(r"= load ptr, ptr |= load float\*, float\*\* ", body)),
+        "loop_base_ptr_loads": len(
+            re.findall(r"= load ptr, ptr |= load float\*, float\*\* ", body)
+        ),
         # Scalar and vector separately: hoisting the base pointers out lets LLVM
         # vectorize the body, so the `on` arm legitimately has no *scalar* float
         # loads left. Counting only scalars would read that as a broken parse.
@@ -147,8 +159,14 @@ def compare(on_path, off_path):
     on = json.loads(pathlib.Path(on_path).read_text())
     off = json.loads(pathlib.Path(off_path).read_text())
     print(f"{'':24s} {'off':>8s} {'on':>8s}")
-    for k in ("invariant_load_total", "dereferenceable_total", "loop_base_ptr_loads",
-              "loop_data_loads", "loop_vector_loads", "loop_lines"):
+    for k in (
+        "invariant_load_total",
+        "dereferenceable_total",
+        "loop_base_ptr_loads",
+        "loop_data_loads",
+        "loop_vector_loads",
+        "loop_lines",
+    ):
         print(f"{k:24s} {off[k]:8d} {on[k]:8d}")
 
     failures = []
@@ -157,23 +175,30 @@ def compare(on_path, off_path):
     if on["invariant_load_total"] <= 0:
         failures.append("the on arm emitted no !invariant.load; the patch did not take")
     if on["dereferenceable_total"] <= 0:
-        failures.append("the on arm emitted no !dereferenceable on the arg-buffer pointer")
+        failures.append(
+            "the on arm emitted no !dereferenceable on the arg-buffer pointer"
+        )
     if on["loop_lines"] == 0 or off["loop_lines"] == 0:
-        failures.append("no loop body was found in the dumped IR; the parse is wrong, not the patch")
+        failures.append(
+            "no loop body was found in the dumped IR; the parse is wrong, not the patch"
+        )
     elif on["loop_base_ptr_loads"] >= off["loop_base_ptr_loads"]:
         failures.append(
             f"base-pointer loads did not leave the loop "
             f"({off['loop_base_ptr_loads']} -> {on['loop_base_ptr_loads']}); "
-            f"the metadata landed but LICM did not act on it")
+            f"the metadata landed but LICM did not act on it"
+        )
 
     if failures:
         print("\nFAIL")
         for f in failures:
             print(f"  - {f}")
         return 1
-    print(f"\nPASS: !invariant.load lands ({on['invariant_load_total']} sites) and the "
-          f"argument base-pointer re-loads leave the loop "
-          f"({off['loop_base_ptr_loads']} -> {on['loop_base_ptr_loads']}).")
+    print(
+        f"\nPASS: !invariant.load lands ({on['invariant_load_total']} sites) and the "
+        f"argument base-pointer re-loads leave the loop "
+        f"({off['loop_base_ptr_loads']} -> {on['loop_base_ptr_loads']})."
+    )
     return 0
 
 
