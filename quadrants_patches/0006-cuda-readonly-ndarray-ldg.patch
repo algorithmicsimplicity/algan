@@ -1,0 +1,177 @@
+diff --git a/quadrants/analysis/offline_cache_util.cpp b/quadrants/analysis/offline_cache_util.cpp
+index e8580ec25..081d2c23c 100644
+--- a/quadrants/analysis/offline_cache_util.cpp
++++ b/quadrants/analysis/offline_cache_util.cpp
+@@ -51,6 +51,7 @@ static std::vector<std::uint8_t> get_offline_cache_key_of_compile_config(const C
+   serializer(config.make_block_local);
+   serializer(config.detect_read_only);
+   serializer(config.invariant_arg_loads);
++  serializer(config.readonly_ndarray_ldg);
+   serializer(config.default_fp->to_string());
+   serializer(config.default_ip.to_string());
+   if (arch_is_cpu(config.arch)) {
+diff --git a/quadrants/codegen/cuda/codegen_cuda.cpp b/quadrants/codegen/cuda/codegen_cuda.cpp
+index eb513c95e..52e618d69 100644
+--- a/quadrants/codegen/cuda/codegen_cuda.cpp
++++ b/quadrants/codegen/cuda/codegen_cuda.cpp
+@@ -10,6 +10,7 @@
+ #include "quadrants/util/io.h"
+ #include "quadrants/ir/ir.h"
+ #include "quadrants/ir/statements.h"
++#include "quadrants/program/function.h"
+ #include "quadrants/program/program.h"
+ #include "quadrants/util/lang_util.h"
+ #include "quadrants/rhi/cuda/cuda_driver.h"
+@@ -616,6 +617,113 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {
+     return load;
+   }
+ 
++  // ---- read-only ndarray loads through the non-coherent cache (`readonly_ndarray_ldg`) ----------------------------
++  //
++  // The SNode read-only path above (`create_intrinsic_load`, reached through `mem_access_opt`'s `read_only` flag) has
++  // no ndarray counterpart: `detect_read_only` flags SNodes only, and its `detect_external_ptr_access_in_task` sibling
++  // feeds the launch-time cache bookkeeping, not codegen. This is that counterpart, computed here rather than in the
++  // pass because it wants a stricter notion of "written" than the pass keeps -- see `readonly_ndarray_args`.
++
++  // The ExternalPtrStmt a pointer is derived from, looking through the MatrixPtrStmt that scalarization puts between a
++  // vector-element ndarray and its element accesses; nullptr for anything else (SNodes, allocas, temporaries).
++  static ExternalPtrStmt *root_external_ptr(Stmt *ptr) {
++    while (ptr != nullptr) {
++      if (auto *ext = ptr->cast<ExternalPtrStmt>()) {
++        return ext;
++      }
++      if (auto *matrix_ptr = ptr->cast<MatrixPtrStmt>()) {
++        ptr = matrix_ptr->origin;
++        continue;
++      }
++      return nullptr;
++    }
++    return nullptr;
++  }
++
++  // Element types the `.nc` path takes: every storage primitive. Not the 1-bit bool (loaded as i1, which the NVPTX
++  // `ld.global.nc` patterns do not cover), and not a whole-vector TensorType load, which keeps the plain load.
++  static bool is_ldg_element_type(DataType dt) {
++    return dt->is_primitive(PrimitiveTypeID::f16) || dt->is_primitive(PrimitiveTypeID::f32) ||
++           dt->is_primitive(PrimitiveTypeID::f64) || dt->is_primitive(PrimitiveTypeID::i8) ||
++           dt->is_primitive(PrimitiveTypeID::i16) || dt->is_primitive(PrimitiveTypeID::i32) ||
++           dt->is_primitive(PrimitiveTypeID::i64) || dt->is_primitive(PrimitiveTypeID::u8) ||
++           dt->is_primitive(PrimitiveTypeID::u16) || dt->is_primitive(PrimitiveTypeID::u32) ||
++           dt->is_primitive(PrimitiveTypeID::u64);
++  }
++
++  // The ndarray arguments `offload` only ever reads: every use of every pointer derived from them is a GlobalLoadStmt,
++  // or the MatrixPtrStmt on the way to one. A whitelist rather than "no GlobalStoreStmt / AtomicOpStmt on it", so a
++  // pointer handed to anything else -- a store through a MatrixPtrStmt (which `detect_external_ptr_access_in_task`
++  // does not see), a SIMT or tile primitive, a statement that does not exist yet -- counts as a write. Empty when the
++  // task calls a @qd.real_func at all: the callee's IR is separate, may write whatever it is handed, and numbers its
++  // own ArgLoadStmts in its own argument space, so nothing about it can be folded in here.
++  static std::set<std::vector<int>> readonly_ndarray_args(OffloadedStmt *offload) {
++    std::set<std::vector<int>> candidates;
++    std::set<std::vector<int>> written;
++    for (Stmt *stmt : irpass::analysis::gather_statements(offload, [](Stmt *) { return true; })) {
++      if (stmt->is<FuncCallStmt>()) {
++        return {};
++      }
++      if (auto *ext = stmt->cast<ExternalPtrStmt>()) {
++        if (auto *arg = ext->base_ptr->cast<ArgLoadStmt>()) {
++          candidates.insert(arg->arg_id);
++        }
++      }
++      for (int i = 0; i < stmt->num_operands(); i++) {
++        auto *ext = root_external_ptr(stmt->operand(i));
++        if (ext == nullptr) {
++          continue;
++        }
++        const bool is_load = stmt->is<GlobalLoadStmt>();
++        const bool is_derived_ptr = stmt->is<MatrixPtrStmt>() && stmt->as<MatrixPtrStmt>()->origin == stmt->operand(i);
++        if (is_load || is_derived_ptr) {
++          continue;
++        }
++        if (auto *arg = ext->base_ptr->cast<ArgLoadStmt>()) {
++          written.insert(arg->arg_id);
++        }
++      }
++    }
++    std::set<std::vector<int>> result;
++    for (const auto &arg_id : candidates) {
++      if (written.count(arg_id) == 0) {
++        result.insert(arg_id);
++      }
++    }
++    return result;
++  }
++
++  // Memoized per offload: the IR is fixed for the whole codegen run, so the set is computed once per task.
++  OffloadedStmt *readonly_ndarray_args_offload_{nullptr};
++  std::set<std::vector<int>> readonly_ndarray_args_;
++
++  bool is_read_only_ndarray_load(GlobalLoadStmt *stmt) {
++    if (!compile_config.readonly_ndarray_ldg || stmt->is_volatile || current_offload == nullptr) {
++      return false;
++    }
++    // Not inside a @qd.real_func body. Its ExternalPtrStmts index the callee's own argument buffer, so an arg id here
++    // says nothing about the task's arguments -- the same exclusion 0004's `mark_invariant_arg_load` makes.
++    if (dynamic_cast<const Function *>(current_callable) != nullptr) {
++      return false;
++    }
++    if (!is_ldg_element_type(stmt->ret_type)) {
++      return false;
++    }
++    auto *ext = root_external_ptr(stmt->src);
++    if (ext == nullptr) {
++      return false;
++    }
++    auto *arg = ext->base_ptr->cast<ArgLoadStmt>();
++    if (arg == nullptr) {
++      return false;
++    }
++    if (readonly_ndarray_args_offload_ != current_offload) {
++      readonly_ndarray_args_ = readonly_ndarray_args(current_offload);
++      readonly_ndarray_args_offload_ = current_offload;
++    }
++    return readonly_ndarray_args_.count(arg->arg_id) > 0;
++  }
++
+   void visit(GlobalLoadStmt *stmt) override {
+     if (auto get_ch = stmt->src->cast<GetChStmt>()) {
+       // A volatile load explicitly opts out of caching: the read-only-cache path goes through `create_intrinsic_load`
+@@ -626,7 +734,8 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {
+                                                                  get_ch->output_snode, SNodeAccessFlag::read_only);
+       create_global_load(stmt, should_cache_as_read_only);
+     } else {
+-      create_global_load(stmt, false);
++      // An ndarray element the task never writes takes the same `ld.global.nc` path; everything else the plain load.
++      create_global_load(stmt, is_read_only_ndarray_load(stmt));
+     }
+   }
+ 
+diff --git a/quadrants/program/compile_config.h b/quadrants/program/compile_config.h
+index a68620437..a8819b49e 100644
+--- a/quadrants/program/compile_config.h
++++ b/quadrants/program/compile_config.h
+@@ -36,6 +36,12 @@ struct CompileConfig {
+   // those loads inside the loop that uses it. Off restores the un-annotated codegen for A/B -- and it is part of the
+   // offline cache key, so the two arms never share a compiled artifact.
+   bool invariant_arg_loads{true};
++  // CUDA: load an ndarray argument through the non-coherent (read-only) cache -- `ld.global.nc`, the `__ldg` path
++  // read-only SNodes already take -- when nothing in the offloaded task writes or atomically updates that argument.
++  // Sound on the same assumption the SNode path makes, that distinct arguments do not alias: two ndarrays bound to
++  // overlapping memory, one written and one read in the same task, would read stale bytes. Off restores the plain
++  // load for A/B; in the offline cache key so the two arms never share a compiled artifact.
++  bool readonly_ndarray_ldg{true};
+   bool demote_dense_struct_fors;
+   bool advanced_optimization;
+   bool constant_folding;
+diff --git a/quadrants/python/export_lang.cpp b/quadrants/python/export_lang.cpp
+index a59acb6d0..3fc1c912d 100644
+--- a/quadrants/python/export_lang.cpp
++++ b/quadrants/python/export_lang.cpp
+@@ -187,6 +187,7 @@ void export_lang(nb::module_ &m) {
+       .def_rw("move_loop_invariant_outside_if", &CompileConfig::move_loop_invariant_outside_if)
+       .def_rw("cache_loop_invariant_global_vars", &CompileConfig::cache_loop_invariant_global_vars)
+       .def_rw("invariant_arg_loads", &CompileConfig::invariant_arg_loads)
++      .def_rw("readonly_ndarray_ldg", &CompileConfig::readonly_ndarray_ldg)
+       .def_rw("default_cpu_block_dim", &CompileConfig::default_cpu_block_dim)
+       .def_rw("cpu_block_dim_adaptive", &CompileConfig::cpu_block_dim_adaptive)
+       .def_rw("default_gpu_block_dim", &CompileConfig::default_gpu_block_dim)

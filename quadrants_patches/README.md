@@ -121,6 +121,16 @@ than raising). Everything up to the transfer — dispatch, run lookup by tag,
 artifact listing and filtering — ran against this run, and the unzip/hash/
 manifest half is covered in `tests/unit_tests/test_quadrants_wheels.py`.
 
+**Running against a wheel on the Mac runner.** `.github/workflows/run_on_mac.yaml`
+and `mps_probe.yaml` take a `quadrants_wheel` input: a `quadrants_build.yaml`
+run id (its `quadrants-wheel-macos-py3.11` artifact is fetched, every Mac arm
+being on 3.11) or a release-asset URL (installed directly). Either installs the
+wheel after `uv sync` and pins `ALGAN_TAICHI_BACKEND=quadrants` for the run;
+when both a Taichi and a Quadrants wheel are named, the Quadrants one wins.
+With it, the pixel A/B and the probe (`scripts/gate/backend_pixel_ab.py
+--scenes fast`, `scripts/gate/mps_probe_quadrants.sh`) measure a *given* wheel
+rather than one the script builds first.
+
 ## What has been verified, and what has not
 
 **They apply, and they compile.** "Applying them" above is the apply half. The

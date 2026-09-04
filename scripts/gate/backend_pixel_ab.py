@@ -65,11 +65,19 @@ AVAILABLE_MEMORY_OVERRIDE = 1536 * 1024 * 1024
 MAX_CHANNEL_DIFFERENCE = 2
 
 
+# The fast suite's one scene, reachable here as the stem ``fast``. It is the
+# scene that renders on every device the project has -- it is the CPU/CUDA
+# pixel gate and the one Apple-GPU render known to complete -- so it is the
+# right first arm for any new compiler or device, before the dense scenes.
+FAST_SCENE = REPO_ROOT / "tests" / "fast" / "scene.py"
+
+
 def _scene_paths(names: list[str] | None) -> list[Path]:
     available = sorted(p for p in SCENES_DIR.glob("*.py") if not p.name.startswith("_"))
     if not names:
         return available
     by_stem = {path.stem: path for path in available}
+    by_stem["fast"] = FAST_SCENE
     missing = [name for name in names if name not in by_stem]
     if missing:
         raise SystemExit(

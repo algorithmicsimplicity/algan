@@ -114,10 +114,11 @@ at most 24 buffers — which cuts across exactly the fusion those kernels exist 
 which rewrites every signature in the renderer. Neither is a port; both are a
 redesign of the kernel layer.
 
-For contrast, Taichi's *own* ceiling is 64 arguments and it reports it politely
-on both backends: `The number of elements in kernel arguments is too big! Do not
-exceed 64 on metal backend.` The Metal limit is a third of that and announces
-itself with an abort.
+For contrast, Taichi's *own* ceiling is a Python-side counter (`max_arg_num =
+64` in 1.7's `kernel_impl.py`; Quadrants' `MAX_ARG_NUM` is 512), not a codegen
+limit, and it reports it politely on both backends: `The number of elements in
+kernel arguments is too big! Do not exceed 64 on metal backend.` The Metal limit
+is a third of that and announces itself with an abort.
 
 ### 1.2 Metal has no f64, and no i64 atomics
 

@@ -276,3 +276,37 @@ and selects MPS itself, because on `mac-mps` the harness's own `algan check`
 runs before the command and refuses MPS for a wheel the script has not built
 yet; the control runs on **`mac-mps`** because it installs nothing and needs MPS
 selectable up front.
+
+---
+
+## 9. Second session (2026-09-04, later): the plan's remaining steps, as far as they got
+
+Executed on `claude/rebase-quadrants-plan-on6ojl`, in parallel worktrees, and
+**cut short when the maintainer ran out of usage**: five of the seven work
+packages were stopped before their own verification finished. Everything is
+committed so nothing is lost; the table says what each package is, and what it
+is not. Read the "not verified" column before trusting a row.
+
+| package | what landed | verified | not verified |
+| --- | --- | --- | --- |
+| Track C step 1 (§7.1) | stale "cache ignores `@ti.func` edits" claims corrected (probe-verified: a func-body edit misses the cache on both compilers); nested-tuple claim corrected; `ALGAN_GPU_MAX_REG` deleted; `ALGAN_TI_FULL_TRACEBACK`; `TI_SKIP_VERSION_CHECK` on the taichi arm; concrete arch + `enable_fallback=False`; stale `ticache.lock`/`qdcache.lock`/`ptxcache.lock` sweep before `init`; eviction comment; 64-argument note; `_inside_class` made cheap; `CUDA_CACHE_PATH` under Algan's cache | the agent's own `--fast` and unit runs before it was stopped; this branch's `--fast` | `benchmarks/_cfg_optimization_ab.py` was written but never run — no cfg_optimization numbers |
+| Track B step 3, fast launch (§7.3) | `taichi_fast_launch.py` now carries a Quadrants dispatcher too; `benchmarks/_quadrants_launch_overhead.py` measured a warm 20-ndarray launch at ~300 µs on either compiler, ~260 µs of it Python above `prog.launch_kernel`, ~90 µs on a plan hit; `tests/unit_tests/test_taichi_fast_launch.py`; `algan check` reports its gate | fast suite pixel-identical on Quadrants with it on (agent's run) | the taichi-arm parity run and the full unit suite were still running when stopped |
+| item 1, source-keyed cache index | `algan/utils/taichi_source_key.py` (1,180 lines: Algan key over kernel source, transitively visited funcs, closure/global walk, config + caps, template values; reuses Quadrants' `load_fast_cache` / `src_hasher` store; verify mode; STATS), `tests/unit_tests/test_taichi_source_key.py`, `benchmarks/_taichi_source_key_check.py`; **default off**, `ALGAN_TAICHI_SOURCE_KEY=1` opts in | imports; `algan check` reports it off | **nothing else** — its tests were never run, no hit rate, no timing, no verify pass. Treat as a draft |
+| item 20, early return in inlined funcs | `algan/utils/taichi_early_return.py` (840 lines), installed at import, `ALGAN_TAICHI_EARLY_RETURN=0` turns it off | imports; this branch's `--fast` (no Algan func has an early return, so the rewrite is inert there) | its own tests were never written or run; no early-return func has been compiled through it |
+| step 5, wheel CI | `quadrants_build.yaml` builds macOS arm64 (Metal) / manylinux x86_64 (CUDA) / Windows x64 (CUDA) and publishes a release when `release_tag` is set; helper scripts under `.github/workflows/scripts/`; `quadrants_patches/README.md` "Getting a wheel"; the Mac harnesses accept a Quadrants wheel | YAML + actionlint; the source script against the pristine tree | never dispatched; Windows is transcribed from Quadrants' `scripts_new/win` and untested |
+| patches 0005–0007 (rows 14, 15, 18) | `0005-cuda-max-reg`, `0006-cuda-readonly-ndarray-ldg`, `0007-cuda-fast-expf`, `verify_cuda_patches.py` | strict `git apply --check` in order after 0001–0004 on pristine v1.3.0 | **not compiled**, not clang-formatted, no README/PORTING-NOTES sections; build with `quadrants_build.yaml` before believing any of them |
+| step 6, CPU re-baseline | the four `tests/full_renders` scenes LLVM 22 moves (3 / 13 / 100 / 158) re-baselined after frame-by-frame inspection; pointer digest refreshed, tag still null | `pytest tests/full_renders` on this box | the release-asset upload (`tests/README.md`) |
+| Metal on the fast scene | `backend_pixel_ab.py --scenes fast`; `run_on_mac.yaml` dispatched with `GATE_SCENE=fast` on the patched Quadrants wheel | — | the run had not reported when the session ended; read it in the Actions tab |
+
+Attribution of the `materials_and_lighting` Metal crash (§6, §7 step 1): the
+control run on **Taichi 1.7.4** dies at the same frame 119 of 179, so it is the
+Apple path on the heaviest scene, not the Quadrants port. The maintainer is
+investigating it separately.
+
+Not started: row 21 (stage contract v2 / `algan.shading` helpers / user buffers
+/ seed) — a user-facing API design with no spec in this plan; and upstreaming.
+
+Order to finish, cheapest first: run `tests/unit_tests/test_taichi_source_key.py`
+and `benchmarks/_taichi_source_key_check.py`; write and run the early-return
+tests; dispatch `quadrants_build.yaml` on this branch (compile-checks 0005–0007
+and exercises the release legs); then the full suite.

@@ -297,6 +297,39 @@ jobs:
           assert impl.current_cfg().invariant_arg_loads is False, 'env var ignored'
           print('QD_INVARIANT_ARG_LOADS=0 OK')"
 
+      # 0005-0007 change what the NVPTX backend is handed, so their proof is a
+      # PTX or pre-O3 IR dump that only a CUDA device can produce: on this
+      # GPU-less runner `verify_cuda_patches.py` writes `{"skipped": true}`
+      # and `--compare` says SKIP, not PASS. What *can* be proved here is the
+      # Python side of the gates the three patches add -- the `qd.init`
+      # kwargs and `qd.loop_config(max_reg=)` are accepted and read back --
+      # which a stock wheel fails with a KeyError / TypeError.
+      - name: Check the 0005-0007 gates (the PTX arms skip without a CUDA device)
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          python -c "
+          import quadrants as qd
+          from quadrants.lang import impl
+          qd.init(arch=qd.cpu, gpu_max_reg=48, readonly_ndarray_ldg=True, fast_math=True)
+          cfg = impl.current_cfg()
+          assert cfg.gpu_max_reg == 48, cfg.gpu_max_reg
+          assert cfg.readonly_ndarray_ldg is True
+          @qd.kernel
+          def k(a: qd.types.ndarray()):
+              qd.loop_config(max_reg=32)
+              for i in range(a.shape[0]):
+                  a[i] = qd.exp(a[i])
+          import numpy as np
+          x = np.ones(8, dtype=np.float32); k(x); qd.sync()
+          assert abs(float(x[0]) - 2.718281828) < 1e-5, x[0]
+          print('0005-0007 gates: qd.init(gpu_max_reg=, readonly_ndarray_ldg=) and loop_config(max_reg=) OK')"
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_cuda_patches.py"
+          python "$V" on  "$GITHUB_WORKSPACE/cuda_on.json"
+          python "$V" off "$GITHUB_WORKSPACE/cuda_off.json"
+          python "$V" --compare "$GITHUB_WORKSPACE/cuda_on.json" "$GITHUB_WORKSPACE/cuda_off.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Report the wheel
         if: always()
         run: bash algan/scripts/gate/report_wheel.sh quadrants-src/dist linux ${{ matrix.python-version }}
