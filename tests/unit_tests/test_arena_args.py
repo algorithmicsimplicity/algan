@@ -11,6 +11,13 @@ So this parses each converted kernel's prologue back out of its source and
 checks it against the spec, index by index. It also holds the line the whole
 conversion exists to hold: no kernel in the package asks for more than
 `METAL_MANAGED_BUFFERS` ndarray arguments.
+
+The launch sites are a third copy of the same layout, and they drift the same
+way: a parameter added to ``call_params`` reaches the wrapper's arity check
+only when that launch actually runs, so a stale site is a render-time
+``ArenaBindingError`` on whichever path happens to hit it. The arity test below
+reads the sites statically instead, which is why it is cheap enough to be in
+the fast suite.
 """
 
 import ast
@@ -193,6 +200,99 @@ def test_no_kernel_asks_for_more_ndarrays_than_metal_can_bind():
         "these kernels ask for more ndarray arguments than Taichi can bind on "
         "Metal; convert them to the arena convention (arena_args_taichi):\n  "
         + "\n  ".join(over)
+    )
+
+
+#: Converted kernels every launch site of which passes its arguments one by
+#: one, so the count can be read off the source. Pinned rather than derived:
+#: turning a site into a ``*args`` splat takes it out of static reach (see
+#: ``sheet_resolve_shade``, which is absent for exactly that reason), and that
+#: is a loss of coverage worth failing over rather than absorbing silently.
+STATICALLY_COUNTABLE = {
+    "wavefront_shade",
+    "wavefront_traverse_events",
+    "raster_shadow_trace",
+    "pt_shade",
+}
+
+
+def _launch_sites(names):
+    """Every ``name(...)`` call in the package, as ``name -> [(where, argc)]``.
+
+    Calls that splat (``f(*args)``) or pass a keyword carry no static count and
+    are reported separately. Only files that mention one of the names are
+    parsed -- the whole-package walk above costs a couple of seconds, which is
+    real money against the fast suite's budget.
+    """
+    root = Path(algan.__file__).parent
+    counted = {n: [] for n in names}
+    uncountable = {n: [] for n in names}
+    for path in root.rglob("*.py"):
+        if "external_libraries" in path.parts:
+            continue
+        src = path.read_text(encoding="utf-8")
+        if not any(n in src for n in names):
+            continue
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                called = func.id
+            elif isinstance(func, ast.Attribute):
+                called = func.attr
+            else:
+                continue
+            if called not in names:
+                continue
+            where = f"{path.relative_to(root)}:{node.lineno}"
+            if node.keywords or any(isinstance(a, ast.Starred) for a in node.args):
+                uncountable[called].append(where)
+            else:
+                counted[called].append((where, len(node.args)))
+    return counted, uncountable
+
+
+@pytest.mark.fast
+def test_every_launch_site_passes_the_arguments_the_wrapper_expects():
+    """A converted kernel's call sites agree with its ``call_params``.
+
+    In the fast suite deliberately, and the cheapest of the three layout
+    checks: it is pure source reading, no Taichi and no render. The expensive
+    proof that a gated variant still *compiles* stays where it has to be, in
+    the render arms of ``test_weight_floor_exit.py`` -- but the drift those
+    arms were pinned against (a parameter joining ``_WAVEFRONT_SHADE_PARAMS``,
+    which moves every count after it) is visible from here, and was not
+    otherwise caught until CI ran the unmarked suite.
+    """
+    expected = {}
+    for mod_name, name in CONVERTED:
+        module = importlib.import_module(mod_name)
+        expected[name] = len(_launcher(module, name).call_params)
+
+    counted, uncountable = _launch_sites(set(expected))
+
+    wrong = [
+        f"{name} at {where} passes {argc}, wrapper takes {expected[name]}"
+        for name, sites in counted.items()
+        for where, argc in sites
+        if argc != expected[name]
+    ]
+    assert not wrong, (
+        "these launch sites disagree with the argument list their wrapper "
+        "packs from; the launch raises ArenaBindingError when this path "
+        "renders:\n  " + "\n  ".join(wrong)
+    )
+
+    reachable = {n for n, sites in counted.items() if sites}
+    assert reachable == STATICALLY_COUNTABLE, (
+        "the set of kernels this test can actually check has changed, so it "
+        "may now be passing vacuously. Gained: "
+        f"{sorted(reachable - STATICALLY_COUNTABLE)}; lost: "
+        f"{sorted(STATICALLY_COUNTABLE - reachable)} (a lost kernel is usually "
+        "a site rewritten to splat its arguments -- those are listed as "
+        f"{ {n: v for n, v in uncountable.items() if v} }). Update "
+        "STATICALLY_COUNTABLE if the loss is intended."
     )
 
 

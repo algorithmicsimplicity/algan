@@ -45,7 +45,7 @@ from algan import (
     Sphere,
 )
 from algan.rendering.raytracing import settings as rt_settings
-from algan.rendering.raytracing import tracer
+from algan.rendering.raytracing import tracer, wavefront_kernels_taichi
 from algan.scene_manager import SceneManager
 from algan.settings import SETTINGS
 
@@ -54,7 +54,37 @@ from algan.settings import SETTINGS
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 46
-_EXPECTED_SHADE_ARGS = 68
+# 69 since the per-batch ``vis_lights`` slot count joined the list at index 47,
+# directly after the gate (the shadow-visibility payload sizing).
+_EXPECTED_SHADE_ARGS = 69
+
+
+@pytest.mark.fast
+def test_the_pinned_argument_positions_still_describe_the_kernel():
+    """The two constants above match ``wavefront_shade``'s live argument list.
+
+    The render arms below are the only thing that checks them, and they are
+    unmarked by design (they cost a render each), so a parameter added to
+    ``_WAVEFRONT_SHADE_PARAMS`` -- which is what ``vis_lights`` did at index 47
+    -- went unnoticed until CI ran the full suite. This reads the same two
+    facts off the wrapper for free, so the staleness surfaces in ``--fast``.
+
+    It does not replace the arms: it cannot see whether either gate variant
+    compiles, which is their whole purpose.
+    """
+    params = wavefront_kernels_taichi._WAVEFRONT_SHADE_PARAMS
+
+    assert len(params) == _EXPECTED_SHADE_ARGS, (
+        f"wavefront_shade takes {len(params)} arguments, not "
+        f"{_EXPECTED_SHADE_ARGS}: {params}. Check what moved, then update the "
+        "pin -- the count is only ever a tripwire for the index below."
+    )
+    assert params.index("weight_floor_exit") == _WEIGHT_FLOOR_EXIT_ARG_INDEX, (
+        "weight_floor_exit moved to index "
+        f"{params.index('weight_floor_exit')}; the render arms below assert on "
+        f"argument {_WEIGHT_FLOOR_EXIT_ARG_INDEX} and would now be reading "
+        "whatever took its place"
+    )
 
 
 def test_experimental_setting_surfaces_and_drives_the_legacy_global():
