@@ -967,6 +967,12 @@ def _build_render_plan(
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
+    # Empty on every path today: the path tracer is the fallback and refuses
+    # nothing (roadmap section 9), and the deterministic renderer never did.
+    # Kept, and kept enumerating, because the rule is that a feature a
+    # renderer cannot honour is NAMED here rather than silently dropped --
+    # tests/unit_tests/test_path_tracer.py asserts the emptiness feature by
+    # feature, so an addition here fails a test rather than a user's render.
     unsupported = []
     if scene_environment_map is not None:
         requested.append("environment maps")
@@ -974,12 +980,6 @@ def _build_render_plan(
         requested.append("refractive materials")
     if _scene_has_user_pipeline(merged):
         requested.append("custom fragment-shader pipelines")
-        if samples_requested > 1 and _scene_has_custom_scatter(merged):
-            # Pipelines are evaluated at hits under the path tracer exactly
-            # as the deterministic renderer evaluates them, but a custom
-            # SCATTER override redefines ray continuation with no sampling
-            # density, which stochastic transport cannot honor.
-            unsupported.append("custom scatter overrides")
     if any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
@@ -998,12 +998,18 @@ def _validate_render_capabilities(
 ):
     """Validate that the selected renderer can honor the authored scene.
 
-    ``samples_per_pixel > 1`` selects the path tracer, which supports the
-    deterministic renderer's feature set except custom scatter overrides
-    (arbitrary user continuation code has no sampling density for stochastic
-    transport); silently discarding a feature is more dangerous than failing
-    early. The global unsupported-feature policy permits an explicit
-    warning/ignore migration mode for benchmarks and legacy projects.
+    ``samples_per_pixel > 1`` selects the path tracer, and it refuses
+    **nothing**: it is the fallback for the scenes the deterministic renderer
+    cannot do, so a feature it rejected would leave the user with no renderer
+    at all (``DESIGN_path_tracer_roadmap.md`` section 9). Custom scatter
+    overrides were the last rejection and are now continued as a delta lobe.
+    The machinery below stays because the rule it enforces stays: silently
+    discarding a feature is more dangerous than failing early, and the global
+    unsupported-feature policy permits an explicit warning/ignore migration
+    mode for benchmarks and legacy projects.
+    ``tests/unit_tests/test_path_tracer.py`` asserts the empty refusal over
+    every feature ``_build_render_plan`` inspects, so a rejection added there
+    fails a test the moment it is written.
     """
     plan = _build_render_plan(
         samples_per_pixel,
@@ -1444,14 +1450,12 @@ def render_batch_raytraced(
         # process ever registered -- a scene with no custom shader at all would
         # compile its own uncached kernel variant just because some earlier
         # scene had one. The path tracer evaluates the same pipelines at its
-        # hits; custom SCATTER overrides stay deterministic-only (rejected in
-        # _build_render_plan), so its tuple stays empty there.
+        # hits and takes the same scatter tuple: a custom scatter is a delta
+        # continuation there (pt_shade), not a refusal.
         batch_pids = _batch_user_pipeline_ids(merged)
         frag_pipelines = build_frag_pipelines(batch_pids)
         frag_scatters = (
-            build_frag_scatters(batch_pids)
-            if (samples <= 1 and _scene_has_custom_scatter(merged))
-            else ()
+            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
         )
     else:
         frag_pipelines = ()
@@ -1461,13 +1465,15 @@ def render_batch_raytraced(
     # transmitted-branch code the refraction path compiles in.
     # Continuation-ray supersampling makes every reflector a splitting path, so
     # it needs the same shared pool (see _secondary_split_needed). Deterministic
-    # only: the Monte Carlo path tracer antialiases by jittered sampling already.
+    # only: the Monte Carlo path tracer antialiases by jittered sampling
+    # already, and it never splits -- it samples ONE of a scatter's branches
+    # (contract 3), so a custom scatter buys it no pool either.
     refraction_flag = (
         1
         if (
             refractive_det
             or refl_transparent_det
-            or frag_scatters
+            or (samples <= 1 and frag_scatters)
             or (samples <= 1 and _secondary_split_needed(merged, analytic_raster))
         )
         else 0
@@ -1757,6 +1763,7 @@ def render_batch_raytraced(
                         light_col=light_col,
                         num_lights=num_lights,
                         frag_pipelines=frag_pipelines,
+                        frag_scatters=frag_scatters,
                         shadows=1 if bool(shadows) else 0,
                         max_bounces=int(max_bounces),
                         near_clip=near_clip,

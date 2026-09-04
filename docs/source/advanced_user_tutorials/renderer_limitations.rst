@@ -123,7 +123,7 @@ row links to the section that explains it.
    * - Custom ray scatter (bounce override)
      - **Falls back**
      - Yes
-     - **Refused**
+     - Yes, as a delta lobe
      - `Which renderer runs your scene`_
    * - Near clipping (``camera.near``)
      - **Falls back**
@@ -187,9 +187,21 @@ row links to the section that explains it.
      - `Not implemented at all`_
 
 "Triangles only" means the feature applies to triangle geometry and not to
-Bezier circuits -- see :ref:`limits-lit`. "Refused" means Algan raises rather
-than dropping the feature silently. "Falls back" means the batch is routed off
-the analytic path onto the supersampled one.
+Bezier circuits -- see :ref:`limits-lit`. "Falls back" means the batch is routed
+off the analytic path onto the supersampled one. Nothing in this table is
+refused: where a renderer cannot honour a feature it says so here rather than
+dropping it silently, and if that ever changes Algan raises
+:class:`~algan.errors.UnsupportedFeatureError` naming the feature rather than
+rendering a wrong frame.
+
+"Yes, as a delta lobe" is how the path tracer takes a **custom ray scatter**.
+Your function picks the direction; the path continues along the branch it
+returns with weight 1 and no MIS coverage, exactly as refraction and a tinted
+pane already do. The one limitation is the flip side of that: such a surface is
+not covered by next-event estimation, so light reaching it arrives only through
+the sampled continuation -- a scatter surface facing a small bright light is
+noisier than a Lambert one in the same place, and needs more samples rather
+than a different renderer.
 
 
 Which renderer runs your scene
@@ -200,9 +212,11 @@ Which renderer runs your scene
 
 ``SETTINGS.raytracing.samples_per_pixel`` selects the renderer, not a quality
 dial. ``1`` (the default) is the deterministic renderer; anything above it is
-the path tracer, which does not implement custom scatter overrides. Algan
-refuses such a combination rather than silently dropping it. See
-:ref:`renderer-capabilities` for the full table.
+the path tracer, and the path tracer **refuses nothing**: every feature the
+deterministic renderer accepts renders there too, custom scatter overrides
+included (as a delta continuation -- see :ref:`renderer-capabilities` for the
+full table). That is deliberate: it is the fallback, so a feature it rejected
+would leave that scene with no renderer at all.
 
 The path tracer is the **fallback** for the scenes the deterministic renderer
 cannot render: more lights than its shadow cap (below), reflective or

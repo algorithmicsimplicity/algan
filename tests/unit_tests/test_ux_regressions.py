@@ -15,7 +15,6 @@ from algan.constants.math import PI
 from algan.errors import (
     AlganConfigurationError,
     HierarchyError,
-    UnsupportedFeatureError,
 )
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
@@ -727,26 +726,27 @@ def test_light_parameters_are_validated_instead_of_silently_clamped():
         RectAreaLight(samples=0)
 
 
-def test_path_tracer_unsupported_features_fail_preflight():
-    """What the path tracer still refuses: custom scatter overrides
-    (user-defined ray continuation has no sampling density for stochastic
-    transport to weight). Environment maps graduated to full support --
-    integrated for real through CDF next-event estimation and escaping rays
-    -- so they must NOT appear in the refusal.
+def test_the_path_tracer_preflight_refuses_nothing():
+    """The path tracer is the **fallback**, so it refuses nothing.
+
+    Custom scatter overrides were its last rejection -- and the wrong kind of
+    one: a scene that authors a scatter *and* needs the path tracer (for
+    memory, light count or global illumination) had nowhere to go, and the
+    error told it to set ``samples_per_pixel`` back to 1, which is the thing
+    that did not work. A custom scatter is now continued as a delta lobe.
+    The preflight machinery stays for anything a future renderer genuinely
+    cannot do; ``tests/unit_tests/test_path_tracer.py`` enumerates every
+    feature the plan inspects and asserts the empty refusal over all of them.
     """
     rt_settings.set_unsupported_feature_policy("error")
     merged = {"has_user_pipeline": True, "has_custom_scatter": True}
 
-    with pytest.raises(UnsupportedFeatureError) as exc_info:
-        _validate_render_capabilities(
-            4,
-            torch.zeros((1, 1, 3)),
-            merged,
-            [],
-        )
-    message = str(exc_info.value)
-    assert "custom scatter overrides" in message
-    assert "environment maps" not in message
+    plan = _validate_render_capabilities(4, torch.zeros((1, 1, 3)), merged, [])
+    assert plan.backend == "path_tracer"
+    assert plan.is_supported
+    assert plan.unsupported_features == ()
+    assert "custom fragment-shader pipelines" in plan.requested_features
+    assert "environment maps" in plan.requested_features
 
 
 def test_path_tracer_supports_the_features_the_monte_carlo_kernel_refused():
@@ -1367,75 +1367,35 @@ def test_skip_save_frame_is_not_a_settings_section():
 
 
 @pytest.mark.parametrize(
-    ("feature", "expected"),
-    [
-        ("custom_scatter", "custom scatter overrides"),
-    ],
-)
-def test_an_authored_scene_reaches_the_path_tracer_capability_check(
-    feature, expected, tmp_path
-):
-    """The preflight is only worth having if real authoring actually trips it.
-
-    ``_validate_render_capabilities`` is unit-tested above against hand-built
-    ``merged`` dicts, which proves the message but not the wiring: that a
-    fragment pipeline carrying a custom scatter registers as one. Authoring
-    the still-unsupported feature the way a user would and asserting the
-    render refuses is what closes that gap -- and it needs no GPU, because
-    the check runs on host metadata before any arena reservation or kernel
-    compilation.
-    """
-    from algan.constants.color import BLUE
-    from algan.mobs.shapes_3d import Sphere
-    from algan.rendering.shaders.fragment_shaders import (
-        STAGE_STANDARD,
-        FragmentStage,
-    )
-    from algan.settings.video_settings import SMOKE_TEST
-    from algan.taichi_compat import ti
-
-    rt_settings.set_unsupported_feature_policy("error")
-    scene = SceneManager.instance().current_scene
-    scene.set_video_settings(SMOKE_TEST)
-
-    with algan.SETTINGS.raytracing.override(samples_per_pixel=4):
-        if feature == "custom_scatter":
-
-            @ti.func
-            def _test_scatter_noop():
-                pass
-
-            sphere = Sphere(radius=0.6, color=BLUE)
-            sphere.set_fragment_shader(
-                [
-                    FragmentStage(
-                        STAGE_STANDARD.ti_func,
-                        STAGE_STANDARD.param_specs,
-                        scatter=_test_scatter_noop,
-                    )
-                ]
-            )
-            sphere.spawn()
-
-        scene.wait(0.2)
-
-        with pytest.raises(UnsupportedFeatureError, match=expected):
-            scene.save_video(tmp_path / f"spp_{feature}", overwrite=True)
-
-
-@pytest.mark.parametrize(
     "feature",
-    ["refraction", "fragment_pipeline", "extended_light", "environment_map"],
+    [
+        "refraction",
+        "fragment_pipeline",
+        "extended_light",
+        "environment_map",
+        "custom_scatter",
+    ],
 )
 def test_lifted_path_tracer_features_render(feature, tmp_path):
     """Features the path tracer gained (refraction, fragment pipelines,
     extended lights and environment maps were Monte Carlo rejections before
-    it) pass preflight and render one small frame end-to-end.
+    it, and a custom scatter override was its last hard refusal) pass
+    preflight and render one small frame end-to-end.
+
+    The ``custom_scatter`` case is the wiring test for the last of those: the
+    plan is unit-tested against hand-built ``merged`` dicts above, which
+    proves the verdict but not that a fragment pipeline carrying a scatter
+    registers as one and reaches the kernel. Authoring it the way a user
+    would and rendering is what closes that gap.
     """
     from algan.constants.color import BLUE, WHITE
     from algan.constants.spatial import OUT, UP
     from algan.mobs.shapes_3d import Sphere
-    from algan.rendering.shaders.fragment_shaders import STAGE_STANDARD, cosine_color
+    from algan.rendering.shaders.fragment_shaders import (
+        STAGE_STANDARD,
+        cosine_color,
+        forced_mirror_scatter,
+    )
     from algan.rendering.shaders.materials import MeshPhysicalMaterial
     from algan.settings.video_settings import SMOKE_TEST
 
@@ -1466,6 +1426,10 @@ def test_lifted_path_tracer_features_render(feature, tmp_path):
         elif feature == "environment_map":
             scene.set_environment_map(torch.rand((4, 8, 3)))
             Sphere(radius=0.6, color=BLUE).spawn()
+        elif feature == "custom_scatter":
+            sphere = Sphere(radius=0.6, color=BLUE)
+            sphere.set_fragment_shader(forced_mirror_scatter)
+            sphere.spawn()
 
         result = scene.save_frame(tmp_path / f"pt_{feature}.png", overwrite=True)
         assert result.render_plan.backend == "path_tracer"

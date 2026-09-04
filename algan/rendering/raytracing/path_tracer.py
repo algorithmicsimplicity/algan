@@ -439,6 +439,7 @@ def path_trace_render(
     light_col,
     num_lights,
     frag_pipelines,
+    frag_scatters=(),
     shadows,
     max_bounces,
     near_clip,
@@ -461,6 +462,13 @@ def path_trace_render(
     ``base_dist + t`` passes it. Raises the arena's memory exceptions with all tile
     state released, so the chunk-halving retry in ``render_chunk`` works
     unchanged.
+
+    ``frag_scatters`` is the per-pipeline custom ray-continuation tuple, the
+    same one the deterministic wavefront takes (empty when no pipeline in
+    this batch overrides bouncing). A crossing whose pipeline supplies one
+    commits the radiance the scatter returns and continues along one of its
+    three branches as a delta lobe -- see ``pt_shade``. Empty compiles the
+    kernel exactly as it compiled before custom scatter reached here.
 
     ``aovs``, when given, is ``(albedo, normal, bg_weight)`` -- three zeroed
     ``[frames, pixels, 3]`` float32 tensors the call fills with per-pixel
@@ -715,6 +723,7 @@ def path_trace_render(
                             shadow_mode,
                             shadow_vis_slots(num_lights),
                             frag_pipelines,
+                            frag_scatters,
                             ALL_PIDS,
                             seed_root,
                             int(sample_base),

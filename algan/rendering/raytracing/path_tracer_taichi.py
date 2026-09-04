@@ -1101,7 +1101,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              # Light slots this variant's ``vis`` payload carries -- what the
              # batch needs, not the cap (shading_taichi.shadow_vis_slots).
              vis_lights: ti.template(),
-             frag_pipelines: ti.template(), tri_pids: ti.template(),
+             frag_pipelines: ti.template(), frag_scatters: ti.template(),
+             tri_pids: ti.template(),
              seed_root: ti.u32, sample_base: ti.i32, tile_pixels: ti.i32,
              rr_start: ti.i32, firefly_clamp: ti.f32,
              time_start: ti.i32, width: ti.i32, height: ti.i32,
@@ -1140,6 +1141,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     paths can also find; delta lights have no geometry to MIS against).
     Escaping rays sample the environment map in their own direction, so
     mirrors and GI see the sky the deterministic renderer shows.
+
+    ``frag_scatters`` is the per-pipeline custom ray-continuation tuple (the
+    same one ``wavefront_shade`` takes, narrowed to the batch): a crossing
+    whose material pipeline supplies a scatter has its radiance AND its
+    continuation decided by the user's ``@ti.func``, and continues as a
+    **delta lobe** -- one of the three returned branches picked
+    stochastically, weighted by the branch weights, and ``prev_pdf = 0``
+    because no next-event strategy covers where the user's direction lands
+    (the contract refraction and the tinted pane already get). An empty tuple
+    -- every scene that authors no custom scatter -- compiles this kernel
+    exactly as it compiled before the feature existed.
     """
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
@@ -1466,6 +1478,25 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                               ti.max(e_trans_l[1],
                                                      e_trans_l[2]))
 
+                # Custom-scatter state for this crossing: whether a user
+                # scatter owns it, the radiance it committed, and its three
+                # continuation branches. Declared unconditionally because a
+                # Taichi ``if`` body -- ``ti.static`` included -- is its own
+                # variable scope, so a declaration inside the static gate the
+                # readers below sit in would not be visible to them. Every
+                # READ is gated, so with an empty tuple these are locals
+                # nothing loads and the compiled kernel is the one this file
+                # produced before custom scatter reached it.
+                sc_on = 0
+                sc_contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                sc_pass_w = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_refl_o = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_refl_d = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_refl_w = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_trans_o = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_trans_d = ti.math.vec3(0.0, 0.0, 0.0)
+                sc_trans_w = ti.math.vec3(0.0, 0.0, 0.0)
+
                 # ----------------------------------------------------------
                 # Local radiance of this crossing (emission semantics).
                 # ----------------------------------------------------------
@@ -1743,9 +1774,47 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         snrm, fnrm, albedo3, color[3],
                         light_pos, light_col, num_lights, tri_mat_id,
                         tri_mat, shadows, vis, cam_pos)
+                    if ti.static(len(frag_scatters) > 0):
+                        # Custom ray continuation. The pid switch mirrors
+                        # ``_run_frag_scatter``'s, minus its default-scatter
+                        # fallback: a user pipeline that supplies no scatter
+                        # keeps the path tracer's own importance-sampled
+                        # lobes rather than inheriting the deterministic
+                        # renderer's opacity/Fresnel continuation. The
+                        # ``shaded`` argument is the pipeline output just
+                        # computed, exactly what ``wavefront_shade`` hands
+                        # it, and ``refraction`` is 1 because this renderer
+                        # can carry a transmitted branch (it samples one of
+                        # the three rather than splitting).
+                        for pi in ti.static(range(len(frag_scatters))):
+                            # ``bool(func)`` rather than an ``is not``
+                            # comparison -- see ``_run_frag_scatter``.
+                            if ti.static(bool(frag_scatters[pi])):
+                                if pid == _USER_PIPELINE_BASE + pi:
+                                    (sc_contrib, sc_pass_w, sc_refl_o,
+                                     sc_refl_d, sc_refl_w, sc_trans_o,
+                                     sc_trans_d, sc_trans_w) = \
+                                        frag_scatters[pi](
+                                            rd, snrm, fnrm, hit_p, local,
+                                            albedo3, alpha, metalness, ior,
+                                            T, tri_mat, f, prim,
+                                            bounces_left, 1)
+                                    sc_on = 1
 
                 indirect_path = bounces_left < max_b
                 add = thru * alpha * local
+                if ti.static(len(frag_scatters) > 0):
+                    if sc_on == 1:
+                        # The scatter committed this crossing's radiance
+                        # itself: ``contrib`` already folds in the shaded
+                        # colour it was handed and the surface's coverage
+                        # (the deterministic renderer likewise adds
+                        # ``weight * contrib``), so it REPLACES
+                        # ``alpha * local`` rather than scaling it.
+                        add = ti.math.vec4(thru[0] * sc_contrib[0],
+                                           thru[1] * sc_contrib[1],
+                                           thru[2] * sc_contrib[2],
+                                           thru[3] * sc_contrib[3])
                 if indirect_path and (firefly_clamp > 0.0):
                     add = ti.min(add, ti.math.vec4(firefly_clamp,
                                                    firefly_clamp,
@@ -1761,6 +1830,140 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     aov_alb += ti.math.vec3(thru[0], thru[1], thru[2]) \
                         * (alpha * albedo3)
                     aov_nrm += (thru[3] * alpha) * shade_n
+
+                # ----------------------------------------------------------
+                # Continuation A: the user's scatter, as a delta lobe.
+                # ----------------------------------------------------------
+                # The scatter returns three branches (pass-through, reflect,
+                # transmit) with vec3 throughput multipliers. Paths never
+                # split here (contract 3), so exactly one branch is picked --
+                # with the same importance weighting the built-in lobe pick
+                # below uses, from the same ``u_lobe`` draw -- and the path
+                # continues with ``prev_pdf = 0``: it is the user's direction
+                # and the user's density, so nothing MIS-covers what it finds
+                # next, which is precisely the contract refraction and the
+                # tinted pane already get. A pass-through keeps peeling this
+                # batch; a reflect or transmit ends the camera segment and
+                # spends a bounce, as any scatter does.
+                #
+                # ``sc_next`` carries the pass-through out to a RUNTIME ``if``
+                # below rather than continuing from inside the static gate: a
+                # ``continue`` under a compile-time gate is emitted bare and
+                # invalidates the SPIR-V module (test_kernel_control_flow.py).
+                sc_next = 0
+                if ti.static(len(frag_scatters) > 0):
+                    if sc_on == 1:
+                        cw_pass = ti.max(sc_pass_w[0],
+                                         ti.max(sc_pass_w[1], sc_pass_w[2]))
+                        cw_refl = ti.max(sc_refl_w[0],
+                                         ti.max(sc_refl_w[1], sc_refl_w[2]))
+                        cw_trans = ti.max(sc_trans_w[0],
+                                          ti.max(sc_trans_w[1],
+                                                 sc_trans_w[2]))
+                        if bounces_left <= 0:
+                            # Out of bounces: only the pass-through survives,
+                            # the rule ``wavefront_shade`` applies to the same
+                            # returned branches.
+                            cw_refl = 0.0
+                            cw_trans = 0.0
+                        cw_pass = ti.max(cw_pass, 0.0)
+                        cw_refl = ti.max(cw_refl, 0.0)
+                        cw_trans = ti.max(cw_trans, 0.0)
+                        cw_sum = cw_pass + cw_refl + cw_trans
+                        if cw_sum <= 1e-6:
+                            # The scatter absorbed the ray: nothing continues
+                            # and the background must not show through, in
+                            # colour or in coverage (see the built-in
+                            # absorption below).
+                            t_alpha = 0.0
+                            absorbed = True
+                            aov_open = 0
+                            done = True
+                            break
+                        u_c = _pt_rng(seed_root, key, s_index, processed, 7)
+                        pick_c = u_c * cw_sum
+                        c_tint = ti.math.vec3(0.0, 0.0, 0.0)
+                        c_ro = ti.math.vec3(0.0, 0.0, 0.0)
+                        c_rd = ti.math.vec3(0.0, 0.0, 0.0)
+                        c_scatter = 0
+                        if pick_c < cw_pass:
+                            c_tint = sc_pass_w \
+                                * (cw_sum / ti.max(cw_pass, 1e-6))
+                        elif pick_c < cw_pass + cw_refl:
+                            c_tint = sc_refl_w \
+                                * (cw_sum / ti.max(cw_refl, 1e-6))
+                            c_ro = sc_refl_o
+                            c_rd = sc_refl_d
+                            c_scatter = 1
+                        else:
+                            c_tint = sc_trans_w \
+                                * (cw_sum / ti.max(cw_trans, 1e-6))
+                            c_ro = sc_trans_o
+                            c_rd = sc_trans_d
+                            c_scatter = 1
+                        c_mean = (c_tint[0] + c_tint[1] + c_tint[2]) / 3.0
+                        thru = ti.math.vec4(thru[0] * c_tint[0],
+                                            thru[1] * c_tint[1],
+                                            thru[2] * c_tint[2],
+                                            thru[3] * c_mean)
+                        if c_scatter == 0:
+                            # Pass-through: the camera segment survives and
+                            # its transparency takes the same weight the
+                            # throughput did. Peel on (via ``sc_next``).
+                            t_alpha *= c_mean
+                            t_prev = t_hit
+                            layer_prev = hit_layer
+                            sc_next = 1
+                            if ti.max(thru[0],
+                                      ti.max(thru[1],
+                                             thru[2])) < min_weight:
+                                done = True
+                                break
+                        else:
+                            # A scatter: the camera segment ends here, and
+                            # what the continuation finds is covered by no
+                            # NEE.
+                            t_alpha = 0.0
+                            prev_pdf = 0.0
+                            bounce_ord_c = max_b - bounces_left
+                            survived_c = 1
+                            if bounce_ord_c >= rr_start:
+                                u_rr_c = pt_sample_2d(
+                                    seed_root, key,
+                                    PAIR_BOUNCE_BASE
+                                    + PAIRS_PER_BOUNCE * bounce_ord_c
+                                    + _PAIR_LOBE, s_index)[1]
+                                p_rr_c = ti.math.clamp(
+                                    ti.max(thru[0],
+                                           ti.max(thru[1], thru[2])),
+                                    _PT_RR_FLOOR, 1.0)
+                                if u_rr_c >= p_rr_c:
+                                    survived_c = 0
+                                else:
+                                    thru *= 1.0 / p_rr_c
+                            if survived_c == 0:
+                                thru = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                                absorbed = True
+                                done = True
+                                break
+                            if ti.max(thru[0],
+                                      ti.max(thru[1],
+                                             thru[2])) < min_weight:
+                                done = True
+                                break
+                            ro = c_ro
+                            rd = c_rd
+                            base_dist += t_hit
+                            t_prev = 0.0
+                            layer_prev = 1e30
+                            seam_t = -1e30
+                            bounces_left -= 1
+                            bounced = True
+                            break
+                if sc_next == 1:
+                    # The custom scatter passed this crossing through; the
+                    # built-in lobe pick below is not its business.
+                    continue
 
                 # ----------------------------------------------------------
                 # Continuation: pass-through | diffuse | specular | transmit.
@@ -2155,7 +2358,7 @@ _PT_SHADE_PARAMS = (
     "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
     "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
     "shadows", "shadow_mode",
-    "vis_lights", "frag_pipelines", "tri_pids", "seed_root",
+    "vis_lights", "frag_pipelines", "frag_scatters", "tri_pids", "seed_root",
     "sample_base",
     "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",

@@ -47,13 +47,19 @@ class FragmentStage:
     param is at ``off + 0``). ``width`` is 1 for a scalar, 3 for an RGB triple.
 
     ``scatter`` optionally customises how a ray *continues* after this stage's
-    pipeline shades a surface hit (reflection / refraction / pass-through) on
-    the sorted-material wavefront: a ``@ti.func`` following the scatter
-    contract documented in
+    pipeline shades a surface hit (reflection / refraction / pass-through): a
+    ``@ti.func`` following the scatter contract documented in
     :mod:`algan.rendering.raytracing.shading_taichi`. When no stage of a
     pipeline supplies one, the default scatter applies the classic
     opacity/reflectivity/Fresnel-glass behaviour. When several stages supply
     one, the last stage's scatter wins.
+
+    Both renderers honour it. The deterministic wavefront splits into the
+    reflected and transmitted branches the scatter returns; the path tracer
+    (``samples_per_pixel > 1``) never splits, so it picks one of the three
+    branches at random -- weighted by the branch weights -- and continues
+    along it as a delta lobe (weight 1, no MIS coverage, exactly what
+    refraction and a tinted pane get there).
     """
 
     def __init__(self, ti_func, param_specs=(), scatter=None):
@@ -251,7 +257,9 @@ def build_frag_pipelines(pids=None):
 
 def build_frag_scatters(pids=None):
     """Per-pipeline custom scatter funcs (None = default scatter), ordered by
-    id, for the monolithic wavefront's per-material continuation dispatch.
+    id, for the monolithic wavefront's per-material continuation dispatch --
+    and for the path tracer's, which takes the same tuple and continues along
+    one sampled branch of it (``pt_shade``).
 
     Narrowed by ``pids`` exactly as :func:`build_frag_pipelines` is, and for
     the same reason.

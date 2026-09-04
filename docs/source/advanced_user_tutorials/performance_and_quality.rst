@@ -153,9 +153,12 @@ promises they converge to the same image.
 What each renderer supports
 ---------------------------
 
-Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer, and
-a couple of features are implemented only in the deterministic one. Algan checks
-this before it allocates anything and refuses rather than silently dropping them.
+Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer.
+The path tracer refuses nothing -- it is the fallback, so every feature the
+deterministic renderer accepts renders there too -- but several are *reached*
+differently, which the table below spells out. Algan still checks compatibility
+before it allocates anything, and would refuse rather than silently drop a
+feature it could not honour.
 
 .. list-table::
    :header-rows: 1
@@ -175,7 +178,7 @@ this before it allocates anything and refuses rather than silently dropping them
      - Yes (shaded as authored; diffuse for indirect bounces)
    * - Custom scatter overrides
      - Yes
-     - **Not supported**
+     - Yes (as a delta lobe; no NEE coverage)
    * - Environment maps
      - Yes (order-1 SH diffuse)
      - Yes (importance-sampled, full map)
@@ -190,15 +193,20 @@ this before it allocates anything and refuses rather than silently dropping them
      - Yes
 
 A **custom scatter override** is a fragment pipeline that redefines how a ray
-continues (``FragmentStage(..., scatter=...)``). The pipeline's *shading* is
-honoured under both renderers; only the ray-continuation override is
-deterministic-only, because arbitrary user continuation carries no sampling
-density for stochastic transport to weight.
+continues (``FragmentStage(..., scatter=...)``). Both renderers honour it. The
+deterministic one *splits* into the reflected and transmitted branches the
+scatter returns; the path tracer picks one of the three branches at random,
+weighted by the branch weights, and continues along it as a **delta lobe** --
+your direction, your density, weight 1, no MIS. The one consequence is that a
+scatter surface is outside next-event estimation, so light reaches it only
+through the sampled continuation and it converges more slowly than a
+physically-integrated material in the same place.
 
-If a scene requests an unsupported feature, Algan raises
-:class:`~algan.errors.UnsupportedFeatureError` naming the features it cannot
-honor. Either set ``samples_per_pixel`` back to ``1``, remove the feature, or opt
-into the older behaviour explicitly:
+No feature reaches this today, but the mechanism stands: were a scene to request
+one a renderer could not honour, Algan raises
+:class:`~algan.errors.UnsupportedFeatureError` naming the features rather than
+dropping them. Either set ``samples_per_pixel`` back to ``1``, remove the
+feature, or opt into the older behaviour explicitly:
 
 .. code-block:: python
 

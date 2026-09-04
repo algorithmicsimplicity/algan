@@ -92,8 +92,9 @@ be as fast as it can be, is:
 
 1. §0 — a measured baseline, then the kernel and host wins it ranks.
 2. §0.3 — the defaults and the switch: what "turn on path tracing" means.
-3. §9 — the fallback never refuses (custom scatter as a delta lobe, the
-   never-refuses test, the failure messages that point at the switch).
+3. §9 — the fallback never refuses. Custom scatter as a delta lobe and the
+   never-refuses test have LANDED; what is left of this item is the failure
+   messages that point at the switch.
 4. §2 — adaptive sampling, if the baseline confirms the camera-segment peel
    and the unlit pixels are where the time goes.
 5. §6 + §5 — the light tree, the authored-appearance sampling fix and the
@@ -197,6 +198,41 @@ host round-trips; the share of a text frame spent re-peeling the camera
 segment per sample (the §2 case); and the denoiser's fixed per-frame cost,
 which is independent of spp and bounds how low spp can usefully go.
 
+**Measured, Kaggle T4, 2026-09-04**
+(`benchmarks/performance/reports/t4_2026_09/pt_baseline_1.md` has every
+arm). Five frames, 16 spp, 4 bounces, denoiser on, warm RUN 2:
+
+| lit scene, 1280x720 | s | % |
+| --- | --- | --- |
+| host: prep, merge, encode | 0.879 | 50 |
+| denoiser (fp32 torch U-Net) | 0.383 | 22 |
+| `pt_shade` (NEE + shadow rays) | 0.248 | 14 |
+| `wavefront_traverse_events` | 0.152 | 9 |
+| generate + reduce + compact | 0.051 | 3 |
+
+* The path tracer's kernels are **0.09 s per 720p frame** (~16 M paths/s
+  with NEE and shadows); the deterministic renderer's kernels on the same
+  scene are 8 ms per frame. End to end the fallback is **1.7x** the
+  deterministic renderer here, because host prep and the denoiser set the
+  wall clock, not transport.
+* **The denoiser was the largest device-side item**: 77 ms per 720p frame,
+  fixed per frame, fp32, NCHW, per tile, through plain `F.conv2d`. It was
+  34% of the 2-D text arm, where it has zero-variance pixels to filter.
+  **LANDED**: `denoise_precision` defaults to half precision with
+  channels-last activations on CUDA (`pt_denoise_1.md` in the same
+  reports directory): 1.7x on the filter at 720p and 1080p, at most one
+  8-bit count of difference on a handful of channel samples, 9-14% end to
+  end. Batching the tiles into one forward pass and compiling the U-Net
+  are the next two steps if it climbs back to the top of the profile.
+* **Many lights is flat**: 64 point lights cost what 3 do
+  (`pt_shade` 20.1 ms against 18.2 ms at 320x180).
+* **The 2-D arm**: 1.4 iterations per wave, 0.30 s of kernel time per five
+  720p frames spent re-peeling zero-variance content 16 times. That sizes
+  §2 at roughly a 16x reduction of that 0.30 s.
+* **The two opaque switches** (§0.2) took 11% off the path tracer's device
+  time at 720p, byte-identical video on both arms.
+* **The host sync per iteration does not pay to remove** — see §0.2-bis.
+
 ### 0.2 Cheap wins the survey found in the kernel
 
 Each is a half-day to a day, each ships behind an experimental kill switch,
@@ -270,6 +306,15 @@ kernel is shared, so its guard must be output-neutral for the deterministic
 renderer; it is a single compare. This is a "measure first" item: the T4
 number decides it, the CPU number does not (the CPU has no launch latency
 to speak of, so it cannot see the cost).
+
+**Measured 2026-09-04: deferred.** At 720p the arena budget puts a whole
+frame's pixels in one wave with 16 samples in flight, so a render is 5
+iterations per wave and 25 syncs per five frames; `compact_ray_slots` is
+1.3% of wall and its wall time equals its device time, so the round trips
+are hidden behind the kernels. The rewrite would only show at a small
+memory budget, where waves are many and short. Revisit if a profile under
+`available_memory_mb` pressure says so; until then the denoiser (§0.1) is
+the item.
 
 ### 0.3 The defaults, and what "turn on path tracing" means
 
@@ -1028,20 +1073,21 @@ A fallback that rejects a feature leaves the user with **no renderer at all**
 for that scene, and one that silently drops a feature is worse — the frame
 comes out wrong with nothing pointing at why. Under the purpose stated at the
 top of this document, each of these is a bug against the renderer's role
-rather than a missing nicety. Audited at the current head — the clip-plane
-entry is kept after its fix because it is the worked example of the failure
-mode this section exists to catch:
+rather than a missing nicety. Audited at the current head — the custom-scatter
+and clip-plane entries are kept after their fixes because they are the worked
+examples of the failure mode this section exists to catch (one refused
+outright, one silently inert):
 
-* **Custom scatter overrides are hard-rejected.** `_build_render_plan` puts
-  `"custom scatter overrides"` in `unsupported_features` when
-  `samples_per_pixel > 1`, so a scene using `FragmentStage(..., scatter=...)`
-  raises `UnsupportedFeatureError` rather than rendering. If that scene is
-  also one the deterministic renderer cannot fit — the exact case the
-  fallback exists for — the user has nowhere to go, and the error message
-  tells them to set `samples_per_pixel` back to 1, which is the thing that
-  did not work.
+* **Custom scatter overrides were hard-rejected — LANDED.**
+  `_build_render_plan` used to put `"custom scatter overrides"` in
+  `unsupported_features` when `samples_per_pixel > 1`, so a scene using
+  `FragmentStage(..., scatter=...)` raised `UnsupportedFeatureError` rather
+  than rendering. If that scene was also one the deterministic renderer
+  cannot fit — the exact case the fallback exists for — the user had nowhere
+  to go, and the error message told them to set `samples_per_pixel` back to
+  1, which is the thing that did not work.
 
-  The stated reason is that arbitrary user continuation carries no sampling
+  The stated reason was that arbitrary user continuation carries no sampling
   density for stochastic transport to weight. True, but the renderer already
   has a category for exactly that: a **delta lobe**. Refraction and tinted
   panes both take a deterministic direction and continue with `prev_pdf = 0`,
@@ -1053,6 +1099,31 @@ mode this section exists to catch:
   same contract the built-in delta lobes get. The one genuine limitation is
   that such surfaces cannot be MIS-covered, which is already the case for
   every other delta lobe.
+
+  That is what shipped. `pt_shade` takes `frag_scatters` beside
+  `frag_pipelines` — the same batch-narrowed tuple `wavefront_shade` takes,
+  so `tracer.py` builds it once for either renderer — and at an authored
+  crossing whose pid carries a scatter it calls the user's `@ti.func` with
+  the pipeline's shaded colour, commits the `contrib` it returns in place of
+  `alpha * local` (the scatter has already folded coverage and shading into
+  it, exactly as the deterministic renderer's `weight * contrib` assumes),
+  and continues along **one** of the three returned branches: `w_pass`,
+  `w_refl`, `w_trans` are their max components, one is picked from the
+  existing `u_lobe` draw and its throughput divided by its selection
+  probability, the same importance weighting the built-in lobe pick uses.
+  Paths still do not split (contract 3), a pass-through keeps peeling the
+  batch and a reflect/transmit ends the camera segment and spends a bounce,
+  and `refraction` is passed to the scatter as 1 because this renderer can
+  carry a transmitted branch even though it never traces both. A scene with
+  no custom scatter passes `()`, every read is behind `ti.static`, and the
+  compiled kernel is unchanged — `tests/path_traced` stays green at its
+  existing baselines, which is the byte-identity guard.
+
+  Note the one thing this does **not** buy: a scatter surface is still
+  outside next-event estimation (it runs no NEE block, as every authored
+  crossing does not), so light reaches it only through the sampled
+  continuation. That is the documented limitation on
+  `renderer_limitations.rst`, not a defect to fix here.
 
 * **`camera.near` and `camera.far` — FIXED.** Near clipping used to be inert
   under the path tracer while the feature matrix advertised it: it is applied
@@ -1104,17 +1175,24 @@ This section outranks §§1–8 under the renderer's purpose. A missing feature
 in those sections makes a scene noisier or slower; a hole here leaves the
 user with no renderer at all.
 
-**Verification.** Two tests, one of which exists now:
+**Verification.** Two tests, both of which exist now:
 
-* **The fallback never refuses** — assert `_build_render_plan` returns an
-  empty `unsupported_features` for `samples_per_pixel > 1` across every
-  feature combination the deterministic renderer accepts. This is the
-  machine-checkable form of the rule above and the thing that would have
-  caught the custom-scatter hole; it is the test to add alongside the custom
-  scatter work, and it should fail today. Build it by enumerating the
-  features `_build_render_plan` inspects rather than by listing scenes, so a
-  future rejection added to that function fails the test the moment it is
-  written.
+* **The fallback never refuses** — LANDED, as
+  `test_the_fallback_refuses_nothing` in
+  `tests/unit_tests/test_path_tracer.py`: `_build_render_plan` must return an
+  empty `unsupported_features` for `samples_per_pixel > 1`, over every
+  feature it inspects together *and* one at a time (so a refusal conditioned
+  on a combination fails it too). This is the machine-checkable form of the
+  rule above and the thing that would have caught the custom-scatter hole; it
+  is built by enumerating the features that function reads rather than by
+  listing scenes, so a future rejection added to it fails the test the moment
+  it is written. It failed before the custom-scatter work and passes after.
+  The wiring — that a real authored pipeline registers as a scatter and
+  reaches the kernel — is a render, in the same file
+  (`test_custom_scatter_renders_as_a_delta_continuation`, a black 45-degree
+  panel between two out-of-frame red emissive walls: red in its pixels can
+  only have bounced) and in `test_ux_regressions.py`'s
+  `test_lifted_path_tracer_features_render`.
 * **Clip planes apply** —
   `test_camera_clip_planes_apply_under_path_tracing` (landed with the fix
   above). Note the shape of the assertion, because it generalises: it checks

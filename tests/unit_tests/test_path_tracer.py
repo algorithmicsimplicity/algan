@@ -1122,5 +1122,192 @@ def test_a_static_scene_draws_the_same_noise_every_frame():
     )
 
 
+# ---------------------------------------------------------------------------
+# Completeness: the fallback must not refuse anything
+# (DESIGN_path_tracer_roadmap.md section 9)
+# ---------------------------------------------------------------------------
+
+
+def test_the_fallback_refuses_nothing():
+    """``_build_render_plan`` returns an EMPTY ``unsupported_features`` for
+    ``samples_per_pixel > 1``, whatever the scene carries.
+
+    The path tracer is the fallback for scenes the deterministic renderer
+    cannot do, so a refusal leaves the user with no renderer at all and an
+    error message naming the setting that did not work. This is the
+    machine-checkable form of that rule, and it is built by enumerating the
+    features ``_build_render_plan`` actually inspects -- an environment map,
+    ``has_refractive``, a user fragment pipeline, a custom scatter override
+    on it, and an extended light -- rather than by listing scenes, so a
+    rejection added to that function fails this test the moment it is
+    written. Every feature is set at once *and* one at a time: a refusal
+    conditioned on a combination has to fail here too.
+    """
+    from types import SimpleNamespace
+
+    from algan.rendering.raytracing.tracer import _build_render_plan
+
+    # Every input _build_render_plan reads, in the form it reads it.
+    features = {
+        "environment_map": lambda kw: kw.update(
+            scene_environment_map=torch.zeros((1, 1, 3))
+        ),
+        "refractive": lambda kw: kw["merged"].update(has_refractive=True),
+        "user_pipeline": lambda kw: kw["merged"].update(has_user_pipeline=True),
+        "custom_scatter": lambda kw: kw["merged"].update(
+            has_user_pipeline=True, has_custom_scatter=True
+        ),
+        "extended_light": lambda kw: kw["light_sources"].append(
+            SimpleNamespace(_render_aux=object())
+        ),
+    }
+
+    def plan_for(names):
+        kwargs = {
+            "scene_environment_map": None,
+            "merged": {},
+            "light_sources": [],
+        }
+        for name in names:
+            features[name](kwargs)
+        return _build_render_plan(
+            4,
+            kwargs["scene_environment_map"],
+            kwargs["merged"],
+            kwargs["light_sources"],
+        )
+
+    everything = plan_for(features)
+    assert everything.backend == "path_tracer"
+    assert everything.unsupported_features == (), (
+        "the path tracer refused "
+        f"{list(everything.unsupported_features)}; it is the fallback, so a "
+        "refusal leaves that scene with no renderer at all"
+    )
+    assert everything.is_supported
+    # Each feature alone, so a future refusal cannot hide behind a
+    # combination the merged dict above happens to satisfy.
+    for name in features:
+        assert plan_for([name]).unsupported_features == (), (
+            f"the path tracer refused a scene carrying only {name}"
+        )
+    # ... and the features it does honour are still *reported* as requested.
+    assert set(everything.requested_features) == {
+        "environment maps",
+        "refractive materials",
+        "custom fragment-shader pipelines",
+        "extended lights",
+    }
+
+
+def _mirror_scene(mirror_stage):
+    """A black 45-degree panel between two red emissive walls, out of frame.
+
+    The panel is the only thing the camera sees. Its own albedo is black, so
+    the ONLY way red can reach its pixels is a ray that leaves it sideways
+    and finds a wall -- which is exactly what a custom scatter is for, and
+    which nothing else in this scene can produce.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        mirror = Prism(width=3.0, height=3.0, depth=0.2)
+        mirror.color = BLACK
+        mirror.set_fragment_shader(mirror_stage)
+        # Tilted 45 degrees, so a camera ray leaves it sideways -- toward one
+        # of the walls -- rather than straight back at the camera.
+        mirror.rotate(45, UP)
+        mirror.spawn(animate=False)
+        # Both sides, so the test does not depend on which way the rotation
+        # tips the panel. Far enough out to sit outside the camera frustum
+        # (the visible half-width at the origin plane is 4), so the only red
+        # that can reach the frame is red that bounced.
+        for side in (RIGHT, -RIGHT):
+            wall = Prism(width=0.4, height=8.0, depth=6.0)
+            wall.set_material(
+                MeshLambertMaterial(color=BLACK, emissive=RED, emissive_intensity=1.0)
+            )
+            wall.move(side * 5.0)
+            wall.spawn(animate=False)
+
+    return build
+
+
+def _mirror_patch(img, half=4):
+    """The mirror panel's own pixels: the image centre (the panel is the only
+    geometry inside the camera frustum).
+    """
+    h, w = img.shape[0], img.shape[1]
+    return img[h // 2 - half : h // 2 + half, w // 2 - half : w // 2 + half]
+
+
+def test_custom_scatter_renders_as_a_delta_continuation(tmp_path):
+    """A custom scatter is honoured by the path tracer, as a delta lobe.
+
+    It used to be the fallback's one hard refusal (``_build_render_plan``
+    put "custom scatter overrides" in ``unsupported_features``), which is a
+    bug against the renderer's role: a scene that needs the path tracer for
+    memory, light count or GI *and* authors a scatter had nowhere to go. It
+    now continues along the branch the user's function returns, weight 1 and
+    ``prev_pdf = 0`` -- the same contract refraction and the tinted pane get.
+
+    Asserted against the same panel wearing a plain unlit stage, which is
+    the same geometry, the same shading and the same black albedo, differing
+    only in whether rays bounce: red in the mirror's pixels can therefore
+    only have come from the scatter.
+    """
+    from algan.rendering.shaders.fragment_shaders import (
+        _BUILTIN_MAT_SPECS,
+        STAGE_UNLIT,
+        FragmentStage,
+        forced_mirror_scatter,
+    )
+
+    # Same stage, same params: only the scatter differs.
+    plain = FragmentStage(STAGE_UNLIT.ti_func, _BUILTIN_MAT_SPECS)
+    mirrored = _render_scene(
+        tmp_path, "scatter_mirror.png", _mirror_scene(forced_mirror_scatter), 16
+    ).float()
+    flat = _render_scene(
+        tmp_path, "scatter_plain.png", _mirror_scene(plain), 16
+    ).float()
+
+    # OpenCV loads BGR: channel 2 is red.
+    red_mirror = float(_mirror_patch(mirrored)[..., 2].mean())
+    red_flat = float(_mirror_patch(flat)[..., 2].mean())
+    assert red_flat < 3.0, (
+        f"the control panel is not black ({red_flat:.1f}/255 red); the "
+        "comparison below would not isolate the scatter"
+    )
+    assert red_mirror > red_flat + 50.0, (
+        "the custom scatter reflected nothing: the mirror panel reads "
+        f"{red_mirror:.1f}/255 red against the plain stage's {red_flat:.1f}"
+    )
+    # It reflected the RED walls rather than lifting every channel.
+    patch = _mirror_patch(mirrored)
+    assert float(patch[..., 2].mean() - patch[..., 0].mean()) > 30.0, (
+        "the reflection arrived achromatic; it did not come off the red walls"
+    )
+
+
+def test_custom_scatter_plan_does_not_refuse_an_authored_scene(tmp_path):
+    """The wiring, end to end: a mob authored with a custom scatter renders
+    under the path tracer and its plan refuses nothing. The unit test above
+    proves the message; this proves a real pipeline registers as one and
+    still reaches the kernel.
+    """
+    from algan.rendering.shaders.fragment_shaders import forced_mirror_scatter
+
+    _img, result = _render_scene_result(
+        tmp_path,
+        "scatter_plan.png",
+        _mirror_scene(forced_mirror_scatter),
+        4,
+    )
+    assert result.render_plan.backend == "path_tracer"
+    assert result.render_plan.unsupported_features == ()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
