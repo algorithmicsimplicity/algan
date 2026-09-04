@@ -44,7 +44,7 @@ def scene():
             .spawn()
         )
 
-    with Sync(duration=DURATION):
+    with Sync(runtime=DURATION):
         nn.move(UP)
         x.color_texture = x.color_texture * 0.5
         label.move(RIGHT * 2)

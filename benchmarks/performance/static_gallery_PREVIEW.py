@@ -31,7 +31,7 @@ def scene():
         mover = Cube().scale(0.5).move(DOWN * 1.2).spawn()
         Text("static gallery").move(DOWN * 2.6).spawn()
 
-    with Sync(duration=duration):
+    with Sync(runtime=duration):
         mover.rotate(360, UP)
 
 
