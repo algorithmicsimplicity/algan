@@ -263,12 +263,39 @@ def import_tensor(tensor, element_shape=()):
 def clear_import_cache():
     """Drop every imported ndarray and the storages they were holding.
 
-    Call this when a render's arena is released. Nothing here outlives a
-    render, and an entry that did would pin the arena -- the largest allocation
-    in the process, and one the render loop frees on purpose.
+    Call this whenever the render gives device memory back --
+    :func:`~algan.utils.memory_utils.release_torch_memory` does, immediately
+    before ``torch.mps.empty_cache()``, because an entry here is exactly what
+    stops that call reclaiming anything.
+
+    It used to be called once, at the end of a render job, on the reasoning
+    that an entry outliving the job would pin the arena. True, and far too
+    narrow: the arena is *one* storage that the job reuses, while every other
+    kernel argument -- the uploaded scene arrays, the BVH nodes, the wavefront
+    queues -- is a fresh allocation on every batch, and each one was pinned
+    here until the job ended. Measured on the Mac runner, that walked torch's
+    live MPS bytes from 0.64 GB to 6.74 GB over fifteen batches of eight
+    frames, on a machine with 7 GB and no swap (``DESIGN_mps_support.md``
+    §1.4).
     """
     with _LOCK:
         _IMPORTS.clear()
+
+
+def cache_stats():
+    """``(entries, distinct storages, bytes pinned)`` for the import cache.
+
+    What this cache costs right now, which is the question §1.4 turned on and
+    which nothing could answer while the only visible number was Taichi's own.
+    ``bytes`` counts each storage once: many entries share one allocation (the
+    arena, sliced at a different offset for every argument), so summing per
+    entry would report the arena dozens of times over.
+    """
+    with _LOCK:
+        storages = {}
+        for _array, storage in _IMPORTS.values():
+            storages[storage.data_ptr()] = storage.nbytes()
+        return len(_IMPORTS), len(storages), sum(storages.values())
 
 
 def _ndarray_positions(kernel):

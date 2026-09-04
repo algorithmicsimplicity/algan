@@ -153,6 +153,18 @@ def release_torch_memory(force_gc=True):
     ):
         torch.cuda.empty_cache()
     if torch.mps.is_available():
+        # Before the cache drain, not after, and not conditionally: the MPS
+        # zero-copy import cache holds a torch storage per buffer it has ever
+        # handed a kernel (it must -- Taichi's imported ndarray keeps no
+        # reference, so nothing else stops the caching allocator recycling a
+        # buffer under a live kernel), and a storage held here is a storage
+        # `empty_cache` cannot reclaim. Clearing it first is what makes the
+        # drain mean anything on Metal; a re-import afterwards is a dict miss
+        # and an ExternalMetalNdarray, which is why this is affordable at the
+        # rate this function is called. A no-op off MPS and on a stock build.
+        from algan.rendering.mps_zero_copy import clear_import_cache
+
+        clear_import_cache()
         torch.mps.empty_cache()
 
 

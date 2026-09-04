@@ -557,6 +557,37 @@ Unlike the other two, this one has a fix (§3.3): a Taichi-owned `ti.ndarray` is
 bound by device allocation with no copy-back callback, and is **46x faster than
 the torch-MPS path on the same backend**.
 
+### 1.4 A dense scene dies at frame 119 of 179, silently, on both compilers — OPEN
+
+**Measured 2026-09-04** on the Mac runner (`scripts/gate/mps_vs_cpu_ab.sh`,
+`GATE_SCENE=materials_and_lighting`). Rendering that scene on Metal dies with
+`Trace/BPT trap: 5` after `Rendering 119/179 frames (66%)` and prints **nothing**
+— no Python traceback, no `QD_ASSERT`, no Metal diagnostic, and no `.ips` crash
+report, which points at the process being killed rather than faulting. The CPU
+arm of the same scene on the same machine completes in 198 s.
+
+**It is not a compiler or a fork problem.** The patched Taichi 1.7.4 wheel and a
+patched Quadrants 1.3.0 wheel fail *identically*: same scene, same hardware, same
+signal, same frame. Stopping at the same frame on both says deterministic rather
+than a race.
+
+The first place to look is memory. Both arms log `Prepared batch does not fit the
+render arena; binary-searching the largest fitting runtime` **twice** before
+dying, and the runner is a virtualized M1 with 7 GB shared between host and GPU.
+That makes a Metal allocation failure or a jetsam kill the leading hypothesis,
+and neither would print anything through Algan.
+
+Why it was never seen before: nothing renders a dense scene on Metal.
+`tests/full_renders` renders all six scenes on a Mac and **skips every
+comparison** (`tests/full_renders/test_full_renders.py`), the MPS probe renders
+`Square`s, and `gpu_smoke.py` renders one moving square. This was found only
+because the Quadrants migration needed a Metal-versus-CPU pixel comparison and
+picked the heaviest scene to make it.
+
+What it costs today: **a Mac user cannot render `materials_and_lighting`, or
+presumably anything of that weight, on either compiler.** Reproduce with the
+harness line above; the arm log lands in `gate-logs/`.
+
 ---
 
 ## 2. Everything else the probe established

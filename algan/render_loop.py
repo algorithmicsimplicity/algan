@@ -106,6 +106,58 @@ _UNMEASURED_SCENE_SHARE = 0.5
 _UNMEASURED_PROBE_FRAMES = 8
 
 
+def _render_device_pool_bytes(device):
+    """Bytes the render device's memory pool is taken to hold, in total.
+
+    The one figure every out-of-arena budget is a share of:
+    :meth:`RenderLoopMixin._gpu_merge_headroom_bytes` subtracts the arena from
+    it, and :meth:`RenderLoopMixin._render_device_prep_budget` takes a fraction
+    of what the arena leaves.
+
+    It is deliberately the device's *total* rather than what is free at the
+    moment of asking. These budgets size the next batch window, and a window is
+    not a harmless performance choice: the frames that share a merge share the
+    batch-wide chord-count and promotion decisions, so a window that moved with
+    another tenant's momentary VRAM use moved pixels from one run to the next
+    -- measured on the T4 box as a second window of 8 frames in one process and
+    11 in another, with ~5% of the frame's pixels differing.
+    ``available_memory_override`` wins on a measured device, exactly as it does
+    in :func:`~algan.utils.memory_utils.get_num_available_bytes`, so a run that
+    pins the pool pins the windows with it.
+
+    **Never infinite, for any device.** Both budgets used to answer
+    ``float("inf")`` for anything that was not CUDA or CPU, which meant MPS.
+    That does not fail loudly; it silently makes every guard they feed
+    unsatisfiable -- ``estimated_merge_peak > headroom`` cannot be true of
+    infinity -- so a Metal render sized its windows against the arena alone
+    while the merge and projection scratch, which live outside the arena, were
+    bounded by nothing at all. That is what killed ``materials_and_lighting``
+    two thirds of the way through on a 7 GB Mac (``DESIGN_mps_support.md``
+    §1.4). A device this function does not know now gets the CPU's ceiling
+    rather than a free pass.
+    """
+    device = torch.device(device)
+    if device.type in ("cuda", "mps"):
+        override = SETTINGS.computing.available_memory_override
+        if override is not None:
+            return int(override)
+        if device.type == "cuda":
+            _, total_bytes = torch.cuda.mem_get_info(device)
+            return int(total_bytes)
+        # Metal's ``recommendedMaxWorkingSetSize``: the driver's own answer for
+        # how much of a unified-memory machine a process should hold. It is the
+        # analogue of CUDA's total, and it is already what
+        # ``get_num_available_bytes`` measures MPS against.
+        return int(torch.mps.recommended_max_memory())
+    # A CPU render has a ceiling too -- ``max_cpu_memory_used``, which is what
+    # the arena itself is a fraction of -- so the merge has the same finite
+    # headroom outside the arena that a card does. Leaving this infinite left
+    # the CPU with no window-shrinking lever at all: every budget that bounds a
+    # batch before it is built was CUDA-only, so CPU took the largest window
+    # the geometry allowed and met the arena's limit mid-render instead.
+    return int(SETTINGS.computing.max_cpu_memory_used)
+
+
 @contextlib.contextmanager
 def _render_progress(total):
     """Report render progress on the frame the user is waiting for.
@@ -546,38 +598,13 @@ class RenderLoopMixin:
         the merge draws from, with a margin left for Taichi's own allocation
         growth during the render that follows.
 
-        Computed from the device's total memory (or ``available_memory_override``
-        when a run pins that) and the arena's actual size, NOT from what is free
-        at the moment of asking. This figure feeds the batch cost model, which
-        sizes the *next* batch window from it, and a window is not a harmless
-        performance choice: the frames that share a merge share the batch-wide
-        chord-count and promotion decisions, so a window that moved with
-        another tenant's momentary VRAM use moved pixels from one run to the
-        next -- measured on the T4 box as a second window of 8 frames in one
-        process and 11 in another, with ~5% of the frame's pixels differing.
-        A device genuinely short of memory still lands on the merge's own
-        out-of-memory retry, which is exact.
+        The device's pool (:func:`_render_device_pool_bytes`, which is where
+        the reasoning about *why* it is a total and not a live measurement
+        lives) less the arena's actual size, with a margin. A device genuinely
+        short of memory still lands on the merge's own out-of-memory retry,
+        which is exact.
         """
-        device = self.memory.data.device
-        if device.type == "cuda":
-            override = SETTINGS.computing.available_memory_override
-            if override is not None:
-                total_bytes = int(override)
-            else:
-                _, total_bytes = torch.cuda.mem_get_info(device)
-        elif device.type == "cpu":
-            # A CPU render has a ceiling too -- ``max_cpu_memory_used``, which
-            # is what the arena itself is a fraction of -- so the merge has the
-            # same finite headroom outside the arena that a card does.
-            # Returning infinity here left the CPU with no window-shrinking
-            # lever at all: every budget that bounds a batch before it is built
-            # was CUDA-only, so CPU took the largest window the geometry alone
-            # allowed and met the arena's limit mid-render instead.
-            total_bytes = int(SETTINGS.computing.max_cpu_memory_used)
-        else:
-            # MPS sizes its own headroom elsewhere (DESIGN_mps_support.md);
-            # leave it as it was rather than guess at a figure here.
-            return float("inf")
+        total_bytes = _render_device_pool_bytes(self.memory.data.device)
         return int(max(0, total_bytes - len(self.memory)) * 0.9)
 
     @staticmethod
@@ -2095,32 +2122,14 @@ class RenderLoopMixin:
         """Render-device bytes a batch's preparation may hold at once.
 
         The animation-device budget is a setting (``max_cpu_memory_used``) and
-        so is this one, in effect: a fixed share of what the device holds
-        outside the arena's fraction, computed from the device's *total*
-        memory (or ``available_memory_override`` when a run pins that) rather
-        than from what happens to be free. A batch window is not a harmless
-        performance choice -- it decides which frames share a merge, and with
-        it the batch-wide tessellation and chord decisions, so a window that
-        moved with another tenant's VRAM use would move pixels run to run.
+        so is this one, in effect: a fixed share of what the device's pool
+        (:func:`_render_device_pool_bytes`) holds outside the arena's fraction.
         The merge's and projection's own out-of-arena scratch stays bounded
         separately by the batch preflight; a device genuinely short of memory
         falls back on the render's out-of-memory retry, as the animation
         budget does.
         """
-        device = render_device()
-        if device.type == "cuda":
-            override = SETTINGS.computing.available_memory_override
-            if override is not None:
-                total_bytes = int(override)
-            else:
-                _, total_bytes = torch.cuda.mem_get_info(device)
-        elif device.type == "cpu":
-            # Same reasoning as ``_gpu_merge_headroom_bytes``: the CPU's
-            # ceiling is ``max_cpu_memory_used``, and leaving this infinite
-            # meant a CPU fetch was bounded only by the animation device.
-            total_bytes = int(SETTINGS.computing.max_cpu_memory_used)
-        else:
-            return float("inf")
+        total_bytes = _render_device_pool_bytes(render_device())
         outside_arena = total_bytes * (
             1.0 - float(SETTINGS.computing.rendering_memory_fraction)
         )
