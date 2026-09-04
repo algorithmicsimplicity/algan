@@ -324,10 +324,12 @@ over the tolerance of 2, max delta 131 at frame 42. This is the scene that
 reaches every unconditionally cacheable kernel above (bloom, glow, the gloss
 pyramid, the surface normals), so a cache hit binding at the base of the arena
 would have shown as the dimmed picture defect 1 produced, not as an edge
-residual with identical means. The residual's own attribution — MPS-friendly
-mode's float32 accumulators, glossy prefilter and edges — is what the Taichi
-control on the same scene says, recorded in `../taichi_patches/MIGRATION.md`
-§9. The fast scene had already agreed the same way on the same wheel (run
+residual with identical means. And the residual is Algan's, not the port's:
+the Taichi 1.7.4 control on the same scene, same harness, same box (run
+`33927559059`) reads 76,983 over tolerance, max 131, worst frame 42, the same
+means — a difference of differences of 117 pixels in 49.9 million
+(`../taichi_patches/MIGRATION.md` §10). The fast scene had already agreed the
+same way on the same wheel (run
 `33847294165`: means 39.23 on both arms, 1,059 of 12,545,280 over tolerance,
 max 24).
 
