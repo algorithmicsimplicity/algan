@@ -6,6 +6,14 @@ checkout of that tag. They are the source of truth for the forked wheel
 a stock install, and Algan runs on a stock wheel without them (see "What Algan
 does without them" below).
 
+**Two bases, one directory.** `quadrants/` holds patches against
+**Quadrants v1.3.0** instead, the base `PLAN.md` recommends rebasing onto. They
+are not interchangeable with the two below — different tree layout
+(`quadrants/` not `taichi/`), different identifiers, LLVM 22 not 15 — and
+nothing applies both sets. The macOS build job globs `taichi_patches/[0-9]*.patch`,
+which is flat and does **not** reach the subdirectory, so the v1.7.4 wheel it
+builds is unaffected by anything in `quadrants/` until someone ports the job.
+
 `.github/workflows/taichi_build.yaml` is the executable version of everything
 that follows: it clones the tag, applies these, builds a wheel on the free
 Apple-silicon runner and publishes it as an artifact.
@@ -118,6 +126,90 @@ reason. So:
 That last group is worth having whatever happens to the rest: it is the
 difference between "the process died" and "this kernel would not compile, and
 here is how far it got".
+
+## quadrants/0001 — `!invariant.load` on kernel argument loads
+
+Against **Quadrants v1.3.0** (`ab9a58ab5`, 2026-08-11 — the latest public
+release; `v1.3.0b1`/`b2` are earlier betas despite sorting above it).
+
+    git clone --filter=blob:none https://github.com/Genesis-Embodied-AI/quadrants.git
+    cd quadrants && git checkout v1.3.0
+    git apply ../taichi_patches/quadrants/0001-invariant-load-argument-loads.patch
+
+**What it fixes.** A Taichi/Quadrants kernel takes one parameter, a
+`RuntimeContext` holding a *pointer* to an argument buffer in global memory.
+Every read of an ndarray's base pointer or of one of its shape dims is a load
+from that buffer, emitted at **every use site inside the loop**, and the loads
+carry no metadata: LLVM cannot prove the kernel's own stores do not write the
+argument buffer, so LICM will not hoist them. `PLAN.md` §2.2 traces this to
+plain `CreateLoad`s in `codegen_llvm.cpp` with no `!invariant.load` anywhere,
+and the deleted `DESIGN_taichi_argument_loads.md` (recover with `git show
+aa7d198^:DESIGN_taichi_argument_loads.md`) measured the cost on the shipped
+renderer: **~3,100 of `sheet_resolve_shade`'s 37,100 static instructions** are
+argument re-loads — 1737 `ld.u64` + 1383 `ld.u32` that re-derive values which
+were constant before the kernel launched. It is also the whole of the arena
+convention's penalty (+18% with every array bound, +1.7–3.0% as shipped),
+because the offset table adds a third level to an already two-level dependent-load
+chain.
+
+The claim the optimizer is missing is simply true: the argument buffer is
+written once by the host before the launch and is not writable from the kernel.
+`!invariant.load` states exactly that, on every backend, and with it LICM hoists
+the loads into the loop preheader.
+
+**What it changes**, six edits across five files:
+
+| file | change |
+| --- | --- |
+| `codegen/llvm/codegen_llvm.{h,cpp}` | `mark_invariant_arg_load(load, callable)` — attaches `!invariant.load`, and wraps the four `CreateLoad`s that read the argument buffer: the ndarray data/grad pointer and each shape dim in `visit(ExternalPtrStmt *)`, the element load in `get_struct_arg` (which is what `ArgLoadStmt`, `ExternalTensorShapeAlongAxisStmt` and `ExternalTensorBasePtrStmt` all route through), and the buffer's own base pointer in `get_args_ptr`. The last one additionally gets `!dereferenceable(args_size)`, which is exact rather than a bound — `LaunchContextBuilder` allocates the buffer at precisely `Callable::args_size`. |
+| `program/compile_config.h` | `invariant_arg_loads`, default on. |
+| `analysis/offline_cache_util.cpp` | the new field, in the cache key. |
+| `python/export_lang.cpp` | one `def_rw`. |
+
+**The gate is a compile-config field on purpose, and it has to be in the cache
+key.** `get_offline_cache_key_of_compile_config` serializes an *explicit* list
+of fields rather than the whole struct — `cache_loop_invariant_global_vars` is
+already missing from it — so a flag added without that line would let the two
+A/B arms share a compiled artifact and report the first arm's numbers as the
+second's. That is the same class of silent-stale-arm bug `CLAUDE.md` warns about
+for `ti.static` gates, and it is why this is not an env var read in codegen.
+Being a config field also means Quadrants' generic plumbing gives
+`qd.init(invariant_arg_loads=False)` **and** `QD_INVARIANT_ARG_LOADS=0` with no
+Python change (`misc.py:435` iterates `dir(cfg)`).
+
+**Not for a `@qd.real_func` callee, and that exclusion is correctness rather
+than caution.** A kernel's argument buffer has no store to it anywhere in the
+module. A callee's is an `alloca` in its *caller*, filled by
+`set_args_ptr` / `set_struct_to_buffer` immediately before the call
+(`visit(FuncCallStmt)`), so once the callee is inlined the store and these loads
+sit in one function — and `!invariant.load` would license LLVM to move a load
+above the store that initializes it, reading uninitialized stack. The guard is
+`dynamic_cast<const Function *>(callable) == nullptr`. Quadrants' own PR #866
+(`91c590563`, AMDGPU address-space tagging) reached the identical exclusion for
+the identical reason on the identical two functions — but it landed 2026-08-28,
+**after** v1.3.0, so it is not in this base and there is no helper here to reuse.
+Expect a textual conflict at `get_struct_arg` and `get_args_ptr` on a rebase past
+it; the two changes compose, they do not fight.
+
+**What it deliberately does not do.** No `addrspace(1)` tagging. On NVPTX that
+is what would upgrade the hoisted loads from `ld.global` to `ld.global.nc`
+(`codegen_cuda.cpp:583-596` already pairs the two for read-only SNodes), but it
+is backend-specific, it is `PLAN.md` row 15's job, and the plan's own order is
+to land `!invariant.load` alone and confirm the hoist before stacking anything
+on it.
+
+**Unverified.** This has **not been built or benchmarked** — Quadrants needs
+LLVM 22 from prebuilt archives and there is no such toolchain, and no GPU, on
+the machine it was written on. What is checked is that it applies cleanly to a
+pristine `v1.3.0` (`git apply --check`), that every symbol it names exists in
+that tree at the line it was read from, and that RTTI is on (61 existing
+`dynamic_cast`s, no `-fno-rtti`). `PLAN.md` §5 has the order to verify it in:
+reproduce the unpatched numbers from source first, then dump PTX
+(`print_kernel_llvm_ir_optimized`, consumed by the new-PM O3 pipeline at
+`jit_cuda.cpp:291`/`:325`) and confirm the argument loads have left the loop body
+**before timing anything**. If only the arena penalty shrinks and the shipped
+renderer does not speed up, the patch is still worth having and
+`DESIGN_taichi_argument_loads.md` §4's projection was wrong.
 
 ## What Algan does without them
 
