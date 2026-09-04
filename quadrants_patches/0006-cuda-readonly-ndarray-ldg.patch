@@ -65,12 +65,12 @@ index eb513c95e..52e618d69 100644
 +  // pointer handed to anything else -- a store through a MatrixPtrStmt (which `detect_external_ptr_access_in_task`
 +  // does not see), a SIMT or tile primitive, a statement that does not exist yet -- counts as a write. Empty when the
 +  // task calls a @qd.real_func at all: the callee's IR is separate, may write whatever it is handed, and numbers its
-+  // own ArgLoadStmts in its own argument space, so nothing about it can be folded in here.
++  // own ArgLoadStmts in its own argument space -- or an ExternalTensorBasePtrStmt, a base pointer this walk cannot root.
 +  static std::set<std::vector<int>> readonly_ndarray_args(OffloadedStmt *offload) {
 +    std::set<std::vector<int>> candidates;
 +    std::set<std::vector<int>> written;
 +    for (Stmt *stmt : irpass::analysis::gather_statements(offload, [](Stmt *) { return true; })) {
-+      if (stmt->is<FuncCallStmt>()) {
++      if (stmt->is<FuncCallStmt>() || stmt->is<ExternalTensorBasePtrStmt>()) {
 +        return {};
 +      }
 +      if (auto *ext = stmt->cast<ExternalPtrStmt>()) {
@@ -157,9 +157,9 @@ index a68620437..a8819b49e 100644
 +  // CUDA: load an ndarray argument through the non-coherent (read-only) cache -- `ld.global.nc`, the `__ldg` path
 +  // read-only SNodes already take -- when nothing in the offloaded task writes or atomically updates that argument.
 +  // Sound on the same assumption the SNode path makes, that distinct arguments do not alias: two ndarrays bound to
-+  // overlapping memory, one written and one read in the same task, would read stale bytes. Off restores the plain
-+  // load for A/B; in the offline cache key so the two arms never share a compiled artifact.
-+  bool readonly_ndarray_ldg{true};
++  // overlapping memory, one written and one read in the same task, would read stale bytes. OFF by default: opt in
++  // per process once measured. In the offline cache key so the two arms never share a compiled artifact.
++  bool readonly_ndarray_ldg{false};
    bool demote_dense_struct_fors;
    bool advanced_optimization;
    bool constant_folding;

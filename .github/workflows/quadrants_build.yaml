@@ -308,22 +308,33 @@ jobs:
         if: ${{ env.PATCHED == '1' }}
         run: |
           set -euxo pipefail
-          python -c "
+          # A file, not `python -c`: the compiler reads a kernel's source back
+          # through `inspect`, which has none for a `-c` string.
+          cat > "$RUNNER_TEMP/gates_0005_0007.py" <<'PY'
+          import numpy as np
           import quadrants as qd
           from quadrants.lang import impl
+
           qd.init(arch=qd.cpu, gpu_max_reg=48, readonly_ndarray_ldg=True, fast_math=True)
           cfg = impl.current_cfg()
           assert cfg.gpu_max_reg == 48, cfg.gpu_max_reg
           assert cfg.readonly_ndarray_ldg is True
+
+
           @qd.kernel
           def k(a: qd.types.ndarray()):
               qd.loop_config(max_reg=32)
               for i in range(a.shape[0]):
                   a[i] = qd.exp(a[i])
-          import numpy as np
-          x = np.ones(8, dtype=np.float32); k(x); qd.sync()
+
+
+          x = np.ones(8, dtype=np.float32)
+          k(x)
+          qd.sync()
           assert abs(float(x[0]) - 2.718281828) < 1e-5, x[0]
-          print('0005-0007 gates: qd.init(gpu_max_reg=, readonly_ndarray_ldg=) and loop_config(max_reg=) OK')"
+          print("0005-0007 gates: qd.init(gpu_max_reg=, readonly_ndarray_ldg=) and loop_config(max_reg=) OK")
+          PY
+          python "$RUNNER_TEMP/gates_0005_0007.py"
           V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_cuda_patches.py"
           python "$V" on  "$GITHUB_WORKSPACE/cuda_on.json"
           python "$V" off "$GITHUB_WORKSPACE/cuda_off.json"
