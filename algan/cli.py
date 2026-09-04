@@ -154,6 +154,18 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             f"  [WARNING] Kernel fast-launch dispatcher is off: {fast_launch_off}. "
             "Every kernel launch pays the compiler's full Python argument re-validation."
         )
+    # The source-keyed index is the other half of the warm frontend: with it
+    # a kernel the process has compiled before skips the AST transform. It is
+    # opt-in, so its state is reported as information rather than a warning
+    # -- but reported, because "on and silently degraded to a no-op" is the
+    # failure mode the line above exists for too.
+    from algan.utils.taichi_source_key import skipped_reason as source_key_skipped
+
+    source_key_off = source_key_skipped()
+    if source_key_off is None:
+        print("  Kernel source-keyed cache index: ON (ALGAN_TAICHI_SOURCE_KEY=1)")
+    else:
+        print(f"  [INFO] Kernel source-keyed cache index is off: {source_key_off}.")
 
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()
