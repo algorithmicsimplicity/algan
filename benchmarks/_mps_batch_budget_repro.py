@@ -62,6 +62,7 @@ thing.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import resource
 import sys
@@ -119,6 +120,25 @@ def _device_memory_note():
     return ""
 
 
+#: Name of the render phase the sampler should credit what it sees to, and the
+#: worst RSS seen inside each. A phase's *peak* is the number that matters --
+#: the render's high-water mark decides whether the box survives it, and a
+#: before/after delta around a phase that allocates and releases shows nothing.
+PHASE = {"name": "startup"}
+PHASE_PEAK: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def phase(name):
+    """Credit the sampler's readings to ``name`` for the duration."""
+    previous = PHASE["name"]
+    PHASE["name"] = name
+    try:
+        yield
+    finally:
+        PHASE["name"] = previous
+
+
 def start_rss_watchdog(ceiling_gb):
     """Sample RSS, remember the peak, and kill the process past ``ceiling_gb``."""
     ceiling = int(ceiling_gb * (1 << 30)) if ceiling_gb else 0
@@ -127,6 +147,9 @@ def start_rss_watchdog(ceiling_gb):
         while True:
             rss = _rss_bytes()
             PEAK["rss"] = max(PEAK["rss"], rss)
+            name = PHASE["name"]
+            if rss > PHASE_PEAK.get(name, 0):
+                PHASE_PEAK[name] = rss
             if ceiling and rss > ceiling:
                 print(
                     f"\nWATCHDOG: RSS {rss / 1e9:.2f} GB passed the "
@@ -134,10 +157,20 @@ def start_rss_watchdog(ceiling_gb):
                     flush=True,
                 )
                 print(f"PEAK-RSS {PEAK['rss'] / 1e9:.2f} GB (ceiling hit)", flush=True)
+                report_phases()
                 os._exit(42)
             time.sleep(0.1)
 
     threading.Thread(target=sample, daemon=True).start()
+
+
+def report_phases():
+    """Print the worst RSS each phase was inside, worst first."""
+    if not PHASE_PEAK:
+        return
+    print("\nPHASE-PEAKS (worst RSS observed while inside each):", flush=True)
+    for name, peak in sorted(PHASE_PEAK.items(), key=lambda kv: -kv[1]):
+        print(f"  {peak / 1e9:6.2f} GB  {name}", flush=True)
 
 
 def install_probes(headroom_mode, pin_pool):
@@ -190,9 +223,29 @@ def install_probes(headroom_mode, pin_pool):
             f"rss={_rss_bytes() / 1e9:.2f}GB{_device_memory_note()}",
             flush=True,
         )
-        yield from real_batch(self, primitives, start_ind, end_ind, *args, **kwargs)
+        with phase("render"):
+            yield from real_batch(self, primitives, start_ind, end_ind, *args, **kwargs)
 
     RenderLoopMixin._render_primitive_batch = batch
+
+    # The phases a batch passes through, in the order it passes through them.
+    # The names are the methods' own, because the point of the reading is to
+    # send someone to the code that holds the memory.
+    for name in (
+        "_get_batch_of_primitives",
+        "_prewarm_render_batch",
+        "_prepare_merged_host_scene",
+    ):
+        real = getattr(RenderLoopMixin, name)
+
+        def wrap(real=real, name=name):
+            def wrapped(self, *args, **kwargs):
+                with phase(name):
+                    return real(self, *args, **kwargs)
+
+            return wrapped
+
+        setattr(RenderLoopMixin, name, wrap())
 
 
 def main(argv=None):
@@ -282,6 +335,7 @@ def main(argv=None):
     elapsed = time.perf_counter() - started
     print(f"\nARM-DONE headroom={args.headroom} in {elapsed:.1f}s", flush=True)
     print(f"PEAK-RSS {PEAK['rss'] / 1e9:.2f} GB", flush=True)
+    report_phases()
     return 0
 
 
