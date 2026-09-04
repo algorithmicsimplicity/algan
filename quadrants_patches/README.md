@@ -56,7 +56,7 @@ and only if the build had CUDA on — and dies when it is absent. (Not
 `qd._lib.core.with_cuda()`: that also probes for `libcuda.so`, so it is False on
 every GPU-less runner however the binary was built.)
 
-### The Metal port rendered wrong, and why
+### The Metal port rendered wrong, why, and the fix
 
 **Measured 2026-09-04 on the Mac runner's real Apple GPU, before the fix below.**
 A wheel built from these patches installs, Algan resolves
@@ -113,10 +113,26 @@ same `spirv_has_physical_storage_buffer` decides which the codegen emits and
 which the runtime binds — so nothing is offset twice, and the descriptor arm
 stays as the correct path for a device without the capability.
 
-**Not yet re-measured on hardware.** The prediction is that MPS matches CPU to
-Taichi's own margin (order 0.01 % of pixels, at edges); mean brightness is the
-one-number check. If brightness moves but does not land, the remaining suspects
-are unchanged and §5 still ranks them.
+**Re-measured on the same hardware, and it lands on the reference.** Same scene,
+same script, the only change being the fix above:
+
+| | pixels over tolerance | max delta | worst frame | per-channel BGR, MPS vs CPU |
+| --- | --- | --- | --- | --- |
+| Quadrants, before | 79,914,286 of 83,913,984 | 255 | 4 | (16.7, 15.8, 16.7) vs (46.1, 48.1, 48.6) |
+| **Quadrants, after** | **11,526** | **221** | **174** | (46.1, 48.1, 48.6) vs (46.1, 48.1, 48.6) |
+| Taichi 1.7.4, reference | 11,527 | 221 | 174 | equal, mean 47.62 |
+
+One pixel apart from Taichi in 83.9 million, at the same maximum on the same
+frame: the residual is the float32-accumulator drift MPS-friendly mode produces
+on both compilers, not anything the port does differently. **The Apple path
+works on Quadrants.**
+
+What is still not covered, and should not be read as covered: one scene, one
+Apple GPU (a virtualized M1 whose per-launch numbers are not trustworthy even
+though its compute is), and `zero_copy_available()` is not the same claim as
+"every argument took the zero-copy path" — the probe now prints
+`mps_zero_copy.report()` so the next run says how many launches converted and
+what, if anything, is still crossing the bus.
 
 **Still unverified: that the CUDA half works.** A compile check cannot tell you
 that an sm_61 card loads the runtime module.
