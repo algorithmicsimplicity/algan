@@ -141,6 +141,20 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "Every render pays the compiler's full Python frontend cost."
         )
 
+    # The launch-plan cache is gated the same way and fails the same way: a
+    # compiler release it does not recognise leaves every kernel launch paying
+    # the compiler's full Python argument re-validation (~0.2-0.4 ms a launch,
+    # hundreds of launches a render), with nothing to show for it but a
+    # slower clock.
+    from algan.utils.taichi_fast_launch import skipped_reason as fast_launch_skipped
+
+    fast_launch_off = fast_launch_skipped()
+    if fast_launch_off is not None:
+        print(
+            f"  [WARNING] Kernel fast-launch dispatcher is off: {fast_launch_off}. "
+            "Every kernel launch pays the compiler's full Python argument re-validation."
+        )
+
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()
     if ffmpeg_path:

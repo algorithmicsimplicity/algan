@@ -45,10 +45,13 @@ The two are not drop-in equal everywhere, and the differences that matter are
 handled by their owners rather than papered over here:
 
 * :mod:`algan.utils.taichi_warmstart` memoizes each compiler's frontend and
-  carries a patch per implementation; :mod:`algan.utils.taichi_fast_launch`
-  patches ``Kernel.__call__`` and is taichi 1.7 only. Each checks the backend
-  and its version itself, and the warm-start one reports a version gate it
-  refused to fire through ``algan check`` rather than no-opping in silence.
+  :mod:`algan.utils.taichi_fast_launch` replaces each compiler's
+  ``Kernel.__call__`` with a plan-caching dispatcher; both carry a patch per
+  implementation (the launch paths differ: quadrants' takes integer argument
+  indices, batches its scalar setters and compiles before the launch rather
+  than in it). Each checks the backend and its version itself, and both
+  report a version gate they refused to fire through ``algan check`` rather
+  than no-opping in silence.
 * Quadrants renamed parts of ``Kernel`` (``materialize``'s ``args`` parameter is
   ``py_args``; ``compiled_kernels`` is ``materialized_kernels``), which is why
   code touching those goes through :data:`BACKEND` -- or, for that last one,
