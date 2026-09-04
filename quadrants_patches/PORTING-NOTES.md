@@ -708,3 +708,140 @@ Not verified — nothing in this patch has been compiled or run:
 6. **AMDGPU.** Untouched by construction (the helper's AMDGPU branch is first and unchanged; the
    `llvm_context.cpp` rewrite is inside `if (arch_ == Arch::cuda)`), but a gfx9 run of the reduction
    tests would confirm.
+
+---
+
+## 8. Patches 0005-0007 — CUDA codegen
+
+Base: Quadrants `v1.3.0` (`ab9a58ab5`), LLVM 22.1.0. **Not ports.** §§1-2 above are a record of moving
+existing Taichi hunks onto a new tree; these three have no Taichi counterpart, so what follows is
+shorter and is about anchors and unknowns rather than about what changed in translation.
+
+19 files between them, +214/−8 (`0005` 16 files +81/−5, `0006` 4 files +118/−1, `0007` 2 files
++15/−2). What `README.md`'s three sections say about *why* is not repeated here.
+
+**They were authored on 0004 but not on 0003**, which the diff headers say out loud: 0005's
+`codegen_cuda.cpp` pre-image blob is `20abf1fa9` (pristine v1.3.0's), 0006's is 0005's post-image
+`eb513c95e`, 0007's is 0006's `52e618d69`. Same for `llvm_context.cpp` in 0005. So a full-set apply
+takes line offsets on `codegen_cuda.cpp` and `llvm_context.cpp` where 0003 landed earlier in the
+file; plain `git apply` absorbs them and `--index`/`-3` would not. That is the only ordering
+consequence, and it is cosmetic.
+
+### What each hunk is anchored on
+
+**0005** — every anchor is an existing `block_dim` line, which is the whole design: `max_reg` travels
+the path `block_dim` already travels and is inserted beside it at each stop.
+
+| file | anchored on |
+| --- | --- |
+| `ir/frontend_ir.h` `:22`, `:212`, `:933`, `:1086` | `ForLoopConfig::block_dim`; `FrontendForStmt::block_dim`; the `config.block_dim = 0` reset in `ASTBuilder`; `ASTBuilder::block_dim(int)` (the new `max_reg(int)` sits after it). |
+| `ir/frontend_ir.cpp` `:110`, `:122` | the copy-ctor init list and `init_config`, both immediately after `block_dim`. |
+| `transforms/lower_ast.cpp` `:230`, `:269`, `:287`, `:307` | the four `std::make_unique<*ForStmt>(...)` calls, each followed by a run of `new_for->… = stmt->…` assignments. |
+| `transforms/offload.cpp` `:168`, `:214`, `:303` | the `offloaded->block_dim = …` assignments (two inside an if/else on `block_dim`, one for the struct-for). |
+| `ir/statements.h` `:974`, `:1039`, `:1083`, `:1385` and their field lists | each class's `int block_dim;` and each class's field-list macro. |
+| `ir/statements.cpp` `:222`, `:246`, `:274`, `:369` | the four `clone()`s. |
+| `codegen/cuda/codegen_cuda.cpp` `:692` | the file's only `current_task->block_dim = stmt->block_dim;`. |
+| `codegen/llvm/codegen_llvm.cpp` `:3241` | the `mark_function_as_cuda_kernel(func, task.block_dim)` call in `run_compilation`'s CUDA arm. |
+| `runtime/llvm/llvm_context.cpp` `:1055` | `mark_function_as_cuda_kernel`'s body, after the `maxntidx` / `minctasm` block. |
+| `runtime/llvm/llvm_runtime_executor.cpp` `:173` | `create_jit_module`, whose whole body is the one `add_module` call. |
+| `analysis/gen_offline_cache_key.cpp` `:382` | `emit(stmt->block_dim)` in `ASTSerializer`'s `FrontendForStmt` visitor. |
+| `python/quadrants/lang/misc.py` `:632`, `:648`, `:658`, `:707` | `_block_dim`, `loop_config`'s signature and docstring, and the `if block_dim is not None:` dispatch. |
+| `quadrants/python/export_lang.cpp` `:317` | the `.def("block_dim", &ASTBuilder::block_dim)` line in the `ASTBuilder` binding chain. |
+
+**0006** — three of the four hunks are one line each in a list 0004 already extended
+(`get_offline_cache_key_of_compile_config` at `:51`, `CompileConfig` at `:36`, the `def_rw` chain at
+`:187`); their context includes 0004's own line, so 0006 is anchored on a tree with 0004 applied. The
+fourth is the substance: ~110 new lines in `codegen/cuda/codegen_cuda.cpp` inserted at `:616`,
+between `create_intrinsic_load` and `visit(GlobalLoadStmt *)`, plus the one-line change inside that
+visitor's `else` arm (`create_global_load(stmt, false)` → `create_global_load(stmt,
+is_read_only_ndarray_load(stmt))`).
+
+**0007** — one hunk at `codegen/cuda/codegen_cuda.cpp:356`, anchored on the end of the `cos` branch
+and the `UNARY_STD(exp)` line that follows it. The macro invocation is *replaced* by an explicit
+`} else if (op == UnaryOpType::exp) { … }`, so the preceding branch's closing brace becomes the new
+branch's opener and the removed macro's trailing brace closes it. Nothing else in the chain moves.
+The second hunk is one sentence in `docs/source/user_guide/init_options.md`.
+
+### What to check first on a real build
+
+Ranked by how likely they are to bite. All are compile-or-first-run questions; the design questions
+are in `README.md`'s per-patch sections.
+
+1. **0006's includes.** The new code uses `std::set` and `irpass::analysis::gather_statements`, and
+   the patch adds only `#include "quadrants/program/function.h"`. If `codegen_cuda.cpp` does not
+   already pull them in transitively it needs `<set>` and `quadrants/ir/analysis.h`. Same hunk, same
+   class of question: `current_callable` and `current_offload` are read off the `TaskCodeGenLLVM`
+   base and must be at least `protected` there.
+2. **0005's `add_module` arity.** No hunk touches `jit_session.h` or `jit_cuda.cpp`, so the
+   module-wide half assumes v1.3.0 still declares
+   `JITSession::add_module(std::unique_ptr<llvm::Module>, int max_reg = 0)` and still turns it into
+   `CU_JIT_MAX_REGISTERS`. `../taichi_patches/PLAN.md` row 14 says it does ("1 line at
+   `llvm_runtime_executor.cpp:181`"), and `CompileConfig::gpu_max_reg` is certainly there — #890
+   deletes it, and #890 postdates v1.3.0 — but neither was read in Quadrants' own tree.
+3. **`ArgLoadStmt::arg_id`'s type.** 0006 keys its two sets on `std::vector<int>`. §1 of this
+   document records that Quadrants replaced the vector-valued argument id with a plain `int` in the
+   `LaunchContextBuilder` API; the IR-level id looks unaffected — 0004's hunk shows
+   `TaskCodeGenLLVM::get_struct_arg(const std::vector<int> &index, …)` at v1.3.0, and that is what an
+   `ArgLoadStmt` routes through — but if it *is* an `int`, 0006 fails to compile at three lines and
+   the fix is `std::set<int>` throughout.
+4. **`nvvm_ldg_global_f` on a `half`.** 0006's `is_ldg_element_type` admits f16, i8/u8 and i16/u16,
+   and `create_intrinsic_load` picks the intrinsic by `isFloatingPointTy()`. If LLVM 22's NVPTX has
+   no ISel pattern for an f16 `ldg`, the failure is a `Cannot select` fatal error at kernel-compile
+   time on exactly Algan's f16 BVH nodes (`NODE_ARG`, `algan/rendering/raytracing/raytrace_kernels_taichi.py:401-404`).
+   `verify_cuda_patches.py` loads only f32, so it cannot see this.
+5. **`fast_math` in the compile-config cache key.** 0007 adds no key line because it relies on that
+   field already being serialized. It is in Taichi 1.7.4 and Quadrants' PTX cache keys on it too
+   (PLAN row 2), but no hunk here shows it, and 0004's section is the record of what a missing key
+   field does to an A/B.
+6. **`.maxnreg` versus `CU_JIT_MAX_REGISTERS`.** 0005 asserts in four comments that the per-loop cap
+   overrides the process-wide one. That is the documented PTX behaviour and is not verified;
+   `verify_cuda_patches.py` sets `gpu_max_reg=0` in both arms on purpose, so it never exercises the
+   interaction. A third arm plus `cuobjdump --dump-resource-usage` settles it.
+7. **0005 on a non-CUDA build.** `loop_config(max_reg=N)` is recorded and serialized into the AST key
+   on every backend and read by CUDA codegen only, so on CPU or Metal it is a silent no-op that
+   still costs a cache miss. Consistent with `block_dim`; surprising the first time.
+
+### What has been verified here, and what has not
+
+Verified on this machine (no GPU, no CUDA toolchain, no Quadrants checkout) — all of it by reading:
+
+- The three patches' hunks are internally consistent: every field 0005 adds is declared before it is
+  used, the `.h`/`.cpp` pair for `mark_function_as_cuda_kernel` agrees on arity with the default
+  argument on the declaration only, and 0007's brace arithmetic balances across the macro removal.
+- 0006's analysis is a whitelist, so atomics, stores through a `MatrixPtrStmt`, and any statement kind
+  not yet invented count as writes; `ti.static`-gated stores need no handling because a false static
+  branch never enters the IR; a `@qd.real_func` callee returns the empty set for the whole task.
+- Algan's own side: no `loop_config(max_reg=)` anywhere in `algan/`, no `gpu_max_reg` in
+  `taichi_init_kwargs()` (`algan/rendering/taichi_runtime.py:614-665`), `"fast_math": True` at
+  `:628`, no `@qd.real_func`, and the 16 f32 `ti.exp` sites 0007 reaches.
+- The aliasing question 0006 raises, answered against this repository rather than against the patch:
+  `ManualMemory` is one `torch.uint8` block and every render-time tensor is a view into it
+  (`algan/utils/memory_utils.py:640-641,732`), and `arena_args_taichi.py:161-172,249` hands a
+  converted kernel a view of that *whole* allocation per dtype — so `arena_f32` and `arena_i32` are
+  the same bytes and contain every other argument. Argument-level aliasing is total. It is not
+  currently a wrong picture, for two reasons that are both accidents: distinct logical arrays are
+  byte-disjoint (bump allocator), and the arena arguments are themselves written in the big kernels
+  (`sheet_resolve_taichi.py:227-228,578-585,622`) so they never qualify for `.nc` at all. The second
+  reason is also why 0006 is close to a no-op on the seven widest kernels.
+
+Verified, 2026-09-04, `quadrants_build.yaml` run `33926192036` (`ubuntu-22.04`, `QD_WITH_CUDA=ON`):
+
+1. **The apply.** All seven, strict `git apply`, numeric order, onto pristine `v1.3.0` — clean.
+2. **The compile**, which settles items 1-3 of the list above in the patches' favour: no include is
+   missing, `add_module` takes the register cap, and the `.h`/`.cpp` pairs agree. The wheel installs,
+   `qd.init(gpu_max_reg=48, readonly_ndarray_ldg=True)` reads back, and the 0004 checks still pass on
+   it. That run predates the two 0006 fixes (default off, the `ExternalTensorBasePtrStmt` bail); the
+   rebuild with them is recorded in `../taichi_patches/MIGRATION.md` §9.
+
+Not verified — **nothing in these three has been run on a CUDA device**:
+
+3. **`verify_cuda_patches.py`** on a box with a CUDA device — the `.maxnreg` directive, the
+   `ld.global.nc` with a plain load kept beside it, and `__nv_fast_expf` in the unoptimized IR. On a
+   GPU-less runner it writes `{"skipped": true}` and exits 0, so **check for the skip before reading
+   a green run as a pass**.
+4. **Pixels.** 0007 moves them by construction and only `tests/full_renders` on CUDA can see it; 0006
+   would show an unsound `.nc` there as a picture rather than as an argument. Neither has been run,
+   and neither can be here.
+5. **Anything about speed.** No timing, on any of the three, on any hardware. 0005 in particular is a
+   lever nobody has pulled: PLAN §8's `ptxas -v` measurement on the four megakernels comes first, and
+   §9 still lists the register-pressure effect on the 161-register megakernel as an open question.
