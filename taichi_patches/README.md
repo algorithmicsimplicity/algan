@@ -198,18 +198,35 @@ is backend-specific, it is `PLAN.md` row 15's job, and the plan's own order is
 to land `!invariant.load` alone and confirm the hoist before stacking anything
 on it.
 
-**Unverified.** This has **not been built or benchmarked** — Quadrants needs
-LLVM 22 from prebuilt archives and there is no such toolchain, and no GPU, on
-the machine it was written on. What is checked is that it applies cleanly to a
-pristine `v1.3.0` (`git apply --check`), that every symbol it names exists in
-that tree at the line it was read from, and that RTTI is on (61 existing
-`dynamic_cast`s, no `-fno-rtti`). `PLAN.md` §5 has the order to verify it in:
-reproduce the unpatched numbers from source first, then dump PTX
-(`print_kernel_llvm_ir_optimized`, consumed by the new-PM O3 pipeline at
-`jit_cuda.cpp:291`/`:325`) and confirm the argument loads have left the loop body
-**before timing anything**. If only the arena penalty shrinks and the shipped
-renderer does not speed up, the patch is still worth having and
-`DESIGN_taichi_argument_loads.md` §4's projection was wrong.
+**Built, and the hoist is confirmed. Not yet timed.**
+`.github/workflows/quadrants_build.yaml` builds it on the free Linux runner
+(clone `v1.3.0`, apply, `./build.py wheel`, ~20 minutes) and then runs
+`verify_invariant_load.py` in one process per arm. On **LLVM 22 / clang,
+x64 CPU backend**, over an eight-ndarray sum kernel:
+
+| | `off` | `on` |
+| --- | --- | --- |
+| `!invariant.load` sites | 0 | 11 |
+| `!dereferenceable` sites | 0 | 2 |
+| **argument base-pointer re-loads inside the loop** | **18** | **0** |
+| scalar / vector float loads in the loop | 16 / 0 | 0 / vectorized |
+| loop body, lines | 112 | 30 |
+
+So the metadata lands, the gate gates in both directions, and LICM does act on
+it: every argument base-pointer re-load leaves the loop body, which is what
+`DESIGN_taichi_argument_loads.md` §3a predicted and the whole point of the
+patch. The scalar float loads disappearing is not a parse failure — with the
+base pointers hoisted, LLVM vectorizes the body, which is a second win the
+measurement was not looking for.
+
+What is **not** established is the thing that matters commercially: **no timing,
+and nothing on CUDA.** The runner is shared, 4-core and has no GPU, so a number
+from it would be noise. `PLAN.md` §5 is still the order for that, on a real box,
+against the wheel this job uploads: dump PTX (`print_kernel_llvm_ir_optimized`,
+consumed by the new-PM O3 pipeline at `jit_cuda.cpp:291`/`:325`), confirm the
+hoist there too, and only then time both arms. If only the arena penalty shrinks
+and the shipped renderer does not speed up, the patch is still worth having and
+§4's projection was wrong.
 
 ## What Algan does without them
 

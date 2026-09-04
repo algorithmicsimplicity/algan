@@ -8,9 +8,13 @@ Run once per arm -- the arms differ by a `CompileConfig` field, so they must not
 share a process (and, because the field is in the offline cache key, they would
 not share a compiled artifact even if they did)::
 
-    python verify_invariant_load.py on  > on.json
-    python verify_invariant_load.py off > off.json
+    python verify_invariant_load.py on  on.json
+    python verify_invariant_load.py off off.json
     python verify_invariant_load.py --compare on.json off.json
+
+The arm result is written to the named file rather than to stdout, because
+`qd.init()` prints a banner there that a shell redirect would fold into the
+JSON.
 
 The kernel is eight ndarray arguments summed in a loop, which is the shape the
 patch targets in miniature: every one of those eight base pointers is re-loaded
@@ -121,7 +125,11 @@ def measure(arm):
         "dereferenceable_total": len(re.findall(r"!dereferenceable", text)),
         # What it is supposed to buy: pointer re-loads left inside the loop.
         "loop_base_ptr_loads": len(re.findall(r"= load ptr, ptr |= load float\*, float\*\* ", body)),
+        # Scalar and vector separately: hoisting the base pointers out lets LLVM
+        # vectorize the body, so the `on` arm legitimately has no *scalar* float
+        # loads left. Counting only scalars would read that as a broken parse.
         "loop_data_loads": len(re.findall(r"= load float, ", body)),
+        "loop_vector_loads": len(re.findall(r"= load <\d+ x float>, ", body)),
         "loop_lines": len(body.splitlines()),
     }
     os.chdir("/")  # leave the directory before removing it
@@ -134,7 +142,7 @@ def compare(on_path, off_path):
     off = json.load(open(off_path))
     print(f"{'':24s} {'off':>8s} {'on':>8s}")
     for k in ("invariant_load_total", "dereferenceable_total", "loop_base_ptr_loads",
-              "loop_data_loads", "loop_lines"):
+              "loop_data_loads", "loop_vector_loads", "loop_lines"):
         print(f"{k:24s} {off[k]:8d} {on[k]:8d}")
 
     failures = []
@@ -144,7 +152,7 @@ def compare(on_path, off_path):
         failures.append("the on arm emitted no !invariant.load; the patch did not take")
     if on["dereferenceable_total"] <= 0:
         failures.append("the on arm emitted no !dereferenceable on the arg-buffer pointer")
-    if on["loop_data_loads"] == 0 or off["loop_data_loads"] == 0:
+    if on["loop_lines"] == 0 or off["loop_lines"] == 0:
         failures.append("no loop body was found in the dumped IR; the parse is wrong, not the patch")
     elif on["loop_base_ptr_loads"] >= off["loop_base_ptr_loads"]:
         failures.append(
@@ -166,4 +174,14 @@ def compare(on_path, off_path):
 if __name__ == "__main__":
     if sys.argv[1] == "--compare":
         sys.exit(compare(sys.argv[2], sys.argv[3]))
-    print(json.dumps(measure(sys.argv[1]), indent=2))
+    # The result goes to a FILE named on the command line, never to stdout.
+    # `qd.init()` prints its "[Quadrants] Starting on arch=" banner
+    # unconditionally (`misc.py`; PLAN.md row 47 has it as a two-line fix nobody
+    # has made), so `python verify.py on > arm_on.json` captures the banner
+    # along with the JSON and json.load dies on line 1. Absolute path first,
+    # because measure() leaves the CWD.
+    arm, out_path = sys.argv[1], os.path.abspath(sys.argv[2])
+    result = measure(arm)
+    with open(out_path, "w") as fh:
+        json.dump(result, fh, indent=2)
+    print(json.dumps(result, indent=2))

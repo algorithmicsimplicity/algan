@@ -171,9 +171,10 @@ jobs:
         run: |
           set -euxo pipefail
           V="$GITHUB_WORKSPACE/algan/taichi_patches/quadrants/verify_invariant_load.py"
-          python "$V" on  > "$GITHUB_WORKSPACE/arm_on.json"
-          python "$V" off > "$GITHUB_WORKSPACE/arm_off.json"
-          cat "$GITHUB_WORKSPACE/arm_on.json" "$GITHUB_WORKSPACE/arm_off.json"
+          # Result path as an argument, not a stdout redirect: qd.init() prints a
+          # banner to stdout that a redirect would fold into the JSON.
+          python "$V" on  "$GITHUB_WORKSPACE/arm_on.json"
+          python "$V" off "$GITHUB_WORKSPACE/arm_off.json"
           python "$V" --compare "$GITHUB_WORKSPACE/arm_on.json" "$GITHUB_WORKSPACE/arm_off.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
