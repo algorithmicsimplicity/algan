@@ -76,6 +76,7 @@ def scene():
 # rather than the assertion.
 _CODEGEN_ENV = (
     ("ALGAN_SHADOW_ANYHIT", "ah"),
+    ("ALGAN_SHADOW_VIS_EXACT", "vis"),
     ("ALGAN_GPU_MAX_REG", "reg"),
     ("ALGAN_OPT_LEVEL", "opt"),
     ("ALGAN_ADV_OPT", "adv"),
