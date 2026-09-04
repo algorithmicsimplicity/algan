@@ -64,16 +64,35 @@ def scene():
         label.move(RIGHT * 2)
 
 
+# Codegen knobs ride in the output tag, not just in the log. Every step of a
+# harness run writes into one `algan_outputs/`, so two arms that share a tag
+# also share their video filenames -- and the digests the runner reports then
+# all come from whichever step ran last, which silently destroys the parity
+# half of an A/B. These four change only how the kernels are COMPILED, so the
+# frames must come out identical, and that is exactly the claim the digest is
+# there to check.
+_CODEGEN_ENV = (
+    ("ALGAN_GPU_MAX_REG", "reg"),
+    ("ALGAN_OPT_LEVEL", "opt"),
+    ("ALGAN_ADV_OPT", "adv"),
+    ("ALGAN_ANALYTIC_AA_SECONDARY", "sec"),
+)
+_SUFFIX = "".join(
+    f"_{short}{os.environ[name]}" for name, short in _CODEGEN_ENV if name in os.environ
+)
+
 print(
-    f"ARM={ARM}  QUALITY={QUALITY}  ALGAN_ANALYTIC_AA_SECONDARY="
-    f"{os.environ.get('ALGAN_ANALYTIC_AA_SECONDARY', '(default)')}",
+    f"ARM={ARM}  QUALITY={QUALITY}  "
+    + "  ".join(
+        f"{name}={os.environ.get(name, '(default)')}" for name, _ in _CODEGEN_ENV
+    ),
     flush=True,
 )
 _PRESETS = {"UHD": UHD, "HD": HD, "PREVIEW": PREVIEW, "MD": MD, "LD": LD}
 profile_scene(
     scene,
     _PRESETS[QUALITY],
-    f"nn_abl_{ARM}_{QUALITY}",
+    f"nn_abl_{ARM}_{QUALITY}{_SUFFIX}",
     runs=2,
     kernel_profiler=False,
     save_video_kwargs={"ffmpeg_params": ["-crf", "17", "-preset", "ultrafast"]},
