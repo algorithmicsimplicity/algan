@@ -128,6 +128,13 @@ QD_REPO="${GATE_QD_REPO:-https://github.com/Genesis-Embodied-AI/quadrants.git}"
 QD_REF="${GATE_QD_REF:-v1.3.0}"
 WITH_VULKAN="${GATE_QD_VULKAN:-0}"
 WITH_TESTS="${GATE_QD_TESTS:-0}"
+# `GATE_QD_PATCHES=1` applies `quadrants_patches/` before building, which is
+# what turns this from "does stock Quadrants build" into "does Algan's fork of
+# it build". Off by default so the stock reading stays available: when a
+# patched build fails, the first question is always whether the patches or the
+# toolchain are at fault, and that is one env var apart.
+APPLY_PATCHES="${GATE_QD_PATCHES:-0}"
+PATCH_DIR="${GATE_QD_PATCH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/quadrants_patches}"
 JOBS="${GATE_JOBS:-3}"
 HEARTBEAT="${GATE_HEARTBEAT:-60}"
 WORKDIR="${GATE_WORKDIR:-${RUNNER_TEMP:-/tmp}/gate-quadrants}"
@@ -139,6 +146,9 @@ STATUS="INCOMPLETE"
 FAILED_PHASE="startup"
 SEC_CLONE=""
 SEC_SUBMODULES=""
+SEC_PATCH=""
+PATCHED=0
+PATCHES_APPLIED=""
 SEC_PIP=""
 SEC_BREW=""
 SEC_BUILD=""
@@ -154,6 +164,7 @@ DISK_END=""
 mkdir -p "$LOGDIR" "$WORKDIR"
 BUILD_LOG="$LOGDIR/build-cold.log"
 SUBMOD_LOG="$LOGDIR/submodules.log"
+PATCH_LOG="$LOGDIR/patches.log"
 PIP_LOG="$LOGDIR/pip.log"
 BREW_LOG="$LOGDIR/brew-llvm22.log"
 SMOKE_LOG="$LOGDIR/smoke.log"
@@ -221,7 +232,7 @@ diagnose() {
 }
 
 report() {
-  rule "GATE REPORT -- stock Quadrants $QD_REF on macOS arm64"
+  rule "GATE REPORT -- Quadrants $QD_REF$( [ "$PATCHED" = 1 ] && echo ' + quadrants_patches/' || echo ' (stock)' ) on macOS arm64"
   echo "runner : $(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null) $(uname -m), \
 $(sysctl -n hw.ncpu 2>/dev/null) cpus, $(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 )) GiB"
   echo "config : QD_WITH_VULKAN=$( [ "$WITH_VULKAN" = 1 ] && echo ON || echo OFF ) \
@@ -230,7 +241,7 @@ QD_WITH_METAL=ON QD_BUILD_TESTS=$( [ "$WITH_TESTS" = 1 ] && echo ON || echo OFF 
   echo
   printf '| %-24s | %8s | %7s |\n' "phase" "seconds" "minutes"
   printf '| %-24s | %8s | %7s |\n' "------------------------" "--------" "-------"
-  for kv in "clone:$SEC_CLONE" "submodules:$SEC_SUBMODULES" "pip deps:$SEC_PIP" \
+  for kv in "clone:$SEC_CLONE" "submodules:$SEC_SUBMODULES" "apply patches:$SEC_PATCH" "pip deps:$SEC_PIP" \
             "brew llvm@22:$SEC_BREW" "cold build:$SEC_BUILD" "wheel smoke test:$SEC_SMOKE"; do
     local k="${kv%%:*}" v="${kv#*:}"
     if [ -n "$v" ]; then
@@ -240,6 +251,7 @@ QD_WITH_METAL=ON QD_BUILD_TESTS=$( [ "$WITH_TESTS" = 1 ] && echo ON || echo OFF 
     fi
   done
   echo
+  echo "patches: ${PATCHES_APPLIED:-(none applied)}"
   echo "wheel  : ${WHEEL_NAME:-(none produced)}"
   [ -n "$WHEEL_BYTES" ] && echo "size   : $WHEEL_BYTES bytes ($(awk -v b="$WHEEL_BYTES" 'BEGIN{printf "%.1f", b/1048576}') MiB)"
   echo "version: ${QD_VERSION:-(unknown)}"
@@ -287,7 +299,7 @@ JSON
   flags="$(werror_flags "$BUILD_LOG" | sort -u | tr '\n' ',' | sed 's/,$//')"
   [ -n "$flags" ] || flags="none"
   echo
-  echo "GATE-RESULT: gate=quadrants_macos_build ref=$QD_REF status=$STATUS phase=$FAILED_PHASE \
+  echo "GATE-RESULT: gate=quadrants_macos_build ref=$QD_REF patched=$PATCHED status=$STATUS phase=$FAILED_PHASE \
 clone=${SEC_CLONE:--}s submodules=${SEC_SUBMODULES:--}s pip=${SEC_PIP:--}s brew=${SEC_BREW:--}s \
 build=${SEC_BUILD:--}s total=${SECONDS}s wheel=${WHEEL_NAME:-none} bytes=${WHEEL_BYTES:-0} \
 vulkan=$( [ "$WITH_VULKAN" = 1 ] && echo on || echo off ) tests=$( [ "$WITH_TESTS" = 1 ] && echo on || echo off ) \
@@ -364,6 +376,45 @@ run_logged "$SUBMOD_LOG" "submodules" \
   || die submodules "git submodule update failed"
 SEC_SUBMODULES=$(( SECONDS - _t ))
 say "checkout size: $(du -sh "$SRC" 2>/dev/null | cut -f1)   free: $(free_disk)"
+
+# -----------------------------------------------------------------------------
+rule "3b. quadrants_patches/"
+FAILED_PHASE="patch"
+_t=$SECONDS
+if [ "$APPLY_PATCHES" = "1" ]; then
+  # Strict on purpose -- no fuzz, no 3-way merge -- for the reason
+  # taichi_build.yaml is strict: a patch that has drifted from the tag must
+  # fail here, loudly, rather than half-applying and producing a wheel whose
+  # behaviour nobody can account for.
+  # A newline list rather than an array: macOS's /bin/bash is 3.2, where
+  # `"${arr[@]}"` on an empty array is an unbound-variable error under `set -u`.
+  patch_list="$(ls -1 "$PATCH_DIR"/[0-9]*.patch 2>/dev/null || true)"
+  if [ -z "$patch_list" ]; then
+    die patch "GATE_QD_PATCHES=1 but no patches in $PATCH_DIR -- refusing to \
+build a wheel that would look patched and not be. Unset it to build stock $QD_REF."
+  fi
+  say "patches to apply, in order:"
+  printf '  %s\n' $patch_list
+  : >"$PATCH_LOG"
+  while IFS= read -r patch; do
+    [ -n "$patch" ] || continue
+    say "applying $(basename "$patch")"
+    { echo "=== $(basename "$patch")"; git apply --verbose "$patch"; } >>"$PATCH_LOG" 2>&1 \
+      || { cat "$PATCH_LOG"; die patch "git apply failed on $(basename "$patch") -- \
+strict apply, so this means the patch has drifted from $QD_REF"; }
+    PATCHES_APPLIED="${PATCHES_APPLIED}$(basename "$patch") "
+  done <<EOF
+$patch_list
+EOF
+  PATCHED=1
+  cat "$PATCH_LOG"
+  echo "--- resulting diffstat"
+  git -c core.pager=cat diff --stat
+else
+  say "GATE_QD_PATCHES unset: building STOCK $QD_REF (the toolchain reading)"
+  PATCHED=0
+fi
+SEC_PATCH=$(( SECONDS - _t ))
 
 # -----------------------------------------------------------------------------
 rule "4. prerequisites (their 1_prerequisites.sh, minus the vestigial bits)"
