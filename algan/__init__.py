@@ -107,12 +107,17 @@ from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
 # Taichi is imported (via the rendering modules above) but no kernel has
 # materialized yet -- install the warm-start memoization now so every kernel
-# compiled in this process benefits (see utils/taichi_warmstart.py), plus
-# the cached fast launcher that skips Taichi's per-launch Python argument
-# re-validation on repeat launches (see utils/taichi_fast_launch.py).
+# compiled in this process benefits (see utils/taichi_warmstart.py), then the
+# early-return rewrite for inlined funcs, which wraps the source-to-AST step
+# the warm-start just memoized and so goes on after it (see
+# utils/taichi_early_return.py), plus the cached fast launcher that skips
+# Taichi's per-launch Python argument re-validation on repeat launches (see
+# utils/taichi_fast_launch.py).
+from algan.utils.taichi_early_return import apply as _apply_taichi_early_return
 from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
 
 _apply_taichi_warmstart()
+_apply_taichi_early_return()
 _apply_taichi_fast_launch()
 # The MPS zero-copy conversion, which turns torch MPS tensors into ndarrays
 # over their own MTLBuffer so Taichi binds them instead of copying them through
