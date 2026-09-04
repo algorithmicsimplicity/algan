@@ -7,17 +7,28 @@
 # is the other half, and the one that matters: it builds the same wheel,
 # installs it, and then asks the Apple GPU to render with it.
 #
-#   `.github/workflows/run_on_mac.yaml`, arm mac-mps:
+#   `.github/workflows/run_on_mac.yaml`, arm mac-CPU (not mac-mps):
 #       command: bash scripts/gate/mps_probe_quadrants.sh
 #       env:     ALGAN_TAICHI_BACKEND=quadrants
 #       taichi_wheel_run_id: none
 #       timeout_minutes: 120
 #
-# Both of those inputs are load-bearing. `taichi_wheel_run_id: none` stops the
-# harness installing the patched *Taichi* wheel (and with it the
-# `ALGAN_TAICHI_BACKEND=taichi` pin it writes to GITHUB_ENV when it does), and
-# the `env:` entry is exported inside the run step, so it wins over anything the
-# harness set. Without them this measures Taichi and says "quadrants" nowhere.
+# **The arm is `mac-cpu` and this script selects MPS itself**, which looks
+# backwards and is not. The arm only pins `ALGAN_RENDER_DEVICE`; the GPU is
+# there either way. On `mac-mps` the harness's own "Report the environment
+# Algan resolved" step runs `algan check` *before* the command -- at which
+# point the patched wheel this script exists to build has not been built, so
+# Algan correctly refuses to select MPS without one and the job dies before the
+# script starts. Measured, on the first attempt: `AlganConfigurationError:
+# ALGAN_RENDER_DEVICE requests MPS, but rendering on MPS needs the patched
+# build`. So the device is switched on below, after the install, where the
+# refusal would be a real finding instead of an ordering artefact.
+#
+# `taichi_wheel_run_id: none` stops the harness installing the patched *Taichi*
+# wheel (and with it the `ALGAN_TAICHI_BACKEND=taichi` pin it writes to
+# GITHUB_ENV when it does), and the `env:` entry is exported inside the run
+# step, so it wins over anything the harness set. Without them this measures
+# Taichi and says "quadrants" nowhere.
 #
 # WHY NOT `mps_probe.yaml`. That workflow is the Metal instrument, and it is
 # wired to Taichi end to end: it downloads a `taichi_build.yaml` artifact and
@@ -114,6 +125,11 @@ print('patched: ExternalMetalNdarray present')
 
 rule "3. what Algan resolved"
 FAILED_PHASE="resolve"
+# Now, and not before: with the patched wheel installed, asking for MPS is a
+# question about the patch rather than about the order the harness runs its
+# steps in. If Algan still refuses here, that IS the finding -- it means
+# `zero_copy_available()` cannot see the entry points patch 0001 adds.
+export ALGAN_RENDER_DEVICE=mps
 "$PYTHON" -m algan.cli check 2>&1 | sed 's/^/    /'
 COMPILER="$("$PYTHON" -c "
 from algan.taichi_compat import describe_backend

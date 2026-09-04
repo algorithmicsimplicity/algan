@@ -144,10 +144,21 @@ def unavailable_reason() -> str:
 
     Kept beside :func:`zero_copy_available` so the message and the condition
     cannot drift apart.
+
+    It names the compiler this process actually bound, because both of them
+    have a fork and they are not interchangeable: a patched Taichi wheel in a
+    Quadrants process is not installed as far as Algan is concerned, and the
+    old wording -- which said "Taichi" unconditionally -- sent a Quadrants user
+    to build the wrong one. Reading ``BACKEND`` does not import the compiler,
+    which matters here: this runs while Algan is still importing.
     """
+    from algan.taichi_compat import BACKEND
+
+    compiler = "Quadrants" if BACKEND == "quadrants" else "Taichi"
+    patches = f"{BACKEND if BACKEND == 'quadrants' else 'taichi'}_patches/"
     return (
-        "rendering on MPS needs the patched Taichi build (see taichi_patches/ "
-        "and DESIGN_mps_zero_copy.md): stock Taichi copies every kernel "
+        f"rendering on MPS needs the patched {compiler} build (see {patches} "
+        "and DESIGN_mps_zero_copy.md): a stock build copies every kernel "
         "argument through the host, which is not merely slow but wrong for "
         "Algan's arena convention -- two dtype views of one buffer come back "
         "with one of them reverted, and the render draws a black frame. "
