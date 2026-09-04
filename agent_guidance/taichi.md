@@ -14,14 +14,22 @@
   builds clean on `macos-latest` in 12.5 min with a working Metal wheel, where Taichi 1.7.4 plus
   `taichi_patches/` no longer builds at all (`-Wnontrivial-memcall`, after patch 0003 cleared
   `-Wdeprecated-literal-operator`); and upstream #8745 — a stale Metal read when a buffer is written
-  and re-read in one loop — reproduces on Taichi and is clean on Quadrants. The two things that
-  argue the other way are both unfixed there: **a 2.1× warm frontend** on the released wheel (no
-  Quadrants *release* carries the `get_pos_info` memo Algan already has, and it builds every kernel
-  AST twice), and **pre-Volta CUDA**, which their CI never exercises (§7.3 Prerequisite 0).
-- Renders and timings taken on one backend are not comparable to the other's *by wall clock*: the
-  Quadrants frontend costs ~25 s per process against Algan's ~4 s on Taichi, all of it Python, none
-  of it in the offline cache (warm backend is 0.24 s against 0.27 s). A/B anything with both arms on
-  one backend.
+  and re-read in one loop — reproduces on Taichi and is clean on Quadrants. Two things argue the
+  other way. One is **pre-Volta CUDA**, which their CI never exercises and which still blocks the
+  primary dev box (§7.3 Prerequisite 0). The other was a 2.1× warm frontend, since **halved by
+  porting `taichi_warmstart.py` to Quadrants** — no Quadrants *release* carries the upstream
+  `get_pos_info` memo, so Algan carries its own on both compilers now.
+- **Renders and timings taken on one backend are still not comparable to the other's by wall
+  clock.** One warm `save_frame` of a `Square` (22 kernels), memoization on:  **7.2 s on Taichi,
+  12.5 s on Quadrants**; `--fast` is ~50 s against 78 s. What is left is Quadrants building every
+  kernel AST **twice** (a pruning pass and an enforcing pass — every frontend counter is exactly
+  2.00× Taichi's), which the memo does not touch. None of the gap is in the offline cache: warm
+  backend time is 0.24 s against 0.27 s. A/B anything with both arms on one backend.
+- **The memoization is version-gated to internals it patches** (taichi 1.7.x, quadrants 1.3.x) and
+  turns itself off on anything else — which has already cost this project ~25 s per render once,
+  unnoticed. After a compiler upgrade, run `algan check`: it names the reason when the accelerator
+  is off. `benchmarks/_taichi_warmstart_check.py` is the audit (three arms, one of them recomputing
+  every memoized value the original way and comparing).
 - The offline kernel cache does **not** invalidate on `@ti.func` edits — clear it before A/B-benchmarking kernel changes with `clear_cached_kernels()`.
 - Never edit `*_taichi.py` while a render **is running**: the JIT reads files at first launch and can compile half-edited code. Between runs you are covered — the daemon fingerprints every Algan source file and refuses to serve a run once any of them changes, shutting down so the script executes in a fresh process (`DESIGN_daemon_lifecycle.md`). You no longer restart it by hand; you do still pay the cold start, and a kernel edit still pays a full recompile.
 - Cold kernel compilation takes minutes (the Monte Carlo path tracer is a separate kernel with its own cold compile); compiled kernels are cached.

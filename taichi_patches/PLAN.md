@@ -427,6 +427,16 @@ Both halves are addressable and neither is a correctness or pixel risk: Algan al
 build is untouched by that memo. See the release finding in the corrections below — **no Quadrants
 release contains the upstream memo**, so this is port-or-pin, not "upgrade later".
 
+> **Since measured: the port landed, and it halves this.** The maintainer chose Quadrants pinned to
+> public releases, so `taichi_warmstart.py` now patches both compilers rather than version-gating
+> itself off on one. Same box, same scene, warm, 22 kernels
+> (`benchmarks/_taichi_warmstart_check.py`): Quadrants **29.0 s → 12.5 s** (2.32×), Taichi
+> **15.1 s → 7.2 s** (2.11×, unchanged behaviour); `--fast` on Quadrants **106 s → 78 s**. Frames
+> are byte-identical across all three arms and across both compilers, with
+> `ALGAN_TAICHI_WARMSTART_VERIFY=1` recomputing every memoized value the original way inside a real
+> materialization. The residual ~1.7× against Taichi is the doubled AST build, which is untouched
+> and is now the only known frontend item left.
+
 New and unexplained, worth a look before adopting: every render prints, twice,
 `UserWarning: cannot create weak reference to 'DataTypeCxx' object. Template mapper caching
 disabled.` Quadrants is disabling its own template-mapper cache for Algan's kernel arguments.
@@ -648,7 +658,12 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
    no-ops elsewhere. Consequence: a Track B build pinned to 1.3.0 pays a frontend cost Algan
    already solved on Taichi (measured whole-process kernel materialize: ~107 s vs ~30 s for the
    same 27 kernels). Either pin a Quadrants build that contains the upstream memo, or port the
-   memo rather than trimming it. Quadrants additionally builds each kernel AST **twice**
+   memo rather than trimming it. **Done, by porting** (2026-09-04): pinning was not on offer —
+   the memo is in no release tag (§6.1) — so `taichi_warmstart.py` now installs against either
+   compiler, memoizing `get_pos_info` and, on Quadrants, `get_source_info_and_src` and the
+   per-line `textwrap.fill` behind `get_tree_and_ctx`. It stands down by itself if a future
+   release carries upstream's own memo (`_build_pos_info`), and `algan check` now reports the
+   version gate refusing to fire rather than leaving it silent. Quadrants additionally builds each kernel AST **twice**
    (`get_tree_and_ctx` 2.00x per kernel — a pruning pass then an enforcing pass; the first is
    skipped only on a fastcache hit), which the memo does not address: node visits measured at
    505,978 vs Taichi's 252,989, `build_Name` 203,288 vs 101,644.
