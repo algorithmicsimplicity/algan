@@ -55,9 +55,13 @@ Usage::
     REPRO_BACKEND=quadrants REPRO_ARCH=cuda  python benchmarks/_upstream_repro_8794.py
 
 ``REPRO_ITERS`` (default 600) sets the loop length; ``REPRO_MODE`` runs a single mode
-instead of all three. Prints one verdict line, ``REPRO-8794: REPRODUCES`` or
-``REPRO-8794: CLEAN``, plus the iteration each mode reached. Exits 0 either way; a
-non-zero exit means the script itself failed.
+instead of all three. To reproduce the reporter's own platform, dispatch
+``run_on_mac.yaml`` with ``arms: mac-cpu`` and ``env: REPRO_ARCH=cpu`` -- on Apple
+silicon that is the ``arch=arm64`` of the report.
+
+Prints one verdict line, ``REPRO-8794: REPRODUCES`` or ``REPRO-8794: CLEAN``, plus the
+iteration each mode reached. Exits 0 either way; a non-zero exit means the script itself
+failed.
 """
 
 import importlib

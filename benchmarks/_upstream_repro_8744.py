@@ -39,6 +39,14 @@ and whether a workaround is bounded:
     the same statements written straight into the kernel body with no ``@ti.func`` at
     all -- says whether inlining is required to hit it.
 
+**Known workaround** (measured on Linux x64, both compilers, 2026-09-04): the miscompile
+is gated on the optimizer. ``ti.init(advanced_optimization=False)`` -- which is what
+Algan already runs with (``taichi_runtime.py``'s ``taichi_init_kwargs``, env
+``ALGAN_ADV_OPT``, default off) -- makes every variant correct, and so does
+``cfg_optimization=False`` alone, which narrows the suspect to the CFG store-to-load
+forwarding pass. Set ``REPRO_ADV_OPT=0`` (or ``=1``) to pin the flag; unset means the
+compiler's own default, which is what the issue reports against.
+
 Usage::
 
     REPRO_BACKEND=taichi   REPRO_ARCH=cpu  python benchmarks/_upstream_repro_8744.py
@@ -60,7 +68,13 @@ ARCH_NAME = os.environ.get("REPRO_ARCH", "cpu")
 N = 10
 SENTINEL = 15  # > N, so ``i == n`` is false for every element: the branch is dead.
 
-ti.init(arch=getattr(ti, ARCH_NAME), default_ip=ti.i32, default_fp=ti.f32)
+INIT_KWARGS = {}
+if "REPRO_ADV_OPT" in os.environ:
+    INIT_KWARGS["advanced_optimization"] = bool(int(os.environ["REPRO_ADV_OPT"]))
+if "REPRO_CFG_OPT" in os.environ:
+    INIT_KWARGS["cfg_optimization"] = bool(int(os.environ["REPRO_CFG_OPT"]))
+
+ti.init(arch=getattr(ti, ARCH_NAME), default_ip=ti.i32, default_fp=ti.f32, **INIT_KWARGS)
 
 BOOL_T = getattr(ti, "u1", ti.i32)
 
@@ -159,7 +173,7 @@ def test_inline(
 def main() -> int:
     print(
         f"backend={ti.__name__} version={ti.__version__} arch={ARCH_NAME} "
-        f"python={sys.version.split()[0]}"
+        f"python={sys.version.split()[0]} init_kwargs={INIT_KWARGS or 'compiler defaults'}"
     )
 
     rng = np.random.default_rng(8744)
