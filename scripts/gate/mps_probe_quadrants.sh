@@ -170,6 +170,29 @@ smoke_log="$LOGDIR/mps-smoke.log"
 SMOKE_COLD="$(grep -oE 'cold[^0-9]*([0-9.]+)' "$smoke_log" | grep -oE '[0-9.]+' | head -1)"
 SMOKE_WARM="$(grep -oE 'warm[^0-9]*([0-9.]+)' "$smoke_log" | grep -oE '[0-9.]+' | head -1)"
 
+rule "5b. did zero copy actually engage, and for every argument?"
+FAILED_PHASE="engagement"
+# `zero_copy_available()` says the entry points exist; it does not say a single
+# argument took them. A wrapper installed but converting nothing renders a
+# plausible-looking frame, which is the failure this telemetry exists for --
+# and it is the discriminator for the defect being chased here: if
+# `converted` is 0, or arguments are still crossing the bus, the fault is in
+# Algan's Python; if the counts match Taichi's, it is below the Python line.
+"$PYTHON" - <<'PY' 2>&1 | sed 's/^/    /'
+import os
+os.environ.setdefault("ALGAN_AUTO_DAEMON", "0")
+os.environ.setdefault("ALGAN_USE_DAEMON", "0")
+from algan import PREVIEW, SETTINGS, Scene, Square
+from algan.rendering import mps_zero_copy
+
+SETTINGS.video.set(PREVIEW)
+with Scene() as scene:
+    Square().spawn()
+    scene.save_frame("zero_copy_probe", video_settings=PREVIEW, overwrite=True)
+print("--- mps_zero_copy.report() after one frame")
+print(mps_zero_copy.report())
+PY
+
 rule "6. Metal against this machine's own CPU, same compiler"
 FAILED_PHASE="pixels"
 # Not a baseline comparison -- there are no committed macOS baselines. Two
