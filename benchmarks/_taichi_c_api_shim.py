@@ -31,7 +31,17 @@ from pathlib import Path
 
 
 def taichi_lib_root() -> Path:
-    """Directory of the installed ``taichi/_lib``."""
+    """Directory of the installed ``taichi/_lib``.
+
+    Deliberately the literal ``taichi`` package, not ``algan.taichi_compat``:
+    this module binds ``libtaichi_c_api.so`` out of *Taichi's own*
+    distribution specifically (see the module docstring), which is a
+    different question from which compiler Algan itself is using. Nothing
+    else in this module touches algan, so importing it does not by itself
+    risk a mixed-compiler process -- but a caller that also imports algan
+    modules should make sure ``ALGAN_TAICHI_BACKEND=taichi`` first (see
+    ``_taichi_arch_coexistence_probe.py``'s ``_require_taichi_backend``).
+    """
     import taichi
 
     return Path(taichi.__file__).parent / "_lib"

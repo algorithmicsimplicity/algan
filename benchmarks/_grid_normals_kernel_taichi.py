@@ -52,7 +52,7 @@ dims flattened by the caller). The float64 fixture in ``_grid_normals_ab.py`` is
 a robustness case for the torch arm and is skipped here.
 """
 
-import taichi as ti
+from algan.taichi_compat import ti
 
 
 @ti.kernel

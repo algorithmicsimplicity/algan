@@ -54,7 +54,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np  # noqa: E402
-import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 
 from algan import LD, MD, SETTINGS, Off, Scene  # noqa: E402,F401
@@ -85,6 +84,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (  # noqa: E402
 )
 from algan.rendering.taichi_runtime import _sync_devices  # noqa: E402
 from algan.scene_manager import SceneManager  # noqa: E402
+from algan.taichi_compat import ti  # noqa: E402
 
 DEBUG = bool(os.environ.get("STEPS_DEBUG"))
 PINNED_BYTES = 1_400_000_000

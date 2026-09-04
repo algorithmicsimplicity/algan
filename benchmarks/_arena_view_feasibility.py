@@ -22,11 +22,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import taichi as ti  # noqa: E402
 import torch  # noqa: E402
-from taichi.lang import impl as _ti_impl  # noqa: E402
 
 from algan.rendering.taichi_runtime import taichi_init_kwargs  # noqa: E402
+from algan.taichi_compat import submodule, ti  # noqa: E402
+
+_ti_impl = submodule("lang.impl")
 
 ti.init(**taichi_init_kwargs())
 

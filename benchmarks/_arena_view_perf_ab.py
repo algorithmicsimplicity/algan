@@ -28,6 +28,30 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from algan.taichi_compat import BACKEND  # noqa: E402
+
+
+def _require_taichi_backend():
+    """Refuse to run under any backend but Taichi.
+
+    Like ``_arena_arg_packing_ab.py``, this harness times
+    ``algan.utils.taichi_fast_launch`` (gated to taichi 1.7.x, a silent
+    no-op elsewhere) and imports the literal ``taichi`` package directly
+    (``run_arm`` below, and the header baked into each generated arm
+    module) rather than through ``algan.taichi_compat``. Running that
+    alongside algan modules that bind Quadrants (the default) would load
+    both compilers into one process -- the mixed-compiler process
+    ``algan/taichi_compat.py`` exists to prevent -- so refuse outright.
+    """
+    if BACKEND != "taichi":
+        raise SystemExit(
+            f"_arena_view_perf_ab.py is Taichi-only (it exercises "
+            f"taichi_fast_launch, gated to taichi 1.7.x, and imports the "
+            f"literal `taichi` package directly). Current backend is "
+            f"{BACKEND!r}; re-run with ALGAN_TAICHI_BACKEND=taichi."
+        )
+
+
 NF = int(os.environ.get("AB_NF", 40))
 NI = int(os.environ.get("AB_NI", 8))
 COLS = 4
@@ -136,6 +160,9 @@ def build_view():
 
 
 def run_arm(arm, cache_dir, reps):
+    # Deliberately the literal Taichi package, not `algan.taichi_compat` --
+    # see `_require_taichi_backend`'s docstring. `main` has already checked
+    # `BACKEND == "taichi"` before calling this.
     import taichi as ti
     import torch
 
@@ -161,7 +188,7 @@ def run_arm(arm, cache_dir, reps):
     os.makedirs(mod_dir, exist_ok=True)
     header = "\n".join(
         [
-            "import taichi as ti",
+            "import taichi as ti",  # deliberately literal Taichi; see _require_taichi_backend
             f"MASK = {ROWS - 1}",
             f"IMASK = {IROWS - 1}",
             VIEW_SRC if arm == "view" else "",
@@ -259,6 +286,7 @@ def main():
     ap.add_argument("--reps", type=int, default=30)
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    _require_taichi_backend()
 
     if args.arm:
         print("RESULT " + json.dumps(run_arm(args.arm, args.cache, args.reps)))

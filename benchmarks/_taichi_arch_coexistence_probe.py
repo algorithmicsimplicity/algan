@@ -160,7 +160,35 @@ def build_aot_module(out_dir: Path) -> dict:
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
+def _require_taichi_backend():
+    """Refuse to run under any backend but Taichi.
+
+    Every question this probe asks -- whether a C-API x64 runtime built with
+    ``ti.aot.Module`` coexists beside a live Python ``Program``
+    (``DESIGN_taichi_arch_coexistence.md`` §4/§8.1) -- is a question about
+    Taichi's own C API and AOT support, neither of which Quadrants
+    implements (``ti.aot`` does not exist there at all). Below, ``import
+    taichi as ti`` is deliberately the literal package rather than
+    ``algan.taichi_compat``, while ``algan.mobs.surfaces.surface_kernels_taichi``
+    (imported later, for the "live Python-side" launches) goes through that
+    layer and binds whatever ``ALGAN_TAICHI_BACKEND`` selects -- so an
+    unchecked run under the Quadrants default would load both compilers into
+    one process. Refuse outright instead.
+    """
+    from algan.taichi_compat import BACKEND
+
+    if BACKEND != "taichi":
+        raise SystemExit(
+            "_taichi_arch_coexistence_probe.py is Taichi-only: it probes "
+            "Taichi's C API and `ti.aot.Module`, which Quadrants does not "
+            f"implement. Current backend is {BACKEND!r}; re-run with "
+            "ALGAN_TAICHI_BACKEND=taichi."
+        )
+
+
 def main() -> int:
+    _require_taichi_backend()
+    # Deliberately the literal Taichi package; see `_require_taichi_backend`.
     import taichi as ti
     import torch
 

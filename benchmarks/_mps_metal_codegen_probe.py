@@ -48,6 +48,13 @@ import sys
 
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 
+# Deliberately the literal Taichi package, not `algan.taichi_compat`: every
+# case here exists to find which kernel spellings survive TAICHI's own
+# SPIR-V-to-MSL step (see the module docstring's C++-most-vexing-parse bug).
+# `init_taichi()` below binds whatever `ALGAN_TAICHI_BACKEND` selects, so
+# `_require_taichi_backend` (called from `__main__`) makes sure that is
+# Taichi too -- otherwise this process would end up with Quadrants (the
+# default) and the literal `taichi` package both loaded at once.
 import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 
@@ -56,6 +63,18 @@ from algan.settings._startup import render_device  # noqa: E402
 
 N = 16
 STRIDE = 8
+
+
+def _require_taichi_backend():
+    from algan.taichi_compat import BACKEND
+
+    if BACKEND != "taichi":
+        raise SystemExit(
+            "_mps_metal_codegen_probe.py is Taichi-only: it probes which "
+            "kernel spellings survive Taichi's own SPIR-V-to-MSL codegen. "
+            f"Current backend is {BACKEND!r}; re-run with "
+            "ALGAN_TAICHI_BACKEND=taichi."
+        )
 
 
 # --------------------------------------------------------------- the cases
@@ -468,4 +487,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", choices=sorted(CASES))
     args = parser.parse_args()
+    _require_taichi_backend()
     sys.exit(run_one(args.case) if args.case else run_all())

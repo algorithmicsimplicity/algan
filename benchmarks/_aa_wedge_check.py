@@ -27,7 +27,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np  # noqa: E402
-import taichi as ti  # noqa: E402
 import torch  # noqa: E402
 
 # Benchmarks must never be measured inside a warm daemon: it keeps adaptive
@@ -42,6 +41,7 @@ from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _halfplane_clip_area,
     _two_halfplane_area,
 )
+from algan.taichi_compat import ti  # noqa: E402
 from algan.rendering.taichi_runtime import init_taichi  # noqa: E402
 
 # Algan's own Taichi configuration, not Taichi's defaults: a check of a shipped
