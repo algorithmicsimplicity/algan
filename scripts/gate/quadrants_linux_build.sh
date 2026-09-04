@@ -225,15 +225,30 @@ wheel="$(ls -1 dist/*.whl 2>/dev/null | head -1)"
 WHEEL_NAME="$(basename "$wheel")"
 WHEEL_BYTES="$(stat -c%s "$wheel" 2>/dev/null || echo 0)"
 ls -la dist/
-# The point of this leg: prove the files 0003 patches were actually compiled.
-# A build with CUDA silently off would otherwise pass and mean nothing.
-cuda_tus="$(grep -cE 'codegen_cuda\.cpp|cuda_context\.cpp' "$BUILD_LOG" 2>/dev/null || echo 0)"
-runtime_tu="$(grep -cE 'adstack_runtime|runtime\.cpp' "$BUILD_LOG" 2>/dev/null || echo 0)"
-CUDA_TUS="codegen_cuda/cuda_context lines=$cuda_tus runtime lines=$runtime_tu"
-say "$CUDA_TUS"
-if [ "$cuda_tus" = "0" ]; then
-  say "WARNING: the build log never mentions the CUDA codegen -- CUDA may have been off, \
-in which case this run does NOT verify 0003"
+# The point of this leg: prove the CUDA backend -- the code 0003 patches -- was
+# actually compiled. A build with CUDA silently off would otherwise pass and
+# mean nothing, and the first version of this check was itself broken: it
+# grepped the build log, and `grep -c ... || echo 0` yields "0\n0" on no match
+# (grep -c prints its own 0 *and* exits 1), so the guard below could never fire.
+#
+# The wheel is the honest place to ask. `_lib/runtime/runtime_cuda.bc` is the
+# runtime module compiled for the NVPTX target: it exists if and only if the
+# build had CUDA on, it is the module whose `.sys` atomic defect (a) is about,
+# and unlike a log line its name does not depend on the generator's output
+# format. `qd._lib.core.with_cuda()` is NOT the check to use -- it also probes
+# for libcuda.so, so it is False on every GPU-less runner regardless of how the
+# binary was built.
+CUDA_BC="$(unzip -l "$wheel" 2>/dev/null | grep -c 'runtime_cuda\.bc' | head -1)"
+CUDA_BC="${CUDA_BC:-0}"
+if [ "$CUDA_BC" -ge 1 ] 2>/dev/null; then
+  CUDA_TUS="runtime_cuda.bc present -- CUDA backend compiled"
+  say "$CUDA_TUS"
+else
+  CUDA_TUS="runtime_cuda.bc ABSENT -- CUDA was off, 0003 is NOT verified by this run"
+  say "$CUDA_TUS"
+  unzip -l "$wheel" 2>/dev/null | grep -E '_lib/runtime/' | head -10
+  die wheel "the wheel carries no CUDA runtime module, so this build did not \
+compile the code 0003 changes. Check that CMAKE_ARGS reached build.py."
 fi
 
 rule "7. smoke test"
