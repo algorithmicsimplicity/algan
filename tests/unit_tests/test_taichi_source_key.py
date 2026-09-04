@@ -112,6 +112,23 @@ def _closure_over(k):
     return add
 
 
+_FUNC_GLOBAL = 1
+
+
+class _KernelScopeClass:
+    """A class of the shape ``ArenaView`` has: read bare in kernel scope.
+
+    Carries a class-level constant and a compiler callable, which are the two
+    members whose *value* the class-body source hash cannot see.
+    """
+
+    LIMIT = 2
+
+    @staticmethod
+    def scale(x):
+        return x * _FUNC_GLOBAL
+
+
 # --- the gate -----------------------------------------------------------------
 
 
@@ -197,6 +214,7 @@ def test_unknown_values_poison():
 # --- the walk -----------------------------------------------------------------
 
 
+@quadrants_only
 def test_functions_are_keyed_by_source_and_by_closure():
     assert _walk(_closure_over(1)) == _walk(_closure_over(1))
     assert _walk(_closure_over(1)) != _walk(_closure_over(2)), (
@@ -204,12 +222,14 @@ def test_functions_are_keyed_by_source_and_by_closure():
     )
 
 
+@quadrants_only
 def test_a_global_constant_change_changes_the_key(monkeypatch):
     before = _walk(_reads_probe)
     monkeypatch.setattr(sys.modules[__name__], "_PROBE_CONSTANT", 2)
     assert _walk(_reads_probe) != before
 
 
+@quadrants_only
 def test_attribute_chains_resolve_to_the_live_value(monkeypatch):
     before = _walk(_reads_chain)
     assert any(part == "int:3" for part in before), before
@@ -217,6 +237,7 @@ def test_attribute_chains_resolve_to_the_live_value(monkeypatch):
     assert _walk(_reads_chain) != before
 
 
+@quadrants_only
 def test_locally_imported_modules_are_followed():
     out = _walk(_reads_imports_locally)
     assert f"float:{math.pi!r}" in out, (
@@ -225,12 +246,14 @@ def test_locally_imported_modules_are_followed():
     assert f"str:{os.sep!r}" in out, "`from os import sep` must bind the attribute"
 
 
+@quadrants_only
 def test_nested_code_objects_are_walked_and_their_locals_are_not_poison():
     out = _walk(_reads_in_a_comprehension)
     assert "int:1" in out
     assert "builtin:range" in out
 
 
+@quadrants_only
 def test_compiler_names_are_exempt_from_the_walk():
     from algan.taichi_compat import ti  # noqa: F401 -- bound into this module's globals
 
@@ -241,6 +264,7 @@ def test_compiler_names_are_exempt_from_the_walk():
     assert any(part.startswith("compiler-attr:") for part in out), out
 
 
+@quadrants_only
 def test_a_bare_instance_or_module_poisons_the_walk():
     with pytest.raises(sk.Poison, match="no key rule"):
         _walk(_reads_bare_instance)
@@ -248,11 +272,13 @@ def test_a_bare_instance_or_module_poisons_the_walk():
         _walk(_reads_module_as_value)
 
 
+@quadrants_only
 def test_an_unresolvable_global_poisons_the_walk():
     with pytest.raises(sk.Poison, match="unresolvable global"):
         _walk(_reads_undefined_name)
 
 
+@quadrants_only
 def test_a_class_used_in_kernel_scope_is_keyed_by_its_source():
     from algan.rendering.raytracing.arena_args_taichi import (
         ArenaBindingError,
@@ -273,6 +299,37 @@ def test_a_class_used_in_kernel_scope_is_keyed_by_its_source():
     assert view != _walk(raises_an_error)
 
 
+@quadrants_only
+def test_a_class_attribute_is_in_the_key(monkeypatch):
+    """A class read in kernel scope is keyed by its attributes, not only its source.
+
+    ``ArenaView`` is read exactly this way -- ``ti.static(ArenaView(...))``
+    leaves the bare class as the chain leaf -- so a class attribute assigned
+    after the class body ran (``Cfg.LIMIT = from_env()``) reaches the IR through
+    a template or a helper without changing one character of the source. The
+    class-body source hash cannot see it; the key must.
+    """
+    before = _render(_KernelScopeClass)
+    assert any(part == "int:2" for part in before), before
+    monkeypatch.setattr(_KernelScopeClass, "LIMIT", 3)
+    assert _render(_KernelScopeClass) != before
+
+
+@quadrants_only
+def test_a_callable_class_member_is_walked_for_its_own_references(monkeypatch):
+    """A ``@ti.func``/``@staticmethod`` in a class body reads globals of its own.
+
+    ``vars(cls)`` hands back a compiler wrapper (or a ``staticmethod``), not a
+    plain function, and the class-body source hash covers only the text of the
+    member -- never the value of the global it reads. Keying the class by its
+    source alone would serve a kernel compiled against the old value.
+    """
+    before = _render(_KernelScopeClass)
+    monkeypatch.setattr(sys.modules[__name__], "_FUNC_GLOBAL", 2)
+    assert _render(_KernelScopeClass) != before
+
+
+@quadrants_only
 def test_every_algan_kernel_body_walks_without_poison():
     """The rules cover what Algan's own kernels actually read.
 
@@ -555,6 +612,97 @@ def test_a_func_edit_invalidates_and_template_values_are_keyed_by_value(tmp_path
     again, _ = _run_child(script, {}, tmp_path)
     assert again["scaled"] == [3.0] * 4
     assert (again["hits"], again["misses"]) == (3, 0)
+
+
+_CLASS_TEMPLATE_KERNELS = """
+import os
+
+from algan.taichi_compat import ti
+
+GAIN = float(os.environ["PROBE_GAIN"])
+
+
+class Ops:
+    LIMIT = float(os.environ["PROBE_LIMIT"])
+
+    @ti.func
+    def scale(x):
+        return x * GAIN
+
+
+@ti.kernel
+def bake_limit(out: ti.types.ndarray(dtype=ti.f32, ndim=1), C: ti.template()):
+    for i in out:
+        out[i] = C.LIMIT
+
+
+@ti.kernel
+def bake_scale(out: ti.types.ndarray(dtype=ti.f32, ndim=1), C: ti.template()):
+    for i in out:
+        out[i] = C.scale(out[i])
+"""
+
+_CLASS_TEMPLATE_CHILD = """
+import json, sys
+sys.path.insert(0, {tmp!r})
+import algan  # noqa: F401
+from algan.rendering.taichi_runtime import init_taichi
+from algan.utils import taichi_source_key as sk
+import torch
+import class_template_kernels as probe
+
+assert sk.skipped_reason() is None, sk.skipped_reason()
+init_taichi()
+limit = torch.zeros(4)
+probe.bake_limit(limit, probe.Ops)
+scaled = torch.ones(4)
+probe.bake_scale(scaled, probe.Ops)
+print("REPORT " + json.dumps({{
+    "limit": limit.tolist(), "scaled": scaled.tolist(),
+    "hits": sk.STATS["hits"], "misses": sk.STATS["misses"], "poisoned": sk.STATS["poisoned"],
+}}))
+"""
+
+
+@quadrants_only
+def test_a_class_passed_as_a_template_is_keyed_by_what_the_transform_reads(tmp_path):
+    """The end-to-end half of the two tests above: a stale artifact, or not.
+
+    One module, one source text, three processes. The class-level constant and
+    the global its ``@ti.func`` member reads both come from the environment, so
+    the kernel source, the class source and the func source are byte-identical
+    across all three -- exactly the case where only the key can tell the runs
+    apart. A key that misses either serves the first process's compiled
+    constant and the numbers come out wrong rather than the run failing.
+    """
+    (tmp_path / "class_template_kernels.py").write_text(
+        _CLASS_TEMPLATE_KERNELS, encoding="utf-8"
+    )
+    script = _CLASS_TEMPLATE_CHILD.format(tmp=str(tmp_path))
+
+    warm, _ = _run_child(script, {"PROBE_LIMIT": "1", "PROBE_GAIN": "1"}, tmp_path)
+    assert warm["limit"] == [1.0] * 4
+    assert warm["scaled"] == [1.0] * 4
+    assert warm["poisoned"] == 0
+
+    again, _ = _run_child(script, {"PROBE_LIMIT": "1", "PROBE_GAIN": "1"}, tmp_path)
+    assert (again["hits"], again["misses"]) == (2, 0), (
+        "an unchanged run must still hit; the key is over-keyed otherwise"
+    )
+
+    limit_changed, _ = _run_child(
+        script, {"PROBE_LIMIT": "7", "PROBE_GAIN": "1"}, tmp_path
+    )
+    assert limit_changed["limit"] == [7.0] * 4, (
+        "a class attribute the transform baked into the kernel is not in the key"
+    )
+
+    gain_changed, _ = _run_child(
+        script, {"PROBE_LIMIT": "7", "PROBE_GAIN": "9"}, tmp_path
+    )
+    assert gain_changed["scaled"] == [9.0] * 4, (
+        "a global read by a @ti.func in a class body is not in the key"
+    )
 
 
 _SQUARE_CHILD = """

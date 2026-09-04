@@ -54,9 +54,12 @@ heuristic: the kernel's code object is disassembled (``LOAD_GLOBAL``,
 ``LOAD_DEREF`` and import-bound locals, each with its ``LOAD_ATTR`` chain, in
 nested code objects too), every chain is resolved to the live value it names
 and hashed by the same value rules, and every function reached -- an inlined
-``@ti.func``, a Python helper called under ``ti.static``, a class whose
-constructor runs in kernel scope -- is walked the same way, transitively, with
-a visited set. The compiler's own namespace is exempt (its version is already
+``@ti.func``, a Python helper called under ``ti.static`` -- is walked the same
+way, transitively, with a visited set. A **class** reached in kernel scope
+(``ti.static(ArenaView(...))`` leaves the bare class as the chain's leaf) is
+hashed by its source *and by every member by value*: the source hash cannot see
+a class attribute assigned after the body ran, nor the globals a ``@ti.func``
+member reads. The compiler's own namespace is exempt (its version is already
 in the key) and so are builtins. Anything the rules do not know -- an instance
 whose attributes are not accessed, a module used without an attribute, a name
 that does not resolve -- **poisons the key**: the kernel is counted, warned
@@ -71,9 +74,12 @@ Known gaps -- what the key does not see:
 
 * **Dynamic attribute access.** ``getattr(obj, name)``, ``globals()[name]`` and
   a value read through a local that was assigned from a global (``s =
-  SETTINGS.raytracing; s.x``) are not chains the disassembly can follow. The
-  settings belt covers the settings sections; anything else read that way is
-  invisible.
+  SETTINGS.raytracing; s.x``) are not chains the disassembly can follow: the
+  walk stops at the root and hashes *that* by value. So the read is covered
+  when the root is a container or a class (hashed by content) and **poisons**
+  when it is an instance or a module -- what it never does is silently miss the
+  attribute. ``globals()[name]`` and a value routed through an object the rules
+  cannot render both land on the poison side.
 * **Values mutated in place.** A list or dict global is hashed by content at
   key time, which is what the transform sees; a mutation *during* a transform
   is out of scope on both sides.
@@ -118,7 +124,7 @@ from algan.environment import env_flag, env_str
 
 #: Bumped whenever what this module puts in the key, or how it renders a
 #: component, changes -- an entry written by an older rule set must miss.
-_SCHEMA_VERSION = "algan-source-key-v1"
+_SCHEMA_VERSION = "algan-source-key-v2"
 
 _APPLIED = False
 _SKIPPED_REASON = None
@@ -156,6 +162,11 @@ def stats_summary():
         f"poisoned={STATS['poisoned']} verified={STATS['verified']} "
         f"keyed={STATS['keyed']} key_time={STATS['key_seconds']:.3f}s"
     )
+    if _PENDING_VERIFY:
+        # A verify arm proves nothing about a hit whose compile never reached
+        # the store hook, so say how many are still outstanding rather than
+        # letting `verified` read as full coverage.
+        line += f" verify_pending={len(_PENDING_VERIFY)}"
     if POISONED:
         names = ", ".join(sorted(POISONED))
         line += f"\n[Taichi source key] poisoned kernels: {names}"
@@ -431,7 +442,23 @@ def _hash_function(function, ctx, depth):
 
 
 def _hash_class(cls, ctx, depth):
-    """A class used in kernel scope: its source, its methods' references, its bases."""
+    """A class used in kernel scope: its source, **every member by value**, its bases.
+
+    The class-body source hash covers what the body *said*; it does not cover
+    what a class attribute was later *assigned* (``Cfg.LIMIT = from_env()``,
+    the same text every run), and it does not cover the globals a callable
+    member reads. Both reach the IR the moment the transform reads them off the
+    class -- ``ArenaView`` is read exactly this way, as the bare leaf of
+    ``ti.static(ArenaView(...))`` -- so every member is hashed by value:
+    callables by source plus their own reference walk, everything else by the
+    value rules, which poison on anything they do not know.
+
+    Dunder *data* is skipped: ``__dict__`` and ``__weakref__`` are per-class
+    descriptors with no rule, and ``__doc__``/``__module__``/``__qualname__``
+    are already in the source hash. Dunder *functions* are still walked, so an
+    ``__init__`` or ``__getitem__`` that runs in kernel scope keeps its globals
+    in the key.
+    """
     if cls.__module__ == "builtins" or _is_compiler_object(cls, ctx):
         ctx.out.append(f"class-ref:{cls.__module__}.{cls.__qualname__}")
         return
@@ -449,9 +476,15 @@ def _hash_class(cls, ctx, depth):
             member = member.__func__
         elif isinstance(member, property):
             member = member.fget
-        if isinstance(member, types.FunctionType):
+        if isinstance(member, types.FunctionType) or _is_compiler_callable(member):
+            # A `@ti.func` in a class body arrives here as a compiler wrapper,
+            # not as a plain function; it is the member most likely to read a
+            # module global the transform then bakes in.
             ctx.out.append(f"method:{name}")
-            _hash_references(member, ctx, depth + 1)
+            _hash_value(member, ctx, depth + 1)
+        elif not (name.startswith("__") and name.endswith("__")):
+            ctx.out.append(f"attr:{name}")
+            _hash_value(member, ctx, depth + 1)
     for base in cls.__bases__:
         _hash_class(base, ctx, depth + 1)
 
@@ -743,7 +776,10 @@ def _environment_fingerprint():
             continue
         value = env_str(name, None)
         if value is not None:
-            parts.append(f"{name}={value}")
+            # Quoted, not bare: `hash_iterable_strings` joins its inputs with a
+            # single "_", so a bare `A=1_B=2` in one variable and `A=1`, `B=2`
+            # in two would hash alike.
+            parts.append(f"{name}={value!r}")
     # Quadrants' own switch that rewrites every kernel AST; it is in its key too.
     if os.environ.get("QD_KERNEL_COVERAGE") == "1":
         parts.append("QD_KERNEL_COVERAGE=1")
@@ -765,7 +801,11 @@ def _settings_fingerprint(ctx):
     ctx.out.append(")")
 
 
-_CONFIG_EXCLUDE_PREFIXES = ("_", "offline_cache", "print_", "verbose")
+#: Deliberately the same list Quadrants' own ``config_hasher.EXCLUDE_PREFIXES``
+#: uses, so this key is never *less* config-sensitive than the fastcache key it
+#: replaces -- ``verbose_`` and not ``verbose``, which keeps the bare
+#: ``verbose`` field in, exactly as the compiler keeps it.
+_CONFIG_EXCLUDE_PREFIXES = ("_", "offline_cache", "print_", "verbose_")
 #: Process-local, not IR-relevant: the torch MPS queue's address (Quadrants
 #: #850 excluded it from the C++ key for the same reason).
 _CONFIG_EXCLUDE_NAMES = frozenset(
@@ -935,6 +975,15 @@ def compute_key(kernel, args):
         return hash_iterable_strings(out), None
     except Poison as poison:
         return None, str(poison)
+    except Exception as unexpected:
+        # A key that cannot be built is a slow kernel; a key computation that
+        # *raises* is a broken render. The whole design is fail-closed, so an
+        # unexpected failure poisons like any other unknown value -- named as
+        # unexpected so the poisoned-kernel report still shows it as a bug.
+        return (
+            None,
+            f"unexpected {type(unexpected).__name__} building the key: {unexpected}",
+        )
     finally:
         STATS["key_seconds"] += time.perf_counter() - started
 
