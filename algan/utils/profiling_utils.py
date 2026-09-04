@@ -1144,7 +1144,6 @@ def run_nvprof_metrics(script_argv, timeout=1200):
 def run_once(
     scene_func, settings, tag="", run_index=0, telemetry=True, save_video_kwargs=None
 ):
-    TIMERS.reset()
     SCENE_STATS.clear()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -1157,6 +1156,16 @@ def run_once(
     scene = SceneManager.reset()
     scene.set_video_settings(settings)
     scene_func()
+
+    # Reset AFTER authoring, because ``total`` below starts after authoring.
+    # Authoring hits the same hooked functions the render does -- it is where
+    # every ``AttributeTimeline.add`` and, on the reference scene, over half of
+    # every ``AttributeTimeline.get`` happens -- so counting it here put work
+    # into the stage table that is not in the number the stage table is
+    # divided by. ``get`` read 22,702 calls / 1.296 s against a 7.66 s render
+    # of which 11,818 calls were the scene being written, which is how a 78 ms
+    # item came to be ranked as a 17% pole.
+    TIMERS.reset()
 
     sampler = GpuTelemetrySampler().start() if telemetry else None
     # cProfile is opt-in (ALGAN_PROFILE_CPROFILE=1): its per-call overhead

@@ -3183,7 +3183,11 @@ class Surface(Mob):
         # material), so cache it. Reading the shader params goes through the
         # animated-attribute machinery, which is the expensive part.
         names = tuple(getattr(self, "shader_specific_param_names", ()))
-        n_grid = self.grid.location.shape[-2]
+        # Read uncopied: this wants one number out of the shape, and the public
+        # property's defensive clone would copy the whole materialized grid --
+        # once per surface per batch, to size batches -- and then drop it. The
+        # result is never held, indexed or mutated, only asked for its shape.
+        n_grid = self.grid.get_animated_attribute("location", copy=False).shape[-2]
         packed_grid_count = self._packed_grid_count()
         rendered_grid_count = 1 if packed_grid_count is None else packed_grid_count
         # Computed before the cache test, and compared as part of the key: a
