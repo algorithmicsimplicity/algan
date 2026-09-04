@@ -164,6 +164,14 @@ def compare(dir_a: Path, dir_b: Path) -> int:
             cv2.VideoCapture(str(path_b)),
         )
         frames = max_difference = over_tolerance = total_pixels = worst_frame = 0
+        # Brightness per arm, because "how far apart" does not distinguish the
+        # two failures that matter here. Float drift moves a few pixels a
+        # little; a black frame -- the exact failure the MPS zero-copy patch
+        # exists to prevent, and one a smoke test cannot see because the render
+        # still completes -- moves nearly all of them the whole way. A mean
+        # near zero on one arm and not the other says which, without anyone
+        # downloading a video.
+        sum_a = sum_b = 0.0
         try:
             while True:
                 ok_a, frame_a = cap_a.read()
@@ -181,6 +189,8 @@ def compare(dir_a: Path, dir_b: Path) -> int:
                     (difference > MAX_CHANNEL_DIFFERENCE).any(axis=2).sum()
                 )
                 total_pixels += difference.shape[0] * difference.shape[1]
+                sum_a += float(frame_a.mean())
+                sum_b += float(frame_b.mean())
                 frames += 1
         finally:
             cap_a.release()
@@ -188,9 +198,16 @@ def compare(dir_a: Path, dir_b: Path) -> int:
         worst_overall = max(worst_overall, max_difference)
         if max_difference > MAX_CHANNEL_DIFFERENCE:
             failures.append(name)
+        mean_a = sum_a / frames if frames else 0.0
+        mean_b = sum_b / frames if frames else 0.0
         print(
             f"{name:<32} {frames:>6} {max_difference:>4} {over_tolerance:>9} "
             f"{total_pixels:>11} frame {worst_frame}"
+        )
+        print(
+            f"{'':<32} mean brightness: A={mean_a:6.2f}  B={mean_b:6.2f}"
+            + ("   <-- A is blank" if mean_a < 1.0 <= mean_b else "")
+            + ("   <-- B is blank" if mean_b < 1.0 <= mean_a else "")
         )
 
     verdict = (

@@ -207,6 +207,15 @@ case "$arm_status" in
     ;;
 esac
 
+# Both clips travel home with the logs. `$AB_DIR` is under `$RUNNER_TEMP`,
+# which the harness's `artifacts:` glob cannot reach, so a disagreement between
+# the arms was diagnosable only by re-running with more instrumentation. At
+# PREVIEW these are a couple of MB each.
+for device in mps cpu; do
+  cp "$AB_DIR/$device/$SCENE.mp4" "$LOGDIR/ab-$device-$SCENE.mp4" 2>/dev/null \
+    || say "note: no $device clip to copy back"
+done
+
 compare_log="$LOGDIR/mps-vs-cpu.log"
 "$PYTHON" "$ab" --compare "$AB_DIR/mps" "$AB_DIR/cpu" 2>&1 | tee "$compare_log" | sed 's/^/    /'
 PIXEL_MAX="$(grep -oE 'max_channel_delta=[0-9]+' "$compare_log" | grep -oE '[0-9]+' | head -1)"
