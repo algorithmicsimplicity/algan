@@ -126,6 +126,40 @@ and **neutral at UHD**. So the hot kernels are neither register-bound nor
 bandwidth-bound; what is left is dependent-load latency and divergence in BVH
 traversal, which only an algorithmic change touches.
 
+## The shadow gather march is neutral too (`perf-sh-shadow-gather.log`)
+
+`ALGAN_SHADOW_ANYHIT=gather` replaces the ordered march's *k* full BVH
+traversal restarts (one per peeled translucent surface) with
+`ceil((k+1)/kbuf)`. The 20 glass shells made this look like the obvious
+algorithmic lever on `raster_shadow_trace` (2.70 s of 17.7 s, with 390 ms tail
+launches). Alternating arms, one session:
+
+| | base | gather | |
+| --- | --- | --- | --- |
+| UHD | 18.16 / 18.76 | 18.40 / 18.78 | +0.7% |
+| PREVIEW | 5.31 | 5.22 | −1.7% |
+
+Both inside the noise band, and **the digests are identical to base** on both
+scenes — so on this geometry the documented seam-merge corner never arises,
+and `k` is evidently small: the shadow rays are dominated by the opaque ground
+plane, one traversal each, not by deep peels through the shells.
+
+## What this scene has, which bounds several other ideas
+
+`default_scene_initializer` spawns exactly **one** `PointLight`
+(`algan/scenes/default_scene.py`). So:
+
+* a light-major thread mapping in `raster_shadow_trace` (its grid is
+  `num_events * num_lights`, indexed event-major) is a **no-op** — with one
+  light the mapping is already warp-coherent;
+* `wavefront_shade`'s `vis = ti.Vector([1.0] * (3 * max_shadow_lights))` uses
+  **3 of its 48 lanes**. It is dynamically indexed, so it is a 192-byte
+  per-thread *local memory* array, re-initialised across all 48 lanes on every
+  drained surface, to carry 12 bytes. This scene is its worst case, and it is
+  the one structural candidate the measurements above do not rule out —
+  `-maxrregcount` cannot reach local memory, which is why the codegen sweep
+  says nothing about it.
+
 ## Cross-session numbers are not comparable
 
 Identical code, `nn_ablation base PREVIEW`, measured **4.69, 4.70, 4.76, 5.20,
