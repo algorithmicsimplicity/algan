@@ -896,10 +896,12 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
 # ---------------------------------------------------------------------------
 # ``rs_alloc`` slot layout. One tiny i32 ndarray carries the tile's shared-pool
 # allocator AND its truncation counters, rather than each taking a kernel
-# argument: the shade kernels are already near Taichi's 64-argument ceiling,
-# and an ndarray's SHAPE is not part of a kernel's compiled signature, so
-# widening this costs no recompile. The host zeroes it per tile attempt and
-# reads it back once, after the attempt is accepted.
+# argument: every ndarray argument costs a ``set_arg`` per launch and per-use
+# argument loads in the kernel (and Metal allows 31 buffers; the "64-argument
+# ceiling" is a Python-side counter, see ``agent_guidance/taichi.md``), while
+# an ndarray's SHAPE is not part of a kernel's compiled signature, so widening
+# this costs no recompile. The host zeroes it per tile attempt and reads it
+# back once, after the attempt is accepted.
 # ---------------------------------------------------------------------------
 #: Next free slot in the shared continuation pool; starts at ``num_primary``
 #: and keeps counting past capacity, so an overflow reports how much it wanted.

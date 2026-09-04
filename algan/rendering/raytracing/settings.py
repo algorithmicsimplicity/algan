@@ -2456,9 +2456,9 @@ def glossy_reflection_mode():
 
     Read at call time (never imported by value) and returned as an int, because
     it reaches the resolve as a TEMPLATE value: each mode compiles its own
-    kernel variant, so the offline cache -- which does not invalidate on
-    ``@ti.func`` edits, let alone on a Python constant -- cannot serve one
-    mode's kernel for another.
+    kernel variant with its own cache key, so the offline cache cannot serve one
+    mode's kernel for another. A module-level constant read at import would
+    instead freeze the first value for the process, which no cache could fix.
     """
     if not glossy_reflection:
         return 0
