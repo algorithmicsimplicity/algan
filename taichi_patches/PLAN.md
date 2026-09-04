@@ -626,6 +626,36 @@ applies to `match_any_sync` and half2), none touches a non-sm_61 path, and a per
 a rebase tax for nothing. Fork only as a stopgap while an upstream PR lands. If neither happens,
 Track B is blocked on any pre-Volta machine, which today includes the primary dev box.
 
+> **Written 2026-09-04 as `quadrants_patches/0003-pre-volta-cuda.patch`, and writing it corrected
+> the diagnosis above in two load-bearing ways** (`quadrants_patches/PORTING-NOTES.md` §7 has the
+> evidence; the patch is **unbuilt and unrun** — `scripts/gate/quadrants_linux_build.sh` is the
+> compile check, since Quadrants forces CUDA off on Apple and the macOS leg never compiles a line of
+> it, and only the maintainer's sm_61 box can answer whether it actually works):
+>
+> * **The source-level fix for (a) does not work.** `__scoped_atomic_compare_exchange_n(...,
+>   __MEMORY_SCOPE_DEVICE)` emits IR byte-identical to the unscoped builtin — no `syncscope` at all —
+>   because only the AMDGPU, NVPTX and SPIR-V backends override
+>   `TargetCodeGenInfo::getLLVMSyncScopeID`, and the runtime bitcode is compiled with no `-target`
+>   (`runtime_module/CMakeLists.txt`). The patch therefore re-scopes those atomics **in IR**, in the
+>   CUDA branch of `module_from_file` in `llvm_context.cpp` — the file that already exists to fix up
+>   host-compiled bitcode for the GPU target. Only one `.sys` survives into the loaded module because
+>   `init_runtime_module` runs `eliminate_unused_functions` keeping `runtime_*`/`LLVMRuntime_*`
+>   (`llvm_context.cpp:1158`): `runtime_eval_adstack_max_reduce` matches, and `stack_push` — which
+>   holds deliberately system-scoped overflow-flag atomics — is dropped, which is what makes the
+>   narrow rewrite both sufficient and safe.
+> * **The gate for (b) is `cap >= 75`, not 70, and sm_70/sm_72 are broken today too.** LLVM 22's
+>   predicate on `activemask` is `Requires<[hasPTX<62>, hasSM<30>]>`: the hardware bound is sm_30 and
+>   Pascal meets it — what fails is the *PTX ISA version*. Quadrants passes an empty feature string to
+>   `createTargetMachine` (`jit_cuda.cpp:265`), so LLVM defaults `PTXVersion` to
+>   `getMinPTXVersionForSM`, which is 5.0 for sm_6x, 6.0 for sm_70, 6.1 for sm_72 and 6.3 for sm_75.
+>   The `.version 5.0 / .target sm_61` observed above is direct confirmation. A `cap >= 70` gate would
+>   have left a V100 exactly as broken; gating at 75 is still a no-op from Turing up, including
+>   Quadrants' own T4 CI.
+>
+> One caveat on attribution, since it bears on how the fix should be argued upstream: the `.sys`
+> refusal was measured on a single sm_61 **Windows** box, so whether the discriminator is compute
+> capability, WDDM, or `hostNativeAtomicSupported` is unestablished. `cap < 70` is safe either way.
+
 1. Fork `Genesis-Embodied-AI/quadrants` at a tag; new `quadrants_patches/` directory; port 0001
    (all 11 target files exist at renamed paths; `MetalDevice::import_mtl_buffer` still at
    `quadrants/rhi/metal/metal_device.mm:1280`; `MetalShaderResourceSet::rw_buffer` still honours
