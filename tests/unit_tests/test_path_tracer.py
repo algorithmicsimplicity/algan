@@ -31,6 +31,7 @@ import torch
 from algan import (
     BLACK,
     BLUE,
+    DOWN,
     GREEN,
     OUT,
     RED,
@@ -40,6 +41,7 @@ from algan import (
     UP,
     WHITE,
     AmbientLight,
+    Circle,
     HemisphereLight,
     MeshLambertMaterial,
     MeshStandardMaterial,
@@ -1307,6 +1309,193 @@ def test_custom_scatter_plan_does_not_refuse_an_authored_scene(tmp_path):
     )
     assert result.render_plan.backend == "path_tracer"
     assert result.render_plan.unsupported_features == ()
+
+
+# ---------------------------------------------------------------------------
+# Adaptive sampling (roadmap section 2)
+# ---------------------------------------------------------------------------
+#: The ceiling every adaptive test renders against. Big enough that stopping
+#: at the floor of 4 is unmistakable in the mean, small enough to stay cheap.
+_ADAPTIVE_SPP = 32
+
+
+def _flat_2d_scene(scene):
+    """Unlit 2-D only: no lights, no 3-D geometry, nothing stochastic.
+
+    Every interior pixel here is zero-variance by construction -- the camera
+    segment composites deterministically (roadmap contract 4) -- so its two
+    sample halves agree exactly and it must stop at ``pt_min_samples``. The
+    shapes' edges are the exception and are meant to be: anti-aliasing is
+    jittered sampling, so an edge pixel legitimately has variance and may run
+    on, which is why the assertions below are about the mean being far from
+    the ceiling rather than exactly at the floor.
+    """
+    scene.set_background(BLACK)
+    Scene.clear_lights()
+    # The first square covers the frame: a background pixel would stop at the
+    # floor too, and counting it would make the assertion pass for the wrong
+    # reason.
+    Square(size=12.0, color=BLUE).spawn(animate=False)
+    Square(size=3.0, color=RED).set_opacity(0.5).spawn(animate=False)
+    Circle(radius=1.2, color=GREEN).set_opacity(0.6).spawn(animate=False)
+
+
+def _lit_shadowed_scene(scene):
+    """A lit, shadowed 3-D scene: real Monte Carlo variance to converge."""
+    scene.set_background(BLACK)
+    Scene.clear_lights()
+    PointLight(location=OUT * 5.0 + UP * 2.0, color=WHITE, intensity=2.0).spawn(
+        animate=False
+    )
+    floor = Prism(width=7.0, height=0.2, depth=5.0)
+    floor.set_material(MeshLambertMaterial(color=WHITE))
+    floor.move(DOWN * 1.5)
+    floor.spawn(animate=False)
+    ball = Sphere(radius=1.0)
+    ball.set_material(MeshStandardMaterial(color=WHITE, roughness=0.4))
+    ball.spawn(animate=False)
+
+
+def test_adaptive_sampling_stops_unlit_2d_content_near_the_floor(tmp_path):
+    """The case section 2 exists for: unlit 2-D content converges at the
+    floor, so ``samples_per_pixel`` is a ceiling it never reaches.
+    """
+    floor = int(SETTINGS.raytracing.experimental.pt_min_samples)
+    _img, result = _render_scene_result(
+        tmp_path,
+        "adaptive_2d.png",
+        _flat_2d_scene,
+        _ADAPTIVE_SPP,
+        experimental={"pt_error_target": 0.02},
+    )
+    mean = result.render_plan.path_samples_mean
+    assert mean >= floor, f"a pixel got fewer than the floor {floor}: mean {mean}"
+    # Far below the ceiling, and within a couple of floors of it: what is
+    # above the floor is the jittered edges of three shapes, not the
+    # interiors.
+    assert mean < 0.4 * _ADAPTIVE_SPP, (
+        f"unlit 2-D content averaged {mean:.2f} of {_ADAPTIVE_SPP} samples; "
+        "zero-variance pixels should stop at the floor"
+    )
+
+
+def test_adaptive_sampling_keeps_sampling_a_lit_scene(tmp_path):
+    """The other half of the contract: real variance is not declared
+    converged. A lit, shadowed scene must climb well above the floor.
+    """
+    floor = int(SETTINGS.raytracing.experimental.pt_min_samples)
+    _img, result = _render_scene_result(
+        tmp_path,
+        "adaptive_lit.png",
+        _lit_shadowed_scene,
+        _ADAPTIVE_SPP,
+        shadows=True,
+        experimental={"pt_error_target": 0.02},
+    )
+    mean = result.render_plan.path_samples_mean
+    assert mean > 1.5 * floor, (
+        f"a lit shadowed scene averaged only {mean:.2f} samples of "
+        f"{_ADAPTIVE_SPP} (floor {floor}); the estimator is calling noise "
+        "converged"
+    )
+    assert mean <= _ADAPTIVE_SPP
+
+
+def test_adaptive_sampling_never_stops_a_stochastic_pixel(tmp_path):
+    """The safety property the whole mechanism rests on.
+
+    A pixel whose light was estimated by sampling is run to the ceiling
+    unconditionally -- ``pt_shade`` flags every path that takes a random
+    decision and the host refuses to stop a pixel that has one -- so a lit,
+    shadowed scene must render BYTE-IDENTICALLY to its uniform arm even
+    though it takes far fewer samples overall (the ones it drops are the
+    background's, which are deterministic).
+
+    Without that gate this scene renders black dots on lit surfaces: a pixel
+    whose first samples all miss the light has two sample halves that agree
+    exactly, and no error threshold can tell that apart from convergence.
+    """
+    uniform, _ = _render_scene_result(
+        tmp_path,
+        "stoch_uniform.png",
+        _lit_shadowed_scene,
+        _ADAPTIVE_SPP,
+        shadows=True,
+        experimental={"pt_error_target": 0.0},
+    )
+    adaptive, result = _render_scene_result(
+        tmp_path,
+        "stoch_adaptive.png",
+        _lit_shadowed_scene,
+        _ADAPTIVE_SPP,
+        shadows=True,
+        experimental={"pt_error_target": 0.02},
+    )
+    assert result.render_plan.path_samples_mean < _ADAPTIVE_SPP, (
+        "the scene did not exercise adaptive sampling at all"
+    )
+    assert torch.equal(uniform, adaptive), (
+        "adaptive sampling moved a lit scene by up to "
+        f"{int((uniform - adaptive).abs().max())} counts; a pixel whose "
+        "samples gambled must run to the ceiling"
+    )
+
+
+def test_uniform_sampling_spends_the_whole_budget(tmp_path):
+    """``pt_error_target = 0`` is the byte-parity escape hatch, so every
+    pixel gets exactly ``samples_per_pixel`` -- the reported mean is the
+    ceiling, exactly, with nothing rescaled.
+    """
+    _img, result = _render_scene_result(
+        tmp_path,
+        "uniform_2d.png",
+        _flat_2d_scene,
+        _ADAPTIVE_SPP,
+        experimental={"pt_error_target": 0.0},
+    )
+    assert result.render_plan.path_samples_mean == float(_ADAPTIVE_SPP)
+
+
+def test_a_floor_at_the_ceiling_renders_exactly_like_uniform_sampling(tmp_path):
+    """Adaptive sampling's plumbing must not move a pixel by itself.
+
+    With ``pt_min_samples`` at the ceiling no pixel can stop early, so the
+    pixel list stays the tile's, every ``samples / n_p`` rescale is exactly
+    1.0, and the frame must match the uniform arm byte for byte -- even
+    though the waves are cut differently, which is also what proves the
+    sampler's per-pixel prefix survives re-waving.
+    """
+    uniform, _ = _render_scene_result(
+        tmp_path,
+        "parity_uniform.png",
+        _lit_shadowed_scene,
+        8,
+        shadows=True,
+        experimental={"pt_error_target": 0.0},
+    )
+    floored, result = _render_scene_result(
+        tmp_path,
+        "parity_floored.png",
+        _lit_shadowed_scene,
+        8,
+        shadows=True,
+        experimental={"pt_error_target": 0.02, "pt_min_samples": 8},
+    )
+    assert result.render_plan.path_samples_mean == 8.0
+    assert torch.equal(uniform, floored), (
+        "adaptive sampling with nothing to stop early changed the image by up "
+        f"to {int((uniform - floored).abs().max())} counts"
+    )
+
+
+def test_the_deterministic_renderer_reports_no_path_samples(tmp_path):
+    """Zero means "the path tracer did not run", not "nothing measured"."""
+    _img, result = _render_scene_result(
+        tmp_path, "deterministic_spp.png", _flat_2d_scene, 1
+    )
+    assert result.render_plan.backend == "deterministic_wavefront"
+    assert result.render_plan.path_samples_mean == 0.0
+    assert result.render_plan.as_dict()["path_samples_mean"] == 0.0
 
 
 if __name__ == "__main__":

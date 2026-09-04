@@ -55,6 +55,12 @@ the digests ``scripts/kaggle/runner.py`` reports.
 the wavefront renderer instead. The path tracer's cost is only meaningful
 against what the user was already paying, and that is this number.
 
+``--pt-error-target 0`` is the other reference arm: it turns adaptive sampling
+off, so every pixel gets ``--spp`` samples the way the renderer did before
+roadmap §2 landed. Every adaptive arm is quoted against it, and the table's
+"samples per pixel actually taken" line (``path_samples_mean`` in the JSON) is
+what says how much of the ceiling a run really spent.
+
 Usage
 -----
 ::
@@ -92,6 +98,18 @@ Kaggle T4 readings (2026-09-04, warm RUN 2, five frames, 16 spp, 4 bounces;
     many_lights    0.88 s   pt_shade  20 ms  (64 lights: flat)
     text_2d 720p   1.17 s   traverse 153 ms  pt_shade 147 ms  denoise 394 ms
 
+Adaptive sampling arms (this 4-vCPU CPU box, 320x180, warm RUN 2, denoiser
+off, median of three; roadmap §2.1 has the frame diffs)::
+
+    text_2d  target 0     16.00 spp   0.834 s
+    text_2d  target 0.02   5.54 spp   0.622 s   (1.34x)
+    lit      target 0     16.00 spp   1.511 s
+    lit      target 0.02   5.94 spp   1.535 s   (neutral, and BYTE-IDENTICAL:
+                                                nothing that sampled its light
+                                                is ever stopped early, so the
+                                                samples saved on a lit scene
+                                                are the cheap background ones)
+
 Two things to carry into a real run from those. **At this resolution the host
 side is ~85% of the wall clock** -- geometry prep, the merge and the encode --
 so a table taken at 96x54 ranks host work, not the path tracer; use the
@@ -113,6 +131,7 @@ import sys
 os.environ["ALGAN_USE_DAEMON"] = "0"
 
 from algan import *  # noqa: F403
+from algan.rendering.raytracing.truncation import path_samples_mean
 from algan.rendering.taichi_runtime import _live_arch, _taichi_arch
 from algan.settings import _startup
 from algan.utils.profiling_utils import TIMERS, profile_scene
@@ -498,6 +517,20 @@ def parse_args(argv=None):
     parser.add_argument("--pt-rr-start-bounce", type=int, default=None)
     parser.add_argument("--pt-firefly-clamp", type=float, default=None)
     parser.add_argument(
+        "--pt-error-target",
+        type=float,
+        default=None,
+        help="adaptive sampling's per-pixel error target; 0 = uniform waves "
+        "(samples_per_pixel for every pixel), which is the arm every other "
+        "target is compared against",
+    )
+    parser.add_argument(
+        "--pt-min-samples",
+        type=int,
+        default=None,
+        help="the floor every pixel gets before adaptive sampling may stop it",
+    )
+    parser.add_argument(
         "--denoise",
         type=int,
         choices=(0, 1),
@@ -530,6 +563,8 @@ def knob_values(args):
         "pt_light_samples": args.pt_light_samples,
         "pt_rr_start_bounce": args.pt_rr_start_bounce,
         "pt_firefly_clamp": args.pt_firefly_clamp,
+        "pt_error_target": args.pt_error_target,
+        "pt_min_samples": args.pt_min_samples,
         "denoise": args.denoise,
         "available_memory_mb": args.memory_mb,
     }
@@ -549,6 +584,10 @@ def build_tag(args):
         parts.append(f"rr{args.pt_rr_start_bounce}")
     if args.pt_firefly_clamp is not None:
         parts.append(f"fc{args.pt_firefly_clamp:g}")
+    if args.pt_error_target is not None:
+        parts.append(f"et{args.pt_error_target:g}")
+    if args.pt_min_samples is not None:
+        parts.append(f"ms{args.pt_min_samples}")
     if args.denoise is not None:
         parts.append(f"dn{args.denoise}")
     if args.memory_mb is not None:
@@ -578,6 +617,10 @@ def apply_settings(args):
         experimental["pt_rr_start_bounce"] = args.pt_rr_start_bounce
     if args.pt_firefly_clamp is not None:
         experimental["pt_firefly_clamp"] = args.pt_firefly_clamp
+    if args.pt_error_target is not None:
+        experimental["pt_error_target"] = args.pt_error_target
+    if args.pt_min_samples is not None:
+        experimental["pt_min_samples"] = args.pt_min_samples
     if experimental:
         SETTINGS.raytracing.experimental.set(**experimental)
     if args.memory_mb is not None:
@@ -639,6 +682,12 @@ def main(argv=None):
     warm = results[-1]
     rows, summary = stage_table(warm)
     print_stage_table(warm, rows, summary, runs=args.runs)
+    samples_mean = path_samples_mean()
+    print(
+        f"  samples per pixel actually taken: {samples_mean:.2f} "
+        f"of the {1 if args.deterministic else args.spp} the arm asked for "
+        "(0 = the path tracer did not run)"
+    )
     print(f"  lights in the scene: {authored.get('lights')}")
 
     live = _live_arch()
@@ -657,6 +706,7 @@ def main(argv=None):
         "peak_alloc_mb": round(warm["peak_alloc_mb"], 1),
         "pt_shade_launches": summary["pt_shade_launches"],
         "waves": summary["waves"],
+        "path_samples_mean": round(samples_mean, 4),
         "device_profiler": summary["device_profiler"],
         "stages": {
             row["stage"]: {

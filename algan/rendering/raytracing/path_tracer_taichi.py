@@ -167,11 +167,27 @@ _PAIR_LOBE = 0
 _PAIR_BSDF_DIR = 1
 
 # Per-path commit row (``pt_acc``): radiance accumulated so far, the leftover
-# throughput the background shows through, and the camera-segment
-# alpha transparency (see ``pt_reduce``).
-PT_ACC_WIDTH = 9
+# throughput the background shows through, the camera-segment alpha
+# transparency, and whether this path ever took a STOCHASTIC decision (see
+# ``pt_reduce``).
+PT_ACC_WIDTH = 10
 _PT_ACC_LEFTOVER = 4
 _PT_ACC_ALPHA = 8
+#: 1.0 once the path has made any random choice beyond the sub-pixel jitter:
+#: a lit crossing (next-event estimation picks an emitter), an authored
+#: crossing or a custom scatter, or a lobe pick with more than the
+#: pass-through branch available. Sticky -- only ever written 1.0, and
+#: ``pt_acc`` is zeroed once per wave, so it survives the several ``pt_shade``
+#: launches one path takes.
+#:
+#: A path that never sets it is deterministic GIVEN ITS JITTER: an unlit
+#: transparent stack (pass-through at probability 1), an unlit opaque absorb,
+#: and an escape to the background or environment map. Those are the pixels
+#: adaptive sampling is allowed to stop early -- the half-buffer error
+#: estimate cannot tell "converged at zero" from "has not found the light
+#: yet", so the host requires this to be zero as well (see
+#: ``path_tracer._pt_active_pixels``).
+_PT_ACC_STOCH = 9
 
 # Device-side truncation tallies, read back by the host once per wave and fed
 # through ``truncation.record_truncation`` (ceilings are counted, not silent).
@@ -800,23 +816,40 @@ def pt_env_pdf_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
 @ti.kernel
 def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 seed_root: ti.u32, animated_seed: ti.i32, time_start: ti.i32,
-                width: ti.i32, height: ti.i32, tile_start: ti.i32,
+                width: ti.i32, height: ti.i32,
                 half_screen_w: ti.f32, half_screen_h: ti.f32,
                 cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
                 pixel_basis_x: ti.types.ndarray(),
                 pixel_basis_y: ti.types.ndarray(), near_clip: ti.f32,
+                pix_list: ti.types.ndarray(),
                 rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
                 rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray()):
     """Write each slot's jittered primary ray.
 
     Slot layout: ``slot = k * tile_pixels + p_local`` holds wave sample
-    ``sample_base + k`` of tile pixel ``p_local``, so one wave puts every tile
-    pixel's next ``S`` samples in flight and ``pt_reduce`` can walk a pixel's
-    slots at stride ``tile_pixels``. The rest of the per-slot state is
-    constant at generation and broadcast-filled by the host (the same
-    coalesced-fill reasoning as the deterministic ``const_fill`` path) --
-    except ``base_dist`` under a near clip, which varies per ray and is
-    written here over the host's broadcast zero.
+    ``sample_base + k`` of the wave's ``p_local``-th pixel, so one wave puts
+    every one of its pixels' next ``S`` samples in flight and ``pt_reduce``
+    can walk a pixel's slots at stride ``tile_pixels``. The rest of the
+    per-slot state is constant at generation and broadcast-filled by the host
+    (the same coalesced-fill reasoning as the deterministic ``const_fill``
+    path) -- except ``base_dist`` under a near clip, which varies per ray and
+    is written here over the host's broadcast zero.
+
+    ``pix_list[p_local]`` is the wave's pixel list: the GLOBAL flat cell
+    ``(frame - time_start) * width * height + pixel`` each of the wave's
+    ``tile_pixels`` columns renders. Adaptive sampling
+    (``pt_error_target > 0``) hands a compacted list of the pixels that have
+    not converged; the uniform loop hands the tile's identity list
+    ``tile_start .. tile_start + tile_pixels``. ``rs_pix`` therefore stores
+    the GLOBAL cell, and the traverse and shade kernels take
+    ``ray_offset = 0`` -- there is no contiguous tile to offset by any more.
+
+    ``tile_pixels`` is the number of pixels in THIS wave, which is also what
+    makes the sampler's per-pixel prefix contiguous: every pixel alive in a
+    wave has received exactly the same number of samples so far, so
+    ``s_index = sample_base + slot // tile_pixels`` still enumerates
+    ``0 .. n_p`` for each of them without gaps or repeats (sampler purity,
+    ``DESIGN_path_tracer_roadmap.md`` contract 1).
 
     ``animated_seed`` is ``rt_settings.pt_animated_seed`` as 1 / 0 and folds
     the frame out of the sampler key when it is 0; ``pt_shade`` reads the same
@@ -826,7 +859,7 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     for slot in range(num_slots):
         p_local = slot % tile_pixels
         s = sample_base + slot // tile_pixels
-        g = tile_start + p_local
+        g = pix_list[p_local]
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         f = time_start + f_rel
@@ -854,7 +887,7 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
         for k in ti.static(range(3)):
             rs_ro[slot, k] = ro[k]
             rs_rd[slot, k] = rd[k]
-        rs_pix[slot] = p_local
+        rs_pix[slot] = g
 
 
 @ti.func
@@ -1241,6 +1274,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             if aov_on:
                 if pt_aov[r, _AOV_CLOSED] < 0.5:
                     aov_open = 1
+            # Set at the first random decision this launch takes (see
+            # ``_PT_ACC_STOCH``); folded into the sticky column at write-back.
+            stoch = 0
 
             kb_t = ti.Vector([0.0] * kbuf)
             kb_layer = ti.Vector([0.0] * kbuf)
@@ -1505,6 +1541,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # frag-pipeline work outright (its ``local`` would be
                 # multiplied by the zeroed alpha anyway).
                 if lit and (suppressed == 0):
+                    # The lit treatment samples ONE emitter out of the
+                    # next-event table per light sample, so this crossing's
+                    # value is a Monte Carlo estimate however many lobes the
+                    # continuation below ends up offering.
+                    stoch = 1
                     tm = f % tri_mat.shape[0]
                     emissive = ti.math.vec3(tri_mat[tm, prim, 0],
                                             tri_mat[tm, prim, 1],
@@ -1725,6 +1766,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
                 elif authored and (suppressed == 0):
+                    # An authored-appearance crossing draws too (its shadow
+                    # fan, and any custom scatter's branch pick below).
+                    stoch = 1
                     vis = ti.Vector([1.0] * (SHADOW_VIS_CHANNELS * vis_lights))
                     if ti.static(shadows != 0):
                         recv_a = 1
@@ -1800,6 +1844,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             T, tri_mat, f, prim,
                                             bounces_left, 1)
                                     sc_on = 1
+                                    stoch = 1
 
                 indirect_path = bounces_left < max_b
                 add = thru * alpha * local
@@ -2016,6 +2061,13 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     aov_open = 0  # the absorbing surface is the guide
                     done = True
                     break
+                if w_sum - w_pass > 1e-9:
+                    # More than the pass-through branch is available, so the
+                    # pick below is a real draw -- and whichever branch wins,
+                    # this sample is one realisation of several. An unlit
+                    # transparent stack has ``w_sum == w_pass`` and stays
+                    # deterministic; an unlit opaque absorb never gets here.
+                    stoch = 1
                 u_lobe = _pt_rng(seed_root, key, s_index, processed, 7)
                 pick = u_lobe * w_sum
                 if pick < w_pass:
@@ -2193,6 +2245,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
+            if stoch == 1:
+                # Sticky: only ever written 1.0, never cleared, so a path that
+                # became stochastic on an earlier launch stays flagged.
+                pt_acc[r, _PT_ACC_STOCH] = 1.0
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 rs_int[r, _INT_RING0 + q] = ring[q]
             if aov_on:
@@ -2381,13 +2437,15 @@ def pt_shade(*args):
 
 
 @ti.kernel
-def pt_reduce(tile_start: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
-              transparent: ti.i32, width: ti.i32, height: ti.i32,
+def pt_reduce(sample_base: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
+              transparent: ti.i32, adaptive: ti.i32,
+              width: ti.i32, height: ti.i32,
+              pix_list: ti.types.ndarray(),
               out: ti.types.ndarray(), pt_acc: ti.types.ndarray(),
-              accum: ti.types.ndarray()):
+              accum: ti.types.ndarray(), accum_odd: ti.types.ndarray()):
     """Fold one wave's per-path rows into the chunk's per-pixel sample sums.
 
-    One thread per tile pixel walks its own wave samples in index order --
+    One thread per wave pixel walks its own wave samples in index order --
     exclusive slots, no atomics, a fixed summation order, because no path
     splits today (not because frames are promised to match). The background
     (prefilled into ``out`` at byte scale) enters here through each path's
@@ -2395,20 +2453,45 @@ def pt_reduce(tile_start: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
     where ``t_a`` is the deterministically-composited camera-segment
     transparency, so alpha matches the deterministic renderer's compositing
     contract in expectation (exactly, on scatter-free content).
+
+    ``pix_list[p_local]`` is the wave's pixel list (see ``pt_generate``): the
+    global flat cell each column belongs to. ``sample_base`` is the sample
+    index the wave starts at, so slot ``k`` of a pixel carries sample
+    ``sample_base + k``.
+
+    With ``adaptive`` on, ``accum_odd[f_rel, p]`` collects the two things the
+    host's stopping rule needs (section 2 of
+    ``DESIGN_path_tracer_roadmap.md``): columns 0-2 are the RGB of the ODD
+    sample indices, which subtracted from ``accum`` give the two half-sums,
+    and column 3 counts this pixel's STOCHASTIC samples -- the paths that took
+    any random decision beyond the sub-pixel jitter (``_PT_ACC_STOCH``). A
+    pixel with a non-zero count is never stopped early, whatever its halves
+    say. ``accum`` itself keeps the full sums and is accumulated in exactly
+    the order it always was, so the uniform arm (``adaptive == 0``,
+    ``accum_odd`` a dummy) is byte-identical.
     """
     pixels_per_frame = width * height
     for p_local in range(tile_pixels):
-        g = tile_start + p_local
+        g = pix_list[p_local]
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         sum_acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         sum_leftover = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        odd_acc = ti.math.vec3(0.0, 0.0, 0.0)
+        odd_leftover = ti.math.vec3(0.0, 0.0, 0.0)
+        stoch_count = 0.0
         sum_t_alpha = 0.0
         for k in range(wave_samples):
             r = k * tile_pixels + p_local
             for c in ti.static(range(4)):
                 sum_acc[c] += pt_acc[r, c]
                 sum_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
+            if adaptive != 0:
+                stoch_count += pt_acc[r, _PT_ACC_STOCH]
+                if (sample_base + k) % 2 == 1:
+                    for c in ti.static(range(3)):
+                        odd_acc[c] += pt_acc[r, c]
+                        odd_leftover[c] += pt_acc[r, _PT_ACC_LEFTOVER + c]
             sum_t_alpha += pt_acc[r, _PT_ACC_ALPHA]
         background = ti.math.vec4(
             ti.cast(out[f_rel, p, 0], ti.f32),
@@ -2417,6 +2500,11 @@ def pt_reduce(tile_start: ti.i32, tile_pixels: ti.i32, wave_samples: ti.i32,
             ti.cast(out[f_rel, p, 3], ti.f32)) / 255.0
         for c in ti.static(range(4)):
             accum[f_rel, p, c] += sum_acc[c] + sum_leftover[c] * background[c]
+        if adaptive != 0:
+            for c in ti.static(range(3)):
+                accum_odd[f_rel, p, c] += odd_acc[c] \
+                    + odd_leftover[c] * background[c]
+            accum_odd[f_rel, p, 3] += stoch_count
         if transparent != 0:
             bg_alpha = ti.cast(out[f_rel, p, 4], ti.f32) / 255.0
             accum[f_rel, p, 4] += ti.cast(wave_samples, ti.f32) \

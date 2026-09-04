@@ -482,6 +482,134 @@ Sketch, staying inside the contract:
 uniform sampling on the `lit_and_shadowed` suite scene; the 2-D composite
 still exact (contract 4).
 
+### 2.1 LANDED 2026-09-04
+
+Shipped as sketched, with one addition the measurements forced and one
+correction. The settings are `pt_min_samples` (`ALGAN_PT_MIN_SAMPLES`, 4) and
+`pt_error_target` (`ALGAN_PT_ERROR_TARGET`, **0.02**); `samples_per_pixel` is
+now a ceiling, `RenderPlan.path_samples_mean` reports what was actually
+taken (0 = the path tracer did not run), and one PERF line per chunk names
+the pixels at the floor, at the ceiling and the mean.
+
+**Adaptive sampling stops only pixels that were deterministic by
+construction. That is what makes it safe.** A pixel is eligible to stop
+before the ceiling only if *none* of its samples took a random decision, and
+only then does the error estimate get a vote. `pt_shade` sets a sticky flag
+(`_PT_ACC_STOCH`, one new `pt_acc` column) the first time a path gambles: a
+lit crossing (next-event estimation picks one emitter out of the table), an
+authored crossing or a custom scatter, or a lobe pick where
+`w_sum - w_pass > 1e-9` (more than the pass-through branch was available).
+An unlit stack (pass-through at probability 1), an unlit opaque absorb, and
+an escape to the background or the environment map set nothing. `pt_reduce`
+sums the flagged samples per pixel into a fourth column of the half-sum
+buffer, and the host requires that count to be zero.
+
+The reason is a correctness defect, not an optimisation. A half-buffer
+difference cannot see this estimator's one failure mode: **a pixel whose
+first samples all return zero has two halves that agree exactly**, and no
+choice of target or eps distinguishes "converged at zero" from "has not
+found the light yet". It was not hypothetical -- on
+`tests/path_traced/scenes/lit_and_shadowed.py`, whose next-event table is
+dominated by an emissive slab most surface points cannot see, a purely
+statistical rule left **249 lit pixels of 9216 stuck at pure black** (255
+counts, mean frame difference 4.91). A one-pixel dilation of the unconverged
+set cut that to 31 pixels but could not remove it: the failure is structural,
+and on the renderer that exists precisely because it must not refuse or
+corrupt a scene, "rarer" is not an answer. The kernel already knows which
+paths gambled, so it says so. With the gate the same scene renders
+**byte-identical** to its uniform arm at mean 10.30 samples of 48.
+
+The dilation is kept, now for the reason it is actually good at: a 2-D edge
+pixel is deterministic given its jitter, so four jittered samples that happen
+to agree would otherwise freeze a coverage value its neighbours are visibly
+still resolving. It is grown from the unconverged pixels each round, never
+from the rescued ones, so the ring stays one pixel wide, and it never revives
+a pixel that has already stopped -- which is what keeps every live pixel's
+sample count equal.
+
+**What it is, mechanically.** `pt_reduce` sums the odd sample indices' RGB
+into a second `[F, W·H, 4]` buffer (columns 0-2; column 3 is the stochastic
+count), so with `n` samples so far the two half means are
+`E = (accum − odd)/(n/2)` and `O = odd/(n/2)`, and
+
+    err = max_c |E − O| / (max_c (E + O) + 0.02)
+
+Every wave then runs over an explicit pixel LIST rather than a contiguous
+tile span (`pt_generate` gains `pix_list`, `rs_pix` stores the global cell
+and `ray_offset` is 0 for traverse and shade), and `pt_reduce` writes
+through the same list. Slot layout is unchanged — `r = k · active + p` —
+so `s_index = sample_base + r // tile_pixels` still enumerates each pixel's
+contiguous Sobol prefix, because every pixel alive in a wave has received
+the same count. Before `finalize_samples` the per-pixel sums are rescaled by
+`samples / n_p` (and so are the denoiser's AOV sums), so the caller's single
+scalar division is untouched. At `pt_error_target = 0` none of it runs and
+no half-sum buffer is allocated, so that arm's memory model, batching and
+output are byte-identical (`tests/path_traced` is 4 passed under
+`ALGAN_PT_ERROR_TARGET=0`).
+
+**The correction: the floor cannot be one wave.** At any resolution where the
+budget fits a whole frame in one tile, `_pt_tile_shape` puts every sample in
+flight at once — so the first wave would finish the render before a pixel
+could be retired. The wave size is capped at the floor first and then at
+most DOUBLES per wave, which bounds a pixel's overshoot past its true
+stopping point at 2x and costs about 2x the launches.
+
+**Measured, this CPU box** (4 vCPU x64, Quadrants 1.3.0, `pt_baseline.py`,
+320x180, five frames, 16 spp, 4 bounces, denoiser off, warm RUN 2, median of
+three):
+
+| scene | target | mean spp | warm wall | frame diff vs target 0 |
+| --- | --- | --- | --- | --- |
+| `text_2d` | 0 | 16.00 | 0.834 s | — |
+| `text_2d` | 0.02 | 5.54 | 0.622 s (**1.34x**) | max 119, mean 0.311, 883 px > 8 |
+| `lit` | 0 | 16.00 | 1.511 s | — |
+| `lit` | 0.02 | 5.94 | 1.535 s (neutral) | **max 0 — byte-identical** |
+
+and across targets (288000 pixels, five frames):
+
+| scene | target | max | mean | px > 8 |
+| --- | --- | --- | --- | --- |
+| `lit` | 0.01 / 0.02 / 0.05 | 0 | 0.000 | 0 |
+| `text_2d` | 0.01 / 0.02 / 0.05 | 119 | 0.311 / 0.311 / 0.318 | 883 / 883 / 926 |
+
+Four readings to carry forward.
+
+* **Nothing that gambled was stopped, so the lit scene is exact.** `lit`
+  takes 2.7x fewer samples and renders byte-identically: every sample it
+  saved was a background pixel. That is also why the wall clock is neutral
+  there — the samples adaptive sampling can safely drop on a lit scene are
+  the cheapest ones (one traversal and out), which is §2's own prediction
+  ("adaptive sampling does nothing for the *lit* pixels' cost per sample")
+  measured.
+* **The remaining cost is 2-D anti-aliasing, and only at edges.** All 883
+  `text_2d` pixels past 8 counts sit on a geometry edge; no interior pixel
+  moves (contract 4 holds exactly). `pt_min_samples` buys them back: a floor
+  of 8 leaves 200 such pixels (mean 0.198, max 99) at mean 9.15 spp instead
+  of 5.54 — half the win for a quarter of the residual.
+* **The target is not the throughput knob.** Mean spp is flat from 0.005 to
+  0.05: a pixel is either exactly converged or not eligible at all. 0.02 is
+  picked from the tolerance analysis in `raytracing/settings.py` — it accepts
+  a half-buffer difference of about 1.3–2.2 counts of 255 across four decades
+  of linear radiance, which is why the metric needs no perceptual transform
+  (a *relative* metric is invariant under any power law, so sqrt or a PU
+  curve would only rescale it).
+* **`tests/path_traced` at the shipped default is 1 failed, 3 passed.**
+  `lit_and_shadowed` and `environment_and_refraction` now match their
+  baselines within tolerance; `translucency_and_order` differs by up to 28
+  counts on 65 pixels of 46080 (mean 0.011), every one on a translucent
+  square's edge, because that scene renders at 8 spp so its edges get the
+  floor of 4 where the baseline got 8. The baselines were deliberately not
+  regenerated; the arm that must stay green is `ALGAN_PT_ERROR_TARGET=0`.
+
+**What the T4 will measure**, and what this box cannot: §0.1's 2-D arm spent
+0.30 s of kernel time per five 720p frames re-peeling zero-variance content
+16 times, and this box's 320x180 render is too small for per-launch cost to
+be read (`agent_guidance/gpu_harnesses.md`). The two numbers to take there
+are the 720p `text_2d` wall against the target-0 arm — where the peel is
+large and the ~2x extra launches are amortised — and whether the doubling
+schedule's extra waves cost anything on `lit` at 720p, where they were
+neutral here.
+
 
 ## 3. Temporal stability
 

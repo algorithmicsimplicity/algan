@@ -67,10 +67,13 @@ from algan.rendering.raytracing.settings import (
 )
 from algan.rendering.raytracing.truncation import (
     TruncationCounts,
+    attach_render_stats,
     attach_truncations,
     record_truncation,
     report_truncations,
+    restore_path_samples,
     restore_truncations,
+    snapshot_path_samples,
     snapshot_truncations,
 )
 from algan.rendering.taichi_runtime import (
@@ -163,6 +166,13 @@ class RenderPlan:
     #: of a *finished* batch carries counts; the one built during validation
     #: is necessarily empty.
     truncations: TruncationCounts = TruncationCounts()
+    #: Samples per pixel the path tracer actually took, averaged over every
+    #: path-traced cell of the render job. With adaptive sampling on
+    #: (``pt_error_target > 0``) ``samples_per_pixel`` is only the ceiling and
+    #: this is the measurement: converged pixels -- every unlit 2-D pixel --
+    #: stop at ``pt_min_samples``. **Zero means the path tracer did not run**,
+    #: so it is 0.0 on every deterministic render.
+    path_samples_mean: float = 0.0
 
     @property
     def is_supported(self) -> bool:
@@ -175,6 +185,7 @@ class RenderPlan:
             "requested_features": list(self.requested_features),
             "unsupported_features": list(self.unsupported_features),
             "truncations": self.truncations.as_dict(),
+            "path_samples_mean": self.path_samples_mean,
         }
 
 
@@ -1606,6 +1617,7 @@ def render_batch_raytraced(
         # memory: the failed attempt's truncations describe frames that are
         # about to be re-rendered, and counting both attempts would double them.
         entry_truncations = snapshot_truncations()
+        entry_path_samples = snapshot_path_samples()
         try:
             post_tonemap = is_post_process_tonemap_enabled()
             if rt_settings.linear_color_space and not post_tonemap:
@@ -1693,7 +1705,7 @@ def render_batch_raytraced(
                         merged["textures"],
                         out,
                     )
-                accum = None
+                accum = accum_odd = None
                 if samples > 1:
                     # f32 per-pixel sample sums, averaged by finalize_samples.
                     # Its own scope: the accumulator is float32 whatever the
@@ -1707,6 +1719,30 @@ def render_batch_raytraced(
                             (end - start, width * height, 5), torch.float32
                         )
                     accum.zero_()
+                    # Local, like ``path_trace_render`` below: the path
+                    # tracer's modules are imported at dispatch so a
+                    # deterministic render never pays for them.
+                    from algan.rendering.raytracing.path_tracer import (
+                        pt_adaptive_active,
+                    )
+
+                    if pt_adaptive_active(samples_eff):
+                        # Adaptive sampling's stopping-rule buffer: the RGB of
+                        # the ODD sample indices plus the count of stochastic
+                        # samples, which is what the per-pixel rule needs
+                        # (roadmap section 2). Allocated only when the
+                        # mechanism runs, so ``pt_error_target = 0`` charges
+                        # the memory model exactly what it charged before --
+                        # which is what keeps that arm's frame batching, and
+                        # therefore its output, identical.
+                        with memory.scope(
+                            "frame_accum_odd",
+                            accum_cells=(end - start) * width * height * 4,
+                        ):
+                            accum_odd = memory.get_tensor(
+                                (end - start, width * height, 4), torch.float32
+                            )
+                        accum_odd.zero_()
                 aovs = aov_bg = None
                 if denoiser is not None:
                     # The denoiser's guides: per-pixel sample sums of albedo,
@@ -1774,6 +1810,7 @@ def render_batch_raytraced(
                         aovs=aovs,
                         out=out,
                         accum=accum,
+                        accum_odd=accum_odd,
                     )
                 finalize_samples(
                     samples_eff,
@@ -1877,6 +1914,7 @@ def render_batch_raytraced(
             logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
             rewind_to(entry_pointers)
             restore_truncations(entry_truncations)
+            restore_path_samples(entry_path_samples)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
@@ -1899,7 +1937,7 @@ def render_batch_raytraced(
     # onto the plan the Scene hands back, so a script can assert on them
     # without parsing logs.
     report_truncations()
-    scene.last_render_plan = attach_truncations(plan)
+    scene.last_render_plan = attach_render_stats(attach_truncations(plan))
     if memory is not None and launched_frames:
         memory.last_launch_frames = max(launched_frames)
     if len(chunks) == 1:

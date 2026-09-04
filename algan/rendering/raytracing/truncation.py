@@ -49,6 +49,14 @@ can assert on them without parsing logs.
 Scope: one *render job*.  :meth:`_TruncationRecorder.reset` is called by
 ``RenderLoopMixin.get_frames``, which is the boundary of a
 ``save_video`` / ``save_frame``.
+
+One non-truncation statistic rides here too: the path tracer's **mean samples
+per pixel** (:func:`record_path_samples`).  It is not a ceiling and never
+warns -- adaptive sampling stopping a converged pixel is the sampler working
+as designed, so it logs at ``PERF`` like the budget events -- but it wants
+exactly this module's three properties: render-job scope, the same
+snapshot/restore so a chunk discarded for memory does not count twice, and a
+graft onto the frozen ``RenderPlan`` afterwards.
 """
 
 from __future__ import annotations
@@ -171,6 +179,8 @@ class _TruncationRecorder:
         self._reported = dict.fromkeys(_CEILING_NAMES, 0)
         self._caps = {}
         self._warned = set()
+        # Path-tracer samples: (sum of per-pixel sample counts, cells).
+        self._path_samples = (0.0, 0)
 
     def record(self, ceiling, count, cap=None):
         """Add ``count`` occurrences of ``ceiling``.
@@ -185,6 +195,32 @@ class _TruncationRecorder:
         self._counts[ceiling] = _CEILING_REDUCERS[ceiling](self._counts[ceiling], count)
         if cap is not None:
             self._caps[ceiling] = int(cap)
+
+    def record_path_samples(self, sample_sum, cells):
+        """Add one path-traced chunk's per-pixel sample total."""
+        cells = int(cells)
+        if cells <= 0:
+            return
+        total, seen = self._path_samples
+        self._path_samples = (total + float(sample_sum), seen + cells)
+
+    def path_samples_mean(self) -> float:
+        """Samples per pixel the path tracer actually took, over the job.
+
+        Zero means the path tracer did not run: the deterministic renderer
+        never calls :func:`record_path_samples`, and a chunk with no cells is
+        not recorded, so a zero is "no path-traced pixels" rather than a
+        missing instrument.
+        """
+        total, cells = self._path_samples
+        return total / cells if cells else 0.0
+
+    def path_samples_state(self):
+        """The raw (sum, cells) pair, for snapshot/restore."""
+        return self._path_samples
+
+    def restore_path_samples(self, state):
+        self._path_samples = (float(state[0]), int(state[1]))
 
     def snapshot(self) -> TruncationCounts:
         """The running totals, as the immutable value the plan carries."""
@@ -272,3 +308,34 @@ def attach_truncations(plan):
     counts are grafted on afterwards rather than mutated in place.
     """
     return replace(plan, truncations=snapshot_truncations())
+
+
+def record_path_samples(sample_sum, cells):
+    """Record one path-traced chunk's samples: ``sum(n_p)`` over ``cells``."""
+    _recorder.record_path_samples(sample_sum, cells)
+
+
+def path_samples_mean() -> float:
+    """Mean samples per pixel the path tracer took this render job (0 = none)."""
+    return _recorder.path_samples_mean()
+
+
+def snapshot_path_samples():
+    """The path-sample accumulator's state, for the OOM chunk retry."""
+    return _recorder.path_samples_state()
+
+
+def restore_path_samples(state):
+    """Roll the path-sample accumulator back to ``state``."""
+    _recorder.restore_path_samples(state)
+
+
+def attach_render_stats(plan):
+    """Return ``plan`` carrying the render job's non-ceiling statistics.
+
+    Today that is the path tracer's mean samples per pixel, which adaptive
+    sampling makes a *measurement* rather than an echo of
+    ``samples_per_pixel``. Grafted like the truncations, and for the same
+    reason: ``RenderPlan`` is frozen and is built before the batch renders.
+    """
+    return replace(plan, path_samples_mean=path_samples_mean())

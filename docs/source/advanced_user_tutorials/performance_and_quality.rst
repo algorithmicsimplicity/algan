@@ -136,6 +136,24 @@ estimate them by sampling. The path tracer renders at output resolution and
 anti-aliases by jittering its samples inside each pixel, so
 ``supersampling`` does not apply to it.
 
+``samples_per_pixel`` is a **ceiling, not a count**. A pixel stops early only
+when it was never going to change: the renderer knows which pixels it resolved
+deterministically -- flat 2-D artwork, text, unlit transparency and the
+background all composite with no randomness at all -- and gives those
+``SETTINGS.raytracing.experimental.pt_min_samples`` samples (4) plus whatever
+their own error estimate asks for, up to
+``SETTINGS.raytracing.experimental.pt_error_target`` (0.02). **Any pixel whose
+light was estimated by sampling runs to the full count**, so no lit surface,
+shadow or reflection is ever cut short. That is where the saving comes from on
+a typical frame, and why it does not cost accuracy where it would show.
+``RenderResult.render_plan.path_samples_mean`` reports the samples per pixel a
+render actually took (0 means the path tracer did not run). What adaptive
+sampling does change is the *anti-aliasing* of 2-D edges, which is estimated
+by jittering samples inside the pixel: raise ``pt_min_samples`` if a
+text-heavy frame's edges look coarser than you want, or set
+``pt_error_target = 0`` to restore uniform sampling and give every pixel
+exactly ``samples_per_pixel``.
+
 Noise is stable from frame to frame by default: static regions of a
 path-traced animation get the same estimate every frame, so residual noise
 reads as a fixed grain rather than a shimmer. Set

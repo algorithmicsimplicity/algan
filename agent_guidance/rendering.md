@@ -134,3 +134,16 @@ The flag is read **host-side only** (`ALGAN_AREA_LIGHT_SOFT_SHADOWS` / `SETTINGS
 `raytracing/truncation.py` counts surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.
 
 The counters are unconditional, so a zero is a reading rather than a missing instrument; keep them that way when adding a ceiling.
+
+One non-ceiling statistic rides the same recorder because it wants the same three properties (render-job scope, rollback on the OOM chunk retry, a graft onto the frozen plan): `RenderPlan.path_samples_mean`, the samples per pixel the path tracer actually took. It is grafted by `attach_render_stats` rather than `attach_truncations`, it logs at `PERF` rather than `WARNING` — stopping a converged pixel is the sampler working, not a degraded image — and **zero means the path tracer did not run**.
+
+## `samples_per_pixel` is the path tracer's ceiling, not its count
+
+With `SETTINGS.raytracing.experimental.pt_error_target > 0` (0.02, the default) a path-traced pixel gets `pt_min_samples` (4) and then keeps drawing until it is finished. **Eligibility to stop is a property of the paths, not of the statistics**: `pt_shade` sets a sticky flag (`_PT_ACC_STOCH`) the first time a path takes a random decision — a lit crossing's next-event estimation, an authored crossing or a custom scatter, a lobe pick with more than the pass-through branch — `pt_reduce` counts the flagged samples per pixel into column 3 of `accum_odd`, and the host stops a pixel only when that count is zero *and* its even/odd half-sums agree. That gate is load-bearing, not a refinement: a half-buffer difference cannot tell a converged black pixel from one whose first samples all missed the light, and a purely statistical rule left 249 lit pixels of 9216 stuck at pure black on `tests/path_traced/scenes/lit_and_shadowed.py`. Four consequences for anyone editing `path_tracer.py`:
+
+- **A new stochastic decision in `pt_shade` needs a `stoch = 1` beside it.** Adding one without the flag is not a performance bug, it is a wrong-pixel bug: adaptive sampling would freeze that pixel on however few samples it had.
+
+
+- **Every wave runs over a pixel LIST**, not a contiguous tile span. `pt_generate` takes `pix_list`, `rs_pix` holds the GLOBAL flat cell, and traverse and shade take `ray_offset = 0`. The uniform arm passes the identity list, so there is one code path.
+- **`tile_pixels` is the wave's active count**, which is what keeps `s_index = sample_base + r // tile_pixels` a contiguous Sobol prefix per pixel: every pixel alive in a wave has received the same number of samples.
+- **`pt_error_target = 0` must stay byte-identical** — no half-sum buffer is allocated (so the memory model and the frame batching are unchanged) and no rescale runs. `ALGAN_PT_ERROR_TARGET=0 pytest -q tests/path_traced` is the guard, and it is the arm that must be green; at the shipped default those baselines differ on purpose (roadmap §2.1).

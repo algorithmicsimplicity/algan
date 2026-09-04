@@ -10,7 +10,7 @@ Structure per chunk::
 
     for tile of pixels:                       # bounded by the arena's free bytes
         allocate per-slot state, pool = tile_pixels * wave_samples
-        for wave of samples:                  # slot = (wave sample, tile pixel)
+        for wave of samples:                  # slot = (wave sample, wave pixel)
             pt_generate                       # jittered primaries, one per slot
             while any path is active:
                 wavefront_traverse_events     # SHARED with the deterministic
@@ -20,8 +20,21 @@ Structure per chunk::
                                               # scattering stages, as they land)
                 compact                       # keep status == _ACTIVE
             pt_reduce                         # exclusive per-pixel sums -> accum
+            compact the pixel list            # adaptive sampling only
 
     finalize_samples(accum) -> frame buffer   # caller (tracer.render_chunk)
+
+Every wave runs over an explicit **pixel list** (``pt_generate``'s
+``pix_list``), not over a contiguous span: the uniform loop hands it the
+tile's identity list, and adaptive sampling (``pt_error_target > 0``,
+roadmap section 2) hands it the pixels that have not finished. One code path,
+and ``samples_per_pixel`` becomes a ceiling that converged pixels never
+reach. A pixel may stop early only if **none of its samples took a random
+decision** -- the kernel flags those (``_PT_ACC_STOCH``) and the host refuses
+to stop a pixel that has any, whatever its error estimate says, because a
+Monte Carlo estimator cannot tell "converged at zero" from "has not found the
+light yet". What is left to stop is the zero-variance content section 2 was
+aimed at: 2-D interiors, unlit stacks and the background.
 
 One wave holds one path per (tile pixel, wave sample), so every path owns an
 exclusive accumulator row and accumulation is plain stores rather than
@@ -43,6 +56,7 @@ import math
 
 import torch
 
+from algan.logging.logger import PERF, get_logger
 from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.path_tracer_taichi import (
@@ -93,17 +107,23 @@ from algan.rendering.raytracing.shading_taichi import (
     ALL_PIDS,
     shadow_vis_slots,
 )
-from algan.rendering.raytracing.truncation import record_truncation
+from algan.rendering.raytracing.truncation import (
+    record_path_samples,
+    record_truncation,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     SCA_WIDTH_NESTED,
     wavefront_traverse_events,
 )
 from algan.utils.memory_utils import InsufficientMemoryException
 
+logger = get_logger("raytracing")
+
 # Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (the
 # nested-IOR width -- the path tracer always carries the media stack),
 # rs_int (PT_INT_WIDTH i32: the shared 5 plus the closed-shell ring),
-# rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32), pt_aov
+# rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32-- the radiance,
+# leftover and alpha columns plus adaptive sampling's stochastic flag), pt_aov
 # (PT_AOV_WIDTH f32 -- budgeted whether or not the denoiser's AOVs are on,
 # since the budget only shapes work grouping, never results),
 # the compactor's ping-pong index pair (2 i32), and the transient
@@ -123,6 +143,191 @@ _PT_BYTES_PER_SLOT = (
 )
 # Per-tile fixed words: the compactor's counter, the stats tallies, alignment.
 _PT_FIXED_BYTES = 64
+
+#: Absolute floor in the adaptive error metric's denominator, in the frame
+#: buffer's linear radiance units (1.0 = display white). Without it a pixel
+#: whose radiance is near zero divides a tiny difference by a tinier sum and
+#: runs to the ceiling for noise nobody can see; with it, the tolerance at
+#: ``pt_error_target = t`` is ``t * _PT_ERR_EPS`` in absolute linear units
+#: wherever the signal is smaller than the floor.
+#:
+#: 0.02 is chosen so the accepted half-buffer difference is roughly CONSTANT
+#: in the 8-bit counts the frame is finally written as. Pushing
+#: ``t * (value + 0.02)`` through the sRGB OETF's slope at each level, a
+#: target of 0.02 accepts about 1.4 counts at linear 0.001, 1.3 at 0.01, 1.9
+#: at 0.1 and 2.2 at 1.0 -- flat across four decades, because the encode's
+#: log-like shape cancels the metric's proportionality to the signal. That is
+#: also why the metric is computed on linear radiance with no perceptual
+#: transform: a *relative* metric is invariant under any power law, so sqrt or
+#: a PU curve would only rescale it by a constant, and this floor is the only
+#: part of the formula that actually decides how darks are treated.
+_PT_ERR_EPS = 0.02
+
+
+def pt_adaptive_active(samples):
+    """Whether adaptive sampling runs for a render of ``samples`` spp.
+
+    ``pt_error_target = 0`` is the byte-parity escape hatch: uniform waves,
+    no half-sum buffer, no per-pixel rescale. A ceiling below two samples has
+    nothing to stop early either, and the estimator needs balanced halves.
+    Read live off ``rt_settings`` at call time, like every other toggle.
+    """
+    return int(samples) >= 2 and float(rt_settings.pt_error_target) > 0.0
+
+
+def _pt_floor_samples(samples):
+    """The floor every pixel is given before any of them may stop.
+
+    Forced even (the estimator splits a pixel's samples into halves, and an
+    odd count leaves them unbalanced) and at least 2, then capped by the
+    ceiling.
+    """
+    floor = max(2, int(rt_settings.pt_min_samples))
+    floor += floor % 2
+    return min(floor, int(samples))
+
+
+def _log_sample_spread(n_p, samples, num_cells, floor=None):
+    """One PERF line per chunk: what the ceiling actually cost.
+
+    Budget events log at PERF rather than WARNING (``truncation.py``'s rule):
+    stopping a converged pixel is the sampler working as designed, not a
+    degradation of the image. ``n_p`` of ``None`` is the uniform arm, where
+    every pixel is at the ceiling by construction and nothing needs reading
+    back from the device.
+    """
+    if not logger.isEnabledFor(PERF):
+        return
+    if n_p is None:
+        logger.log(
+            PERF,
+            f"path tracer samples/pixel: uniform {samples} "
+            f"(pt_error_target = 0) over {num_cells} cells.",
+        )
+        return
+    at_floor = int((n_p <= floor).sum().item())
+    at_ceiling = int((n_p >= samples).sum().item())
+    mean = float(n_p.to(torch.float32).mean().item())
+    logger.log(
+        PERF,
+        f"path tracer samples/pixel: mean {mean:.2f} of {samples} "
+        f"({at_floor} of {num_cells} cells stopped at the floor {floor}, "
+        f"{at_ceiling} reached the ceiling).",
+    )
+
+
+def _pt_wave_size(pool, active_pixels, sample_base, floor_samples, remaining):
+    """How many samples the next adaptive wave puts in flight, per pixel.
+
+    Three limits, in order of who imposes them:
+
+    * **The pool.** The tile's slots were allocated for the whole tile, so a
+      compacted list of ``active_pixels`` may spend ``pool // active_pixels``
+      of them per pixel -- exactly the "same budget, fewer pixels" the
+      shrinking list buys. ``//`` against the pool that was actually
+      allocated (rather than against the arena budget, which the state
+      allocation has since eaten into) is what keeps it from overrunning.
+    * **The decision schedule.** The first waves take the tile to
+      ``floor_samples`` and stop there, because a single wave of
+      ``samples_per_pixel`` -- which is what the budget allows at any
+      resolution a whole frame fits in one tile -- would finish the render
+      before a single pixel could be retired. Above the floor the count at
+      most DOUBLES per wave, so the error is re-checked at 2x granularity and
+      a pixel overshoots its true stopping point by at most a factor of two.
+    * **The ceiling**, and evenness: the estimator splits a pixel's samples
+      into halves, so every wave but the last keeps the running total even.
+      The last wave may be odd -- no decision is taken after it.
+    """
+    if sample_base < floor_samples:
+        limit = floor_samples - sample_base
+    else:
+        limit = min(remaining, max(2, sample_base))
+    sw = max(1, min(pool // max(1, active_pixels), limit))
+    if sw > 1 and sw < remaining:
+        sw -= sw % 2
+    return max(1, sw)
+
+
+def _pt_active_pixels(
+    accum, accum_odd, pix_list, num_samples, target, keep_buf, tile_start, width
+):
+    """The subset of ``pix_list`` that may not stop yet.
+
+    **A pixel may stop early only if every one of its samples was
+    deterministic given the sub-pixel jitter**, and only then does its error
+    estimate get a vote. ``accum_odd[..., 3]`` is the count of samples whose
+    path took any random decision (``_PT_ACC_STOCH`` in
+    ``path_tracer_taichi``: a lit crossing's next-event estimation, an
+    authored crossing or a custom scatter, a lobe pick with more than the
+    pass-through branch), and a non-zero count runs the pixel to the ceiling
+    unconditionally.
+
+    That gate is the correctness of the whole mechanism, not a refinement of
+    it. A half-buffer difference cannot see the estimator's one failure mode:
+    a pixel whose first samples ALL return zero has two halves that agree
+    exactly, and no choice of ``target`` or ``eps`` distinguishes "converged
+    at zero" from "has not found the light yet". It was not hypothetical --
+    on ``tests/path_traced/scenes/lit_and_shadowed.py``, whose next-event
+    table is dominated by an emissive slab that most surface points cannot
+    see, a purely statistical rule left 249 lit pixels of 9216 stuck at pure
+    black (255 counts). The kernel knows which paths gambled, so it says so
+    and no lit pixel is ever stopped on evidence a Monte Carlo estimator
+    cannot supply. What is left to stop is exactly what section 2 was for:
+    2-D interiors, unlit stacks, and the background, which are zero-variance
+    by construction (roadmap contract 4).
+
+    For those eligible pixels, with ``n = num_samples`` samples so far each
+    half holds ``n / 2`` of them: ``O = accum_odd / (n/2)`` is the odd half's
+    mean and ``E = (accum_rgb - accum_odd) / (n/2)`` the even half's, so
+
+        err = max_c |E - O| / (max_c (E + O) + _PT_ERR_EPS)
+
+    which in terms of the stored sums is
+    ``max_c|rgb - 2*odd| / (max_c(rgb) + (n/2) * eps)``. Every input is a
+    deterministic sum, so the decision -- which pixels stop, and after how
+    many samples -- is a reproducible function of the rendered data rather
+    than of how the render was tiled.
+
+    Only the three colour channels enter. Alpha (column 4, transparent
+    output only) rides the same paths and carries no independent variance,
+    and the leftover columns are already folded into ``accum``'s RGB by
+    ``pt_reduce``.
+
+    **A pixel is also kept alive when a 4-neighbour is.** With the
+    stochastic gate in front of it this is no longer load-bearing for
+    correctness, but it is still worth its cost: a 2-D edge pixel is
+    deterministic given its jitter, and four jittered samples that happen to
+    agree would otherwise freeze a coverage value the neighbouring edge
+    pixels are visibly still resolving. The dilation is grown from the
+    unconverged pixels each round, never from the rescued ones, so the ring
+    stays one pixel wide; it runs over the flat cell index with a stride of
+    ``width``, so it wraps at row ends (one spurious neighbour per row, which
+    can only be conservative); and it never revives a pixel that has already
+    stopped, because only pixels still in ``pix_list`` are candidates. That
+    is what keeps every live pixel's sample count equal, and its Sobol prefix
+    contiguous.
+
+    ``keep_buf`` is a ``[tile_pixels]`` bool scratch buffer, left all-False
+    on exit so the next call need not clear it.
+    """
+    idx = pix_list.long()
+    rgb = accum.view(-1, accum.shape[-1])[idx, :3]
+    odd_row = accum_odd.view(-1, 4)[idx]
+    odd = odd_row[:, :3]
+    inv_half = 2.0 / float(num_samples)
+    diff = (rgb - 2.0 * odd).abs().amax(-1) * inv_half
+    scale = rgb.amax(-1).clamp_min(0.0) * inv_half
+    keep = (diff > target * (scale + _PT_ERR_EPS)) | (odd_row[:, 3] > 0.0)
+    local = idx - tile_start
+    keep_buf[local] = keep
+    grown = keep_buf.clone()
+    grown[1:] |= keep_buf[:-1]
+    grown[:-1] |= keep_buf[1:]
+    if keep_buf.numel() > width:
+        grown[width:] |= keep_buf[:-width]
+        grown[:-width] |= keep_buf[width:]
+    keep_buf[local] = False
+    return pix_list[grown[local]]
 
 
 def _pt_slots_budget(memory):
@@ -450,6 +655,7 @@ def path_trace_render(
     aovs=None,
     out,
     accum,
+    accum_odd=None,
 ):
     """Path trace frames ``[time_start, time_end)`` into ``accum``.
 
@@ -476,6 +682,20 @@ def path_trace_render(
     ``path_tracer_taichi``): the caller divides by ``samples`` and folds
     ``bg_weight`` with its own background colors (the kernel does not know
     them). ``None`` skips all AOV work.
+
+    ``accum_odd`` is the adaptive sampler's stopping-rule buffer -- a zeroed
+    ``[frames, pixels, 4]`` float32 tensor the caller allocates exactly when
+    :func:`pt_adaptive_active` says so, into which ``pt_reduce`` sums the RGB
+    of the ODD sample indices (columns 0-2) and the count of samples whose
+    path took a random decision (column 3). With it, ``samples`` is a
+    CEILING: every pixel gets ``pt_min_samples``, and after that a pixel stops
+    only if none of its samples was stochastic AND its two halves agree to
+    within ``pt_error_target``.
+    The per-pixel sums are rescaled to ``samples`` before returning, so the
+    caller's one scalar division (``finalize_samples``, and the AOVs' own
+    ``1 / samples``) still yields per-pixel means. ``None`` -- which is what
+    ``pt_error_target = 0`` produces -- is the uniform loop, byte for byte as
+    it was before adaptive sampling existed.
     """
     # Local import: tracer imports this module lazily at dispatch, and these
     # helpers live beside the deterministic orchestration it reuses.
@@ -568,6 +788,19 @@ def path_trace_render(
     rr_start = max(0, int(rt_settings.pt_rr_start_bounce))
     firefly_clamp = float(rt_settings.pt_firefly_clamp)
 
+    # Adaptive sampling (roadmap section 2). ``accum_odd`` is the caller's
+    # signal: allocated exactly when the mechanism is on. ``n_p`` counts what
+    # each pixel actually received -- host-side torch, because it is read once
+    # per wave to build the next pixel list and once at the end to rescale.
+    adaptive = accum_odd is not None
+    error_target = float(rt_settings.pt_error_target)
+    floor_samples = _pt_floor_samples(samples) if adaptive else samples
+    n_p = torch.zeros(n, dtype=i32, device=device) if adaptive else None
+    if accum_odd is None:
+        # pt_reduce takes the argument either way; with ``adaptive == 0`` it
+        # never indexes it, so a one-cell dummy keeps the launch site single.
+        accum_odd = torch.zeros((1, 1, 4), dtype=f32, device=device)
+
     tile_start = 0
     while tile_start < n:
         tp = min(tile_pixels, n - tile_start)
@@ -589,9 +822,27 @@ def path_trace_render(
             compactor = _ArenaRayCompactor(memory, pool, i32)
             pt_stats.zero_()
 
-            for sample_base in range(0, samples, wave_samples):
-                sw = min(wave_samples, samples - sample_base)
-                slots = tp * sw
+            # The wave's pixel list: the tile's identity list to start with,
+            # compacted to the unconverged pixels once the floor is in.
+            # ``keep_buf`` is the compaction's dense scratch (see
+            # ``_pt_active_pixels``), all-False between calls.
+            pix_list = torch.arange(
+                tile_start, tile_start + tp, dtype=i32, device=device
+            )
+            keep_buf = (
+                torch.zeros(tp, dtype=torch.bool, device=device) if adaptive else None
+            )
+            active_pixels = tp
+            sample_base = 0
+            while sample_base < samples and active_pixels > 0:
+                remaining = samples - sample_base
+                if adaptive:
+                    sw = _pt_wave_size(
+                        pool, active_pixels, sample_base, floor_samples, remaining
+                    )
+                else:
+                    sw = min(wave_samples, remaining)
+                slots = active_pixels * sw
                 rs_sca[:slots].copy_(sca_init)
                 rs_int[:slots].copy_(int_init)
                 pt_thru[:slots].fill_(1.0)
@@ -600,14 +851,13 @@ def path_trace_render(
                     pt_aov[:slots].zero_()
                 pt_generate(
                     int(slots),
-                    int(tp),
+                    int(active_pixels),
                     int(sample_base),
                     seed_root,
                     animated_seed,
                     int(time_start),
                     int(width),
                     int(height),
-                    int(tile_start),
                     float(half_screen_w),
                     float(half_screen_h),
                     cam_origin,
@@ -615,6 +865,7 @@ def path_trace_render(
                     pixel_basis_x,
                     pixel_basis_y,
                     float(near_clip),
+                    pix_list,
                     rs_ro,
                     rs_rd,
                     rs_sca,
@@ -667,7 +918,13 @@ def path_trace_render(
                             int(time_start),
                             int(width),
                             int(height),
-                            int(tile_start),
+                            # ray_offset: rs_pix holds the GLOBAL flat cell
+                            # (pt_generate writes it through the pixel list),
+                            # so there is nothing to add. The kernel decodes
+                            # ``ray_offset + rs_pix[r]`` on the gen_first == 0
+                            # path the path tracer always takes, and reads
+                            # rs_pix for nothing else.
+                            0,
                             rs_ro,
                             rs_rd,
                             rs_sca,
@@ -727,13 +984,13 @@ def path_trace_render(
                             ALL_PIDS,
                             seed_root,
                             int(sample_base),
-                            int(tp),
+                            int(active_pixels),
                             rr_start,
                             firefly_clamp,
                             int(time_start),
                             int(width),
                             int(height),
-                            int(tile_start),
+                            0,  # ray_offset: rs_pix is already global
                             rs_ro,
                             rs_rd,
                             rs_sca,
@@ -756,25 +1013,55 @@ def path_trace_render(
                     it += 1
                 if aovs is not None:
                     # Fold this wave's per-path guide sums into the chunk's
-                    # per-pixel sums. Slot r = wave_sample * tp + tile_pixel
-                    # (pt_generate/pt_reduce's layout), so a view + sum is
-                    # the whole reduction: one tensor op per wave.
-                    wave_sums = pt_aov[:slots].view(sw, tp, PT_AOV_WIDTH).sum(0)
-                    seg = slice(tile_start, tile_start + tp)
-                    aov_albedo_flat[seg] += wave_sums[:, 0:3]
-                    aov_normal_flat[seg] += wave_sums[:, 3:6]
-                    aov_bgw_flat[seg] += wave_sums[:, 6:9]
+                    # per-pixel sums. Slot r = wave_sample * active_pixels +
+                    # wave pixel (pt_generate/pt_reduce's layout), so a view +
+                    # sum is the whole reduction: one tensor op per wave,
+                    # scattered through the wave's pixel list.
+                    wave_sums = (
+                        pt_aov[:slots].view(sw, active_pixels, PT_AOV_WIDTH).sum(0)
+                    )
+                    seg = pix_list.long()
+                    aov_albedo_flat.index_add_(0, seg, wave_sums[:, 0:3])
+                    aov_normal_flat.index_add_(0, seg, wave_sums[:, 3:6])
+                    aov_bgw_flat.index_add_(0, seg, wave_sums[:, 6:9])
                 pt_reduce(
-                    int(tile_start),
-                    int(tp),
+                    int(sample_base),
+                    int(active_pixels),
                     int(sw),
                     1 if transparent else 0,
+                    1 if adaptive else 0,
                     int(width),
                     int(height),
+                    pix_list,
                     out,
                     pt_acc,
                     accum,
+                    accum_odd,
                 )
+                sample_base += sw
+                if adaptive:
+                    n_p[pix_list.long()] += sw
+                    # Re-decide only on an even total: the estimator's two
+                    # halves are only balanced there, and every pixel still
+                    # alive has received exactly ``sample_base`` samples --
+                    # which is what keeps each one's sampler prefix the
+                    # contiguous 0..n_p the Sobol sequence is stratified over.
+                    if (
+                        sample_base < samples
+                        and sample_base >= floor_samples
+                        and sample_base % 2 == 0
+                    ):
+                        pix_list = _pt_active_pixels(
+                            accum,
+                            accum_odd,
+                            pix_list,
+                            sample_base,
+                            error_target,
+                            keep_buf,
+                            tile_start,
+                            width,
+                        )
+                        active_pixels = int(pix_list.numel())
 
             truncated = int(pt_stats[PT_STAT_TRUNC_SURFACES].item())
             if truncated:
@@ -791,3 +1078,22 @@ def path_trace_render(
             raise
         memory.set_pointers(state_ptrs)
         tile_start += tp
+
+    if not adaptive:
+        # Uniform: every pixel got the ceiling, and nothing is rescaled --
+        # this arm must stay byte-identical to the pre-adaptive renderer.
+        record_path_samples(float(samples) * n, n)
+        _log_sample_spread(None, samples, n)
+        return
+    # Turn the per-pixel sums into "as if every pixel had ``samples`` samples",
+    # so the caller's single scalar divisions (finalize_samples, and the AOVs'
+    # own 1 / samples in tracer.render_chunk) still produce per-pixel means.
+    # All five columns: alpha rides the same wave count.
+    scale = (float(samples) / n_p.to(f32).clamp_min(1.0)).unsqueeze(-1)
+    accum.view(-1, accum.shape[-1]).mul_(scale)
+    if aovs is not None:
+        aov_albedo_flat.mul_(scale)
+        aov_normal_flat.mul_(scale)
+        aov_bgw_flat.mul_(scale)
+    record_path_samples(float(n_p.sum().item()), n)
+    _log_sample_spread(n_p, samples, n, floor=floor_samples)

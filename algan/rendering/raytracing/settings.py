@@ -148,6 +148,71 @@ pt_seed = env_int("ALGAN_PT_SEED", 0)
 # regardless of the memory budget, which is what an A/B comparison of two
 # kernel variants wants (see agent_guidance/memory_perf.md).
 pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
+# Adaptive sampling (DESIGN_path_tracer_roadmap.md section 2). With
+# ``pt_error_target > 0``, ``samples_per_pixel`` is a CEILING rather than a
+# count: every pixel first receives ``pt_min_samples`` (forced even and at
+# least 2, because the estimator needs balanced halves), and after that a
+# pixel stops only if BOTH of the following hold.
+#
+# 1. **Every one of its samples was deterministic given the sub-pixel
+#    jitter.** ``pt_shade`` flags a path the moment it takes any random
+#    decision -- a lit crossing (next-event estimation picks one emitter), an
+#    authored crossing or a custom scatter, or a lobe pick with more than the
+#    pass-through branch -- and ``pt_reduce`` counts the flagged samples per
+#    pixel. A pixel with any of them runs to the ceiling, unconditionally.
+#    This is what makes the mechanism SAFE rather than merely usually right:
+#    a Monte Carlo pixel whose first samples all return zero has two sample
+#    halves that agree exactly, and no error threshold can tell that apart
+#    from a converged black pixel. What is left to stop early is what section
+#    2 was always aimed at -- 2-D interiors, unlit stacks and the background,
+#    which are zero-variance by construction.
+# 2. **Its error estimate is at or below ``pt_error_target``**: the relative
+#    disagreement of the pixel's even- and odd-indexed sample halves.
+#    ``pt_reduce`` keeps the odd half in its own buffer, so with ``n`` samples
+#    so far, ``E = (accum - odd)/(n/2)``, ``O = odd/(n/2)`` and
+#    ``err = max_c |E - O| / (max_c (E + O) + 0.02)``. It is computed from
+#    deterministic sums, so which pixels stop, and when, is a reproducible
+#    function of the rendered data.
+#
+# The metric runs on the LINEAR radiance the frame buffer holds (1.0 = display
+# white), with no perceptual transform, for a reason worth writing down: a
+# relative metric is invariant under any power law, so a sqrt or PU transform
+# would only rescale it by a constant -- what actually decides how dark pixels
+# are treated is the absolute floor in the denominator. At 0.02 that floor
+# makes the tolerance, expressed in 8-bit counts of the sRGB-encoded output,
+# very nearly flat: a target of 0.02 accepts a half-buffer difference of about
+# 1.4 counts at linear 0.001, 1.3 at 0.01, 1.9 at 0.1 and 2.2 at 1.0. The
+# OETF's log-like shape is doing the perceptual work already, and a half-buffer
+# difference is roughly twice the estimate's own error, so this is a
+# sub-count-of-noise target.
+#
+# ``pt_error_target = 0`` disables the mechanism entirely: uniform waves over
+# every pixel, no rescale before ``finalize_samples``, output byte-identical to
+# the pre-adaptive renderer.
+#
+# The default was chosen by measurement, on ``benchmarks/performance/
+# pt_baseline.py`` at 320x180, five frames, 16 spp, 4 bounces, denoiser off,
+# warm RUN 2, median of three, on a 4-vCPU x64 box (the whole table is in
+# DESIGN_path_tracer_roadmap.md section 2, "LANDED 2026-09-04"):
+#
+#   text_2d  mean 16.00 -> 5.54 spp, 0.834 s -> 0.622 s (1.34x)
+#   lit      mean 16.00 -> 5.94 spp, 1.511 s -> 1.535 s (neutral)
+#
+# The ``lit`` frames are BYTE-IDENTICAL to the uniform arm at every target
+# from 0.01 to 0.05 -- the stochastic gate means nothing that gambled was
+# stopped, and the 2.7x fewer samples all came from the background. What is
+# left is 2-D anti-aliasing: an edge pixel is deterministic given its jitter,
+# so four jittered samples that happen to agree can freeze a coverage value
+# the 16-sample render resolves further. On ``text_2d`` that is 883 pixels of
+# 288000 more than 8 counts off (mean 0.311, max 119), every one of them on a
+# geometry edge and none in an interior. ``pt_min_samples`` is the knob that
+# buys those back: a floor of 8 leaves 200 such pixels (mean 0.198, max 99)
+# for mean 9.15 spp instead of 5.54 -- half the win. The mean samples per
+# pixel is otherwise FLAT across targets from 0.005 to 0.05, because a pixel
+# here is either exactly converged or not eligible at all; the target is not
+# a throughput knob.
+pt_min_samples = env_int("ALGAN_PT_MIN_SAMPLES", 4)
+pt_error_target = env_float("ALGAN_PT_ERROR_TARGET", 0.02)
 # Bounce ordinal at which the path tracer starts Russian roulette: earlier
 # bounces always continue (low-order transport carries most of the image),
 # later ones survive with probability proportional to their throughput.
