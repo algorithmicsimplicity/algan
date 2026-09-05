@@ -137,3 +137,24 @@ jobs:
       # other thing a wheel can get wrong while importing fine.
       - name: Check the console script is wired up
         run: /tmp/wheel-env/bin/algan check
+
+  apply_todo_3_6:
+    name: Apply TODO 3/6 edits
+    if: github.event_name == 'pull_request' && github.head_ref == 'complete-gtx-eager-baselines'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Apply deterministic edits
+        run: python scripts/_apply_todo_3_6.py
+      - name: Commit edited files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add taichi_patches/MIGRATION.md taichi_patches/PLAN.md quadrants_patches/README.md scripts/gate/quadrants_linux_build.sh tests/full_renders/test_full_renders.py
+          git diff --cached --check
+          git commit -m "Record GTX validation and pin full renders to eager"
+          git push origin HEAD:${{ github.head_ref }}
