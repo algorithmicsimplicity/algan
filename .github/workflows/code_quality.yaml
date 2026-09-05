@@ -8,38 +8,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 jobs:
-  regenerate_quadrants_lock:
-    name: Regenerate algan-quadrants lockfile
-    if: github.event_name == 'pull_request' && github.head_ref == 'use-algan-quadrants'
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: use-algan-quadrants
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.12.1"
-      - name: Restore the revision-3 lock as the resolution preference
-        run: git checkout origin/master -- uv.lock
-      - name: Regenerate only the dependency migration
-        run: |
-          uv lock
-          uv lock --check
-          grep -q 'name = "algan-quadrants"' uv.lock
-          grep -q 'revision = 3' uv.lock
-          echo "Lockfile diff against master:"
-          git diff --numstat origin/master -- uv.lock
-      - name: Commit generated lockfile
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add uv.lock
-          git commit -m "Regenerate uv.lock for algan-quadrants"
-          git push origin HEAD:use-algan-quadrants
-
   lock_file:
     runs-on: ubuntu-latest
     steps:
