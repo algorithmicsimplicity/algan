@@ -15,10 +15,15 @@ the ledger of verified-versus-not, and how to re-run any of it.
 the Apple path is fixed and verified on the fast scene and on the heaviest
 scene in the suite, the crash that blocked the latter having turned out to be
 a leak in Algan's own MPS import cache and been fixed on master; the seven
-Quadrants patches apply and compile; what remains unverified is everything
-that needs a CUDA device (0003 on sm_61, 0005–0007 in PTX and pixels).**
-§10 is the current ledger; §6 and §9 are kept as the record of how it got
+Quadrants patches apply, compile, and — since 2026-09-05 — 0003 and 0005–0007
+are verified in PTX on real sm_61 hardware; and the source-keyed cache index
+is on by default, its verify arm clean on both arches.** §11 is the newest
+ledger, §10 the one before it; §6 and §9 are kept as the record of how it got
 there.
+
+What is still unverified needs hardware nobody here has: sm_70/sm_72 for
+0003's second defect, and Metal for 0002. `tests/full_renders` on CPU cannot
+be read on the Windows box either — those baselines are Linux's.
 
 ---
 
@@ -388,11 +393,218 @@ depends on it.
 
 ### 10.4 Still not verified, and the order to do it
 
+*Items 1 and 2 were run on 2026-09-05 and are settled; §11 is the record.*
+
 1. **A CUDA device for 0005–0007** — `verify_cuda_patches.py on/off/--compare`
    on the T4 harness (`agent_guidance/gpu_harnesses.md`) against the Linux
    wheel from `33927637278`, then `tests/full_renders` on CUDA with the wheel
    installed, inspecting 0007's last-bit change before re-baselining.
-2. **0003 on sm_61**, the maintainer's GTX 1050, unchanged from §7.
+   **Done on sm_61 instead of the T4** (§11.2), and the 0007 re-baseline turns
+   out to have happened already — see the end of §11.2.
+2. **0003 on sm_61**, the maintainer's GTX 1050, unchanged from §7. **Done**
+   (§11.1).
 3. **The release-asset upload of the CPU baselines** (`tests/README.md`),
    still the maintainer's step.
 4. Row 21 (stage contract v2) still has no spec; upstreaming is unstarted.
+
+---
+
+## 11. Fourth session (2026-09-05): the GTX 1050 run
+
+The maintainer's own box, Windows 10, GTX 1050 (sm_61, 4 GB, driver 576.52),
+against the locally-built patched wheel
+`quadrants-1.3.1.dev0+gab9a58ab5.d20260905-cp311-cp311-win_amd64`. This is the
+hardware §10.4 items 1 and 2 were waiting for.
+
+**Read §11.0 first.** The session opened by reproducing a "the patches are not
+working" report that was an artefact of the harness, and the same trap is one
+`uv run` away from anyone.
+
+### 11.0 `uv run` had silently reverted the wheel
+
+The reported symptom was that `debug/debug.py` still took ~100 s on a fresh
+process with the source-keyed index supposedly shipped. Two things were true at
+once and neither was the port:
+
+* **The index is opt-in** and the script sets no environment, so it was never
+  installed — `skipped_reason()` says exactly that, and `algan check` prints it.
+* **`uv run python` had uninstalled the patched wheel**, twice, before anything
+  was measured. This is §10.3's defect, unchanged, on the maintainer's box
+  rather than in a workflow: `uv run` syncs the lockfile first, and
+  `1.3.1.dev0+g…` does not satisfy it, so stock `quadrants==1.3.0` goes back.
+  On sm_61 the tell is loud — `qd.init` dies in `cuModuleLoadDataEx` with
+  `CUDA_ERROR_NOT_SUPPORTED`, which is defect (a) of §7 with 0003 gone — but on
+  any post-Volta box it would be silent, and would read as a performance
+  regression in whatever was being tested.
+
+`CLAUDE.md` now says to run `.venv/Scripts/python.exe` directly and carries the
+`--reinstall-package quadrants` recipe. **That accidental uninstall is also the
+negative control** the sm_61 verification below would otherwise have lacked: the
+same script, same box, same hour, pristine v1.3.0 fails at `Program()` and the
+patched wheel does not.
+
+A **per-patch marker check** was run on the restored wheel, because "the wheel is
+patched" had been assumed rather than checked. Four of the seven leave a
+Python-visible symbol and all four are present: 0001
+(`quadrants.lang._ndarray.ExternalMetalNdarray`,
+`Program.create_ndarray_from_metal_buffer`), 0004
+(`CompileConfig.invariant_arg_loads`), 0005 (`ASTBuilder.max_reg`,
+`loop_config(max_reg=)`) and 0006 (`CompileConfig.readonly_ndarray_ldg`). Note
+that `CompileConfig.gpu_max_reg` is **not** a marker — pristine v1.3.0 has it,
+which is §8's point about 0005 having two halves. 0002, 0003 and 0007 are
+behavioural; 0003 and 0007 are settled below, 0002 remains Metal-only.
+
+### 11.1 0003 on sm_61 — verified, exactly as §7 predicted
+
+`qd.init(arch=qd.cuda)` comes up, kernels compile and run, and the answers are
+right. Dumping the module PTX (`print_kernel_asm=True`) gives, across 56 atomic
+instructions in the runtime module:
+
+* **`atom.sys`: 0.**
+* **`atom.gpu`: 1** — `atom.gpu.cas.b64`, inside `runtime_eval_adstack_max_reduce`,
+  which is the exact instruction and the exact function §7 names as the one
+  that took the whole runtime module down.
+* Every other atomic is unscoped (`atom.exch.b32`, `atom.global.add.u64`), i.e.
+  untouched by the patch, as intended.
+
+The header reads `.version 5.0 / .target sm_61`, which is
+`getMinPTXVersionForSM(61) == 50` — the outside confirmation §7 wanted for
+defect (b)'s "the bound is PTX ISA version, not SM" correction. No
+`Cannot select: intrinsic %llvm.nvvm.activemask` abort occurred, so change 3's
+`kMinComputeCapabilityForWarpReduction = 75` gate is doing its job.
+
+What this does **not** settle, still: sm_70/sm_72 (§7 item 4), and whether the
+driver's refusal of `atom.sys` tracks compute capability or something else
+(§7 item 5). One sm_61 box remains one sm_61 box.
+
+### 11.2 0005–0007 on a CUDA device — verified, after fixing the verifier
+
+`verify_cuda_patches.py` **failed on its first run**, and the failure was the
+script's, not a patch's:
+
+    the off arm emitted ld.global.nc; readonly_ndarray_ldg=False does not gate
+
+The script's docstring claimed that leaving `invariant_arg_loads` (0004) at its
+default "isolates 0005-0007". It does not. 0004's default is **True**, and NVPTX
+lowers a global load carrying `!invariant.load` to `ld.global.nc` on its own —
+so 0004 emits the very instruction the script attributes to 0006. A 2×2 sweep,
+one process per cell, on the script's own probe kernel:
+
+| `invariant_arg_loads` | `readonly_ndarray_ldg` | `ld.global.nc` | `ld.global` (plain) |
+| --- | --- | --- | --- |
+| False | False | **0** | 6 |
+| False | True | 2 | 6 |
+| True | False | 4 | 2 |
+| True | True | 6 | 2 |
+
+The four in row 3 are 0004 hoisting base pointers and shape dims; the two 0006
+adds are the two read-only ndarrays. **0006 gates correctly** — with 0004 out of
+the way, off means zero. Both arms now pin `invariant_arg_loads=False`, the
+config read-back records it, and the failure message names 0004 when an arm did
+not pin it, so the next reader is not sent after the wrong patch. With that:
+
+    maxnreg_directives   off 0   on 1  (['64'])
+    ld_global_nc         off 0   on 2
+    ld_global_plain      off 6   on 6
+    fast_expf_calls      off 0   on 2
+    expf_calls           off 2   on 0
+    PASS
+
+So on sm_61: 0005's per-kernel `.maxnreg` lands, 0006's `ld.global.nc` engages
+only when asked and leaves the read-and-written array on a plain load, and 0007
+picks `__nv_fast_expf` only under `fast_math`.
+
+**Two of the seven are inert on every Algan render**, which the patches' own
+notes imply but nothing said outright: nothing in `algan/` sets
+`readonly_ndarray_ldg` (0006, and the compiler defaults it off) or
+`gpu_max_reg` / `loop_config(max_reg=)` (0005). 0004 defaults on and Algan sets
+`fast_math=True`, so those two, and only those two, are live. The stale
+paragraph in `algan/rendering/taichi_runtime.py` claiming `gpu_max_reg` "never
+reached ptxas on either compiler" is corrected: with 0005 it does.
+
+**0007's re-baseline turns out to be already done.** The worry was that the CUDA
+baselines were made with `__nv_expf` while this wheel renders `__nv_fast_expf`.
+They were not: `expected_outputs_cuda/` was regenerated on 2026-09-04 21:11-21:28
+(`5d558f1`), and the first patched wheel (`d20260904`) was built at 20:02 the
+same evening — so the committed CUDA baselines already carry 0007. Confirmed
+from the other side by `materials_and_lighting` passing pixel-wise on the
+`d20260905` wheel, which is the densest scene and the one 0007's f32 `exp` sites
+most affect.
+
+### 11.3 The source-keyed cache index is now on by default
+
+§10.2 left it a working feature with an explicit bar: *"the module's own bar is
+a clean verify arm over `tests/full_renders` on CPU and CUDA, and both holes
+were invisible to a one-frame render"*. That bar is met, and the default is
+flipped (`ALGAN_TAICHI_SOURCE_KEY=0` is now the opt-*out*).
+
+**What the report that started this session actually was.** "A simple script
+still takes ~100 s on a fresh process." Two causes, neither the index being
+broken: the script sets no environment and the index was opt-in, so it was
+never installed; and `uv run` had reverted the patched wheel (§11.0). Worth
+recording because "the feature shipped" and "the feature runs" were two
+different things and nothing in a render said so — which is why `algan check`
+now prints an off index as a **WARNING** rather than as INFO.
+
+**The measurements.** `benchmarks/_taichi_source_key_check.py`, twice, warm
+(the first run pays cold compilation and is not the number):
+
+| arm | process s | render s | frontend s | hits | miss | verified | frame digest |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| off | 43.66 | 34.55 | 23.81 | 0 | 0 | 0 | `e0a4f46bf40a7a67` |
+| warm | 18.96 | 9.15 | 5.78 | 22 | 0 | 0 | `e0a4f46bf40a7a67` |
+| on | 20.85 | 10.01 | 6.13 | 22 | 0 | 0 | `e0a4f46bf40a7a67` |
+| verify | 44.01 | 34.47 | 23.65 | 0 | 0 | 22 | `e0a4f46bf40a7a67` |
+
+One digest across all four arms. Frontend 23.8 s → 6.1 s; the whole process
+43.7 s → 20.9 s on a scene that is one `Square`.
+
+**The bar, on `tests/full_renders`:**
+
+| | keyed | verified | poisoned | misses | mismatches |
+| --- | --- | --- | --- | --- | --- |
+| CUDA | 39 | **39** | 0 | 0 | **0** |
+| CPU (`x64`) | 40 | **40** | 0 | 0 | **0** |
+
+Each arch needs **two** passes and the reason is in the hook: a miss returns
+`None` and the full compile stores, so the first pass over a new arch is all
+first sightings (CUDA 39 misses, CPU 40) and verifies nothing. The second pass
+is the one that verifies. A run that reports `verified=0` has not tested
+anything, which is easy to mistake for a pass.
+
+**And on CUDA, all six scenes came out byte-identical** between an index-on run
+and a full-transform run — not "within the suite's ±2", identical. That is the
+strongest form of the claim and it is what makes a third CPU pass unnecessary:
+restoring an artifact once the key matches is arch-independent, and what *is*
+arch-dependent — whether the key captures the CPU compile config — is exactly
+what the verify arm re-derives.
+
+**Two things the CPU arm needs a note about.** Its pixel comparisons all fail
+on this box, by 26–94 channel values, because `expected_outputs_cpu/` was
+generated on Linux and this is Windows; the signal read there was the
+verified/poisoned counts and the absence of a raise. And key computation costs
+**6.2 s** on the CPU arm's first pass against 0.95 s on CUDA, dropping to 1.1 s
+once the index is warm — the walk is the same, the box is not.
+
+**Cost of being wrong, and the control.** An unsound key serves a stale
+*kernel*, so it shows up as a wrong picture rather than as an error.
+`ALGAN_TAICHI_SOURCE_KEY=0` is the control arm and is the first thing to try if
+a render's output is ever in question.
+
+### 11.4 Two defects found on the way, unrelated to the port
+
+* **`Color.__new__` had no NumPy branch** (`algan/constants/color.py`). Every
+  colour from the Manim layer arrives as one — `ManimColor.to_rgba()` is a
+  NumPy array and a `VMobject`'s `fill_opacity` is an array per submobject — so
+  an `ndarray` fell through every `isinstance` branch and was splatted into the
+  five-channel tuple unconverted. It survived only on NumPy's size-1-array-to-
+  scalar coercion, deprecated since 1.25 and **raising in 2.4**, where the whole
+  Manim import path dies in `Axes(...)`. Fixed by coercing `glow`/`opacity`
+  before the branches (the string branch compares `opacity == 1`, which on an
+  array is an array) and widening the tensor branch to `np.ndarray` via a
+  zero-copy `torch.as_tensor`. A second latent defect fell out: a 4- or 5-wide
+  `ndarray` had been producing a **six**- or seven-channel colour. 13 tests in
+  `tests/unit_tests/test_color_array_inputs.py`, with `DeprecationWarning`
+  promoted to an error so the NumPy version installed decides nothing; the
+  three Manim-touching full-render scenes are byte-identical across the fix.
+* **`verify_cuda_patches.py` blamed the wrong patch** — §11.2.

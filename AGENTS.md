@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 This file is the operational quick-start: commands, hazards, and the API shape. It is short on purpose — the detail
 lives in `agent_guidance/`, split by topic so you read only what your task touches:
@@ -34,12 +34,34 @@ the process-global stack of active Scenes.
 
 ### Running Python
 
-use `uv run python`
+Run the venv interpreter directly — `.venv/Scripts/python.exe` on Windows,
+`.venv/bin/python` elsewhere.
+
+**Do not use bare `uv run`** on a machine with a locally-built compiler wheel.
+`uv run` syncs the lockfile first, and the patched Quadrants wheel's version
+(`1.3.1.dev0+g<sha>.d<date>`, built from `quadrants_patches/`) does not satisfy
+the lock — so the sync silently **uninstalls it and reinstalls stock
+`quadrants==1.3.0`**. The symptom is not a missing package: it is
+`qd.init` dying with `CUDA_ERROR_NOT_SUPPORTED ... cuModuleLoadDataEx` on
+pre-Volta (patch 0003 gone), or a render that is merely slower and reads as a
+regression in your change. The Mac harnesses hit this and now export
+`UV_NO_SYNC=1` for the whole job (`taichi_patches/MIGRATION.md` §10.3); that
+env var is the escape hatch if you need `uv run` for its script resolution.
+
+Putting the wheel back:
+```
+uv pip install --python .venv\Scripts\python.exe --reinstall-package quadrants wheels\<the wheel>.whl
+```
+`--reinstall-package quadrants`, not bare `--reinstall` — the latter also
+churns every transitive dependency. Locally-built wheels live in `wheels/`.
+A one-line check that the installed one is patched: `CompileConfig` must have
+`invariant_arg_loads` and `readonly_ndarray_ldg`, and the banner must say
+`1.3.1`, not `1.3.0`.
 
 ### Testing
 ```
-uv run -m pytest -q --fast    # THE development loop: 191 curated tests
-uv run -m pytest -q           # everything, ~12 min, before pushing
+.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 191 curated tests
+.venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
 ```
 - **`--fast` is the suite to run after every change.** It is **opt-in**: only tests marked `fast` run, everything else is deselected. It prints where it landed against a 75s budget (`fast suite: 21s of its 75s budget (28%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
@@ -55,7 +77,7 @@ uv run -m pytest -q           # everything, ~12 min, before pushing
 - A change to tessellation, projection or a level criterion is **invisible to `--fast`** (`tests/fast/scene.py` has no PN geometry) — it needs `pytest -q tests/full_renders`.
 
 ### Documentation
-- Build: `uv run python docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
+- Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 

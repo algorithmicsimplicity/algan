@@ -156,16 +156,24 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         )
     # The source-keyed index is the other half of the warm frontend: with it
     # a kernel the process has compiled before skips the AST transform. It is
-    # opt-in, so its state is reported as information rather than a warning
-    # -- but reported, because "on and silently degraded to a no-op" is the
-    # failure mode the line above exists for too.
+    # on by default, so an off state is a WARNING like its two neighbours --
+    # it was INFO only while the feature was opt-in. The failure it names is
+    # the same one: version-gated to compiler internals, so a compiler bump
+    # can stand it down with nothing to show but a frontend that quietly went
+    # back to ~12 s per megakernel. Deliberately turning it off with
+    # ALGAN_TAICHI_SOURCE_KEY=0 prints the same line, which is correct -- the
+    # user asked for it and the cost is worth stating either way.
     from algan.utils.taichi_source_key import skipped_reason as source_key_skipped
 
     source_key_off = source_key_skipped()
     if source_key_off is None:
-        print("  Kernel source-keyed cache index: ON (ALGAN_TAICHI_SOURCE_KEY=1)")
+        print("  Kernel source-keyed cache index: ON (the default)")
     else:
-        print(f"  [INFO] Kernel source-keyed cache index is off: {source_key_off}.")
+        print(
+            f"  [WARNING] Kernel source-keyed cache index is off: {source_key_off}. "
+            "Every kernel a warm process has already compiled pays the full "
+            "Python AST transform again."
+        )
     # Same shape of hazard for the early-return rewrite: version-gated to the
     # compiler it wraps, and when it is off the only symptom is a shader
     # stage that used to compile now failing with the compiler's own message.

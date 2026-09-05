@@ -120,7 +120,9 @@ _apply_taichi_early_return()
 _apply_taichi_fast_launch()
 # The source-keyed cache index, which lets a warm process skip the AST
 # transform outright on a kernel it has compiled before (see
-# utils/taichi_source_key.py). Opt-in until its verify mode is clean on CUDA.
+# utils/taichi_source_key.py). On by default since 2026-09-05, when its verify
+# mode came back clean over tests/full_renders on both CPU and CUDA;
+# ALGAN_TAICHI_SOURCE_KEY=0 is the control arm.
 _apply_taichi_source_key()
 # The MPS zero-copy conversion, which turns torch MPS tensors into ndarrays
 # over their own MTLBuffer so Taichi binds them instead of copying them through

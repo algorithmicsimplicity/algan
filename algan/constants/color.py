@@ -22,6 +22,7 @@ alpha-channel video) and ``GLOW`` (black with full glow).
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from algan.errors import InvalidColorError
@@ -105,6 +106,32 @@ def _parse_color_string(s: str) -> tuple[tuple[float, float, float], float]:
         )
 
 
+def _as_color_scalar(value):
+    """A ``glow`` or ``opacity`` that arrived as an array, as a Python float.
+
+    Manim hands these over as arrays rather than as numbers: a ``ManimColor``'s
+    ``to_rgba()`` is a NumPy array (``external_libraries/manim/utils/color/core.py``),
+    and a ``VMobject``'s ``fill_opacity`` is whatever ``set_fill`` was given,
+    which is an array per submobject. An array reaching the five-channel tuple
+    below used to survive only because NumPy still converted a size-1 array to
+    a scalar; that is deprecated since NumPy 1.25 and **raises** from NumPy 2.4
+    (``TypeError: only 0-dimensional arrays can be converted to Python
+    scalars``), which took the whole Manim import path down.
+
+    Several values means several submobjects, and by the time a colour is built
+    ``ManimMob`` has already recursed to a leaf (``mobs/manim_mob.py``), so the
+    array is length 1 and the choice does not arise in practice. Where it does,
+    this takes the first, which is what Manim's own ``VMobject.get_fill_opacity``
+    does with the same ambiguity -- a render should not die over an alpha.
+    """
+    if isinstance(value, (torch.Tensor, np.ndarray)):
+        flat = torch.as_tensor(value).reshape(-1)
+        if flat.numel() == 0:
+            raise InvalidColorError("A color's glow/opacity cannot be an empty array.")
+        return float(flat[0])
+    return value
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -178,12 +205,16 @@ class Color(torch.Tensor):
 
     def __new__(
         cls,
-        rgb: str | tuple[float, ...] | list[float] | torch.Tensor,
+        rgb: str | tuple[float, ...] | list[float] | torch.Tensor | np.ndarray,
         glow=0,
         opacity=1,
         *args,
         **kwargs,
     ):
+        # Before the branches, not inside them: the string branch compares
+        # `opacity == 1`, which on an array is an array and not a truth value.
+        glow = _as_color_scalar(glow)
+        opacity = _as_color_scalar(opacity)
         if isinstance(rgb, str):
             rgb_tuple, extracted_opacity = _parse_color_string(rgb)
             rgb = rgb_tuple
@@ -196,8 +227,12 @@ class Color(torch.Tensor):
                 rgb, glow, opacity = tuple(rgb[:3]), rgb[3], rgb[4]
             elif len(rgb) == 3:
                 rgb = tuple(rgb)
-        elif isinstance(rgb, torch.Tensor):
-            t = rgb.reshape(-1)
+        elif isinstance(rgb, (torch.Tensor, np.ndarray)):
+            # `as_tensor` is zero-copy on an ndarray, so the NumPy case costs
+            # nothing and does not need a branch of its own. Without it an
+            # ndarray fell through every branch and was splatted unconverted,
+            # which is how `to_rgba()` output reached the tuple below.
+            t = torch.as_tensor(rgb).reshape(-1)
             if t.numel() == 5:
                 rgb, glow, opacity = (
                     (float(t[0]), float(t[1]), float(t[2])),

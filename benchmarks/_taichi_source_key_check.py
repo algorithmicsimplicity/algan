@@ -13,8 +13,10 @@ walk against fixtures; this runs the mechanism inside a real render.
 
 Four arms, each a separate process, because the patch installs at import:
 
-* **off** -- `ALGAN_TAICHI_SOURCE_KEY=0`, the compiler as shipped. The baseline
-  for both the timing and the pixels.
+* **off** -- `ALGAN_TAICHI_SOURCE_KEY=0`, the index turned off. The baseline
+  for both the timing and the pixels. This is the opt-*out* arm: the index has
+  been on by default since 2026-09-05, so **on** below is what a render does
+  now and **off** is the control.
 * **warm** -- the index on, filling itself: every kernel misses and is stored.
   Same frontend cost as **off** plus the key computation; run so that **on**
   measures a warm index rather than a first sighting.

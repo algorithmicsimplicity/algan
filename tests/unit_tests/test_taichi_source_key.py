@@ -150,18 +150,27 @@ def test_the_index_installs_on_this_compiler():
     )
 
 
-def test_it_is_off_unless_asked_for():
+def test_it_is_on_unless_turned_off():
+    """The default flipped on 2026-09-05; ``=0`` is now the opt-*out*.
+
+    Reads the live gate rather than the flag, so it also catches the index
+    standing down for a reason that has nothing to do with the environment --
+    a compiler bump, or a backend that has no fast-cache load path at all.
+    """
     reason = sk.skipped_reason()
     if os.environ.get("ALGAN_TAICHI_SOURCE_KEY", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+        "0",
+        "false",
+        "no",
+        "off",
     ):
-        assert reason is None or BACKEND != "quadrants"
-    else:
         assert reason is not None
-        assert "ALGAN_TAICHI_SOURCE_KEY=1" in reason
+        assert "ALGAN_TAICHI_SOURCE_KEY=0" in reason
+    elif BACKEND == "quadrants":
+        assert reason is None, f"the index is on by default but stood down: {reason}"
+    else:
+        # taichi has no `load_fast_cache`, so standing down is the spec.
+        assert reason is not None
 
 
 # --- value rules --------------------------------------------------------------

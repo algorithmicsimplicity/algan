@@ -24,8 +24,26 @@ would not share a compiled artifact even if they could share a process::
 
 The `on` arm is Algan's configuration: `fast_math=True`,
 `readonly_ndarray_ldg=True`, and the loop carries `max_reg=64`. The `off` arm
-turns all three off. Both leave `invariant_arg_loads` (0004) at its default,
-so the comparison isolates 0005-0007.
+turns all three off.
+
+**Both arms pin `invariant_arg_loads=False` (0004), and must.** An earlier
+version left it at its default and claimed that isolated 0005-0007; it does
+not, and the `off` arm failed on a GTX 1050 (sm_61, 2026-09-05) with "the off
+arm emitted ld.global.nc". 0004's default is **True**, and NVPTX lowers a
+global load carrying `!invariant.load` to `ld.global.nc` on its own -- so 0004
+produces the very instruction this script attributes to 0006. Measured, one
+process per cell, on the probe kernel below::
+
+    invariant_arg_loads  readonly_ndarray_ldg   ld.global.nc   ld.global (plain)
+                 False                 False              0                   6
+                 False                  True              2                   6
+                  True                 False              4                   2
+                  True                  True              6                   2
+
+The four `.nc` in the third row are the argument-buffer loads (0004 hoisting
+base pointers and shape dims); the two 0006 adds are `a` and `b`. With 0004
+pinned off the count is 0006's alone, which is what the `off["ld_global_nc"]
+== 0` assertion needs to mean what it says.
 
 **No CUDA device is a skip, not a failure.** An arm run prints why and exits 0
 after writing `{"skipped": true}` to its file, and `--compare` exits 0 with
@@ -113,6 +131,9 @@ def _cfg():
             "arch": str(cfg.arch),
             "fast_math": bool(cfg.fast_math),
             "readonly_ndarray_ldg": bool(cfg.readonly_ndarray_ldg),
+            # Recorded because the ld.global.nc counts are only 0006's while
+            # this is False; a True here invalidates the 0006 assertions.
+            "invariant_arg_loads": bool(cfg.invariant_arg_loads),
             "gpu_max_reg": int(cfg.gpu_max_reg),
         }
     except Exception as exc:  # noqa: BLE001 -- the nanobind is the thing under test; do not mask its absence
@@ -163,6 +184,11 @@ def measure(arm):
         advanced_optimization=False,  # the config Algan actually renders with
         fast_math=on,  # 0007
         readonly_ndarray_ldg=on,  # 0006
+        # 0004 defaults ON and lowers its `!invariant.load` argument reads to
+        # `ld.global.nc` by itself, which is the instruction the 0006 check
+        # counts. Pin it off in BOTH arms so that count is 0006's alone --
+        # the docstring's table is the measurement.
+        invariant_arg_loads=False,
         gpu_max_reg=0,  # keep the module-wide cap out of the way of the per-loop one
         print_kernel_llvm_ir=True,  # unoptimized IR: where the libdevice call is still a call by name
         print_kernel_asm=True,  # the PTX
@@ -262,9 +288,23 @@ def compare(on_path, off_path):
                 "the on arm has no plain ld.global left; the read-and-written array went .nc -- unsound"
             )
         if off["ld_global_nc"] != 0:
-            failures.append(
-                "the off arm emitted ld.global.nc; readonly_ndarray_ldg=False does not gate"
-            )
+            # Say which patch to suspect. 0004 emits `.nc` too, so an arm that
+            # did not pin it off cannot blame 0006 for this count.
+            leaked = [
+                a["arm"]
+                for a in (on, off)
+                if a.get("config", {}).get("invariant_arg_loads")
+            ]
+            if leaked:
+                failures.append(
+                    f"the off arm emitted ld.global.nc, but invariant_arg_loads (0004) is ON in the "
+                    f"{', '.join(leaked)} arm -- 0004 lowers its own loads to ld.global.nc, so this "
+                    "count is not 0006's. Re-run: both arms must pin invariant_arg_loads=False"
+                )
+            else:
+                failures.append(
+                    "the off arm emitted ld.global.nc; readonly_ndarray_ldg=False does not gate"
+                )
         # 0007
         if on["fast_expf_calls"] < 1 or on["expf_calls"] != 0:
             failures.append(

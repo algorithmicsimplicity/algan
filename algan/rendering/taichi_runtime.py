@@ -24,10 +24,23 @@ cannot silently regress):
 * ``ALGAN_TI_FULL_TRACEBACK=1`` -> ``print_full_traceback``: the compiler's
   own frames in a kernel compile error, instead of the trimmed user-facing one.
 
-There is no register-cap setting. ``gpu_max_reg`` (and the ``ALGAN_GPU_MAX_REG``
-that fed it) never reached ptxas on either compiler -- the field was read only
-by the cache key -- and a per-kernel cap is a compiler patch
-(``taichi_patches/PLAN.md`` row 14), not an Algan setting.
+There is no register-cap setting, and that is now a *choice* rather than a
+limitation. On taichi 1.7.4 it was a limitation: ``gpu_max_reg`` (and the
+``ALGAN_GPU_MAX_REG`` that fed it) never reached ptxas -- the field was read
+only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` fixed both
+halves on the Quadrants wheel Algan builds: ``gpu_max_reg`` now becomes
+``CU_JIT_MAX_REGISTERS`` at module load, and ``qd.loop_config(max_reg=N)``
+becomes a per-kernel PTX ``.maxnreg`` (both confirmed in PTX on sm_61,
+2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). Nothing in
+``algan/`` sets either, so **0005 is inert on every render today**; it is a
+lever for the register-pressure work in ``taichi_patches/PLAN.md`` §8-§9, and
+turning it on means adding it here and measuring.
+
+The same is true of ``readonly_ndarray_ldg``
+(``0006-cuda-readonly-ndarray-ldg.patch``): the compiler defaults it off and
+this dict does not set it. ``invariant_arg_loads`` (0004) defaults **on**, and
+``fast_math`` below is what makes 0007's fast ``expf`` live, so those two are
+the patches an Algan render actually runs through.
 """
 
 from __future__ import annotations

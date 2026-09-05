@@ -95,10 +95,29 @@ Known gaps -- what the key does not see:
 ``ALGAN_TAICHI_SOURCE_KEY_VERIFY=1`` is the audit of all of the above: on every
 validated hit the shortcut is *not* taken, the full transform and compile run,
 and the C++ key they produce is compared with the one the index stored; a
-mismatch raises. It is what has to be clean across ``tests/full_renders`` on
-CPU and CUDA before this is on by default, which is why it is **off** unless
-``ALGAN_TAICHI_SOURCE_KEY=1``. ``algan check`` reports the state, and a render
-under ``ALGAN_LOG_TAICHI_COMPILES=1`` prints :data:`STATS` when it finishes.
+mismatch raises. It was the bar for turning this on by default, and it was met
+on 2026-09-05 on a GTX 1050 (sm_61) against the patched Quadrants wheel:
+
+===============================  =====  ========  ========  ==========
+``tests/full_renders``           keyed  verified  poisoned  mismatches
+===============================  =====  ========  ========  ==========
+CUDA                             39     39        0         0
+CPU (``x64``)                    40     40        0         0
+===============================  =====  ========  ========  ==========
+
+and on CUDA all six scenes' videos came out **byte-identical** between an
+index-on run and a full-transform run -- a stronger statement than the suites'
+own tolerance, and the reason the shortcut half needs no separate CPU
+comparison. (The CPU arm's pixel comparisons fail on that box for an unrelated
+reason: the committed CPU baselines were made on Linux. The signal read there
+was the verified/poisoned counts and the absence of a raise, not the
+comparison.)
+
+So this is now **on unless ``ALGAN_TAICHI_SOURCE_KEY=0``**. Turn it off if a
+render's picture is ever in question -- an unsound key is a stale *kernel*, so
+it shows as a wrong picture rather than an error, and the off arm is the
+control. ``algan check`` reports the state, and a render under
+``ALGAN_LOG_TAICHI_COMPILES=1`` prints :data:`STATS` when it finishes.
 
 Quadrants-only. The feature rests on ``Program.load_fast_cache`` and the
 ``only_parse_function_def`` transform, neither of which taichi 1.7 has, so on
@@ -1208,8 +1227,8 @@ def apply():
     global _APPLIED, _SKIPPED_REASON
     if _APPLIED:
         return
-    if not env_flag("ALGAN_TAICHI_SOURCE_KEY", False):
-        _SKIPPED_REASON = "off by default; ALGAN_TAICHI_SOURCE_KEY=1 opts in"
+    if not env_flag("ALGAN_TAICHI_SOURCE_KEY", True):
+        _SKIPPED_REASON = "turned off by ALGAN_TAICHI_SOURCE_KEY=0"
         return
     try:
         from algan.taichi_compat import BACKEND, backend_version

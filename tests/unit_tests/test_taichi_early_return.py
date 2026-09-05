@@ -12,8 +12,8 @@ would produce.
 The backend is process-global (``algan.taichi_compat`` binds it on first use),
 so this file cannot parametrise over both. Run it twice::
 
-    ALGAN_TAICHI_BACKEND=quadrants uv run -m pytest -q tests/unit_tests/test_taichi_early_return.py
-    ALGAN_TAICHI_BACKEND=taichi    uv run -m pytest -q tests/unit_tests/test_taichi_early_return.py
+    ALGAN_TAICHI_BACKEND=quadrants .venv/Scripts/python.exe -m pytest -q tests/unit_tests/test_taichi_early_return.py
+    ALGAN_TAICHI_BACKEND=taichi    .venv/Scripts/python.exe -m pytest -q tests/unit_tests/test_taichi_early_return.py
 
 Two things the rewrite deliberately does *not* do, checked here so they stay
 deliberate:
@@ -44,8 +44,52 @@ from algan.errors import AlganWarning
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import BACKEND, ti
 from algan.utils import taichi_early_return as er
+from algan.utils import taichi_source_key as sk
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _no_source_key_shortcut():
+    """Nothing in this file may be served from the source-keyed cache.
+
+    This file tests an **AST transform**, and 28 of its tests assert the tag
+    ``_rewrite_tree`` leaves on a function when it rewrites it. The
+    source-keyed index (``algan/utils/taichi_source_key.py``, on by default
+    since 2026-09-05) exists precisely to *skip* that transform for a kernel
+    some previous process already compiled -- so on a hit the tag is never
+    set and the assertion reads as "the rewrite did not fire" when in truth
+    it fired earlier and was cached. The kernel is still correct; the test is
+    simply blind.
+
+    That makes every one of those 28 cache-dependent: green on a cold index,
+    red on a warm one, which is worse than either. Restoring the compiler's
+    own ``_try_load_fastcache`` for the duration of each test forces the full
+    transform, so they test what they claim whatever is on disk. The store
+    hook is deliberately left installed -- writing an entry harms nothing, and
+    leaving it means this file does not quietly change what the index holds.
+
+    The alternative -- teaching 28 assertions to accept ``None`` -- would
+    blind them to a rewrite that really had stopped firing, which is the one
+    thing they exist to catch.
+    """
+    if not sk.is_applied():
+        yield
+        return
+    from algan.taichi_compat import submodule
+
+    kernel_cls = submodule("lang.kernel").Kernel
+    patched = kernel_cls._try_load_fastcache
+    original = getattr(patched, "_algan_original", None)
+    if original is None:
+        yield  # not our hook after all; leave it alone
+        return
+    kernel_cls._try_load_fastcache = original
+    try:
+        yield
+    finally:
+        kernel_cls._try_load_fastcache = patched
+
 
 #: Off the daemon, and on this process's compiler, for every child below.
 CHILD_ENV = {
@@ -127,6 +171,9 @@ def test_the_rewrite_is_live_on_this_compiler():
     src = _f32([-3.0, 0.25, 5.0])
     got = _zeros(3)
     run(got, src)
+    # The module's `_no_source_key_shortcut` fixture guarantees a full
+    # transform here, so a missing tag really does mean the rewrite did not
+    # fire rather than that a cache answered first.
     assert _outcome(clamp01) == er.REWRITTEN
     assert got.tolist() == [0.0, 0.25, 1.0]
 
