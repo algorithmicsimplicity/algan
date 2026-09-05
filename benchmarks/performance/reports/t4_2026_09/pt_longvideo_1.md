@@ -66,3 +66,21 @@ so a per-window cache would return ~13 ms per frame, 8% of the production
 frame. The next-event setup could memoise on a static rig for another 6 ms.
 The denoiser (35 ms per frame, torch U-Net) is now the largest single item
 after `pt_shade`.
+
+## The packing cache, re-measured (`pt-packcache-1.txt`, at `bd09abc`)
+
+`arena_args_taichi.pack` now caches its offset/shape tables per tensor set.
+The same no-profiler 30-frame lit arm at 720p: **5.521 s before, 5.591 s
+after** — no change inside the box's run-to-run noise (1080p: 10.080 s,
+against 10.319 s measured *with* the kernel profiler, not a comparable
+arm). The 13 ms per frame cProfile attributed to `pack` was real time but
+not critical-path time: without the profiler's per-launch syncs a launch
+returns before its kernel finishes, so the host packs the next launch's
+tables while the GPU is still busy with the previous one. cProfile was
+attributing a serialized run. The cache stays — it is small, tested and
+byte-identical, and a host-bound backend (the CPU box, Metal) does pay
+packing on the critical path — but the T4 lesson is the general one for
+this column: **in production the host and the device overlap, and a host
+cost only matters where it fails to hide behind a kernel.** What still does
+not hide is the per-window next-event setup and the adaptive pixel list
+(both sync the device), ~10 ms per frame together, and the denoiser's 35 ms.

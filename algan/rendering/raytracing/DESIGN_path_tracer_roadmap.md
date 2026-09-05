@@ -376,10 +376,18 @@ per frame *including* the wait for the kernels it sits behind, and the
 real in-call host cost is nearer 25 ms of a ~150 ms production frame: 13 ms
 of `arena_args_taichi.pack` rebuilding the arena offset/shape tables for
 every one of 30 launches per frame although the tensor set is the same for
-every iteration of a window (cacheable per window — the one cheap §0 win
-left, ~8% of the frame), 6 ms of next-event setup (memoisable on a static
-rig), 3.5 ms of the adaptive sampler's pixel list. After `pt_shade` the
-largest single item is the denoiser at 35 ms per frame.
+every iteration of a window, 6 ms of next-event setup (memoisable on a
+static rig), 3.5 ms of the adaptive sampler's pixel list. `pack` now
+caches its tables per tensor set (`pt-packcache-1`) — and the T4 wall did
+not move (5.52 s → 5.59 s over 30 frames), because without the profiler's
+per-launch syncs the packing was already hidden behind the previous
+launch's device time; cProfile had attributed a serialized run. The cache
+stays (byte-identical, and a host-bound backend does pay packing on its
+critical path), and the lesson is the general one for this column: a host
+cost matters only where it fails to hide behind a kernel, which here is
+the two device syncs per window (next-event setup, pixel list; ~10 ms) and
+nothing else. After `pt_shade` the largest single item is the denoiser at
+35 ms per frame, and that is device time.
 
 ### 0.3 The defaults, and what "turn on path tracing" means
 
