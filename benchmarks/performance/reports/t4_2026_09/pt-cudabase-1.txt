@@ -1,0 +1,289 @@
++ nvidia-smi
+Sat Sep  5 18:19:15 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.159.04             Driver Version: 580.159.04     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla T4                       Off |   00000000:00:04.0 Off |                    0 |
+| N/A   48C    P8             10W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  Tesla T4                       Off |   00000000:00:05.0 Off |                    0 |
+| N/A   51C    P8             10W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
++ apt-get -qq update && apt-get -qq install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg
+W: Skipping acquire of configured file 'main/source/Sources' as repository 'https://r2u.stat.illinois.edu/ubuntu jammy InRelease' does not seem to provide it (sources.list entry misspelt?)
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 125186 files and directories currently installed.)
+Removing r-base-dev (4.6.0-3.2204.0) ...
+dpkg: pkgconf: dependency problems, but removing anyway as you requested:
+ libsndfile1-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmkl-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickwand-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickcore-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libglib2.0-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libfontconfig-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+
+Removing pkgconf (1.8.0-1) ...
+Removing 'diversion of /usr/bin/pkg-config to /usr/bin/pkg-config.real by pkgconf'
+Removing 'diversion of /usr/share/aclocal/pkg.m4 to /usr/share/aclocal/pkg.real.m4 by pkgconf'
+Removing 'diversion of /usr/share/man/man1/pkg-config.1.gz to /usr/share/man/man1/pkg-config.real.1.gz by pkgconf'
+Removing 'diversion of /usr/share/pkg-config-crosswrapper to /usr/share/pkg-config-crosswrapper.real by pkgconf'
+Selecting previously unselected package pkg-config.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 125163 files and directories currently installed.)
+Preparing to unpack .../00-pkg-config_0.29.2-1ubuntu3_amd64.deb ...
+Unpacking pkg-config (0.29.2-1ubuntu3) ...
+Selecting previously unselected package libdatrie-dev:amd64.
+Preparing to unpack .../01-libdatrie-dev_0.2.13-2_amd64.deb ...
+Unpacking libdatrie-dev:amd64 (0.2.13-2) ...
+Selecting previously unselected package libfribidi-dev:amd64.
+Preparing to unpack .../02-libfribidi-dev_1.0.8-2ubuntu3.1_amd64.deb ...
+Unpacking libfribidi-dev:amd64 (1.0.8-2ubuntu3.1) ...
+Preparing to unpack .../03-libgraphite2-3_1.3.14-1ubuntu0.1_amd64.deb ...
+Unpacking libgraphite2-3:amd64 (1.3.14-1ubuntu0.1) over (1.3.14-1build2) ...
+Selecting previously unselected package libgraphite2-dev:amd64.
+Preparing to unpack .../04-libgraphite2-dev_1.3.14-1ubuntu0.1_amd64.deb ...
+Unpacking libgraphite2-dev:amd64 (1.3.14-1ubuntu0.1) ...
+Selecting previously unselected package libharfbuzz-icu0:amd64.
+Preparing to unpack .../05-libharfbuzz-icu0_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-icu0:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libharfbuzz-gobject0:amd64.
+Preparing to unpack .../06-libharfbuzz-gobject0_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-gobject0:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libharfbuzz-dev:amd64.
+Preparing to unpack .../07-libharfbuzz-dev_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-dev:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libthai-dev:amd64.
+Preparing to unpack .../08-libthai-dev_0.1.29-1build1_amd64.deb ...
+Unpacking libthai-dev:amd64 (0.1.29-1build1) ...
+Selecting previously unselected package pango1.0-tools.
+Preparing to unpack .../09-pango1.0-tools_1.50.6+ds-2ubuntu1_amd64.deb ...
+Unpacking pango1.0-tools (1.50.6+ds-2ubuntu1) ...
+Selecting previously unselected package libpango1.0-dev:amd64.
+Preparing to unpack .../10-libpango1.0-dev_1.50.6+ds-2ubuntu1_amd64.deb ...
+Unpacking libpango1.0-dev:amd64 (1.50.6+ds-2ubuntu1) ...
+Preparing to unpack .../11-r-base-core_4.6.1-6.2204.0_amd64.deb ...
+Unpacking r-base-core (4.6.1-6.2204.0) over (4.6.0-3.2204.0) ...
+Setting up libgraphite2-3:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up libharfbuzz-icu0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libfribidi-dev:amd64 (1.0.8-2ubuntu3.1) ...
+Setting up pango1.0-tools (1.50.6+ds-2ubuntu1) ...
+Setting up libharfbuzz-gobject0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libgraphite2-dev:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up r-base-core (4.6.1-6.2204.0) ...
+Installing new version of config file /etc/R/Makeconf ...
+Setting up pkg-config (0.29.2-1ubuntu3) ...
+Setting up libdatrie-dev:amd64 (0.2.13-2) ...
+Setting up libharfbuzz-dev:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libthai-dev:amd64 (0.1.29-1build1) ...
+Setting up libpango1.0-dev:amd64 (1.50.6+ds-2ubuntu1) ...
+Processing triggers for hicolor-icon-theme (0.17-2) ...
+Processing triggers for libc-bin (2.35-0ubuntu3.8) ...
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_5.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero_v2.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_0.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_loader.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbb.so.12 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libumf.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm_debug.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_opencl.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc_proxy.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libhwloc.so.15 is not a symbolic link
+
+Processing triggers for man-db (2.10.2-1) ...
+Processing triggers for mailcap (3.70+nmu1ubuntu1) ...
++ git clone --filter=blob:none https://github.com/algorithmicsimplicity/algan.git /kaggle/working/algan
+Cloning into '/kaggle/working/algan'...
+Updating files:   0% (2/996)Updating files:   1% (10/996)Updating files:   2% (20/996)Updating files:   3% (30/996)Updating files:   4% (40/996)Updating files:   5% (50/996)Updating files:   6% (60/996)Updating files:   7% (70/996)Updating files:   8% (80/996)Updating files:   9% (90/996)Updating files:  10% (100/996)Updating files:  11% (110/996)Updating files:  12% (120/996)Updating files:  13% (130/996)Updating files:  14% (140/996)Updating files:  15% (150/996)Updating files:  16% (160/996)Updating files:  17% (170/996)Updating files:  18% (180/996)Updating files:  19% (190/996)Updating files:  20% (200/996)Updating files:  21% (210/996)Updating files:  22% (220/996)Updating files:  23% (230/996)Updating files:  24% (240/996)Updating files:  25% (249/996)Updating files:  26% (259/996)Updating files:  27% (269/996)Updating files:  28% (279/996)Updating files:  29% (289/996)Updating files:  30% (299/996)Updating files:  31% (309/996)Updating files:  32% (319/996)Updating files:  33% (329/996)Updating files:  34% (339/996)Updating files:  35% (349/996)Updating files:  36% (359/996)Updating files:  37% (369/996)Updating files:  38% (379/996)Updating files:  39% (389/996)Updating files:  40% (399/996)Updating files:  41% (409/996)Updating files:  42% (419/996)Updating files:  43% (429/996)Updating files:  44% (439/996)Updating files:  45% (449/996)Updating files:  46% (459/996)Updating files:  47% (469/996)Updating files:  48% (479/996)Updating files:  49% (489/996)Updating files:  50% (498/996)Updating files:  51% (508/996)Updating files:  52% (518/996)Updating files:  53% (528/996)Updating files:  54% (538/996)Updating files:  55% (548/996)Updating files:  56% (558/996)Updating files:  57% (568/996)Updating files:  58% (578/996)Updating files:  59% (588/996)Updating files:  60% (598/996)Updating files:  61% (608/996)Updating files:  62% (618/996)Updating files:  63% (628/996)Updating files:  64% (638/996)Updating files:  65% (648/996)Updating files:  66% (658/996)Updating files:  67% (668/996)Updating files:  68% (678/996)Updating files:  69% (688/996)Updating files:  70% (698/996)Updating files:  71% (708/996)Updating files:  72% (718/996)Updating files:  73% (728/996)Updating files:  74% (738/996)Updating files:  75% (747/996)Updating files:  76% (757/996)Updating files:  77% (767/996)Updating files:  78% (777/996)Updating files:  79% (787/996)Updating files:  80% (797/996)Updating files:  81% (807/996)Updating files:  82% (817/996)Updating files:  83% (827/996)Updating files:  84% (837/996)Updating files:  85% (847/996)Updating files:  86% (857/996)Updating files:  87% (867/996)Updating files:  88% (877/996)Updating files:  89% (887/996)Updating files:  90% (897/996)Updating files:  91% (907/996)Updating files:  92% (917/996)Updating files:  93% (927/996)Updating files:  94% (937/996)Updating files:  95% (947/996)Updating files:  96% (957/996)Updating files:  97% (967/996)Updating files:  98% (977/996)Updating files:  99% (987/996)Updating files: 100% (996/996)Updating files: 100% (996/996), done.
++ git -C /kaggle/working/algan fetch --force origin claude/algan-path-tracer-design-8uj1vl
+From https://github.com/algorithmicsimplicity/algan
+ * branch            claude/algan-path-tracer-design-8uj1vl -> FETCH_HEAD
++ git -C /kaggle/working/algan checkout --force FETCH_HEAD
+Note: switching to 'FETCH_HEAD'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at 99a7f72 Authored light sampling: T4 A/B recorded
++ git -C /kaggle/working/algan clean -fdx
++ git -C /kaggle/working/algan log --oneline -1
+99a7f72 Authored light sampling: T4 A/B recorded
++ pip install -q -e '/kaggle/working/algan[pango]'
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.9/44.9 kB 1.2 MB/s eta 0:00:00
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.1/4.1 MB 25.3 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 27.7/27.7 MB 52.1 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.2/59.2 kB 4.6 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 129.9/129.9 kB 9.1 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 92.0 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.9/137.9 kB 9.7 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 750.0/750.0 kB 3.5 MB/s eta 0:00:00
+
+==============================================================================
+algan Kaggle harness -- tag pt-cudabase-1
+==============================================================================
+repo      /kaggle/working/algan
+branch    claude/algan-path-tracer-design-8uj1vl
+commit    (resolved on the box)
+steps     ['record', 'verify', 'export', 'dump']
+ALGAN_DEVICE cuda
+TORCH 2.10.0+cu128 cuda=True
+GPU Tesla T4
+render device: cuda
+
+==============================================================================
+=== STEP record ===
+==============================================================================
+$ pip install -q pytest && ALGAN_RUN_PATH_TRACED=1 ALGAN_UPDATE_PATH_TRACED_BASELINES=1 python -m pytest tests/path_traced -q -p no:cacheprovider
+  env ALGAN_VIDEO_ENCODER=software
+[Quadrants] version 1.3.0, llvm 22.1.0, commit ab9a58ab, linux, python 3.12.13
+.ssss                                                                    [100%]
+=============================== warnings summary ===============================
+../../../usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1480
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1480: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/path_traced/test_path_traced.py: 14 warnings
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/path_traced/test_path_traced.py::test_path_traced_scene[authored_under_many_lights]
+  /usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'tuple' object. Template mapper caching disabled.
+    warnings.warn(message)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 4 skipped, 16 warnings in 128.74s (0:02:08)
+--- step record: ok (rc=0) in 142.7s
+
+==============================================================================
+=== STEP verify ===
+==============================================================================
+$ ALGAN_RUN_PATH_TRACED=1 python -m pytest tests/path_traced -q -p no:cacheprovider
+  env ALGAN_VIDEO_ENCODER=software
+[Quadrants] version 1.3.0, llvm 22.1.0, commit ab9a58ab, linux, python 3.12.13
+.....                                                                    [100%]
+=============================== warnings summary ===============================
+../../../usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1480
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1480: DeprecationWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/path_traced/test_path_traced.py: 14 warnings
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/path_traced/test_path_traced.py::test_path_traced_scene[authored_under_many_lights]
+  /usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'tuple' object. Template mapper caching disabled.
+    warnings.warn(message)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+5 passed, 16 warnings in 83.69s (0:01:23)
+--- step verify: ok (rc=0) in 92.6s
+
+==============================================================================
+=== STEP export ===
+==============================================================================
+$ mkdir -p ../out/pt-cudabase-1/cuda_baselines && cp tests/path_traced/expected_outputs_cuda/*.mp4 ../out/pt-cudabase-1/cuda_baselines/ && md5sum ../out/pt-cudabase-1/cuda_baselines/*.mp4 && ls -la ../out/pt-cudabase-1/cuda_baselines/
+  env ALGAN_VIDEO_ENCODER=software
+e3b31613f27200f63ce7d49ee217e345  ../out/pt-cudabase-1/cuda_baselines/authored_under_many_lights.mp4
+542604c850037a8ffc1d61bf3223ba91  ../out/pt-cudabase-1/cuda_baselines/environment_and_refraction.mp4
+f8b69feeefa4a83d412d3c8199ccb2dc  ../out/pt-cudabase-1/cuda_baselines/lit_and_shadowed.mp4
+7881de9a7d16e5da060807972373df7d  ../out/pt-cudabase-1/cuda_baselines/translucency_and_order.mp4
+total 40
+drwxr-xr-x 2 root root 4096 Sep  5 18:24 .
+drwxr-xr-x 3 root root 4096 Sep  5 18:24 ..
+-rw-r--r-- 1 root root 6135 Sep  5 18:24 authored_under_many_lights.mp4
+-rw-r--r-- 1 root root 7316 Sep  5 18:24 environment_and_refraction.mp4
+-rw-r--r-- 1 root root 7554 Sep  5 18:24 lit_and_shadowed.mp4
+-rw-r--r-- 1 root root 5042 Sep  5 18:24 translucency_and_order.mp4
+--- step export: ok (rc=0) in 0.0s
+
+==============================================================================
+=== STEP dump ===
+==============================================================================
+$ for f in ../out/pt-cudabase-1/cuda_baselines/*.mp4; do echo "=== B64 $(basename $f)"; base64 -w0 "$f"; echo; echo "=== END"; done; md5sum ../out/pt-cudabase-1/cuda_baselines/*.mp4
+  env ALGAN_VIDEO_ENCODER=software
+=== B64 authored_under_many_lights.mp4
+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
+=== END
+=== B64 environment_and_refraction.mp4
+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
+=== END
+=== B64 lit_and_shadowed.mp4
+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
+=== END
+=== B64 translucency_and_order.mp4
+AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAEFptZGF0AAACDQYF//8J3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NCByMzE5MSA0NjEzYWMzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTIgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NiBwc3k9MCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTAgOHg4ZGN0PTEgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0wIGNocm9tYV9xcF9vZmZzZXQ9MCB0aHJlYWRzPTIgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MSBrZXlpbnQ9MjUwIGtleWludF9taW49NSBzY2VuZWN1dD00MCBpbnRyYV9yZWZyZXNoPTAgcmM9Y3FwIG1idHJlZT0wIHFwPTAAgAAAB5ZliISv7P/CS7uPV9Qd/e238bMdRdhJpFpCh0LS0m2LwmgL10FK+QD4+5vJdqVccAna1UFgSShIIqBCtVUDE0SZqltsM3AmF11jD1kSM/NI8ZyLh8i1P/hQkodSrBJsjipxpBESC5u3f4KhF+8hlTzmGlv////5MurJXPYp+Lj////fji5JlGGcbI3oxw2isP1DnnPP////40jUV6b+ns4v////fji5JlGegeHi0DS5t1MVW/////ky6slc9in4uP///9+OLkmUX3lpM2CRMgg24iJpJZtmfrl7Lapf185ttiv2xCi7MOTe7ARcDF2ra4IA2TvPNaNCe98l9Axd8CAtHxYhKIK3ZQPoU4ETWEg2m4eWHD0Hvi+4KvFT864hrqJy+XPCbjEV3I+12Kqjr/mz4qsvkWpjd1qea/zsoELQrX6VybihBWo6+1lekrveA+gW7GvVA5Y/naMAX9zle816SpC7P2tv/+mBREC9D//x/9vMbkFrAaeEZais+RaNKIySH4uj2H/tntX92q3EoCrh/ya9o4hunj7G6wxdnhSqBOGbTz2NSOEYX//TAiTHD8//8f4X56q9awFzq4NoM27KsG/eqqiujoH/6icp/dq/k3sXZxWJMjhXynDTp2D/o/ClM19XA89iTsv7F//0wXYspx//5AvTVFkFrAdsTUqitLKGRqH1WkjrWEl/1HlT/92v7sChj3jeO5ymiErqBejiBN9cJwT8KMC/mGQfHPZ39bXwt+3Z10hiGBXueQ+fB7RAgPuUrV/X8884fxm3BBD0bTGq/Zlc5biX6lM8p1kn8YGAOl+UPu/RH3KLyYA8884bkv5hR/WNEjm/RUW1TP0AlAmbxjsjfgAS4M6uKvFR/AMlCrzzm3+xhghHYTxOI9Q5NTIV6ysWYftstGdN5YMnDOwwWnxmnX2iekWDFxKerXbcuztWVmydIXoF3gtPhyGfZk7LrN9Rp+GD5WIwE81Q59kbrZdVAx8yDPaJ0ZuVq++jG8vaYBVRUNgpS1PjDse66Vj2aZEaKJ0BYDpzxmFE/0kq+/4q3ZVUngw+ouDGQo4clyz/1L1ZeiCQq8k9fNyxZbsr/Lq+AjacTtFgMRaolhuiTO+/4bjELSkSjqy7Co2cXW0rm83T2ztuo4yTHl6Y1tvT3kSLhafftdBe3FMX0Q+b0PbWBve69bxHKoCkYrX9rBoIEIIwRtf1EsZbfJZhjxfnzZX1UH94ymQYwu47PsJHTRlUm3iNuWsFiNhoWvIjbDTL4zrUPhifaLMPemujglJ+wYd4s02FT3kNQuVkU3dZgeUEkpSbjyPz9J4rZRYlTwqsHV+GemPOKywS19H/VMwdtmtkjAAXm9UPhl6o3PeeMRv0k4RfWsT6scKchqEgI8PWpCB8HXmNm2kAREsdgGQagMcTWV4yDACMjIUtNkYTBjAjAHESiFJleR9GeN/YWOEwP/H1adnOpT284UtOauOhUhEzZ5KqGOGtqjd2BZoCKhnAHXpO/6EsGdQWx8GEnLoneSMJVDGnMA5GajbXzvBNcfZfW0pz5dA0TNSAYqsJfdmMNBjEfO7LxX9L6/jLoUvFTbOXMHt1uNNN6pquta9hrKg9dBUpy27vJtMH0XwpYg9cQBlNhDYagd+dNGYP49+vdL4Uz6PTDr14g60H1MZaIKUifE7Zm1o6ISKnBX0OuXGBgYp4qdbGiWYpUSqdhFPKkZaFYd/eLbamGWK7jXyaqINdHzZJhNgPZ6iTf+AuHu6nUAXMBc8QRxi9q2hqO/2C3KTuzS3IHjJo4RUlgp+vv7VzBdfz2lCQM4NiujKW4lqmNlS12oLhZ5ftBHea5LMxbR4GpDBshtWhB0+nOaprAhxyrVb+1n6+hL8XlgoX3ErFS/Pr0BSnNsLTCSHAFNtCel6DBnoo51nE9egvHNxWMrOHoz2BqbQXsEUQ/ORV8tVegDI/HJXAreSsJWHeo6o5IeIOStG03Bb3UcMlWLUvoZ1zip/7uYlGbCglK6WxK4UajTXUEzZWkxIdXf/gvBaZvn+a07HhPmQxVBtX6qkBGk9E6umP85lmYPGNUU0Q4O5MOkfXXlgbNXM5edk8S5gU/TiIC/SCBcI7f0hmFlRurHz91IEGgRRnH8t2lJZN9AsItMP3iv+e/QIcMTrSIpZKxaLA12C0cSTI6rD+1IfGHw475ETicBGkwWUFzy+zafvPyGFD0lThdqolD5gm7EaRDXzg1yL8JzLIgQr7dGt7LJ1IdQuSZWCHYqn7uGg4FBeNy2jgc1uUz3GvqqsvW4Wp1EEFPqwT7f+1HYBJobPyGB+GEhnM4/MEwLNLuuas+BkQ5ImkbHgXztMo6eI1Y5Yqi4FD+NVAR4LK0gzHTCpTM+nXbt5vVaTAM22EsEt8axjJY+l3b+DHhn/+7dQuG0tP+ZxwObY1rpIIMdNTCFvajolh3TdrrEoDkqXbBT5o5s8TLYCcxCJXia6Tk5ihNY4taBTAGLbE5lW6CE10nJaRGxNLKXYtFYnQ+wtzaFsRS5ekgyjj6H1eLK+irBaU/MaSXaAEsDTGzAjZd/UpbOYJuNl39Sls5gm42Xf1KWzmA5qhAAABPkGaOxr+1hj+Zid/L7EzsD6yArIAsfznZLijTGVHQiCIR5f5Ddk9THgTKzJvpjcum2RQ2pawRrzQYbATmjle/p6ei635MJxK3MV1rvCniZ4fj8vfBMrUBgMHB7YCRlcQue0CYTN7LhrK1DTQOaHP6RjZ58NMobk+00WI3pF8U2LRdbZZKtmBUpM7JG46EQ2LbBx//2F+T1kqkOYDcE3IK2Zo2xum9wJQD1tPBKFCMixa6608PrdpxRAWFTJixaKSYTsI160OVlOiOwnqTfHqWwSLIWzLmGzVc22AoY1LkRTo+H2UlElV3wPWSqe8KIWFTNtry4qvOP7bupilZev05SApvf0U/5n7zyCuHDZutQOy0ZQ8FeN1AVKtW/LqmmRSo83W0UyoJFcCCSq9nMpXn/WrPxqenXr0y+kG+MHBMQAAAbFBmkYNf/7aqYb2VJ/vLd4xP38ow8Xr0OEbjxNqOAyl0Jh0DfON5Q3EGcuiXSz92AQWSIJ/z4p98QB9pEYU6Ho8YikwkE5caqFvdl1l1Q3skGcuPKXrnavDm+TPZjgyGTeyerj/Av2GToYWIg176jtOIqlP+xkvn170l1mlKz+N2FZnjDdMDVmJnNVHxNmHnDadPFDG7EPoFSWcN0Tg/vtTkWme4EpfhCFOWGv3217cicifKXoPgtEHTuz4egXDsFwctpI7L6CI+iogPd07EwLtX3j6C0lfBlC3vTUehaYHgbRyz++1OXZWZo3fIiGDiNlOuoS8qE8kAMe5oa5Q2fHCXr9GpdL3VLjjl8ibh4JoNsrtW+f25T5K+VWZwS/HyOiAItRuuf+haX3SfVA6+5ESlix8nurlSyCtxNXsZIrmX7yhs+aIycU007QGEJBv1FjTyhWkuHgmpU+l32MXATfU2M46DxPCy7p2MuKYp7S/jBq/nAg9B5R92N5ACRFtg/9xufIOlV+FGQJCwj5Dt0bEj3FO/4+f0EzZ/YjhuTJ3055V36SJEro/x9RNCfc0rCghAAACI0GaZg1//sj18hDJbzP3kGS3mc3AyW80RmTl214dQlFBQH0WHDWf0umLFwOYSU0AB0mg300xg14dKZME6nhU80u0umB5AnMou02nJoHNsxo14dW9GQUmbwXB9RomCLpmlwBf36n+cnWSaE1SwQd6+dm9nmzoZD3yEJAWqTAxmga7gA5Fn8qd5G6YTnLuvBx3QktQIYDi+2vIeBIj3cj17XJrkW0XTK1dCdAuMyXdeTsgazV91f6MqWZPEoNCfFFrcYxslg/OvYu9PAJX3W7QG1iHTJEDaZs3+0/MQ41ajOCnQHkQ9QUWdYY616sUitwXHrUhaLD2aUSe6sl9gE9ztrVKlXzDvl0aDsPjne17VOy4OFfGBf0CDqhOZp0pv+CD/WJcj/GSFLVBxwryDWrhaJu7bnsu+8DfKCzkVtUbym7rrcWOHLSpI8WrpGS0u2ORH5+BfazJi94snHzOCrCKdC9XXqxSK7d5Oxt1GuygmrWJSYz7DDu0EVBrRHRZPG6KXUmUMHCHD1z2mVk5lZgbhLMUZvaFfnRsCaZcznft2lNg/w0tk8iQ3bLieFmGs/AuYT+vn10Bvnw7CyrKmDEnFtJ6VbE7kvaJ9kkw1n2Mz6f18+ugN+hlxIw1IAL8Yyg6EoRim5oPNw15oMKKuvaalJy5g32vXxG4BW7SCawH/IB7EPACHtrvW8BdG33HKtD6OqX6HHdxTqZjCQdrbDiqIuHmGLgAAAGFQZqGDX/+yK/+tJRCxSfBOYF9kcIMy3tjW+XpC2LgXuf5kVv8VCjLFJ8YQ9awEq6ToDamd82qEta8YRW+E9kM50+Bt3DJ5yLW7Kuu4jww2duC8BYHN2cVeXldDRXZ41nEV6l/35zjxskQhiPJm63CrZHZp90ZsU1I6iF5vbgzT4amIIye1fSepghLD8yTze84645B1XpY4yUZWdXdU0zRmuyP4vCWGTv9jFdITL1fsBF7yGs0cXv6fRKROjxMwCt6x37Ecb7U3FA01D3x83FLZsD1wVf8rb+8mWubylEWdts9U2W2p8DM+FF10nVYxAnguuObCUOk3G9OC7vlyE8tptxT+xisaEzG559BVfJkMod5w2kWV/2wGQgCn6x37Ec7sYmT1icUjX/275iQAjHXn3bzWUGLGSpvhcsrQLtanUsNFnLFbR3zYhZVDGOvyfYbLazP3DUd0vomUkuXg4483fO43k0asZyRkpZJ5428mnCpNrVCm+o+w82dT49hcmTRt2wTyBEAAAMwbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlt0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAIAAAABIAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHTbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABfm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAT5zdGJsAAAAsnN0c2QAAAAAAAAAAQAAAKJhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAIAASABIAAAASAAAAAAAAAABF0xhdmM2MS4zLjEwMCBsaWJ4MjY0cmdiAAAAAAAAAAAAGP//AAAAOGF2Y0MB9AAK/+EAHGf0AAqR1sIL+Jm4EBACAAADAAIAAAMAFB4kTcABAAVo6sBry//4+AAAAAAUYnRydAAAAAAAAIKQAACCkAAAABhzdHRzAAAAAAAAAAEAAAAFAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAFAAAAAQAAAChzdHN6AAAAAAAAAAAAAAAFAAAJqwAAAUIAAAG1AAACJwAAAYkAAAAUc3RjbwAAAAAAAAABAAAAMAAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjEuMS4xMDA=
+=== END
+e3b31613f27200f63ce7d49ee217e345  ../out/pt-cudabase-1/cuda_baselines/authored_under_many_lights.mp4
+542604c850037a8ffc1d61bf3223ba91  ../out/pt-cudabase-1/cuda_baselines/environment_and_refraction.mp4
+f8b69feeefa4a83d412d3c8199ccb2dc  ../out/pt-cudabase-1/cuda_baselines/lit_and_shadowed.mp4
+7881de9a7d16e5da060807972373df7d  ../out/pt-cudabase-1/cuda_baselines/translucency_and_order.mp4
+--- step dump: ok (rc=0) in 0.0s
+
+==============================================================================
+summary
+==============================================================================
+    OK     142.7s  record
+    OK      92.6s  verify
+    OK       0.0s  export
+    OK       0.0s  dump
+RESULTS {"tag":"pt-cudabase-1","device":"cuda","branch":"claude/algan-path-tracer-design-8uj1vl","commit":"99a7f7208532c14041606a929bec2cf19fb79811","steps":[{"name":"record","command":"pip install -q pytest && ALGAN_RUN_PATH_TRACED=1 ALGAN_UPDATE_PATH_TRACED_BASELINES=1 python -m pytest tests/path_traced -q -p no:cacheprovider","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":142.68,"log":"/kaggle/working/out/pt-cudabase-1/record.log"},{"name":"verify","command":"ALGAN_RUN_PATH_TRACED=1 python -m pytest tests/path_traced -q -p no:cacheprovider","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":92.62,"log":"/kaggle/working/out/pt-cudabase-1/verify.log"},{"name":"export","command":"mkdir -p ../out/pt-cudabase-1/cuda_baselines && cp tests/path_traced/expected_outputs_cuda/*.mp4 ../out/pt-cudabase-1/cuda_baselines/ && md5sum ../out/pt-cudabase-1/cuda_baselines/*.mp4 && ls -la ../out/pt-cudabase-1/cuda_baselines/","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":0.02,"log":"/kaggle/working/out/pt-cudabase-1/export.log"},{"name":"dump","command":"for f in ../out/pt-cudabase-1/cuda_baselines/*.mp4; do echo \"=== B64 $(basename $f)\"; base64 -w0 \"$f\"; echo; echo \"=== END\"; done; md5sum ../out/pt-cudabase-1/cuda_baselines/*.mp4","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":0.02,"log":"/kaggle/working/out/pt-cudabase-1/dump.log"}],"sha256":{}}
+ALL STEPS OK
+runner exit code: 0
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __script__.ipynb to html
+[NbConvertApp] Writing 285790 bytes to __results__.html

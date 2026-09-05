@@ -232,12 +232,19 @@ everywhere else. Like the full-render suite the baselines are per machine,
 and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
 
 The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
-container. **The CUDA set does not exist yet** — creating it takes a CUDA
-machine: run `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
-tests/path_traced -q` there twice, check the second run's outputs against the
-first (they must be byte-identical), look at the videos, and commit
-`expected_outputs_cuda/`. Until then a CUDA machine renders the scenes and
-skips the comparisons.
+container. The `expected_outputs_cuda/` set was rendered on a Kaggle Tesla T4
+(`benchmarks/performance/reports/t4_2026_09/pt-cudabase-1.txt`: recorded,
+re-rendered byte-identically in the same session, and byte-identically again
+in a second session). Two of the four scenes — `environment_and_refraction`
+and `translucency_and_order` — are byte-identical between the two devices;
+`lit_and_shadowed` and `authored_under_many_lights` differ by a few counts
+where the two backends round the sampler differently. Re-recording either
+set is the same procedure on that device: run
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
+tests/path_traced -q` twice, check the second run's outputs against the first
+(they must be byte-identical), look at the videos, and commit the directory.
+A device without a committed set renders the scenes and skips the
+comparisons.
 
 ## The fast suite's render
 

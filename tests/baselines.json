@@ -28,6 +28,11 @@
       "file": "path_traced-cpu.tar.gz",
       "sha256": "adcb281889290a16859ec02dad755155a3c11bac0302331a0a3952a8a3a35a2e",
       "size": 21577
+    },
+    "path_traced/cuda": {
+      "file": "path_traced-cuda.tar.gz",
+      "sha256": "ef80f96c35259276ffea46211cf30686e4f54b72c1077471dc13746655e28ecf",
+      "size": 21593
     }
   }
 }

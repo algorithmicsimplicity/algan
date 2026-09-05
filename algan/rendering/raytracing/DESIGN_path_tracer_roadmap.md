@@ -1921,8 +1921,12 @@ Tracked here so they are one search away, in rough order of effort:
   deterministic route's identical bounce-loop gap (see the comment block at
   `solid_shell_alpha` in `settings.py`). Closing both means carrying surface
   identity through arbitrary bounce trees.
-* **CUDA baselines for `tests/path_traced/` do not exist.** Procedure is in
-  `tests/README.md`; needs a CUDA machine.
+* **CUDA baselines for `tests/path_traced/` — RECORDED.** On the Kaggle T4
+  (`pt-cudabase-1`): all four scenes, byte-identical on a re-render in the
+  same session and again in a second session. `environment_and_refraction`
+  and `translucency_and_order` are byte-identical to the CPU set;
+  `lit_and_shadowed` and `authored_under_many_lights` differ by a few
+  counts. Procedure in `tests/README.md`.
 * **Self-intersection offsetting was a fixed world-space epsilon —
   FIXED in the path tracer.** Every spawned ray left along the geometric
   normal by `10 * min_hit_distance` (1e-3 world units, five sites in
