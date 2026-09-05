@@ -191,10 +191,12 @@ def test_a_metals_stage_exceeds_its_lobe_by_a_view_independent_constant(
     with geometry would mean the two disagree about the specular lobe itself,
     which is the failure this pins.
 
-    Asserting the residue's magnitude here instead would be asserting a stale
-    kernel as often as a real one: Taichi's offline cache does not invalidate
-    on a ``@ti.func`` edit, and two runs of this probe across one such edit
-    reported 9.6e-5 and 0 for the same code.
+    Asserting the residue's magnitude here instead would pin a value that
+    belongs to the colour space's ambient strength, not to the lobe. (An
+    earlier note here blamed the offline cache for two runs across one
+    ``@ti.func`` edit reporting 9.6e-5 and 0; the cache is keyed on the
+    kernel's IR and does invalidate on such an edit, so whatever moved that
+    number was not a stale kernel.)
     """
     stage, lobe = evaluate(
         FRONT, metalness=metalness, roughness=roughness, albedo=(0.0, 0.0, 0.0)

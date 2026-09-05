@@ -148,6 +148,17 @@ class TestResolveGpuRequest:
             == "none"
         )
 
+    def test_the_quadrants_wheel_is_empty_unless_asked_for(self, resolver):
+        # No default, unlike the Taichi wheel: an empty value means the arm
+        # runs whatever Quadrants `uv sync` installed, and a run id or a
+        # release-asset URL passes through from either entry point untouched.
+        assert resolver.resolve({"IN_COMMAND": "x"}, None)["quadrants_wheel"] == ""
+        out = resolver.resolve({"IN_COMMAND": "x", "IN_QUADRANTS_WHEEL": "123"}, None)
+        assert out["quadrants_wheel"] == "123"
+        url = "https://github.com/o/r/releases/download/t/quadrants-1.3.0.post1.whl"
+        out = resolver.resolve({}, {"command": "x", "quadrants_wheel": url})
+        assert out["quadrants_wheel"] == url
+
     def test_multiline_values_use_the_heredoc_form(self, resolver):
         text = resolver.format_outputs({"env": "A=1\nB=2", "timeout": "60"})
         assert "env<<ghadelim_" in text

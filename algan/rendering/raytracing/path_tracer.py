@@ -332,8 +332,9 @@ def _build_nee_tables(
         meta[_NM_ENV_CDF_H] = float(cdf_h)
         meta[_NM_ENV_CDF_W] = float(cdf_w)
         # The far plane rides the meta vector rather than a new kernel
-        # argument: pt_shade is close to Taichi's 64-argument ceiling, and a
-        # per-render scalar is exactly what this vector is for.
+        # argument: an argument costs a set_arg per launch and argument loads
+        # in the kernel (the "64-argument ceiling" is only a Python-side
+        # counter), and a per-render scalar is exactly what this vector is for.
         meta[_NM_FAR_CLIP] = float(max(0.0, far_clip))
         nee_meta = _arena_values(memory, meta, torch.float32)
     return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf

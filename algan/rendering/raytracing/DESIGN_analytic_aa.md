@@ -413,10 +413,11 @@ byte-identical kill-switch proving the toggle-off path is untouched. Full
 re-baseline of `tests/expected_outputs_cuda/` and the docs example videos when
 the default flips.
 
-**8.3 Taichi kernel-cache staleness.** Editing `@ti.func`s (`_ss_pixel`,
-`_bez_pixel_hit`, `_bezier_point_metrics`) does **not** invalidate the offline
-cache. Run `clear_cached_kernels()` before every A/B, and
-never edit `*_taichi.py` while a render process is live.
+**8.3 Taichi kernel-cache staleness.** Not a hazard after all: the offline
+cache is keyed on the compiled IR, so editing `@ti.func`s (`_ss_pixel`,
+`_bez_pixel_hit`, `_bezier_point_metrics`) recompiles by itself. What remains
+is: never edit `*_taichi.py` while a render process is live, and run one
+process per arm of anything a `ti.static` gate controls.
 
 **8.4 Register pressure.** The resolve is occupancy-bound. Coverage adds one
 float per fragment plus the union accumulator (cheap); sample masks add more.

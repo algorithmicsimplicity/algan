@@ -1609,8 +1609,9 @@ _MSL_CASES = [
 #: The same ladder question as ``_ARG_LADDER``, asked of hand-written MSL. It
 #: stops lower and steps finer around 31 because that is Metal's own per-stage
 #: buffer limit and the answer here is a property of Metal rather than of
-#: Taichi's 64-argument ceiling -- and because the arena convention's whole
-#: purpose is to make the top of this ladder irrelevant.
+#: Taichi's 64-argument counter (a Python-side check, not a codegen limit) --
+#: and because the arena convention's whole purpose is to make the top of this
+#: ladder irrelevant.
 _MSL_ARG_LADDER = [8, 16, 24, 28, 30, 31, 32, 40, 49]
 
 #: 31 is Metal's classic per-stage buffer limit and 49 is what

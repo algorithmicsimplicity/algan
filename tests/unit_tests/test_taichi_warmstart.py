@@ -15,6 +15,8 @@ the original way inside a real materialization.
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 import textwrap
 from textwrap import TextWrapper
 
@@ -22,6 +24,7 @@ import pytest
 
 from algan.taichi_compat import BACKEND, submodule
 from algan.utils.taichi_warmstart import (
+    _make_fast_inside_class,
     _MemoizingTextwrap,
     _wrap80,
     skipped_reason,
@@ -199,3 +202,122 @@ def test_pos_info_memo_keys_on_the_context_offsets():
     first.func = second.func = shared_func
 
     assert memoized(first, node) != memoized(second, node)
+
+
+#: A module that asks ``_inside_class`` from the places a decorator would: the
+#: frame *enclosing* a class body (the one the compilers look at, ``level`` 3
+#: from ``ask``), the module body itself, a plain function, and a class that
+#: carries a decorator of its own. ``ASK`` is the function under test, bound in
+#: by the test before the module runs.
+_INSIDE_CLASS_SOURCE = """\
+def ask(level):
+    return ASK(level)
+
+
+def deco(cls):
+    return cls
+
+
+class Holder:
+    enclosing = ask(3)
+    own_body = ask(2)
+
+
+@deco
+class Decorated:
+    enclosing = ask(3)
+
+
+module_body = ask(2)
+too_deep = ask(200)
+
+
+def in_function():
+    return ask(2)
+
+
+function_body = in_function()
+"""
+
+
+def _run_inside_class_module(tmp_path, ask):
+    """Execute the module from a real file, so ``linecache`` can see it."""
+    path = tmp_path / "inside_class_probe.py"
+    path.write_text(_INSIDE_CLASS_SOURCE, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("_inside_class_probe", path)
+    module = importlib.util.module_from_spec(spec)
+    module.ASK = ask
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return {
+        "Holder.enclosing": module.Holder.enclosing,
+        "Holder.own_body": module.Holder.own_body,
+        "Decorated.enclosing": module.Decorated.enclosing,
+        "module_body": module.module_body,
+        "too_deep": module.too_deep,
+        "function_body": module.function_body,
+    }
+
+
+def _installed_inside_class():
+    fast = submodule("lang.kernel_impl")._inside_class
+    original = getattr(fast, "_algan_original", None)
+    if original is None:
+        pytest.skip("_inside_class is not the patched version on this compiler")
+    return fast, original
+
+
+def test_inside_class_patch_answers_exactly_as_the_frame_walk(tmp_path):
+    """The patch against the implementation it replaced, frame by frame.
+
+    Both are handed the same ``level`` from the same call sites; the original
+    is *called* one frame deeper here (through a lambda), which is the same
+    adjustment the verify arm makes, so the frame each inspects is the same.
+    The class case is asserted outright so the comparison cannot pass by both
+    sides answering ``False`` to everything.
+    """
+    fast, original = _installed_inside_class()
+
+    from_fast = _run_inside_class_module(tmp_path, fast)
+    from_original = _run_inside_class_module(
+        tmp_path, lambda level: original(level + 1)
+    )
+
+    assert from_fast == from_original
+    assert from_fast["Holder.enclosing"] is True
+    assert from_fast["module_body"] is False
+    assert from_fast["too_deep"] is False
+    assert from_fast["function_body"] is False
+
+
+def test_inside_class_patch_verify_arm_agrees_with_the_original(tmp_path):
+    """``ALGAN_TAICHI_WARMSTART_VERIFY=1`` builds this instance; it raises on
+    the first disagreement, so running it over the same module is the check
+    that the verify arm's own frame arithmetic is right.
+    """
+    _, original = _installed_inside_class()
+    patterns = submodule("lang.kernel_impl")._KERNEL_CLASS_STACKFRAME_STMT_RES
+    verifying = _make_fast_inside_class(original, patterns, verify=True)
+
+    answers = _run_inside_class_module(tmp_path, verifying)
+
+    assert answers["Holder.enclosing"] is True
+    assert answers["module_body"] is False
+
+
+def test_inside_class_patch_without_source_on_disk_answers_false():
+    """A ``<string>`` module has no line to match, on either implementation."""
+    fast, original = _installed_inside_class()
+    namespace = {"FAST": fast, "ORIG": original}
+    exec(  # noqa: S102 -- the point is a frame whose file does not exist
+        compile(
+            "class NoFile:\n    answers = (FAST(2), ORIG(2))\n",
+            "<inside-class-probe>",
+            "exec",
+        ),
+        namespace,
+    )
+    assert namespace["NoFile"].answers == (False, False)

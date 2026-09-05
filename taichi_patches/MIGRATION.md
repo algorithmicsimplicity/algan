@@ -12,9 +12,13 @@ both, plus the things neither of them is the right home for — the corrections,
 the ledger of verified-versus-not, and how to re-run any of it.
 
 **Status in one line: the base decision is made and executed on CPU and CUDA;
-the Apple path is fixed and verified on one scene, and one heavier scene
-currently crashes on Metal — on *both* compilers, so that one is Algan's, not
-the migration's.**
+the Apple path is fixed and verified on the fast scene and on the heaviest
+scene in the suite, the crash that blocked the latter having turned out to be
+a leak in Algan's own MPS import cache and been fixed on master; the seven
+Quadrants patches apply and compile; what remains unverified is everything
+that needs a CUDA device (0003 on sm_61, 0005–0007 in PTX and pixels).**
+§10 is the current ledger; §6 and §9 are kept as the record of how it got
+there.
 
 ---
 
@@ -192,11 +196,11 @@ backend it landed on.** `../quadrants_patches/README.md` has the full account.
 | Quadrants renders CPU pixels identical to Taichi | **verified**, `tests/fast`, byte-identical |
 | Quadrants renders CUDA pixels identical | **verified** by the maintainer, Windows, before this session |
 | Both patch sets compile | **verified**, two runner images, one leg each |
-| The Apple GPU renders correctly on the patched Quadrants wheel | **verified on one scene** (`shapes_and_timeline`), one virtualized M1 |
-| …on a scene using bloom, glow, surfaces or glossy prefilter | **NOT verified** — the scene picked for it crashes on Metal on *both* compilers, see below; a lighter one that still reaches those kernels is needed |
-| Defect 2's fix works | **NOT verified on hardware** — the run that would have shown it is the one that crashed |
+| The Apple GPU renders correctly on the patched Quadrants wheel | **verified on one scene** (`shapes_and_timeline`), one virtualized M1 — and since on `fast` and `materials_and_lighting`, §10 |
+| …on a scene using bloom, glow, surfaces or glossy prefilter | was **NOT verified** at the time (the scene picked for it crashed on Metal on *both* compilers, see below); **verified since**, §10 |
+| Defect 2's fix works | was **NOT verified on hardware**; **verified since**, §10 |
 | pre-Volta CUDA works on sm_61 | **NOT verified** — compile-only; needs the maintainer's GTX 1050 |
-| `tests/full_renders` on CPU | **known to differ**, re-baseline outstanding (§4) |
+| `tests/full_renders` on CPU | **known to differ**; re-baselined in the second session (§9), re-checked in the third (§10) |
 
 **The crash, attributed: it is not the port, and it is not new.** Rendering
 `materials_and_lighting` on Metal dies at frame 119 of 179 with
@@ -219,6 +223,9 @@ It is filed in `../algan/rendering/DESIGN_mps_support.md` beside the other Metal
 failure modes, because that is where a Metal bug belongs and not here.
 
 ## 7. What to do next, in order
+
+*As written at the end of the first session. Items 1–3 are done (§10 has the
+runs); the live list is §10's.*
 
 1. **Fix the pre-existing Metal crash** on `materials_and_lighting` — attributed
    now: Taichi fails identically at the same frame, so it is Algan's Apple path,
@@ -276,3 +283,116 @@ and selects MPS itself, because on `mac-mps` the harness's own `algan check`
 runs before the command and refuses MPS for a wheel the script has not built
 yet; the control runs on **`mac-mps`** because it installs nothing and needs MPS
 selectable up front.
+
+---
+
+## 9. Second session (2026-09-04, later): the plan's remaining steps, as far as they got
+
+Executed on `claude/rebase-quadrants-plan-on6ojl`, in parallel worktrees, and
+**cut short when the maintainer ran out of usage**: five of the seven work
+packages were stopped before their own verification finished. Everything is
+committed so nothing is lost; the table says what each package is, and what it
+is not. Read the "not verified" column before trusting a row.
+
+| package | what landed | verified | not verified |
+| --- | --- | --- | --- |
+| Track C step 1 (§7.1) | stale "cache ignores `@ti.func` edits" claims corrected (probe-verified: a func-body edit misses the cache on both compilers); nested-tuple claim corrected; `ALGAN_GPU_MAX_REG` deleted; `ALGAN_TI_FULL_TRACEBACK`; `TI_SKIP_VERSION_CHECK` on the taichi arm; concrete arch + `enable_fallback=False`; stale `ticache.lock`/`qdcache.lock`/`ptxcache.lock` sweep before `init`; eviction comment; 64-argument note; `_inside_class` made cheap; `CUDA_CACHE_PATH` under Algan's cache | the agent's own `--fast` and unit runs before it was stopped; this branch's `--fast` | `benchmarks/_cfg_optimization_ab.py` was written but never run — no cfg_optimization numbers |
+| Track B step 3, fast launch (§7.3) | `taichi_fast_launch.py` now carries a Quadrants dispatcher too; `benchmarks/_quadrants_launch_overhead.py` measured a warm 20-ndarray launch at ~300 µs on either compiler, ~260 µs of it Python above `prog.launch_kernel`, ~90 µs on a plan hit; `tests/unit_tests/test_taichi_fast_launch.py`; `algan check` reports its gate | fast suite pixel-identical on Quadrants with it on (agent's run) | the taichi-arm parity run and the full unit suite were still running when stopped |
+| item 1, source-keyed cache index | `algan/utils/taichi_source_key.py` (1,180 lines: Algan key over kernel source, transitively visited funcs, closure/global walk, config + caps, template values; reuses Quadrants' `load_fast_cache` / `src_hasher` store; verify mode; STATS), `tests/unit_tests/test_taichi_source_key.py`, `benchmarks/_taichi_source_key_check.py`; **default off**, `ALGAN_TAICHI_SOURCE_KEY=1` opts in | imports; `algan check` reports it off | **nothing else** — its tests were never run, no hit rate, no timing, no verify pass. Treat as a draft |
+| item 20, early return in inlined funcs | `algan/utils/taichi_early_return.py` (840 lines), installed at import, `ALGAN_TAICHI_EARLY_RETURN=0` turns it off | imports; this branch's `--fast` (no Algan func has an early return, so the rewrite is inert there) | its own tests were never written or run; no early-return func has been compiled through it |
+| step 5, wheel CI | `quadrants_build.yaml` builds macOS arm64 (Metal) / manylinux x86_64 (CUDA) / Windows x64 (CUDA) and publishes a release when `release_tag` is set; helper scripts under `.github/workflows/scripts/`; `quadrants_patches/README.md` "Getting a wheel"; the Mac harnesses accept a Quadrants wheel | YAML + actionlint; the source script against the pristine tree | never dispatched; Windows is transcribed from Quadrants' `scripts_new/win` and untested |
+| patches 0005–0007 (rows 14, 15, 18) | `0005-cuda-max-reg`, `0006-cuda-readonly-ndarray-ldg`, `0007-cuda-fast-expf`, `verify_cuda_patches.py` | strict `git apply --check` in order after 0001–0004 on pristine v1.3.0 | **not compiled**, not clang-formatted, no README/PORTING-NOTES sections; build with `quadrants_build.yaml` before believing any of them |
+| step 6, CPU re-baseline | the four `tests/full_renders` scenes LLVM 22 moves (3 / 13 / 100 / 158) re-baselined after frame-by-frame inspection; pointer digest refreshed, tag still null | `pytest tests/full_renders` on this box | the release-asset upload (`tests/README.md`) |
+| Metal on the fast scene | `backend_pixel_ab.py --scenes fast`; `run_on_mac.yaml` dispatched with `GATE_SCENE=fast` on the patched Quadrants wheel | — | the run had not reported when the session ended; read it in the Actions tab |
+
+Attribution of the `materials_and_lighting` Metal crash (§6, §7 step 1): the
+control run on **Taichi 1.7.4** dies at the same frame 119 of 179, so it is the
+Apple path on the heaviest scene, not the Quadrants port. The maintainer is
+investigating it separately.
+
+Not started: row 21 (stage contract v2 / `algan.shading` helpers / user buffers
+/ seed) — a user-facing API design with no spec in this plan; and upstreaming.
+
+Order to finish, cheapest first: run `tests/unit_tests/test_taichi_source_key.py`
+and `benchmarks/_taichi_source_key_check.py`; write and run the early-return
+tests; dispatch `quadrants_build.yaml` on this branch (compile-checks 0005–0007
+and exercises the release legs); then the full suite.
+
+---
+
+## 10. Third session (2026-09-04, later still): consolidation, and what the verification found
+
+The second session's branch was merged onto `master` (`d9e89a9`), which had
+moved in the meantime: the maintainer had fixed the `materials_and_lighting`
+Metal crash (a leak in Algan's MPS import cache, §1.4 of
+`../algan/rendering/DESIGN_mps_support.md`), built the three-platform wheel
+workflow independently and run it green on all three legs, and re-baselined
+the CUDA renders. This section is the ledger after the merge: what was
+decided, what each unverified row of §9 turned into when it was actually run,
+and what is still open.
+
+### 10.1 The merge
+
+Two conflicts, both where the branch and `master` had built the same thing
+twice, and both resolved for `master`:
+
+* **`quadrants_build.yaml`.** `master`'s version had been dispatched and passed
+  on all three platforms (run `33850787142`, cp311) and comes with a driver
+  (`scripts/build_quadrants_wheels.py`), a matrix resolver and tests. The
+  branch's rewrite (`1ac25a6`: a manylinux container build and a release job
+  with a `.postN` version pin) was never dispatched and is dropped, with its
+  two helper scripts. One step was added to the Linux leg: the 0005–0007 gates
+  from Python, and `verify_cuda_patches.py` (whose PTX arms skip without a
+  CUDA device).
+* **`quadrants_patches/README.md` "Getting a patched wheel".** `master`'s, plus
+  a paragraph on the Mac harnesses' `quadrants_wheel` input, whose artifact
+  name now follows `master`'s workflow.
+
+Everything else merged clean. `--fast` on the merge: 531 passed, pixel-identical.
+
+### 10.2 What the runs settled
+
+| §9 row | run | result |
+| --- | --- | --- |
+| Metal on the fast scene | `run_on_mac.yaml` `33847294165` (dispatched in session 2, read here) | **PASS in substance**: MPS vs CPU on the patched Quadrants wheel, mean brightness 39.23 on both arms, per-channel means identical, 1,059 of 12,545,280 channel samples over tolerance (0.008 %), max delta 24 — the float32-accumulator class, the same as Taichi's own MPS-vs-CPU reading. Cold smoke 67 s, warm 3.05 s. |
+| The dense scene on Metal (§7 items 1–2) | `33926483875` | **materials_and_lighting renders on the Apple GPU on the patched Quadrants wheel**: 179 frames, 420 s on MPS vs 209 s CPU, means 55.33 vs 55.34, per-channel `(53.1, 57.5, 55.4)` on both, 76,866 of 49,902,336 over tolerance (0.15 %), max 131 at frame 42. This scene reaches every unconditionally cacheable kernel, so it is also **defect 2's fix, verified on hardware**: a cache hit binding at the arena base would look like defect 1 (95 % of pixels, a third of the brightness), not an edge residual with identical means. |
+| …and its control | `33927559059`, Taichi 1.7.4 patched wheel, same scene, same harness | **Taichi's own Metal-vs-CPU is the same reading**: 76,983 over tolerance, max 131, worst frame 42, means 55.33 vs 55.34, per-channel identical. The difference of differences is 117 pixels in 49.9 million. So the residual is Algan's Apple path (float32 accumulators, glossy prefilter, edges), not the port; the port's Metal picture on the heaviest scene is as good as the reference compiler's. |
+| Patches 0005–0007 | `quadrants_build.yaml` `33926192036` | **apply strictly in order and compile with CUDA on**; the wheel installs and the 0004 checks still pass on it. A hunk-by-hunk review (recorded per patch in `../quadrants_patches/README.md`) found one soundness hole (a store rooted in `ExternalTensorBasePtrStmt` was invisible to 0006's "written" analysis) and one policy error (0006 defaulted **on**, so it would have engaged on every CUDA render with no opt-in); both fixed in `165914d` and **rebuilt green in `33927637278`** (apply, compile, install, the 0004 checks, and the new gate step: `qd.init(gpu_max_reg=48, readonly_ndarray_ldg=True)` reads back and a `loop_config(max_reg=32)` kernel runs on CPU). Not verified: anything on a CUDA device — `.maxnreg`, `ld.global.nc` and `__nv_fast_expf` in PTX/IR, and pixels. 0007 is the one that is *live* on a CUDA render, since Algan runs `fast_math=True`; expect a last-bit change wherever f32 `exp` is called. |
+| Item 20, early return | `tests/unit_tests/test_taichi_early_return.py`, 45 tests, both compilers | **Tested and kept installed by default.** Each early-return func is compiled beside a hand-written single-exit twin and both must agree with Python: 45/45 on quadrants 1.3.0 and on taichi 1.7.4; `--fast` green on both with the hook on; a real render leaves the rewrite counter at 0 (104 funcs seen; 255 across `algan/` statically), so no shipped kernel's IR or cache key moves. The tests found three module bugs (an i32 initialiser truncating every float answer, `-1` taken for a typed expression, a decline leaving the body half-rewritten) and one design error: a `return` inside a func's outermost runtime `for` was body-guarded, which *compiles*, and at a kernel's top level that loop is the parallel one — a 65,536-element search with matches at 1000 and 50000 returned **both** across 20 launches on Quadrants. That case is now **refused** with a message naming the `while` spelling (which stays serial and is tested at a kernel's top level); the pass cannot see call sites, so the refusal is lexical and deliberately costs the legitimate inlined-inside-a-loop case too. One test is marked `fast`. |
+| Item 1, source-keyed cache index | `test_taichi_source_key.py` (28 on Quadrants; 12 + 16 skipped on Taichi, where the feature stands down by spec), `benchmarks/_taichi_source_key_check.py` twice per backend | **Works, and had two holes.** Over the 22 kernels a `Square` frame materializes: 22 hits, 0 poisoned, the verify arm re-deriving all 22 with **zero mismatches**, one frame digest across every arm and both backends; frontend seconds **13.0 → 0.48** (~27×), whole process 20.7 s → 7.5 s; `--fast` green with it on. Adversarial probing found two ways to a hit on stale IR, both reproduced as a wrong picture: a class read in kernel scope was keyed by its body source, not its attributes (the `ti.static(ArenaView(...))` shape Algan uses), and a `@ti.func` in a class body was skipped by the class walk. Both fixed by hashing every class member by value; schema bumped; config exclusions aligned to the compiler's own. Looked for and not found: globals/closures/attribute chains, aliases and `getattr` (they poison), mutable globals, same-repr template values, nested func tuples, config fields (all 98 audited), non-`ALGAN_` env, dataclasses (poison), kernel defaults (the compiler rejects them). **Default stays off**: the module's own bar is a clean verify arm over `tests/full_renders` on CPU and CUDA, and both holes were invisible to a one-frame render. |
+| Fast launcher, taichi arm | `benchmarks/_taichi_fast_launch_check.py`, twice on Taichi, once on Quadrants | **PASS on both**: identical frames across the off / on / verify arms (one digest, `717c4690…`, on both compilers too), the on arm taking the fast path for 96 of 119 launches. No render-time speedup is measurable on CPU (0.85–1.04×, cross-process, a shared box); the launcher's ~200 µs per launch is invisible behind a CPU frame, which is the expected shape — it exists for the GPU arms. |
+| `cfg_optimization` A/B | `benchmarks/_cfg_optimization_ab.py`, both compilers | **The docstring's 2.1× compile saving did not reproduce**: backend compile 20.9 s on / 21.2 s off on Quadrants, 18.4 / 19.2 on Taichi, frames byte-identical, warm render inside noise. Both arms of this run beat the earlier run's *off* arm, so its 63.4 s "on" arm was contention. On Algan's kernels the pass costs nothing measurable and buys nothing measurable; the default stays. Recorded in the script's docstring beside the first run. |
+| Full unit suite | `tests/unit_tests`, Quadrants | **3168 passed, 139 skipped, 2 failed**, both fixed here: `test_baseline_store` was red because `master`'s CUDA re-baseline (`5d558f1`) never refreshed `tests/baselines.json` (pointer refreshed, tag still null, upload still the maintainer's); `test_taichi_launch_pairing` asserted the "unknown device matches any GPU arch" rule that Track C step 1 replaced with "an unknown device is served by the CPU arch" — the test now states the new rule. Taichi arm: see the note below. |
+| `tests/full_renders` on CPU | this box, after the merge | **4 passed, 3 differ by 13 / 5 / 8** (`materials_and_lighting` frame 63, `solids_and_camera` frame 130, `text_and_media` frame 129) against the second session's re-baseline. **Not the merge's doing:** the second session's own commit (`5846c87`), rendered in this same container, fails `solids_and_camera` by the identical 5 at the identical frame 130. What differs is the container: `torch.compile` fails here (`InductorError: AssertionError: …/distutils/core.py`, four times per run) and the fused triangle projection runs eagerly, so its rounding is not the rounding the baselines were made with. The baselines stand; `pytest tests/full_renders` must be read on a box where `torch.compile` works, and the release-asset upload is still outstanding. |
+
+The Taichi arm of the unit suite (`ALGAN_TAICHI_BACKEND=taichi`): **3201
+passed, 155 skipped, 1 failed** — the same launch-pairing test, collected
+before its fix landed; it passes on Taichi in the re-run after the fix (23
+passed in that file), and the baseline-pointer test is backend-independent.
+This box's `torch.compile` failure (§10.2, full renders) is visible in this
+run too as `AlganWarning: torch.compile failed … runs eagerly`; no test
+depends on it.
+
+### 10.3 Two harness defects found on the way
+
+* **`uv run` reverts a patched Quadrants wheel.** The `quadrants_wheel` input
+  installed the wheel and lost it two lines later: the sync `uv run` performs
+  first put stock `quadrants==1.3.0` back, because the patched wheel's
+  `1.3.1.dev0+g…` does not satisfy the lockfile. The Taichi wheel survives the
+  same `uv run` only because its version matches the lock exactly, which is
+  why the pattern looked safe to copy. Both Mac workflows now check with
+  `.venv/bin/python` and export `UV_NO_SYNC=1` for the rest of the job
+  (`8415711`; `agent_guidance/gpu_harnesses.md` has the rule).
+* **The compiler cannot read a kernel out of `python -c`.** The first gate step
+  defined its probe kernel inline and died in `inspect`; it now writes a file.
+
+### 10.4 Still not verified, and the order to do it
+
+1. **A CUDA device for 0005–0007** — `verify_cuda_patches.py on/off/--compare`
+   on the T4 harness (`agent_guidance/gpu_harnesses.md`) against the Linux
+   wheel from `33927637278`, then `tests/full_renders` on CUDA with the wheel
+   installed, inspecting 0007's last-bit change before re-baselining.
+2. **0003 on sm_61**, the maintainer's GTX 1050, unchanged from §7.
+3. **The release-asset upload of the CPU baselines** (`tests/README.md`),
+   still the maintainer's step.
+4. Row 21 (stage contract v2) still has no spec; upstreaming is unstarted.

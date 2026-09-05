@@ -82,6 +82,18 @@ Things worth setting deliberately:
   GPU is refused and Algan renders on the CPU**, so an MPS arm without a wheel
   silently duplicates the CPU arm. `"none"` opts out on purpose — which is a
   real thing to measure, since it is what an unpatched Mac user gets.
+* **`quadrants_wheel`**. The Quadrants counterpart: a `quadrants_build.yaml`
+  run id (its `quadrants-wheel-macos-py3.11` artifact) or a release-asset URL.
+  Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
+  run; it wins over the Taichi wheel when both are given. It also sets
+  `UV_NO_SYNC=1` for the rest of the job, because the patched wheel's
+  `1.3.1.dev0+g…` version does not satisfy the lockfile's `quadrants==1.3.0`
+  and the sync `uv run` does first would put the stock wheel back (the Taichi
+  wheel survives only because its version matches the lock). A script that
+  installs its own wheel must use `.venv/bin/python`, as the gate scripts do.
+  `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
+  built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
+  the run id.
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
 
@@ -289,8 +301,11 @@ Then grep `/tmp/run.log` for whatever the run was about.
   band. Taichi's advanced optimization is superlinear in statement count and
   these kernels inline a whole shading + traversal call graph into one body.
   Do not spend a session on it; the sweep is recorded in
-  `benchmarks/performance/reports/t4_2026_09/`, which also shows every
-  `ALGAN_GPU_MAX_REG` cap coming out *worse* than letting ptxas choose.
+  `benchmarks/performance/reports/t4_2026_09/`. (The same sweep's
+  `ALGAN_GPU_MAX_REG` arms all landed within noise of the base, and the reason
+  is now known: the knob never reached ptxas on either compiler -- the field
+  was read only by the cache key -- so it has been removed. A per-kernel
+  register cap is a compiler patch, `taichi_patches/PLAN.md` row 14.)
 * **Never take a determinism or pixel reading while another process is using
   the GPU.** Free VRAM at job start sets the arena size, which sets tile sizes
   and batch windows; a concurrent job changes the pixels. Check `nvidia-smi`

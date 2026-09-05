@@ -1,0 +1,40 @@
+diff --git a/docs/source/user_guide/init_options.md b/docs/source/user_guide/init_options.md
+index a74a7fbea..6e07f9619 100644
+--- a/docs/source/user_guide/init_options.md
++++ b/docs/source/user_guide/init_options.md
+@@ -37,7 +37,7 @@ Whether to run the control-flow-graph optimization pass. Default `True`. Setting
+ 
+ ### `fast_math`
+ 
+-Whether to enable IEEE-relaxed floating-point optimizations (FMA fusion, no NaN / infinity / signed-zero guarantees). Default `True`. Disable when investigating numerical anomalies or running deterministic-tolerance tests.
++Whether to enable IEEE-relaxed floating-point optimizations (FMA fusion, no NaN / infinity / signed-zero guarantees). Default `True`. On CUDA it also selects the approximate single-precision libdevice routines for `qd.sin`, `qd.cos`, `qd.log` and `qd.exp` (`__nv_fast_sinf` and friends, accurate to a few ulp over their intended input ranges; `f64` is never affected). Disable when investigating numerical anomalies or running deterministic-tolerance tests.
+ 
+ ### `num_compile_threads`
+ 
+diff --git a/quadrants/codegen/cuda/codegen_cuda.cpp b/quadrants/codegen/cuda/codegen_cuda.cpp
+index 52e618d69..ad4c71a32 100644
+--- a/quadrants/codegen/cuda/codegen_cuda.cpp
++++ b/quadrants/codegen/cuda/codegen_cuda.cpp
+@@ -356,8 +356,21 @@ class TaskCodeGenCUDA : public TaskCodeGenLLVM {
+       } else {
+         QD_ERROR("cos() for type {} is not supported", input_quadrants_type.to_string());
+       }
++    } else if (op == UnaryOpType::exp) {
++      if (input_quadrants_type->is_primitive(PrimitiveTypeID::f32)) {
++        // expf has fast-math option, the same shape as log / sin / cos above. `__nv_fast_expf` is libdevice's `__expf`
++        // (one `ex2.approx` on a scaled input); its error is 2 ulp plus one per unit of |x|, so a `qd.exp(-20.0)`
++        // attenuation term lands ~25 ulp off the correctly rounded value -- of a piece with `__nv_fast_sinf`'s
++        // range-dependent bound, and a last-bit change on every kernel that calls it.
++        llvm_val[stmt] = call(compile_config.fast_math ? "__nv_fast_expf" : "__nv_expf", input);
++      } else if (input_quadrants_type->is_primitive(PrimitiveTypeID::f64)) {
++        llvm_val[stmt] = call("__nv_exp", input);
++      } else if (input_quadrants_type->is_primitive(PrimitiveTypeID::i32)) {
++        llvm_val[stmt] = call("exp", input);
++      } else {
++        QD_ERROR("exp() for type {} is not supported", input_quadrants_type.to_string());
++      }
+     }
+-    UNARY_STD(exp)
+     UNARY_STD(tan)
+     UNARY_STD(tanh)
+     UNARY_STD(sgn)

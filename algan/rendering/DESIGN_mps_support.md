@@ -114,10 +114,11 @@ at most 24 buffers — which cuts across exactly the fusion those kernels exist 
 which rewrites every signature in the renderer. Neither is a port; both are a
 redesign of the kernel layer.
 
-For contrast, Taichi's *own* ceiling is 64 arguments and it reports it politely
-on both backends: `The number of elements in kernel arguments is too big! Do not
-exceed 64 on metal backend.` The Metal limit is a third of that and announces
-itself with an abort.
+For contrast, Taichi's *own* ceiling is a Python-side counter (`max_arg_num =
+64` in 1.7's `kernel_impl.py`; Quadrants' `MAX_ARG_NUM` is 512), not a codegen
+limit, and it reports it politely on both backends: `The number of elements in
+kernel arguments is too big! Do not exceed 64 on metal backend.` The Metal limit
+is a third of that and announces itself with an abort.
 
 ### 1.2 Metal has no f64, and no i64 atomics
 
@@ -557,7 +558,43 @@ Unlike the other two, this one has a fix (§3.3): a Taichi-owned `ti.ndarray` is
 bound by device allocation with no copy-back callback, and is **46x faster than
 the torch-MPS path on the same backend**.
 
-### 1.4 A dense scene dies at frame 119 of 179, silently, on both compilers — OPEN
+### 1.4 A dense scene dies at frame 119 of 179, silently, on both compilers — FIXED
+
+**Resolved 2026-09-04, and it was a leak, not a limit.** `mps_zero_copy`'s
+import cache pins a torch storage per buffer it has handed a kernel (it has to:
+the imported ndarray keeps no reference, so nothing else stops the caching
+allocator recycling a buffer under a live kernel), and it was released once, at
+the end of the render job. The arena is one storage the job reuses, but every
+other kernel argument — the uploaded scene arrays, the BVH nodes, the wavefront
+queues — is a fresh allocation per batch, and each stayed pinned until the last
+frame. Torch's *live* MPS bytes rose monotonically, 0.64 GB at batch 0:8 to
+6.74 GB at batch 120:128, on a runner with 7 GB and no swap; host RSS never
+passed 1.2 GB, which is why every host-side reading missed it and why capping
+the window changed nothing. Neither compiler is involved, which is why both
+died at the same frame.
+
+The fix (`release_torch_memory` now clears the cache immediately before
+`torch.mps.empty_cache()`, the two belonging together since a storage the cache
+holds is precisely one `empty_cache` cannot reclaim) is measured by
+`scripts/gate/mps_crash_diagnose.sh`, run 33851991845 on the Mac runner
+(Taichi 1.7.4, patched wheel): the leak arm, with the defect reinstated, exits 1
+at a 7.48 GB live-MPS peak, killed by Python running out of memory; the fixed
+arm renders all 179 frames in 425 s with the peak flat at 0.64 GB across every
+batch. `cache_stats()` reports what the cache holds, and the benchmark prints
+it as `pinned=` beside `mps_alloc=` so the claim reads off a run. The cost is a
+re-import per buffer per drain, and the Quadrants launch-context cache's hit
+rate, since that cache keys on argument identity and a re-imported wrapper is
+a new object — a fair trade against a render that cannot finish.
+
+A second hole closed on the way (`b51966f`): the two budgets bounding a frame
+window's cost outside the arena answered `float("inf")` for any device that
+was not CUDA or CPU, which made every guard they feed unsatisfiable on Metal.
+Both now read one `_render_device_pool_bytes`. It is not the 1.4 fix — the
+windows and the peak are unchanged by it — but an unknown device now gets a
+ceiling rather than a free pass.
+
+The account as it stood before the fix follows, because the reasoning in it is
+what led to the measurement.
 
 **Measured 2026-09-04** on the Mac runner (`scripts/gate/mps_vs_cpu_ab.sh`,
 `GATE_SCENE=materials_and_lighting`). Rendering that scene on Metal dies with
@@ -584,9 +621,11 @@ comparison** (`tests/full_renders/test_full_renders.py`), the MPS probe renders
 because the Quadrants migration needed a Metal-versus-CPU pixel comparison and
 picked the heaviest scene to make it.
 
-What it costs today: **a Mac user cannot render `materials_and_lighting`, or
-presumably anything of that weight, on either compiler.** Reproduce with the
-harness line above; the arm log lands in `gate-logs/`.
+What it cost until the fix: **a Mac user could not render
+`materials_and_lighting`, or anything of that weight, on either compiler.**
+`scripts/gate/mps_crash_diagnose.sh` reinstates the defect on demand
+(`--leak-cache`) and is how the fix is re-checked; the arm log lands in
+`gate-logs/`.
 
 ---
 
