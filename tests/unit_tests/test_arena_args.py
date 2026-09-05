@@ -357,6 +357,55 @@ def test_pack_rejects_the_wrong_rank():
         pack((("a", "f32", 3), ("b", "i32", 1)), (a, b))
 
 
+def test_pack_caches_the_tables_on_pointers_and_shapes_only():
+    """The second pack of one tensor set reuses its tables; nothing else does.
+
+    The tables are a pure function of every bound tensor's pointer, storage,
+    dtype and shape, and the cache is keyed on exactly those integers -- never
+    on a tensor -- so it can neither serve a stale layout nor keep an arena
+    alive. A slice one element over, a re-allocated arena, and a spec of
+    another rank each miss; the miss re-validates, which is why the wrong-rank
+    error above still fires after a hit on the same tensors.
+    """
+    from algan.rendering.raytracing import arena_args_taichi as mod
+
+    mod.clear_pack_cache()
+    arena, a, b = _slices()
+    spec = (("a", "f32", 2), ("b", "i32", 1))
+    first = pack(spec, (a, b))
+    assert len(mod._table_cache) == 1
+    second = pack(spec, (a, b))
+    assert len(mod._table_cache) == 1
+    # The very same table tensor comes back; the arena views are rebuilt.
+    assert (
+        second[2].untyped_storage().data_ptr() == first[2].untyped_storage().data_ptr()
+    )
+    assert second[2].tolist() == first[2].tolist() == [0, 16]
+    assert second[3].tolist() == [2, 3, 8]
+
+    # One element over is another key with another offset.
+    b_shifted = arena[68 : 68 + 32].view(torch.int32).view(8)
+    third = pack(spec, (a, b_shifted))
+    assert third[2].tolist() == [0, 17]
+    assert len(mod._table_cache) == 2
+
+    # A spec of another rank on the SAME tensors is a miss, so it is validated.
+    with pytest.raises(ArenaBindingError, match="dimensions"):
+        pack((("a", "f32", 3), ("b", "i32", 1)), (a, b))
+
+    # The cache holds no tensor: the arena dies when its last user does.
+    import gc
+    import weakref
+
+    probe = weakref.ref(arena)
+    del arena, a, b, b_shifted, first, second, third
+    gc.collect()
+    assert probe() is None
+    assert len(mod._table_cache) == 2
+    mod.clear_pack_cache()
+    assert not mod._table_cache
+
+
 def test_the_wrapper_splits_a_positional_call_back_apart():
     _arena, a, b = _slices()
     seen = {}

@@ -368,10 +368,18 @@ it should. What does not amortise is ~40 ms per frame of host time
 *inside* the render call — the next-event setup per window, the adaptive
 sampler's per-wave `.item()` syncs and pixel-list builds, the compaction's
 host side, 15 launches per frame — against ~100 ms of device work (shade
-43, denoise 38, traverse 21). At 20% of a long render's per-frame cost
-that is now the largest host item, so the rewrite above is the natural
-next §0 item, ahead of anything in §8; it stays "measure first" — the T4
-attributes it, the CPU box cannot.
+43, denoise 38, traverse 21). **Attributed under cProfile
+(`pt-longhost-1`): the rewrite above is still not the item.** Of those
+~40 ms, ~29 ms is the profiling harness's own enter/exit syncs around every
+stage (7,037 syncs in 30 frames), the compactor's count read-back is 8 ms
+per frame *including* the wait for the kernels it sits behind, and the
+real in-call host cost is nearer 25 ms of a ~150 ms production frame: 13 ms
+of `arena_args_taichi.pack` rebuilding the arena offset/shape tables for
+every one of 30 launches per frame although the tensor set is the same for
+every iteration of a window (cacheable per window — the one cheap §0 win
+left, ~8% of the frame), 6 ms of next-event setup (memoisable on a static
+rig), 3.5 ms of the adaptive sampler's pixel list. After `pt_shade` the
+largest single item is the denoiser at 35 ms per frame.
 
 ### 0.3 The defaults, and what "turn on path tracing" means
 
