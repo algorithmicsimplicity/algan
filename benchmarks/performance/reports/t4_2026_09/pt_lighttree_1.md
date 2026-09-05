@@ -53,3 +53,31 @@ gap: tree minus flat on the host fell from 430 ms to **210 ms**. The build
 is gone from it; what remains is the tree path's device-to-host copies of
 the light tensors at chunk setup, which force a sync that costs the render
 loop its prefetch overlap with the previous chunk's kernels.
+
+## Attribution with the PERF setup line (`9391d07`, `pt-lighttree-3.txt`)
+
+Two repetitions of each arm in one session, next-event setup logged per
+chunk:
+
+| arm | end-to-end | `pt_shade` device | host | next-event setup per chunk |
+| --- | --- | --- | --- | --- |
+| tree, run A | 2.055 s | 272 ms | 1.342 s | 8.7–10.0 ms (127 nodes, cache hits) |
+| flat, run A | 1.632 s | 215 ms | 0.977 s | 2.6–3.2 ms |
+| tree, run B | 1.938 s | 276 ms | 1.190 s | 9–10 ms |
+| flat, run B | 1.712 s | 221 ms | 0.991 s | 2.6–3.2 ms |
+
+So the next-event setup is **7 ms per chunk** more with the tree — 35 ms
+over five chunks — and every other kernel row is identical between arms
+to the millisecond. The remaining **200–365 ms** of host residual on the
+tree arm is not attributed by anything the harness measures: it is not
+the build (memoized), not the geometry gather or the uploads (inside the
+timed line), and not kernel execution (each kernel's wall includes it).
+The cold run's `pt_shade` wall is 17.3 s against 14.8 s, so the tree
+kernel is a longer compile; RUN 2 is warm, so that is not it either.
+Candidates not yet excluded: Taichi launch overhead for the wider
+arena-packed argument set (seven more arrays in the offset/shape tables,
+75 launches), and the profiler's own per-launch cost growing with that
+set. It does not reproduce as a device-time difference and it does not
+show on the CPU box. Open; the next step is a `nsys`-style timeline on
+the T4, which this harness does not take. At worst it is 12–18% of the
+64-light frame's wall clock at 720p for an 8.7x variance reduction.
