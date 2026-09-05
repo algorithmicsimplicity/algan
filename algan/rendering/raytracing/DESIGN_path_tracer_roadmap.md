@@ -1532,18 +1532,80 @@ user with no renderer at all.
 
 Tracked here so they are one search away, in rough order of effort:
 
-* **Isolated black pixels beside glass.** In `environment_and_refraction`
-  a handful of pixels per frame (5–10 of 9216, re-rolling with the
-  sampler seeds) come out pure black next to the prism, against a bright
-  sky: paths that were absorbed (roulette or the `min_weight` floor) after
-  a refraction, with nothing left to show the background through. At a
-  handful of samples per pixel the estimate of such a pixel is the few
-  surviving paths' values, and when none survive it is black. Not new to
-  the §5 batch — the count merely moved. The fix is the standard one:
-  never kill a path whose throughput is still the camera segment's
-  transparency (a delta chain to the sky is exact, not noisy), or route the
-  absorbed path's leftover to the background as the pass-through does.
-  Cheap and visible; it belongs in the next batch that re-baselines.
+* **Isolated black pixels beside glass — FIXED.** In
+  `environment_and_refraction` two pixels per frame (10 over the five
+  frames) came out pure black inside the prism's silhouette against a
+  bright sky, every one of their four neighbours saturated.
+
+  **It was not Russian roulette and not the `min_weight` floor** — the
+  hypothesis this bullet used to carry. Instrumenting every retirement path
+  in `pt_shade` for those pixels put all 8 of each pixel's samples on the
+  **`ok == 0` rejected-direction absorb**: each one refracted into the
+  prism at bounce 0 and was then killed at bounce 1, on the prism's *exit*
+  face, by the GGX branch's `n_dot_l2 <= 1e-5` test. Scene-wide, 774 of
+  2715 specular picks (29%) retired that way. Roulette could not have been
+  it: `pt_rr_start_bounce` is 3 and these paths died at bounce ordinal 1,
+  and the roulette / `min_weight` / far-clip / truncation counters for those
+  pixels all read zero.
+
+  The cause is the shading normal's *side*. A one-sided solid keeps its
+  outward normal on a hit from inside (`_sided_shading_normal`, deliberately
+  — a backface there is genuinely its inside), so a path travelling inside
+  the glass meets the exit face with `shade_n . -rd < 0`. Two things then
+  went wrong at once. `_pt_lit_lobes` clamped that cosine with
+  `ti.max(..., 1e-4)`, which read a head-on interior hit as a *grazing* one
+  and handed the reflection lobe the grazing Fresnel limit — measured
+  `w_spec = 1.0` against `w_trans = 0.96`, so half the samples chose
+  specular. And the VNDF sample was then drawn about `shade_n`, which puts
+  every direction it can produce below that normal's horizon, so the pick
+  was always rejected and `absorbed` zeroed the throughput. Total internal
+  reflection is the same hit with the transmission branch shut
+  (`w_trans = 0`, measured on one of the two pixels): there the specular
+  lobe is the only branch, so **100%** of those samples died. Half a
+  pixel's samples dying is invisible against a blown-out sky; all of them
+  dying is a black pixel, and at 8 spp with p ≈ 0.5 that is ~0.4% of the
+  prism's pixels — the handful observed.
+
+  **The fix** is one ray-facing normal, `spec_n` in `pt_shade`: `shade_n`
+  flipped to face the incoming ray, used for the GGX lobe's ONB, its
+  `n_dot_v`, its half-vector and its horizon test, and mirrored by
+  `ti.abs()` on `_pt_lit_lobes`' `n_dot_v`. Mirror reflection is invariant
+  to the normal's sign, so this is the same interface — only the cosines
+  and the horizon test change, and a front-facing hit gets
+  `spec_n == shade_n` and is bit-identical. Nothing is killed to make it
+  work: `ok == 0` still absorbs, because a below-horizon microfacet
+  reflection genuinely has BRDF 0 and absorbing it is the unbiased answer;
+  what changed is that the lobe is no longer *offered* at a weight it
+  cannot honour. The selection weights are importance-sampling
+  probabilities divided back out by `p_sel`, so moving them moves variance,
+  not the mean. Measured: `ok == 0` retirements 774 → **0** on the scene,
+  black pixels 2/frame → **0**, and a lossless glass cube in a uniform
+  environment now renders as a flat white furnace.
+
+  Tested by `test_glass_against_a_bright_sky_leaves_no_black_pixels`
+  (`tests/unit_tests/test_path_tracer.py`): a glass prism at 2 spp against a
+  bright environment map, counting pure-black pixels whose four neighbours
+  are saturated — 30 of 9216 before the fix, 0 after.
+
+  It moves `tests/path_traced/environment_and_refraction` (435 of 46080
+  pixels differ, max 255 counts) and, unexpectedly, `lit_and_shadowed` —
+  but only 2 pixels of 46080, one of them by 4 counts (frame 3, brighter,
+  not darker). That scene has no transmissive material, so the crossing
+  must be one whose *shading* normal is fractionally backfacing while the
+  face is not — a grazing indirect hit — where the lobe used to be rejected
+  and now reflects; a recovered sample of 48 is the right size for the
+  move. `translucency_and_order` is byte-identical. **Both moved baselines
+  still need re-recording** (`ALGAN_UPDATE_PATH_TRACED_BASELINES=1`, then
+  `scripts/package_baselines.py`).
+
+  Residual, out of scope here and worth its own bullet if it ever shows:
+  the reflected TIR branch's tint is Schlick evaluated on the *inside*
+  angle rather than KHR's air-side angle (which `_material_reflectance`
+  already implements for the transmission gate), so a reflection just past
+  the critical angle keeps ~4% instead of 100%. That is an energy
+  *understatement* on a path that used to be killed outright, so it is
+  strictly an improvement; correcting it means giving the specular lobe the
+  same side-aware reflectance the transmission lobe already gets.
 * **Frame-animated emitters are untested.** The NEE table samples frame-0
   emission power (dark-at-frame-0 emitters stay unbiased through the BSDF
   path, weight 1), and the MIS pdf evaluates per-frame area — implemented,

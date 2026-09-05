@@ -45,6 +45,7 @@ from algan import (
     Circle,
     HemisphereLight,
     MeshLambertMaterial,
+    MeshPhysicalMaterial,
     MeshStandardMaterial,
     Off,
     PointLight,
@@ -973,6 +974,84 @@ def test_env_map_lighting_matches_the_reference_integral(tmp_path):
         f"BSDF-only env arm off the irradiance reference: measured "
         f"{measured_b:.1f}, reference {reference:.1f} -- the two strategies "
         f"no longer estimate the same integral"
+    )
+
+
+def _isolated_black_pixels(frame, bright=200):
+    """Pixels that are pure black while all four of their neighbours are
+    bright -- the signature of a pixel whose every sample was killed rather
+    than of geometry that is genuinely dark there.
+
+    Counted, not thresholded on a mean: one such pixel is a defect, and a
+    dark *region* (a shadow, a silhouette) never trips it because its
+    neighbours are dark too.
+    """
+    rgb = frame[..., :3]
+    black = (rgb.sum(-1) == 0)[1:-1, 1:-1]
+    lum = rgb.min(-1).values
+    surround = (
+        (lum[:-2, 1:-1] >= bright)
+        & (lum[2:, 1:-1] >= bright)
+        & (lum[1:-1, :-2] >= bright)
+        & (lum[1:-1, 2:] >= bright)
+    )
+    return int((black & surround).sum())
+
+
+def test_glass_against_a_bright_sky_leaves_no_black_pixels(tmp_path):
+    """A refracting solid in front of a bright environment must not punch
+    pure-black pixels into it.
+
+    The path that made them: on the exit face of a one-sided solid the
+    shading normal is the surface's OUTWARD normal, so it faces away from a
+    ray travelling inside the glass. The GGX lobe's cosine was clamped to
+    1e-4 there, which read a head-on interior hit as a grazing one and gave
+    the reflection lobe a Fresnel of ~1 -- and every direction the lobe then
+    sampled sat below that normal's horizon, so ``ok == 0`` absorbed the
+    path and zeroed its throughput. Total internal reflection is the same
+    hit with the transmission branch shut, and killed 100% of its samples.
+    At a handful of samples per pixel, a pixel whose samples were all killed
+    is pure black with the bright sky all around it.
+
+    Deliberately TWO samples: the defect is "every one of this pixel's
+    samples died", whose probability is the per-sample kill rate raised to
+    the sample count, so a generous budget hides it. The sky is authored well
+    above 1.0 for the same reason the real scene showed the bug -- one
+    surviving sample of two still saturates, so a pixel only reads dark when
+    nothing at all survived. Measured before the fix: 47 pure-black pixels of
+    9216, 30 of them with all four neighbours saturated; after it the frame
+    is a uniform 255 (a lossless glass in a uniform environment is a white
+    furnace).
+    """
+    env = torch.full((8, 16, 3), 3.0)
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        scene.set_environment_map(env, ambient=False)
+        glass = Prism(width=2.0, height=2.0, depth=2.0)
+        glass.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1.0, ior=1.5, roughness=0.0)
+        )
+        glass.spawn(animate=False)
+
+    frame = _render_scene(
+        tmp_path, "glass_sky.png", build, 2, video=SMOKE_TEST.set(resolution=(96, 96))
+    )
+
+    # The frame must actually BE the bright sky seen through the glass --
+    # an empty or dark render would satisfy the count below vacuously.
+    bright = int((frame[..., :3].min(-1).values >= 200).sum())
+    assert bright > 0.5 * frame.shape[0] * frame.shape[1], (
+        f"only {bright} of {frame.shape[0] * frame.shape[1]} pixels are "
+        "bright: the environment did not light the frame, so the black-pixel "
+        "count below would be vacuous"
+    )
+
+    isolated = _isolated_black_pixels(frame)
+    assert isolated == 0, (
+        f"{isolated} pure-black pixels sit in a bright surround: a killed "
+        "path turned an exact contribution into black"
     )
 
 

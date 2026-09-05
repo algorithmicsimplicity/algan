@@ -854,7 +854,16 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
     e_trans = ti.math.vec3(0.0, 0.0, 0.0)
     f0 = ti.math.vec3(0.0, 0.0, 0.0)
     rough_eff = rough
-    n_dot_v = ti.max(shade_n.dot(-rd), 1e-4)
+    # |cos|, not cos. The GGX reflection lobe lives on whichever side of the
+    # interface the ray arrived from, and ``shade_n`` is the surface's own
+    # declared side: a one-sided solid keeps its OUTWARD normal when a
+    # refracted path hits its exit face from inside
+    # (``_sided_shading_normal``), so ``shade_n . -rd`` is then negative.
+    # Clamping that to 1e-4 read a head-on interior hit as a grazing one and
+    # handed the specular lobe a Fresnel of ~1, which is what made the exit
+    # face of a glass prism choose a continuation it could never sample (see
+    # ``spec_n`` in ``pt_shade``).
+    n_dot_v = ti.max(ti.abs(shade_n.dot(-rd)), 1e-4)
     if pid == _MID_LAMBERT:
         # The lambert stage has no specular lobe at all.
         e_diff = albedo3
@@ -1846,6 +1855,25 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         if shade_n.dot(rd) > 0.0:
                             shade_n = -shade_n
 
+                # Normal the GGX reflection lobe is built on: ``shade_n``
+                # turned to FACE THE RAY. Mirror reflection is invariant to
+                # the normal's sign, but the lobe's cosines and its
+                # above-the-horizon test are not, and ``shade_n`` is the
+                # surface's declared side, not the ray's: a one-sided solid
+                # keeps its outward normal when a refracted path hits its
+                # exit face from inside. Sampling the lobe about that normal
+                # put every VNDF direction below its horizon, so ``ok == 0``
+                # absorbed the path -- with a few samples per pixel, all of
+                # them absorbed is a pure-black pixel where the sky should
+                # show through the glass (roadmap, "Isolated black pixels
+                # beside glass"). Total internal reflection is the same hit
+                # with the transmission branch closed, and it lands here too.
+                # A front-facing hit gets ``spec_n == shade_n`` and is
+                # unaffected.
+                spec_n = shade_n
+                if shade_n.dot(rd) > 0.0:
+                    spec_n = -shade_n
+
                 hit_p = ro + t_hit * rd
 
                 # Volumetric absorption on exiting a transmissive interior
@@ -2460,7 +2488,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 f0 = ti.math.vec3(0.0, 0.0, 0.0)
                 diel_pass = 0.0
                 if needs_normal and (bounces_left > 0):
-                    n_dot_v = ti.max(shade_n.dot(-rd), 1e-4)
+                    # ``spec_n``, not ``shade_n``: the reflection lobe's
+                    # cosine is measured from the side the ray is on.
+                    n_dot_v = ti.max(spec_n.dot(-rd), 1e-4)
                     if lit:
                         # The hoisted lobes (the same values every NEE
                         # response and MIS pdf above used).
@@ -2564,16 +2594,20 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         # GGX is non-delta (any roughness): close the prefix.
                         aov_open = 0
                         p_sel = w_spec / w_sum
-                        # VNDF sample about the shading normal.
-                        t_b, b_b = _pt_onb(shade_n)
+                        # VNDF sample about the RAY-FACING normal (see
+                        # ``spec_n``): about ``shade_n`` an interior hit --
+                        # the exit face of a refracting solid, total internal
+                        # reflection included -- puts every sampled direction
+                        # below the horizon and rejects it.
+                        t_b, b_b = _pt_onb(spec_n)
                         wo_l = ti.math.vec3(t_b.dot(-rd), b_b.dot(-rd),
-                                            ti.max(shade_n.dot(-rd), 1e-4))
+                                            ti.max(spec_n.dot(-rd), 1e-4))
                         a_g = ti.max(rough * rough, 1e-4)
                         h_l = _pt_vndf_half_vector(wo_l, a_g, u_dir)
                         h_w = (t_b * h_l[0] + b_b * h_l[1]
-                               + shade_n * h_l[2]).normalized()
+                               + spec_n * h_l[2]).normalized()
                         new_rd = (rd - 2.0 * rd.dot(h_w) * h_w).normalized()
-                        n_dot_l2 = shade_n.dot(new_rd)
+                        n_dot_l2 = spec_n.dot(new_rd)
                         if n_dot_l2 <= 1e-5:
                             ok = 0
                         else:
