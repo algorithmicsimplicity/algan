@@ -290,6 +290,20 @@ In rough order of impact:
 3. **Refraction.** Splits every ray in two, and routes the batch to the general
    wavefront tracer.
 4. **Shadows**, multiplied by the number of lights.
+
+   That multiplication is the deterministic renderer's, and it is why a scene
+   with dozens of lights belongs on the path tracer instead. There, a lit
+   surface point does not sum every light: it *chooses* one per shadow ray,
+   and it chooses by descending a tree built over the emitters -- every point,
+   spot and area-light cell and every emissive triangle -- that weighs how far
+   away an emitter is and which way it faces as well as how bright it is. So
+   the cost per shading point grows with the *logarithm* of the light count
+   rather than with the count, and the shadow rays that do get fired are aimed
+   at lights that can actually illuminate the point instead of at whichever
+   one happens to be brightest. On a floor under 32 falling-off point lights
+   that is roughly nine times less noise at the same
+   ``samples_per_pixel``. Directional lights and an environment map have no
+   position to sort by and are chosen by brightness alone, as before.
 5. **Triangle count.** Imported models and high-resolution
    :class:`~algan.mobs.surfaces.surface.Surface` grids.
 6. **Glow and bloom**, which add a full-frame post-processing pass.

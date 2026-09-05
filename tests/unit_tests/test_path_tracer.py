@@ -33,6 +33,7 @@ from algan import (
     BLUE,
     DOWN,
     GREEN,
+    LEFT,
     OUT,
     RED,
     RIGHT,
@@ -1866,6 +1867,272 @@ def test_the_deterministic_renderer_reports_no_path_samples(tmp_path):
     assert result.render_plan.backend == "deterministic_wavefront"
     assert result.render_plan.path_samples_mean == 0.0
     assert result.render_plan.as_dict()["path_samples_mean"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# The light tree (DESIGN_path_tracer_roadmap.md 6a / 6b)
+# ---------------------------------------------------------------------------
+
+
+def _random_light_tree(seed=3, entries=17):
+    """One frame's tree over a random mix of emitter shapes.
+
+    Deliberately mixed: full cones (point rows), half-spread cones (two-sided
+    triangles) and zero-spread ones (one-sided emitters), with and without
+    distance falloff, so the probes exercise every branch of the importance
+    function rather than one uniform kind.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.light_tree import build_light_tree
+
+    rng = np.random.default_rng(seed)
+    power = rng.random(entries) + 0.05
+    center = rng.random((entries, 3)) * 8.0 - 4.0
+    radius = rng.random((entries, 1)) * 0.3
+    axis = rng.normal(size=(entries, 3))
+    axis /= np.linalg.norm(axis, axis=-1, keepdims=True)
+    theta_o = rng.choice([0.0, np.pi / 2, np.pi], entries)
+    theta_e = np.full(entries, np.pi / 2)
+    decay = rng.choice([0.0, 2.0], entries)
+    node_f, node_i, leaf = build_light_tree(
+        power, center - radius, center + radius, axis, theta_o, theta_e, decay
+    )
+    return node_f, node_i, leaf
+
+
+def test_light_tree_descent_and_pmf_agree():
+    """The MIS identity: the probability the descent returns for the leaf it
+    lands on equals the probability the upward walk computes for that same
+    leaf and point.
+
+    This is the single test that keeps multiple importance sampling correct
+    once selection depends on position. Next-event estimation divides by the
+    descent's probability; a BSDF ray that later hits the same emitter forms
+    its ``pdf_ne`` from the upward walk at the PREVIOUS vertex. If the two
+    disagree the power-heuristic weights stop summing to one and the
+    estimator is quietly biased -- nothing else in the suite would see it.
+    """
+    import numpy as np
+    import torch as _torch
+
+    from algan.rendering.raytracing.path_tracer_taichi import pt_light_tree_probe
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    node_f, node_i, _leaf = _random_light_tree()
+    rng = np.random.default_rng(11)
+    n = 4096
+    pts = _torch.from_numpy((rng.random((n, 3)) * 24.0 - 12.0).astype(np.float32))
+    u = _torch.from_numpy(rng.random(n).astype(np.float32))
+    out = _torch.zeros((n, 4), dtype=_torch.float32)
+    pt_light_tree_probe(
+        _torch.from_numpy(node_f[None].copy()),
+        _torch.from_numpy(node_i[None].copy()),
+        0,
+        pts,
+        u,
+        out,
+    )
+    got = out.numpy()
+    assert (got[:, 0] >= 0).all(), "the descent failed to reach a leaf"
+    rel = np.abs(got[:, 1] - got[:, 2]) / np.maximum(got[:, 1], 1e-30)
+    assert rel.max() < 1e-5, (
+        f"descent and upward-walk probabilities disagree by {rel.max():.3e} "
+        "relative -- the two MIS ends are not evaluating the same selection "
+        "pdf"
+    )
+    # And the probe really did exercise the whole tree, not one bright leaf.
+    assert len(set(got[:, 0].astype(int).tolist())) > 8
+
+
+def test_light_tree_selection_probabilities_sum_to_one():
+    """Over every leaf, the descent's probabilities are a distribution.
+
+    A tree that merely aims well is not enough: next-event estimation
+    divides by the selection probability, so the probabilities have to be a
+    normalized pmf over the entries or the estimate is scaled wrong. The
+    interesting case is a node whose two children both score zero at a point
+    while the parent does not -- the descent splits evenly there rather than
+    dropping the sample, which is exactly what keeps this sum at one.
+    """
+    import numpy as np
+    import torch as _torch
+
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        pt_light_tree_pmf_probe,
+    )
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    node_f, node_i, leaf = _random_light_tree()
+    rng = np.random.default_rng(5)
+    pts = _torch.from_numpy((rng.random((64, 3)) * 24.0 - 12.0).astype(np.float32))
+    out = _torch.zeros((64, leaf.shape[0]), dtype=_torch.float32)
+    pt_light_tree_pmf_probe(
+        _torch.from_numpy(node_f[None].copy()),
+        _torch.from_numpy(node_i[None].copy()),
+        0,
+        pts,
+        _torch.from_numpy(leaf.astype(np.int32)),
+        out,
+    )
+    sums = out.numpy().sum(1)
+    assert np.abs(sums - 1.0).max() < 1e-4, (
+        f"leaf selection probabilities sum to [{sums.min():.6f}, "
+        f"{sums.max():.6f}], not 1"
+    )
+
+
+def test_light_tree_build_is_deterministic():
+    """Two builds of one input give byte-identical tensors.
+
+    The tree is rebuilt every render call, and ``tests/path_traced`` pixel-
+    compares, so a build that depended on dictionary or sort order would show
+    up as unexplainable frame drift rather than as a failure here.
+    """
+    first = _random_light_tree(seed=8, entries=64)
+    second = _random_light_tree(seed=8, entries=64)
+    for a, b, name in zip(first, second, ("node_f", "node_i", "entry_leaf")):
+        assert (a == b).all(), f"{name} differs between two identical builds"
+
+
+def test_light_tree_follows_a_light_that_moves_between_frames(tmp_path):
+    """A moving light gets a different tree at each frame.
+
+    ``light_pos`` is a per-frame tensor, so a tree built once per render call
+    from frame 0 would aim every later frame's shadow rays at where the light
+    used to be. The build is per frame (frames with identical emitter
+    geometry share a row), which is what this pins.
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing import path_tracer as pt_host
+    from algan.rendering.raytracing.light_tree import LT_BMIN
+
+    captured = []
+    original = pt_host._build_nee_tables
+
+    def capture(*args, **kwargs):
+        out = original(*args, **kwargs)
+        captured.append((out[6].detach().cpu().numpy().copy(), out[9].cpu().tolist()))
+        return out
+
+    settings = SMOKE_TEST.set(resolution=(32, 32), frames_per_second=2)
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    pt_host._build_nee_tables = capture
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=2, denoise=False)
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                scene.set_background(BLACK)
+                Scene.clear_lights()
+                floor = Prism(width=7.0, height=7.0, depth=0.1)
+                floor.set_material(MeshLambertMaterial(color=WHITE))
+                floor.spawn(animate=False)
+                light = PointLight(
+                    location=OUT * 4.0 + LEFT * 3.0, color=WHITE, intensity=1.0
+                ).spawn(animate=False)
+            light.move(RIGHT * 6.0)
+            scene.save_frame(
+                tmp_path / "lt_moving.png",
+                video_settings=settings,
+                at=[0, 1],
+                overwrite=True,
+            )
+    finally:
+        pt_host._build_nee_tables = original
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+
+    assert captured, "the path tracer never built a next-event table"
+    # Every distinct tree the render built, whether the chunk held both
+    # frames (two rows in one call) or one frame each (two calls).
+    trees = [nodes[r] for nodes, rows in captured for r in sorted(set(rows))]
+    assert len(trees) >= 2, "the render produced only one tree for two frames"
+    spread = max(
+        float(np.abs(a[:, LT_BMIN] - b[:, LT_BMIN]).max()) for a in trees for b in trees
+    )
+    assert spread > 1.0, (
+        f"the two frames' trees bound the light in the same place (max x-min "
+        f"difference {spread:.3f}) -- the build is not per frame"
+    )
+
+
+def _many_light_ring(scene):
+    """A Lambert floor under 32 point lights on a ring.
+
+    ``decay=2`` on purpose: Algan's light rows default to no distance
+    falloff at all, and a light that does not fade with distance is one the
+    tree has nothing to discriminate by -- the tree matches the flat CDF
+    there rather than beating it. Physical falloff is the case the
+    "too many lights" use case actually means.
+    """
+    import math as _math
+
+    scene.set_background(BLACK)
+    Scene.clear_lights()
+    floor = Prism(width=9.0, height=9.0, depth=0.2)
+    floor.set_material(MeshLambertMaterial(color=WHITE))
+    floor.spawn(animate=False)
+    for i in range(32):
+        a = 2.0 * _math.pi * i / 32
+        PointLight(
+            location=OUT * 2.5
+            + RIGHT * (3.2 * _math.cos(a))
+            + UP * (3.2 * _math.sin(a)),
+            color=WHITE,
+            intensity=0.15,
+            decay=2.0,
+        ).spawn(animate=False)
+
+
+def test_light_tree_cuts_many_light_variance(tmp_path):
+    """The point of the whole structure: at equal spp, aiming shadow rays by
+    distance and orientation converges faster than aiming them by power.
+
+    Both arms are unbiased estimators of the same integral, so this is a
+    noise comparison against a high-sample reference, not a pixel match.
+    """
+    video = SMOKE_TEST.set(resolution=(64, 64))
+    reference = _render_scene_exp(
+        tmp_path,
+        "lt_ref.png",
+        _many_light_ring,
+        128,
+        video=video,
+        experimental={"pt_light_tree": False, "pt_light_samples": 1},
+    ).double()
+    tree = _render_scene_exp(
+        tmp_path,
+        "lt_on.png",
+        _many_light_ring,
+        4,
+        video=video,
+        experimental={"pt_light_tree": True, "pt_light_samples": 1},
+    ).double()
+    flat = _render_scene_exp(
+        tmp_path,
+        "lt_off.png",
+        _many_light_ring,
+        4,
+        video=video,
+        experimental={"pt_light_tree": False, "pt_light_samples": 1},
+    ).double()
+    assert reference.mean() > 20, "the reference scene rendered (nearly) black"
+    assert (tree - flat).abs().max() > 0, (
+        "the two arms produced identical frames -- pt_light_tree did not "
+        "reach the kernel"
+    )
+    mse_tree = float(((tree - reference) ** 2).mean())
+    mse_flat = float(((flat - reference) ** 2).mean())
+    assert mse_tree > 0
+    assert mse_flat / mse_tree > 3.0, (
+        f"the light tree cut mean squared error by only "
+        f"{mse_flat / mse_tree:.2f}x (tree {mse_tree:.2f}, flat CDF "
+        f"{mse_flat:.2f}) on 32 lights"
+    )
 
 
 if __name__ == "__main__":

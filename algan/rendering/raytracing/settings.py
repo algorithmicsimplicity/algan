@@ -235,6 +235,16 @@ pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
 # escapes -- the A/B arm for the sampler, still unbiased, just noisier for
 # concentrated maps (a sun disc).
 pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
+# Choose the emitter each next-event sample aims at by descending a light
+# tree (Conty Estevez & Kulla 2018; algan/rendering/raytracing/light_tree.py)
+# instead of by one flat power-weighted CDF. The tree weighs distance and
+# orientation as well as power, so a shadow ray is not spent on a light
+# across the room or on one facing away -- which is what makes the
+# "too many lights" case the path tracer exists for actually cheap, and it
+# wins even at two lights. False restores the flat CDF exactly (the A/B arm
+# and the byte-parity escape hatch); directional lights and the environment
+# map are position-independent and stay on a flat list either way.
+pt_light_tree = env_flag("ALGAN_PT_LIGHT_TREE", True)
 # Let the path tracer's next-event visibility rays take the opaque any-hit
 # shadow query (``_shadow_occluded`` mode 3, the ordered march compiled out)
 # on a batch that provably holds no translucent and no transmissive geometry

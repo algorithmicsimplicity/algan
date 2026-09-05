@@ -472,6 +472,11 @@ def print_stage_table(res, rows, summary, runs=2):
 #: the Kaggle runner reports comes from whichever step ran last.
 CODEGEN_ENV = (
     ("ALGAN_PT_WAVE", "wave"),
+    # Not a codegen switch: it selects a different emitter sampler, so the
+    # two arms converge to the same image and are EXPECTED to differ at
+    # finite spp. It rides the tag for the same filename reason, but for it
+    # the digest is the question rather than the assertion.
+    ("ALGAN_PT_LIGHT_TREE", "lt"),
     ("ALGAN_SHADOW_ANYHIT", "ah"),
     ("ALGAN_OPT_LEVEL", "opt"),
     ("ALGAN_ADV_OPT", "adv"),

@@ -54,11 +54,19 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
 
 from algan.logging.logger import PERF, get_logger
 from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
+from algan.rendering.raytracing.light_tree import (
+    LT_F_WIDTH,
+    LT_I_WIDTH,
+    LT_LEFT,
+    LT_RIGHT,
+    build_light_trees,
+)
 from algan.rendering.raytracing.path_tracer_taichi import (
     _NEE_AMBIENT_ROW,
     _NEE_EMISSIVE_TRI,
@@ -77,7 +85,10 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_ENV_SHARE,
     _NM_ENV_W,
     _NM_FAR_CLIP,
+    _NM_INF_COUNT,
     _NM_LIGHT_SAMPLES,
+    _NM_TREE_MIX,
+    _NM_TREE_ON,
     _SHELL_RING_SLOTS,
     NEE_META_WIDTH,
     PT_ACC_WIDTH,
@@ -102,6 +113,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _LT_HEMISPHERE,
     _LT_POINT,
     _LT_SPOT,
+    _MAT_ONE_SIDED,
     _MID_LAMBERT,
     _MID_PHYSICAL,
     ALL_PIDS,
@@ -409,8 +421,264 @@ def _build_env_cdf(env_rgb, max_h=128, max_w=256):
     return env_cdf.float(), power
 
 
+_HALF_PI = 0.5 * math.pi
+
+
+def _row_tree_geometry(lc_f, lp_f, ltype):
+    """Bounds and orientation cone of one packed light row, per frame.
+
+    ``lp_f [R, 3]`` / ``lc_f [R, C]`` are the row's packed columns at each
+    frame of the chunk. A point row is a degenerate box widened by its
+    shadow radius (which is where its visibility ray may actually aim) under
+    a full cone; a spot keeps its outer cone; an area cell is the rectangle
+    its row stands for, emitting one-sided about the rectangle normal.
+    """
+    rows = lp_f.shape[0]
+    axis = np.zeros((rows, 3))
+    axis[:, 2] = 1.0
+    theta_o = np.full(rows, math.pi)
+    theta_e = np.full(rows, _HALF_PI)
+    ext = np.zeros((rows, 3))
+    if lc_f.shape[1] > 11:
+        ext += np.abs(lc_f[:, 11])[:, None]
+    if ltype == _LT_SPOT and lc_f.shape[1] > 9:
+        axis = lc_f[:, 6:9].copy()
+        theta_o = np.zeros(rows)
+        theta_e = np.arccos(np.clip(lc_f[:, 9], -1.0, 1.0))
+    elif ltype == _LT_AREA_SAMPLE and lc_f.shape[1] > 14:
+        axis = lc_f[:, 6:9].copy()
+        theta_o = np.zeros(rows)
+        b1 = lc_f[:, 12:15]
+        b2 = np.cross(axis, b1)
+        ext = np.abs(b1) * lc_f[:, 9:10] + np.abs(b2) * lc_f[:, 10:11]
+    norm = np.linalg.norm(axis, axis=-1, keepdims=True)
+    axis = np.where(
+        norm > 1e-9, axis / np.maximum(norm, 1e-9), np.array([0.0, 0.0, 1.0])
+    )
+    # The row's authored falloff exponent (``_light_eval``'s column 4), which
+    # defaults to 0: the importance must not assume inverse-square.
+    decay = np.zeros(rows)
+    if lc_f.shape[1] > 4:
+        decay = np.maximum(lc_f[:, 4], 0.0)
+    return lp_f - ext, lp_f + ext, axis, theta_o, theta_e, decay
+
+
+def _light_tree_geometry(
+    merged, light_pos, light_col, row_ids, row_types, tri_ids, frames
+):
+    """Per-frame bounds and cones of every finite next-event entry.
+
+    Returns ``(bmin, bmax, axis, theta_o, theta_e, decay)``, each
+    ``[R, E, ...]`` with the entries in the next-event table's own order
+    (light rows, then emissive triangles) so a tree leaf's entry index
+    addresses ``nee_ref`` directly. Everything is gathered per frame the way
+    the kernels index these tensors (``f % rows``), which is what makes the
+    tree follow a moving light.
+    """
+    fr = np.asarray(frames, dtype=np.int64)
+    rows = int(fr.shape[0])
+    blocks = []
+    if row_ids.numel():
+        lp_all = light_pos.detach().cpu().numpy().astype(np.float64)
+        lc_all = light_col.detach().cpu().numpy().astype(np.float64)
+        tl = fr % lp_all.shape[0]
+        ids = row_ids.cpu().numpy()
+        types = row_types.cpu().numpy()
+        lp_g = lp_all[tl][:, ids, :3]
+        lc_g = lc_all[tl][:, ids, :]
+        n_rows = int(ids.shape[0])
+        bn = np.zeros((rows, n_rows, 3))
+        bx = np.zeros((rows, n_rows, 3))
+        ax = np.zeros((rows, n_rows, 3))
+        to = np.zeros((rows, n_rows))
+        te = np.zeros((rows, n_rows))
+        dk = np.zeros((rows, n_rows))
+        for j in range(n_rows):
+            r_bn, r_bx, r_ax, r_to, r_te, r_dk = _row_tree_geometry(
+                lc_g[:, j, :], lp_g[:, j, :], int(types[j])
+            )
+            bn[:, j], bx[:, j], ax[:, j], to[:, j], te[:, j], dk[:, j] = (
+                r_bn,
+                r_bx,
+                r_ax,
+                r_to,
+                r_te,
+                r_dk,
+            )
+        blocks.append((bn, bx, ax, to, te, dk))
+    if tri_ids.numel():
+        tri_pos = merged["tri_pos"]
+        pos = tri_pos[:, tri_ids, :].detach().cpu().numpy().astype(np.float64)
+        tp = fr % pos.shape[0]
+        pos = pos[tp]
+        v0 = pos[..., 0:3]
+        v1 = pos[..., 3:6]
+        v2 = pos[..., 6:9]
+        bn = np.minimum(np.minimum(v0, v1), v2)
+        bx = np.maximum(np.maximum(v0, v1), v2)
+        ng = np.cross(v1 - v0, v2 - v0)
+        norm = np.linalg.norm(ng, axis=-1, keepdims=True)
+        ax = np.where(
+            norm > 1e-12, ng / np.maximum(norm, 1e-12), np.array([0.0, 0.0, 1.0])
+        )
+        tri_mat = merged["tri_mat"]
+        one_sided = np.zeros(int(tri_ids.numel()), dtype=bool)
+        if int(tri_mat.shape[2]) > _MAT_ONE_SIDED:
+            one_sided = tri_mat[0, tri_ids, _MAT_ONE_SIDED].detach().cpu().numpy() > 0.5
+        # A two-sided emitter's normals span a hemisphere, which is what
+        # theta_o = pi/2 (with theta_e = pi/2) says; a one-sided one has the
+        # single geometric normal it is packed with.
+        to = np.broadcast_to(
+            np.where(one_sided, 0.0, _HALF_PI), (rows, one_sided.shape[0])
+        )
+        te = np.full((rows, one_sided.shape[0]), _HALF_PI)
+        # Inverse square, always: this is the area-measure pdf's Jacobian,
+        # not something the author chose.
+        dk = np.full((rows, one_sided.shape[0]), 2.0)
+        blocks.append((bn, bx, ax, to, te, dk))
+    return tuple(np.concatenate([b[k] for b in blocks], axis=1) for k in range(6))
+
+
+def _build_light_tree_tables(
+    memory,
+    merged,
+    light_pos,
+    light_col,
+    kind,
+    ref,
+    power,
+    ltypes,
+    n_tri,
+    time_start,
+    num_frames,
+    enabled,
+):
+    """Pack this render call's light trees for the kernel.
+
+    Splits the next-event entries into the **finite** ones a tree can
+    discriminate between (point / spot / area-cell rows and emissive
+    triangles) and the **infinite** ones it cannot (directional rows, the
+    environment entry), builds one tree per distinct frame over the finite
+    set, and returns the kernel-facing tensors plus
+    ``(tree_on, tree_mix, num_inf)`` for ``nee_meta``.
+
+    ``tree_mix`` is ``P_finite / P_total``, so an infinite entry's effective
+    selection probability is ``(1 - tree_mix) * power / P_inf = power /
+    P_total`` -- exactly the flat CDF's number. Only the split among the
+    finite entries changes, which is why ``_NM_ENV_SHARE`` needs no
+    adjustment.
+    """
+    from algan.rendering.raytracing.tracer import _arena_copy
+
+    device = memory.data.device
+    i32 = torch.int32
+    f32 = torch.float32
+    if enabled:
+        is_row = kind == _NEE_LIGHT_ROW
+        row_types = torch.zeros_like(kind)
+        if ltypes is not None and bool(is_row.any().item()):
+            row_types[is_row] = ltypes[ref[is_row]].to(kind.dtype)
+        finite = (is_row & (row_types != _LT_DIRECTIONAL)) | (kind == _NEE_EMISSIVE_TRI)
+        fin_pos = finite.nonzero(as_tuple=False).flatten()
+        inf_pos = (~finite).nonzero(as_tuple=False).flatten()
+    else:
+        fin_pos = torch.zeros(0, dtype=torch.int64, device=device)
+        inf_pos = torch.zeros(0, dtype=torch.int64, device=device)
+    n_fin = int(fin_pos.numel())
+    n_inf = int(inf_pos.numel())
+    p_fin = float(power[fin_pos].sum().item()) if n_fin else 0.0
+    p_inf = float(power[inf_pos].sum().item()) if n_inf else 0.0
+    total = p_fin + p_inf
+    tree_mix = (p_fin / total) if total > 0.0 else 0.0
+
+    if n_fin > 0:
+        fin_rows = fin_pos[is_row[fin_pos]]
+        fin_tris = fin_pos[kind[fin_pos] == _NEE_EMISSIVE_TRI]
+        geo = _light_tree_geometry(
+            merged,
+            light_pos,
+            light_col,
+            ref[fin_rows],
+            row_types[fin_rows],
+            ref[fin_tris],
+            range(int(time_start), int(time_start) + int(num_frames)),
+        )
+        # geo[5] is the falloff exponent, which is authored rather than
+        # animated, so the tree takes frame 0's row for every frame.
+        node_f, node_i, entry_leaf, frame_row = build_light_trees(
+            power[fin_pos].detach().cpu().numpy().astype(np.float64),
+            *geo[:5],
+            geo[5][0],
+        )
+        # A leaf's right link becomes the GLOBAL entry index, so a descent
+        # lands on a row of ``nee_ref`` without a second indirection; the
+        # entry -> leaf map stays keyed by the tree's own local index, which
+        # is what ``tri_emit_entry`` stores.
+        leaves = node_i[:, :, LT_LEFT] < 0
+        globals_of_local = fin_pos.detach().cpu().numpy().astype(np.int32)
+        right = node_i[:, :, LT_RIGHT]
+        right[leaves] = globals_of_local[right[leaves]]
+    else:
+        node_f = np.zeros((1, 1, LT_F_WIDTH), dtype=np.float32)
+        node_i = np.full((1, 1, LT_I_WIDTH), -1, dtype=np.int32)
+        entry_leaf = np.zeros((1, 1), dtype=np.int32)
+        frame_row = np.zeros(max(int(num_frames), 1), dtype=np.int32)
+
+    with memory.scope(
+        "pt_light_tree",
+        rows=int(node_f.shape[0]),
+        nodes=int(node_f.shape[1]),
+        infinite=max(n_inf, 1),
+    ):
+        lt_node_f = _arena_copy(memory, torch.from_numpy(node_f))
+        lt_node_i = _arena_copy(memory, torch.from_numpy(node_i))
+        lt_entry_leaf = _arena_copy(memory, torch.from_numpy(entry_leaf))
+        lt_frame = _arena_copy(memory, torch.from_numpy(frame_row))
+        if n_inf > 0:
+            inf_power = power[inf_pos]
+            inf_cdf = (inf_power / inf_power.sum()).cumsum(0)
+            inf_cdf[-1] = 1.0
+            nee_inf_cdf = _arena_copy(memory, inf_cdf.float())
+            nee_inf_ref = _arena_copy(memory, inf_pos.to(i32))
+        else:
+            nee_inf_cdf = memory.get_tensor((1,), f32)
+            nee_inf_cdf.zero_()
+            nee_inf_ref = memory.get_tensor((1,), i32)
+            nee_inf_ref.zero_()
+        # Triangle -> its LOCAL tree index (-1 = not in the table), the one
+        # extra lookup the MIS pdf query needs at a BSDF hit on an emitter.
+        emit_entry = memory.get_tensor((max(n_tri, 1),), i32)
+        emit_entry.fill_(-1)
+        if n_fin > 0:
+            local = torch.arange(n_fin, device=device, dtype=torch.int64)
+            tri_local = local[kind[fin_pos] == _NEE_EMISSIVE_TRI]
+            if tri_local.numel():
+                emit_entry[ref[fin_pos[kind[fin_pos] == _NEE_EMISSIVE_TRI]]] = (
+                    tri_local.to(i32)
+                )
+    return (
+        lt_node_f,
+        lt_node_i,
+        lt_entry_leaf,
+        lt_frame,
+        nee_inf_cdf,
+        nee_inf_ref,
+        emit_entry,
+        tree_mix,
+        n_inf,
+    )
+
+
 def _build_nee_tables(
-    memory, merged, light_pos, light_col, num_lights, env_meta, far_clip=0.0
+    memory,
+    merged,
+    light_pos,
+    light_col,
+    num_lights,
+    env_meta,
+    far_clip=0.0,
+    time_start=0,
+    num_frames=1,
 ):
     """Build one render call's power-weighted next-event table.
 
@@ -423,8 +691,17 @@ def _build_nee_tables(
     on. Light-row weights take the max over frames so a light dark at frame
     0 but lit later is still sampled (rows have no MIS backstop).
 
+    Under ``pt_light_tree`` (the default) that flat CDF stops being how a
+    finite entry is *chosen* -- a light tree over the same entries is
+    (``_build_light_tree_tables``, ``light_tree.py``) -- but it is still
+    built: it is the ``pt_light_tree = False`` arm, and ``tri_emit_prob``
+    remains the "this triangle is in the table" predicate either way.
+
     Returns arena tensors ``(nee_cdf [E], nee_ref [E + A, 2], nee_meta
-    [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1])`` -- every
+    [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
+    [N], lt_node_f [rows, nodes, 14], lt_node_i [rows, nodes, 3],
+    lt_entry_leaf [rows, E_finite], lt_frame [frames], nee_inf_cdf [E_inf],
+    nee_inf_ref [E_inf])`` -- every
     selection probability the kernels divide by or MIS against comes from
     these, so both ends of each MIS pair see identical numbers. The ``A``
     ambient-like rows sit AFTER the ``E`` sampled entries and are not part of
@@ -448,6 +725,7 @@ def _build_nee_tables(
     # attribute). The compact packing has no type column at all: every row is
     # a point light there, so there is nothing to find.
     amb_rows = None
+    ltypes = None
     if num_lights > 0:
         row_power = light_col[..., :3].amax(0).amax(-1).to(acc)
         if light_col.shape[2] > 3:
@@ -582,8 +860,53 @@ def _build_nee_tables(
         meta[_NM_AMBIENT_PACKED] = 1.0 if rt_settings.pt_ambient_rows else 0.0
         meta[_NM_AMBIENT_COUNT] = float(num_ambient)
         meta[_NM_ANIM_SEED] = 1.0 if rt_settings.pt_animated_seed else 0.0
+
+    # The light tree over the SAMPLED entries only: the ambient rows on
+    # nee_ref's tail are the deterministic fill and were never selected.
+    tree_on = bool(rt_settings.pt_light_tree) and num_entries > 0
+    (
+        lt_node_f,
+        lt_node_i,
+        lt_entry_leaf,
+        lt_frame,
+        nee_inf_cdf,
+        nee_inf_ref,
+        emit_entry,
+        tree_mix,
+        n_inf,
+    ) = _build_light_tree_tables(
+        memory,
+        merged,
+        light_pos,
+        light_col,
+        kind[:num_entries] if num_entries > 0 else kind,
+        ref[:num_entries] if num_entries > 0 else ref,
+        power if num_entries > 0 else torch.zeros(0, dtype=acc, device=device),
+        ltypes,
+        n_tri,
+        time_start,
+        num_frames,
+        tree_on,
+    )
+    with memory.scope("pt_nee_meta"):
+        meta[_NM_TREE_ON] = 1.0 if tree_on else 0.0
+        meta[_NM_TREE_MIX] = float(tree_mix)
+        meta[_NM_INF_COUNT] = float(n_inf)
         nee_meta = _arena_values(memory, meta, torch.float32)
-    return nee_cdf, nee_ref, nee_meta, emit_prob, env_cdf
+    return (
+        nee_cdf,
+        nee_ref,
+        nee_meta,
+        emit_prob,
+        env_cdf,
+        emit_entry,
+        lt_node_f,
+        lt_node_i,
+        lt_entry_leaf,
+        lt_frame,
+        nee_inf_cdf,
+        nee_inf_ref,
+    )
 
 
 def _build_shell_table(memory, merged):
@@ -757,8 +1080,29 @@ def path_trace_render(
         )
     # The power-weighted next-event table + environment CDF for this call
     # (before the tile budget is taken, so their bytes are accounted).
-    nee_cdf, nee_ref, nee_meta, tri_emit_prob, env_cdf = _build_nee_tables(
-        memory, merged, light_pos, light_col, int(num_lights), env_meta, far_clip
+    (
+        nee_cdf,
+        nee_ref,
+        nee_meta,
+        tri_emit_prob,
+        env_cdf,
+        tri_emit_entry,
+        lt_node_f,
+        lt_node_i,
+        lt_entry_leaf,
+        lt_frame,
+        nee_inf_cdf,
+        nee_inf_ref,
+    ) = _build_nee_tables(
+        memory,
+        merged,
+        light_pos,
+        light_col,
+        int(num_lights),
+        env_meta,
+        far_clip,
+        int(time_start),
+        num_frames,
     )
     tri_shell = _build_shell_table(memory, merged)
     if aovs is not None:
@@ -1008,6 +1352,13 @@ def path_trace_render(
                             env_cdf,
                             tri_shell,
                             pt_aov,
+                            tri_emit_entry,
+                            lt_node_f,
+                            lt_node_i,
+                            lt_entry_leaf,
+                            lt_frame,
+                            nee_inf_cdf,
+                            nee_inf_ref,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

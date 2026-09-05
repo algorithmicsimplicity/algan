@@ -67,6 +67,10 @@ rows, emissive triangles and the environment map's 2-D luminance CDF, the
 Sobol–Owen sampler, Russian roulette, firefly clamping, jittered-pixel AA,
 the closed-shell opacity ring, the `tests/path_traced/` baseline suite and
 parity benchmark, and the OIDN RT denoiser with in-kernel albedo/normal AOVs.
+On top of that table, §6a/§6b have landed: the Conty-Kulla light tree is now
+the selection structure for next-event estimation (`light_tree.py`,
+`pt_light_tree`), so emitter choice weighs distance and orientation rather
+than power alone.
 
 Power-heuristic MIS covers the two strategies that genuinely overlap:
 emissive triangles and the environment map, each sampled both by next-event
@@ -858,10 +862,15 @@ ambient rows, so there was nothing left to remove there.
 
 ## 6. Many-light and emissive-mesh sampling
 
-**What exists.** One flat power-weighted CDF over every sampled light row,
+**6a and 6b are LANDED** (see the two sections below for what shipped and
+what it measured). 6a-bis (the two loops still linear in light count) and
+6a-ter are *not*; they are still open and are described unchanged.
+
+**What existed.** One flat power-weighted CDF over every sampled light row,
 every emissive triangle and one environment entry, rebuilt per render call
-(`_build_nee_tables`). Selection is global and purely power-proportional: no
-spatial term, no orientation cone, no BSDF awareness.
+(`_build_nee_tables`). Selection was global and purely power-proportional: no
+spatial term, no orientation cone, no BSDF awareness. It survives as the
+`pt_light_tree = False` arm, byte for byte.
 
 **Why treeing the *lights* looked unnecessary — and why that was wrong.** The
 redesign plan said a tree over a handful of light rows could not pay, and an
@@ -885,7 +894,7 @@ across the room as often as a dim one against the surface. The survey quotes
 PBRT-v4 §12.6 measuring a **2.72x MSE improvement on a two-light scene** for
 exactly this reason.
 
-### 6a. The tree covers the whole table, not just emitters
+### 6a. The tree covers the whole table, not just emitters — LANDED
 
 So the light tree is not an optimization for the emissive-mesh case with the
 light rows left outside it. It is the selection structure for **every** entry
@@ -895,6 +904,88 @@ lighting `O(log E)` in the total emitter count, which is the property the
 "too many lights" use case actually needs, and it is what promotes 6b from
 "worth doing once emissive meshes are a supported look" to **required for a
 stated primary use case**.
+
+**What shipped.** `algan/rendering/raytracing/light_tree.py` builds it host
+side and `_pt_lt_importance` / `_pt_lt_descend` / `_pt_lt_pmf` in
+`path_tracer_taichi.py` use it; `pt_light_tree` (`ALGAN_PT_LIGHT_TREE`,
+default on) is the switch and off restores the flat CDF byte for byte.
+Point, spot and rect-area-cell rows and emissive triangles go in the tree.
+**Directional rows and the environment entry stay out** as a small
+power-weighted flat list, picked with a position-independent probability
+`P_inf / (P_inf + P_tree)` — and because a member's share inside that list is
+`power / P_inf`, an infinite entry's *effective* probability comes out at
+`power / P_total`, exactly the flat CDF's number. That is why `_NM_ENV_SHARE`
+and the escape MIS weight needed no change at all: only the split among the
+finite entries moved.
+
+**One thing the paper does not tell you, and it inverted the first
+measurement.** The importance is `power * |cos theta'| / d^decay`, not
+`/ d^2`: Algan's light rows default to `decay = 0` and genuinely do not fade
+with distance. A hard-coded inverse square aims the sampler at the near
+lights while every light contributes the same, and measured **1.34x worse**
+MSE than the flat CDF on the 32-light ring. The exponent therefore rides the
+node (`LT_DECAY`, the minimum over the subtree — conservative in the
+direction that keeps every emitter reachable); an emissive triangle always
+carries 2, because there it is the area-to-solid-angle Jacobian rather than
+an authored choice. The consequence to state plainly: **on default
+`decay = 0` lights the tree matches the flat CDF rather than beating it**
+(measured 1.03x), because there is nothing about them for a spatial
+structure to discriminate by. It wins where the emitter model actually
+varies with position — physical falloff, spot cones, one-sided area cells and
+emissive triangles.
+
+**Measured** (CPU, 32 point lights on a ring with `decay = 2` over a Lambert
+floor, `pt_light_samples = 1`, 4 spp against a 128-spp reference rendered
+with the tree off): mean squared error **12.5 with the tree against 109.2
+without — 8.7x**, which is what `test_light_tree_cuts_many_light_variance`
+asserts (at a 3x threshold). PBRT-v4 quotes 2.72x on *two* lights; more
+lights is more room, as expected.
+
+**Cost.** The build is host-side numpy, about **0.12 ms per node** and
+`2E - 1` nodes: 0.2 ms at 2 entries, 7.5 ms at 32, 60 ms at 256, 236 ms at
+1024. It is per *frame* because `light_pos` and `tri_pos` are per-frame
+tensors — but frames whose emitter geometry is byte-identical share a row, so
+a static light rig under moving geometry collapses to one tree per render
+chunk however long the chunk is, and above `PER_FRAME_BUILD_BUDGET`
+(`distinct frames x entries`) the build falls back to a single tree over the
+union of every frame's bounds and cones: looser, still unbiased, and bounded
+at roughly a quarter second per chunk. In the kernel,
+`benchmarks/performance/pt_baseline.py --scene many_lights --resolution
+320x180` (CPU, warm run 2, 64 lights) puts `pt_shade` device time at
+**492.6 ms flat against 529.6 ms with the tree, +7.5%** — one importance pair
+per level of a ~6-level descent, against a 6-step binary search, against a
+kernel that is also tracing shadow rays and shading solids. On a bare
+32-light `decay = 2` ring at the same resolution, where next-event estimation
+is nearly all of what `pt_shade` does, the same descent measured +34%; take
+that as the ceiling and this as the shape of a real frame. Against an 8.7x
+variance win either is a large net gain in equal-error time.
+
+Half of that overhead was inverse trigonometry, and it is gone: the node
+packs `cos theta_o`, `sin theta_o` and `cos theta_e` rather than the angles,
+and the importance evaluates `cos(theta - theta_o - theta_u)` through the
+angle-subtraction identities (PBRT-v4's `CosSubClamped`). Measured on the
+32-light ring, the straightforward `acos`/`asin`/`cos` version of the same
+formula cost 844 ms of `pt_shade` device time where this one costs 674 ms,
+over a flat-CDF baseline of 504 ms.
+
+Two deliberate approximations in the build, both conservative and both
+invisible to correctness (any positive importance is unbiased so long as both
+MIS ends read the same tree): a node's cone is bounded about the normalized
+*mean* of its members' axes rather than by the paper's incremental pairwise
+union, and the split search scores a prefix's cone from the same bound on
+running sums. Both exist because they vectorize and the union does not — the
+build is dominated by host-side call count, not by arithmetic.
+
+A node whose two children both score zero at a shading point — possible,
+because the parent's union box and union cone can face the point when
+neither child does — **splits the draw evenly** rather than abandoning the
+sample. That costs a shadow ray that returns almost nothing and buys the
+property the MIS weights rest on: the descent is a genuine distribution over
+the leaves with no mass lost part-way down, which
+`test_light_tree_selection_probabilities_sum_to_one` pins.
+
+Still **not** done, and deliberately, the **sum-everything fast
+path** for tiny tables:
 
 A **sum-everything fast path** for tiny tables (a threshold on entry count,
 in the low tens) is exact and zero-variance, but it costs `E` shadow rays per
@@ -925,7 +1016,7 @@ would accept the hit. The deterministic renderer keeps its rows untouched.
 This is a §5 re-baseline item (it moves every sample that touched an area
 light) and belongs in that batch.
 
-### 6a-quater. Build the tree per frame
+### 6a-quater. Build the tree per frame — LANDED
 
 `light_pos` and `light_col` are per-frame tensors, and `_build_nee_tables`
 runs once per render *chunk*. A tree whose bounds are the union over a
@@ -936,6 +1027,20 @@ is small, so build one tree per frame, indexed by `f` the way `light_pos`
 already is, rather than one union tree. The per-frame emission power the
 "frame-animated emitters" gap in the final section describes falls out of the
 same change.
+
+**What shipped.** `build_light_trees` builds one tree per distinct frame of
+the chunk and `lt_frame[f - time_start]` picks the row, so a light that moves
+is followed rather than bounded by a chunk-wide union. Frames whose emitter
+geometry is byte-identical share a row (a static rig under moving geometry
+collapses to one build per chunk), and a chunk whose distinct-frame count
+times entry count exceeds `PER_FRAME_BUILD_BUDGET` falls back to exactly the
+union tree this section argues against — looser, still unbiased, and the
+thing that keeps a host-side build from costing seconds on a long chunk of
+genuinely moving emitters. `test_light_tree_follows_a_light_that_moves_
+between_frames` is the guard. The per-frame *power* is still frame-0's: an
+entry's weight is the number the flat table gives it, so which emitters are
+sampleable at all did not change, and the "frame-animated emitters" gap in
+the final section stays open.
 
 ### 6a-bis. Two loops that are linear in light count today
 
@@ -970,7 +1075,7 @@ than inefficiencies:
   their lighting like everything else. Either way it is an interface decision,
   not just a loop rewrite, which is why it is called out separately here.
 
-### 6b. Building the tree
+### 6b. Building the tree — LANDED
 
 Conty Estevez & Kulla 2018, as in PBRT-v4's `BVHLightSampler` and Cycles:
 each node carries its subtree's emitted power, its bounds, and an
@@ -1054,20 +1159,40 @@ free, and 7–11 owned by the nested-IOR stack, so one free column exists and a
 widening would cost `_PT_BYTES_PER_SLOT` +12 bytes and a slightly smaller
 tile. Start position-only.
 
-Two smaller consequences to keep straight: `tri_emit_prob` is also used as a
-*predicate* (`> 0` gates the MIS weight and marks "this triangle is in the
-table"), so that flag survives as an array even once the probability becomes a
-query; and the NEE and MIS ends must call the *same* PMF routine, as they call
-the same `_pt_lit_f_pdf` today — that identity is what makes the weights sum
-to one, and it is the thing to test directly rather than by eye.
+**What shipped: position-only at both ends, and the normal term dropped
+outright.** The tempting half-measure is to use PBRT's receiver-cosine bound
+at the next-event call site, where the shading normal *is* in registers, and
+to leave it out of the upward walk where it is not. That is exactly the bug
+this section warns about: the two ends would evaluate different selection
+pdfs and the power-heuristic weights would stop summing to one — silently,
+as a small brightness error on emissive meshes. The alternative was widening
+the shared `rs_sca` (which is `SCA_WIDTH_NESTED`, so it sizes the
+*deterministic* renderer's per-ray state too) by three columns for one free
+one. So both ends call one `_pt_lt_importance`, with no normal term, and
+`test_light_tree_descent_and_pmf_agree` compares the descent's returned
+probability against the upward walk over 4096 random points and trees —
+equal to 1e-5 relative, which is the float precision of the two orderings.
+Making that identity exact needed one more care: the descent forms the right
+child's probability as `i1 / total` and never as `1 - p0`, so both walks
+evaluate the same expression.
 
-**Verification:** an emissive-mesh scene at equal time against the flat CDF
-(the `_pt_furnace_check` / reference-integral pattern from Stage 3 gives the
-ground truth); a unit probe asserting the descent's returned probability
-equals the upward PMF walk for the same (point, triangle) pair, over random
-points — that single test is what keeps MIS correct; and delta-light direct
-lighting invariant to `pt_light_samples` once 6a lands, since summing the rows
-makes that term exact.
+`tri_emit_prob` kept its array and its predicate role (`> 0` still marks
+"this triangle is in the table"), and a new `tri_emit_entry` column maps a
+triangle to its tree-local entry index so the walk can start at
+`lt_entry_leaf[frame, entry]`. The kernel's arena spec grew seven entries
+(`tri_emit_entry`, the two node tensors, the entry→leaf map, the frame→tree
+row map and the infinite list's two) rather than seven kernel arguments —
+`pt_shade` was already near Taichi's ceiling.
+
+**Verification, as shipped:** the MIS-identity probe above (the single test
+that keeps MIS correct); the leaf probabilities summing to one; the build's
+determinism; a two-frame render whose moving light produces two different
+trees; and the equal-spp variance comparison in 6a. Every furnace,
+reference-integral and RectAreaLight test in `test_path_tracer.py` still
+passes unchanged — the tree is a sampler and must not bias.
+
+Still open from this section: delta-light direct lighting invariant to
+`pt_light_samples`, which needs the sum-everything path 6a leaves undone.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise

@@ -17,6 +17,12 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     deterministic renderer. Transparency composites *deterministically*
     (throughput-weighted, never stochastic alpha), so stacked vector
     graphics and text match the deterministic composite with zero variance.
+    Which emitter a next-event sample aims at is decided by descending the
+    per-frame **light tree** (``light_tree.py``, Conty Estevez & Kulla
+    2018) -- a selection that weighs distance and orientation as well as
+    power, so cost stays ``O(log E)`` in emitter count and the shadow ray
+    is not spent on something facing away. ``pt_light_tree = False``
+    restores the flat power CDF exactly.
     Lit surfaces receive next-event estimation over every packed light row
     (emitter radiometry via the shared ``_light_eval``; the SURFACE response
     is the physical BSDF, not the deterministic stage formula -- see
@@ -119,6 +125,19 @@ trick next-event estimation already used, gives it one (roadmap section 7).
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
+)
+from algan.rendering.raytracing.light_tree import (
+    LT_AXIS,
+    LT_BMAX,
+    LT_BMIN,
+    LT_COS_THETA_E,
+    LT_COS_THETA_O,
+    LT_DECAY,
+    LT_LEFT,
+    LT_PARENT,
+    LT_POWER,
+    LT_RIGHT,
+    LT_SIN_THETA_O,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
@@ -265,7 +284,7 @@ _NEE_AMBIENT_ROW = 3
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 14
+NEE_META_WIDTH = 17
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -280,6 +299,13 @@ _NM_FAR_CLIP = 10  # camera.far in world units (0 = no far plane)
 _NM_AMBIENT_PACKED = 11  # 1 = the ambient rows ride nee_ref's tail ...
 _NM_AMBIENT_COUNT = 12  # ... and there are this many of them
 _NM_ANIM_SEED = 13  # 1 = the sampler key includes the frame (pt_animated_seed)
+# Light-tree selection (light_tree.py). Off, the kernel takes the flat CDF
+# path byte for byte and the tree tensors are [1, 1, ...] placeholders.
+_NM_TREE_ON = 14  # 1 = select finite entries by descending the light tree
+_NM_TREE_MIX = 15  # P(tree) = finite power / total power; the rest is the
+#                    position-independent infinite list (directional + env),
+#                    which is what keeps the mixture unbiased
+_NM_INF_COUNT = 16  # entries in nee_inf_cdf / nee_inf_ref
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -605,6 +631,199 @@ def _pt_pick_nee_entry(nee_cdf: ti.template(), n, u):
     return lo, nee_cdf[lo] - prev
 
 
+#: Descent / upward-walk step ceiling. The tree is binary over at most a few
+#: thousand entries and the SAOH keeps it near-balanced, so this is a
+#: watchdog against a malformed tree hanging a GPU, not a working limit.  The
+#: two walks share it so that an entry past the ceiling reads as probability
+#: zero at BOTH MIS ends rather than at one of them.
+_PT_LT_MAX_DEPTH = 1024
+
+
+@ti.func
+def _pt_lt_importance(lt_node_f: ti.template(), row, node, p):
+    """Conty-Kulla node importance at shading point ``p``.
+
+    ``power * cos(theta') / d^decay``, where ``theta'`` is how far the node's
+    orientation cone still has to turn to face ``p`` once its normal spread
+    (``theta_o``) and the angle the node's bounds subtend from ``p``
+    (``theta_u``) are both credited to it, and the whole node scores zero once
+    that residual passes the emission spread ``theta_e`` -- a back-facing
+    subtree is skipped instead of being picked in proportion to its power.
+    Every angle is carried as its cosine and sine and every subtraction goes
+    through the angle-subtraction identities, so no ``acos``/``asin``/``cos``
+    runs per node visit; that alone is half the descent's cost -- 844 ms of
+    ``pt_shade`` device time on a bare 32-light ring against 674 ms, over a
+    flat-CDF baseline of 504 ms.
+
+    The exponent comes off the node (``LT_DECAY``) rather than being the
+    inverse square a physical renderer could assume: Algan's light rows
+    default to ``decay = 0`` and genuinely do not fade with distance, so a
+    hard-coded ``1/d^2`` would aim the sampler at the near lights while every
+    light contributes the same -- measured *worse* than the flat CDF. An
+    emissive triangle always carries 2, which is its area-to-solid-angle
+    Jacobian and not an authored choice.
+
+    **Position only, deliberately.** PBRT-v4's ``LightBounds::Importance``
+    also multiplies by a bound on the receiver's own cosine, and the shading
+    normal *is* in registers at the next-event call site -- but the MIS pdf
+    query at a BSDF hit has to evaluate this same function at the PREVIOUS
+    vertex, and the path state carries that vertex's position (``rs_ro``) and
+    not its normal.  Both ends calling one function is what makes the MIS
+    weights sum to one, so the normal term is dropped at both rather than
+    used at one; carrying it would cost three more ``rs_sca`` columns (only
+    one is free) and a wider ``_PT_BYTES_PER_SLOT``. See
+    ``DESIGN_path_tracer_roadmap.md`` section 6b.
+    """
+    power = lt_node_f[row, node, LT_POWER]
+    imp = 0.0
+    if power > 0.0:
+        bmin = ti.math.vec3(lt_node_f[row, node, LT_BMIN + 0],
+                            lt_node_f[row, node, LT_BMIN + 1],
+                            lt_node_f[row, node, LT_BMIN + 2])
+        bmax = ti.math.vec3(lt_node_f[row, node, LT_BMAX + 0],
+                            lt_node_f[row, node, LT_BMAX + 1],
+                            lt_node_f[row, node, LT_BMAX + 2])
+        axis = ti.math.vec3(lt_node_f[row, node, LT_AXIS + 0],
+                            lt_node_f[row, node, LT_AXIS + 1],
+                            lt_node_f[row, node, LT_AXIS + 2])
+        cos_o = lt_node_f[row, node, LT_COS_THETA_O]
+        sin_o = lt_node_f[row, node, LT_SIN_THETA_O]
+        cos_e = lt_node_f[row, node, LT_COS_THETA_E]
+        decay = lt_node_f[row, node, LT_DECAY]
+        center = (bmin + bmax) * 0.5
+        radius = 0.5 * (bmax - bmin).norm()
+        to_p = p - center
+        d = to_p.norm()
+        # Inside the node's bounding sphere the point could be arbitrarily
+        # close to an emitter, so the falloff reverts to the sphere's own
+        # scale and the bounds subtend every direction.
+        d2 = ti.max(d * d, ti.max(radius * radius, 1e-12))
+        cos_u = 0.0
+        sin_u = 1.0
+        wi = axis
+        if d > radius:
+            sin_u = ti.math.clamp(radius / d, 0.0, 1.0)
+            cos_u = ti.sqrt(ti.max(1.0 - sin_u * sin_u, 0.0))
+        if d > 1e-12:
+            wi = to_p / d
+        cos_t = ti.math.clamp(axis.dot(wi), -1.0, 1.0)
+        sin_t = ti.sqrt(ti.max(1.0 - cos_t * cos_t, 0.0))
+        # cos(theta - theta_o) and sin(theta - theta_o), both clamped at 0
+        # (PBRT-v4's CosSubClamped / SinSubClamped): the angle-subtraction
+        # identities, so no inverse trigonometry runs per node visit.
+        cos_x = 1.0
+        sin_x = 0.0
+        if cos_t <= cos_o:
+            cos_x = cos_t * cos_o + sin_t * sin_o
+            sin_x = sin_t * cos_o - cos_t * sin_o
+        cos_p = 1.0
+        if cos_x <= cos_u:
+            cos_p = cos_x * cos_u + sin_x * sin_u
+        if cos_p > cos_e:
+            falloff = 1.0
+            if decay > 0.0:
+                if decay == 2.0:
+                    falloff = 1.0 / d2
+                else:
+                    falloff = ti.pow(d2, -0.5 * decay)
+            imp = power * cos_p * falloff
+    return imp
+
+
+@ti.func
+def _pt_lt_descend(lt_node_f: ti.template(), lt_node_i: ti.template(),
+                   row, p, u):
+    """Descend the light tree from the root to a leaf with one random number.
+
+    At each node the two children are scored by ``_pt_lt_importance``, one is
+    picked in proportion, and ``u`` is **rescaled** into the chosen child's
+    bracket -- so a single stratified draw (the entry-select Sobol dimension)
+    stratifies the whole descent instead of one level of it. Returns
+    ``(leaf node, entry index, probability)``.
+
+    A node whose two children both score zero -- which happens, because a
+    parent's union box and union cone can face ``p`` when neither child does
+    -- splits the draw evenly instead of giving up. That spends a shadow ray
+    that will return next to nothing, and it buys the property the MIS
+    weights rest on: the descent is a genuine probability distribution over
+    the leaves, with no mass quietly lost part-way down.
+    """
+    node = 0
+    prob = 1.0
+    depth = 0
+    while (lt_node_i[row, node, LT_LEFT] >= 0) and (depth < _PT_LT_MAX_DEPTH):
+        c0 = lt_node_i[row, node, LT_LEFT]
+        c1 = lt_node_i[row, node, LT_RIGHT]
+        i0 = _pt_lt_importance(lt_node_f, row, c0, p)
+        i1 = _pt_lt_importance(lt_node_f, row, c1, p)
+        total = i0 + i1
+        # p0 and p1 are formed the SAME way the upward walk forms them
+        # (i / total, never 1 - p0): the two must agree bit for bit or the
+        # MIS weights stop summing to one.
+        p0 = 0.5
+        p1 = 0.5
+        if total > 0.0:
+            p0 = i0 / total
+            p1 = i1 / total
+        if u < p0:
+            node = c0
+            prob *= p0
+            u = ti.math.clamp(u / ti.max(p0, 1e-12), 0.0, 0.99999994)
+        else:
+            node = c1
+            prob *= p1
+            u = ti.math.clamp((u - p0) / ti.max(p1, 1e-12), 0.0, 0.99999994)
+        depth += 1
+    entry = -1
+    if lt_node_i[row, node, LT_LEFT] < 0:
+        entry = lt_node_i[row, node, LT_RIGHT]
+    else:
+        prob = 0.0
+    return node, entry, prob
+
+
+@ti.func
+def _pt_lt_pmf(lt_node_f: ti.template(), lt_node_i: ti.template(),
+               row, leaf, p):
+    """Probability the descent from ``p`` reaches ``leaf``, walked upward.
+
+    The MIS pdf at a BSDF hit needs the probability next-event estimation
+    would have had of choosing this emitter FROM THE PREVIOUS VERTEX, which
+    a spatially-varying sampler can no longer read out of a table. Walking
+    the stored parent chain costs one importance pair per level, against a
+    whole re-descent's worth of comparisons -- and it evaluates the same
+    expressions ``_pt_lt_descend`` does, in the same order per level.
+    """
+    node = leaf
+    prob = 1.0
+    steps = 0
+    reached = 0
+    while steps <= _PT_LT_MAX_DEPTH:
+        par = lt_node_i[row, node, LT_PARENT]
+        if par < 0:
+            reached = 1
+            break
+        c0 = lt_node_i[row, par, LT_LEFT]
+        c1 = lt_node_i[row, par, LT_RIGHT]
+        i0 = _pt_lt_importance(lt_node_f, row, c0, p)
+        i1 = _pt_lt_importance(lt_node_f, row, c1, p)
+        total = i0 + i1
+        p0 = 0.5
+        p1 = 0.5
+        if total > 0.0:
+            p0 = i0 / total
+            p1 = i1 / total
+        if node == c0:
+            prob *= p0
+        else:
+            prob *= p1
+        node = par
+        steps += 1
+    if reached == 0:
+        prob = 0.0
+    return prob
+
+
 @ti.func
 def _pt_ggx_ndf(n_dot_h, alpha):
     """Isotropic GGX normal distribution with ``alpha`` = roughness^2 -- the
@@ -921,6 +1140,44 @@ def pt_nee_pick_probe(nee_cdf: ti.types.ndarray(), n: ti.i32,
 
 
 @ti.kernel
+def pt_light_tree_probe(lt_node_f: ti.types.ndarray(),
+                        lt_node_i: ti.types.ndarray(), row: ti.i32,
+                        pts: ti.types.ndarray(), u: ti.types.ndarray(),
+                        out: ti.types.ndarray()):
+    """Test probe: descend the tree, then walk back up from where it landed.
+
+    ``out[i] = (entry, descent probability, upward PMF at the same point,
+    leaf node)``. Columns 1 and 2 are the two ends of every emissive MIS
+    pair -- they must be equal to float precision or the power-heuristic
+    weights stop summing to one, which is the single property this whole
+    structure has to preserve.
+    """
+    for i in range(u.shape[0]):
+        p = ti.math.vec3(pts[i, 0], pts[i, 1], pts[i, 2])
+        leaf, entry, prob = _pt_lt_descend(lt_node_f, lt_node_i, row, p, u[i])
+        out[i, 0] = ti.cast(entry, ti.f32)
+        out[i, 1] = prob
+        out[i, 2] = _pt_lt_pmf(lt_node_f, lt_node_i, row, leaf, p)
+        out[i, 3] = ti.cast(leaf, ti.f32)
+
+
+@ti.kernel
+def pt_light_tree_pmf_probe(lt_node_f: ti.types.ndarray(),
+                            lt_node_i: ti.types.ndarray(), row: ti.i32,
+                            pts: ti.types.ndarray(),
+                            leaves: ti.types.ndarray(),
+                            out: ti.types.ndarray()):
+    """Test probe: ``out[i, j]`` is the selection probability of leaf ``j``
+    from point ``i``. Summing a row over every leaf must give 1 -- the tree
+    is a probability distribution over the entries, not just a way to find a
+    bright one.
+    """
+    for i, j in ti.ndrange(pts.shape[0], leaves.shape[0]):
+        p = ti.math.vec3(pts[i, 0], pts[i, 1], pts[i, 2])
+        out[i, j] = _pt_lt_pmf(lt_node_f, lt_node_i, row, leaves[j], p)
+
+
+@ti.kernel
 def pt_env_sample_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
                         cdf_w: ti.i32, u: ti.types.ndarray(),
                         out: ti.types.ndarray()):
@@ -1185,9 +1442,10 @@ def _pt_meta_escape(nee_meta: ti.template()):
 @ti.func
 def _pt_meta_hit(nee_meta: ti.template()):
     """The ``nee_meta`` words only a path with a surface event reads: the
-    next-event table size, the far plane, the packed ambient-row window and
-    the sampler's frame gate. Returns ``(num_nee, far_clip, amb_packed,
-    amb_count, anim_seed)``.
+    next-event table size, the far plane, the packed ambient-row window, the
+    sampler's frame gate and the light tree's selection words. Returns
+    ``(num_nee, far_clip, amb_packed, amb_count, anim_seed, tree_on,
+    tree_mix, num_inf)``.
     """
     return (
         ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32),
@@ -1195,6 +1453,9 @@ def _pt_meta_hit(nee_meta: ti.template()):
         nee_meta[_NM_AMBIENT_PACKED] > 0.5,
         ti.cast(nee_meta[_NM_AMBIENT_COUNT] + 0.5, ti.i32),
         ti.cast(nee_meta[_NM_ANIM_SEED] + 0.5, ti.i32),
+        nee_meta[_NM_TREE_ON] > 0.5,
+        nee_meta[_NM_TREE_MIX],
+        ti.cast(nee_meta[_NM_INF_COUNT] + 0.5, ti.i32),
     )
 
 
@@ -1248,8 +1509,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
 
     Direct lighting at a lit vertex is the sum of a deterministic fill from
     the direction-less rows (ambient / hemisphere) and ``pt_light_samples``
-    draws from the power-weighted next-event table (``nee_cdf`` /
-    ``nee_ref``): delta and area light rows at stage radiometry, emissive
+    draws from the next-event table (``nee_ref``), each entry chosen either
+    by descending the light tree at the shading point (``lt_node_f`` /
+    ``lt_node_i``, the finite emitters) or from the position-independent
+    infinite list (``nee_inf_cdf``: directional rows and the environment),
+    or -- with ``pt_light_tree`` off -- from the one flat power CDF
+    (``nee_cdf``): delta and area light rows at stage radiometry, emissive
     triangles and the environment map at physical radiometry with
     power-heuristic MIS against the continuation lobes (the emitters BSDF
     paths can also find; delta lights have no geometry to MIS against).
@@ -1306,6 +1571,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     tri_emit_prob = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60],)))
     env_cdf = ti.static(ArenaView(arena_f32, aoff[28], (ashp[61], ashp[62])))
     tri_shell = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63], ashp[64])))
+    tri_emit_entry = ti.static(ArenaView(arena_i32, aoff[30], (ashp[65],)))
+    lt_node_f = ti.static(ArenaView(
+        arena_f32, aoff[31], (ashp[66], ashp[67], ashp[68])))
+    lt_node_i = ti.static(ArenaView(
+        arena_i32, aoff[32], (ashp[69], ashp[70], ashp[71])))
+    lt_entry_leaf = ti.static(ArenaView(arena_i32, aoff[33], (ashp[72], ashp[73])))
+    lt_frame = ti.static(ArenaView(arena_i32, aoff[34], (ashp[74],)))
+    nee_inf_cdf = ti.static(ArenaView(arena_f32, aoff[35], (ashp[75],)))
+    nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -1318,11 +1592,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
         if num_hits > 0:
             (n_ls, env_off, env_w, env_h, env_intensity, env_share,
              cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
-            (num_nee, far_clip, amb_packed, amb_count,
-             anim_seed) = _pt_meta_hit(nee_meta)
+            (num_nee, far_clip, amb_packed, amb_count, anim_seed,
+             tree_on, tree_mix, num_inf) = _pt_meta_hit(nee_meta)
             g = ray_offset + rs_pix[r]
-            f = time_start + g // pixels_per_frame
-            p = g - (g // pixels_per_frame) * pixels_per_frame
+            f_rel = g // pixels_per_frame
+            f = time_start + f_rel
+            p = g - f_rel * pixels_per_frame
+            # Which of the chunk's light trees this frame uses: frames whose
+            # emitter geometry is identical share one (light_tree.py).
+            lt_r = 0
+            if tree_on:
+                lt_r = lt_frame[f_rel]
             key = _pt_key(f * anim_seed, p)
             # Sampler seeds and pair bases that are constant for the whole
             # path, hoisted out of the drain loop (roadmap section 0.2): the
@@ -1665,7 +1945,23 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         area_e = 0.5 * fn_len
                         if covered == 1:
                             c_l = ti.max(ti.abs(cos_l), 1e-4)
-                            pdf_ne = tri_emit_prob[prim] * (t_hit * t_hit) \
+                            # The probability next-event estimation would
+                            # have had of picking THIS triangle from the
+                            # PREVIOUS vertex. Flat CDF: a table lookup.
+                            # Light tree: a query, because selection is a
+                            # function of the shading point -- walked up
+                            # from the triangle's leaf at ``ro``, which is
+                            # the previous scatter origin (rs_ro is not
+                            # touched by a pass-through crossing).
+                            p_ne = tri_emit_prob[prim]
+                            if tree_on:
+                                p_ne = 0.0
+                                ent_m = tri_emit_entry[prim]
+                                if ent_m >= 0:
+                                    p_ne = tree_mix * _pt_lt_pmf(
+                                        lt_node_f, lt_node_i, lt_r,
+                                        lt_entry_leaf[lt_r, ent_m], ro)
+                            pdf_ne = p_ne * (t_hit * t_hit) \
                                 / ti.max(area_e * c_l, 1e-12) \
                                 * ti.cast(n_ls, ti.f32)
                             w_emit = prev_pdf * prev_pdf \
@@ -1720,8 +2016,36 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                         s_index)
                             u_pt = pt_sample_2d_seeded(path_seed,
                                                        pair_sel + 1, s_index)
-                            entry, p_sel = _pt_pick_nee_entry(
-                                nee_cdf, num_nee, u_sel[0])
+                            entry = 0
+                            p_sel = 0.0
+                            if tree_on:
+                                # One draw, two stages: the position-
+                                # independent tree-vs-infinite mixture, then
+                                # the descent, each consuming its bracket of
+                                # the same stratified number.
+                                uu = u_sel[0]
+                                if uu < tree_mix:
+                                    uu = ti.math.clamp(
+                                        uu / ti.max(tree_mix, 1e-12),
+                                        0.0, 0.99999994)
+                                    _lf, ent_s, p_d = _pt_lt_descend(
+                                        lt_node_f, lt_node_i, lt_r,
+                                        sorigin, uu)
+                                    if ent_s >= 0:
+                                        entry = ent_s
+                                        p_sel = p_d * tree_mix
+                                elif num_inf > 0:
+                                    uu = ti.math.clamp(
+                                        (uu - tree_mix)
+                                        / ti.max(1.0 - tree_mix, 1e-12),
+                                        0.0, 0.99999994)
+                                    slot, p_i = _pt_pick_nee_entry(
+                                        nee_inf_cdf, num_inf, uu)
+                                    entry = nee_inf_ref[slot]
+                                    p_sel = p_i * (1.0 - tree_mix)
+                            else:
+                                entry, p_sel = _pt_pick_nee_entry(
+                                    nee_cdf, num_nee, u_sel[0])
                             kind = nee_ref[entry, 0]
                             ref = nee_ref[entry, 1]
                             contrib = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1757,7 +2081,13 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         wi_vis = wi_v
                                         ldist = ld_d
                             elif kind == _NEE_EMISSIVE_TRI:
+                                # Flat arm: the table's own probability, so
+                                # this end and the MIS end read one number.
+                                # Tree arm: the descent's probability, which
+                                # is what the upward walk reproduces.
                                 p_tri = tri_emit_prob[ref]
+                                if tree_on:
+                                    p_tri = p_sel
                                 if p_tri > 1e-12:
                                     pe, ne, area_s, ew0, ew1, ew2 = \
                                         _pt_emissive_sample(
@@ -2513,6 +2843,13 @@ _PT_SHADE_ARENA = (
     ("tri_emit_prob", "f32", 1),
     ("env_cdf", "f32", 2),
     ("tri_shell", "i32", 2),
+    ("tri_emit_entry", "i32", 1),
+    ("lt_node_f", "f32", 3),
+    ("lt_node_i", "i32", 3),
+    ("lt_entry_leaf", "i32", 2),
+    ("lt_frame", "i32", 1),
+    ("nee_inf_cdf", "f32", 1),
+    ("nee_inf_ref", "i32", 1),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -2533,6 +2870,8 @@ _PT_SHADE_PARAMS = (
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
+    "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
+    "nee_inf_cdf", "nee_inf_ref",
 )
 
 _pt_shade_launch = arena_packed(
