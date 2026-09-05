@@ -1,18 +1,139 @@
 name: Code Quality
 on:
+  push:
+    branches: [master, stable]
   pull_request:
-    branches: [master]
+    branches: [master, stable]
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 jobs:
-  formatting_diff:
-    name: Ruff formatting diff
+  lock_file:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-uv
+      # `--locked` asserts the lockfile is already up to date; without it this
+      # step was a no-op guard. Bare `uv lock` *writes* uv.lock and exits 0, so
+      # a pyproject.toml change that had never been locked passed here and then
+      # failed several minutes into the test job, on `uv sync --locked`, with a
+      # message about syncing rather than about the lockfile.
+      #
+      # `--locked` is the spelling uv 0.4.25 (pinned in ./actions/install-uv)
+      # understands. Newer uv shows it as `--check`; both still work.
+      - run: uv lock --locked
+
+  linting:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    needs: [lock_file]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: ./.github/actions/install-uv
-      - run: uvx ruff@0.12.4 format --diff tests/unit_tests/test_quadrants_distribution.py
+      # Pinned for the same reason as the format job below -- see the comment
+      # there. `check` reports only: the repository sets `fix = false`, and
+      # this job passes no `--fix`, so CI can never rewrite the checkout.
+      - run: uvx ruff@0.12.4 check --no-fix
+
+  formatting:
+    name: Ruff Format
+    runs-on: ubuntu-latest
+    needs: [lock_file]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+      # Pinned, and it has to stay pinned: bare `uvx ruff` resolves whatever
+      # version is newest at run time, so a release upstream turns this job red
+      # with no change to the repository. That is not hypothetical -- a newer
+      # ruff began formatting Python inside Markdown, which the project's own
+      # ruff refuses to do at all ("Markdown formatting is experimental"), so
+      # CI was enforcing a rule no contributor could reproduce locally.
+      #
+      # Keep this in step with the `ruff` dev dependency in pyproject.toml
+      # (currently >=0.9.3, resolved to 0.12.4 in uv.lock). Bumping it is a
+      # deliberate act: expect a reformat commit alongside.
+      - run: uvx ruff@0.12.4 format --check
+
+  packaging:
+    name: Wheel builds and imports
+    runs-on: ubuntu-latest
+    needs: [lock_file]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+
+      # ManimPango publishes no wheel this runner's interpreter can use, so
+      # installing Algan's dependencies builds it from source -- and its
+      # setup.py asks pkg-config for pangocairo >= 1.30 before it will even
+      # report its build requirements. Without these the job dies in
+      # `uv pip install dist/*.whl` with `RequiredDependencyException:
+      # pangocairo >= 1.30.0 is required`, which reads like a packaging fault
+      # in Algan and is not one. The test job installs the same two for the
+      # same reason. (Cairo used to be here too, for pycairo; `manim` is no
+      # longer a dependency, so nothing pulls it in any more.)
+      - name: Install system dependencies for manimpango
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev pkg-config
+
+      - name: Build the wheel and sdist
+        run: uv build
+
+      # The tests import Algan from the source tree, so nothing else in CI can
+      # see the wheel at all. What that hides is packaging, not code: hatchling
+      # is told `include = ["/algan"]` and ships whatever is under it, so a new
+      # `exclude` entry, or a data directory added outside `algan/`, produces a
+      # wheel that installs cleanly and fails at runtime -- with every other
+      # job green, and the first report coming from a user on PyPI.
+      #
+      # `--python` names the target interpreter explicitly rather than relying
+      # on VIRTUAL_ENV or on uv discovering the workspace venv: the point is to
+      # install the built artifact into an empty environment and nothing else,
+      # the way a user would.
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv /tmp/wheel-env
+          uv pip install --python /tmp/wheel-env/bin/python dist/*.whl
+
+      # Named explicitly rather than left to `import algan`, because these are
+      # exactly the files a packaging mistake drops and imports do not touch:
+      # the two SMAA lookup textures the anti-aliasing pass loads at render
+      # time, and the vendored manim config the compatibility layer reads. An
+      # import-only check passes without them.
+      #
+      # No `py.typed` here on purpose. Algan ships no PEP 561 marker, so its
+      # annotations are invisible to a downstream type checker by design --
+      # adding the marker would make them authoritative for users' mypy and
+      # pyright runs, which is a promise to make deliberately and not as a
+      # side effect of a packaging check.
+      - name: Check the installed package is complete
+        run: |
+          /tmp/wheel-env/bin/python - <<'PY'
+          import importlib.resources as res
+          import algan
+          print("algan", algan.__version__ if hasattr(algan, "__version__") else "(no __version__)")
+          root = res.files("algan")
+          required = [
+              "rendering/post_processing/anti_aliasing/AreaTex.png",
+              "rendering/post_processing/anti_aliasing/SearchTex.png",
+              "external_libraries/manim/_config/default.cfg",
+          ]
+          missing = [r for r in required if not (root / r).is_file()]
+          if missing:
+              raise SystemExit("missing from the installed wheel: " + ", ".join(missing))
+          print("all required data files present")
+          PY
+
+      # The CLI is declared as a console script in pyproject.toml, which is the
+      # other thing a wheel can get wrong while importing fine.
+      - name: Check the console script is wired up
+        run: /tmp/wheel-env/bin/algan check
