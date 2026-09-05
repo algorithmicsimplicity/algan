@@ -78,6 +78,42 @@ Candidates not yet excluded: Taichi launch overhead for the wider
 arena-packed argument set (seven more arrays in the offset/shape tables,
 75 launches), and the profiler's own per-launch cost growing with that
 set. It does not reproduce as a device-time difference and it does not
-show on the CPU box. Open; the next step is a `nsys`-style timeline on
-the T4, which this harness does not take. At worst it is 12–18% of the
-64-light frame's wall clock at 720p for an 8.7x variance reduction.
+show on the CPU box. At worst it is 12–18% of the 64-light frame's wall
+clock at 720p for an 8.7x variance reduction.
+
+## Under cProfile the gap is gone (`pt-cprofile-1.txt`, at `65fbc62`)
+
+Same two arms, warm RUN 2, with `ALGAN_PROFILE_CPROFILE=1` so every
+Python frame is attributed:
+
+| arm | end-to-end | `pt_shade` device | host | `path_trace_render` cum | `_build_light_tree_tables` |
+| --- | --- | --- | --- | --- | --- |
+| tree | 2.283 s | 344 ms | 1.381 s | 0.958 s | 43 ms (5 calls) |
+| flat | 2.288 s | 277 ms | 1.447 s | 0.843 s | — |
+
+The two arms are now **equal to 5 ms** end to end, and the host column
+is 66 ms *smaller* on the tree arm. Everything the tree adds on the host
+is attributed and small: 43 ms of `_build_light_tree_tables` over five
+chunks (cache hits; the `.item()` classification and the numpy → arena
+copies), 52 ms of `_build_nee_tables` on both arms, and the kernel launch
+wall grows exactly by the device time (`pt_shade` +65 ms, the tree
+descent). The "unaccounted" bucket is 0.328 s against 0.318 s — the
+255 ms it carried on the tree arm without cProfile is not there.
+
+cProfile slows Python roughly 2x with the same ~1.0 M calls on both arms,
+and the flat arm lost 0.65 s to it while the tree arm lost only 0.23 s: the
+tree arm's residual was **overlapped away** by slower Python. A fixed host
+cost in the tree code path cannot behave that way; only something that
+runs concurrently with the render thread can — the software x264 writer
+process on this box's few vCPUs (`ALGAN_VIDEO_ENCODER=software`), torch's
+intra-op threads, or a device wait that the faster arm serialized behind.
+So the residual is a scheduling artefact of the measurement box, not
+renderer host work, and the harness can measure the light tree's true
+host cost as ~10 ms per chunk. Not pursued further; a frame-only render
+(no encoder) on a box with more cores would settle which concurrent
+activity it was.
+
+Same session, both arms, unrelated to the tree: `scene_excluded_from_gc`'s
+one explicit `gc.collect()` costs **218–259 ms** of a 2.28 s render —
+larger than the whole next-event setup — and it is a candidate for §0's
+cheap host wins on any scene with a large timeline.

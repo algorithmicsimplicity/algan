@@ -1194,19 +1194,22 @@ passes unchanged — the tree is a sampler and must not bias.
 Still open from this section: delta-light direct lighting invariant to
 `pt_light_samples`, which needs the sum-everything path 6a leaves undone.
 
-**Also open: an unattributed host residual on the T4.** With the build
-memoized, the tree arm of the 64-light scene at 720p still costs 200–365 ms
+**Closed: the T4 host residual was a measurement artefact.** With the build
+memoized, the tree arm of the 64-light scene at 720p still read 200–365 ms
 more host time per five-frame render than the flat arm, and nothing the
-harness measures accounts for it — not the build (cache hits), not the
+harness measures accounted for it — not the build (cache hits), not the
 next-event setup (7 ms per chunk more, logged by the PERF line), and not
-kernel execution (every kernel's device time is identical to the
-millisecond). It does not reproduce on the CPU box. The candidates left are
-Taichi's launch marshalling for the seven extra arena entries (75 launches)
-and the profiler's own per-launch cost. Numbers and the elimination so far
-are in `benchmarks/performance/reports/t4_2026_09/pt_lighttree_1.md`; the
-next step is a timeline (`nsys`-style) on the T4, which the Kaggle harness
-does not take. At worst it is 12–18% of that frame's wall clock for an 8.7x
-variance reduction, so it is recorded rather than blocking.
+kernel execution. Under cProfile (`pt-cprofile-1`) the two arms are equal
+to 5 ms end to end and every host cost the tree adds is attributed and
+small (43 ms of `_build_light_tree_tables` over five chunks); slower Python
+overlapped the residual away, which a fixed host cost cannot do, so it was
+concurrent activity on the box (the software encoder process on few vCPUs,
+most likely) landing on one arm's timeline. The light tree's real host
+cost is ~10 ms per chunk. Numbers in
+`benchmarks/performance/reports/t4_2026_09/pt_lighttree_1.md`. The same
+profile showed the one explicit `gc.collect()` in `scene_excluded_from_gc`
+costing 220–260 ms of a 2.3 s render on both arms — a §0 host item worth
+its own look.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
