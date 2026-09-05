@@ -86,8 +86,7 @@ def test_rebrand_refuses_a_version_not_used_at_native_build_time(helper, tmp_pat
 
 def test_validate_refuses_a_wheel_without_quadrants_import(helper, tmp_path):
     path = (
-        tmp_path
-        / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+        tmp_path / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
     )
     prefix = "algan_quadrants-1.3.0.post1.dist-info/"
     with zipfile.ZipFile(path, "w") as wheel:
