@@ -227,7 +227,7 @@ setting to reach for is a modest sample count with a short bounce budget,
 there only if the scene needs indirect light or the denoised result is still
 noisy. See :ref:`renderer-settings` in the performance guide.
 
-Three further consequences of the split, not covered there:
+Four further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
   fragment route. Direct light comes from sampling one entry of a
@@ -236,6 +236,33 @@ Three further consequences of the split, not covered there:
   direction-less ambient and hemisphere lights keep their deterministic fill.
   What it does not reproduce is the deterministic renderer's screen-space
   glossy prefilter: real sampled glossy transport replaces it.
+* **Lit surfaces are not as bright here, and they answer to one BSDF.** The
+  path tracer evaluates every light with the same physically-normalised
+  response its own rays sample -- ``albedo / pi`` diffuse, GGX with the exact
+  Smith masking-shadowing term, Fresnel and multiple-scattering compensation
+  -- where the deterministic renderer uses its stage formulas. So a Lambert
+  surface under a light is about ``pi`` times dimmer than its
+  ``samples_per_pixel = 1`` render, before whatever indirect light the scene
+  bounces back into it. This is deliberate: the path tracer is the fallback
+  for scenes the other renderer cannot do, and one response is what makes an
+  area light and an emissive quad of the same radiance light a surface
+  identically. Two consequences worth knowing:
+
+  * :class:`~.MeshPhongMaterial` has **no Blinn-Phong highlight** under the
+    path tracer. Its ``specular`` colour and ``shininess`` are converted to a
+    GGX lobe (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so
+    the material still has a highlight -- it is a slightly different shape
+    and it sits in a slightly different place. Nothing is dropped; nothing
+    matches the deterministic renderer pixel for pixel either.
+  * The ambient and hemisphere fill reaches **diffuse only**. A constant
+    radiance arriving from every direction, integrated over the diffuse
+    lobe, is exactly what the fill contributes; the specular equivalent is
+    real indirect transport, which this renderer has and the other one does
+    not.
+
+  If you are comparing the two renderers side by side, expect to adjust
+  ``intensity``. If you reached for the path tracer because the other one
+  could not render your scene, there is nothing to compare against.
 * Its raw output is stochastic, so low sample counts are visibly noisy. By
   default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
   Image Denoise RT filter re-implemented in torch, guided by albedo and

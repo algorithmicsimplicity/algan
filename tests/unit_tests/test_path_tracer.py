@@ -134,6 +134,56 @@ def test_sampler_is_uniform():
     assert samples.max() < 1.0
 
 
+def test_dimension_pairs_never_collide():
+    """The dimension table is a partition, not a convention.
+
+    Two consumers sharing a pair would silently correlate two decisions --
+    the failure mode has no symptom other than variance -- so the arithmetic
+    in ``pt_shade`` is checked here directly, in Python, over the shapes a
+    render can take. The pair the stratified lobe select gained (roadmap
+    section 7) widened one crossing's block from ``2L`` to ``2L + 1``, which
+    is exactly the kind of change this test exists to catch.
+    """
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        PAIR_BOUNCE_BASE,
+        PAIR_LENS,
+        PAIR_PIXEL,
+        PAIRS_PER_BOUNCE,
+    )
+
+    for max_bounces in (0, 1, 2, 4, 8):
+        for light_samples in (1, 2, 4):
+            owner = {PAIR_PIXEL: "pixel jitter", PAIR_LENS: "lens"}
+
+            shape = f"B={max_bounces}, L={light_samples}"
+
+            def claim(pair, who, owner=owner, shape=shape):
+                assert pair >= 0, f"negative pair {pair} for {who!r} ({shape})"
+                assert pair not in owner, (
+                    f"pair {pair} claimed by both {owner[pair]!r} and {who!r} ({shape})"
+                )
+                owner[pair] = who
+
+            # A scatter needs a bounce left, so the ordinal tops out at
+            # ``max_bounces - 1`` and the crossing block starts right after.
+            for b in range(max_bounces):
+                for slot in range(PAIRS_PER_BOUNCE):
+                    claim(
+                        PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * b + slot,
+                        f"bounce {b} slot {slot}",
+                    )
+            # Crossings are indexed by ``processed``, which ``pt_shade``
+            # increments BEFORE the block, so c starts at 1; c = 0 is checked
+            # too because nothing but the arithmetic keeps it clear.
+            cross0 = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * max_bounces
+            for c in range(0, 12):
+                base = cross0 + (2 * light_samples + 1) * c
+                for s in range(light_samples):
+                    claim(base + 2 * s, f"crossing {c} NEE {s} select")
+                    claim(base + 2 * s + 1, f"crossing {c} NEE {s} point")
+                claim(base + 2 * light_samples, f"crossing {c} lobe select")
+
+
 # ---------------------------------------------------------------------------
 # Renders
 # ---------------------------------------------------------------------------
@@ -321,6 +371,53 @@ def test_lambert_furnace_is_lossless(tmp_path):
     )
 
 
+def test_lambert_furnace_is_lossless_under_a_light_row(tmp_path):
+    """The furnace check, with the uniform environment delivered as a light
+    ROW instead of as the background.
+
+    An ``AmbientLight`` is a direction-less packed row: constant radiance
+    ``L`` from every direction. Integrated against a white Lambert lobe that
+    is exactly ``e_diff * L`` -- which is what the fill computes since the
+    one-BSDF change (roadmap section 5), in place of the deterministic
+    stage's ``albedo * L * (n . n)``. So a white sphere lit only by an
+    ambient row of radiance 1 must read white: no energy lost, and none
+    gained. Tonemapping and the sRGB transfer are off so a byte IS the
+    radiance times 255.
+
+    This is the light-row arm of the furnace test above; the NEE-sampled rows
+    are pinned against an independently-built emitter of matched radiance by
+    ``test_area_light_row_and_emissive_quad_agree``.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        AmbientLight(color=WHITE, intensity=1.0).spawn(animate=False)
+        sphere = Sphere(radius=1.0)
+        sphere.set_material(MeshLambertMaterial(color=WHITE))
+        sphere.spawn(animate=False)
+
+    img = _render_scene_exp(
+        tmp_path,
+        "furnace_light_row.png",
+        build,
+        16,
+        shadows=False,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False},
+    ).float()
+    h, w = img.shape[0], img.shape[1]
+    # 8x8: the sphere's disc is ~20 px across at this framing, so a wider
+    # patch would average in the black background.
+    disc = img[h // 2 - 4 : h // 2 + 4, w // 2 - 4 : w // 2 + 4, :3]
+    mean = float(disc.mean())
+    assert mean > 0.98 * 255, (
+        f"ambient-row furnace lost energy: sphere disc mean {mean:.1f}/255"
+    )
+    assert mean <= 256, f"ambient-row furnace GAINED energy: {mean:.1f}/255"
+
+
 def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
     """White furnace, specular: a white metallic sphere (roughness 0.5) under
     a white background must stay near-white -- VNDF sampling with the Turquin
@@ -348,12 +445,20 @@ def test_ggx_furnace_keeps_energy_with_compensation(tmp_path):
     assert mean <= 256, f"GGX furnace GAINED energy: {mean:.1f}/255"
 
 
-def test_nee_direct_lighting_matches_deterministic(tmp_path):
-    """A Lambert plane under one point light, no shadows: the path tracer's
-    NEE uses the same ``_light_eval`` radiometry and stage formulas as the
-    deterministic renderer, so flat interiors agree up to the deterministic
-    renderer's small ambient fill (which real GI replaces) -- nothing here
-    for GI to add (black background, single surface).
+def test_nee_light_row_direct_lighting_is_the_physical_bsdf(tmp_path):
+    """A Lambert plane under one point light, against the closed-form
+    physical answer rather than against the deterministic renderer.
+
+    Since the one-BSDF change (``DESIGN_path_tracer_roadmap.md`` section 5) a
+    packed light row goes through ``_pt_lit_f_pdf`` like every other emitter
+    kind, so a Lambert surface returns ``albedo / pi * L * cos`` -- ``pi``
+    times dimmer than the deterministic stage, which has no ``1/pi``. That is
+    deliberate: parity with a renderer the user fell back FROM is not a goal,
+    and one response is what makes MIS weights sum to one. This test pins the
+    physical value, which is the thing that must not drift.
+
+    The light sits on the surface normal above the measured point, so
+    ``cos = 1`` and the answer is simply ``albedo * intensity / pi``.
     """
 
     def build(scene):
@@ -361,22 +466,25 @@ def test_nee_direct_lighting_matches_deterministic(tmp_path):
         Scene.clear_lights()
         PointLight(location=OUT * 5.0, color=WHITE, intensity=1.0).spawn(animate=False)
         plane = Prism(width=7.0, height=7.0, depth=0.1)
-        plane.set_material(MeshLambertMaterial(color=RED))
+        plane.set_material(MeshLambertMaterial(color=WHITE))
         plane.spawn(animate=False)
 
-    det = _render_scene(tmp_path, "nee_det.png", build, 1)
-    pt = _render_scene(tmp_path, "nee_pt.png", build, 32)
-    det_f = det.float().permute(2, 0, 1).unsqueeze(0)
-    pooled_max = torch.nn.functional.max_pool2d(det_f, 3, stride=1, padding=1)
-    pooled_min = -torch.nn.functional.max_pool2d(-det_f, 3, stride=1, padding=1)
-    flat = (pooled_max - pooled_min).squeeze(0).amax(0) < 2
-    err = (det - pt).abs().amax(-1)
-    assert flat.sum() > 500, "not enough flat pixels to compare"
-    max_err = int(err[flat].max())
-    assert max_err <= 5, (
-        f"path-traced direct lighting deviates from the deterministic stage "
-        f"by {max_err} (expected within the ambient-fill difference); "
-        f"{int((err[flat] > 5).sum())} of {int(flat.sum())} flat pixels off"
+    img = _render_scene_exp(
+        tmp_path,
+        "nee_row_bsdf.png",
+        build,
+        32,
+        shadows=False,
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False},
+    )
+    reference = 255.0 / np.pi
+    measured = _center_patch_mean(img, half=2)
+    assert abs(measured - reference) <= max(4.0, 0.06 * reference), (
+        f"light-row direct lighting off the physical BSDF: measured "
+        f"{measured:.1f}, reference {reference:.1f} (a ~pi x reading means "
+        f"the deterministic stage formula is back)"
     )
 
 
@@ -498,56 +606,212 @@ def _center_patch_mean(img, half=2):
     return float(patch[..., :3].double().mean())
 
 
-def test_area_light_matches_the_deterministic_grid_limit(tmp_path):
-    """A RectAreaLight under the path tracer samples a uniform point inside
-    the selected row's cell and evaluates the falloff and one-sided cosine
-    AT that point, so its expectation is the continuous area integral -- the
-    limit the deterministic K-cell grid approximates. With a fine grid the
-    two must agree on flat interior pixels. Runs with pt_light_samples = 2,
-    so the 1/N weighting of multi-sample NEE is under test too.
+def _rect_light_lambert_reference(half_u, half_v, height, radiance, decay=0.0, n=192):
+    """Torch quadrature of the radiance a white Lambert surface returns under
+    a rectangular emitter directly above it.
+
+    The rectangle is centred on the surface normal at ``height``, faces
+    straight down, and carries ``radiance`` per unit area's worth of the
+    light's power (``color * intensity / area``, which is what
+    ``_materialize_render_state``'s ``1/K`` split plus ``_light_eval``'s
+    per-row radiometry adds up to). ``decay`` is the light's falloff exponent
+    -- ``2`` is the physical inverse-square, ``0`` the default "no falloff",
+    which the emitter model applies verbatim and this reference therefore
+    reproduces verbatim.
+
+    Returns ``(albedo / pi) * radiance * integral(cos_p cos_l / d^decay dA)``.
     """
+    cell_u = 2.0 * half_u / n
+    cell_v = 2.0 * half_v / n
+    u = torch.arange(n, dtype=torch.float64) * cell_u - half_u + cell_u / 2
+    v = torch.arange(n, dtype=torch.float64) * cell_v - half_v + cell_v / 2
+    du = u.view(-1, 1)
+    dv = v.view(1, -1)
+    d2 = du * du + dv * dv + height * height
+    d = d2.sqrt()
+    cos_pq = (height * height) / d2  # cos_p * cos_l, both against +-z
+    fall = torch.ones_like(d) if decay == 0.0 else d.pow(-decay)
+    integral = float((cos_pq * fall).sum()) * cell_u * cell_v
+    return radiance * integral / np.pi
+
+
+def test_area_light_matches_the_reference_integral(tmp_path):
+    """A RectAreaLight under the path tracer samples a uniform point inside
+    the selected row's cell and evaluates the falloff and one-sided cosine AT
+    that point; every cell carries equal power, so selecting a cell and then
+    a point inside it IS a uniform point on the whole rectangle. Its
+    expectation is therefore the continuous area integral, whatever ``k`` is.
+
+    Checked against that integral in torch rather than against the
+    deterministic renderer: since the one-BSDF change (roadmap section 5) the
+    two no longer agree by design, and a parity assertion here would only
+    re-assert what section 5 deleted. Runs with pt_light_samples = 2, so the
+    1/N weighting of multi-sample NEE is under test too.
+    """
+    width = height = 3.0
+    intensity = 1.0
+    plane_z = 3.0
 
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
         RectAreaLight(
-            location=OUT * 3.0,
-            width=3.0,
-            height=3.0,
+            location=OUT * plane_z,
+            width=width,
+            height=height,
             samples=64,
             color=WHITE,
-            intensity=1.0,
+            intensity=intensity,
         ).spawn(animate=False)
         floor = Prism(width=7.0, height=7.0, depth=0.1)
         floor.set_material(MeshLambertMaterial(color=WHITE))
         floor.spawn(animate=False)
 
-    det = _render_scene(tmp_path, "area_det.png", build, 1, shadows=False)
-    pt = _render_scene_exp(
+    img = _render_scene_exp(
         tmp_path,
         "area_pt.png",
         build,
         96,
         shadows=False,
-        experimental={"pt_light_samples": 2},
+        linear_color_space=False,
+        tonemapping=False,
+        experimental={"post_process_tonemap": False, "pt_light_samples": 2},
     )
-    # The lit floor is a smooth gradient (per-cell cosines), so a flatness
-    # mask has nothing to grab; compare per-pixel over the floor's interior
-    # (the central region sits well inside the 7x7 floor at this framing).
-    h, w = det.shape[0], det.shape[1]
-    core = (slice(h // 2 - 20, h // 2 + 20), slice(w // 2 - 20, w // 2 + 20))
-    err = (det[..., :3] - pt[..., :3]).abs().amax(-1).float()[core]
-    assert float(det[core][..., :3].float().mean()) > 40.0, (
-        "the area light did not light the floor at all"
+    # The floor's top face is at z = 0.05 (a 0.1-deep prism at the origin).
+    reference = 255.0 * _rect_light_lambert_reference(
+        0.5 * width,
+        0.5 * height,
+        plane_z - 0.05,
+        intensity / (width * height),
     )
-    assert float(err.mean()) <= 4.0, (
-        f"area-light radiometry drifted from the deterministic grid limit "
-        f"(mean interior error {float(err.mean()):.2f})"
+    measured = _center_patch_mean(img, half=2)
+    assert reference > 20.0, "test scene poorly scaled"
+    assert abs(measured - reference) <= max(4.0, 0.06 * reference), (
+        f"area-light radiometry off the reference integral: measured "
+        f"{measured:.1f}, reference {reference:.1f}"
     )
-    assert float(err.max()) <= 30.0, (
-        f"area-light sampling left an outlier on the floor interior "
-        f"(max interior error {float(err.max()):.1f})"
-    )
+
+
+def test_area_light_row_and_emissive_quad_agree(tmp_path):
+    """**The section-5 acceptance test.** A ``RectAreaLight`` and an emissive
+    quad of matched radiance, in the same place, must light the same surface
+    identically -- for a Lambert surface and for a GGX one.
+
+    They did not before: light rows went through ``_pt_direct_response`` (the
+    deterministic stage formula, term for term) while emissive triangles went
+    through ``_pt_lit_f_pdf`` (the physical BSDF the continuation samples),
+    and the two diverge most on smooth metals, where their ``G`` terms
+    disagree. Now both ends call ``_pt_lit_f_pdf``.
+
+    **Matching the radiance.** A ``RectAreaLight`` of colour ``C`` and
+    intensity ``I`` expands into ``K`` cell rows carrying ``C * I / K`` each
+    (``_materialize_render_state``), and ``_light_eval`` /
+    ``_pt_nee_light_row`` apply the falloff ``d^-decay``, the range fade and
+    the one-sided cosine at the sampled point. With ``decay = 2`` and no
+    range limit, the ``K``-row sum is a Riemann sum of
+    ``integral Le cos_l / d^2 dA`` over the rectangle with
+    ``Le = C * I / K / (A / K) = C * I / A``. So an emissive quad of the same
+    size and place matches when ``emissive * emissive_intensity`` equals
+    ``C * I / area``. (``decay = 2`` is not incidental: the light row's
+    default ``decay = 0`` has no inverse-square term at all, so no emissive
+    quad can match it -- that is the emitter model, not the surface
+    response, and section 5 leaves it exactly as it was.)
+    """
+    size = 1.2
+    area = size * size
+    radiance = 4.0
+    intensity = radiance * area
+    emitter_at = RIGHT * 2.0 + OUT * 1.6
+
+    def floor_of(material):
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            floor = Prism(width=8.0, height=8.0, depth=0.2)
+            floor.set_material(material())
+            floor.spawn(animate=False)
+
+        return build
+
+    def with_row(material):
+        base = floor_of(material)
+
+        def build(scene):
+            base(scene)
+            RectAreaLight(
+                location=emitter_at,
+                width=size,
+                height=size,
+                samples=64,
+                color=WHITE,
+                intensity=intensity,
+                decay=2.0,
+                # Straight down, so the rectangle's one-sided cosine is
+                # measured against the same normal the quad's -z face has.
+                # A ``target`` of ORIGIN would tilt it and change the
+                # emitter, not the response.
+                target=RIGHT * 2.0,
+            ).spawn(animate=False)
+
+        return build
+
+    def with_quad(material):
+        base = floor_of(material)
+
+        def build(scene):
+            base(scene)
+            # A thin prism, not a Square: the emitter must be triangle
+            # geometry with a material block (a 2-D Square is a circuit).
+            quad = Prism(width=size, height=size, depth=0.02)
+            quad.set_material(
+                MeshLambertMaterial(
+                    color=BLACK,
+                    emissive=WHITE,
+                    emissive_intensity=radiance,
+                )
+            )
+            quad.move(emitter_at)
+            quad.spawn(animate=False)
+
+        return build
+
+    surfaces = {
+        "lambert": lambda: MeshLambertMaterial(color=WHITE),
+        "ggx": lambda: MeshStandardMaterial(color=WHITE, metalness=0.0, roughness=0.35),
+    }
+    for name, material in surfaces.items():
+        row = _render_scene_exp(
+            tmp_path,
+            f"matched_row_{name}.png",
+            with_row(material),
+            96,
+            shadows=True,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={"post_process_tonemap": False, "pt_light_samples": 2},
+        )
+        quad = _render_scene_exp(
+            tmp_path,
+            f"matched_quad_{name}.png",
+            with_quad(material),
+            96,
+            shadows=True,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={"post_process_tonemap": False, "pt_light_samples": 2},
+        )
+        row_mean = _center_patch_mean(row, half=4)
+        quad_mean = _center_patch_mean(quad, half=4)
+        assert row_mean > 10.0, (
+            f"the {name} patch is barely lit by the light row "
+            f"({row_mean:.1f}/255); the comparison has no content"
+        )
+        rel = abs(row_mean - quad_mean) / max(row_mean, quad_mean)
+        assert rel <= 0.06, (
+            f"{name}: a RectAreaLight and an emissive quad of matched "
+            f"radiance disagree by {100 * rel:.1f}% (row {row_mean:.1f}, "
+            f"quad {quad_mean:.1f}) -- they must go through ONE BSDF"
+        )
 
 
 def test_emissive_quad_matches_the_reference_integral(tmp_path):
@@ -714,6 +978,112 @@ def test_env_map_lighting_matches_the_reference_integral(tmp_path):
 # ---------------------------------------------------------------------------
 # Stage-3 probes (table search + environment CDF, no render pipeline)
 # ---------------------------------------------------------------------------
+
+
+def test_offset_ray_origin_scales_with_the_hit_point():
+    """``_pt_offset_ray_origin`` (Wachter & Binder, Ray Tracing Gems 2019)
+    replaces the fixed ``10 * min_hit_distance`` world epsilon the path
+    tracer used to spawn rays with.
+
+    The property that matters is the one the fixed epsilon did not have: the
+    step is tied to the representable spacing AT the hit point, so it grows
+    with the scene's coordinates instead of being simultaneously too small
+    far from the origin (acne) and too large near it (light leaks). Three
+    decades of magnitude, and the point must move at every one of them --
+    an offset that returned its input would put the spawn origin back on the
+    surface.
+    """
+    from algan.rendering.raytracing.path_tracer_taichi import pt_offset_probe
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    magnitudes = [1e-3, 1.0, 1e3]
+    points = torch.tensor(
+        [[m, m, m] for m in magnitudes], dtype=torch.float32, device=DEVICE
+    )
+    normals = torch.tensor(
+        [[0.0, 0.0, 1.0]] * len(magnitudes), dtype=torch.float32, device=DEVICE
+    )
+    out = torch.zeros((len(magnitudes), 3), dtype=torch.float32, device=DEVICE)
+    pt_offset_probe(points, normals, out)
+    out = out.double().cpu()
+
+    stored = points.double().cpu()
+    steps = []
+    for i, m in enumerate(magnitudes):
+        # Against the f32 value the kernel actually saw, not the f64 literal.
+        m32 = float(stored[i, 2])
+        step = float(out[i, 2]) - m32
+        assert step > 0.0, (
+            f"the offset did not move a point at magnitude {m} along the "
+            f"normal (step {step!r})"
+        )
+        # Only the normal's axis moves; the other two are untouched.
+        untouched = [float(out[i, 0]), float(out[i, 1])]
+        assert untouched == [float(stored[i, 0]), float(stored[i, 1])], (
+            f"the offset moved axes the normal does not point along at "
+            f"magnitude {m}: {out[i].tolist()}"
+        )
+        steps.append(step)
+
+    # It scales: a thousand-fold larger hit point takes a far larger step.
+    assert steps[2] > 100.0 * steps[1] > steps[0], (
+        f"the offset did not scale with the hit point's magnitude: {steps}"
+    )
+    # And it stays an epsilon at every scale: bounded by a ten-thousandth of
+    # the coordinate above the near-origin threshold, and by the paper's fixed
+    # float offset (1/65536) below it, where a relative step would round to
+    # nothing. An offset growing faster than that would push spawn origins off
+    # the geometry they belong to.
+    for m, step in zip(magnitudes, steps):
+        bound = max(1e-4 * m, 2.0 / 65536.0)
+        assert step <= bound, (
+            f"the offset is {step} at magnitude {m} (bound {bound}): too "
+            "coarse to be an epsilon"
+        )
+
+
+def test_lobe_select_is_stratified_and_seed_stable(tmp_path):
+    """The pass/diffuse/specular/transmit pick draws its own crossing-indexed
+    Sobol pair now (roadmap section 7) rather than white noise.
+
+    A stratification assertion on one pixel's lobe draws would only re-test
+    ``pt_sample_2d`` (``test_sampler_prefixes_are_stratified`` already owns
+    that), and the pair itself is checked by
+    ``test_dimension_pairs_never_collide``. What is left to check is that the
+    kernel wiring survives: the same lit scene at a small sample count under
+    two different ``pt_seed`` values must both render, must differ (the pick
+    really is re-rolled by the seed), and must agree on the mean -- two
+    realisations of one estimator.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        PointLight(location=OUT * 5.0 + UP * 1.5, color=WHITE, intensity=2.0).spawn(
+            animate=False
+        )
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        blocker = Prism(width=1.6, height=1.6, depth=0.1)
+        blocker.set_material(MeshStandardMaterial(color=RED, roughness=0.4))
+        blocker.move(OUT * 1.5)
+        blocker.spawn(animate=False)
+
+    a = _render_scene_exp(
+        tmp_path, "lobe_seed0.png", build, 8, shadows=True, experimental={"pt_seed": 0}
+    ).float()
+    b = _render_scene_exp(
+        tmp_path, "lobe_seed7.png", build, 8, shadows=True, experimental={"pt_seed": 7}
+    ).float()
+    assert float(a.mean()) > 5.0, "the probe scene rendered (nearly) empty"
+    assert not torch.equal(a, b), "pt_seed does not reach the lobe select"
+    assert abs(float(a.mean()) - float(b.mean())) <= 2.0, (
+        f"two seeds of the same scene disagree on the mean "
+        f"({float(a.mean()):.2f} vs {float(b.mean()):.2f}); the lobe select's "
+        "reweighting is not unbiased"
+    )
 
 
 def test_nee_table_search_probe():

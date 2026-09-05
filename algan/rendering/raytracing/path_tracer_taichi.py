@@ -18,8 +18,9 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     (throughput-weighted, never stochastic alpha), so stacked vector
     graphics and text match the deterministic composite with zero variance.
     Lit surfaces receive next-event estimation over every packed light row
-    (radiometry via the shared ``_light_eval``, so brightness matches the
-    deterministic stages), and scatter one importance-sampled continuation:
+    (emitter radiometry via the shared ``_light_eval``; the SURFACE response
+    is the physical BSDF, not the deterministic stage formula -- see
+    ``_pt_lit_f_pdf``), and scatter one importance-sampled continuation:
     cosine-hemisphere diffuse, GGX specular via spherical-cap VNDF sampling
     (Dupuy & Benyoub 2023) with Turquin-style multiple-scattering
     compensation, or a refracted transmission ray through the shared
@@ -37,10 +38,16 @@ into the frame buffer exactly as it always has.
 Surface treatment by pipeline id (see ``shading_taichi``):
 
 * lambert/phong/standard/physical (2-5): physically integrated -- NEE direct
-  lighting per the stage formulas (same lobes, same light units, minus the
-  ambient fill, which real indirect transport replaces) plus the sampled
-  continuation above. Emissive surfaces illuminate their surroundings
-  through BSDF-sampled paths.
+  lighting through ONE BSDF (``_pt_lit_f_pdf``: ``albedo/pi`` diffuse, exact
+  Smith ``G2``, Fresnel, Turquin compensation) for every emitter kind, plus
+  the sampled continuation above. The direction-less ambient / hemisphere
+  rows contribute ``e_diff * L``, the physical answer for a constant-radiance
+  environment over the diffuse lobe, and no specular fill (indirect transport
+  replaces that). Light units are the deterministic renderer's; the response
+  is not, so a lit surface is not as bright as its ``spp == 1`` render --
+  which is deliberate (roadmap section 5). Phong has no Blinn-Phong highlight
+  here: it is GGX like everything else. Emissive surfaces illuminate their
+  surroundings through BSDF-sampled paths.
 * manim/toon/normal/matcap/depth/user (0, 6-9, >= 10): authored appearance --
   the hit is shaded exactly as the deterministic renderer shades it
   (``_run_frag_pipeline``, shadow visibility included), the result treated
@@ -67,30 +74,46 @@ is a fixed noise texture rather than per-frame shimmer; on, each frame is
 decorrelated from its neighbours. Both ends -- ``pt_generate`` and
 ``pt_shade`` -- take the choice as a runtime value and must agree, so it is
 carried to the first as a plain argument and to the second in ``nee_meta``
-(``_NM_ANIM_SEED``). Decisions whose count per path is unbounded
-(the pass/scatter choice at each crossed surface, per-light soft-shadow
-jitter) draw from a hash RNG keyed on the same inputs plus the peel step, so
-they stay reproducible without consuming Sobol dimensions.
+(``_NM_ANIM_SEED``). The one decision still drawn from a hash RNG
+(``_pt_rng_seeded``, keyed on the same inputs plus the peel step) is the
+authored-appearance branch's per-light soft-shadow jitter, whose count per
+crossing is the light count; the pass/scatter choice at each crossed surface
+now has a crossing-indexed pair of its own (see the table below).
+
+Every draw's seed splits in two: ``_pt_path_seed`` mixes ``(pt_seed,
+frame-or-0, pixel)`` once per thread, and ``_pt_pair_seed`` mixes the
+dimension pair on top of it per draw. That is a hoist, not a weakening --
+the combine avalanches its second argument, so distinct pairs still
+decorrelate.
 
 Dimension-pair allocation (a fixed table; keep in sync with ``pt_shade``).
 ``B`` is the render's ``max_bounces`` and ``L`` is ``pt_light_samples``; the
-next-event block sits after every bounce pair because it draws per surface
+per-crossing block sits after every bounce pair because it draws per surface
 CROSSING ``c`` (a translucent stack visits several lit surfaces per bounce
-ordinal), not per bounce:
+ordinal), not per bounce. One crossing owns ``2L + 1`` pairs: the ``L``
+next-event pairs it may draw, plus the lobe select every crossing draws:
 
-===========================  ==================================================
-pair                         use
-===========================  ==================================================
-0                            sub-pixel jitter (2D)
-1                            lens (2D) -- reserved for depth of field
-2 + 6b + 0                   bounce ``b``: y Russian roulette (x unused -- the
-                             lobe select draws white noise, see the roadmap)
-2 + 6b + 1                   bounce ``b``: BSDF direction (2D)
-2 + 6b + 2, 3                bounce ``b``: reserved (legacy light slots)
-2 + 6b + 4, 5                bounce ``b``: reserved for volumes
-2 + 6B + 2(cL + s) + 0       crossing ``c``, NEE sample ``s``: x entry select
-2 + 6B + 2(cL + s) + 1       crossing ``c``, NEE sample ``s``: light point (2D)
-===========================  ==================================================
+=============================  ================================================
+pair                           use
+=============================  ================================================
+0                              sub-pixel jitter (2D)
+1                              lens (2D) -- reserved for depth of field
+2 + 6b + 0                     bounce ``b``: y Russian roulette (x unused --
+                               the roulette draw keeps one component)
+2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
+2 + 6b + 2, 3                  bounce ``b``: reserved (legacy light slots)
+2 + 6b + 4, 5                  bounce ``b``: reserved for volumes
+2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry select
+2 + 6B + (2L+1)c + 2s + 1      crossing ``c``, NEE sample ``s``: light point
+                               (2D)
+2 + 6B + (2L+1)c + 2L          crossing ``c``: x lobe select -- pass / diffuse
+                               / specular / transmit, or a custom scatter's
+                               branch (y unused)
+=============================  ================================================
+
+The lobe select used to draw white noise from the hash RNG, on the argument
+that a crossing has no fixed dimension index; indexing on ``processed``, the
+trick next-event estimation already used, gives it one (roadmap section 7).
 """
 
 from algan.rendering.raytracing.arena_args_taichi import (
@@ -111,7 +134,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     kbuf,
     max_surfaces_per_ray,
-    min_hit_distance,
     min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -124,15 +146,10 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     SHADOW_VIS_CHANNELS,
-    _d_charlie,
-    _ggx_distribution,
-    _ibl_sheen_brdf,
     _light_eval,
     _prep_normal,
     _run_frag_pipeline,
     _sided_shading_normal,
-    _smith_geometry,
-    _v_neubelt,
     light_vis_index,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -366,16 +383,39 @@ def _pt_key(f: ti.i32, pixel: ti.i32) -> ti.u32:
 
 
 @ti.func
-def pt_sample_2d(seed_root: ti.u32, key: ti.u32, pair: ti.i32,
-                 sample_index: ti.i32) -> ti.math.vec2:
-    """Sample ``pair`` of the pixel's padded Sobol sequence at
-    ``sample_index``: Owen-shuffled index, Owen-scrambled (0,2) point.
+def _pt_path_seed(seed_root: ti.u32, key: ti.u32) -> ti.u32:
+    """The PATH half of every draw's seed: the part that depends only on
+    ``(pt_seed, frame-or-0, pixel)`` and is therefore constant for the whole
+    path.
 
-    Any prefix of the returned sequence is well stratified, which is what
-    makes progressive rendering (waves) and future adaptive sampling sound;
-    distinct ``(key, pair)`` values decorrelate into independent sequences.
+    It is split out so a shading thread hashes it ONCE and every draw the
+    path makes only hashes its own ``pair`` on top (``_pt_pair_seed``); the
+    combine used to be nested the other way round
+    (``combine(seed_root, combine(key, pair))``), which put a ``pair``
+    -dependent term inside both hashes and made the whole seed unhoistable.
+    Ordering the two combines this way is what makes the per-path half
+    loop-invariant -- and it moves every sample, which is why it landed with
+    the section 5 re-baseline (roadmap section 0.2).
     """
-    pair_seed = _pt_hash_combine(seed_root, _pt_hash_combine(key, ti.cast(pair, ti.u32)))
+    return _pt_hash_combine(seed_root, key)
+
+
+@ti.func
+def _pt_pair_seed(path_seed: ti.u32, pair: ti.i32) -> ti.u32:
+    """The per-DIMENSION-PAIR half of a draw's seed. ``_pt_hash_combine``
+    avalanches its second argument, so distinct pairs still decorrelate into
+    independent sequences from one shared ``path_seed``.
+    """
+    return _pt_hash_combine(path_seed, ti.cast(pair, ti.u32))
+
+
+@ti.func
+def pt_sample_2d_seeded(path_seed: ti.u32, pair: ti.i32,
+                        sample_index: ti.i32) -> ti.math.vec2:
+    """``pt_sample_2d`` with the per-path seed already hoisted (see
+    ``_pt_path_seed``) -- what every draw inside ``pt_shade`` calls.
+    """
+    pair_seed = _pt_pair_seed(path_seed, pair)
     shuffle_seed = _pt_hash(pair_seed ^ ti.u32(0x51633E2D))
     seed_x = _pt_hash(pair_seed ^ ti.u32(0x68BC21EB))
     seed_y = _pt_hash(pair_seed ^ ti.u32(0x02E5BE93))
@@ -390,18 +430,94 @@ def pt_sample_2d(seed_root: ti.u32, key: ti.u32, pair: ti.i32,
 
 
 @ti.func
-def _pt_rng(seed_root: ti.u32, key: ti.u32, sample_index: ti.i32,
-            salt_a: ti.i32, salt_b: ti.i32) -> ti.f32:
-    """White-noise uniform in [0, 1) for the unbounded-count decisions
-    (pass/scatter choice per crossed surface, per-light shadow jitter): a
-    pure hash of the path identity plus two salts, so it is exactly as
-    reproducible as the Sobol samples without consuming a dimension pair.
+def pt_sample_2d(seed_root: ti.u32, key: ti.u32, pair: ti.i32,
+                 sample_index: ti.i32) -> ti.math.vec2:
+    """Sample ``pair`` of the pixel's padded Sobol sequence at
+    ``sample_index``: Owen-shuffled index, Owen-scrambled (0,2) point.
+
+    Any prefix of the returned sequence is well stratified, which is what
+    makes progressive rendering (waves) and future adaptive sampling sound;
+    distinct ``(key, pair)`` values decorrelate into independent sequences.
+
+    The unhoisted spelling, for callers that draw once (the test probe): the
+    kernels hold ``_pt_path_seed``'s result and call
+    ``pt_sample_2d_seeded``.
     """
-    h = _pt_hash_combine(seed_root, key)
-    h = _pt_hash_combine(h, ti.cast(sample_index, ti.u32))
+    return pt_sample_2d_seeded(_pt_path_seed(seed_root, key), pair,
+                               sample_index)
+
+
+@ti.func
+def _pt_rng_seeded(path_seed: ti.u32, sample_index: ti.i32,
+                   salt_a: ti.i32, salt_b: ti.i32) -> ti.f32:
+    """White-noise uniform in [0, 1) for the unbounded-count decisions
+    (per-light shadow jitter): a pure hash of the path identity plus two
+    salts, so it is exactly as reproducible as the Sobol samples without
+    consuming a dimension pair. Takes the hoisted per-path seed, which is
+    the same value ``pt_sample_2d_seeded`` takes.
+    """
+    h = _pt_hash_combine(path_seed, ti.cast(sample_index, ti.u32))
     h = _pt_hash_combine(h, ti.cast(salt_a, ti.u32))
     h = _pt_hash_combine(h, ti.cast(salt_b, ti.u32))
     return ti.cast(h >> 8, ti.f32) * (1.0 / 16777216.0)
+
+
+# Self-intersection offsetting (Wachter & Binder, "A Fast and Robust Method
+# for Avoiding Self-Intersection", Ray Tracing Gems 2019 ch. 6). The constants
+# are theirs: below ``_OFS_ORIGIN`` in magnitude a coordinate is offset by an
+# absolute ``_OFS_FLOAT`` (float spacing near zero is finer than any useful
+# world epsilon), above it by ``_OFS_INT`` ULPs, which scales with the point's
+# own magnitude exactly as the representable spacing does.
+_OFS_ORIGIN = 1.0 / 32.0
+_OFS_FLOAT = 1.0 / 65536.0
+_OFS_INT = 256.0
+
+
+@ti.func
+def _pt_offset_ray_origin(p, n):
+    """Move hit point ``p`` off the surface along ``n`` by a SCALE-AWARE
+    epsilon, and return the spawn origin.
+
+    The fixed ``10 * min_hit_distance`` (1e-3 world units) this replaces was
+    wrong in both directions: acne on a scene authored at large coordinates,
+    where 1e-3 is below the float spacing of the hit point, and light leaking
+    through thin geometry on one authored at small coordinates, where 1e-3 is
+    a visible distance. Offsetting in INTEGER float space instead ties the
+    step to the representable spacing at ``p``, so it is the smallest step
+    that provably changes the coordinate whatever the scene's scale.
+
+    ``n`` points to the side the ray leaves from; each call site keeps its own
+    convention (the geometric normal flipped toward the outgoing direction,
+    or the ray direction itself for a zero-thickness pane).
+    """
+    out = ti.math.vec3(0.0, 0.0, 0.0)
+    for k in ti.static(range(3)):
+        off_i = ti.cast(_OFS_INT * n[k], ti.i32)
+        if p[k] < 0.0:
+            off_i = -off_i
+        p_i = ti.bit_cast(ti.bit_cast(p[k], ti.i32) + off_i, ti.f32)
+        if ti.abs(p[k]) < _OFS_ORIGIN:
+            out[k] = p[k] + _OFS_FLOAT * n[k]
+        else:
+            out[k] = p_i
+    return out
+
+
+@ti.func
+def _pt_shadow_tmax(sorigin, wi, ldist):
+    """Shadow-ray max distance: the emitter end pulled back by the SAME
+    scale-aware offset ``_pt_offset_ray_origin`` applies at the surface end,
+    so a light sitting on geometry is not occluded by its own emitter and the
+    pull-back scales with the scene the way the spawn offset does (it was a
+    fixed ``20 * min_hit_distance``).
+
+    The pull-back is measured as a difference of two nearby points, so it
+    stays exact even when ``ldist`` is the 1e7 sentinel a directional row or
+    an environment sample carries.
+    """
+    lp = sorigin + wi * ldist
+    back = (lp - _pt_offset_ray_origin(lp, -wi)).dot(wi)
+    return ldist - ti.max(back, 0.0)
 
 
 @ti.func
@@ -445,9 +561,10 @@ def _pt_vndf_half_vector(wo_local, alpha, u):
 
 @ti.func
 def _pt_smith_lambda(cos_theta, alpha):
-    """Smith's Lambda for isotropic GGX (for the exact G1/G2 the VNDF
-    estimator wants -- distinct from ``_smith_geometry``'s direct-lighting
-    remap, which the NEE response keeps for stage parity).
+    """Smith's Lambda for isotropic GGX: the exact G1/G2 the VNDF estimator
+    wants, and -- since the section-5 change -- what every direct-lighting
+    response in this renderer uses too. The deterministic stages keep their
+    own ``k = (r+1)^2/8`` remap (``_smith_geometry``); nothing here calls it.
     """
     c2 = ti.math.clamp(cos_theta * cos_theta, 1e-8, 1.0)
     t2 = (1.0 - c2) / c2
@@ -492,8 +609,7 @@ def _pt_pick_nee_entry(nee_cdf: ti.template(), n, u):
 def _pt_ggx_ndf(n_dot_h, alpha):
     """Isotropic GGX normal distribution with ``alpha`` = roughness^2 -- the
     same parameterisation the VNDF sampler and ``_pt_smith_lambda`` use, so
-    an evaluated pdf matches the sampled one exactly (``_smith_geometry``'s
-    direct-lighting remap deliberately does not).
+    an evaluated pdf matches the sampled one exactly.
     """
     a2 = alpha * alpha
     d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0
@@ -504,22 +620,43 @@ def _pt_ggx_ndf(n_dot_h, alpha):
 def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
                   rough, ior, T, shade_n, rd):
     """Continuation-lobe energies of a physically-integrated (lit) hit:
-    ``(e_diff, e_spec, e_trans, f0)``. The single source for both the
-    sampled continuation and the NEE-side BSDF evaluation -- MIS is only
-    correct while the two agree term for term.
+    ``(e_diff, e_spec, e_trans, f0, rough_eff)``. The single source for the
+    sampled continuation AND for every direct-lighting response (roadmap
+    section 5) -- one BSDF, so MIS weights sum to one and a light row and an
+    emissive triangle of matched radiance light a surface identically.
+
+    ``rough_eff`` is the GGX roughness the caller must carry downstream: it
+    is the crossing's own ``rough`` for every pipeline except phong, whose
+    highlight is authored as a Blinn-Phong exponent instead.
     """
     one3 = ti.math.vec3(1.0, 1.0, 1.0)
     e_diff = ti.math.vec3(0.0, 0.0, 0.0)
     e_spec = ti.math.vec3(0.0, 0.0, 0.0)
     e_trans = ti.math.vec3(0.0, 0.0, 0.0)
     f0 = ti.math.vec3(0.0, 0.0, 0.0)
+    rough_eff = rough
     n_dot_v = ti.max(shade_n.dot(-rd), 1e-4)
-    if (pid == _MID_LAMBERT) or (pid == _MID_PHONG):
-        # Pure-diffuse indirect transport: the lambert stage has no specular
-        # lobe at all, and phong's Blinn highlight responds to delta lights
-        # via NEE only (an indirect GGX proxy for it would add energy its
-        # stage never had).
+    if pid == _MID_LAMBERT:
+        # The lambert stage has no specular lobe at all.
         e_diff = albedo3
+    elif pid == _MID_PHONG:
+        # Phong under the path tracer is GGX. Its Blinn-Phong highlight was
+        # the last thing evaluated by a formula the continuation could not
+        # sample, and deleting that formula without giving the material a
+        # lobe would silently drop ``specular`` / ``shininess`` -- exactly
+        # the failure the fallback must not have (roadmap section 9). The
+        # exponent maps to the GGX width by the standard
+        # ``alpha = sqrt(2 / (s + 2))``, and the authored specular colour is
+        # F0; the highlight moves and softens, which is the visible change
+        # the limitations page calls out.
+        tmp = f % params.shape[0]
+        f0 = ti.math.vec3(params[tmp, prim, 4], params[tmp, prim, 5],
+                          params[tmp, prim, 6])
+        shininess = ti.max(params[tmp, prim, 7], 1e-3)
+        rough_eff = ti.math.clamp(
+            ti.sqrt(ti.sqrt(2.0 / (shininess + 2.0))), 0.03, 1.0)
+        e_spec = _pt_ggx_energy(f0, n_dot_v, rough_eff)
+        e_diff = albedo3 * (one3 - e_spec)
     else:
         tm = f % params.shape[0]
         met = ti.math.clamp(ti.max(metalness, 0.0), 0.0, 1.0)
@@ -537,7 +674,7 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
             rd, shade_n, ti.max(metalness, 0.0), ior, albedo3, T)
         e_trans = albedo3 * (diel_pass * T)
         e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) * (one3 - e_spec)
-    return e_diff, e_spec, e_trans, f0
+    return e_diff, e_spec, e_trans, f0, rough_eff
 
 
 @ti.func
@@ -814,6 +951,21 @@ def pt_env_pdf_probe(env_cdf: ti.types.ndarray(), cdf_h: ti.i32,
 
 
 @ti.kernel
+def pt_offset_probe(points: ti.types.ndarray(), normals: ti.types.ndarray(),
+                    out: ti.types.ndarray()):
+    """Test probe: the spawn origin ``_pt_offset_ray_origin`` returns for each
+    ``(point, normal)`` row. Exists so the scale-aware self-intersection
+    offset can be unit-tested at several magnitudes without a render.
+    """
+    for i in range(points.shape[0]):
+        p = ti.math.vec3(points[i, 0], points[i, 1], points[i, 2])
+        n = ti.math.vec3(normals[i, 0], normals[i, 1], normals[i, 2])
+        q = _pt_offset_ray_origin(p, n)
+        for k in ti.static(range(3)):
+            out[i, k] = q[k]
+
+
+@ti.kernel
 def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 seed_root: ti.u32, animated_seed: ti.i32, time_start: ti.i32,
                 width: ti.i32, height: ti.i32,
@@ -865,8 +1017,10 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
         f = time_start + f_rel
         py = p // width
         px = p - py * width
-        jitter = pt_sample_2d(seed_root, _pt_key(f * animated_seed, p),
-                              PAIR_PIXEL, s)
+        # The per-path half of the sampler seed, hoisted out of the draw the
+        # same way ``pt_shade`` hoists it (roadmap section 0.2).
+        path_seed = _pt_path_seed(seed_root, _pt_key(f * animated_seed, p))
+        jitter = pt_sample_2d_seeded(path_seed, PAIR_PIXEL, s)
         ro, rd = _generate_ray(f, px, py, jitter[0], jitter[1],
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
@@ -917,10 +1071,13 @@ def _pt_nee_visibility(refit: ti.template(), anyhit: ti.template(),
     the ordered march, 3 the opaque any-hit walk with the march compiled out
     -- valid only on a batch with no translucent and no transmissive
     geometry, where every blocker occludes fully. See ``_shadow_occluded``.
+
+    The emitter end is pulled back by ``_pt_shadow_tmax``, the matching
+    scale-aware counterpart of the spawn offset at the surface end.
     """
     occ = _shadow_occluded(
         refit, anyhit, sorigin, wi, f, ff,
-        ldist - 20.0 * min_hit_distance,
+        _pt_shadow_tmax(sorigin, wi, ldist),
         pixel_size_per_t, base_dist, layer_offset_triangles,
         has_tri, has_bez,
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
@@ -1003,82 +1160,6 @@ def _pt_light_sample_point(light_pos: ti.template(), light_col: ti.template(),
             wi = to_light / ldist
             valid = 1
     return wi, ldist, valid
-
-
-@ti.func
-def _pt_direct_response(pid, params: ti.template(), f, prim, albedo,
-                        n, view_dir, ld, lc, spec_w):
-    """One light's direct response of a physically-integrated pipeline
-    (lambert/phong/standard/physical), term for term the matching
-    ``shading_taichi`` stage minus the ambient fill (real indirect transport
-    replaces it) and minus emissive (added once per hit, not per light).
-    """
-    tm = f % params.shape[0]
-    out = ti.math.vec3(0.0, 0.0, 0.0)
-    one = ti.math.vec3(1.0, 1.0, 1.0)
-    n_dot_l = ti.max(n.dot(ld), 0.0)
-    if pid == _MID_LAMBERT:
-        out = albedo * lc * n_dot_l
-    elif pid == _MID_PHONG:
-        specular = ti.math.vec3(params[tm, prim, 4], params[tm, prim, 5],
-                                params[tm, prim, 6])
-        shininess = params[tm, prim, 7]
-        half = (ld + view_dir).normalized()
-        v_dot_h = ti.max(view_dir.dot(half), 0.0)
-        n_dot_h = ti.max(n.dot(half), 0.0)
-        fresnel = specular + (one - specular) \
-            * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
-        d = (shininess * 0.5 + 1.0) * ti.pow(n_dot_h, ti.max(shininess, 1e-3))
-        out = (albedo + fresnel * (0.25 * d * spec_w)) * lc * n_dot_l
-    else:
-        # standard / physical share the Cook-Torrance core.
-        roughness = params[tm, prim, 8]
-        metalness = params[tm, prim, 9]
-        f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metalness) \
-            + albedo * metalness
-        transmission = 0.0
-        if pid == _MID_PHYSICAL:
-            ior = params[tm, prim, 12]
-            specular_intensity = params[tm, prim, 13]
-            specular_color = ti.math.vec3(params[tm, prim, 14],
-                                          params[tm, prim, 15],
-                                          params[tm, prim, 16])
-            ratio = (ior - 1.0) / ti.max(ior + 1.0, 1e-4)
-            f0 = (specular_color * (ratio * ratio * specular_intensity)
-                  * (1.0 - metalness) + albedo * metalness)
-            transmission = params[tm, prim, 24]
-        half = (ld + view_dir).normalized()
-        n_dot_v = ti.max(n.dot(view_dir), 1e-4)
-        n_dot_h = ti.max(n.dot(half), 0.0)
-        v_dot_h = ti.max(view_dir.dot(half), 0.0)
-        fresnel = f0 + (one - f0) * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
-        ndf = _ggx_distribution(n_dot_h, roughness)
-        geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
-        spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
-        k_d = (one - fresnel) * ((1.0 - metalness) * (1.0 - transmission))
-        out = (k_d * albedo + spec * spec_w) * lc * n_dot_l
-        if pid == _MID_PHYSICAL:
-            clearcoat = params[tm, prim, 17]
-            clearcoat_roughness = params[tm, prim, 18]
-            sheen = params[tm, prim, 19]
-            sheen_roughness = ti.math.clamp(params[tm, prim, 20], 1e-4, 1.0)
-            sheen_c = ti.math.vec3(params[tm, prim, 21], params[tm, prim, 22],
-                                   params[tm, prim, 23]) * sheen
-            sheen_max = ti.max(sheen_c[0], ti.max(sheen_c[1], sheen_c[2]))
-            sheen_comp = 1.0 - sheen_max * ti.max(
-                _ibl_sheen_brdf(n_dot_v, sheen_roughness),
-                _ibl_sheen_brdf(n_dot_l, sheen_roughness))
-            out *= sheen_comp
-            cc_ndf = _ggx_distribution(n_dot_h, clearcoat_roughness)
-            cc_geom = _smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
-            cc_fresnel = 0.04 + 0.96 * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
-            out += lc * (clearcoat * cc_ndf * cc_geom * cc_fresnel
-                         / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
-                         * n_dot_l * spec_w)
-            sheen_brdf = _d_charlie(n_dot_h, sheen_roughness) \
-                * _v_neubelt(n_dot_v, n_dot_l)
-            out += sheen_c * lc * (sheen_brdf * n_dot_l * spec_w)
-    return out
 
 
 @ti.func
@@ -1243,6 +1324,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             f = time_start + g // pixels_per_frame
             p = g - (g // pixels_per_frame) * pixels_per_frame
             key = _pt_key(f * anim_seed, p)
+            # Sampler seeds and pair bases that are constant for the whole
+            # path, hoisted out of the drain loop (roadmap section 0.2): the
+            # per-path seed half every draw shares, the first per-crossing
+            # pair, and the width of one crossing's block (``2L`` next-event
+            # pairs plus the lobe select; see the module docstring's table).
+            path_seed = _pt_path_seed(seed_root, key)
             s_index = sample_base + r // tile_pixels
             ff = ti.cast(f, ti.f32)
             pixel_size_per_t = pixel_world_scale[f]
@@ -1265,6 +1352,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             # value written by the host is max_bounces, so the ordinal is
             # the difference.
             max_b = rs_int[r, 4]
+            pair_nee0 = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * max_b
+            pairs_per_cross = 2 * n_ls + 1
             ring = ti.Vector([-1, -1, -1, -1])
             for q in ti.static(range(_SHELL_RING_SLOTS)):
                 ring[q] = rs_int[r, _INT_RING0 + q]
@@ -1340,6 +1429,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         kb_prim[q] = -1
                 drained += 1
                 processed += 1
+                # This crossing's dimension-pair block (module docstring):
+                # ``2L`` next-event pairs then the lobe select.
+                pair_cross0 = pair_nee0 + pairs_per_cross * processed
                 htype = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
@@ -1501,9 +1593,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 wl_spec = 0.0
                 wl_trans = 0.0
                 if lit and (suppressed == 0):
-                    e_diff_l, e_spec_l, e_trans_l, f0_l = _pt_lit_lobes(
-                        pid, tri_mat, f, prim, albedo3, metalness, rough,
-                        ior, T, shade_n, rd)
+                    # ``rough`` is REPLACED by the lobe set's own GGX width:
+                    # phong authors its highlight as a Blinn-Phong exponent,
+                    # so its lobes, its NEE responses and its continuation
+                    # must all read the converted roughness. Every other
+                    # pipeline gets its own value back unchanged.
+                    e_diff_l, e_spec_l, e_trans_l, f0_l, rough = \
+                        _pt_lit_lobes(
+                            pid, tri_mat, f, prim, albedo3, metalness, rough,
+                            ior, T, shade_n, rd)
                     wl_diff = alpha * ti.max(e_diff_l[0],
                                              ti.max(e_diff_l[1],
                                                     e_diff_l[2]))
@@ -1578,13 +1676,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
                         if tri_mat[tm, prim, _MAT_NO_SHADOW_RECEIVE] > 0.5:
                             recv = 0
-                    offs_s = fnrm
-                    if fnrm.dot(-rd) < 0.0:
-                        offs_s = -fnrm
-                    sorigin = hit_p + offs_s * (10.0 * min_hit_distance)
-                    # Deterministic fill from the direction-less rows -- the
-                    # literal ambient / hemisphere semantics of the stages,
-                    # never a visibility ray, never in the sampled table.
+                    sorigin = _pt_offset_ray_origin(
+                        hit_p, fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
+                    # Deterministic fill from the direction-less rows.  A
+                    # constant-radiance environment ``L`` over the diffuse
+                    # lobe integrates to exactly ``e_diff * L`` -- the
+                    # physical answer, and the one consistent with the BSDF
+                    # every other emitter kind now goes through (roadmap
+                    # section 5).  ``_light_eval`` stays the EMITTER model:
+                    # for a hemisphere row it is what blends sky and ground
+                    # by the shading normal.  Specular gets no ambient fill;
+                    # indirect transport is what replaces it.
+                    # Never a visibility ray, never in the sampled table.
                     # Their row indexes ride the tail of ``nee_ref`` when the
                     # host packed them (``pt_ambient_rows``), so this visits
                     # exactly those rows in the same ascending order the scan
@@ -1592,13 +1695,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if amb_packed:
                         for j in range(amb_count):
                             li = nee_ref[num_nee + j, 1]
-                            ld, lc, spec_w, _frac = _light_eval(
+                            _ld_a, lc, _sw_a, _frac = _light_eval(
                                 light_pos, light_col, f, li, hit_p, shade_n)
-                            if (lc[0] != 0.0) or (lc[1] != 0.0) \
-                                    or (lc[2] != 0.0):
-                                direct += _pt_direct_response(
-                                    pid, tri_mat, f, prim, albedo3,
-                                    shade_n, -rd, ld, lc, spec_w)
+                            direct += e_diff_l * lc
                     elif light_col.shape[2] > 3:
                         tl_f = f % light_col.shape[0]
                         for li in range(num_lights):
@@ -1606,28 +1705,21 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                              ti.i32)
                             if (lt_row == _LT_AMBIENT) \
                                     or (lt_row == _LT_HEMISPHERE):
-                                ld, lc, spec_w, _frac = _light_eval(
+                                _ld_b, lc, _sw_b, _frac = _light_eval(
                                     light_pos, light_col, f, li, hit_p,
                                     shade_n)
-                                if (lc[0] != 0.0) or (lc[1] != 0.0) \
-                                        or (lc[2] != 0.0):
-                                    direct += _pt_direct_response(
-                                        pid, tri_mat, f, prim, albedo3,
-                                        shade_n, -rd, ld, lc, spec_w)
+                                direct += e_diff_l * lc
                     # Next-event estimation: ``pt_light_samples`` draws from
                     # the power-weighted table (delta/area light rows,
                     # emissive triangles, the environment map).
                     if num_nee > 0:
                         inv_ls = 1.0 / ti.cast(n_ls, ti.f32)
-                        pair_nee0 = PAIR_BOUNCE_BASE \
-                            + PAIRS_PER_BOUNCE * max_b
                         for ls in range(n_ls):
-                            pair_sel = pair_nee0 \
-                                + 2 * (processed * n_ls + ls)
-                            u_sel = pt_sample_2d(seed_root, key, pair_sel,
-                                                 s_index)
-                            u_pt = pt_sample_2d(seed_root, key,
-                                                pair_sel + 1, s_index)
+                            pair_sel = pair_cross0 + 2 * ls
+                            u_sel = pt_sample_2d_seeded(path_seed, pair_sel,
+                                                        s_index)
+                            u_pt = pt_sample_2d_seeded(path_seed,
+                                                       pair_sel + 1, s_index)
                             entry, p_sel = _pt_pick_nee_entry(
                                 nee_cdf, num_nee, u_sel[0])
                             kind = nee_ref[entry, 0]
@@ -1637,7 +1729,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             ldist = 1e7
                             if kind == _NEE_LIGHT_ROW:
                                 if p_sel > 1e-12:
-                                    ld, lc, spec_w, wi_v, ld_d, valid = \
+                                    ld, lc, _sw_r, wi_v, ld_d, valid = \
                                         _pt_nee_light_row(
                                             light_pos, light_col, f, ref,
                                             hit_p, shade_n,
@@ -1646,10 +1738,22 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             (lc[0] != 0.0)
                                             or (lc[1] != 0.0)
                                             or (lc[2] != 0.0)):
-                                        contrib = _pt_direct_response(
-                                            pid, tri_mat, f, prim,
-                                            albedo3, shade_n, -rd, ld,
-                                            lc, spec_w) * (inv_ls / p_sel)
+                                        # One BSDF for every emitter kind
+                                        # (roadmap section 5): the estimator
+                                        # is ``f_cos * radiance / p_sel``,
+                                        # with ``_light_eval``'s radiometry
+                                        # untouched -- that is the emitter
+                                        # model, and only the surface
+                                        # response changed. A light row is
+                                        # unhittable by a BSDF ray, so there
+                                        # is nothing to MIS against.
+                                        f_cos_r, _pdf_r = _pt_lit_f_pdf(
+                                            e_diff_l, e_spec_l, f0_l,
+                                            rough, shade_n, rd, ld,
+                                            wl_pass, wl_diff, wl_spec,
+                                            wl_trans)
+                                        contrib = f_cos_r * lc \
+                                            * (inv_ls / p_sel)
                                         wi_vis = wi_v
                                         ldist = ld_d
                             elif kind == _NEE_EMISSIVE_TRI:
@@ -1778,17 +1882,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                            _MAT_NO_SHADOW_RECEIVE] > 0.5:
                                     recv_a = 0
                         if recv_a == 1:
-                            offs_a = fnrm
-                            if fnrm.dot(-rd) < 0.0:
-                                offs_a = -fnrm
-                            sorigin_a = hit_p + offs_a \
-                                * (10.0 * min_hit_distance)
+                            sorigin_a = _pt_offset_ray_origin(
+                                hit_p,
+                                fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
                             for li in range(num_lights):
                                 if li < vis_lights:
-                                    u1 = _pt_rng(seed_root, key, s_index,
-                                                 processed * 64 + li, 2)
-                                    u2 = _pt_rng(seed_root, key, s_index,
-                                                 processed * 64 + li, 3)
+                                    u1 = _pt_rng_seeded(
+                                        path_seed, s_index,
+                                        processed * 64 + li, 2)
+                                    u2 = _pt_rng_seeded(
+                                        path_seed, s_index,
+                                        processed * 64 + li, 3)
                                     wi, ldist, valid = _pt_light_sample_point(
                                         light_pos, light_col, f, li, hit_p,
                                         u1, u2)
@@ -1925,7 +2029,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             aov_open = 0
                             done = True
                             break
-                        u_c = _pt_rng(seed_root, key, s_index, processed, 7)
+                        # The crossing's stratified lobe-select draw -- the
+                        # same pair the built-in lobe pick below uses (the
+                        # two are mutually exclusive: a custom scatter ends
+                        # this crossing).
+                        u_c = pt_sample_2d_seeded(
+                            path_seed, pair_cross0 + 2 * n_ls, s_index)[0]
                         pick_c = u_c * cw_sum
                         c_tint = ti.math.vec3(0.0, 0.0, 0.0)
                         c_ro = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1973,8 +2082,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             bounce_ord_c = max_b - bounces_left
                             survived_c = 1
                             if bounce_ord_c >= rr_start:
-                                u_rr_c = pt_sample_2d(
-                                    seed_root, key,
+                                u_rr_c = pt_sample_2d_seeded(
+                                    path_seed,
                                     PAIR_BOUNCE_BASE
                                     + PAIRS_PER_BOUNCE * bounce_ord_c
                                     + _PAIR_LOBE, s_index)[1]
@@ -2068,7 +2177,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # transparent stack has ``w_sum == w_pass`` and stays
                     # deterministic; an unlit opaque absorb never gets here.
                     stoch = 1
-                u_lobe = _pt_rng(seed_root, key, s_index, processed, 7)
+                # Stratified lobe selection (roadmap section 7): the pick
+                # drives which lobe a bounce explores, so it gets its own
+                # crossing-indexed Sobol pair rather than the white noise it
+                # used to draw. Only the x component is consumed.
+                u_lobe = pt_sample_2d_seeded(
+                    path_seed, pair_cross0 + 2 * n_ls, s_index)[0]
                 pick = u_lobe * w_sum
                 if pick < w_pass:
                     # Deterministic in an unlit stack (probability 1 there).
@@ -2087,8 +2201,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     bounce_ord = max_b - bounces_left
                     pair_base = PAIR_BOUNCE_BASE \
                         + PAIRS_PER_BOUNCE * bounce_ord
-                    u_dir = pt_sample_2d(seed_root, key,
-                                         pair_base + _PAIR_BSDF_DIR, s_index)
+                    u_dir = pt_sample_2d_seeded(
+                        path_seed, pair_base + _PAIR_BSDF_DIR, s_index)
                     new_rd = rd
                     new_ro = hit_p
                     ok = 1
@@ -2104,10 +2218,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             thru[2] * tint[2],
                             thru[3] * (alpha / ti.max(p_sel, 1e-6))
                             * ((e_diff[0] + e_diff[1] + e_diff[2]) / 3.0))
-                        offs = fnrm
-                        if fnrm.dot(new_rd) < 0.0:
-                            offs = -fnrm
-                        new_ro = hit_p + offs * (10.0 * min_hit_distance)
+                        new_ro = _pt_offset_ray_origin(
+                            hit_p,
+                            fnrm if fnrm.dot(new_rd) >= 0.0 else -fnrm)
                         # MIS state: only a lit vertex ran the NEE block, so
                         # only its sampled direction carries a pdf for the
                         # next emitter hit to weight against.
@@ -2152,8 +2265,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 thru[1] * tint[1],
                                                 thru[2] * tint[2],
                                                 thru[3] * gmean)
-                            offs = fnrm if fnrm.dot(new_rd) > 0.0 else -fnrm
-                            new_ro = hit_p + offs * (10.0 * min_hit_distance)
+                            new_ro = _pt_offset_ray_origin(
+                                hit_p,
+                                fnrm if fnrm.dot(new_rd) > 0.0 else -fnrm)
                             prev_pdf = 0.0
                             if lit:
                                 _fc_s, prev_pdf = _pt_lit_f_pdf(
@@ -2173,7 +2287,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         else:
                             # Zero-thickness pane: unbent, tinted.
                             new_rd = rd
-                            new_ro = hit_p + rd * (10.0 * min_hit_distance)
+                            new_ro = _pt_offset_ray_origin(hit_p, rd)
                         tint = e_trans * (alpha / ti.max(p_sel, 1e-6))
                         gmean = (tint[0] + tint[1] + tint[2]) / 3.0
                         thru = ti.math.vec4(thru[0] * tint[0],
@@ -2191,9 +2305,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # Russian roulette past the configured depth.
                     survived = 1
                     if bounce_ord >= rr_start:
-                        u_rr = pt_sample_2d(seed_root, key,
-                                            pair_base + _PAIR_LOBE,
-                                            s_index)[1]
+                        u_rr = pt_sample_2d_seeded(
+                            path_seed, pair_base + _PAIR_LOBE, s_index)[1]
                         p_rr = ti.math.clamp(
                             ti.max(thru[0], ti.max(thru[1], thru[2])),
                             _PT_RR_FLOOR, 1.0)

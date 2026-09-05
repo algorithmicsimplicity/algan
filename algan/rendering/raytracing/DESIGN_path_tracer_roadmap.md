@@ -74,10 +74,13 @@ estimation and by BSDF continuations that land on them. It does **not** cover
 packed light rows, and cannot as the renderer stands — a delta light has zero
 area and is unhittable by construction, and a `RectAreaLight` is a light row
 rather than geometry, so no BSDF ray can find it either. That is sound (there
-is nothing to double-count) but it has two visible consequences worth stating
-plainly: an area light casts no reflected image in a mirror, and its highlight
-on a glossy surface comes from the analytic stage formula rather than from
-transport. §5 covers why those two ends do not agree numerically.
+is nothing to double-count) but it leaves one visible consequence worth
+stating plainly: an area light casts no reflected image in a mirror. The
+second consequence this paragraph used to name — that its highlight came
+from the analytic stage formula rather than from the BSDF transport samples
+— is gone: §5 has LANDED, and a light row's highlight is now the same
+`_pt_lit_f_pdf` a BSDF ray would evaluate. The remaining half is §6a-ter's,
+which makes an area light hittable geometry.
 
 What follows is the throughput baseline and the cheap wins the fallback role
 puts first (§0), then everything the original plan named beyond the staged
@@ -97,8 +100,10 @@ be as fast as it can be, is:
    messages that point at the switch.
 4. §2 — adaptive sampling, if the baseline confirms the camera-segment peel
    and the unlit pixels are where the time goes.
-5. §6 + §5 — the light tree, the authored-appearance sampling fix and the
-   single BSDF, landed together as one re-baseline (§5 says why together).
+5. §6 — the light tree and the authored-appearance sampling fix. §5's
+   single BSDF has LANDED, together with §7's stratified lobe select,
+   §0.2's sampler hoists and the self-intersection offset, as the one
+   re-baseline §5 said to batch them into.
 6. §3 tier 2, §7's real blue noise, §8's pools — only behind a profile.
 7. §1 and §4 are not fallback work at all (each section says why) and sit
    behind everything above.
@@ -282,12 +287,22 @@ to — which is what makes them cheap to land without a re-baseline:
 * **`nee_meta` was decoded per path per launch before the hit test**, so a
   path with no hits paid eleven loads for nothing. Moved under the test
   (no switch, see above).
-* **Sampler overhead per draw.** `pt_sample_2d` re-derives the
-  `(seed_root, key)` half of its seed on every call although it is constant
-  for the whole path; the roulette draw computes a full 2-D pair and keeps
-  one component; `pair_nee0` is recomputed per crossing. All hoistable, none
-  byte-identical (they move every sample), so they wait for the §5
-  re-baseline rather than earning their own.
+* **Sampler overhead per draw — LANDED** (with the §5 re-baseline).
+  `pt_sample_2d` re-derived the `(seed_root, key)` half of its seed on every
+  call although it is constant for the whole path. The two hashes are now
+  nested the other way round — `_pt_path_seed(seed_root, key)` once per
+  `pt_shade` thread and once per `pt_generate` slot, then
+  `_pt_pair_seed(path_seed, pair)` per draw — which is what makes the
+  per-path half loop-invariant at all; the old spelling
+  `combine(seed_root, combine(key, pair))` put a `pair`-dependent term
+  inside *both* hashes. Per-dimension independence is unchanged, because
+  `_pt_hash_combine` avalanches its second argument. `_pt_rng` took the same
+  treatment (`_pt_rng_seeded`) and its unhoisted spelling is gone, leaving
+  only the test probe on `pt_sample_2d`'s original signature. `pair_nee0` is
+  hoisted per path, alongside the width of one crossing's pair block.
+  The roulette draw still computes a full 2-D pair and keeps one component,
+  deliberately: it is one draw per bounce and the dimension table documents
+  the unused `x`.
 * **The authored-appearance shadow loop** (the second bullet of §6a-bis)
   is the remaining linear-in-lights term and needs the interface decision
   that section describes. It is not cheap and is listed there, not here.
@@ -712,9 +727,53 @@ reference-test pattern from Stage 3); a dense-medium cube converging to its
 diffusion limit.
 
 
-## 5. One material, two direct-lighting responses
+## 5. One material, two direct-lighting responses — LANDED
 
-**What is inconsistent.** A lit vertex answers "how much light comes back
+**LANDED 2026-09-05**, as the section argued and with one addition the
+completeness rule (§9) forced. `_pt_direct_response` is deleted; every
+emitter kind — packed light rows included — now evaluates the surface through
+`_pt_lit_f_pdf`, and the NEE estimator for a row is `f_cos * radiance /
+p_sel`. `_light_eval` is untouched: decay, range fade, spot cone, the
+one-sided area cosine and the `1/K` power fraction are the EMITTER model, and
+only the SURFACE response changed. The direction-less ambient / hemisphere
+rows contribute `e_diff * L` (the diffuse lobe's energy times the row's
+radiance, with the hemisphere row's sky/ground blend still done by
+`_light_eval` against the shading normal) and no specular fill — indirect
+transport is what replaces that.
+
+What moved, concretely: a Lambert surface under a light row is `pi` times
+dimmer than it was, since `_pt_direct_response` had no `1/pi`; a rough metal
+changes by the difference between `_smith_geometry`'s `k = (r+1)^2/8` remap
+and the exact Smith `G2`, which is small at high roughness and grows as
+roughness falls. The deterministic renderer's stage formulas and every one of
+its baselines are untouched, exactly as this section predicted.
+
+**Phong is GGX now, and that is why it still has a highlight.** Deleting the
+Blinn-Phong term without giving `MeshPhongMaterial` a lobe would have made it
+render identically to `MeshLambertMaterial` under the path tracer — a
+silently dropped feature, which §9 says is worse than a refused one. So
+`_pt_lit_lobes` gained a phong branch: `F0` is the authored `specular`
+colour, the exponent converts by the standard `alpha = sqrt(2/(s + 2))`, and
+the resulting roughness replaces the crossing's own for that material's NEE
+responses *and* its continuation (`_pt_lit_lobes` returns it). The highlight
+therefore moves and softens rather than disappearing, which
+`renderer_limitations.rst` now says out loud.
+
+Verification, in `tests/unit_tests/test_path_tracer.py`:
+`test_area_light_row_and_emissive_quad_agree` is the acceptance test — a
+Lambert and a GGX floor under a `RectAreaLight` and under an emissive quad of
+matched radiance, agreeing within noise at 96 spp (the bound it holds them
+to is 6% of the brighter arm);
+`test_nee_light_row_direct_lighting_is_the_physical_bsdf` and
+`test_area_light_matches_the_reference_integral` pin the row estimator
+against closed-form and quadrature references instead of against the
+deterministic renderer (the parity assertions they replaced are precisely
+what this section deleted); and the furnace check gained a light-row arm,
+`test_lambert_furnace_is_lossless_under_a_light_row`.
+
+The rest of this section is the reasoning, kept.
+
+**What was inconsistent.** A lit vertex answered "how much light comes back
 toward the camera" with two different functions, chosen by *what kind of
 emitter is asking*:
 
@@ -782,16 +841,19 @@ discovered.
 `RectAreaLight` and by an emissive quad of matched radiance agree to within
 noise; the furnace tests extended to the NEE path.
 
-**Land it with the other re-baselines, as one.** This change, §7's
-stratified lobe select, the sampler hoists in §0.2, the self-intersection
-offset in the final section and §6's area-light change each move every
-sample and each say "re-baselines `tests/path_traced/`". Four separate
-re-baselines is four rounds of looking at frames and four release-asset
-uploads (`tests/README.md`, "Where the heavy baselines live"); one is one.
-Batch them behind a single branch and re-baseline once, on both devices.
-Deleting `_pt_direct_response` also removes the second `_light_eval` call
-per ambient row and shrinks the shade kernel, which is a small throughput
-win in its own right.
+**Land it with the other re-baselines, as one — DONE for four of the five.**
+This change, §7's stratified lobe select, the sampler hoists in §0.2 and the
+self-intersection offset in the final section each move every sample and each
+say "re-baselines `tests/path_traced/`". They landed together, so
+`tests/path_traced/` takes ONE re-baseline for the four of them; every one of
+its three scenes moves, and the frames were compared side by side against the
+committed baselines before it was taken. §6a-ter's area-light change (a
+`RectAreaLight` as two emissive triangles) is still ahead and will need its
+own; it was not in this batch.
+Deleting `_pt_direct_response` shrinks the shade kernel, which is a small
+throughput win in its own right — the "second `_light_eval` call per ambient
+row" this paragraph used to promise had already gone with §0.2's packed
+ambient rows, so there was nothing left to remove there.
 
 
 ## 6. Many-light and emissive-mesh sampling
@@ -1010,25 +1072,29 @@ makes that term exact.
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
 
-Two cheap sampling improvements the survey names and the implementation does
-not have.
+Two cheap sampling improvements the survey named. The first has LANDED; the
+second has not.
 
-**Lobe selection draws white noise.** `u_lobe` comes from `_pt_rng`, not from
-a Sobol pair, so the diffuse/specular/transmission/pass-through split at every
-crossing is unstratified — and that decision drives which lobe a bounce
-explores, so it is not a minor dimension. The dimension table's `2 + 6b + 0`
-entry reserved an `x` slot for it that the kernel never reads (the table now
-says so).
+**Lobe selection drew white noise — LANDED.** `u_lobe` came from `_pt_rng`,
+not from a Sobol pair, so the diffuse/specular/transmission/pass-through split
+at every crossing was unstratified — and that decision drives which lobe a
+bounce explores, so it was not a minor dimension.
 
 The original reason was sound: the choice happens per surface *crossing*, and
 crossings per bounce are unbounded in a translucent stack, so it had no fixed
 dimension index. But Stage 3 solved exactly that problem for next-event
-estimation by indexing pairs on `processed` (`2 + 6B + 2(cL + s)`). The same
-trick applies here: give the lobe select its own crossing-indexed pair after
-the NEE block. Cost is a pair-index constant and one `pt_sample_2d` call;
-sampler purity is unaffected (both draws are pure functions of the same key),
-though it does move every existing sample, so it re-baselines
-`tests/path_traced/`.
+estimation by indexing pairs on `processed`. The same trick applies here, and
+it is what shipped: a crossing's block widened from `2L` pairs to `2L + 1`,
+the next-event pairs keeping their places inside it
+(`2 + 6B + (2L+1)c + 2s`) and the lobe select taking the last one
+(`2 + 6B + (2L+1)c + 2L`, x component only). The custom-scatter branch pick,
+which shared the same white-noise draw, moved with it. Cost is a pair-index
+constant and one `pt_sample_2d_seeded` call; sampler purity is unaffected
+(both draws are pure functions of the same key), and it moved every existing
+sample, so it rides the section 5 batch's single re-baseline of
+`tests/path_traced/`. `test_dimension_pairs_never_collide` checks that the widened
+arithmetic still partitions the pair space, over the render shapes a scene
+can take.
 
 **No blue-noise error distribution in screen space.** `_pt_key` hashes
 `(frame, pixel)`, so neighbouring pixels get independent sequences — error is
@@ -1341,6 +1407,18 @@ user with no renderer at all.
 
 Tracked here so they are one search away, in rough order of effort:
 
+* **Isolated black pixels beside glass.** In `environment_and_refraction`
+  a handful of pixels per frame (5–10 of 9216, re-rolling with the
+  sampler seeds) come out pure black next to the prism, against a bright
+  sky: paths that were absorbed (roulette or the `min_weight` floor) after
+  a refraction, with nothing left to show the background through. At a
+  handful of samples per pixel the estimate of such a pixel is the few
+  surviving paths' values, and when none survive it is black. Not new to
+  the §5 batch — the count merely moved. The fix is the standard one:
+  never kill a path whose throughput is still the camera segment's
+  transparency (a delta chain to the sky is exact, not noisy), or route the
+  absorbed path's leftover to the background as the pass-through does.
+  Cheap and visible; it belongs in the next batch that re-baselines.
 * **Frame-animated emitters are untested.** The NEE table samples frame-0
   emission power (dark-at-frame-0 emitters stay unbiased through the BSDF
   path, weight 1), and the MIS pdf evaluates per-frame area — implemented,
@@ -1353,13 +1431,25 @@ Tracked here so they are one search away, in rough order of effort:
   identity through arbitrary bounce trees.
 * **CUDA baselines for `tests/path_traced/` do not exist.** Procedure is in
   `tests/README.md`; needs a CUDA machine.
-* **Self-intersection offsetting is a fixed world-space epsilon.** Every
-  spawned ray leaves along the geometric normal by `10 * min_hit_distance`
-  (1e-3 world units, five sites in `pt_shade`), which is scale-dependent in
-  both directions: acne on a scene authored at large coordinates, light
-  leaking through thin geometry on one authored at small. The survey names
-  Wächter & Binder (Ray Tracing Gems 2019) — offset in integer float space,
-  scaled by the hit point's own magnitude — as a day-one item. It is a
-  drop-in `@ti.func` replacement at those five sites plus the deterministic
-  renderer's own offsets, and it re-baselines rendered output, so it is a
-  change to make on its own.
+* **Self-intersection offsetting was a fixed world-space epsilon —
+  FIXED in the path tracer.** Every spawned ray left along the geometric
+  normal by `10 * min_hit_distance` (1e-3 world units, five sites in
+  `pt_shade`), which is scale-dependent in both directions: acne on a scene
+  authored at large coordinates, light leaking through thin geometry on one
+  authored at small. Those five sites now call `_pt_offset_ray_origin`, which
+  is Wachter & Binder (Ray Tracing Gems 2019, ch. 6): offset in integer float
+  space by 256 ULPs, scaled by the hit point's own magnitude, with a fixed
+  `1/65536` step below `1/32` where a relative step would round to nothing.
+  The matching pull-back at the light end (`20 * min_hit_distance` in
+  `_pt_nee_visibility`) scales the same way, through `_pt_shadow_tmax`, which
+  measures the pull-back as a difference of two nearby points so the 1e7
+  sentinel a directional row or an environment sample carries stays exact.
+  `test_offset_ray_origin_scales_with_the_hit_point` probes it at 1e-3, 1 and
+  1e3.
+
+  **The deterministic renderer's own offsets are NOT changed** and none of
+  its baselines move: this landed inside the path tracer only, and the
+  frames it does move are `tests/path_traced/`'s, in the section 5
+  re-baseline batch. Porting it to `wavefront_kernels_taichi` /
+  `sheet_resolve_taichi` would re-baseline every committed frame in the
+  repository on both devices, which is a change to make on its own.
