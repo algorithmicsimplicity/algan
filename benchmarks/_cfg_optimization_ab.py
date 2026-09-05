@@ -38,9 +38,26 @@ the ratios, not the seconds; PREVIEW, ``at=1.0``, 23 kernels per frame):
 
 Not the documented 6x: that figure is for kernels where the pass dominates,
 and Algan's megakernels spend most of their backend time in LLVM's own O3
-(`PLAN.md` §2.1). Still 33 s off a cold start for nothing visible. What this
-run cannot see is CUDA: the pass runs on the CHI IR before either backend, so
-the compile saving should carry over, but the runtime cost is a GPU question
+(`PLAN.md` §2.1).
+
+**That 2.1x did not reproduce.** Measured again 2026-09-04 (later), same box,
+both compilers, the frames byte-identical again:
+
+    backend     arm   cold backend   cold frontend   cold render   warm render
+    Quadrants   on        20.9 s         13.9 s         37.0 s        15.7 s
+    Quadrants   off       21.2 s         13.5 s         36.7 s        17.9 s
+    Taichi      on        18.4 s          4.7 s         25.6 s         7.3 s
+    Taichi      off       19.2 s          4.9 s         26.6 s         7.8 s
+
+    cfg_optimization=False: backend compile 1.01x (Quadrants) / 1.05x (Taichi),
+    warm render inside noise, max channel delta 0.
+
+Both arms of the second run are faster than the *off* arm of the first, so the
+first run's 63.4 s "on" arm was the shared box, not the pass: on Algan's
+kernels the CFG pass costs nothing measurable and buys nothing measurable, and
+the default stays where the compiler put it. What neither run can see is CUDA:
+the pass runs on the CHI IR before either backend, so the compile saving, if
+there is one, should carry over, but the runtime cost is a GPU question
 (register pressure, occupancy) and needs the T4 harness
 (`agent_guidance/gpu_harnesses.md`) before the default moves.
 """
@@ -175,7 +192,9 @@ def compare_frames(first, second):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--arms", default="on,off")
-    parser.add_argument("--quiet", action="store_true", help="child output only on failure")
+    parser.add_argument(
+        "--quiet", action="store_true", help="child output only on failure"
+    )
     args = parser.parse_args(argv)
     names = [name.strip() for name in args.arms.split(",") if name.strip()]
     unknown = [name for name in names if name not in ARMS]
