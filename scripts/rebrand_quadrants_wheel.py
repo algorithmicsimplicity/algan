@@ -83,7 +83,9 @@ def _rewrite_metadata(data: bytes) -> bytes:
             f"found {name_hits}"
         )
     if version_hits != 1:
-        raise ValueError(f"expected exactly one Version field in METADATA, found {version_hits}")
+        raise ValueError(
+            f"expected exactly one Version field in METADATA, found {version_hits}"
+        )
     return "".join(rewritten).encode("utf-8")
 
 
@@ -120,15 +122,23 @@ def rebrand_wheel(path: Path, *, delete_original: bool = False) -> Path:
     record_info: zipfile.ZipInfo | None = None
     metadata_seen = False
     try:
-        with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(temporary, "w") as target:
+        with (
+            zipfile.ZipFile(path, "r") as source,
+            zipfile.ZipFile(temporary, "w") as target,
+        ):
             target.comment = source.comment
             for info in source.infolist():
                 name = info.filename
                 if name.endswith(("RECORD.jws", "RECORD.p7s")):
                     raise ValueError(
-                        f"{path.name} is signed; rebranding would invalidate its wheel signature"
+                        f"{path.name} is signed; rebranding would invalidate its "
+                        "wheel signature"
                     )
-                renamed = new_prefix + name[len(old_prefix) :] if name.startswith(old_prefix) else name
+                renamed = (
+                    new_prefix + name[len(old_prefix) :]
+                    if name.startswith(old_prefix)
+                    else name
+                )
                 if name == old_prefix + "RECORD":
                     record_info = info
                     continue
@@ -168,9 +178,14 @@ def validate_downstream_wheel(path: Path) -> None:
     path = Path(path)
     distribution, version, _ = _wheel_parts(path)
     if distribution != DOWNSTREAM_WHEEL_DISTRIBUTION:
-        raise ValueError(f"{path.name}: expected wheel distribution {DOWNSTREAM_WHEEL_DISTRIBUTION!r}")
+        raise ValueError(
+            f"{path.name}: expected wheel distribution "
+            f"{DOWNSTREAM_WHEEL_DISTRIBUTION!r}"
+        )
     if version != DOWNSTREAM_VERSION:
-        raise ValueError(f"{path.name}: expected version {DOWNSTREAM_VERSION!r}, got {version!r}")
+        raise ValueError(
+            f"{path.name}: expected version {DOWNSTREAM_VERSION!r}, got {version!r}"
+        )
 
     prefix = f"{DOWNSTREAM_WHEEL_DISTRIBUTION}-{version}.dist-info/"
     with zipfile.ZipFile(path, "r") as wheel:
@@ -178,9 +193,13 @@ def validate_downstream_wheel(path: Path) -> None:
         metadata_name = prefix + "METADATA"
         record_name = prefix + "RECORD"
         if metadata_name not in names or record_name not in names:
-            raise ValueError(f"{path.name}: downstream .dist-info metadata is incomplete")
+            raise ValueError(
+                f"{path.name}: downstream .dist-info metadata is incomplete"
+            )
         if "quadrants/__init__.py" not in names:
-            raise ValueError(f"{path.name}: rebranding must retain the import package 'quadrants'")
+            raise ValueError(
+                f"{path.name}: rebranding must retain the import package 'quadrants'"
+            )
         metadata = wheel.read(metadata_name).decode("utf-8").replace("\r\n", "\n")
         if f"Name: {DOWNSTREAM_DISTRIBUTION}\n" not in metadata:
             raise ValueError(f"{path.name}: METADATA has the wrong distribution name")
