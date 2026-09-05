@@ -17,14 +17,33 @@
 # `.github/workflows/quadrants_build.yaml`, which builds the same set and then
 # runs `quadrants_patches/verify_invariant_load.py` over the optimized IR.
 #
-# This is a **compile check, not a recurring hardware behaviour check**. It
-# answers "do the patched files still build", which is the half that can be
-# automated. The one-time sm_61 behaviour check was completed on the
-# maintainer's GTX 1050 on 2026-09-05: the runtime module loads, kernels run,
-# and the PTX evidence matches the patch design. See taichi_patches/MIGRATION.md
-# §11.1. A future compiler/base change still needs equivalent hardware
-# revalidation; this runner cannot provide it.
-
+# So this is a **compile check, not a behaviour check**. It answers "do the
+# patched files still build", which is the half that can be automated. The half
+# that cannot is whether sm_61 now loads the runtime module and runs a kernel;
+# that needs the maintainer's GTX 1050, and `PLAN.md` §7.3 Prerequisite 0 is
+# what describes it.
+#
+#   `.github/workflows/run_on_mac.yaml`, arm `linux-cpu`:
+#       command: bash scripts/gate/quadrants_linux_build.sh
+#
+# Follows Quadrants' own `scripts_new/linux/{1_prerequisites,2_build}.sh`, with
+# three deviations, each behind a knob: Vulkan and AMDGPU off (their CI builds
+# both; Algan wants neither, and each costs TUs and dependencies), tests off,
+# and `quadrants_patches/` applied. Unlike the macOS script this one applies the
+# patches by DEFAULT -- there, the question was whether stock builds at all;
+# here, stock is already known to build in their CI and the patches are the
+# whole subject. `GATE_QD_PATCHES=0` gives the stock control arm.
+#
+# clang comes from the LLVM archive itself (`python download_llvm.py`, then
+# `$LLVM_DIR/bin` on PATH), not from a distro package -- so unlike the macOS
+# build there is no second Homebrew LLVM to install and no version to keep in
+# step by hand.
+#
+# Output is stamped and the build is logged to a file with a heartbeat rather
+# than streamed, for the reason the macOS script explains: the Actions API
+# serves a window at the END of a job log, and a large build log pushes the
+# answer out of it. The last line is always `GATE-RESULT:`.
+# =============================================================================
 
 set -o pipefail
 set -u
