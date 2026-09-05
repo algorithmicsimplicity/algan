@@ -227,7 +227,7 @@ setting to reach for is a modest sample count with a short bounce budget,
 there only if the scene needs indirect light or the denoised result is still
 noisy. See :ref:`renderer-settings` in the performance guide.
 
-Four further consequences of the split, not covered there:
+Five further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
   fragment route. Direct light comes from sampling one entry of a
@@ -263,6 +263,20 @@ Four further consequences of the split, not covered there:
   If you are comparing the two renderers side by side, expect to adjust
   ``intensity``. If you reached for the path tracer because the other one
   could not render your scene, there is nothing to compare against.
+* **A** :class:`~.RectAreaLight` **is real geometry here.** The deterministic
+  renderer expands one into a grid of ``samples`` point emitters; the path
+  tracer instead treats it as an emissive rectangle, which is what it
+  physically is. Three visible consequences: a mirror or a polished metal
+  **shows the light's reflection**, which the deterministic renderer cannot
+  draw at all; the panel itself is still **invisible to the camera**, so
+  putting a light in shot does not put a white rectangle in the frame; and it
+  still **casts no shadow**, so you can place one between the camera and your
+  subject. Its ``decay`` and ``distance`` mean exactly what they do in the
+  other renderer -- ``decay = 0``, the default, really is no falloff, even
+  though a physical emitter of that size would fade with distance. A
+  ``samples = 16`` area light also costs the sampler two emitters here rather
+  than sixteen, so raising ``samples`` for the deterministic renderer's sake
+  no longer makes path-traced renders slower.
 * Its raw output is stochastic, so low sample counts are visibly noisy. By
   default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
   Image Denoise RT filter re-implemented in torch, guided by albedo and

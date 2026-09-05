@@ -129,6 +129,38 @@ Two things worth knowing: the umbra legitimately *lifts* (a `k x k` centre grid 
 
 The flag is read **host-side only** (`ALGAN_AREA_LIGHT_SOFT_SHADOWS` / `SETTINGS.raytracing.experimental.area_light_soft_shadows`): off, `_build_aux` packs zeros and the kernels take their existing path with no recompile and no per-arm process. `benchmarks/_area_light_shadow_check.py` is the acceptance harness; `tests/unit_tests/test_area_light_soft_shadow.py` is the guard, and its render arms exist to **compile both fans** — a host-side test cannot see a Taichi scoping error, which is how one shipped mid-review.
 
+## Under the path tracer an area light is geometry, not rows
+
+Everything above is the **deterministic** renderer's model, and it is unchanged. With
+`samples_per_pixel > 1` the path tracer builds its own view of each `RectAreaLight`:
+**two emissive triangles** covering the rectangle, appended by
+`raytracing/area_light_quads.py` to a *private copy* of the merged scene (the persistent
+device scene the deterministic renderer may render from next never carries them), with the
+triangle BVH rebuilt over the widened primitive set. They ride the emissive-triangle path
+end to end — area sampling from the next-event table, `_pt_lit_f_pdf` at both ends,
+power-heuristic MIS, and a BSDF ray that can hit them, which is what gives an area light a
+reflection in a mirror. The `K` cell rows stay in `light_col` (authored-appearance
+materials still light from them) but stop being selectable in `_build_nee_tables`, so
+nothing is counted twice.
+
+Three properties to keep if you touch it. The quads are **invisible to the camera
+segment** — one `prim >= quad_base` compare in `pt_shade`'s drain loop gated on
+`bounces_left >= max_b`, not a BVH leaf bit, because the deterministic renderer never sees
+these triangles at all — and they are packed **non-opaque** so nothing behind one is
+pruned while it is being skipped (that batch turns `all_visible_opaque` off, which also
+disables `pt_opaque_closest`). They are **non-casting** in the rebuilt tree, the same leaf
+bit `casts_shadows = False` uses, matching the deterministic renderer where an area light
+is not an occluder. And the row model's `decay` (default 0 = no falloff) survives as a
+per-emitter radiance multiplier `d^(2 - decay) * fade(d)^2` in `pt_emit_falloff`, applied
+at the EMITTER so both MIS ends evaluate it from the same distance; an ordinary emissive
+triangle is `prim < quad_base` and is bit-identical.
+
+`SETTINGS.raytracing.experimental.pt_area_light_quads` / `ALGAN_PT_AREA_LIGHT_QUADS=0`
+restores the packed-rows arm byte for byte — host-side, no kernel variant. Measured
+2.09x lower MSE at equal spp (`benchmarks/_pt_area_light_quad_variance.py`);
+`tests/unit_tests/test_path_tracer.py`'s `test_area_light_quad_*` are the guards, and
+roadmap §6a-ter is the record.
+
 ## The render path's fixed ceilings are counted, not silent
 
 `raytracing/truncation.py` counts surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.

@@ -34,6 +34,7 @@ from algan import (
     DOWN,
     GREEN,
     LEFT,
+    ORIGIN,
     OUT,
     RED,
     RIGHT,
@@ -814,6 +815,427 @@ def test_area_light_row_and_emissive_quad_agree(tmp_path):
             f"radiance disagree by {100 * rel:.1f}% (row {row_mean:.1f}, "
             f"quad {quad_mean:.1f}) -- they must go through ONE BSDF"
         )
+
+
+# ---------------------------------------------------------------------------
+# Area lights as emissive geometry (roadmap section 6a-ter)
+# ---------------------------------------------------------------------------
+
+#: Small, cheap framing for the quad tests: a whole render each, and there
+#: are several of them.
+QUAD_SETTINGS = SMOKE_TEST.set(resolution=(40, 40))
+
+
+def _quad_arm(tmp_path, name, build, samples, quads, **kwargs):
+    """One render of ``build`` with the area-light quad path on or off."""
+    experimental = dict(kwargs.pop("experimental", None) or {})
+    experimental["pt_area_light_quads"] = bool(quads)
+    experimental.setdefault("post_process_tonemap", False)
+    return _render_scene_exp(
+        tmp_path,
+        name,
+        build,
+        samples,
+        video=kwargs.pop("video", QUAD_SETTINGS),
+        experimental=experimental,
+        linear_color_space=False,
+        tonemapping=False,
+        **kwargs,
+    )
+
+
+def _lit_floor(light_builder, material=None):
+    """A white Lambert floor at the origin under whatever ``light_builder``
+    spawns.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        floor = Prism(width=8.0, height=8.0, depth=0.2)
+        floor.set_material((material or (lambda: MeshLambertMaterial(color=WHITE)))())
+        floor.spawn(animate=False)
+        light_builder(scene)
+
+    return build
+
+
+def test_area_light_quad_and_row_arms_agree(tmp_path):
+    """The two arms of ``pt_area_light_quads`` light a floor identically.
+
+    Off, a ``RectAreaLight`` is ``K`` packed cell rows sampled from the
+    next-event table; on, it is two emissive triangles that ride the
+    emissive-triangle path (area sampling, ``_pt_lit_f_pdf`` at both ends,
+    power-heuristic MIS, hittable by BSDF continuations). Those are two
+    entirely different estimators of the same emitter, so agreeing within
+    noise is the whole claim of roadmap section 6a-ter -- on a Lambert
+    surface and on a GGX one, because the two responses diverge fastest as
+    roughness falls.
+    """
+    size = 2.0
+
+    def light(scene):
+        RectAreaLight(
+            location=OUT * 3.0,
+            width=size,
+            height=size,
+            samples=16,
+            color=WHITE,
+            intensity=4.0,
+            target=ORIGIN,
+        ).spawn(animate=False)
+
+    surfaces = {
+        "lambert": lambda: MeshLambertMaterial(color=WHITE),
+        "ggx": lambda: MeshStandardMaterial(color=WHITE, metalness=0.0, roughness=0.4),
+    }
+    for name, material in surfaces.items():
+        build = _lit_floor(light, material)
+        rows = _quad_arm(tmp_path, f"arm_rows_{name}.png", build, 96, False)
+        quads = _quad_arm(tmp_path, f"arm_quads_{name}.png", build, 96, True)
+        row_mean = _center_patch_mean(rows, half=4)
+        quad_mean = _center_patch_mean(quads, half=4)
+        assert row_mean > 10.0, (
+            f"{name}: the rows arm is barely lit ({row_mean:.1f}/255); the "
+            f"comparison has no content"
+        )
+        rel = abs(row_mean - quad_mean) / max(row_mean, quad_mean)
+        assert rel <= 0.06, (
+            f"{name}: the quad arm and the rows arm disagree by "
+            f"{100 * rel:.1f}% (rows {row_mean:.1f}, quads {quad_mean:.1f})"
+        )
+
+
+def test_area_light_quad_falloff_follows_the_row_model(tmp_path):
+    """``decay`` and ``distance`` survive the move to geometry.
+
+    A ``RectAreaLight`` defaults to ``decay = 0``: no distance falloff at
+    all. A physical emissive quad has inverse square built into transport,
+    which is ``decay = 2``. The quad therefore carries a per-emitter radiance
+    multiplier ``d^(2 - decay)`` times the row model's own range fade,
+    evaluated identically at both MIS ends -- so every authored falloff must
+    reproduce the rows arm, not just the physical one.
+    """
+    cases = (
+        ("decay0", {"decay": 0.0}),
+        ("decay1", {"decay": 1.0}),
+        ("decay2", {"decay": 2.0}),
+        ("ranged", {"decay": 2.0, "distance": 4.5}),
+    )
+    for name, params in cases:
+
+        def light(scene, params=params):
+            RectAreaLight(
+                location=OUT * 3.0,
+                width=2.0,
+                height=2.0,
+                samples=16,
+                color=WHITE,
+                intensity=4.0 * (3.0 ** params["decay"]),
+                target=ORIGIN,
+                **params,
+            ).spawn(animate=False)
+
+        build = _lit_floor(light)
+        rows = _quad_arm(tmp_path, f"fall_rows_{name}.png", build, 96, False)
+        quads = _quad_arm(tmp_path, f"fall_quads_{name}.png", build, 96, True)
+        row_mean = _center_patch_mean(rows, half=4)
+        quad_mean = _center_patch_mean(quads, half=4)
+        assert row_mean > 8.0, (
+            f"{name}: the rows arm is barely lit ({row_mean:.1f}/255)"
+        )
+        rel = abs(row_mean - quad_mean) / max(row_mean, quad_mean)
+        assert rel <= 0.07, (
+            f"{name}: the quad's falloff does not reproduce the row model "
+            f"({100 * rel:.1f}% apart: rows {row_mean:.1f}, quads "
+            f"{quad_mean:.1f})"
+        )
+
+
+def test_area_light_quad_is_invisible_to_the_camera(tmp_path):
+    """A camera ray passes straight through the quad.
+
+    The deterministic renderer draws no light, and a user who places a
+    ``RectAreaLight`` in shot does not expect a white panel to appear when
+    they raise ``samples_per_pixel``. The control -- the same rectangle
+    authored as an emissive mob -- must be blazing in exactly those pixels,
+    so this cannot pass by pointing the camera at nothing.
+    """
+
+    def with_light(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        RectAreaLight(
+            location=ORIGIN,
+            width=2.5,
+            height=2.5,
+            samples=4,
+            color=WHITE,
+            intensity=8.0,
+            target=OUT * 5.0,
+        ).spawn(animate=False)
+
+    def with_mob(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        panel = Prism(width=2.5, height=2.5, depth=0.02)
+        panel.set_material(
+            MeshLambertMaterial(
+                color=BLACK, emissive=WHITE, emissive_intensity=8.0 / 6.25
+            )
+        )
+        panel.spawn(animate=False)
+
+    seen = _quad_arm(tmp_path, "quad_camera.png", with_light, 4, True)
+    control = _quad_arm(tmp_path, "quad_camera_control.png", with_mob, 4, True)
+    assert _center_patch_mean(control, half=4) > 50.0, (
+        "the control emissive panel is not in shot; the framing proves nothing"
+    )
+    assert float(seen[..., :3].max()) == 0.0, (
+        f"a camera ray hit the area light's quad (brightest channel "
+        f"{float(seen[..., :3].max()):.1f}/255) -- it must pass through"
+    )
+
+
+def test_area_light_quad_shows_up_in_a_mirror(tmp_path):
+    """...but a ray that has BOUNCED sees it.
+
+    That is the point of making the light geometry: a packed light row is
+    unhittable, so an area light cast no reflected image at all. A smooth
+    metal sphere with nothing else in the scene can only be bright where it
+    reflects the emitter, so the rows arm is black and the quad arm is not.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        sphere = Sphere(radius=1.2)
+        sphere.set_material(
+            MeshStandardMaterial(color=WHITE, metalness=1.0, roughness=0.03)
+        )
+        sphere.spawn(animate=False)
+        RectAreaLight(
+            location=RIGHT * 2.0 + OUT * 2.5,
+            width=3.0,
+            height=3.0,
+            samples=4,
+            color=WHITE,
+            intensity=40.0,
+            target=ORIGIN,
+        ).spawn(animate=False)
+
+    rows = _quad_arm(tmp_path, "mirror_rows.png", build, 32, False)
+    quads = _quad_arm(tmp_path, "mirror_quads.png", build, 32, True)
+    # Pixel COUNT, not peak: a near-delta GGX lobe can occasionally catch a
+    # next-event sample aimed at the light row, so the rows arm is not
+    # perfectly black -- it is a scattering of stray samples where the quad
+    # arm has a coherent rectangle. Measured on this scene: rows 0 pixels
+    # over 100/255, quads 16.
+    row_bright = int((rows[..., :3].amax(-1) > 100).sum())
+    quad_bright = int((quads[..., :3].amax(-1) > 100).sum())
+    assert quad_bright >= 6, (
+        f"a smooth metal sphere shows no image of the area light "
+        f"({quad_bright} bright pixels, peak {float(quads[..., :3].max()):.1f}/255)"
+    )
+    assert row_bright <= 2, (
+        f"the rows arm already had a mirror image ({row_bright} bright "
+        f"pixels) -- this test no longer measures what it claims"
+    )
+
+
+def test_area_light_quad_occludes_nothing(tmp_path):
+    """The quad is not a shadow caster, matching the deterministic renderer.
+
+    A dark ``RectAreaLight`` panel is interposed between a point light and
+    the floor. If its triangles blocked shadow rays the floor would go black;
+    they are stamped non-casting in the rebuilt tree, the same leaf bit
+    ``Mob.casts_shadows = False`` uses, so nothing changes.
+    """
+
+    def point_only(scene):
+        PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(animate=False)
+
+    def with_panel(scene):
+        point_only(scene)
+        # Intensity 0: the panel adds no light of its own, so anything that
+        # moves is occlusion and nothing else.
+        RectAreaLight(
+            location=OUT * 3.0,
+            width=6.0,
+            height=6.0,
+            samples=4,
+            color=WHITE,
+            intensity=0.0,
+            target=ORIGIN,
+        ).spawn(animate=False)
+
+    clear = _quad_arm(
+        tmp_path, "occl_clear.png", _lit_floor(point_only), 32, True, shadows=True
+    )
+    blocked = _quad_arm(
+        tmp_path, "occl_panel.png", _lit_floor(with_panel), 32, True, shadows=True
+    )
+    a = _center_patch_mean(clear, half=4)
+    b = _center_patch_mean(blocked, half=4)
+    assert a > 10.0, f"the unobstructed floor is barely lit ({a:.1f}/255)"
+    assert abs(a - b) <= max(2.0, 0.05 * a), (
+        f"the area light's quad occluded a point light: {a:.1f} -> {b:.1f}"
+    )
+
+
+def test_area_light_quad_is_mis_covered_by_both_strategies(tmp_path):
+    """The two MIS weights on a hit on the quad sum to one.
+
+    Not asserted as arithmetic but as its only observable consequence. With
+    ``max_bounces = 0`` a lit vertex has no continuation, so ``pdf_b`` is 0
+    and next-event estimation carries the emitter's whole contribution at
+    weight 1. With bounces available the same contribution is SPLIT between
+    the next-event sample and the diffuse rays that land on the quad, each
+    carrying a power-heuristic weight. Weights that did not sum to one would
+    read high (double counting) or low (a lost strategy); a flat floor under
+    a panel has almost no other indirect light for the difference to hide in.
+    """
+
+    def light(scene):
+        RectAreaLight(
+            location=OUT * 2.5,
+            width=2.5,
+            height=2.5,
+            samples=4,
+            color=WHITE,
+            intensity=6.0,
+            target=ORIGIN,
+        ).spawn(animate=False)
+
+    build = _lit_floor(light)
+    nee_only = _quad_arm(tmp_path, "mis_nee_only.png", build, 96, True, max_bounces=0)
+    both = _quad_arm(tmp_path, "mis_both.png", build, 96, True, max_bounces=3)
+    a = _center_patch_mean(nee_only, half=4)
+    b = _center_patch_mean(both, half=4)
+    assert a > 10.0, f"the next-event-only arm is barely lit ({a:.1f}/255)"
+    rel = abs(a - b) / max(a, b)
+    assert rel <= 0.06, (
+        f"the quad's two sampling strategies do not partition its light "
+        f"({100 * rel:.1f}% apart: next-event only {a:.1f}, both {b:.1f})"
+    )
+
+
+def test_area_light_quad_follows_a_moving_light(tmp_path):
+    """The quad is per-frame geometry, like ``light_pos`` itself.
+
+    A tree, a table or a triangle built once from frame 0 would leave the
+    light behind the moment it moves -- and Algan is an animation engine.
+    """
+    from algan.rendering.raytracing import tracer as tracer_mod
+
+    captured = []
+    original = tracer_mod._attach_area_light_quads
+
+    def capture(merged, lights, memory, num_frames):
+        out = original(merged, lights, memory, num_frames)
+        base = out.get("pt_quad_base")
+        if base is not None:
+            captured.append(out["tri_pos"][:, int(base) :].detach().cpu().clone())
+        return out
+
+    settings = SMOKE_TEST.set(resolution=(32, 32), frames_per_second=2)
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    tracer_mod._attach_area_light_quads = capture
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=2, denoise=False)
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                scene.set_background(BLACK)
+                Scene.clear_lights()
+                floor = Prism(width=7.0, height=7.0, depth=0.1)
+                floor.set_material(MeshLambertMaterial(color=WHITE))
+                floor.spawn(animate=False)
+                light = RectAreaLight(
+                    location=OUT * 3.0 + LEFT * 3.0,
+                    width=1.5,
+                    height=1.5,
+                    samples=4,
+                    color=WHITE,
+                    intensity=4.0,
+                    target=ORIGIN,
+                ).spawn(animate=False)
+            light.move(RIGHT * 6.0)
+            scene.save_frame(
+                tmp_path / "quad_moving.png",
+                video_settings=settings,
+                at=[0, 1],
+                overwrite=True,
+            )
+    finally:
+        tracer_mod._attach_area_light_quads = original
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+
+    assert captured, "the render never built an area-light quad"
+    frames = [pos[f] for pos in captured for f in range(pos.shape[0])]
+    assert len(frames) >= 2, "the quad collapsed to one frame for a moving light"
+    spread = max(float((a - b).abs().max()) for a in frames for b in frames)
+    assert spread > 1.0, (
+        f"the quad sits in the same place on both frames (max vertex "
+        f"difference {spread:.3f}) -- it does not follow the light"
+    )
+
+
+def test_area_light_quad_collapses_the_next_event_table(tmp_path):
+    """``samples = 16`` costs two table entries, not sixteen.
+
+    That is the throughput half of section 6a-ter: a 4x4 area light was 16
+    entries in the next-event table and 16 leaves in the light tree, so
+    "tiny table" was reached long before the light count suggested it.
+    """
+    from algan.rendering.raytracing import path_tracer as pt_host
+    from algan.rendering.raytracing.path_tracer_taichi import _NM_COUNT
+
+    def run(quads):
+        counts = []
+        original = pt_host._build_nee_tables
+
+        def capture(*args, **kwargs):
+            out = original(*args, **kwargs)
+            counts.append(int(out[2][_NM_COUNT].item()))
+            return out
+
+        pt_host._build_nee_tables = capture
+        try:
+
+            def light(scene):
+                RectAreaLight(
+                    location=OUT * 3.0,
+                    width=2.0,
+                    height=2.0,
+                    samples=16,
+                    color=WHITE,
+                    intensity=4.0,
+                    target=ORIGIN,
+                ).spawn(animate=False)
+
+            _quad_arm(
+                tmp_path,
+                f"entries_{int(quads)}.png",
+                _lit_floor(light),
+                2,
+                quads,
+            )
+        finally:
+            pt_host._build_nee_tables = original
+        return counts
+
+    rows = run(False)
+    quads = run(True)
+    assert rows, "the rows arm never built a next-event table"
+    assert quads, "the quad arm never built a next-event table"
+    assert max(rows) == 16, (
+        f"a samples=16 RectAreaLight should pack 16 selectable rows, got {rows}"
+    )
+    assert max(quads) == 2, (
+        f"the quad arm should hold exactly the two emissive triangles, got {quads}"
+    )
 
 
 def test_emissive_quad_matches_the_reference_integral(tmp_path):

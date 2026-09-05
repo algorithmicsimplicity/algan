@@ -1066,6 +1066,65 @@ def _retain_persistent(merged, memory):
         merged[ARENA_RETAINED_REVERSE_POINTER] = reverse
 
 
+#: Merged-scene tables the area-light quads widen and that a converted kernel
+#: binds through the arena, so they have to be re-homed there as one group --
+#: ``arena_packed`` checks the whole argument list, not one array at a time.
+_QUAD_ARENA_KEYS = (
+    "tri_pos",
+    "tri_norm",
+    "tri_extra",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "tri_mat_id",
+    "tri_mat",
+    "tri_bvh",
+)
+
+#: Merged-scene key under which the batch caches its quad-widened copy.
+_QUAD_CACHE_KEY = "_pt_quad_widened"
+
+
+def _attach_area_light_quads(merged, light_sources, memory, num_frames):
+    """Widen the merge with one emissive quad per ``RectAreaLight``.
+
+    Returns ``merged`` itself when the switch is off or the batch has no area
+    light, and otherwise a private copy whose triangle tables and triangle BVH
+    carry the synthetic geometry (``area_light_quads``). The widened tables are
+    built as ordinary allocations and re-homed into the arena at its persistent
+    end, for exactly the reason a deferred BVH build is: everything a converted
+    kernel binds through the arena has to live in one allocation per dtype.
+    """
+    from algan.rendering.raytracing.area_light_quads import build_area_light_quads
+    from algan.rendering.raytracing.scene_builder import _copy_merged_scene_to_arena
+
+    # Built ONCE per batch and cached on the batch-lived merge, the way the
+    # raster tables and a re-homed deferred BVH are: this function runs once
+    # per render window, and a window is often a single frame, while the
+    # quads cover the whole batch (the light snapshot is batch-wide and the
+    # geometry is per frame of it). Rebuilding the triangle tree per window
+    # measured 120 ms on 3,200 triangles on the CPU box, per frame.
+    if not rt_settings.pt_area_light_quads:
+        return merged
+    cached = merged.get(_QUAD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    widened = build_area_light_quads(merged, light_sources, memory, num_frames)
+    if widened is merged:
+        return merged
+    group = {key: widened[key] for key in _QUAD_ARENA_KEYS if key in widened}
+    widened.update(_copy_merged_scene_to_arena(group, memory, persist=True))
+    # Published on BOTH dicts: the widened one is what this call's rewinds
+    # read, the batch one is what the render loop and the next window's
+    # rewind read -- without the second, the per-window rewind hands the
+    # widened tables back to the allocator while the cache still points at
+    # them.
+    _retain_persistent(widened, memory)
+    _retain_persistent(merged, memory)
+    merged[_QUAD_CACHE_KEY] = widened
+    return widened
+
+
 def _build_raster_tables(
     merged,
     memory,
@@ -1339,6 +1398,15 @@ def render_batch_raytraced(
 
         build_deferred_bvhs(merged, memory)
         _retain_persistent(merged, memory)
+    # The path tracer's own view of a RectAreaLight: two emissive triangles
+    # per light instead of K packed cell rows (roadmap section 6a-ter). Built
+    # into a PRIVATE copy of the merged scene -- the deterministic renderer's
+    # persistent device scene, which this batch may be rendered from again,
+    # must never carry them.
+    if int(samples_per_pixel) > 1:
+        merged = _attach_area_light_quads(
+            merged, light_sources, memory, int(num_frames)
+        )
     tri_bvh = merged["tri_bvh"]
     bez_bvh = merged["bez_bvh"]
     # A geometry type absent from the whole batch has only a placeholder BVH;

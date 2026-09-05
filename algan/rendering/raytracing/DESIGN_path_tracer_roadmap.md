@@ -70,21 +70,22 @@ parity benchmark, and the OIDN RT denoiser with in-kernel albedo/normal AOVs.
 On top of that table, §6a/§6b have landed: the Conty-Kulla light tree is now
 the selection structure for next-event estimation (`light_tree.py`,
 `pt_light_tree`), so emitter choice weighs distance and orientation rather
-than power alone.
+than power alone. §6a-ter has landed with them: a `RectAreaLight` is two
+emissive triangles here rather than `K` packed cell rows
+(`area_light_quads.py`, `pt_area_light_quads`).
 
-Power-heuristic MIS covers the two strategies that genuinely overlap:
-emissive triangles and the environment map, each sampled both by next-event
-estimation and by BSDF continuations that land on them. It does **not** cover
-packed light rows, and cannot as the renderer stands — a delta light has zero
-area and is unhittable by construction, and a `RectAreaLight` is a light row
-rather than geometry, so no BSDF ray can find it either. That is sound (there
-is nothing to double-count) but it leaves one visible consequence worth
-stating plainly: an area light casts no reflected image in a mirror. The
-second consequence this paragraph used to name — that its highlight came
-from the analytic stage formula rather than from the BSDF transport samples
-— is gone: §5 has LANDED, and a light row's highlight is now the same
-`_pt_lit_f_pdf` a BSDF ray would evaluate. The remaining half is §6a-ter's,
-which makes an area light hittable geometry.
+Power-heuristic MIS covers the strategies that genuinely overlap: emissive
+triangles — a `RectAreaLight`'s own quad included, since §6a-ter — and the
+environment map, each sampled both by next-event estimation and by BSDF
+continuations that land on them. It does **not** cover the remaining packed
+light rows, and cannot: a delta light (point, spot, directional) has zero area
+and is unhittable by construction, so no BSDF ray can find it. That is sound —
+there is nothing to double-count — and it no longer costs anything visible.
+The two consequences this paragraph used to name are both gone: a light row's
+highlight is the same `_pt_lit_f_pdf` a BSDF ray would evaluate (§5), and an
+area light **does** cast a reflected image in a mirror, because it is
+geometry (§6a-ter). It is still invisible to camera rays and still not an
+occluder, which is what the deterministic renderer does with it too.
 
 What follows is the throughput baseline and the cheap wins the fallback role
 puts first (§0), then everything the original plan named beyond the staged
@@ -852,8 +853,9 @@ say "re-baselines `tests/path_traced/`". They landed together, so
 `tests/path_traced/` takes ONE re-baseline for the four of them; every one of
 its three scenes moves, and the frames were compared side by side against the
 committed baselines before it was taken. §6a-ter's area-light change (a
-`RectAreaLight` as two emissive triangles) is still ahead and will need its
-own; it was not in this batch.
+`RectAreaLight` as two emissive triangles) landed after this batch and needed
+**no** re-baseline of its own: none of the three suite scenes carries a
+`RectAreaLight`, and a render without one takes not one of its branches.
 Deleting `_pt_direct_response` shrinks the shade kernel, which is a small
 throughput win in its own right — the "second `_light_eval` call per ambient
 row" this paragraph used to promise had already gone with §0.2's packed
@@ -862,9 +864,9 @@ ambient rows, so there was nothing left to remove there.
 
 ## 6. Many-light and emissive-mesh sampling
 
-**6a and 6b are LANDED** (see the two sections below for what shipped and
-what it measured). 6a-bis (the two loops still linear in light count) and
-6a-ter are *not*; they are still open and are described unchanged.
+**6a, 6a-ter, 6a-quater and 6b are LANDED** (see the sections below for what
+shipped and what each measured). 6a-bis — the two loops still linear in light
+count — is *not*; it is still open and is described unchanged.
 
 **What existed.** One flat power-weighted CDF over every sampled light row,
 every emissive triangle and one environment entry, rebuilt per render call
@@ -994,7 +996,114 @@ well-chosen sample is likely the faster route to equal perceived quality.
 Do not build it first; build it if the §0.1 baseline on a two-light scene
 asks for it.
 
-### 6a-ter. A `RectAreaLight` is one emissive quad, not `K` rows
+### 6a-ter. A `RectAreaLight` is one emissive quad, not `K` rows — LANDED
+
+**What shipped.** `algan/rendering/raytracing/area_light_quads.py` builds two
+emissive triangles per `RectAreaLight` — centre from the light's own packed
+sample rows, axes from its facing normal, radiance `colour * intensity / area`
+(the matching §5's acceptance test does by hand) — and
+`tracer._attach_area_light_quads` appends them to a **private copy** of the
+merged scene, rebuilding the triangle BVH over the widened primitive set and
+re-homing the widened tables into the arena. Private because the merge is the
+persistent device scene the deterministic renderer may render from next: it
+never sees these triangles at all, which is also why the camera-invisibility
+test is not a leaf bit. The geometry is per frame, indexed like `light_pos`, so
+a light that moves takes its quad with it. The `K` cell rows stay in
+`light_col` (the authored-appearance branch still lights from them) but stop
+being selectable in `_build_nee_tables`, so nothing is counted twice.
+
+`pt_area_light_quads` (`ALGAN_PT_AREA_LIGHT_QUADS`, default on) is the switch,
+host-side with no kernel variant; off is the packed-rows arm, byte for byte.
+
+**What it costs on the host.** The widened copy rebuilds the *whole*
+triangle tree (the merge does not keep its build inputs, and the traversal
+takes one triangle tree per batch), so it is built **once per batch** and
+cached on the batch-lived merge under `_pt_quad_widened`, with its arena
+range retained through the per-window rewind the way the raster tables are
+— `render_batch_raytraced` runs once per render *window*, which at 720p and
+16 spp is one frame, and the first version rebuilt per window: measured
+120 ms per frame on 3,200 triangles on the CPU box, i.e. a fifth of that
+frame's wall. Per batch it is one extra split-BVH build, on the order of
+the merge's own, plus a second copy of the triangle tables in the arena's
+persistent end that the memory model does not plan for (a batch that only
+just fit will retry smaller). The right end state is the quads entering
+the merge itself with a camera-invisible leaf bit the deterministic
+traversal tests and never sets; that touches the deterministic kernels and
+is not done here.
+
+**The falloff multiplier.** A row's emitter model is `d^-decay` times a range
+fade and `RectAreaLight` defaults to `decay = 0` — no falloff at all — while a
+physical emissive quad has inverse square built into transport. The difference
+is a per-emitter radiance multiplier `d^(2 - decay) * fade(d)^2` applied
+**at the emitter**, so both MIS ends evaluate it from the same distance (the
+next-event end knows `ldist`, the BSDF-hit end knows `t_hit`) and the
+power-heuristic weights still sum to one. Its two numbers per quad ride
+`pt_emit_falloff`, one new arena entry on `pt_shade` rather than a new kernel
+argument, indexed by `prim - quad_base` with `quad_base` on `nee_meta`
+(`_NM_QUAD_BASE`). An ordinary emissive triangle is `prim < quad_base` and
+takes neither branch, so emissive meshes are bit-identical. The light tree's
+importance exponent reads the NET falloff for a quad rather than the
+triangle's usual 2, because on a `decay = 0` light a hard-coded inverse square
+aims the sampler at the near emitter for nothing (§6a measured that at 1.34x
+worse).
+
+**Camera-invisible, and not an occluder.** The one compare `prim >= quad_base`
+in `pt_shade`'s drain loop, gated on `bounces_left >= max_b` — the camera
+segment, the same reading the closed-shell ring takes — passes a primary ray
+straight through while a ray that has bounced sees the light, which is what
+puts it in a mirror. The quads are packed **non-opaque** so the k-buffer's
+prune-behind-an-opaque-hit and `pt_opaque_closest` cannot hide the geometry
+behind one while it is being skipped (that batch turns `all_visible_opaque`
+off), and **non-casting** in the rebuilt tree — the `casts_shadows` leaf bit —
+so a shadow ray walks through, matching the deterministic renderer where an
+area light is not an occluder.
+
+**Tests**, all in `tests/unit_tests/test_path_tracer.py` and none marked
+`fast`: `test_area_light_quad_and_row_arms_agree` (Lambert and GGX floors, the
+two arms within 6% at 96 spp),
+`test_area_light_quad_falloff_follows_the_row_model` (`decay` 0 / 1 / 2 and a
+non-zero `distance`, each arm against the
+other), `test_area_light_quad_is_invisible_to_the_camera` (the light's own
+pixels are pure background, with an emissive mob of the same size as the
+control that proves the framing), `test_area_light_quad_shows_up_in_a_mirror`
+(a smooth metal sphere: 16 pixels over 100/255 with quads, 0 without),
+`test_area_light_quad_occludes_nothing` (a point light through a zero-intensity
+panel), `test_area_light_quad_is_mis_covered_by_both_strategies`
+(`max_bounces = 0`, where next-event carries the whole emitter at weight 1,
+against `max_bounces = 3`, where the two strategies split it),
+`test_area_light_quad_follows_a_moving_light` and
+`test_area_light_quad_collapses_the_next_event_table` (a `samples = 16` light:
+16 selectable entries becomes 2). The two pre-existing area-light tests —
+`test_area_light_matches_the_reference_integral`, which pins the `decay = 0`
+radiometry against a torch quadrature of the continuous area integral, and
+§5's `test_area_light_row_and_emissive_quad_agree` — now run **through** the
+quad path and still pass, which is the strongest statement available that the
+new estimator is the same estimator.
+
+**Variance**, `benchmarks/_pt_area_light_quad_variance.py` (CPU, 64x64, one
+`samples = 16` area light over a Lambert floor with a smooth metal sphere,
+adaptive sampling off, MSE against a 1024-spp reference, 4 seeds per arm):
+**320.3 for the rows arm against 153.2 for the quads — 2.09x better at equal
+spp**. The two 1024-spp references differ by 0.807 counts of 255 mean
+absolute, which is the bias bound: they are two estimators of one emitter,
+they agree to well under a channel count, and the 2.09x is therefore variance.
+Most of it is the metal sphere, where a BSDF ray finds the emitter and a
+next-event sample aimed at a near-delta lobe almost never does — the strategy
+the rows arm does not have.
+
+`tests/path_traced/` did not move at all — none of its three scenes carries a
+`RectAreaLight` — so 6a-ter cost no re-baseline, which is why it is not in
+§5's batch after all.
+
+**Known, and deliberately left:** an authored-appearance material (manim,
+toon, matcap, a custom fragment pipeline) still lights from the packed rows,
+because that is the model those materials have; the quad is additionally
+geometry its continuation can find, so such a surface sees an area light
+slightly twice. Physically-integrated materials — everything that goes through
+the next-event table — are unaffected. Closing it is §6a-bis's interface
+decision, not this section's.
+
+The rest of this section is the original plan, kept.
 
 `RectAreaLight` expands to `K = k*k` cell rows carrying `1/K` of the power
 each. That packing exists for the deterministic renderer's shadow fans; the

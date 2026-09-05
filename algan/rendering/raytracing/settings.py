@@ -245,6 +245,21 @@ pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
 # and the byte-parity escape hatch); directional lights and the environment
 # map are position-independent and stay on a flat list either way.
 pt_light_tree = env_flag("ALGAN_PT_LIGHT_TREE", True)
+# Give the path tracer its own view of a ``RectAreaLight``: two emissive
+# triangles covering the rectangle, appended to the merged geometry for this
+# render only, instead of the ``K = k*k`` packed cell rows the deterministic
+# renderer's shadow fans need. The quads ride the emissive-triangle path end
+# to end -- area sampling from the next-event table, ``_pt_lit_f_pdf`` on both
+# ends, power-heuristic MIS, and a BSDF ray that can FIND them, which is what
+# puts an area light in a mirror -- so one light costs 2 table entries instead
+# of 16 and the light tree's leaves stop multiplying. The quads are invisible
+# to camera-segment rays and cast no shadow, matching the deterministic
+# renderer where an area light is neither drawn nor an occluder; the row
+# model's ``decay`` / ``distance`` survive as a per-emitter radiance
+# multiplier evaluated identically at both MIS ends (roadmap section 6a-ter).
+# False restores the packed cell rows exactly, byte for byte: it is the A/B
+# arm and the regression guard, host-side only with no kernel variant.
+pt_area_light_quads = env_flag("ALGAN_PT_AREA_LIGHT_QUADS", True)
 # Let the path tracer's next-event visibility rays take the opaque any-hit
 # shadow query (``_shadow_occluded`` mode 3, the ordered march compiled out)
 # on a batch that provably holds no translucent and no transmissive geometry

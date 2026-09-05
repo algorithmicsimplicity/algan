@@ -284,7 +284,7 @@ _NEE_AMBIENT_ROW = 3
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 17
+NEE_META_WIDTH = 18
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -306,6 +306,13 @@ _NM_TREE_MIX = 15  # P(tree) = finite power / total power; the rest is the
 #                    position-independent infinite list (directional + env),
 #                    which is what keeps the mixture unbiased
 _NM_INF_COUNT = 16  # entries in nee_inf_cdf / nee_inf_ref
+# First primitive index of the synthetic RectAreaLight quads this render call
+# appended (``area_light_quads``; 1 << 30 when it appended none, which is past
+# any primitive a batch can hold). One compare against it is the whole
+# camera-invisibility test AND the gate on the per-emitter falloff multiplier
+# in ``pt_emit_falloff``, so an ordinary emissive triangle takes neither branch
+# and is bit-identical to what it was before area-light quads existed.
+_NM_QUAD_BASE = 17
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -1452,9 +1459,10 @@ def _pt_meta_escape(nee_meta: ti.template()):
 def _pt_meta_hit(nee_meta: ti.template()):
     """The ``nee_meta`` words only a path with a surface event reads: the
     next-event table size, the far plane, the packed ambient-row window, the
-    sampler's frame gate and the light tree's selection words. Returns
+    sampler's frame gate, the light tree's selection words and the first
+    synthetic area-light quad. Returns
     ``(num_nee, far_clip, amb_packed, amb_count, anim_seed, tree_on,
-    tree_mix, num_inf)``.
+    tree_mix, num_inf, quad_base)``.
     """
     return (
         ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32),
@@ -1465,7 +1473,40 @@ def _pt_meta_hit(nee_meta: ti.template()):
         nee_meta[_NM_TREE_ON] > 0.5,
         nee_meta[_NM_TREE_MIX],
         ti.cast(nee_meta[_NM_INF_COUNT] + 0.5, ti.i32),
+        ti.cast(nee_meta[_NM_QUAD_BASE] + 0.5, ti.i32),
     )
+
+
+@ti.func
+def _pt_quad_radiance_scale(pt_emit_falloff: ti.template(), prim, quad_base, d):
+    """Per-emitter radiance multiplier of a synthetic RectAreaLight quad.
+
+    A packed area-light row applies ``_light_eval``'s emitter model -- a
+    ``d^-decay`` falloff (``decay`` defaults to 0: no falloff at all) and a
+    range fade -- while a physical emissive quad has inverse square built into
+    transport. The difference is ``d^(2 - decay)`` times that same fade, and it
+    rides the EMITTER so both ends of the MIS pair evaluate it from the same
+    distance and the power-heuristic weights still sum to one: the next-event
+    end knows ``ldist``, the BSDF-hit end knows ``t_hit``.
+
+    An ordinary emissive triangle (``prim < quad_base``) returns exactly 1.0
+    without touching the table, so emissive meshes are unchanged.
+    """
+    m = 1.0
+    if prim >= quad_base:
+        j = prim - quad_base
+        expo = pt_emit_falloff[j, 0]
+        rng = pt_emit_falloff[j, 1]
+        if expo != 0.0:
+            # ``ti.max(d, 1e-4)`` is _light_eval's own clamp, so a shading
+            # point on the emitter reads the same number either model.
+            m = ti.pow(ti.max(d, 1e-4), expo)
+        if rng > 0.0:
+            q = ti.math.clamp(d / rng, 0.0, 1.0)
+            q2 = q * q
+            fade = ti.math.clamp(1.0 - q2 * q2, 0.0, 1.0)
+            m = m * (fade * fade)
+    return m
 
 
 @ti.kernel
@@ -1589,6 +1630,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     lt_frame = ti.static(ArenaView(arena_i32, aoff[34], (ashp[74],)))
     nee_inf_cdf = ti.static(ArenaView(arena_f32, aoff[35], (ashp[75],)))
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
+    pt_emit_falloff = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -1602,7 +1644,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             (n_ls, env_off, env_w, env_h, env_intensity, env_share,
              cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
             (num_nee, far_clip, amb_packed, amb_count, anim_seed,
-             tree_on, tree_mix, num_inf) = _pt_meta_hit(nee_meta)
+             tree_on, tree_mix, num_inf, quad_base) = _pt_meta_hit(nee_meta)
             g = ray_offset + rs_pix[r]
             f_rel = g // pixels_per_frame
             f = time_start + f_rel
@@ -1731,6 +1773,22 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     layer_prev = hit_layer
                     continue
                 seam_t = t_hit if edge_hit == 1 else -1e30
+
+                # A synthetic RectAreaLight quad is invisible to the CAMERA
+                # SEGMENT and to nothing else: ``bounces_left >= max_b`` is
+                # "this path has not scattered yet", the same reading the
+                # closed-shell ring takes. A primary ray peels straight
+                # through (the panel is not drawn, exactly as the
+                # deterministic renderer does not draw a light), while a ray
+                # that has bounced -- the reflection in a mirror, an indirect
+                # diffuse ray -- sees it and collects its emission. The quads
+                # are packed non-opaque so nothing behind one is pruned from
+                # the gather while it is being skipped.
+                if (htype == 1) and (prim >= quad_base) \
+                        and (bounces_left >= max_b):
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
 
                 w0 = 1.0 - a - b
                 color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -1957,6 +2015,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             tri_mat[tm, prim, 1],
                                             tri_mat[tm, prim, 2]) \
                         * tri_mat[tm, prim, 3]
+                    # The BSDF end of the falloff pair: ``t_hit`` is measured
+                    # from ``ro``, which a pass-through crossing leaves alone,
+                    # so it IS the distance from the shading point the
+                    # next-event end would have measured ``ldist`` from.
+                    emissive = emissive * _pt_quad_radiance_scale(
+                        pt_emit_falloff, prim, quad_base, t_hit)
                     # Emission reached through a sampled smooth lobe is
                     # MIS-weighted against the NEE strategy that also covers
                     # this triangle; camera rays, delta continuations and
@@ -2138,6 +2202,13 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 tri_mat[tm_e, ref, 1],
                                                 tri_mat[tm_e, ref, 2]) \
                                                 * tri_mat[tm_e, ref, 3]
+                                            # The next-event end of the
+                                            # falloff pair -- the same
+                                            # function of the same distance
+                                            # the BSDF end applies above.
+                                            le = le * _pt_quad_radiance_scale(
+                                                pt_emit_falloff, ref,
+                                                quad_base, d_e)
                                             _ec, e_alpha = _tri_color_g(
                                                 0, f, ref, ew0, ew1, ew2,
                                                 tri_colors, tri_colors,
@@ -2884,6 +2955,7 @@ _PT_SHADE_ARENA = (
     ("lt_frame", "i32", 1),
     ("nee_inf_cdf", "f32", 1),
     ("nee_inf_ref", "i32", 1),
+    ("pt_emit_falloff", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -2905,7 +2977,7 @@ _PT_SHADE_PARAMS = (
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref",
+    "nee_inf_cdf", "nee_inf_ref", "pt_emit_falloff",
 )
 
 _pt_shade_launch = arena_packed(
