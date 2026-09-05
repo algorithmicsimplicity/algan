@@ -286,6 +286,55 @@ pt_opaque_closest = env_flag("ALGAN_PT_OPAQUE_CLOSEST", True)
 # order, and a row's type column is frame-invariant (``Light._build_aux``
 # fills it from the class attribute).
 pt_ambient_rows = env_flag("ALGAN_PT_AMBIENT_ROWS", True)
+# How an authored-appearance surface (manim, toon, normal, matcap, depth and
+# every ``set_fragment_shader`` pipeline) gets its direct light under the path
+# tracer. Those materials are defined as a SUM over the packed light rows, and
+# reproducing that sum literally is the deterministic renderer's cost model --
+# one shadow ray per light, capped at ``max_shadow_lights`` -- running inside
+# the renderer whose whole point is that light count is free:
+#
+# ``"off"``
+#     Sum every row and trace one shadow ray per row up to the cap. What the
+#     path tracer has always done, byte for byte.
+# ``"auto"`` (the default)
+#     That sum where it is affordable (``num_lights <= max_shadow_lights``),
+#     and the estimator below past it -- so nothing about a small rig moves and
+#     a hundred-light scene stops paying a hundred-light loop.
+# ``"always"``
+#     The estimator at every light count. The A/B arm, and what the tests use
+#     to compare the two on a rig small enough to have an exact answer.
+#
+# The estimator: the direction-less (ambient / hemisphere) rows are filled
+# deterministically as they always were, then ``pt_light_samples`` rows are
+# DRAWN from a power-weighted table of the light rows and their radiance is
+# scaled by ``1 / (S * p)``. Every built-in stage carries a light's colour
+# linearly, so the sum over sampled rows is unbiased for the sum over all of
+# them; the residual bias is ``_stage_manim``'s clamp to the display range,
+# which is why "auto" keeps the exact sum where it is cheap. A user stage that
+# uses a light's DIRECTION without multiplying by its colour sees an unweighted
+# sum over the sampled rows instead (see ``FragmentStage``).
+pt_authored_light_sampling = env_str("ALGAN_PT_AUTHORED_LIGHT_SAMPLING", "auto")
+
+_PT_AUTHORED_LIGHT_SAMPLING = ("off", "auto", "always")
+
+
+def set_pt_authored_light_sampling(value):
+    """Select how the path tracer lights authored-appearance materials.
+
+    One of ``"off"``, ``"auto"`` (the default) or ``"always"``; see
+    ``pt_authored_light_sampling``. Host-side, read at the start of each render
+    call, so both arms run in one process.
+    """
+    global pt_authored_light_sampling
+    text = str(value).strip().lower()
+    if text not in _PT_AUTHORED_LIGHT_SAMPLING:
+        raise ValueError(
+            "pt_authored_light_sampling must be one of "
+            f"{_PT_AUTHORED_LIGHT_SAMPLING}, got {value!r}"
+        )
+    pt_authored_light_sampling = text
+
+
 # Whether the path tracer's sampler key includes the frame. Off (the default)
 # keys every frame as frame 0, so a static region draws the IDENTICAL sample
 # set each frame: its Monte Carlo error becomes a fixed noise texture that

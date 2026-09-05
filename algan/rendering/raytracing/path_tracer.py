@@ -71,6 +71,7 @@ from algan.rendering.raytracing.light_tree import (
 )
 from algan.rendering.raytracing.path_tracer_taichi import (
     _NEE_AMBIENT_ROW,
+    _NEE_AUTHORED_ROW,
     _NEE_EMISSIVE_TRI,
     _NEE_ENV,
     _NEE_LIGHT_ROW,
@@ -78,6 +79,8 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_AMBIENT_PACKED,
     _NM_ANIM_SEED,
     _NM_AOV,
+    _NM_AUTHORED_COUNT,
+    _NM_AUTHORED_SAMPLES,
     _NM_COUNT,
     _NM_ENV_CDF_H,
     _NM_ENV_CDF_W,
@@ -120,6 +123,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_LAMBERT,
     _MID_PHYSICAL,
     ALL_PIDS,
+    max_shadow_lights,
     shadow_vis_slots,
 )
 from algan.rendering.raytracing.truncation import (
@@ -713,17 +717,30 @@ def _build_nee_tables(
     built: it is the ``pt_light_tree = False`` arm, and ``tri_emit_prob``
     remains the "this triangle is in the table" predicate either way.
 
-    Returns arena tensors ``(nee_cdf [E], nee_ref [E + A, 2], nee_meta
+    Returns arena tensors ``(nee_cdf [E + R], nee_ref [E + A + R, 2], nee_meta
     [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
     [N], lt_node_f [rows, nodes, 14], lt_node_i [rows, nodes, 3],
     lt_entry_leaf [rows, E_finite], lt_frame [frames], nee_inf_cdf [E_inf],
-    nee_inf_ref [E_inf], pt_emit_falloff [Q, 2])`` -- every
+    nee_inf_ref [E_inf], pt_emit_falloff [Q, 2])`` plus the two host-side
+    numbers the launch needs, ``(auth_mode, authored_slots)`` -- every
     selection probability the kernels divide by or MIS against comes from
     these, so both ends of each MIS pair see identical numbers. The ``A``
     ambient-like rows sit AFTER the ``E`` sampled entries and are not part of
     the CDF (which the kernel searches at ``num_nee``): they are the
     deterministic fill's row indexes, packed here so ``pt_shade`` need not
     rescan every light row's type column at every lit crossing.
+
+    The ``R`` rows after those are the AUTHORED-appearance branch's own table
+    (roadmap section 6a-bis), present only when that branch samples: the light
+    rows an authored stage sums, with a self-normalised power CDF of their own
+    in the matching span of ``nee_cdf``. It is a separate table rather than a
+    subset of the sampled entries because the two disagree about a
+    ``RectAreaLight``: the sampled entries hold its emissive quads and NOT its
+    cell rows, while an authored material lights from those cell rows, which
+    is the model those materials have. Keeping them apart is also what keeps
+    every draw useful -- selecting from the sampled entries would have to
+    reject emissive triangles and the environment, which do not light an
+    authored surface at all.
 
     ``pt_emit_falloff`` and ``_NM_QUAD_BASE`` are the area-light quads'
     (``area_light_quads``): the ``Q`` synthetic emissive triangles a
@@ -750,6 +767,8 @@ def _build_nee_tables(
     # a point light there, so there is nothing to find.
     amb_rows = None
     ltypes = None
+    auth_idx = None
+    auth_power = None
     # The area-light quads this render call added, if any (area_light_quads):
     # the first synthetic primitive index, each quad's ``(2 - decay, range)``
     # falloff pair, and the packed rows they replace.
@@ -773,6 +792,14 @@ def _build_nee_tables(
             | (ltypes == _LT_SPOT)
             | (ltypes == _LT_AREA_SAMPLE)
         ) & (row_power > 0)
+        # The authored-appearance branch's own table, taken BEFORE the quad
+        # withdrawal below (roadmap 6a-bis). An authored material is defined as
+        # a sum over the packed rows and lights from a ``RectAreaLight``'s cell
+        # rows whether or not the path tracer replaced that light with geometry
+        # for its OWN estimator -- so the two tables agree on which rows exist
+        # and disagree, deliberately, about the area light's.
+        auth_idx = sampled.nonzero(as_tuple=False).flatten()
+        auth_power = row_power[auth_idx]
         if quad_rows:
             # A RectAreaLight the quad path has turned into geometry is in
             # this table twice otherwise -- once as its K cell rows and once
@@ -852,30 +879,99 @@ def _build_nee_tables(
         num_entries = 0
 
     num_ambient = 0 if amb_rows is None else int(amb_rows.numel())
+
+    # ------------------------------------------------------------------
+    # The authored-appearance branch's estimator (roadmap section 6a-bis).
+    # ------------------------------------------------------------------
+    # ``off``  -- the branch sums every row and traces a shadow ray per row up
+    #             to the cap, exactly as it always has.
+    # ``auto`` -- that sum while it is affordable, this estimator past the cap.
+    # ``always`` -- this estimator at every light count (the A/B arm).
+    #
+    # The estimator fills ``A`` slots with the direction-less rows and ``S``
+    # with rows drawn from ``auth_cdf``, so it needs ``A + S`` visibility slots
+    # where the sum needs one per light. ``S`` never exceeds
+    # ``pt_light_samples``: the kernel spends the crossing's OWN next-event
+    # dimension pairs on these draws (a crossing is either lit or authored,
+    # never both), and there are ``2 * pt_light_samples`` of them.
+    #
+    # Forced back to the sum in three cases, each because the estimator would
+    # be a strictly worse spelling of the same answer: no sampleable row at all
+    # (nothing to draw from), the ambient rows not packed (``pt_ambient_rows``
+    # off -- the deterministic slots come from that tail), and no slot left for
+    # a sampled row after the ambient ones.
+    num_authored = 0 if auth_idx is None else int(auth_idx.numel())
+    auth_choice = str(rt_settings.pt_authored_light_sampling).strip().lower()
+    auth_mode = int(
+        auth_choice == "always"
+        or (auth_choice == "auto" and num_lights > max_shadow_lights)
+    )
+    if num_authored == 0 or not rt_settings.pt_ambient_rows:
+        auth_mode = 0
+    auth_want = max(1, int(rt_settings.pt_light_samples))
+    auth_amb = min(num_ambient, max_shadow_lights)
+    auth_samples = max(0, min(auth_want, max_shadow_lights - auth_amb))
+    if auth_samples == 0:
+        auth_mode = 0
+    if auth_mode == 0:
+        num_authored = 0
+        auth_samples = 0
+        authored_slots = int(num_lights)
+    else:
+        authored_slots = auth_amb + auth_samples
+        if auth_samples < auth_want:
+            logger.log(
+                PERF,
+                "path tracer: authored-appearance materials sample %d of the "
+                "%d light rows they asked for (%d of the %d shadow slots go "
+                "to ambient rows).",
+                auth_samples,
+                auth_want,
+                auth_amb,
+                max_shadow_lights,
+            )
+
     with memory.scope(
         "pt_nee_tables",
-        entries=max(num_entries + num_ambient, 1),
+        entries=max(num_entries + num_ambient + num_authored, 1),
         emitters=max(n_tri, 1),
     ):
         emit_prob = memory.get_tensor((max(n_tri, 1),), torch.float32)
         emit_prob.zero_()
         if num_entries > 0:
-            nee_cdf = _arena_copy(memory, cdf.float())
             emissive_rows = kind == _NEE_EMISSIVE_TRI
             if bool(emissive_rows.any().item()):
                 emit_prob[ref[emissive_rows]] = prob[emissive_rows].float()
         else:
-            nee_cdf = memory.get_tensor((1,), torch.float32)
-            nee_cdf.zero_()
             kind = torch.zeros(0, dtype=i64, device=device)
             ref = torch.zeros(0, dtype=i64, device=device)
-        if num_entries > 0 or num_ambient > 0:
+        # The authored branch's CDF is SELF-NORMALISED and occupies the span of
+        # ``nee_cdf`` matching its rows' span of ``nee_ref``. Nothing else
+        # reads it (the sampled search is bounded by ``num_nee``), and it is
+        # built only in the sampled mode, so an ``off`` render's tables are the
+        # bytes they always were.
+        cdf_parts = [cdf.float()] if num_entries > 0 else []
+        if num_authored > 0:
+            a_prob = auth_power / auth_power.sum()
+            a_cdf = a_prob.cumsum(0)
+            a_cdf[-1] = 1.0
+            cdf_parts.append(a_cdf.float())
+        if cdf_parts:
+            nee_cdf = _arena_copy(memory, torch.cat(cdf_parts))
+        else:
+            nee_cdf = memory.get_tensor((1,), torch.float32)
+            nee_cdf.zero_()
+        if num_entries > 0 or num_ambient > 0 or num_authored > 0:
             # The ambient rows go AFTER the ``num_entries`` sampled ones: the
             # CDF search is bounded by ``num_nee`` and never sees them, and
-            # the kernel walks them at ``nee_ref[num_nee + j]``.
+            # the kernel walks them at ``nee_ref[num_nee + j]``. The authored
+            # rows go after those, at ``nee_ref[num_nee + num_ambient + k]``.
             if num_ambient > 0:
                 kind = torch.cat((kind, torch.full_like(amb_rows, _NEE_AMBIENT_ROW)))
                 ref = torch.cat((ref, amb_rows))
+            if num_authored > 0:
+                kind = torch.cat((kind, torch.full_like(auth_idx, _NEE_AUTHORED_ROW)))
+                ref = torch.cat((ref, auth_idx))
             nee_ref = _arena_copy(
                 memory,
                 torch.stack((kind, ref), -1).to(torch.int32),
@@ -918,6 +1014,12 @@ def _build_nee_tables(
         meta[_NM_QUAD_BASE] = float(
             NO_QUAD_BASE if quad_base is None else int(quad_base)
         )
+        # Both zero unless the authored branch samples (roadmap 6a-bis); the
+        # kernel reads them only in the arm compiled for that, and the arm is
+        # chosen by ``auth_sampled``, which the caller derives from the same
+        # decision that set these.
+        meta[_NM_AUTHORED_SAMPLES] = float(auth_samples)
+        meta[_NM_AUTHORED_COUNT] = float(num_authored)
 
     with memory.scope(
         "pt_quad_falloff",
@@ -981,6 +1083,8 @@ def _build_nee_tables(
         nee_inf_cdf,
         nee_inf_ref,
         emit_falloff,
+        auth_mode,
+        authored_slots,
     )
 
 
@@ -1174,6 +1278,8 @@ def path_trace_render(
         nee_inf_cdf,
         nee_inf_ref,
         pt_emit_falloff,
+        auth_sampled,
+        authored_slots,
     ) = _build_nee_tables(
         memory,
         merged,
@@ -1411,7 +1517,12 @@ def path_trace_render(
                             int(has_bez),
                             int(shadows),
                             shadow_mode,
-                            shadow_vis_slots(num_lights),
+                            # The visibility payload is sized by what the
+                            # authored branch will actually fill: one slot per
+                            # light when it sums them, and the far smaller
+                            # ``ambient + sampled`` when it samples.
+                            shadow_vis_slots(authored_slots),
+                            int(auth_sampled),
                             frag_pipelines,
                             frag_scatters,
                             ALL_PIDS,

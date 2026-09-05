@@ -110,7 +110,16 @@ do.** Three kinds of scene fail there and render here:
   and it shadows at most 16 light slots (:ref:`limits-truncation`; a 4x4 area
   light spends 16 on its own). The path tracer samples lights instead of
   summing them, so its cost per shading point does not depend on how many
-  there are, and every light casts a shadow.
+  there are, and every light casts a shadow. That holds for
+  authored-appearance materials as well -- toon, normal, matcap, depth,
+  Manim's material and custom fragment pipelines, whose lighting is *defined*
+  as a sum over the light rows: past the shadow cap the path tracer samples
+  those rows too, so they get a shadow from every light rather than from the
+  first 16 (``SETTINGS.raytracing.experimental.pt_authored_light_sampling``,
+  ``"auto"`` by default; ``"off"`` restores the exact sum and its cap). The
+  price is that their lighting becomes an estimate that converges with
+  ``samples_per_pixel``, which is why the default keeps the exact sum on a rig
+  small enough to afford it.
 * **Reflective and transparent geometry that exhausts render memory.** The
   deterministic renderer splits a ray at every reflective or refractive
   surface, so enough such surfaces make one frame not fit; the path tracer
@@ -201,7 +210,8 @@ feature it could not honour.
      - Yes
    * - Custom fragment-shader pipelines
      - Yes
-     - Yes (shaded as authored; diffuse for indirect bounces)
+     - Yes (shaded as authored; diffuse for indirect bounces; their light rows
+       are sampled past the shadow cap)
    * - Custom scatter overrides
      - Yes
      - Yes (as a delta lobe; no NEE coverage)

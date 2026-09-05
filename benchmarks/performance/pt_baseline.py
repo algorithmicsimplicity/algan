@@ -25,6 +25,16 @@ many_lights
     rest light without shadowing and the render records a truncation. That is
     the shipped behaviour, so it is what this arm measures; raise the env var
     if the question is what 64 *shadowed* lights cost.
+many_lights_authored
+    The ``many_lights`` rig again, with every solid in an AUTHORED-appearance
+    material (``ManimMaterial`` / ``MeshToonMaterial``) instead of a
+    physically-integrated one. Those materials are defined as a sum over the
+    packed light rows, so before roadmap 6a-bis this arm paid a 64-iteration
+    loop and 16 shadow rays at every crossing -- the deterministic renderer's
+    cost model, inside the renderer that exists because that model does not
+    scale. ``--pt-authored-light-sampling off`` is the arm before, ``always``
+    the arm after, and ``auto`` (the default) is ``always`` here because 64
+    lights is past ``max_shadow_lights``.
 text_2d
     Unlit 2-D content: a ``Text`` paragraph plus overlapping translucent
     ``Square``/``Circle`` shapes. This is the deterministic camera-segment
@@ -98,6 +108,16 @@ Kaggle T4 readings (2026-09-04, warm RUN 2, five frames, 16 spp, 4 bounces;
     many_lights    0.88 s   pt_shade  20 ms  (64 lights: flat)
     text_2d 720p   1.17 s   traverse 153 ms  pt_shade 147 ms  denoise 394 ms
 
+Authored-appearance arms (this 4-vCPU CPU box, 320x180, 16 spp, 4 bounces,
+warm RUN 2, one process per arm; roadmap §6a-bis is the record)::
+
+    many_lights_authored  als off      6.267 s   pt_shade 3693.9 ms   5.94 spp
+    many_lights_authored  als always   3.308 s   pt_shade  517.1 ms   5.94 spp
+
+The same number of samples in both, so the 7.1x on ``pt_shade`` is per-crossing
+cost and nothing else -- and the ``off`` arm is the one that silently drops the
+shadows of 48 of the 64 lights.
+
 Adaptive sampling arms (this 4-vCPU CPU box, 320x180, warm RUN 2, denoiser
 off, median of three; roadmap §2.1 has the frame diffs)::
 
@@ -131,6 +151,11 @@ import sys
 os.environ["ALGAN_USE_DAEMON"] = "0"
 
 from algan import *  # noqa: F403
+
+# Not part of the star-import's curated namespace (``manim_shader``'s material
+# is reached through ``algan.manim``); this arm needs the stage whose clamp is
+# roadmap 6a-bis's documented bias.
+from algan.rendering.shaders.materials import ManimMaterial
 from algan.rendering.raytracing.truncation import path_samples_mean
 from algan.rendering.taichi_runtime import _live_arch, _taichi_arch
 from algan.settings import _startup
@@ -222,24 +247,84 @@ def scene_many_lights():
     Scene.set_background(BLACK)
     Scene.clear_lights()
 
+    with Off():
+        _many_light_ring()
+        ball, box, coated = _solids()
+
+    with Sync(runtime=DURATION):
+        ball.move(UP * 0.9)
+        box.rotate(60, UP)
+        coated.rotate(45, RIGHT)
+
+
+def _authored_solids():
+    """``_solids``' geometry in authored-appearance materials.
+
+    Same shapes, same placement, same opacity rule -- only the pipeline id
+    changes, so a comparison against ``many_lights`` is a comparison of the two
+    direct-lighting responses and nothing else. Toon rather than manim on most
+    of them because ``_stage_toon`` is linear in a light's colour, which is
+    what the sampled estimator is unbiased for; one manim solid is here so the
+    arm also compiles the stage whose clamp is the documented bias.
+    """
+    floor = Prism(width=10.0, height=0.3, depth=6.0)
+    floor.set_material(MeshToonMaterial(color=WHITE))
+    _opaque(floor).move(DOWN * 1.7)
+    floor.spawn(animate=False)
+
+    ball = Sphere(radius=0.9)
+    ball.set_material(MeshToonMaterial(color=BLUE))
+    _opaque(ball).move(LEFT * 1.9 + DOWN * 0.6)
+    ball.spawn(animate=False)
+
+    toon_ball = Sphere(radius=0.7)
+    toon_ball.set_material(MeshToonMaterial(color=WHITE))
+    _opaque(toon_ball).move(RIGHT * 2.1 + DOWN * 0.8)
+    toon_ball.spawn(animate=False)
+
+    box = Prism(width=1.2, height=1.2, depth=1.2)
+    box.set_material(ManimMaterial(color=RED))
+    _opaque(box).move(DOWN * 0.9)
+    box.spawn(animate=False)
+
+    coated = Prism(width=1.0, height=1.6, depth=1.0)
+    coated.set_material(MeshToonMaterial(color=GREEN))
+    _opaque(coated).move(LEFT * 0.2 + UP * 1.1 + IN * 1.0)
+    coated.spawn(animate=False)
+
+    return ball, box, coated
+
+
+def _many_light_ring(num_lights=64):
+    """The ``many_lights`` rig, shared by both arms so they differ only in the
+    materials they light.
+    """
     import math
 
-    num_lights = 64
+    for i in range(num_lights):
+        angle = 2.0 * math.pi * i / num_lights
+        PointLight(
+            location=(
+                RIGHT * (5.0 * math.cos(angle))
+                + UP * (2.5 + 2.0 * math.sin(angle))
+                + OUT * (4.0 * math.sin(angle * 2.0))
+            ),
+            color=WHITE,
+            # 64 lights at full strength is a white frame, which measures
+            # nothing: keep the total roughly the lit scene's.
+            intensity=4.0 / num_lights,
+        ).spawn(animate=False)
+
+
+def scene_many_lights_authored():
+    """The 64-light ring over AUTHORED-appearance solids (roadmap 6a-bis)."""
+    SETTINGS.raytracing.set(shadows=True)
+    Scene.set_background(BLACK)
+    Scene.clear_lights()
+
     with Off():
-        for i in range(num_lights):
-            angle = 2.0 * math.pi * i / num_lights
-            PointLight(
-                location=(
-                    RIGHT * (5.0 * math.cos(angle))
-                    + UP * (2.5 + 2.0 * math.sin(angle))
-                    + OUT * (4.0 * math.sin(angle * 2.0))
-                ),
-                color=WHITE,
-                # 64 lights at full strength is a white frame, which measures
-                # nothing: keep the total roughly the lit scene's.
-                intensity=4.0 / num_lights,
-            ).spawn(animate=False)
-        ball, box, coated = _solids()
+        _many_light_ring()
+        ball, box, coated = _authored_solids()
 
     with Sync(runtime=DURATION):
         ball.move(UP * 0.9)
@@ -298,6 +383,7 @@ def scene_text_2d():
 SCENES = {
     "lit": scene_lit,
     "many_lights": scene_many_lights,
+    "many_lights_authored": scene_many_lights_authored,
     "text_2d": scene_text_2d,
 }
 
@@ -519,6 +605,15 @@ def parse_args(argv=None):
     parser.add_argument("--tag", default="", help="extra text for the profile tag")
     # None everywhere below means "leave the shipped default alone".
     parser.add_argument("--pt-light-samples", type=int, default=None)
+    parser.add_argument(
+        "--pt-authored-light-sampling",
+        choices=("off", "auto", "always"),
+        default=None,
+        help="how an authored-appearance material gets its direct light: "
+        "'off' sums every row and traces a shadow ray per row up to the cap "
+        "(the arm before roadmap 6a-bis), 'always' samples them, 'auto' (the "
+        "shipped default) sums inside the cap and samples past it",
+    )
     parser.add_argument("--pt-rr-start-bounce", type=int, default=None)
     parser.add_argument("--pt-firefly-clamp", type=float, default=None)
     parser.add_argument(
@@ -566,6 +661,7 @@ def knob_values(args):
         "samples_per_pixel": 1 if args.deterministic else args.spp,
         "max_bounces": args.bounces,
         "pt_light_samples": args.pt_light_samples,
+        "pt_authored_light_sampling": args.pt_authored_light_sampling,
         "pt_rr_start_bounce": args.pt_rr_start_bounce,
         "pt_firefly_clamp": args.pt_firefly_clamp,
         "pt_error_target": args.pt_error_target,
@@ -585,6 +681,8 @@ def build_tag(args):
     ]
     if args.pt_light_samples is not None:
         parts.append(f"ls{args.pt_light_samples}")
+    if args.pt_authored_light_sampling is not None:
+        parts.append(f"als-{args.pt_authored_light_sampling}")
     if args.pt_rr_start_bounce is not None:
         parts.append(f"rr{args.pt_rr_start_bounce}")
     if args.pt_firefly_clamp is not None:
@@ -618,6 +716,8 @@ def apply_settings(args):
     experimental = {}
     if args.pt_light_samples is not None:
         experimental["pt_light_samples"] = args.pt_light_samples
+    if args.pt_authored_light_sampling is not None:
+        experimental["pt_authored_light_sampling"] = args.pt_authored_light_sampling
     if args.pt_rr_start_bounce is not None:
         experimental["pt_rr_start_bounce"] = args.pt_rr_start_bounce
     if args.pt_firefly_clamp is not None:

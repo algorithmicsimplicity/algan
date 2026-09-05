@@ -72,7 +72,11 @@ the selection structure for next-event estimation (`light_tree.py`,
 `pt_light_tree`), so emitter choice weighs distance and orientation rather
 than power alone. §6a-ter has landed with them: a `RectAreaLight` is two
 emissive triangles here rather than `K` packed cell rows
-(`area_light_quads.py`, `pt_area_light_quads`).
+(`area_light_quads.py`, `pt_area_light_quads`). §6a-bis closed the last loop
+that was linear in the light count: an authored-appearance material's direct
+lighting is now sampled like everything else's past the shadow cap
+(`pt_authored_light_sampling`), so the "too many lights" case is uncapped for
+every material rather than for most of them.
 
 Power-heuristic MIS covers the strategies that genuinely overlap: emissive
 triangles — a `RectAreaLight`'s own quad included, since §6a-ter — and the
@@ -308,9 +312,9 @@ to — which is what makes them cheap to land without a re-baseline:
   The roulette draw still computes a full 2-D pair and keeps one component,
   deliberately: it is one draw per bounce and the dimension table documents
   the unused `x`.
-* **The authored-appearance shadow loop** (the second bullet of §6a-bis)
-  is the remaining linear-in-lights term and needs the interface decision
-  that section describes. It is not cheap and is listed there, not here.
+* **The authored-appearance shadow loop — LANDED (§6a-bis).** It was the
+  remaining linear-in-lights term and it needed the interface decision that
+  section describes, which is why it is recorded there and not here.
 
 ### 0.2-bis The host sync every iteration
 
@@ -864,9 +868,9 @@ ambient rows, so there was nothing left to remove there.
 
 ## 6. Many-light and emissive-mesh sampling
 
-**6a, 6a-ter, 6a-quater and 6b are LANDED** (see the sections below for what
-shipped and what each measured). 6a-bis — the two loops still linear in light
-count — is *not*; it is still open and is described unchanged.
+**6a, 6a-bis, 6a-ter, 6a-quater and 6b are all LANDED** (see the sections
+below for what shipped and what each measured). Nothing in `pt_shade` is
+linear in the light count any more.
 
 **What existed.** One flat power-weighted CDF over every sampled light row,
 every emissive triangle and one environment entry, rebuilt per render call
@@ -1106,13 +1110,30 @@ entries instead of 64. Variance at equal spp is 1.83x lower on the T4
 (2.09x on the CPU box). The traverse cost is the argument for the leaf-bit
 end state above.
 
-**Known, and deliberately left:** an authored-appearance material (manim,
-toon, matcap, a custom fragment pipeline) still lights from the packed rows,
-because that is the model those materials have; the quad is additionally
-geometry its continuation can find, so such a surface sees an area light
-slightly twice. Physically-integrated materials — everything that goes through
-the next-event table — are unaffected. Closing it is §6a-bis's interface
-decision, not this section's.
+**Known, and deliberately left — and §6a-bis did not close it.** An
+authored-appearance material (manim, toon, matcap, a custom fragment pipeline)
+lights from the packed rows, because that is the model those materials have,
+while the quad is additionally geometry its continuation can find: such a
+surface sees an area light slightly twice. §6a-bis changed *which* rows that
+first term sums over — it may now sample them rather than sum them all — and
+that is the whole of the change: the direct term still comes from the rows and
+the continuation is still an ordinary Lambert bounce that can hit the quad, so
+the double count is identical in both of its arms — the same surface, the same
+two contributions, only the first one estimated rather than summed. (It exists
+only where the quads do: with `pt_area_light_quads` off there is no geometry
+for a continuation to find.) Closing it needs the continuation to know it left
+an authored surface — path state, not an estimator — or the quads to carry an
+"invisible to a path that came off an authored crossing" rule, and neither is
+built. Physically-integrated materials — everything that goes through the
+next-event table — are unaffected: for them the rows are withdrawn and only
+the quad remains.
+
+What §6a-bis *did* have to get right here is the other direction: its estimator
+draws from a table of the LIGHT ROWS, not from the next-event entries, so a
+`RectAreaLight` whose cell rows this section withdrew still reaches an authored
+surface. Drawing from the next-event entries would have made an authored floor
+under an area light go black.
+`test_authored_sampling_lights_an_area_light_the_same` is the guard.
 
 The rest of this section is the original plan, kept.
 
@@ -1162,10 +1183,10 @@ entry's weight is the number the flat table gives it, so which emitters are
 sampleable at all did not change, and the "frame-animated emitters" gap in
 the final section stays open.
 
-### 6a-bis. Two loops that are linear in light count today
+### 6a-bis. Two loops that were linear in light count — LANDED
 
-Independent of the tree, `pt_shade` still walks every light row twice, and
-under the purpose stated at the top of this document these are defects rather
+Independent of the tree, `pt_shade` used to walk every light row twice, and
+under the purpose stated at the top of this document these were defects rather
 than inefficiencies:
 
 * **The ambient / hemisphere fill — FIXED (§0.2).** It used to scan all
@@ -1174,26 +1195,154 @@ than inefficiencies:
   row): in a 200-light scene, a 200-iteration scan per crossing per bounce
   to find two entries. The host now appends those rows to `nee_ref` after
   the sampled entries and the kernel loops their count from `nee_meta`.
-* **The authored-appearance branch** (manim, toon, normal, matcap, depth and
-  every `set_fragment_shader` pipeline) loops all lights and traces a shadow
-  ray for each up to `max_shadow_lights`, filling the `vis` vector
-  `_run_frag_pipeline` expects. That is the deterministic renderer's cost
-  model *and* its 16-light cap, running inside the fallback: such a surface in
-  a hundred-light scene gets shadows from the first 16 lights and pays 16
-  shadow rays per crossing. These materials are opt-in rather than Algan's
-  default (a shader-less mob is unlit, and the physically-integrated
-  materials go through the NEE table), so this is a hole rather than the
-  common path — but it is a hole in exactly the use case the renderer is
-  advertised for, and the feature matrix does not mention that the cap is
-  lifted only for some materials.
+* **The authored-appearance branch — FIXED (this section).** It looped all
+  lights and traced a shadow ray for each up to `max_shadow_lights`, filling
+  the `vis` vector `_run_frag_pipeline` expects. That is the deterministic
+  renderer's cost model *and* its 16-light cap, running inside the fallback:
+  such a surface in a hundred-light scene was lit by all hundred but shadowed
+  by the first 16, and paid 16 shadow rays per crossing. (Not "lit by 16" —
+  `_run_frag_pipeline` was handed the full `num_lights` and `_light_vis`
+  returns fully-lit for any row past the payload, so the surplus lights lost
+  their SHADOW, not their light.) These materials are opt-in rather than
+  Algan's default (a shader-less mob is unlit, and the physically-integrated
+  materials go through the NEE table), so it was a hole rather than the common
+  path — but a hole in exactly the use case the renderer is advertised for,
+  and the feature matrix did not mention that the cap was lifted only for some
+  materials.
 
-  The fix is harder than the first because `_run_frag_pipeline`'s interface is
-  a per-light visibility vector. The options are to sample `pt_light_samples`
-  lights from the table and fill only those slots (changing what the vector
-  means, so the pipeline contract needs restating), or to keep the vector for
-  the sampled subset and document authored-appearance materials as sampling
-  their lighting like everything else. Either way it is an interface decision,
-  not just a loop rewrite, which is why it is called out separately here.
+  It was harder than the first because `_run_frag_pipeline`'s interface is a
+  per-light visibility vector, so it was an interface decision and not just a
+  loop rewrite.
+
+**What shipped.** The branch now fills the direction-less rows as the lit
+branch does and **draws `pt_light_samples` of the remaining rows**, scaling
+each drawn row's radiance by `1 / (S * p)`. `pt_authored_light_sampling`
+(`ALGAN_PT_AUTHORED_LIGHT_SAMPLING`) is the switch, host-side, with **three**
+states: `"off"` is the summing arm byte for byte, `"auto"` (the default) sums
+inside `max_shadow_lights` and samples past it, `"always"` samples at any light
+count. Three rather than two because of the bias below.
+
+**The interface decision, which is the substance of this section: the weight
+rides the light's RADIANCE, not its visibility.** `_run_frag_pipeline` and the
+16-argument stage signature are untouched, and so is `shading_taichi.py`.
+`pt_shade` passes `light_pos` and `light_col` through `_SampledLightView`, a
+read-only view in `ArenaView`'s idiom (a tuple subclass, so `ti.static` passes
+it through and it binds to a name in kernel scope) that rewrites
+`view[tl, slot, c]` into `inner[tl, rows[slot], c]`, multiplied by
+`scale[slot]` for `c < 3`. `rows` and `scale` are per-thread `ti.Vector`
+locals, indexed from Python scope through the compiler's own subscript builder
+exactly as `ArenaView` indexes the arena. Every built-in light-dependent stage
+carries `lc` linearly in *both* its reflection and its `wsum` energy budget, so
+`sum over slots g(r(s)) w_s vis_s` is unbiased for `sum over rows g(i) vis_i`.
+
+The weight could not ride `vis`: `_light_vis` is `ti.static(shadows != 0)`-gated
+and compiles out entirely when shadows are off, so a weight parked there would
+be dead-code-eliminated and every shadowless path-traced render would be
+silently wrong. A slot→row map through the stage signature was the other
+candidate and is a public API break (`FragmentStage`'s contract, with
+`_stage_cosine_color` as the shipped example users copy) that would also
+recompile every deterministic shade kernel.
+
+**The one deviation from the plan of record: the mode is a `ti.template()`
+argument (`auth_sampled`), not a `nee_meta` word.** It is forced, not chosen.
+The summing arm hands `_run_frag_pipeline` a row ordinal that can run *past*
+`vis_lights` — a 40-light rig at the 16-slot cap is exactly the case this
+section is about — so that arm cannot go through a per-thread slot map at all,
+and a runtime mode would make every scene carry the map (and a select per
+channel read) whether or not it uses one. Taichi specialises on template
+arguments, so both arms still compile and run in ONE process, which is what the
+parity tests need; a `ti.static` gate read off a setting would not. It costs no
+runtime argument slot and no arena entry, and the mode-0 variant is the kernel
+this file compiled before. The two runtime words that remain (`S` and the
+authored table's length) ride `nee_meta`, whose width went 18 → 20.
+
+**Where the sampled rows come from, and why not the next-event table.** A
+separate small power-weighted CDF over the light rows, appended after the
+ambient tail of `nee_ref` with its own self-normalised span of `nee_cdf` — no
+new arena entry, only two tables that got longer, and built at all only in the
+sampled mode so an `"off"` render's bytes are unchanged. Selecting from the
+next-event entries instead (the plan's first draft, with non-light-row entries
+rejected at weight 0) fails on §6a-ter: a `RectAreaLight` is two emissive
+triangles there and its `K` cell rows are withdrawn, so an authored floor under
+an area light would have lost its only light. It also wastes every draw that
+lands on an emissive mesh or the environment, which do not light an authored
+surface at all — in a scene where those hold most of the power, nearly all of
+them. The cost of keeping the two apart is that the authored branch does not
+get the light tree's spatial awareness; on `decay = 0` rows, which is Algan's
+default, §6a measured the tree at 1.03x the flat CDF, so there is little there
+to lose. Two bases, not one: the authored rows follow the ambient tail in
+`nee_ref` but only the sampled entries in `nee_cdf`, because the ambient rows
+have no selection probability at all.
+
+**The residual bias, and why the switch has a third state.** `_stage_manim`
+encodes to sRGB, adds its offset, clamps to `[0, 1]` and decodes — always,
+linear working space or not — and `E[clamp(x)] != clamp(E[x])`. At `S = 1`
+over 40 equal lights a sampled row carries 40x a light's radiance and clips, so
+manim under a large rig reads darker and noisier than the sum. `"auto"`
+therefore keeps the exact sum wherever it is affordable. Under
+`ALGAN_LINEAR_COLOR=0` the illumination-budget normalisation `_energy_scale`
+becomes `1 / max(wsum, 1)` of a now-random `wsum`, which is biased for the same
+reason; under the default linear space it is exactly 1.0 and there is no such
+term. And a **user** stage that uses a light's direction without multiplying by
+its colour sees an unweighted sum over the sampled rows — documented on
+`FragmentStage` and in `renderer_limitations.rst`.
+
+**Sampler dimensions and adaptive sampling.** The draws spend the crossing's
+own next-event pairs (`pair_cross0 + 2s` and `+ 1`): a crossing is either lit
+or authored, never both, so no new dimension pair was needed, and `S` is capped
+at `pt_light_samples` for exactly that reason. This also retires the hash-RNG
+draw the summing arm uses for its per-light soft-shadow jitter, whose salt
+`processed * 64 + li` aliases above 64 lights. `stoch = 1` was already set
+unconditionally for this branch and stays; the comment beside it now names the
+light pick as the primary reason so a future narrowing cannot drop it.
+
+**Measured** (this 4-vCPU CPU box, `pt_baseline --scene
+many_lights_authored --resolution 320x180`, 64 lights, 16 spp, 4 bounces, one
+process per arm, warm RUN 2 — the arm is the `many_lights` rig with every solid
+in `MeshToonMaterial` / `ManimMaterial`):
+
+| arm | wall | `pt_shade` device | spp actually taken |
+| --- | --- | --- | --- |
+| `off` (the summing arm) | 6.267 s | 3693.9 ms (59.5% of wall) | 5.94 of 16 |
+| `always` | 3.308 s | 517.1 ms (16.6% of wall) | 5.94 of 16 |
+
+**7.1x less `pt_shade` device time and 1.89x less wall**, on a scene where the
+shade kernel was 60% of the frame and is now 17% — traversal (468 ms) is the
+larger item in the sampled arm. Adaptive sampling took the same 5.94 samples per
+pixel in both, which is the point: the win is entirely per-crossing cost, not
+fewer samples. `off` is also the arm that *misses* the shadows of 48 of the 64
+lights, so this is not an equal-quality comparison in the sampled arm's
+disfavour — it is cheaper and more correct at once.
+
+**Slots, and local memory.** `shadow_vis_slots` is now asked for
+`ambient + sampled` rather than for the light count, so the `vis` payload a
+64-light authored scene carries drops from the 16-slot cap (192 B per thread)
+to one or two slots, against the 8-16 B the two new vectors cost at that width.
+Net reduction where the mode is on; unchanged where it is off, since that arm
+compiles neither vector.
+
+**Also fixed here, one line:** `tracer.py` fired the `shadow_lights`
+truncation warning for path-traced renders too (gated only on `shadow_flag and
+num_lights > max_shadow_lights`), and its message told the user to render with
+the path tracer while they already were. It is now `and samples <= 1`.
+
+**Tests**, all in `tests/unit_tests/test_path_tracer.py` and none marked
+`fast`: `test_authored_sampling_lands_on_the_sum_it_replaces` (a toon floor
+under 8 point lights plus the two direction-less rows, the summing arm exact,
+the two within a count and a half),
+`test_authored_sampling_lands_on_the_sum_for_manim_too` (the same with the
+looser bound the clamp earns),
+`test_authored_sampling_lights_an_area_light_the_same` (the §6a-ter
+interaction), `test_authored_sampling_shadows_a_light_past_the_deterministic_cap`
+(a blocker over 40 lights: the sampled arm is measurably darker because it
+shadows the 24 the summing arm cannot),
+`test_authored_sampling_auto_is_the_sum_on_a_small_rig` (`torch.equal`, both
+arms in one process),
+`test_authored_sampling_is_inert_for_the_deterministic_renderer` and
+`test_authored_sampling_rejects_an_unknown_mode`. `tests/path_traced` and
+`tests/fast` do not move at the default; `tests/path_traced` gained
+`authored_under_many_lights`, which is the first scene in the suite that
+exercises this branch at all.
 
 ### 6b. Building the tree — LANDED
 
@@ -1612,11 +1761,13 @@ outright, one silently inert):
   `test_camera_clip_planes_apply_under_path_tracing`.
 
 * **The 16-light shadow cap is only partly lifted, and the docs do not say
-  so.** Physically-integrated materials sample shadows through the NEE table
-  and are uncapped; authored-appearance materials still loop lights and stop
-  at `max_shadow_lights`. The limitations page presents the cap as a single
-  renderer-wide limit. See §6a-bis for the fix and why it is an interface
-  decision.
+  so — CLOSED (§6a-bis).** Physically-integrated materials sample shadows
+  through the NEE table and were always uncapped; authored-appearance
+  materials looped lights and stopped at `max_shadow_lights`. They now sample
+  their rows too (`pt_authored_light_sampling`, `"auto"`), the truncation
+  warning no longer fires for a path-traced render, and both
+  `renderer_limitations.rst` and `performance_and_quality.rst` say which
+  materials get what.
 
 * **The failures do not point at the fallback.** `record_truncation
   ("shadow_lights", ...)` warns that lights past the cap cast no shadow and

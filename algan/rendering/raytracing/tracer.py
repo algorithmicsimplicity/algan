@@ -1623,7 +1623,16 @@ def render_batch_raytraced(
     # the first ones sat under. Each RectAreaLight emitter sample already
     # occupies its own row here (``_pack_lights`` expands them), which is why
     # the count is of light SLOTS rather than of the author's lights.
-    if shadow_flag and num_lights > max_shadow_lights:
+    #
+    # Deterministic renders only. The path tracer does not sum light rows at a
+    # lit surface at all -- it samples the next-event table, which has no cap --
+    # and since roadmap 6a-bis its authored-appearance branch samples its rows
+    # too, so at ``samples > 1`` there is nothing here to truncate. Firing it
+    # anyway told a user already rendering with the path tracer to render with
+    # the path tracer. (``pt_authored_light_sampling = "off"`` puts the cap back
+    # on authored materials there and is deliberately not reported: it is an A/B
+    # arm, not a configuration to warn about.)
+    if shadow_flag and num_lights > max_shadow_lights and samples <= 1:
         record_truncation(
             "shadow_lights",
             int(num_lights) - max_shadow_lights,

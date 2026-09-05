@@ -58,7 +58,15 @@ Surface treatment by pipeline id (see ``shading_taichi``):
   the hit is shaded exactly as the deterministic renderer shades it
   (``_run_frag_pipeline``, shadow visibility included), the result treated
   as emitted radiance, and the path continues as a Lambert bounce on the
-  base color so these surfaces send and receive indirect light.
+  base color so these surfaces send and receive indirect light. Which light
+  rows that shading sums over is the one thing this renderer changes about
+  them: past ``max_shadow_lights`` (or on demand -- ``auth_sampled``,
+  ``rt_settings.pt_authored_light_sampling``) the branch fills the ambient
+  rows deterministically and DRAWS the rest, scaling each drawn row's
+  radiance by ``1 / (S * p)`` through ``_SampledLightView`` so that neither
+  the pipeline nor any stage is touched. Every built-in stage is linear in a
+  light's colour, so the estimate is unbiased for the sum (roadmap section
+  6a-bis).
 * unlit (1) and bezier circuits: emission + deterministic transparency; a
   reflective or transmissive circuit spawns the matching specular / pane
   continuation. Unlit content never diffuse-scatters, which keeps text and
@@ -82,9 +90,13 @@ decorrelated from its neighbours. Both ends -- ``pt_generate`` and
 carried to the first as a plain argument and to the second in ``nee_meta``
 (``_NM_ANIM_SEED``). The one decision still drawn from a hash RNG
 (``_pt_rng_seeded``, keyed on the same inputs plus the peel step) is the
-authored-appearance branch's per-light soft-shadow jitter, whose count per
-crossing is the light count; the pass/scatter choice at each crossed surface
-now has a crossing-indexed pair of its own (see the table below).
+authored-appearance branch's per-light soft-shadow jitter in its SUMMING arm,
+whose count per crossing is the light count (and whose salt aliases above 64
+lights). Its sampling arm draws none: it spends the crossing's own next-event
+pairs, listed below, on both the row pick and the light point -- a crossing is
+either lit or authored, never both, so the two arms cannot collide over them.
+The pass/scatter choice at each crossed surface has a crossing-indexed pair of
+its own (see the table below).
 
 Every draw's seed splits in two: ``_pt_path_seed`` mixes ``(pt_seed,
 frame-or-0, pixel)`` once per thread, and ``_pt_pair_seed`` mixes the
@@ -109,7 +121,9 @@ pair                           use
 2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
 2 + 6b + 2, 3                  bounce ``b``: reserved (legacy light slots)
 2 + 6b + 4, 5                  bounce ``b``: reserved for volumes
-2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry select
+2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry
+                               select (an authored crossing's sampling arm:
+                               x light-row select)
 2 + 6B + (2L+1)c + 2s + 1      crossing ``c``, NEE sample ``s``: light point
                                (2D)
 2 + 6B + (2L+1)c + 2L          crossing ``c``: x lobe select -- pass / diffuse
@@ -192,7 +206,12 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _tri_normal_g,
     _write_ior_stack,
 )
-from algan.taichi_compat import ti
+from algan.taichi_compat import submodule, ti
+
+#: The compiler's own subscript builder, used by ``_SampledLightView`` to index
+#: a ``ti.Vector`` local from Python scope (``ArenaView`` reaches the arena
+#: buffer the same way).
+_ti_impl = submodule("lang.impl")
 
 # Sampler dimension pairs (see the module docstring's table).
 PAIR_PIXEL = 0
@@ -281,10 +300,21 @@ _NEE_ENV = 2
 # light row's index; they are stored in ascending row order, which is the
 # order the linear scan they replace visited them in.
 _NEE_AMBIENT_ROW = 3
+# Not a selectable entry either: the AUTHORED-appearance branch's own light-row
+# table (roadmap section 6a-bis), appended after the ambient tail with its own
+# self-normalised CDF occupying the matching span of ``nee_cdf``. It exists
+# only when the host chose the sampled authored mode, and nothing else ever
+# reads it -- the sampled-entry search is bounded by ``num_nee`` and the
+# ambient fill by ``amb_count``. It holds the light rows an authored stage
+# SUMS: every direction-carrying row with power, a ``RectAreaLight``'s cell
+# rows included, whether or not the quad path withdrew those rows from the
+# sampled table above (an authored material lights from the rows either way,
+# so its table must not follow that withdrawal).
+_NEE_AUTHORED_ROW = 4
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 18
+NEE_META_WIDTH = 20
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -313,6 +343,11 @@ _NM_INF_COUNT = 16  # entries in nee_inf_cdf / nee_inf_ref
 # in ``pt_emit_falloff``, so an ordinary emissive triangle takes neither branch
 # and is bit-identical to what it was before area-light quads existed.
 _NM_QUAD_BASE = 17
+# The authored-appearance branch's sampled mode (roadmap section 6a-bis). Both
+# words are read only inside that branch and only when the kernel was compiled
+# with ``auth_sampled`` on, so a lit-only scene never loads them.
+_NM_AUTHORED_SAMPLES = 18  # rows the authored branch draws per crossing ...
+_NM_AUTHORED_COUNT = 19  # ... out of this many entries in the authored table
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -636,6 +671,105 @@ def _pt_pick_nee_entry(nee_cdf: ti.template(), n, u):
     if lo > 0:
         prev = nee_cdf[lo - 1]
     return lo, nee_cdf[lo] - prev
+
+
+@ti.func
+def _pt_pick_authored_row(nee_cdf: ti.template(), base, n, u):
+    """Binary-search the AUTHORED branch's own light-row CDF.
+
+    The same search as :func:`_pt_pick_nee_entry` over the span
+    ``[base, base + n)`` of ``nee_cdf``, which the host wrote as a
+    self-normalised CDF of its own (it ends at 1.0, so ``u`` in ``[0, 1)``
+    lands inside it and the first bracket's ``prev`` is 0). Returns the entry
+    index RELATIVE to ``base``, and its selection probability.
+
+    ``base`` is the CDF's base, which is NOT the rows' base: the authored table
+    follows both the sampled entries and the ambient tail in ``nee_ref``, but
+    only the sampled entries in ``nee_cdf`` -- the ambient rows are the
+    deterministic fill and have no selection probability at all. The caller
+    holds both and adds the right one to ``k``.
+    """
+    lo = base
+    hi = base + n - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if u < nee_cdf[mid]:
+            hi = mid
+        else:
+            lo = mid + 1
+    prev = 0.0
+    if lo > base:
+        prev = nee_cdf[lo - 1]
+    return lo - base, nee_cdf[lo] - prev
+
+
+class _SampledLightView(tuple):
+    """``light_pos`` / ``light_col`` re-indexed by a per-thread row map.
+
+    The authored-appearance branch's sampled mode (roadmap section 6a-bis)
+    hands ``_run_frag_pipeline`` a few SLOTS where it used to hand it every
+    packed light row, and each sampled slot's radiance carries that draw's
+    Monte Carlo weight. Neither the pipeline nor any stage is touched: a view
+    in ``ArenaView``'s idiom (a tuple subclass, so ``ti.static`` passes it
+    through and it can be bound to a name in kernel scope) rewrites
+    ``view[tl, slot, c]`` into ``inner[tl, rows[slot], c]``, multiplied by
+    ``scale[slot]`` for the three radiance channels only.
+
+    ``rows`` and ``scale`` are matrix-typed ``Expr``s -- ``ti.Vector`` locals
+    of the calling kernel -- so they are indexed through the compiler's own
+    subscript builder rather than with ``[]``, exactly as ``ArenaView`` indexes
+    the arena buffer. They are filled per crossing and read at every use, which
+    is why the view is built once and never rebuilt.
+
+    Scaling only channels 0-2 is what makes the weight ride the RADIANCE rather
+    than the visibility vector: ``_light_vis`` is compiled out entirely when
+    shadows are off, so a weight parked there would be dead-code-eliminated and
+    every shadowless path-traced render would be silently wrong. Every other
+    packed column -- the type id, the decay and range, the cone axis and
+    cosines, the hemisphere ground colour, the power fraction -- passes through
+    unscaled, and every light model ``_light_eval`` evaluates is linear in the
+    three it scales.
+
+    Read-only, deliberately: a scaled read returns an rvalue, where an
+    ``ArenaView`` subscript is an lvalue. Nothing downstream of
+    ``_run_frag_pipeline`` writes a light row.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, inner, rows, scale=None):
+        return super().__new__(cls, (inner, rows, scale))
+
+    @property
+    def inner(self):
+        return tuple.__getitem__(self, 0)
+
+    @property
+    def rows(self):
+        return tuple.__getitem__(self, 1)
+
+    @property
+    def scale(self):
+        return tuple.__getitem__(self, 2)
+
+    @property
+    def shape(self):
+        # Forwarded so ``f % light_pos.shape[0]`` and the compact-vs-extended
+        # row test ``light_col.shape[2] > 3`` still read the real table's.
+        return self.inner.shape
+
+    def __getitem__(self, idx):
+        tl, slot, c = idx
+        val = self.inner[tl, _ti_impl.subscript(None, self.rows, slot), c]
+        if self.scale is None:
+            return val
+        w = _ti_impl.subscript(None, self.scale, slot)
+        # Every channel index in this package is a Python literal, so the
+        # gate resolves at build time; a user stage computing one at runtime
+        # gets the same rule as a select.
+        if isinstance(c, int):
+            return val * w if c < 3 else val
+        return val * ti.select(c < 3, w, 1.0)
 
 
 #: Descent / upward-walk step ceiling. The tree is binary over at most a few
@@ -1526,6 +1660,20 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              # Light slots this variant's ``vis`` payload carries -- what the
              # batch needs, not the cap (shading_taichi.shadow_vis_slots).
              vis_lights: ti.template(),
+             # 1 = the authored-appearance branch SAMPLES its light rows
+             # (roadmap section 6a-bis); 0 = it sums every row and traces a
+             # shadow ray per row up to ``vis_lights``, which is what it has
+             # always done. Compile-time rather than a ``nee_meta`` word for
+             # one reason the runtime spelling cannot give: the summing arm
+             # feeds ``_run_frag_pipeline`` a row ordinal that may run PAST
+             # ``vis_lights`` (a 40-light rig at the 16-slot cap), so it cannot
+             # go through a per-thread slot map at all -- and a runtime choice
+             # would make every scene pay for the map whether or not it uses
+             # one. Taichi specialises on a ``ti.template()`` argument, so both
+             # arms still compile and run in ONE process (unlike a
+             # ``ti.static`` gate read off a setting), and off is byte-for-byte
+             # the kernel this file produced before sampling existed.
+             auth_sampled: ti.template(),
              frag_pipelines: ti.template(), frag_scatters: ti.template(),
              tri_pids: ti.template(),
              seed_root: ti.u32, sample_base: ti.i32, tile_pixels: ti.i32,
@@ -1570,6 +1718,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     paths can also find; delta lights have no geometry to MIS against).
     Escaping rays sample the environment map in their own direction, so
     mirrors and GI see the sky the deterministic renderer shows.
+
+    Direct lighting at an AUTHORED-appearance vertex is whatever that
+    material's stage says it is, over whichever light rows this kernel hands
+    it. With ``auth_sampled`` off that is every row, each with its own shadow
+    ray up to ``vis_lights`` -- the deterministic renderer's model, cap
+    included. With it on the branch fills the direction-less rows and then
+    draws ``_NM_AUTHORED_SAMPLES`` rows from the authored table on
+    ``nee_ref``'s tail, weighting each by ``1 / (S * p)`` on its radiance;
+    the stage still sees a light index, a colour and a visibility triple and
+    cannot tell (roadmap section 6a-bis). That table is the authored
+    branch's own, not the next-event entries: a ``RectAreaLight`` reaches a
+    physically-integrated surface as its emissive quads and an authored one
+    as its packed cell rows, which is the model each has.
 
     ``frag_scatters`` is the per-pipeline custom ray-continuation tuple (the
     same one ``wavefront_shade`` takes, narrowed to the batch): a crossing
@@ -2299,58 +2460,158 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
                 elif authored and (suppressed == 0):
-                    # An authored-appearance crossing draws too (its shadow
-                    # fan, and any custom scatter's branch pick below).
+                    # An authored-appearance crossing draws too, and in BOTH
+                    # arms: the summing arm jitters each light's soft-shadow
+                    # ray, the sampling arm picks which rows to light from at
+                    # all, and either way a custom scatter picks a branch
+                    # below. Dropping this flag would freeze the pixel on
+                    # however few samples it had (see ``_PT_ACC_STOCH``).
                     stoch = 1
                     vis = ti.Vector([1.0] * (SHADOW_VIS_CHANNELS * vis_lights))
-                    if ti.static(shadows != 0):
+                    if ti.static(auth_sampled != 0):
+                        # ------------------------------------------------------
+                        # Sampled mode (roadmap section 6a-bis). The surface is
+                        # lit from ``A`` direction-less rows filled exactly as the
+                        # lit branch fills them, plus ``S`` rows DRAWN from the
+                        # authored table, each carrying ``1 / (S * p)`` on its
+                        # radiance. ``_run_frag_pipeline`` is handed slots instead
+                        # of rows -- through a view that re-indexes and scales, so
+                        # neither it nor any stage knows the difference.
+                        auth_s = ti.max(
+                            ti.cast(nee_meta[_NM_AUTHORED_SAMPLES] + 0.5, ti.i32), 0)
+                        auth_n = ti.cast(
+                            nee_meta[_NM_AUTHORED_COUNT] + 0.5, ti.i32)
+                        # The authored table's ROWS sit after the sampled
+                        # entries and the ambient tail; its CDF sits directly
+                        # after the sampled entries' CDF, because the ambient
+                        # rows have no CDF of their own (they are the
+                        # deterministic fill). Two bases, deliberately -- one
+                        # base for both reads the wrong bracket and runs off
+                        # the end of ``nee_cdf``.
+                        auth_base = num_nee + amb_count
+                        lrow = ti.Vector([0] * vis_lights)
+                        lscale = ti.Vector([0.0] * vis_lights)
+                        a_use = ti.min(amb_count, vis_lights)
+                        n_slots = ti.min(a_use + auth_s, vis_lights)
+                        for j in range(a_use):
+                            lrow[j] = nee_ref[num_nee + j, 1]
+                            lscale[j] = 1.0
                         recv_a = 1
                         if pid < _USER_PIPELINE_BASE:
                             if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
                                 if tri_mat[f % tri_mat.shape[0], prim,
                                            _MAT_NO_SHADOW_RECEIVE] > 0.5:
                                     recv_a = 0
-                        if recv_a == 1:
-                            sorigin_a = _pt_offset_ray_origin(
-                                hit_p,
-                                fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
-                            for li in range(num_lights):
-                                if li < vis_lights:
-                                    u1 = _pt_rng_seeded(
-                                        path_seed, s_index,
-                                        processed * 64 + li, 2)
-                                    u2 = _pt_rng_seeded(
-                                        path_seed, s_index,
-                                        processed * 64 + li, 3)
-                                    wi, ldist, valid = _pt_light_sample_point(
-                                        light_pos, light_col, f, li, hit_p,
-                                        u1, u2)
-                                    if valid == 1:
-                                        v3 = _pt_nee_visibility(
-                                            refit, shadow_mode,
-                                            has_tri, has_bez,
-                                            sorigin_a, wi, ldist, f, ff,
-                                            pixel_size_per_t, base_dist,
-                                            layer_offset_triangles,
-                                            t_nodes, t_node_miss, t_leaf_prim,
-                                            t_leaf_tspan, t_first_leaf,
-                                            tri_pos, tri_colors, tri_uvs,
-                                            tri_tex_meta, textures, tri_extra,
-                                            num_colored_triangles,
-                                            b_nodes, b_node_miss, b_leaf_prim,
-                                            b_leaf_tspan, b_first_leaf,
-                                            circuit_meta, circuit_colors,
-                                            circuit_border_colors,
-                                            edges_2d, edge_accel)
-                                        base = light_vis_index(li, 0)
-                                        vis[base] = v3[0]
-                                        vis[base + 1] = v3[1]
-                                        vis[base + 2] = v3[2]
-                    local = _run_frag_pipeline(
-                        frag_pipelines, tri_pids, prim, f, hit_p, -rd,
-                        snrm, fnrm, albedo3, color[3],
-                        light_pos, light_col, num_lights, tri_mat_id,
-                        tri_mat, shadows, vis, cam_pos)
+                        sorigin_a = _pt_offset_ray_origin(
+                            hit_p, fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
+                        inv_s = 1.0 / ti.cast(ti.max(auth_s, 1), ti.f32)
+                        for ls in range(auth_s):
+                            s = a_use + ls
+                            if s < n_slots:
+                                # The crossing's OWN next-event pairs: a crossing
+                                # is either lit or authored, never both, so this
+                                # branch reuses the block the lit branch would
+                                # have spent (module docstring's table) rather
+                                # than claiming a dimension of its own.
+                                pair_sel = pair_cross0 + 2 * ls
+                                u_sel = pt_sample_2d_seeded(path_seed, pair_sel,
+                                                            s_index)
+                                u_pt = pt_sample_2d_seeded(path_seed,
+                                                           pair_sel + 1, s_index)
+                                k_row, p_sel = _pt_pick_authored_row(
+                                    nee_cdf, num_nee, auth_n, u_sel[0])
+                                li = nee_ref[auth_base + k_row, 1]
+                                w = 0.0
+                                if p_sel > 1e-12:
+                                    w = inv_s / p_sel
+                                lrow[s] = li
+                                lscale[s] = w
+                                if ti.static(shadows != 0):
+                                    if (recv_a == 1) and (w > 0.0):
+                                        wi, ldist, valid = _pt_light_sample_point(
+                                            light_pos, light_col, f, li, hit_p,
+                                            u_pt[0], u_pt[1])
+                                        if valid == 1:
+                                            v3 = _pt_nee_visibility(
+                                                refit, shadow_mode,
+                                                has_tri, has_bez,
+                                                sorigin_a, wi, ldist, f, ff,
+                                                pixel_size_per_t, base_dist,
+                                                layer_offset_triangles,
+                                                t_nodes, t_node_miss, t_leaf_prim,
+                                                t_leaf_tspan, t_first_leaf,
+                                                tri_pos, tri_colors, tri_uvs,
+                                                tri_tex_meta, textures, tri_extra,
+                                                num_colored_triangles,
+                                                b_nodes, b_node_miss, b_leaf_prim,
+                                                b_leaf_tspan, b_first_leaf,
+                                                circuit_meta, circuit_colors,
+                                                circuit_border_colors,
+                                                edges_2d, edge_accel)
+                                            base = light_vis_index(s, 0)
+                                            vis[base] = v3[0]
+                                            vis[base + 1] = v3[1]
+                                            vis[base + 2] = v3[2]
+                        # Built AFTER the fill only for readability: the vectors
+                        # are mutated in place, so a view built before it would
+                        # read the same values.
+                        lpos_v = ti.static(_SampledLightView(light_pos, lrow))
+                        lcol_v = ti.static(
+                            _SampledLightView(light_col, lrow, lscale))
+                        local = _run_frag_pipeline(
+                            frag_pipelines, tri_pids, prim, f, hit_p, -rd,
+                            snrm, fnrm, albedo3, color[3],
+                            lpos_v, lcol_v, n_slots, tri_mat_id,
+                            tri_mat, shadows, vis, cam_pos)
+                    else:
+                        if ti.static(shadows != 0):
+                            recv_a = 1
+                            if pid < _USER_PIPELINE_BASE:
+                                if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                                    if tri_mat[f % tri_mat.shape[0], prim,
+                                               _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                                        recv_a = 0
+                            if recv_a == 1:
+                                sorigin_a = _pt_offset_ray_origin(
+                                    hit_p,
+                                    fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
+                                for li in range(num_lights):
+                                    if li < vis_lights:
+                                        u1 = _pt_rng_seeded(
+                                            path_seed, s_index,
+                                            processed * 64 + li, 2)
+                                        u2 = _pt_rng_seeded(
+                                            path_seed, s_index,
+                                            processed * 64 + li, 3)
+                                        wi, ldist, valid = _pt_light_sample_point(
+                                            light_pos, light_col, f, li, hit_p,
+                                            u1, u2)
+                                        if valid == 1:
+                                            v3 = _pt_nee_visibility(
+                                                refit, shadow_mode,
+                                                has_tri, has_bez,
+                                                sorigin_a, wi, ldist, f, ff,
+                                                pixel_size_per_t, base_dist,
+                                                layer_offset_triangles,
+                                                t_nodes, t_node_miss, t_leaf_prim,
+                                                t_leaf_tspan, t_first_leaf,
+                                                tri_pos, tri_colors, tri_uvs,
+                                                tri_tex_meta, textures, tri_extra,
+                                                num_colored_triangles,
+                                                b_nodes, b_node_miss, b_leaf_prim,
+                                                b_leaf_tspan, b_first_leaf,
+                                                circuit_meta, circuit_colors,
+                                                circuit_border_colors,
+                                                edges_2d, edge_accel)
+                                            base = light_vis_index(li, 0)
+                                            vis[base] = v3[0]
+                                            vis[base + 1] = v3[1]
+                                            vis[base + 2] = v3[2]
+                        local = _run_frag_pipeline(
+                            frag_pipelines, tri_pids, prim, f, hit_p, -rd,
+                            snrm, fnrm, albedo3, color[3],
+                            light_pos, light_col, num_lights, tri_mat_id,
+                            tri_mat, shadows, vis, cam_pos)
                     if ti.static(len(frag_scatters) > 0):
                         # Custom ray continuation. The pid switch mirrors
                         # ``_run_frag_scatter``'s, minus its default-scatter
@@ -2970,7 +3231,8 @@ _PT_SHADE_PARAMS = (
     "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
     "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
     "shadows", "shadow_mode",
-    "vis_lights", "frag_pipelines", "frag_scatters", "tri_pids", "seed_root",
+    "vis_lights", "auth_sampled",
+    "frag_pipelines", "frag_scatters", "tri_pids", "seed_root",
     "sample_base",
     "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
     "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",

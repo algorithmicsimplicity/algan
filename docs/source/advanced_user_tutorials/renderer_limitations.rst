@@ -608,7 +608,25 @@ Limits and approximations
   A scene with more lights than the cap is what the path tracer is for: it
   samples lights instead of summing them, so every light casts a shadow and
   the cost per shading point does not depend on how many there are
-  (``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``).
+  (``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``). That now
+  covers the authored-appearance materials too --
+  :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
+  :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`, Manim's
+  material and any :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+  pipeline --
+  which used to reproduce this cap inside the path tracer because their
+  lighting is defined as a sum over the light rows. Past the cap the path
+  tracer samples those rows instead, with each drawn row's radiance carrying
+  the weight of the rows it stands for
+  (``SETTINGS.raytracing.experimental.pt_authored_light_sampling``: ``"auto"``
+  by default, ``"off"`` to restore the sum, ``"always"`` to sample at any
+  light count). Two consequences worth knowing. Their lighting becomes a
+  Monte Carlo estimate like everything else in that renderer, so it converges
+  with ``samples_per_pixel`` rather than being exact; and a **custom**
+  fragment stage that uses a light's *direction* without multiplying by its
+  *colour* sees an unweighted sum over the sampled rows rather than over all
+  of them, because the weight rides the colour (see
+  :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`).
 * **One shadow query point per same-surface region per pixel.** The query is
   taken at the region's largest fragment and, by default, at four sub-pixel
   positions around it
@@ -941,7 +959,8 @@ Hard limits
      - 16 (``ALGAN_MAX_SHADOW_LIGHTS``)
      - Further lights are lit but never shadowed. **Warns**
        (:ref:`limits-truncation`). The path tracer has no cap: it samples
-       lights instead of summing them.
+       lights instead of summing them, authored-appearance materials
+       included, and does not warn.
    * - Overlapping layers of one surface in one pixel
      - 16
      - Further layers merge into the last, and attenuate once between them

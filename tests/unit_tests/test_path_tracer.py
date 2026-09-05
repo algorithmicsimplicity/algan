@@ -48,6 +48,7 @@ from algan import (
     MeshLambertMaterial,
     MeshPhysicalMaterial,
     MeshStandardMaterial,
+    MeshToonMaterial,
     Off,
     PointLight,
     Prism,
@@ -2673,6 +2674,251 @@ def test_light_tree_cuts_many_light_variance(tmp_path):
         f"{mse_flat / mse_tree:.2f}x (tree {mse_tree:.2f}, flat CDF "
         f"{mse_flat:.2f}) on 32 lights"
     )
+
+
+# ---------------------------------------------------------------------------
+# The authored-appearance branch samples its lights (roadmap section 6a-bis)
+# ---------------------------------------------------------------------------
+
+
+def _authored_rig(n_lights, material, ambient=True, blocker=False, intensity=0.4):
+    """A toon / manim floor under ``n_lights`` point lights on a ring.
+
+    Dim on purpose: the two arms are compared as numbers, and a floor pinned
+    at 255 would compare equal whatever the estimator did.
+    """
+    import math as _math
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        for i in range(n_lights):
+            a = 2.0 * _math.pi * i / n_lights
+            PointLight(
+                location=OUT * 6.0
+                + RIGHT * (2.5 * _math.cos(a))
+                + UP * (2.5 * _math.sin(a)),
+                color=WHITE,
+                intensity=intensity / n_lights,
+            ).spawn(animate=False)
+        if ambient:
+            AmbientLight(color=WHITE, intensity=0.05).spawn(animate=False)
+            HemisphereLight(color=WHITE, ground_color=BLUE, intensity=0.04).spawn(
+                animate=False
+            )
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
+        floor.set_material(material())
+        floor.spawn(animate=False)
+        if blocker:
+            panel = Prism(width=2.0, height=2.0, depth=0.1)
+            panel.set_material(MeshLambertMaterial(color=WHITE))
+            panel.move(OUT * 2.0)
+            panel.spawn(animate=False)
+
+    return build
+
+
+def _authored_frames(tmp_path, name, build, off_spp, on_spp, **rt):
+    """The summing arm and the sampling arm of the same scene."""
+    summed = _render_scene_exp(
+        tmp_path,
+        f"{name}_off.png",
+        build,
+        off_spp,
+        experimental={"pt_authored_light_sampling": "off", "pt_error_target": 0.0},
+        **rt,
+    )
+    sampled = _render_scene_exp(
+        tmp_path,
+        f"{name}_always.png",
+        build,
+        on_spp,
+        experimental={"pt_authored_light_sampling": "always", "pt_error_target": 0.0},
+        **rt,
+    )
+    return summed.double(), sampled.double()
+
+
+def test_authored_sampling_lands_on_the_sum_it_replaces(tmp_path):
+    """Sampling the light rows is an unbiased estimator of summing them.
+
+    Eight point lights plus the two direction-less rows, over a toon floor --
+    a rig small enough that the summing arm is the exact answer, so this is a
+    parity test of the estimator rather than a noise comparison. Toon rather
+    than manim because ``_stage_manim``'s clamp into the display range is the
+    one non-linearity that genuinely biases the estimate (which is why the
+    default is "auto" and keeps the exact sum at small light counts).
+    """
+    build = _authored_rig(8, lambda: MeshToonMaterial(color=WHITE * 0.6))
+    summed, sampled = _authored_frames(
+        tmp_path, "auth_mean", build, 64, 256, shadows=True
+    )
+    assert summed.mean() > 20, "the scene rendered (nearly) black"
+    diff = (summed - sampled).abs()
+    assert float(diff.mean()) < 1.5, (
+        f"the sampled arm is off the sum it estimates by {float(diff.mean()):.2f} "
+        "counts on average"
+    )
+    assert float(diff.max()) > 0, (
+        "the two arms produced identical frames -- pt_authored_light_sampling "
+        "never reached the kernel"
+    )
+
+
+def test_authored_sampling_lands_on_the_sum_for_manim_too(tmp_path):
+    """The same, for the one stage with a documented bias.
+
+    ``_stage_manim`` encodes to sRGB, adds its offset, clamps to [0, 1] and
+    decodes -- always, linear working space or not -- so a sampled row carrying
+    ``S`` times a light's radiance can clip where the sum did not. The
+    assertion is therefore looser than the toon one, and deliberately still an
+    assertion: the arm has to be usable, not exact.
+    """
+    from algan.rendering.shaders.materials import ManimMaterial
+
+    build = _authored_rig(8, lambda: ManimMaterial(color=WHITE * 0.6))
+    summed, sampled = _authored_frames(
+        tmp_path, "auth_manim", build, 64, 256, shadows=True
+    )
+    assert summed.mean() > 20, "the scene rendered (nearly) black"
+    diff = (summed - sampled).abs()
+    assert float(diff.mean()) < 8.0, (
+        f"manim's clamp cost {float(diff.mean()):.2f} counts on average, more "
+        "than the documented bias"
+    )
+
+
+def test_authored_sampling_lights_an_area_light_the_same(tmp_path):
+    """A ``RectAreaLight`` reaches an authored surface as its packed cell rows.
+
+    Roadmap 6a-ter withdrew those rows from the NEXT-EVENT table (the light is
+    two emissive triangles there) but left them in ``light_col``, because an
+    authored material's model is the rows. The sampled arm therefore draws from
+    its own light-row table rather than from the next-event entries -- if it
+    drew from those, this floor would lose its only light entirely.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        RectAreaLight(
+            location=OUT * 4.0,
+            width=3.0,
+            height=3.0,
+            color=WHITE,
+            intensity=0.5,
+            samples=4,
+        ).spawn(animate=False)
+        AmbientLight(color=WHITE, intensity=0.05).spawn(animate=False)
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
+        floor.set_material(MeshToonMaterial(color=WHITE * 0.6))
+        floor.spawn(animate=False)
+
+    summed, sampled = _authored_frames(
+        tmp_path, "auth_area", build, 64, 512, shadows=True
+    )
+    assert summed.mean() > 20, "the scene rendered (nearly) black"
+    # The frame MEAN, not the per-pixel difference: a ``samples = 4`` light is
+    # 16 cell rows, so one draw carries 16x a row's radiance and the two arms'
+    # independent noise is worth a few counts per pixel however long they run.
+    # What the arms have to agree on is how much light arrives.
+    bias = float(sampled.mean()) - float(summed.mean())
+    assert abs(bias) < 1.0, (
+        "the area light reached the authored floor at a different strength in "
+        f"the two arms (sampled mean {float(sampled.mean()):.2f} against the "
+        f"sum's {float(summed.mean()):.2f})"
+    )
+
+
+def test_authored_sampling_shadows_a_light_past_the_deterministic_cap(tmp_path):
+    """The hole this closes: past ``max_shadow_lights`` the summing arm stops
+    tracing shadow rays, so a blocker over a 40-light rig casts a shadow from
+    the first 16 lights and none from the other 24. The sampling arm draws
+    uniformly over all 40 and shadows every one of them.
+
+    The signal is the blocker's shadow, so the sampled arm must come out
+    DARKER over the frame, not merely different.
+    """
+    build = _authored_rig(
+        40,
+        lambda: MeshToonMaterial(color=WHITE * 0.6),
+        ambient=False,
+        blocker=True,
+        intensity=1.2,
+    )
+    summed, sampled = _authored_frames(
+        tmp_path, "auth_cap", build, 64, 512, shadows=True
+    )
+    assert summed.mean() > 20, "the scene rendered (nearly) black"
+    assert float(sampled.mean()) < float(summed.mean()) - 1.0, (
+        "the sampled arm did not shadow the lights past the cap: it means "
+        f"{float(sampled.mean()):.2f} against the summing arm's "
+        f"{float(summed.mean()):.2f}"
+    )
+
+
+def test_authored_sampling_auto_is_the_sum_on_a_small_rig(tmp_path):
+    """``"auto"`` is the default, and on a rig inside the cap it must be the
+    summing arm BYTE for byte -- nothing about a small scene may move.
+
+    Both arms in one process: the mode is a ``ti.template()`` argument, so
+    Taichi specialises on it rather than baking the first arm's code (see the
+    ``auth_sampled`` parameter).
+    """
+    build = _authored_rig(8, lambda: MeshToonMaterial(color=WHITE * 0.6))
+    auto = _render_scene_exp(
+        tmp_path,
+        "auth_auto.png",
+        build,
+        16,
+        experimental={"pt_authored_light_sampling": "auto", "pt_error_target": 0.0},
+        shadows=True,
+    )
+    off = _render_scene_exp(
+        tmp_path,
+        "auth_small_off.png",
+        build,
+        16,
+        experimental={"pt_authored_light_sampling": "off", "pt_error_target": 0.0},
+        shadows=True,
+    )
+    assert torch.equal(auto, off), (
+        "'auto' moved an 8-light authored scene by up to "
+        f"{int((auto - off).abs().max())} of 255"
+    )
+
+
+def test_authored_sampling_is_inert_for_the_deterministic_renderer(tmp_path):
+    """``samples_per_pixel == 1`` never reaches ``pt_shade``, so the switch has
+    nothing to do there and must not change a deterministic frame.
+    """
+    build = _authored_rig(8, lambda: MeshToonMaterial(color=WHITE * 0.6))
+    always = _render_scene_exp(
+        tmp_path,
+        "auth_det_always.png",
+        build,
+        1,
+        experimental={"pt_authored_light_sampling": "always"},
+        shadows=True,
+    )
+    off = _render_scene_exp(
+        tmp_path,
+        "auth_det_off.png",
+        build,
+        1,
+        experimental={"pt_authored_light_sampling": "off"},
+        shadows=True,
+    )
+    assert torch.equal(always, off), (
+        "the switch changed a samples_per_pixel == 1 render by up to "
+        f"{int((always - off).abs().max())} of 255"
+    )
+
+
+def test_authored_sampling_rejects_an_unknown_mode():
+    """Three states, and a typo is refused rather than silently meaning "off"."""
+    with pytest.raises(ValueError, match="pt_authored_light_sampling"):
+        SETTINGS.raytracing.experimental.set(pt_authored_light_sampling="sample")
 
 
 if __name__ == "__main__":

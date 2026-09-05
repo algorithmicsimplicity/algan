@@ -26,8 +26,8 @@
     },
     "path_traced/cpu": {
       "file": "path_traced-cpu.tar.gz",
-      "sha256": "e583d2c9da47c936626c5edd28c2d157f84e44db106181e7638c8af6877ee5b1",
-      "size": 16873
+      "sha256": "adcb281889290a16859ec02dad755155a3c11bac0302331a0a3952a8a3a35a2e",
+      "size": 21577
     }
   }
 }

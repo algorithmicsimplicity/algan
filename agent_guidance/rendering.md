@@ -161,6 +161,59 @@ restores the packed-rows arm byte for byte — host-side, no kernel variant. Mea
 `tests/unit_tests/test_path_tracer.py`'s `test_area_light_quad_*` are the guards, and
 roadmap §6a-ter is the record.
 
+## Under the path tracer an authored-appearance material samples its light rows
+
+The manim / toon / normal / matcap / depth stages and every
+`set_fragment_shader` pipeline are *defined* as a sum over the packed light
+rows, and `pt_shade` reproduced that sum literally: `for li in range(num_lights)`
+with a shadow ray per row up to `max_shadow_lights`. That is the deterministic
+renderer's cost model **and its 16-light cap**, running inside the renderer whose
+stated purpose is that light count is free.
+
+It now fills the direction-less rows deterministically (as the lit branch does)
+and **draws `pt_light_samples` of the rest** from a small power-weighted table of
+the light rows, scaling each drawn row's radiance by `1 / (S * p)`. Every
+built-in stage carries a light's colour linearly in both its reflection and its
+energy budget, so the estimate is unbiased for the sum.
+
+Three things to know if you touch it.
+
+**The weight rides the radiance, not `vis`.** `_light_vis` is
+`ti.static(shadows != 0)`-gated and compiles out entirely when shadows are off, so
+a weight parked in the visibility vector would be dead-code-eliminated and every
+shadowless path-traced render would be silently wrong. It rides `light_col`'s
+channels 0-2 through `_SampledLightView`, a read-only view in `ArenaView`'s idiom
+that rewrites `view[tl, slot, c]` into `inner[tl, rows[slot], c]` (times the
+weight for `c < 3`). `shading_taichi.py` is not touched and the stage signature
+does not move. The residual: a **user** stage that uses a light's direction
+without multiplying by its colour sees an unweighted sum over the sampled rows.
+
+**The mode is a `ti.template()` argument (`auth_sampled`), not a `nee_meta`
+word,** and that is forced rather than chosen: the summing arm hands the pipeline
+a row ordinal that may run *past* `vis_lights` (40 lights at the 16-slot cap), so
+it cannot go through a per-thread slot map at all. Taichi specialises on template
+arguments, so both arms still compile and run in one process — a `ti.static` gate
+read off a setting would not.
+
+**The authored table is its own, not the next-event entries.** Since §6a-ter a
+`RectAreaLight` is two emissive triangles in the next-event table and its `K` cell
+rows are withdrawn from it — but those rows are still what an authored material
+lights from, so selecting from the next-event entries would lose the light
+entirely (and would waste draws rejecting emissive meshes and the environment,
+which do not light an authored surface at all). The host appends the authored
+rows after the ambient tail of `nee_ref`, with a self-normalised CDF in the
+matching span of `nee_cdf` — **two different bases**, because the ambient rows
+have no CDF entries.
+
+`SETTINGS.raytracing.experimental.pt_authored_light_sampling` /
+`ALGAN_PT_AUTHORED_LIGHT_SAMPLING` is the switch, and it has three states:
+`"off"` is the summing arm byte for byte, `"auto"` (the default) sums inside
+`max_shadow_lights` and samples past it, `"always"` samples at any light count.
+Three states rather than two because `_stage_manim`'s clamp into the display
+range is a genuine non-linearity: at one sample of a large rig it clips where the
+sum did not. `tests/unit_tests/test_path_tracer.py`'s `test_authored_sampling_*`
+are the guards and roadmap §6a-bis is the record.
+
 ## The render path's fixed ceilings are counted, not silent
 
 `raytracing/truncation.py` counts surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.

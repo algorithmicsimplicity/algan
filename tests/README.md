@@ -207,7 +207,7 @@ material coverage.
 
 ## The path-traced suite
 
-`tests/path_traced/scenes/` holds three small scenes rendered through the
+`tests/path_traced/scenes/` holds four small scenes rendered through the
 `samples_per_pixel > 1` wavefront path tracer (each scene file sets
 `samples_per_pixel` itself, and the harness asserts the plan chose the path
 tracer). They are deliberately tiny — 128×72, five frames — because the path
@@ -220,6 +220,7 @@ only pixels can see.
 | `translucency_and_order` | Deterministic 2-D compositing under PT: same-depth author order, depth-separated overlap, and the closed-shell opacity ring on a rotating translucent solid. |
 | `lit_and_shadowed` | NEE direct lighting with shadows, the sampled emitter table, GGX metal, and diffuse colour bleed. |
 | `environment_and_refraction` | Environment-map NEE and escape, mirror reflection, and refraction through the nested-IOR stack. |
+| `authored_under_many_lights` | The authored-appearance branch past the shadow cap: a toon floor and a Manim box under 24 point lights plus the two direction-less rows, sampling their light rows rather than summing them (roadmap §6a-bis). |
 
 The path tracer promises convergence, not byte-identical frames, but its
 accumulation happens to be atomic-free and its sampler is a pure function of
