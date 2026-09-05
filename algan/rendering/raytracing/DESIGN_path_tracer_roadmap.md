@@ -103,16 +103,25 @@ above and the constraint that a fallback the user is *told* to reach for must
 be as fast as it can be, is:
 
 1. §0 — a measured baseline, then the kernel and host wins it ranks.
+   **LANDED** (the T4 baseline, the denoiser in half precision with the
+   adaptive pass-through, the opaque-batch gates, the packed ambient rows,
+   the sampler hoists).
 2. §0.3 — the defaults and the switch: what "turn on path tracing" means.
-3. §9 — the fallback never refuses. Custom scatter as a delta lobe and the
-   never-refuses test have LANDED; what is left of this item is the failure
-   messages that point at the switch.
-4. §2 — adaptive sampling, if the baseline confirms the camera-segment peel
-   and the unlit pixels are where the time goes.
-5. §6 — the light tree and the authored-appearance sampling fix. §5's
-   single BSDF has LANDED, together with §7's stratified lobe select,
-   §0.2's sampler hoists and the self-intersection offset, as the one
-   re-baseline §5 said to batch them into.
+   **LANDED.**
+3. §9 — the fallback never refuses. **LANDED**: custom scatter as a delta
+   lobe, the never-refuses test, and the failure messages that point at the
+   switch.
+4. §2 — adaptive sampling. **LANDED**, with the stochastic gate that keeps
+   deterministic pixels byte-identical.
+5. §6 — the light tree and the authored-appearance sampling fix. **LANDED
+   in full**: §6a/§6b's tree, §6a-quater's per-frame build, §6a-ter's
+   area-light quads and §6a-bis's sampled authored lighting, each with a
+   T4 A/B under `benchmarks/performance/reports/t4_2026_09/`. §5's single
+   BSDF landed before them with §7's stratified lobe select, §0.2's
+   sampler hoists and the self-intersection offset as one re-baseline.
+   What this item leaves open: the area-light quads' leaf-bit end state
+   (§6a-ter, 8% of device time on an area-light scene) and the authored
+   surface's double count of an area light through its continuation.
 6. §3 tier 2 and §8's pools — only behind a profile. §7's blue noise is
    built and measured (+2..4%, inside the noise), and ships off; what would
    make it pay is a per-dimension tile, which that section scopes.
