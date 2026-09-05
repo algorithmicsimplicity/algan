@@ -8,6 +8,43 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  regenerate_quadrants_lock:
+    name: Regenerate algan-quadrants lockfile
+    if: github.event_name == 'pull_request' && github.head_ref == 'use-algan-quadrants'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: use-algan-quadrants
+      - uses: ./.github/actions/install-uv
+      - name: Switch Algan to the published downstream Quadrants distribution
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text()
+          old = '    "quadrants>=1.3.0,<1.4",'
+          new = '    "algan-quadrants==1.3.0.post1",'
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one stock Quadrants dependency, found {text.count(old)}")
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Regenerate lockfile from PyPI
+        run: |
+          uv lock
+          uv lock --locked
+          grep -q 'name = "algan-quadrants"' uv.lock
+      - name: Commit generated dependency and lockfile
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add pyproject.toml uv.lock
+          git commit -m "Use published algan-quadrants wheels"
+          git push origin HEAD:use-algan-quadrants
+
   lock_file:
     runs-on: ubuntu-latest
     steps:
