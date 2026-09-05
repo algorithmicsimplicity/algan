@@ -57,9 +57,7 @@ def _fake_wheel(path: Path, version: str) -> None:
 
 
 def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
-    upstream = (
-        tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
-    )
+    upstream = tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
     _fake_wheel(upstream, helper.DOWNSTREAM_VERSION)
     downstream = helper.rebrand_wheel(upstream)
     assert downstream.name.startswith("algan_quadrants-1.3.0.post1-")
