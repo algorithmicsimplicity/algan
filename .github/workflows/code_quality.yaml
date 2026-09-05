@@ -137,3 +137,24 @@ jobs:
       # other thing a wheel can get wrong while importing fine.
       - name: Check the console script is wired up
         run: /tmp/wheel-env/bin/algan check
+
+  dispatch_algan_quadrants_release:
+    name: Dispatch algan-quadrants 1.3.0.post1
+    if: github.head_ref == 'launch-algan-quadrants-1.3.0-post1'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch canonical release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run quadrants_build.yaml \
+            --repo "${{ github.repository }}" \
+            --ref master \
+            -f platforms=linux,macos,windows \
+            -f python_versions=3.10,3.11,3.12,3.13 \
+            -f apply_patches=true \
+            -f publish=true \
+            -f run_tag=release-1.3.0.post1
