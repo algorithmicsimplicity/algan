@@ -924,16 +924,16 @@ def _refit_link(row, c, blocks: ti.template()):
     child's own block index. Reads the lanes the caller's group test just
     fetched, so this is a same-cache-line load.
     """
-    ts_a = blocks[row, 6]
-    ts_b = blocks[row, 7]
+    # Index the ndarray's vector element directly. Materializing both whole
+    # vectors and selecting a lane through an unrolled branch chain loads
+    # sibling links this ray never uses. Keep bit_cast: these are packed
+    # integers, including half-precision NaN payloads, not numeric floats.
     w = 0
-    for cc in ti.static(range(bvh_arity)):
-        if cc == c:
-            if ti.static(bvh_block_f16):
-                w = ti.cast(ti.bit_cast(ts_a[cc], ti.u16), ti.i32) | (
-                    ti.cast(ti.bit_cast(ts_b[cc], ti.u16), ti.i32) << 16)
-            else:
-                w = ti.bit_cast(ts_a[cc], ti.i32)
+    if ti.static(bvh_block_f16):
+        w = ti.cast(ti.bit_cast(blocks[row, 6][c], ti.u16), ti.i32) | (
+            ti.cast(ti.bit_cast(blocks[row, 7][c], ti.u16), ti.i32) << 16)
+    else:
+        w = ti.bit_cast(blocks[row, 6][c], ti.i32)
     return w
 
 
