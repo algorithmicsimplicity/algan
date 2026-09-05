@@ -1313,6 +1313,153 @@ def test_emissive_quad_matches_the_reference_integral(tmp_path):
     )
 
 
+# The emitter's authored ``emissive_intensity`` while it is on: bright enough
+# that the lit floor patch reads far above the dark-frame threshold, dim enough
+# that nothing in the patch clips at 255.
+_EMITTER_ON = 6.0
+
+
+def _emissive_step_frames(first, second, samples_per_pixel=128):
+    """Two frames of a Lambert floor beside an emissive quad whose
+    ``emissive_intensity`` steps from ``first`` to ``second`` between them.
+
+    Both frames come out of ONE render job (``get_frames``, not two
+    ``save_frame`` stills), which is what puts them in one chunk under one
+    next-event table -- and that table's emissive entries are chosen from the
+    chunk's FIRST frame's emission, which is the thing under test. Raw frames,
+    no post-processing and no colour management, so pixel values are linear
+    radiance times 255.
+
+    Returns ``(frames [2, H, W, 3] int32, emissive_entries)``, the second
+    being how many emissive triangles that table ended up holding.
+    """
+    from algan.rendering.raytracing import path_tracer as pt_host
+
+    settings = SMOKE_TEST.set(resolution=(64, 36), frames_per_second=2)
+    entries = []
+    original = pt_host._build_nee_tables
+
+    def capture(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # ``tri_emit_prob``: nonzero exactly for the triangles the table can
+        # aim a shadow ray at.
+        entries.append(int((out[3] > 0).sum().item()))
+        return out
+
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    pt_host._build_nee_tables = capture
+    try:
+        SETTINGS.raytracing.set(
+            samples_per_pixel=samples_per_pixel,
+            denoise=False,
+            shadows=True,
+            linear_color_space=False,
+            tonemapping=False,
+        )
+        # Uniform sampling: the arms are compared against each other, and
+        # adaptive sampling would hand a different budget to the arm whose
+        # emitter is missing from the table (its pixels are the noisier ones).
+        SETTINGS.raytracing.experimental.set(
+            post_process_tonemap=False, pt_error_target=0.0
+        )
+        with Scene(video_settings=settings) as scene:
+            with Off():
+                scene.set_background(BLACK)
+                Scene.clear_lights()
+                floor = Prism(width=8.0, height=8.0, depth=0.2)
+                floor.set_material(MeshLambertMaterial(color=WHITE))
+                floor.spawn(animate=False)
+                # A thin prism, not a Square: the emitter must be triangle
+                # geometry with a material block (a 2-D Square is a bezier
+                # circuit), same as the reference-integral test above.
+                quad = Prism(width=2.0, height=2.0, depth=0.02)
+                quad.set_material(
+                    MeshLambertMaterial(
+                        color=BLACK, emissive=WHITE, emissive_intensity=first
+                    )
+                )
+                quad.move(RIGHT * 2.0 + OUT * 1.6)
+                quad.spawn(animate=False)
+            # The step is instantaneous and lands strictly between the two
+            # frame times (0 and 0.5 at 2 fps), so each frame samples one side
+            # of it and neither one interpolates.
+            Scene.wait(0.25)
+            with Off():
+                quad.emissive_intensity = second
+            Scene.wait(0.5)
+            frames = torch.cat(
+                [f.cpu() for f in scene.get_frames(0, 2, post_processes=())]
+            )
+    finally:
+        pt_host._build_nee_tables = original
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
+    assert frames.shape[0] == 2, f"expected two frames, got {frames.shape[0]}"
+    assert entries, "the render never built a next-event table"
+    return frames.to(torch.int32), max(entries)
+
+
+def test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on():
+    """An emitter whose emission changes between frames lights each frame at
+    that frame's power, whichever side of the step the table was built on.
+
+    The two directions exercise different halves of the estimator. **Dark at
+    frame 0** keeps the emitter out of the next-event table entirely (the
+    table's emissive weights are frame-0 luminance times area), so at frame 1
+    every one of its photons has to arrive through a BSDF-sampled hit at MIS
+    weight 1 -- unbiased if the pdf bookkeeping agrees that the triangle is
+    unsampled, low if the missing strategy is silently dropped. **Bright at
+    frame 0** puts it in the table, so at frame 1 next-event samples still aim
+    at it and must come back with the frame's own emission, which is zero: a
+    table that carried frame-0 power into the shading would leak light into a
+    frame whose emitter is off.
+
+    Both are checked against a static control lit at ``_EMITTER_ON`` on every
+    frame, which is the same physical configuration, so the two must agree to
+    within sampling noise.
+    """
+    rise, rise_entries = _emissive_step_frames(0.0, _EMITTER_ON)
+    fall, fall_entries = _emissive_step_frames(_EMITTER_ON, 0.0)
+    static, static_entries = _emissive_step_frames(_EMITTER_ON, _EMITTER_ON)
+
+    assert rise_entries == 0, (
+        f"an emitter dark at frame 0 took {rise_entries} next-event entries; "
+        f"the table weights emissive triangles by frame-0 emission, so it "
+        f"should hold none and the arm should light purely through BSDF hits"
+    )
+    assert min(fall_entries, static_entries) > 0, (
+        f"a bright-at-frame-0 emitter is missing from the next-event table "
+        f"(fall {fall_entries}, static {static_entries} entries)"
+    )
+
+    lit = _center_patch_mean(static[0], half=6)
+    assert lit > 20.0, f"the control scene barely lights the floor ({lit:.1f})"
+
+    for label, frame in (
+        ("dark at frame 0 (brightens at frame 1)", rise[0]),
+        ("dark at frame 1 (bright at frame 0)", fall[1]),
+    ):
+        patch = _center_patch_mean(frame, half=6)
+        whole = float(frame[..., :3].double().mean())
+        assert max(patch, whole) <= 1.0, (
+            f"the floor is lit on a frame whose emitter is {label}: patch "
+            f"mean {patch:.2f}, frame mean {whole:.2f} (the other frame's "
+            f"emission is leaking through the next-event table)"
+        )
+
+    for label, measured in (
+        ("dark at frame 0, bright at frame 1", _center_patch_mean(rise[1], half=6)),
+        ("bright at frame 0, dark at frame 1", _center_patch_mean(fall[0], half=6)),
+    ):
+        assert abs(measured - lit) <= 0.10 * lit, (
+            f"an emitter {label} lights its bright frame at {measured:.1f} "
+            f"where the static control reads {lit:.1f} "
+            f"({100.0 * (measured - lit) / lit:+.1f}%): the per-frame emission "
+            f"does not reach the estimator unbiased"
+        )
+
+
 def _sun_env_map():
     """A dim sky with one bright rectangular sun centred on the camera side
     of the scene (``OUT`` is +z: phi = +pi/2 -> u = 0.75, theta = pi/2 ->

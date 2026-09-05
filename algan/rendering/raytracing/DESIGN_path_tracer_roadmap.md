@@ -1314,6 +1314,14 @@ fewer samples. `off` is also the arm that *misses* the shadows of 48 of the 64
 lights, so this is not an equal-quality comparison in the sampled arm's
 disfavour — it is cheaper and more correct at once.
 
+**On the T4** (`benchmarks/performance/reports/t4_2026_09/pt_authored_1.md`,
+the same scene, five frames, 16 spp ceiling with adaptive sampling,
+denoiser on): `pt_shade` **1619 → 235 ms at 720p (6.9x) and 3894 → 598 ms at
+1080p (6.5x)**, end to end **3.15 → 1.61 s and 5.85 → 2.55 s**, at the same
+5.7 mean samples per pixel. An authored material now shades in about what
+the physically-integrated `many_lights` rig does (260–275 ms at 720p) rather
+than six times as much.
+
 **Slots, and local memory.** `shadow_vis_slots` is now asked for
 `ambient + sampled` rather than for the light count, so the `vis` payload a
 64-light authored scene carries drops from the 16-slot cap (192 B per thread)
@@ -1894,11 +1902,20 @@ Tracked here so they are one search away, in rough order of effort:
   *understatement* on a path that used to be killed outright, so it is
   strictly an improvement; correcting it means giving the specular lobe the
   same side-aware reflectance the transmission lobe already gets.
-* **Frame-animated emitters are untested.** The NEE table samples frame-0
+* **Frame-animated emitters — now tested.** The NEE table samples frame-0
   emission power (dark-at-frame-0 emitters stay unbiased through the BSDF
-  path, weight 1), and the MIS pdf evaluates per-frame area — implemented,
-  never pinned by a test. A two-frame scene with an emitter that brightens at
-  frame 1 is the missing test, not new engine code.
+  path, weight 1), and the MIS pdf evaluates per-frame area. Pinned by
+  `test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on`
+  (`tests/unit_tests/test_path_tracer.py`): an emissive quad beside a Lambert
+  floor, stepped instantaneously between frames of ONE render job (both frames
+  in one chunk, so one table built from frame 0), against a static control lit
+  on every frame. Measured at 128 spp, 64x36: dark at frame 0 takes **0**
+  emissive table entries and still lights frame 1 to 131.97 against the
+  control's 132.64 (**−0.5%**, all of it through BSDF hits at weight 1), while
+  its own frame 0 reads exactly 0.00; bright at frame 0 takes 12 entries,
+  matches the control at frame 0 bit for bit, and reads exactly 0.00 at frame
+  1 — no frame-0 power leaks through the table into a frame whose emitter is
+  off.
 * **A mirror's image of a translucent closed shell still doubles.** The
   opacity ring covers the camera segment only, deliberately matching the
   deterministic route's identical bounce-loop gap (see the comment block at
