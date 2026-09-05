@@ -2,7 +2,11 @@
 
 Each file in ``scenes/`` authors one dense Scene covering a whole subsystem.
 This module renders it at ``PREVIEW`` and compares every frame against the
-checked-in baseline in ``expected_outputs_<device>/``.
+checked-in baseline in ``expected_outputs_<device>/``. The baseline contract
+pins ``SETTINGS.computing.torch_compile=False``: compiled and eager triangle
+projection have produced different rounding on otherwise identical renders, so
+the oracle must not depend on whether ``torch.compile`` happens to work on the
+host.
 
 Re-baselining
 -------------
@@ -134,7 +138,9 @@ def render_environment(monkeypatch):
     directory first.
 
     ``available_memory_override`` pins the frame-window split; see
-    ``AVAILABLE_MEMORY_OVERRIDE``.
+    ``AVAILABLE_MEMORY_OVERRIDE``. ``torch_compile=False`` is equally part of
+    the baseline contract: every comparison and every rebaseline runs the
+    PyTorch stages eagerly.
     """
     snapshot = SETTINGS.snapshot()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,7 +151,12 @@ def render_environment(monkeypatch):
         output_directory=OUTPUT_DIR.name,
         cache_directory=str(CACHE_DIR),
     )
-    SETTINGS.computing.set(available_memory_override=AVAILABLE_MEMORY_OVERRIDE)
+    # Baseline contract: eager PyTorch. Historical CPU baselines were made on
+    # a Linux box where torch.compile worked; they need one eager rebaseline on
+    # their canonical machine before CPU pixel verification is authoritative.
+    SETTINGS.computing.set(
+        available_memory_override=AVAILABLE_MEMORY_OVERRIDE, torch_compile=False
+    )
     SceneManager.reset()
     try:
         yield
