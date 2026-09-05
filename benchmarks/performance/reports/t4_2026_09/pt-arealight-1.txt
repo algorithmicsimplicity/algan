@@ -1,0 +1,1360 @@
++ nvidia-smi
+Sat Sep  5 16:26:43 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.159.04             Driver Version: 580.159.04     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla T4                       Off |   00000000:00:04.0 Off |                    0 |
+| N/A   53C    P8             10W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  Tesla T4                       Off |   00000000:00:05.0 Off |                    0 |
+| N/A   48C    P8             10W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
++ apt-get -qq update && apt-get -qq install -y libpango1.0-dev libcairo2-dev pkg-config ffmpeg
+W: Skipping acquire of configured file 'main/source/Sources' as repository 'https://r2u.stat.illinois.edu/ubuntu jammy InRelease' does not seem to provide it (sources.list entry misspelt?)
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 125186 files and directories currently installed.)
+Removing r-base-dev (4.6.0-3.2204.0) ...
+dpkg: pkgconf: dependency problems, but removing anyway as you requested:
+ libsndfile1-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmkl-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickwand-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libmagickcore-6.q16-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libglib2.0-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+ libfontconfig-dev:amd64 depends on pkg-config; however:
+  Package pkg-config is not installed.
+  Package pkgconf which provides pkg-config is to be removed.
+
+Removing pkgconf (1.8.0-1) ...
+Removing 'diversion of /usr/bin/pkg-config to /usr/bin/pkg-config.real by pkgconf'
+Removing 'diversion of /usr/share/aclocal/pkg.m4 to /usr/share/aclocal/pkg.real.m4 by pkgconf'
+Removing 'diversion of /usr/share/man/man1/pkg-config.1.gz to /usr/share/man/man1/pkg-config.real.1.gz by pkgconf'
+Removing 'diversion of /usr/share/pkg-config-crosswrapper to /usr/share/pkg-config-crosswrapper.real by pkgconf'
+Selecting previously unselected package pkg-config.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 125163 files and directories currently installed.)
+Preparing to unpack .../00-pkg-config_0.29.2-1ubuntu3_amd64.deb ...
+Unpacking pkg-config (0.29.2-1ubuntu3) ...
+Selecting previously unselected package libdatrie-dev:amd64.
+Preparing to unpack .../01-libdatrie-dev_0.2.13-2_amd64.deb ...
+Unpacking libdatrie-dev:amd64 (0.2.13-2) ...
+Selecting previously unselected package libfribidi-dev:amd64.
+Preparing to unpack .../02-libfribidi-dev_1.0.8-2ubuntu3.1_amd64.deb ...
+Unpacking libfribidi-dev:amd64 (1.0.8-2ubuntu3.1) ...
+Preparing to unpack .../03-libgraphite2-3_1.3.14-1ubuntu0.1_amd64.deb ...
+Unpacking libgraphite2-3:amd64 (1.3.14-1ubuntu0.1) over (1.3.14-1build2) ...
+Selecting previously unselected package libgraphite2-dev:amd64.
+Preparing to unpack .../04-libgraphite2-dev_1.3.14-1ubuntu0.1_amd64.deb ...
+Unpacking libgraphite2-dev:amd64 (1.3.14-1ubuntu0.1) ...
+Selecting previously unselected package libharfbuzz-icu0:amd64.
+Preparing to unpack .../05-libharfbuzz-icu0_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-icu0:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libharfbuzz-gobject0:amd64.
+Preparing to unpack .../06-libharfbuzz-gobject0_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-gobject0:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libharfbuzz-dev:amd64.
+Preparing to unpack .../07-libharfbuzz-dev_2.7.4-1ubuntu3.2_amd64.deb ...
+Unpacking libharfbuzz-dev:amd64 (2.7.4-1ubuntu3.2) ...
+Selecting previously unselected package libthai-dev:amd64.
+Preparing to unpack .../08-libthai-dev_0.1.29-1build1_amd64.deb ...
+Unpacking libthai-dev:amd64 (0.1.29-1build1) ...
+Selecting previously unselected package pango1.0-tools.
+Preparing to unpack .../09-pango1.0-tools_1.50.6+ds-2ubuntu1_amd64.deb ...
+Unpacking pango1.0-tools (1.50.6+ds-2ubuntu1) ...
+Selecting previously unselected package libpango1.0-dev:amd64.
+Preparing to unpack .../10-libpango1.0-dev_1.50.6+ds-2ubuntu1_amd64.deb ...
+Unpacking libpango1.0-dev:amd64 (1.50.6+ds-2ubuntu1) ...
+Preparing to unpack .../11-r-base-core_4.6.1-6.2204.0_amd64.deb ...
+Unpacking r-base-core (4.6.1-6.2204.0) over (4.6.0-3.2204.0) ...
+Setting up libgraphite2-3:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up libharfbuzz-icu0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libfribidi-dev:amd64 (1.0.8-2ubuntu3.1) ...
+Setting up pango1.0-tools (1.50.6+ds-2ubuntu1) ...
+Setting up libharfbuzz-gobject0:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libgraphite2-dev:amd64 (1.3.14-1ubuntu0.1) ...
+Setting up r-base-core (4.6.1-6.2204.0) ...
+Installing new version of config file /etc/R/Makeconf ...
+Setting up pkg-config (0.29.2-1ubuntu3) ...
+Setting up libdatrie-dev:amd64 (0.2.13-2) ...
+Setting up libharfbuzz-dev:amd64 (2.7.4-1ubuntu3.2) ...
+Setting up libthai-dev:amd64 (0.1.29-1build1) ...
+Setting up libpango1.0-dev:amd64 (1.50.6+ds-2ubuntu1) ...
+Processing triggers for hicolor-icon-theme (0.17-2) ...
+Processing triggers for libc-bin (2.35-0ubuntu3.8) ...
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_5.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_level_zero_v2.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbbind_2_0.so.3 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_loader.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbb.so.12 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libumf.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm_debug.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libur_adapter_opencl.so.0 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc_proxy.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtcm.so.1 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libtbbmalloc.so.2 is not a symbolic link
+
+/sbin/ldconfig.real: /usr/local/lib/libhwloc.so.15 is not a symbolic link
+
+Processing triggers for man-db (2.10.2-1) ...
+Processing triggers for mailcap (3.70+nmu1ubuntu1) ...
++ git clone --filter=blob:none https://github.com/algorithmicsimplicity/algan.git /kaggle/working/algan
+Cloning into '/kaggle/working/algan'...
+Updating files:   0% (2/996)Updating files:   1% (10/996)Updating files:   2% (20/996)Updating files:   3% (30/996)Updating files:   4% (40/996)Updating files:   5% (50/996)Updating files:   6% (60/996)Updating files:   7% (70/996)Updating files:   8% (80/996)Updating files:   9% (90/996)Updating files:  10% (100/996)Updating files:  11% (110/996)Updating files:  12% (120/996)Updating files:  13% (130/996)Updating files:  14% (140/996)Updating files:  15% (150/996)Updating files:  16% (160/996)Updating files:  17% (170/996)Updating files:  18% (180/996)Updating files:  19% (190/996)Updating files:  20% (200/996)Updating files:  21% (210/996)Updating files:  22% (220/996)Updating files:  23% (230/996)Updating files:  24% (240/996)Updating files:  25% (249/996)Updating files:  26% (259/996)Updating files:  27% (269/996)Updating files:  28% (279/996)Updating files:  29% (289/996)Updating files:  30% (299/996)Updating files:  31% (309/996)Updating files:  32% (319/996)Updating files:  33% (329/996)Updating files:  34% (339/996)Updating files:  35% (349/996)Updating files:  36% (359/996)Updating files:  37% (369/996)Updating files:  38% (379/996)Updating files:  39% (389/996)Updating files:  40% (399/996)Updating files:  41% (409/996)Updating files:  42% (419/996)Updating files:  43% (429/996)Updating files:  44% (439/996)Updating files:  45% (449/996)Updating files:  46% (459/996)Updating files:  47% (469/996)Updating files:  48% (479/996)Updating files:  49% (489/996)Updating files:  50% (498/996)Updating files:  51% (508/996)Updating files:  52% (518/996)Updating files:  53% (528/996)Updating files:  54% (538/996)Updating files:  55% (548/996)Updating files:  56% (558/996)Updating files:  57% (568/996)Updating files:  58% (578/996)Updating files:  59% (588/996)Updating files:  60% (598/996)Updating files:  61% (608/996)Updating files:  62% (618/996)Updating files:  63% (628/996)Updating files:  64% (638/996)Updating files:  65% (648/996)Updating files:  66% (658/996)Updating files:  67% (668/996)Updating files:  68% (678/996)Updating files:  69% (688/996)Updating files:  70% (698/996)Updating files:  71% (708/996)Updating files:  72% (718/996)Updating files:  73% (728/996)Updating files:  74% (738/996)Updating files:  75% (747/996)Updating files:  76% (757/996)Updating files:  77% (767/996)Updating files:  78% (777/996)Updating files:  79% (787/996)Updating files:  80% (797/996)Updating files:  81% (807/996)Updating files:  81% (815/996)Updating files:  82% (817/996)Updating files:  83% (827/996)Updating files:  84% (837/996)Updating files:  85% (847/996)Updating files:  86% (857/996)Updating files:  87% (867/996)Updating files:  88% (877/996)Updating files:  89% (887/996)Updating files:  90% (897/996)Updating files:  91% (907/996)Updating files:  92% (917/996)Updating files:  93% (927/996)Updating files:  94% (937/996)Updating files:  95% (947/996)Updating files:  96% (957/996)Updating files:  97% (967/996)Updating files:  98% (977/996)Updating files:  99% (987/996)Updating files: 100% (996/996)Updating files: 100% (996/996), done.
++ git -C /kaggle/working/algan fetch --force origin claude/algan-path-tracer-design-8uj1vl
+From https://github.com/algorithmicsimplicity/algan
+ * branch            claude/algan-path-tracer-design-8uj1vl -> FETCH_HEAD
++ git -C /kaggle/working/algan checkout --force FETCH_HEAD
+Note: switching to 'FETCH_HEAD'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at df25526 Benchmarks: an area-light scene for the path tracer harness
++ git -C /kaggle/working/algan clean -fdx
++ git -C /kaggle/working/algan log --oneline -1
+df25526 Benchmarks: an area-light scene for the path tracer harness
++ pip install -q -e '/kaggle/working/algan[pango]'
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.9/44.9 kB 3.0 MB/s eta 0:00:00
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.1/4.1 MB 80.2 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 59.2/59.2 kB 4.4 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 129.9/129.9 kB 11.9 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 41.0/41.0 MB 41.9 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 97.9 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.9/137.9 kB 10.1 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 750.0/750.0 kB 41.3 MB/s eta 0:00:00
+
+==============================================================================
+algan Kaggle harness -- tag pt-arealight-1
+==============================================================================
+repo      /kaggle/working/algan
+branch    claude/algan-path-tracer-design-8uj1vl
+commit    (resolved on the box)
+steps     ['quads', 'rows', 'quads1080', 'rows1080', 'variance']
+ALGAN_DEVICE cuda
+TORCH 2.10.0+cu128 cuda=True
+GPU Tesla T4
+render device: cuda
+
+==============================================================================
+=== STEP quads ===
+==============================================================================
+$ python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag quads
+  env ALGAN_VIDEO_ENCODER=software
+[algan] starting a background render daemon so later runs skip the startup cost; scripts then run in it, so everything above `import algan` runs twice (once here, once there), atexit handlers do not run and stdin is /dev/null (log: /root/.algan/daemon.log). Disable with ALGAN_AUTO_DAEMON=0.
+==============================================================================
+pt_baseline -- path-tracer performance harness
+==============================================================================
+  arm tag          pt_area_lights_spp16_b4_1280x720_quads
+  render device    cuda
+  taichi arch      [Arch.cuda, Arch.metal, Arch.vulkan, Arch.amdgpu] (selected)
+  scene            area_lights
+  mode             path_tracer
+  resolution       1280x720
+  fps              5
+  samples_per_pixel 16
+  max_bounces      4
+  pt_light_samples (default)
+  pt_rr_start_bounce (default)
+  pt_firefly_clamp (default)
+  pt_error_target  (default)
+  pt_min_samples   (default)
+  denoise          (default)
+  available_memory_mb (default)
+  ALGAN_PT_WAVE    (default)
+  ALGAN_PT_LIGHT_TREE (default)
+  ALGAN_SHADOW_ANYHIT (default)
+  ALGAN_OPT_LEVEL  (default)
+  ALGAN_ADV_OPT    (default)
+  ALGAN_MAX_SHADOW_LIGHTS (default)
+  runs             2
+
+[Quadrants] Starting on arch=cuda
+[profiling] hooked 49 Taichi kernels (208 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run1.mp4
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'tuple' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run1.mp4 in 34.6 s
+
+===== profiling run 2/2 (warm) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run2.mp4
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run2.mp4 in 1.9 s
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: ON
+  hooked kernels (49): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, pn_edge_chord_error, pn_patch_flatness_error, pt_env_pdf_probe, pt_env_sample_probe, pt_generate, pt_light_tree_pmf_probe, pt_light_tree_probe, pt_nee_pick_probe, pt_offset_probe, pt_reduce, pt_sampler_probe, pt_shade_arena, raster_bez_count, raster_bez_write, raster_shadow_trace_arena, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade_arena, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade_arena, wavefront_traverse_events_arena, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 36.04s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5    22.554    62.6%     0.558     1.5%     0.000     0.000
+kernel: pt_shade_arena                                  75    18.854    52.3%    18.854    52.3%    18.850     0.004
+arena preflight (batch)                                  1    11.588    32.1%     0.003     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          1    11.253    31.2%     0.003     0.0%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1    11.051    30.7%     0.001     0.0%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1    11.050    30.7%     0.324     0.9%     0.000     0.000
+logical PN:     - snap boundary                         14     4.614    12.8%     4.614    12.8%     0.000     0.000
+logical PN:     - evaluate normals                       7     2.353     6.5%     2.353     6.5%     0.000     0.000
+logical PN:     - evaluate patch                         7     2.320     6.4%     2.320     6.4%     0.000     0.000
+logical PN:     - subdivision levels                     1     1.279     3.5%     0.111     0.3%     0.000     0.000
+denoise (torch UNet)                                     5     1.126     3.1%     1.126     3.1%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     1.049     2.9%     1.049     2.9%     1.045     0.004
+logical PN:       - edge level search                    1     0.735     2.0%     0.075     0.2%     0.000     0.000
+logical PN:         - edge chord error                   2     0.661     1.8%     0.001     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              2     0.659     1.8%     0.659     1.8%     0.659     0.000
+logical PN:       - patch level search                   1     0.431     1.2%     0.008     0.0%     0.000     0.000
+logical PN:         - patch flatness error               5     0.425     1.2%     0.001     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                          5     0.424     1.2%     0.424     1.2%     0.423     0.000
+kernel: pt_generate                                     15     0.364     1.0%     0.364     1.0%     0.363     0.001
+  - refit-BVH build (in merge)                           3     0.337     0.9%     0.337     0.9%     0.000     0.000
+merge collections + build BVHs                           1     0.332     0.9%     0.079     0.2%     0.000     0.000
+Scene._get_batch_of_primitives                           1     0.218     0.6%     0.123     0.3%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.198     0.6%     0.198     0.6%     0.000     0.000
+logical PN:     - interpolate attrs                    105     0.159     0.4%     0.159     0.4%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.153     0.4%     0.003     0.0%     0.000     0.000
+post:   - tonemap/finalize                               5     0.144     0.4%     0.144     0.4%     0.000     0.000
+kernel: pt_reduce                                       15     0.143     0.4%     0.143     0.4%     0.142     0.001
+kernel: finalize_samples                                 5     0.109     0.3%     0.109     0.3%     0.109     0.000
+wavefront:   - compact active                           75     0.108     0.3%     0.011     0.0%     0.000     0.000
+kernel: compact_ray_slots                               75     0.097     0.3%     0.097     0.3%     0.094     0.003
+AttributeTimeline.get                                 1082     0.053     0.1%     0.053     0.1%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.038     0.1%     0.011     0.0%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          23     0.025     0.1%     0.025     0.1%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.019     0.1%     0.019     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.008     0.0%     0.007     0.0%     0.000     0.000
+post:   - device->host copy                              5     0.006     0.0%     0.006     0.0%     0.000     0.000
+background prefill                                       5     0.006     0.0%     0.006     0.0%     0.000     0.000
+scene upload to arena                                    1     0.005     0.0%     0.005     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.002     0.0%     0.002     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.001     0.0%     0.001     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   1.656     4.6%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    373.922    1.0%    2.4928   24.5234
+  wavefront_traverse_events_arena            150    169.680    0.5%    1.1312    8.2289
+  compact_ray_slots                          150      8.881    0.0%    0.0592    0.6255
+  pt_generate                                 30      7.736    0.0%    0.2579    1.0854
+  pt_reduce                                   30      7.054    0.0%    0.2351    1.0050
+  finalize_samples                            10      1.021    0.0%    0.1021    0.1952
+  tonemap_to_u8                               10      0.516    0.0%    0.0516    0.0963
+  pn_patch_flatness_error                     10      0.275    0.0%    0.0275    0.0634
+  pn_edge_chord_error                          4      0.085    0.0%    0.0212    0.0270
+
+GPU telemetry over render (428 samples @ ~10 Hz, min/avg/max):
+  utilization  0/1/77 %   mem-util 0/1/49 %
+  SM clock     300/456/1515 MHz   mem clock 405/2702/5000 MHz
+  temperature  45/51/62 C   power 10/20/90 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6160 MB, peak reserved 6258 MB
+  batch 0: merged tensors 5.1 MB, BVHs 1.0 MB (cuda after merge 5921 MB)
+    counts: num_colored_triangles=3197, num_triangles=3197, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3197, 34) = 2.1 MB
+    tri_colors: (5, 3197, 3, 5) = 0.9 MB
+    tri_extra: (5, 3197, 15) = 0.9 MB
+    tri_pos: (5, 3197, 9) = 0.5 MB
+    tri_norm: (5, 3197, 9) = 0.5 MB
+    tri_obj: (5, 3197) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 1.93s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     1.117    57.8%     0.211    10.9%     0.000     0.000
+kernel: pt_shade_arena                                  75     0.312    16.1%     0.312    16.1%     0.308     0.004
+Scene._get_batch_of_primitives                           1     0.254    13.2%     0.148     7.7%     0.000     0.000
+denoise (torch UNet)                                     5     0.221    11.5%     0.221    11.5%     0.000     0.000
+  - refit-BVH build (in merge)                           3     0.211    10.9%     0.211    10.9%     0.000     0.000
+arena preflight (batch)                                  1     0.203    10.5%     0.004     0.2%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     0.180     9.3%     0.180     9.3%     0.176     0.004
+merge collections + build BVHs                           1     0.107     5.5%     0.010     0.5%     0.000     0.000
+  - project_to_screen (prewarm)                          1     0.092     4.7%     0.003     0.1%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     0.074     3.8%     0.001     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     0.072     3.7%     0.030     1.5%     0.000     0.000
+AttributeTimeline.get                                 1082     0.068     3.5%     0.068     3.5%     0.000     0.000
+wavefront:   - compact active                           75     0.040     2.1%     0.010     0.5%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.033     1.7%     0.009     0.5%     0.000     0.000
+kernel: compact_ray_slots                               75     0.029     1.5%     0.029     1.5%     0.026     0.003
+logical PN:     - interpolate attrs                    105     0.025     1.3%     0.025     1.3%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.023     1.2%     0.023     1.2%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          23     0.022     1.1%     0.022     1.1%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.015     0.8%     0.015     0.8%     0.000     0.000
+kernel: pt_generate                                     15     0.014     0.7%     0.014     0.7%     0.013     0.001
+kernel: pt_reduce                                       15     0.011     0.6%     0.011     0.6%     0.011     0.001
+post-process (downsample/FXAA/glow)                      5     0.009     0.5%     0.003     0.2%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.009     0.5%     0.002     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.009     0.5%     0.008     0.4%     0.000     0.000
+logical PN:     - snap boundary                         14     0.005     0.2%     0.005     0.2%     0.000     0.000
+scene upload to arena                                    1     0.005     0.2%     0.005     0.2%     0.000     0.000
+post:   - device->host copy                              5     0.004     0.2%     0.004     0.2%     0.000     0.000
+background prefill                                       5     0.003     0.2%     0.003     0.2%     0.000     0.000
+logical PN:         - patch flatness error               5     0.003     0.2%     0.001     0.1%     0.000     0.000
+logical PN:       - patch level search                   1     0.003     0.1%     0.002     0.1%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.003     0.1%     0.003     0.1%     0.000     0.000
+logical PN:     - evaluate normals                       7     0.002     0.1%     0.002     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.002     0.1%     0.002     0.1%     0.002     0.000
+logical PN:       - edge level search                    1     0.002     0.1%     0.001     0.1%     0.000     0.000
+post:   - tonemap/finalize                               5     0.002     0.1%     0.002     0.1%     0.000     0.000
+kernel: pn_patch_flatness_error                          5     0.002     0.1%     0.002     0.1%     0.002     0.000
+logical PN:     - evaluate patch                         7     0.002     0.1%     0.002     0.1%     0.000     0.000
+logical PN:         - edge chord error                   2     0.001     0.1%     0.000     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.001     0.1%     0.001     0.1%     0.000     0.000
+kernel: pn_edge_chord_error                              2     0.001     0.0%     0.001     0.0%     0.001     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.324    16.8%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    271.907   14.1%    1.8127   11.1789
+  wavefront_traverse_events_arena            150    141.541    7.3%    0.9436    7.0617
+  compact_ray_slots                          150      8.753    0.5%    0.0584    0.6030
+  pt_generate                                 30      7.699    0.4%    0.2566    1.0691
+  pt_reduce                                   30      6.931    0.4%    0.2310    0.9789
+  finalize_samples                            10      1.018    0.1%    0.1018    0.1947
+  tonemap_to_u8                               10      0.493    0.0%    0.0493    0.0891
+  pn_patch_flatness_error                     10      0.168    0.0%    0.0168    0.0346
+  pn_edge_chord_error                          4      0.053    0.0%    0.0132    0.0174
+
+GPU telemetry over render (24 samples @ ~10 Hz, min/avg/max):
+  utilization  0/21/100 %   mem-util 0/11/53 %
+  SM clock     300/776/1575 MHz   mem clock 405/2702/5000 MHz
+  temperature  45/53/63 C   power 10/30/87 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6118 MB, peak reserved 6218 MB
+  batch 0: merged tensors 5.1 MB, BVHs 1.0 MB (cuda after merge 5881 MB)
+    counts: num_colored_triangles=3197, num_triangles=3197, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3197, 34) = 2.1 MB
+    tri_colors: (5, 3197, 3, 5) = 0.9 MB
+    tri_extra: (5, 3197, 15) = 0.9 MB
+    tri_pos: (5, 3197, 9) = 0.5 MB
+    tri_norm: (5, 3197, 9) = 0.5 MB
+    tri_obj: (5, 3197) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 /kaggle/working/algan/benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag quads
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 /kaggle/working/algan/benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag quads
+
+(Taichi's own table below; its % is of total GPU-kernel time, not of run wall time -- see '% run' above for that.)
+=========================================================================
+Kernel Profiler(count, default) @ CUDA on Tesla T4
+=========================================================================
+[      %     total   count |      min       avg       max   ] Kernel name
+-------------------------------------------------------------------------
+[ 61.83%   0.271 s     75x |    0.279     3.616    11.179 ms] pt_shade_arena_c124_0_kernel_1_range_for
+[ 32.08%   0.141 s     75x |    0.219     1.876     7.062 ms] wavefront_traverse_events_arena_c92_0_kernel_1_range_for
+[  1.83%   0.008 s     75x |    0.010     0.107     0.603 ms] compact_ray_slots_c74_0_kernel_1_range_for
+[  1.71%   0.008 s     15x |    0.139     0.501     1.069 ms] pt_generate_c122_0_kernel_1_range_for
+[  1.54%   0.007 s     15x |    0.148     0.452     0.979 ms] pt_reduce_c126_0_kernel_1_range_for
+[  0.22%   0.001 s      5x |    0.193     0.194     0.195 ms] finalize_samples_c66_0_kernel_1_range_for
+[  0.19%   0.001 s     75x |    0.008     0.011     0.028 ms] wavefront_traverse_events_arena_c92_0_kernel_0_serial
+[  0.17%   0.001 s     75x |    0.007     0.010     0.034 ms] compact_ray_slots_c74_0_kernel_0_serial
+[  0.17%   0.001 s     75x |    0.008     0.010     0.013 ms] pt_shade_arena_c124_0_kernel_0_serial
+[  0.10%   0.000 s      5x |    0.088     0.089     0.089 ms] tonemap_to_u8_c158_0_kernel_1_range_for
+[  0.04%   0.000 s     15x |    0.009     0.012     0.022 ms] pt_generate_c122_0_kernel_0_serial
+[  0.04%   0.000 s     15x |    0.008     0.011     0.021 ms] pt_reduce_c126_0_kernel_0_serial
+[  0.03%   0.000 s      5x |    0.016     0.024     0.035 ms] pn_patch_flatness_error_c60_0_kernel_1_range_for
+[  0.01%   0.000 s      5x |    0.008     0.010     0.010 ms] tonemap_to_u8_c158_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.008     0.010     0.010 ms] finalize_samples_c66_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.008     0.009     0.010 ms] pn_patch_flatness_error_c60_0_kernel_0_serial
+[  0.01%   0.000 s      2x |    0.015     0.016     0.017 ms] pn_edge_chord_error_c64_0_kernel_1_range_for
+[  0.00%   0.000 s      2x |    0.008     0.010     0.012 ms] pn_edge_chord_error_c64_0_kernel_0_serial
+-------------------------------------------------------------------------
+[100.00%] Total execution time:   0.439 s   number of results: 18
+=========================================================================
+report written to algan_profile_report_pt_area_lights_spp16_b4_1280x720_quads.txt
+
+==============================================================================
+RUN 2 (warm) stage table -- end-to-end 1.931s
+==============================================================================
+  stage                            launches   wall s  wall %  device ms   recs
+  pt_generate                            15    0.014    0.7%      7.699     30
+  wavefront_traverse_events              75    0.180    9.3%    141.541    150
+  pt_shade                               75    0.312   16.1%    271.907    150
+  compact_ray_slots                      75    0.029    1.5%      8.753    150
+  pt_reduce                              15    0.011    0.6%      6.931     30
+  finalize_samples                        5    0.002    0.1%      1.018     10
+  other kernels (3)                       7    0.003    0.1%      0.714     24
+  denoise (torch UNet)                    5    0.221   11.5%          -      -
+  host: prep, merge, encode, ...          -    1.159   60.0%          -      -
+  TOTAL                                        1.931  100.0%
+  pt_shade launches (bounce iterations): 75   waves (pt_reduce launches): 15   iterations/wave: 5.00
+  other kernels: pn_edge_chord_error, pn_patch_flatness_error, tonemap_to_u8
+  samples per pixel actually taken: 5.76 of the 16 the arm asked for (0 = the path tracer did not run)
+  lights in the scene: 4
+
+RESULTS {"benchmark":"pt_baseline","tag":"pt_area_lights_spp16_b4_1280x720_quads","device":"cuda","taichi_arch":"cuda","knobs":{"scene":"area_lights","mode":"path_tracer","resolution":"1280x720","fps":5,"samples_per_pixel":16,"max_bounces":4,"pt_light_samples":null,"pt_rr_start_bounce":null,"pt_firefly_clamp":null,"pt_error_target":null,"pt_min_samples":null,"denoise":null,"available_memory_mb":null},"runs":2,"reported_run":"RUN 2 (warm)","lights":4,"denoiser_hooked":true,"cold_total_s":36.044,"warm_total_s":1.931,"peak_alloc_mb":6118.1,"pt_shade_launches":75,"waves":15,"path_samples_mean":5.7636,"device_profiler":true,"stages":{"pt_generate":{"launches":15,"wall_s":0.0136,"device_ms":7.699},"wavefront_traverse_events":{"launches":75,"wall_s":0.1796,"device_ms":141.541},"pt_shade":{"launches":75,"wall_s":0.3119,"device_ms":271.907},"compact_ray_slots":{"launches":75,"wall_s":0.0295,"device_ms":8.753},"pt_reduce":{"launches":15,"wall_s":0.0113,"device_ms":6.931},"finalize_samples":{"launches":5,"wall_s":0.0024,"device_ms":1.018},"other kernels (3)":{"launches":7,"wall_s":0.0028,"device_ms":0.714},"denoise (torch UNet)":{"launches":5,"wall_s":0.2212,"device_ms":0.0},"host: prep, merge, encode, ...":{"launches":0,"wall_s":1.1592,"device_ms":0.0}},"ok":true}
+--- step quads: ok (rc=0) in 76.7s
+
+==============================================================================
+=== STEP rows ===
+==============================================================================
+$ ALGAN_PT_AREA_LIGHT_QUADS=0 python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag rows
+  env ALGAN_VIDEO_ENCODER=software
+[algan] not using the algan daemon: settings read at import time differ from the running daemon's:
+  ALGAN_PT_AREA_LIGHT_QUADS: this script wants '0', the daemon imported algan with '<unset>'
+The daemon imported algan before this script chose them, so it would render with its own values; this run will execute in a fresh process instead. To choose them from inside a run -- which works warm or cold -- use SETTINGS, or a set_* in algan.rendering.raytracing.settings. To have the daemon itself adopt them, stop it (see algan/daemon.py) and let the next run start one.
+==============================================================================
+pt_baseline -- path-tracer performance harness
+==============================================================================
+  arm tag          pt_area_lights_spp16_b4_1280x720_rows
+  render device    cuda
+  taichi arch      [Arch.cuda, Arch.metal, Arch.vulkan, Arch.amdgpu] (selected)
+  scene            area_lights
+  mode             path_tracer
+  resolution       1280x720
+  fps              5
+  samples_per_pixel 16
+  max_bounces      4
+  pt_light_samples (default)
+  pt_rr_start_bounce (default)
+  pt_firefly_clamp (default)
+  pt_error_target  (default)
+  pt_min_samples   (default)
+  denoise          (default)
+  available_memory_mb (default)
+  ALGAN_PT_WAVE    (default)
+  ALGAN_PT_LIGHT_TREE (default)
+  ALGAN_SHADOW_ANYHIT (default)
+  ALGAN_OPT_LEVEL  (default)
+  ALGAN_ADV_OPT    (default)
+  ALGAN_MAX_SHADOW_LIGHTS (default)
+  runs             2
+
+[Quadrants] Starting on arch=cuda
+[profiling] hooked 49 Taichi kernels (208 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run1.mp4
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'tuple' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run1.mp4 in 23.1 s
+
+===== profiling run 2/2 (warm) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run2.mp4
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run2.mp4 in 2.0 s
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: ON
+  hooked kernels (49): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, pn_edge_chord_error, pn_patch_flatness_error, pt_env_pdf_probe, pt_env_sample_probe, pt_generate, pt_light_tree_pmf_probe, pt_light_tree_probe, pt_nee_pick_probe, pt_offset_probe, pt_reduce, pt_sampler_probe, pt_shade_arena, raster_bez_count, raster_bez_write, raster_shadow_trace_arena, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade_arena, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade_arena, wavefront_traverse_events_arena, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 23.51s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5    18.441    78.4%     0.289     1.2%     0.000     0.000
+kernel: pt_shade_arena                                  75    15.715    66.8%    15.715    66.8%    15.711     0.004
+arena preflight (batch)                                  1     4.247    18.1%     0.003     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          1     3.950    16.8%     0.023     0.1%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     3.796    16.1%     0.011     0.0%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     3.785    16.1%     0.182     0.8%     0.000     0.000
+logical PN:     - snap boundary                         14     1.075     4.6%     1.075     4.6%     0.000     0.000
+logical PN:     - subdivision levels                     1     1.072     4.6%     0.080     0.3%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     0.996     4.2%     0.996     4.2%     0.992     0.004
+logical PN:     - evaluate patch                         7     0.684     2.9%     0.684     2.9%     0.000     0.000
+logical PN:     - evaluate normals                       7     0.679     2.9%     0.679     2.9%     0.000     0.000
+logical PN:       - edge level search                    1     0.663     2.8%     0.040     0.2%     0.000     0.000
+denoise (torch UNet)                                     5     0.625     2.7%     0.625     2.7%     0.000     0.000
+logical PN:         - edge chord error                   2     0.623     2.6%     0.000     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              2     0.622     2.6%     0.622     2.6%     0.622     0.000
+kernel: pt_generate                                     15     0.364     1.5%     0.364     1.5%     0.363     0.001
+logical PN:       - patch level search                   1     0.327     1.4%     0.007     0.0%     0.000     0.000
+logical PN:         - patch flatness error               5     0.322     1.4%     0.001     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                          5     0.320     1.4%     0.320     1.4%     0.320     0.000
+merge collections + build BVHs                           1     0.294     1.3%     0.056     0.2%     0.000     0.000
+  - refit-BVH build (in merge)                           2     0.238     1.0%     0.238     1.0%     0.000     0.000
+Scene._get_batch_of_primitives                           1     0.209     0.9%     0.118     0.5%     0.000     0.000
+kernel: pt_reduce                                       15     0.132     0.6%     0.132     0.6%     0.132     0.001
+triangles: shade + pack (project_to_screen)              2     0.131     0.6%     0.131     0.6%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.131     0.6%     0.003     0.0%     0.000     0.000
+post:   - tonemap/finalize                               5     0.118     0.5%     0.118     0.5%     0.000     0.000
+wavefront:   - compact active                           75     0.103     0.4%     0.011     0.0%     0.000     0.000
+kernel: compact_ray_slots                               75     0.093     0.4%     0.093     0.4%     0.089     0.003
+logical PN:     - interpolate attrs                    105     0.092     0.4%     0.092     0.4%     0.000     0.000
+kernel: finalize_samples                                 5     0.081     0.3%     0.081     0.3%     0.081     0.000
+AttributeTimeline.get                                 1082     0.055     0.2%     0.055     0.2%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.033     0.1%     0.009     0.0%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.023     0.1%     0.023     0.1%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          23     0.022     0.1%     0.022     0.1%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.013     0.1%     0.013     0.1%     0.000     0.000
+post:   - device->host copy                              5     0.009     0.0%     0.009     0.0%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.008     0.0%     0.007     0.0%     0.000     0.000
+scene upload to arena                                    1     0.005     0.0%     0.005     0.0%     0.000     0.000
+background prefill                                       5     0.004     0.0%     0.004     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.001     0.0%     0.001     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.567     2.4%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    400.849    1.7%    2.6723   48.4783
+  wavefront_traverse_events_arena            150    153.663    0.7%    1.0244    7.8341
+  compact_ray_slots                          150      8.916    0.0%    0.0594    0.6242
+  pt_generate                                 30      7.582    0.0%    0.2527    1.0581
+  pt_reduce                                   30      7.076    0.0%    0.2359    1.0028
+  finalize_samples                            10      1.057    0.0%    0.1057    0.2058
+  tonemap_to_u8                               10      0.589    0.0%    0.0589    0.1352
+  pn_patch_flatness_error                     10      0.280    0.0%    0.0280    0.0635
+  pn_edge_chord_error                          4      0.082    0.0%    0.0206    0.0274
+
+GPU telemetry over render (278 samples @ ~10 Hz, min/avg/max):
+  utilization  0/2/84 %   mem-util 0/1/43 %
+  SM clock     300/454/1515 MHz   mem clock 405/2702/5000 MHz
+  temperature  45/53/64 C   power 9/20/64 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6060 MB, peak reserved 6158 MB
+  batch 0: merged tensors 5.1 MB, BVHs 1.0 MB (cuda after merge 5821 MB)
+    counts: num_colored_triangles=3197, num_triangles=3197, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3197, 34) = 2.1 MB
+    tri_colors: (5, 3197, 3, 5) = 0.9 MB
+    tri_extra: (5, 3197, 15) = 0.9 MB
+    tri_pos: (5, 3197, 9) = 0.5 MB
+    tri_norm: (5, 3197, 9) = 0.5 MB
+    tri_obj: (5, 3197) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 2.03s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     1.003    49.3%     0.272    13.4%     0.000     0.000
+kernel: pt_shade_arena                                  75     0.296    14.5%     0.296    14.5%     0.292     0.004
+Scene._get_batch_of_primitives                           1     0.232    11.4%     0.131     6.4%     0.000     0.000
+denoise (torch UNet)                                     5     0.204    10.0%     0.204    10.0%     0.000     0.000
+arena preflight (batch)                                  1     0.200     9.8%     0.002     0.1%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     0.149     7.3%     0.149     7.3%     0.146     0.004
+merge collections + build BVHs                           1     0.121     6.0%     0.007     0.4%     0.000     0.000
+  - refit-BVH build (in merge)                           2     0.114     5.6%     0.114     5.6%     0.000     0.000
+  - project_to_screen (prewarm)                          1     0.077     3.8%     0.003     0.1%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     0.070     3.4%     0.001     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     0.069     3.4%     0.028     1.4%     0.000     0.000
+AttributeTimeline.get                                 1082     0.060     2.9%     0.060     2.9%     0.000     0.000
+wavefront:   - compact active                           75     0.040     2.0%     0.010     0.5%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.037     1.8%     0.010     0.5%     0.000     0.000
+kernel: compact_ray_slots                               75     0.030     1.5%     0.030     1.5%     0.026     0.003
+AttributeTimeline.rematerialize_state_at_times          23     0.024     1.2%     0.024     1.2%     0.000     0.000
+logical PN:     - interpolate attrs                    105     0.023     1.1%     0.023     1.1%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.020     1.0%     0.020     1.0%     0.000     0.000
+kernel: pt_generate                                     15     0.014     0.7%     0.014     0.7%     0.013     0.001
+kernel: pt_reduce                                       15     0.012     0.6%     0.012     0.6%     0.011     0.001
+post-process (downsample/FXAA/glow)                      5     0.010     0.5%     0.003     0.2%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.009     0.5%     0.002     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.009     0.4%     0.007     0.4%     0.000     0.000
+scene upload to arena                                    1     0.005     0.2%     0.005     0.2%     0.000     0.000
+logical PN:     - snap boundary                         14     0.004     0.2%     0.004     0.2%     0.000     0.000
+post:   - device->host copy                              5     0.004     0.2%     0.004     0.2%     0.000     0.000
+background prefill                                       5     0.004     0.2%     0.004     0.2%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.004     0.2%     0.004     0.2%     0.000     0.000
+logical PN:       - patch level search                   1     0.003     0.1%     0.002     0.1%     0.000     0.000
+logical PN:         - patch flatness error               5     0.003     0.1%     0.001     0.1%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.003     0.1%     0.003     0.1%     0.000     0.000
+logical PN:       - edge level search                    1     0.002     0.1%     0.001     0.1%     0.000     0.000
+post:   - tonemap/finalize                               5     0.002     0.1%     0.002     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.002     0.1%     0.002     0.1%     0.002     0.000
+logical PN:     - evaluate normals                       7     0.002     0.1%     0.002     0.1%     0.000     0.000
+kernel: pn_patch_flatness_error                          5     0.002     0.1%     0.002     0.1%     0.002     0.000
+logical PN:     - evaluate patch                         7     0.002     0.1%     0.002     0.1%     0.000     0.000
+AttributeTimeline.add                                   16     0.001     0.1%     0.001     0.1%     0.000     0.000
+logical PN:         - edge chord error                   2     0.001     0.1%     0.000     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.1%     0.001     0.1%     0.000     0.000
+kernel: pn_edge_chord_error                              2     0.001     0.0%     0.001     0.0%     0.001     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.568    27.9%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    255.007   12.5%    1.7000   12.0443
+  wavefront_traverse_events_arena            150    110.964    5.5%    0.7398    4.3158
+  compact_ray_slots                          150      8.786    0.4%    0.0586    0.6017
+  pt_generate                                 30      7.585    0.4%    0.2528    1.0592
+  pt_reduce                                   30      6.927    0.3%    0.2309    0.9627
+  finalize_samples                            10      1.026    0.1%    0.1026    0.1962
+  tonemap_to_u8                               10      0.494    0.0%    0.0494    0.0895
+  pn_patch_flatness_error                     10      0.178    0.0%    0.0178    0.0370
+  pn_edge_chord_error                          4      0.059    0.0%    0.0148    0.0200
+
+GPU telemetry over render (24 samples @ ~10 Hz, min/avg/max):
+  utilization  0/20/86 %   mem-util 0/10/48 %
+  SM clock     300/744/1560 MHz   mem clock 405/2702/5000 MHz
+  temperature  45/54/65 C   power 10/28/76 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6018 MB, peak reserved 6118 MB
+  batch 0: merged tensors 5.1 MB, BVHs 1.0 MB (cuda after merge 5781 MB)
+    counts: num_colored_triangles=3197, num_triangles=3197, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1595 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3197, 34) = 2.1 MB
+    tri_colors: (5, 3197, 3, 5) = 0.9 MB
+    tri_extra: (5, 3197, 15) = 0.9 MB
+    tri_pos: (5, 3197, 9) = 0.5 MB
+    tri_norm: (5, 3197, 9) = 0.5 MB
+    tri_obj: (5, 3197) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag rows
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag rows
+
+(Taichi's own table below; its % is of total GPU-kernel time, not of run wall time -- see '% run' above for that.)
+=========================================================================
+Kernel Profiler(count, default) @ CUDA on Tesla T4
+=========================================================================
+[      %     total   count |      min       avg       max   ] Kernel name
+-------------------------------------------------------------------------
+[ 65.01%   0.254 s     75x |    0.279     3.390    12.044 ms] pt_shade_arena_c124_0_kernel_1_range_for
+[ 28.17%   0.110 s     75x |    0.207     1.469     4.316 ms] wavefront_traverse_events_arena_c92_0_kernel_1_range_for
+[  2.05%   0.008 s     75x |    0.010     0.107     0.602 ms] compact_ray_slots_c74_0_kernel_1_range_for
+[  1.90%   0.007 s     15x |    0.141     0.494     1.059 ms] pt_generate_c122_0_kernel_1_range_for
+[  1.73%   0.007 s     15x |    0.152     0.450     0.963 ms] pt_reduce_c126_0_kernel_1_range_for
+[  0.25%   0.001 s      5x |    0.195     0.196     0.196 ms] finalize_samples_c66_0_kernel_1_range_for
+[  0.20%   0.001 s     75x |    0.009     0.011     0.018 ms] wavefront_traverse_events_arena_c92_0_kernel_0_serial
+[  0.20%   0.001 s     75x |    0.008     0.011     0.054 ms] compact_ray_slots_c74_0_kernel_0_serial
+[  0.20%   0.001 s     75x |    0.009     0.010     0.032 ms] pt_shade_arena_c124_0_kernel_0_serial
+[  0.11%   0.000 s      5x |    0.088     0.088     0.090 ms] tonemap_to_u8_c158_0_kernel_1_range_for
+[  0.05%   0.000 s     15x |    0.008     0.012     0.020 ms] pt_reduce_c126_0_kernel_0_serial
+[  0.04%   0.000 s     15x |    0.010     0.012     0.020 ms] pt_generate_c122_0_kernel_0_serial
+[  0.03%   0.000 s      5x |    0.016     0.027     0.037 ms] pn_patch_flatness_error_c60_0_kernel_1_range_for
+[  0.01%   0.000 s      5x |    0.010     0.010     0.011 ms] tonemap_to_u8_c158_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.009     0.010     0.010 ms] finalize_samples_c66_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.009     0.009     0.011 ms] pn_patch_flatness_error_c60_0_kernel_0_serial
+[  0.01%   0.000 s      2x |    0.017     0.018     0.020 ms] pn_edge_chord_error_c64_0_kernel_1_range_for
+[  0.01%   0.000 s      2x |    0.010     0.011     0.012 ms] pn_edge_chord_error_c64_0_kernel_0_serial
+-------------------------------------------------------------------------
+[100.00%] Total execution time:   0.391 s   number of results: 18
+=========================================================================
+report written to algan_profile_report_pt_area_lights_spp16_b4_1280x720_rows.txt
+
+==============================================================================
+RUN 2 (warm) stage table -- end-to-end 2.034s
+==============================================================================
+  stage                            launches   wall s  wall %  device ms   recs
+  pt_generate                            15    0.014    0.7%      7.585     30
+  wavefront_traverse_events              75    0.149    7.3%    110.964    150
+  pt_shade                               75    0.296   14.5%    255.007    150
+  compact_ray_slots                      75    0.030    1.5%      8.786    150
+  pt_reduce                              15    0.012    0.6%      6.927     30
+  finalize_samples                        5    0.002    0.1%      1.026     10
+  other kernels (3)                       7    0.003    0.1%      0.732     24
+  denoise (torch UNet)                    5    0.204   10.0%          -      -
+  host: prep, merge, encode, ...          -    1.324   65.1%          -      -
+  TOTAL                                        2.034  100.0%
+  pt_shade launches (bounce iterations): 75   waves (pt_reduce launches): 15   iterations/wave: 5.00
+  other kernels: pn_edge_chord_error, pn_patch_flatness_error, tonemap_to_u8
+  samples per pixel actually taken: 5.76 of the 16 the arm asked for (0 = the path tracer did not run)
+  lights in the scene: 4
+
+RESULTS {"benchmark":"pt_baseline","tag":"pt_area_lights_spp16_b4_1280x720_rows","device":"cuda","taichi_arch":"cuda","knobs":{"scene":"area_lights","mode":"path_tracer","resolution":"1280x720","fps":5,"samples_per_pixel":16,"max_bounces":4,"pt_light_samples":null,"pt_rr_start_bounce":null,"pt_firefly_clamp":null,"pt_error_target":null,"pt_min_samples":null,"denoise":null,"available_memory_mb":null},"runs":2,"reported_run":"RUN 2 (warm)","lights":4,"denoiser_hooked":true,"cold_total_s":23.51,"warm_total_s":2.034,"peak_alloc_mb":6018.0,"pt_shade_launches":75,"waves":15,"path_samples_mean":5.7636,"device_profiler":true,"stages":{"pt_generate":{"launches":15,"wall_s":0.0142,"device_ms":7.585},"wavefront_traverse_events":{"launches":75,"wall_s":0.1495,"device_ms":110.964},"pt_shade":{"launches":75,"wall_s":0.296,"device_ms":255.007},"compact_ray_slots":{"launches":75,"wall_s":0.0297,"device_ms":8.786},"pt_reduce":{"launches":15,"wall_s":0.0115,"device_ms":6.927},"finalize_samples":{"launches":5,"wall_s":0.0022,"device_ms":1.026},"other kernels (3)":{"launches":7,"wall_s":0.0028,"device_ms":0.732},"denoise (torch UNet)":{"launches":5,"wall_s":0.2041,"device_ms":0.0},"host: prep, merge, encode, ...":{"launches":0,"wall_s":1.3244,"device_ms":0.0}},"ok":true}
+--- step rows: ok (rc=0) in 47.2s
+
+==============================================================================
+=== STEP quads1080 ===
+==============================================================================
+$ python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag quads
+  env ALGAN_VIDEO_ENCODER=software
+==============================================================================
+pt_baseline -- path-tracer performance harness
+==============================================================================
+  arm tag          pt_area_lights_spp16_b4_1920x1080_quads
+  render device    cuda
+  taichi arch      [Arch.cuda, Arch.metal, Arch.vulkan, Arch.amdgpu] (selected)
+  scene            area_lights
+  mode             path_tracer
+  resolution       1920x1080
+  fps              5
+  samples_per_pixel 16
+  max_bounces      4
+  pt_light_samples (default)
+  pt_rr_start_bounce (default)
+  pt_firefly_clamp (default)
+  pt_error_target  (default)
+  pt_min_samples   (default)
+  denoise          (default)
+  available_memory_mb (default)
+  ALGAN_PT_WAVE    (default)
+  ALGAN_PT_LIGHT_TREE (default)
+  ALGAN_SHADOW_ANYHIT (default)
+  ALGAN_OPT_LEVEL  (default)
+  ALGAN_ADV_OPT    (default)
+  ALGAN_MAX_SHADOW_LIGHTS (default)
+  runs             2
+
+[Quadrants] Starting on arch=cuda
+[profiling] hooked 1 Taichi kernels (208 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run1.mp4
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run1.mp4 in 10.6 s
+
+===== profiling run 2/2 (warm) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run2.mp4
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run2.mp4 in 2.7 s
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: ON
+  hooked kernels (1): tonemap_to_u8
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 10.61s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     7.510    70.8%     0.313     3.0%     0.000     0.000
+kernel: pt_shade_arena                                  75     5.585    52.6%     5.585    52.6%     5.581     0.005
+arena preflight (batch)                                  1     2.494    23.5%     0.003     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          1     2.368    22.3%     0.003     0.0%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     2.361    22.3%     0.002     0.0%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     2.359    22.2%     0.038     0.4%     0.000     0.000
+logical PN:     - snap boundary                         18     1.889    17.8%     1.889    17.8%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     0.743     7.0%     0.743     7.0%     0.738     0.005
+denoise (torch UNet)                                     5     0.418     3.9%     0.418     3.9%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.394     3.7%     0.006     0.1%     0.000     0.000
+logical PN:       - patch level search                   1     0.229     2.2%     0.004     0.0%     0.000     0.000
+logical PN:         - patch flatness error               8     0.227     2.1%     0.002     0.0%     0.000     0.000
+Scene._get_batch_of_primitives                           1     0.227     2.1%     0.133     1.3%     0.000     0.000
+kernel: pn_patch_flatness_error                          8     0.226     2.1%     0.226     2.1%     0.225     0.000
+  - refit-BVH build (in merge)                           3     0.175     1.6%     0.175     1.6%     0.000     0.000
+kernel: pt_generate                                     15     0.160     1.5%     0.160     1.5%     0.159     0.001
+logical PN:       - edge level search                    1     0.157     1.5%     0.002     0.0%     0.000     0.000
+logical PN:         - edge chord error                   3     0.155     1.5%     0.000     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              3     0.154     1.5%     0.154     1.5%     0.154     0.000
+merge collections + build BVHs                           1     0.122     1.2%     0.036     0.3%     0.000     0.000
+wavefront:   - compact active                           75     0.067     0.6%     0.012     0.1%     0.000     0.000
+AttributeTimeline.get                                 1082     0.058     0.5%     0.058     0.5%     0.000     0.000
+kernel: compact_ray_slots                               75     0.055     0.5%     0.055     0.5%     0.051     0.004
+post-process (downsample/FXAA/glow)                      5     0.053     0.5%     0.004     0.0%     0.000     0.000
+kernel: pt_reduce                                       15     0.051     0.5%     0.051     0.5%     0.050     0.001
+post:   - tonemap/finalize                               5     0.040     0.4%     0.001     0.0%     0.000     0.000
+kernel: tonemap_to_u8                                    5     0.039     0.4%     0.039     0.4%     0.039     0.000
+video encode tail (ffmpeg drain)                         1     0.037     0.4%     0.037     0.4%     0.000     0.000
+logical PN:     - interpolate attrs                    135     0.033     0.3%     0.033     0.3%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.031     0.3%     0.009     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.028     0.3%     0.028     0.3%     0.027     0.000
+AttributeTimeline.rematerialize_state_at_times          23     0.020     0.2%     0.020     0.2%     0.000     0.000
+post:   - device->host copy                              5     0.010     0.1%     0.010     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.008     0.1%     0.007     0.1%     0.000     0.000
+scene upload to arena                                    1     0.004     0.0%     0.004     0.0%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.004     0.0%     0.004     0.0%     0.000     0.000
+background prefill                                       5     0.004     0.0%     0.004     0.0%     0.000     0.000
+logical PN:     - evaluate normals                       9     0.003     0.0%     0.003     0.0%     0.000     0.000
+logical PN:     - evaluate patch                         9     0.002     0.0%     0.002     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.001     0.0%     0.001     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.001     0.0%     0.001     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.332     3.1%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    752.075    7.1%    5.0138   43.7801
+  wavefront_traverse_events_arena            150    347.884    3.3%    2.3192   15.8761
+  pt_generate                                 30     18.173    0.2%    0.6058    2.6132
+  compact_ray_slots                          150     17.859    0.2%    0.1191    1.3414
+  pt_reduce                                   30     15.379    0.1%    0.5126    2.2259
+  finalize_samples                            10      2.304    0.0%    0.2304    0.4512
+  tonemap_to_u8                               10      1.090    0.0%    0.1090    0.2082
+  pn_patch_flatness_error                     16      0.426    0.0%    0.0266    0.0615
+  pn_edge_chord_error                          6      0.112    0.0%    0.0186    0.0301
+
+GPU telemetry over render (128 samples @ ~10 Hz, min/avg/max):
+  utilization  0/8/88 %   mem-util 0/5/57 %
+  SM clock     300/519/1500 MHz   mem clock 405/2702/5000 MHz
+  temperature  44/54/66 C   power 10/23/81 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6300 MB, peak reserved 6482 MB
+  batch 0: merged tensors 5.4 MB, BVHs 1.0 MB (cuda after merge 5881 MB)
+    counts: num_colored_triangles=3354, num_triangles=3354, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3354, 34) = 2.2 MB
+    tri_colors: (5, 3354, 3, 5) = 1.0 MB
+    tri_extra: (5, 3354, 15) = 1.0 MB
+    tri_pos: (5, 3354, 9) = 0.6 MB
+    tri_norm: (5, 3354, 9) = 0.6 MB
+    tri_obj: (5, 3354) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 2.75s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     1.937    70.4%     0.306    11.1%     0.000     0.000
+kernel: pt_shade_arena                                  75     0.711    25.8%     0.711    25.8%     0.706     0.005
+kernel: wavefront_traverse_events_arena                 75     0.363    13.2%     0.363    13.2%     0.359     0.004
+denoise (torch UNet)                                     5     0.347    12.6%     0.347    12.6%     0.000     0.000
+Scene._get_batch_of_primitives                           1     0.219     8.0%     0.126     4.6%     0.000     0.000
+arena preflight (batch)                                  1     0.203     7.4%     0.002     0.1%     0.000     0.000
+  - refit-BVH build (in merge)                           3     0.176     6.4%     0.176     6.4%     0.000     0.000
+  - project_to_screen (prewarm)                          1     0.107     3.9%     0.006     0.2%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     0.097     3.5%     0.002     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     0.095     3.5%     0.037     1.4%     0.000     0.000
+merge collections + build BVHs                           1     0.094     3.4%     0.010     0.4%     0.000     0.000
+AttributeTimeline.get                                 1082     0.056     2.0%     0.056     2.0%     0.000     0.000
+wavefront:   - compact active                           75     0.050     1.8%     0.011     0.4%     0.000     0.000
+kernel: compact_ray_slots                               75     0.039     1.4%     0.039     1.4%     0.036     0.003
+video encode tail (ffmpeg drain)                         1     0.035     1.3%     0.035     1.3%     0.000     0.000
+logical PN:     - interpolate attrs                    135     0.033     1.2%     0.033     1.2%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.032     1.2%     0.009     0.3%     0.000     0.000
+kernel: pt_generate                                     15     0.025     0.9%     0.025     0.9%     0.024     0.001
+AttributeTimeline.rematerialize_state_at_times          23     0.021     0.8%     0.021     0.8%     0.000     0.000
+kernel: pt_reduce                                       15     0.020     0.7%     0.020     0.7%     0.019     0.001
+post-process (downsample/FXAA/glow)                      5     0.014     0.5%     0.003     0.1%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.013     0.5%     0.003     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.009     0.3%     0.007     0.3%     0.000     0.000
+post:   - device->host copy                              5     0.008     0.3%     0.008     0.3%     0.000     0.000
+logical PN:     - snap boundary                         18     0.006     0.2%     0.006     0.2%     0.000     0.000
+scene upload to arena                                    1     0.005     0.2%     0.005     0.2%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.005     0.2%     0.005     0.2%     0.000     0.000
+background prefill                                       5     0.005     0.2%     0.005     0.2%     0.000     0.000
+logical PN:         - patch flatness error               8     0.005     0.2%     0.002     0.1%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.004     0.2%     0.004     0.2%     0.000     0.000
+logical PN:       - patch level search                   1     0.004     0.1%     0.002     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.004     0.1%     0.004     0.1%     0.003     0.000
+logical PN:       - edge level search                    1     0.003     0.1%     0.002     0.1%     0.000     0.000
+kernel: pn_patch_flatness_error                          8     0.003     0.1%     0.003     0.1%     0.003     0.000
+post:   - tonemap/finalize                               5     0.003     0.1%     0.001     0.0%     0.000     0.000
+logical PN:     - evaluate normals                       9     0.003     0.1%     0.003     0.1%     0.000     0.000
+kernel: tonemap_to_u8                                    5     0.003     0.1%     0.003     0.1%     0.002     0.000
+logical PN:     - evaluate patch                         9     0.002     0.1%     0.002     0.1%     0.000     0.000
+logical PN:         - edge chord error                   3     0.002     0.1%     0.000     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              3     0.001     0.0%     0.001     0.0%     0.001     0.000
+AttributeTimeline.add                                   16     0.001     0.0%     0.001     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.344    12.5%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    666.261   24.2%    4.4417   29.5700
+  wavefront_traverse_events_arena            150    323.054   11.7%    2.1537   15.0835
+  pt_generate                                 30     18.195    0.7%    0.6065    2.6061
+  compact_ray_slots                          150     17.743    0.6%    0.1183    1.3374
+  pt_reduce                                   30     15.330    0.6%    0.5110    2.1930
+  finalize_samples                            10      2.299    0.1%    0.2299    0.4506
+  tonemap_to_u8                               10      1.086    0.0%    0.1086    0.2068
+  pn_patch_flatness_error                     16      0.426    0.0%    0.0266    0.0636
+  pn_edge_chord_error                          6      0.113    0.0%    0.0188    0.0323
+
+GPU telemetry over render (36 samples @ ~10 Hz, min/avg/max):
+  utilization  0/31/96 %   mem-util 0/18/60 %
+  SM clock     300/745/1455 MHz   mem clock 405/2702/5000 MHz
+  temperature  44/55/67 C   power 10/33/85 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6300 MB, peak reserved 6482 MB
+  batch 0: merged tensors 5.4 MB, BVHs 1.0 MB (cuda after merge 5881 MB)
+    counts: num_colored_triangles=3354, num_triangles=3354, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3354, 34) = 2.2 MB
+    tri_colors: (5, 3354, 3, 5) = 1.0 MB
+    tri_extra: (5, 3354, 15) = 1.0 MB
+    tri_pos: (5, 3354, 9) = 0.6 MB
+    tri_norm: (5, 3354, 9) = 0.6 MB
+    tri_obj: (5, 3354) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 /kaggle/working/algan/benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag quads
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 /kaggle/working/algan/benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag quads
+
+(Taichi's own table below; its % is of total GPU-kernel time, not of run wall time -- see '% run' above for that.)
+=========================================================================
+Kernel Profiler(count, default) @ CUDA on Tesla T4
+=========================================================================
+[      %     total   count |      min       avg       max   ] Kernel name
+-------------------------------------------------------------------------
+[ 63.71%   0.665 s     75x |    0.497     8.873    29.570 ms] pt_shade_arena_c124_0_kernel_1_range_for
+[ 30.85%   0.322 s     75x |    0.375     4.297    15.084 ms] wavefront_traverse_events_arena_c92_0_kernel_1_range_for
+[  1.72%   0.018 s     15x |    0.314     1.200     2.606 ms] pt_generate_c122_0_kernel_1_range_for
+[  1.63%   0.017 s     75x |    0.018     0.227     1.337 ms] compact_ray_slots_c74_0_kernel_1_range_for
+[  1.45%   0.015 s     15x |    0.320     1.012     2.193 ms] pt_reduce_c126_0_kernel_1_range_for
+[  0.22%   0.002 s      5x |    0.449     0.450     0.451 ms] finalize_samples_c66_0_kernel_1_range_for
+[  0.10%   0.001 s      5x |    0.204     0.206     0.207 ms] tonemap_to_u8_c158_0_kernel_1_range_for
+[  0.07%   0.001 s     75x |    0.009     0.010     0.015 ms] wavefront_traverse_events_arena_c92_0_kernel_0_serial
+[  0.07%   0.001 s     75x |    0.009     0.010     0.014 ms] pt_shade_arena_c124_0_kernel_0_serial
+[  0.07%   0.001 s     75x |    0.007     0.010     0.026 ms] compact_ray_slots_c74_0_kernel_0_serial
+[  0.03%   0.000 s      8x |    0.030     0.042     0.064 ms] pn_patch_flatness_error_c60_0_kernel_1_range_for
+[  0.02%   0.000 s     15x |    0.010     0.013     0.024 ms] pt_generate_c122_0_kernel_0_serial
+[  0.01%   0.000 s     15x |    0.010     0.010     0.012 ms] pt_reduce_c126_0_kernel_0_serial
+[  0.01%   0.000 s      8x |    0.010     0.011     0.012 ms] pn_patch_flatness_error_c60_0_kernel_0_serial
+[  0.01%   0.000 s      3x |    0.020     0.026     0.032 ms] pn_edge_chord_error_c64_0_kernel_1_range_for
+[  0.01%   0.000 s      5x |    0.010     0.011     0.012 ms] tonemap_to_u8_c158_0_kernel_0_serial
+[  0.00%   0.000 s      5x |    0.010     0.010     0.010 ms] finalize_samples_c66_0_kernel_0_serial
+[  0.00%   0.000 s      3x |    0.010     0.012     0.013 ms] pn_edge_chord_error_c64_0_kernel_0_serial
+-------------------------------------------------------------------------
+[100.00%] Total execution time:   1.045 s   number of results: 18
+=========================================================================
+report written to algan_profile_report_pt_area_lights_spp16_b4_1920x1080_quads.txt
+
+==============================================================================
+RUN 2 (warm) stage table -- end-to-end 2.752s
+==============================================================================
+  stage                            launches   wall s  wall %  device ms   recs
+  pt_generate                            15    0.025    0.9%     18.195     30
+  wavefront_traverse_events              75    0.363   13.2%    323.054    150
+  pt_shade                               75    0.711   25.8%    666.261    150
+  compact_ray_slots                      75    0.039    1.4%     17.743    150
+  pt_reduce                              15    0.020    0.7%     15.330     30
+  finalize_samples                        5    0.004    0.1%      2.299     10
+  other kernels (3)                      16    0.007    0.3%      1.624     32
+  denoise (torch UNet)                    5    0.347   12.6%          -      -
+  host: prep, merge, encode, ...          -    1.236   44.9%          -      -
+  TOTAL                                        2.752  100.0%
+  pt_shade launches (bounce iterations): 75   waves (pt_reduce launches): 15   iterations/wave: 5.00
+  other kernels: pn_edge_chord_error, pn_patch_flatness_error, tonemap_to_u8
+  samples per pixel actually taken: 5.74 of the 16 the arm asked for (0 = the path tracer did not run)
+  lights in the scene: 4
+
+RESULTS {"benchmark":"pt_baseline","tag":"pt_area_lights_spp16_b4_1920x1080_quads","device":"cuda","taichi_arch":"cuda","knobs":{"scene":"area_lights","mode":"path_tracer","resolution":"1920x1080","fps":5,"samples_per_pixel":16,"max_bounces":4,"pt_light_samples":null,"pt_rr_start_bounce":null,"pt_firefly_clamp":null,"pt_error_target":null,"pt_min_samples":null,"denoise":null,"available_memory_mb":null},"runs":2,"reported_run":"RUN 2 (warm)","lights":4,"denoiser_hooked":true,"cold_total_s":10.61,"warm_total_s":2.752,"peak_alloc_mb":6300.4,"pt_shade_launches":75,"waves":15,"path_samples_mean":5.7435,"device_profiler":true,"stages":{"pt_generate":{"launches":15,"wall_s":0.0251,"device_ms":18.195},"wavefront_traverse_events":{"launches":75,"wall_s":0.3633,"device_ms":323.054},"pt_shade":{"launches":75,"wall_s":0.7105,"device_ms":666.261},"compact_ray_slots":{"launches":75,"wall_s":0.0393,"device_ms":17.743},"pt_reduce":{"launches":15,"wall_s":0.0197,"device_ms":15.33},"finalize_samples":{"launches":5,"wall_s":0.0036,"device_ms":2.299},"other kernels (3)":{"launches":16,"wall_s":0.0072,"device_ms":1.624},"denoise (torch UNet)":{"launches":5,"wall_s":0.3473,"device_ms":0.0},"host: prep, merge, encode, ...":{"launches":0,"wall_s":1.2356,"device_ms":0.0}},"ok":true}
+--- step quads1080: ok (rc=0) in 18.0s
+
+==============================================================================
+=== STEP rows1080 ===
+==============================================================================
+$ ALGAN_PT_AREA_LIGHT_QUADS=0 python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag rows
+  env ALGAN_VIDEO_ENCODER=software
+[algan] not using the algan daemon: settings read at import time differ from the running daemon's:
+  ALGAN_PT_AREA_LIGHT_QUADS: this script wants '0', the daemon imported algan with '<unset>'
+The daemon imported algan before this script chose them, so it would render with its own values; this run will execute in a fresh process instead. To choose them from inside a run -- which works warm or cold -- use SETTINGS, or a set_* in algan.rendering.raytracing.settings. To have the daemon itself adopt them, stop it (see algan/daemon.py) and let the next run start one.
+==============================================================================
+pt_baseline -- path-tracer performance harness
+==============================================================================
+  arm tag          pt_area_lights_spp16_b4_1920x1080_rows
+  render device    cuda
+  taichi arch      [Arch.cuda, Arch.metal, Arch.vulkan, Arch.amdgpu] (selected)
+  scene            area_lights
+  mode             path_tracer
+  resolution       1920x1080
+  fps              5
+  samples_per_pixel 16
+  max_bounces      4
+  pt_light_samples (default)
+  pt_rr_start_bounce (default)
+  pt_firefly_clamp (default)
+  pt_error_target  (default)
+  pt_min_samples   (default)
+  denoise          (default)
+  available_memory_mb (default)
+  ALGAN_PT_WAVE    (default)
+  ALGAN_PT_LIGHT_TREE (default)
+  ALGAN_SHADOW_ANYHIT (default)
+  ALGAN_OPT_LEVEL  (default)
+  ALGAN_ADV_OPT    (default)
+  ALGAN_MAX_SHADOW_LIGHTS (default)
+  runs             2
+
+[Quadrants] Starting on arch=cuda
+[profiling] hooked 49 Taichi kernels (208 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run1.mp4
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'tuple' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run1.mp4 in 15.0 s
+
+===== profiling run 2/2 (warm) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run2.mp4
+Finished rendering /kaggle/working/algan/algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run2.mp4 in 2.8 s
+
+==============================================================================
+Algan ray-tracing scene profile
+==============================================================================
+device: Tesla T4
+  driver 580.159.04  compute cap 7.5  15360 MiB  max SM 1590 MHz / mem 5001 MHz  PCIe gen3 x16
+  profiling tools: nvidia-smi=yes, nvprof=yes, ncu=yes, nsys=no
+  Taichi kernel profiler: ON
+  hooked kernels (49): band_stats_reduce, band_stats_rep_orig, bezier_chord_hull_error, compact_ray_slots, env_background_prefill, fill_background_from_func, finalize_samples, gather_fragment_arrays, gloss_composite, gloss_pyramid_level, gloss_scatter, mask_popcount, one_mesh_pixel_apply, one_mesh_pixel_reduce, opaque_prefix_keep, pair_expand_count, pair_expand_write, pn_edge_chord_error, pn_patch_flatness_error, pt_env_pdf_probe, pt_env_sample_probe, pt_generate, pt_light_tree_pmf_probe, pt_light_tree_probe, pt_nee_pick_probe, pt_offset_probe, pt_reduce, pt_sampler_probe, pt_shade_arena, raster_bez_count, raster_bez_write, raster_shadow_trace_arena, raster_tri_count, raster_tri_write, sheet_band_reduce, sheet_conflict_rank, sheet_lane_first_owner, sheet_resolve_shade_arena, solid_shell_ceiling, wavefront_generate_rays, wavefront_shade_arena, wavefront_traverse_events_arena, wf_composite, wf_composite_aa, wf_composite_accum, wf_composite_accum_aa, wf_composite_accum_sparse, wf_finalize_aa, wf_finalize_uncovered
+
+------------------------------------------------------------------------------
+RUN 1 (cold (includes Taichi JIT compile)): end-to-end 15.39s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     8.243    53.6%     0.400     2.6%     0.000     0.000
+arena preflight (batch)                                  1     6.335    41.2%     0.002     0.0%     0.000     0.000
+  - project_to_screen (prewarm)                          1     6.053    39.3%     0.010     0.1%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     5.923    38.5%     0.002     0.0%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     5.921    38.5%     0.178     1.2%     0.000     0.000
+kernel: pt_shade_arena                                  75     5.678    36.9%     5.678    36.9%     5.673     0.004
+logical PN:     - snap boundary                         18     2.928    19.0%     2.928    19.0%     0.000     0.000
+logical PN:     - evaluate normals                       9     1.407     9.1%     1.407     9.1%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     1.094     7.1%     1.094     7.1%     1.090     0.004
+denoise (torch UNet)                                     5     0.693     4.5%     0.693     4.5%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.670     4.4%     0.064     0.4%     0.000     0.000
+logical PN:     - evaluate patch                         9     0.641     4.2%     0.641     4.2%     0.000     0.000
+logical PN:       - edge level search                    1     0.417     2.7%     0.057     0.4%     0.000     0.000
+logical PN:         - edge chord error                   3     0.359     2.3%     0.001     0.0%     0.000     0.000
+kernel: pn_edge_chord_error                              3     0.359     2.3%     0.359     2.3%     0.358     0.000
+merge collections + build BVHs                           1     0.280     1.8%     0.057     0.4%     0.000     0.000
+  - refit-BVH build (in merge)                           2     0.223     1.4%     0.223     1.4%     0.000     0.000
+Scene._get_batch_of_primitives                           1     0.201     1.3%     0.115     0.7%     0.000     0.000
+logical PN:       - patch level search                   1     0.187     1.2%     0.009     0.1%     0.000     0.000
+logical PN:         - patch flatness error               8     0.180     1.2%     0.002     0.0%     0.000     0.000
+kernel: pn_patch_flatness_error                          8     0.178     1.2%     0.178     1.2%     0.178     0.000
+kernel: pt_generate                                     15     0.175     1.1%     0.175     1.1%     0.174     0.001
+triangles: shade + pack (project_to_screen)              2     0.120     0.8%     0.120     0.8%     0.000     0.000
+logical PN:     - interpolate attrs                    135     0.097     0.6%     0.097     0.6%     0.000     0.000
+post-process (downsample/FXAA/glow)                      5     0.069     0.4%     0.004     0.0%     0.000     0.000
+wavefront:   - compact active                           75     0.057     0.4%     0.011     0.1%     0.000     0.000
+AttributeTimeline.get                                 1082     0.053     0.3%     0.053     0.3%     0.000     0.000
+kernel: pt_reduce                                       15     0.047     0.3%     0.047     0.3%     0.046     0.001
+kernel: compact_ray_slots                               75     0.047     0.3%     0.047     0.3%     0.044     0.003
+post:   - tonemap/finalize                               5     0.045     0.3%     0.045     0.3%     0.000     0.000
+video encode tail (ffmpeg drain)                         1     0.034     0.2%     0.034     0.2%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.029     0.2%     0.008     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.024     0.2%     0.024     0.2%     0.024     0.000
+post:   - device->host copy                              5     0.019     0.1%     0.019     0.1%     0.000     0.000
+AttributeTimeline.rematerialize_state_at_times          23     0.019     0.1%     0.019     0.1%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.008     0.0%     0.007     0.0%     0.000     0.000
+scene upload to arena                                    1     0.005     0.0%     0.005     0.0%     0.000     0.000
+background prefill                                       5     0.005     0.0%     0.005     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.004     0.0%     0.004     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.002     0.0%     0.002     0.0%     0.000     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.566     3.7%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    700.842    4.6%    4.6723   42.2007
+  wavefront_traverse_events_arena            150    276.352    1.8%    1.8423   10.9670
+  compact_ray_slots                          150     17.713    0.1%    0.1181    1.3295
+  pt_generate                                 30     17.683    0.1%    0.5894    2.5405
+  pt_reduce                                   30     15.385    0.1%    0.5128    2.2321
+  finalize_samples                            10      2.295    0.0%    0.2295    0.4490
+  tonemap_to_u8                               10      1.094    0.0%    0.1094    0.2085
+  pn_patch_flatness_error                     16      0.448    0.0%    0.0280    0.0629
+  pn_edge_chord_error                          6      0.115    0.0%    0.0191    0.0300
+
+GPU telemetry over render (184 samples @ ~10 Hz, min/avg/max):
+  utilization  0/5/87 %   mem-util 0/3/53 %
+  SM clock     300/494/1485 MHz   mem clock 405/2702/5000 MHz
+  temperature  44/55/68 C   power 10/22/80 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6242 MB, peak reserved 6420 MB
+  batch 0: merged tensors 5.4 MB, BVHs 1.0 MB (cuda after merge 5821 MB)
+    counts: num_colored_triangles=3354, num_triangles=3354, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3354, 34) = 2.2 MB
+    tri_colors: (5, 3354, 3, 5) = 1.0 MB
+    tri_extra: (5, 3354, 15) = 1.0 MB
+    tri_pos: (5, 3354, 9) = 0.6 MB
+    tri_norm: (5, 3354, 9) = 0.6 MB
+    tri_obj: (5, 3354) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+RUN 2 (warm (steady state)): end-to-end 2.80s
+------------------------------------------------------------------------------
+incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage
+stage                                                calls  incl (s) incl (%)  excl (s)  excl (%)launch    sync      
+ray traced render total                                  5     1.763    62.9%     0.355    12.7%     0.000     0.000
+kernel: pt_shade_arena                                  75     0.656    23.4%     0.656    23.4%     0.652     0.004
+denoise (torch UNet)                                     5     0.347    12.4%     0.347    12.4%     0.000     0.000
+kernel: wavefront_traverse_events_arena                 75     0.284    10.1%     0.284    10.1%     0.280     0.004
+Scene._get_batch_of_primitives                           1     0.222     7.9%     0.128     4.6%     0.000     0.000
+arena preflight (batch)                                  1     0.208     7.4%     0.002     0.1%     0.000     0.000
+merge collections + build BVHs                           1     0.110     3.9%     0.007     0.3%     0.000     0.000
+  - refit-BVH build (in merge)                           2     0.103     3.7%     0.103     3.7%     0.000     0.000
+  - project_to_screen (prewarm)                          1     0.095     3.4%     0.003     0.1%     0.000     0.000
+logical PN: dice + shade + pack (project_to_screen)      1     0.088     3.2%     0.001     0.1%     0.000     0.000
+logical PN:   - _dice_logical_pn                         1     0.087     3.1%     0.034     1.2%     0.000     0.000
+AttributeTimeline.get                                 1082     0.060     2.2%     0.060     2.2%     0.000     0.000
+wavefront:   - compact active                           75     0.050     1.8%     0.011     0.4%     0.000     0.000
+kernel: compact_ray_slots                               75     0.039     1.4%     0.039     1.4%     0.036     0.003
+video encode tail (ffmpeg drain)                         1     0.032     1.1%     0.032     1.1%     0.000     0.000
+AnimationTimeline.set_state_to_times                     1     0.030     1.1%     0.009     0.3%     0.000     0.000
+logical PN:     - interpolate attrs                    135     0.030     1.1%     0.030     1.1%     0.000     0.000
+kernel: pt_generate                                     15     0.024     0.9%     0.024     0.9%     0.023     0.001
+AttributeTimeline.rematerialize_state_at_times          23     0.020     0.7%     0.020     0.7%     0.000     0.000
+kernel: pt_reduce                                       15     0.020     0.7%     0.020     0.7%     0.019     0.001
+post-process (downsample/FXAA/glow)                      5     0.018     0.7%     0.004     0.1%     0.000     0.000
+logical PN:     - subdivision levels                     1     0.013     0.4%     0.003     0.1%     0.000     0.000
+post:   - device->host copy                              5     0.012     0.4%     0.012     0.4%     0.000     0.000
+surfaces: get_render_primitives_batched                  2     0.008     0.3%     0.007     0.2%     0.000     0.000
+logical PN:     - snap boundary                         18     0.006     0.2%     0.006     0.2%     0.000     0.000
+background prefill                                       5     0.005     0.2%     0.005     0.2%     0.000     0.000
+logical PN:         - patch flatness error               8     0.004     0.2%     0.002     0.1%     0.000     0.000
+scene upload to arena                                    1     0.004     0.2%     0.004     0.2%     0.000     0.000
+triangles: shade + pack (project_to_screen)              2     0.004     0.1%     0.004     0.1%     0.000     0.000
+logical PN:       - patch level search                   1     0.004     0.1%     0.002     0.1%     0.000     0.000
+kernel: finalize_samples                                 5     0.004     0.1%     0.004     0.1%     0.003     0.000
+logical PN:       - edge level search                    1     0.003     0.1%     0.002     0.1%     0.000     0.000
+kernel: pn_patch_flatness_error                          8     0.003     0.1%     0.003     0.1%     0.003     0.000
+post:   - tonemap/finalize                               5     0.003     0.1%     0.003     0.1%     0.000     0.000
+logical PN:     - evaluate normals                       9     0.003     0.1%     0.003     0.1%     0.000     0.000
+logical PN:     - evaluate patch                         9     0.002     0.1%     0.002     0.1%     0.000     0.000
+logical PN:         - edge chord error                   3     0.002     0.1%     0.000     0.0%     0.000     0.000
+AttributeTimeline.add                                   16     0.002     0.1%     0.002     0.1%     0.000     0.000
+kernel: pn_edge_chord_error                              3     0.001     0.0%     0.001     0.0%     0.001     0.000
+AttributeTimeline.modify                                11     0.001     0.0%     0.001     0.0%     0.000     0.000
+memory reclaim (gc + cuda cache)                         8     0.001     0.0%     0.001     0.0%     0.000     0.000
+free-VRAM probe (empty_cache)                            1     0.000     0.0%     0.000     0.0%     0.000     0.000
+(unaccounted: video encode, scene mgmt, ...)                   0.567    20.3%
+
+Taichi kernel GPU time (profiler; launch overhead excluded; 'recs' = serial + range-for sub-kernels):
+  kernel                                    recs   total ms   % run    avg ms    max ms
+  pt_shade_arena                             150    615.034   22.0%    4.1002   27.4859
+  wavefront_traverse_events_arena            150    246.217    8.8%    1.6414   10.2800
+  pt_generate                                 30     17.794    0.6%    0.5931    2.5544
+  compact_ray_slots                          150     17.645    0.6%    0.1176    1.3292
+  pt_reduce                                   30     15.313    0.5%    0.5104    2.1856
+  finalize_samples                            10      2.293    0.1%    0.2293    0.4504
+  tonemap_to_u8                               10      1.083    0.0%    0.1083    0.2068
+  pn_patch_flatness_error                     16      0.266    0.0%    0.0166    0.0371
+  pn_edge_chord_error                          6      0.078    0.0%    0.0130    0.0196
+
+GPU telemetry over render (34 samples @ ~10 Hz, min/avg/max):
+  utilization  0/29/92 %   mem-util 0/16/57 %
+  SM clock     300/746/1440 MHz   mem clock 405/2702/5000 MHz
+  temperature  44/56/69 C   power 10/33/74 W
+  ** THROTTLING observed: SwPowerCap (run-to-run timing is unreliable) **
+
+GPU memory: peak allocated 6201 MB, peak reserved 6384 MB
+  batch 0: merged tensors 5.4 MB, BVHs 1.0 MB (cuda after merge 5781 MB)
+    counts: num_colored_triangles=3354, num_triangles=3354, num_circuits=0, num_frames=5
+    bez_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    bez_opaque_bvh: 0 instances, 1 nodes, 0 leaves, 0.0 MB
+    tri_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_opaque_bvh: 0 instances, 1699 nodes, 0 leaves, 0.5 MB
+    tri_mat: (5, 3354, 34) = 2.2 MB
+    tri_colors: (5, 3354, 3, 5) = 1.0 MB
+    tri_extra: (5, 3354, 15) = 1.0 MB
+    tri_pos: (5, 3354, 9) = 0.6 MB
+    tri_norm: (5, 3354, 9) = 0.6 MB
+    tri_obj: (5, 3354) = 0.1 MB
+  cProfile dump: disabled (set ALGAN_PROFILE_CPROFILE=1)
+
+------------------------------------------------------------------------------
+Registers / occupancy not collected in-process (Taichi CUPTI toolkit unavailable here).
+Run this to get them via nvprof:
+
+  # registers per thread (no admin needed):
+  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv /usr/bin/python3 benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag rows
+  # achieved occupancy (may need admin on Pascal):
+  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv /usr/bin/python3 benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag rows
+
+(Taichi's own table below; its % is of total GPU-kernel time, not of run wall time -- see '% run' above for that.)
+=========================================================================
+Kernel Profiler(count, default) @ CUDA on Tesla T4
+=========================================================================
+[      %     total   count |      min       avg       max   ] Kernel name
+-------------------------------------------------------------------------
+[ 67.08%   0.614 s     75x |    0.509     8.190    27.486 ms] pt_shade_arena_c124_0_kernel_1_range_for
+[ 26.80%   0.245 s     75x |    0.352     3.272    10.280 ms] wavefront_traverse_events_arena_c92_0_kernel_1_range_for
+[  1.92%   0.018 s     15x |    0.308     1.174     2.554 ms] pt_generate_c122_0_kernel_1_range_for
+[  1.84%   0.017 s     75x |    0.018     0.225     1.329 ms] compact_ray_slots_c74_0_kernel_1_range_for
+[  1.66%   0.015 s     15x |    0.325     1.011     2.186 ms] pt_reduce_c126_0_kernel_1_range_for
+[  0.25%   0.002 s      5x |    0.447     0.449     0.450 ms] finalize_samples_c66_0_kernel_1_range_for
+[  0.11%   0.001 s      5x |    0.205     0.206     0.207 ms] tonemap_to_u8_c158_0_kernel_1_range_for
+[  0.09%   0.001 s     75x |    0.009     0.011     0.018 ms] wavefront_traverse_events_arena_c92_0_kernel_0_serial
+[  0.08%   0.001 s     75x |    0.009     0.010     0.021 ms] pt_shade_arena_c124_0_kernel_0_serial
+[  0.08%   0.001 s     75x |    0.008     0.010     0.023 ms] compact_ray_slots_c74_0_kernel_0_serial
+[  0.02%   0.000 s      8x |    0.016     0.024     0.037 ms] pn_patch_flatness_error_c60_0_kernel_1_range_for
+[  0.02%   0.000 s     15x |    0.009     0.012     0.028 ms] pt_generate_c122_0_kernel_0_serial
+[  0.02%   0.000 s     15x |    0.009     0.010     0.012 ms] pt_reduce_c126_0_kernel_0_serial
+[  0.01%   0.000 s      8x |    0.008     0.009     0.010 ms] pn_patch_flatness_error_c60_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.010     0.011     0.011 ms] tonemap_to_u8_c158_0_kernel_0_serial
+[  0.01%   0.000 s      5x |    0.010     0.010     0.010 ms] finalize_samples_c66_0_kernel_0_serial
+[  0.00%   0.000 s      3x |    0.011     0.015     0.020 ms] pn_edge_chord_error_c64_0_kernel_1_range_for
+[  0.00%   0.000 s      3x |    0.010     0.011     0.012 ms] pn_edge_chord_error_c64_0_kernel_0_serial
+-------------------------------------------------------------------------
+[100.00%] Total execution time:   0.916 s   number of results: 18
+=========================================================================
+report written to algan_profile_report_pt_area_lights_spp16_b4_1920x1080_rows.txt
+
+==============================================================================
+RUN 2 (warm) stage table -- end-to-end 2.802s
+==============================================================================
+  stage                            launches   wall s  wall %  device ms   recs
+  pt_generate                            15    0.024    0.9%     17.794     30
+  wavefront_traverse_events              75    0.284   10.1%    246.217    150
+  pt_shade                               75    0.656   23.4%    615.034    150
+  compact_ray_slots                      75    0.039    1.4%     17.645    150
+  pt_reduce                              15    0.020    0.7%     15.313     30
+  finalize_samples                        5    0.004    0.1%      2.293     10
+  other kernels (3)                      11    0.004    0.1%      1.426     32
+  denoise (torch UNet)                    5    0.347   12.4%          -      -
+  host: prep, merge, encode, ...          -    1.424   50.8%          -      -
+  TOTAL                                        2.802  100.0%
+  pt_shade launches (bounce iterations): 75   waves (pt_reduce launches): 15   iterations/wave: 5.00
+  other kernels: pn_edge_chord_error, pn_patch_flatness_error, tonemap_to_u8
+  samples per pixel actually taken: 5.74 of the 16 the arm asked for (0 = the path tracer did not run)
+  lights in the scene: 4
+
+RESULTS {"benchmark":"pt_baseline","tag":"pt_area_lights_spp16_b4_1920x1080_rows","device":"cuda","taichi_arch":"cuda","knobs":{"scene":"area_lights","mode":"path_tracer","resolution":"1920x1080","fps":5,"samples_per_pixel":16,"max_bounces":4,"pt_light_samples":null,"pt_rr_start_bounce":null,"pt_firefly_clamp":null,"pt_error_target":null,"pt_min_samples":null,"denoise":null,"available_memory_mb":null},"runs":2,"reported_run":"RUN 2 (warm)","lights":4,"denoiser_hooked":true,"cold_total_s":15.392,"warm_total_s":2.802,"peak_alloc_mb":6200.6,"pt_shade_launches":75,"waves":15,"path_samples_mean":5.7435,"device_profiler":true,"stages":{"pt_generate":{"launches":15,"wall_s":0.0241,"device_ms":17.794},"wavefront_traverse_events":{"launches":75,"wall_s":0.2838,"device_ms":246.217},"pt_shade":{"launches":75,"wall_s":0.6564,"device_ms":615.034},"compact_ray_slots":{"launches":75,"wall_s":0.0392,"device_ms":17.645},"pt_reduce":{"launches":15,"wall_s":0.0198,"device_ms":15.313},"finalize_samples":{"launches":5,"wall_s":0.0036,"device_ms":2.293},"other kernels (3)":{"launches":11,"wall_s":0.0041,"device_ms":1.426},"denoise (torch UNet)":{"launches":5,"wall_s":0.3468,"device_ms":0.0},"host: prep, merge, encode, ...":{"launches":0,"wall_s":1.4238,"device_ms":0.0}},"ok":true}
+--- step rows1080: ok (rc=0) in 40.2s
+
+==============================================================================
+=== STEP variance ===
+==============================================================================
+$ python benchmarks/_pt_area_light_quad_variance.py --resolution 128 --trials 4
+  env ALGAN_VIDEO_ENCODER=software
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/ref_quads.png in 2.7 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/ref_rows.png in 1.7 s
+reference 1024 spp at 128x128: mean abs difference between the two arms 0.644 counts (they estimate the same emitter, so this bounds any bias)
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/rows_0.png in 0.6 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/rows_1.png in 0.5 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/rows_2.png in 0.5 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/rows_3.png in 0.6 s
+ rows arm, 16 spp: MSE 252.78 (per trial: 264.18, 254.89, 251.65, 240.39)
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/quads_0.png in 0.6 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/quads_1.png in 0.6 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/quads_2.png in 0.6 s
+Finished rendering /kaggle/working/algan/benchmarks/_pt_area_light_quad_variance_out/quads_3.png in 0.6 s
+quads arm, 16 spp: MSE 138.33 (per trial: 139.05, 141.11, 136.08, 137.09)
+quad arm is 1.83x better in MSE
+--- step variance: ok (rc=0) in 14.0s
+
+==============================================================================
+summary
+==============================================================================
+    OK      76.7s  quads
+    OK      47.2s  rows
+    OK      18.0s  quads1080
+    OK      40.2s  rows1080
+    OK      14.0s  variance
+sha256  f6df36f4f2002667  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run1.mp4
+sha256  f6df36f4f2002667  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run2.mp4
+sha256  20500f59cb4badb1  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run1.mp4
+sha256  20500f59cb4badb1  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run2.mp4
+sha256  301c3b3f0289591e  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run1.mp4
+sha256  301c3b3f0289591e  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run2.mp4
+sha256  8319aa4d38e6707b  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run1.mp4
+sha256  8319aa4d38e6707b  algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run2.mp4
+RESULTS {"tag":"pt-arealight-1","device":"cuda","branch":"claude/algan-path-tracer-design-8uj1vl","commit":"df25526f3df1209b826f8f707f33aef5a1132d44","steps":[{"name":"quads","command":"python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag quads","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":76.65,"log":"/kaggle/working/out/pt-arealight-1/quads.log"},{"name":"rows","command":"ALGAN_PT_AREA_LIGHT_QUADS=0 python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1280x720 --tag rows","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":47.21,"log":"/kaggle/working/out/pt-arealight-1/rows.log"},{"name":"quads1080","command":"python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag quads","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":18.02,"log":"/kaggle/working/out/pt-arealight-1/quads1080.log"},{"name":"rows1080","command":"ALGAN_PT_AREA_LIGHT_QUADS=0 python benchmarks/performance/pt_area_lights.py --scene area_lights --resolution 1920x1080 --tag rows","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":40.2,"log":"/kaggle/working/out/pt-arealight-1/rows1080.log"},{"name":"variance","command":"python benchmarks/_pt_area_light_quad_variance.py --resolution 128 --trials 4","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":14.01,"log":"/kaggle/working/out/pt-arealight-1/variance.log"}],"sha256":{"algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run1.mp4":"f6df36f4f2002667","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_quads_run2.mp4":"f6df36f4f2002667","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run1.mp4":"20500f59cb4badb1","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1280x720_rows_run2.mp4":"20500f59cb4badb1","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run1.mp4":"301c3b3f0289591e","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_quads_run2.mp4":"301c3b3f0289591e","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run1.mp4":"8319aa4d38e6707b","algan_outputs/profiling/profilingpt_area_lights_spp16_b4_1920x1080_rows_run2.mp4":"8319aa4d38e6707b"}}
+ALL STEPS OK
+runner exit code: 0
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __script__.ipynb to html
+[NbConvertApp] Writing 285823 bytes to __results__.html

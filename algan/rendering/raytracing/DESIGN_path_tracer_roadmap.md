@@ -1095,6 +1095,17 @@ the rows arm does not have.
 `RectAreaLight` — so 6a-ter cost no re-baseline, which is why it is not in
 §5's batch after all.
 
+**On the T4** (`benchmarks/performance/reports/t4_2026_09/pt_arealight_1.md`,
+the `lit` solids under four 16-sample area lights, 64 rows against 8
+triangles): the quads arm is **5% faster end to end at 720p and 2% at
+1080p**, with device time up 8% — the traverse half of that is the batch
+losing `pt_opaque_closest` and the any-hit shadow query because the quads
+are packed non-opaque, the shade half is the two-strategy MIS at emitter
+hits — and host time down 165–190 ms from the next-event setup over 8
+entries instead of 64. Variance at equal spp is 1.83x lower on the T4
+(2.09x on the CPU box). The traverse cost is the argument for the leaf-bit
+end state above.
+
 **Known, and deliberately left:** an authored-appearance material (manim,
 toon, matcap, a custom fragment pipeline) still lights from the packed rows,
 because that is the model those materials have; the quad is additionally
