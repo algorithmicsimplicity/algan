@@ -83,8 +83,10 @@ tiles whose core holds none:
 | text_2d 1920x1080 | 1.301 s | **0.784 s** | 567 ms | 7 ms |
 | lit 1280x720 | 1.597 s | 1.588 s | 222 ms | 184 ms |
 
-Against the uniform arm at 16 spp with the whole-frame filter of before,
-the text frame is now 3.2x faster at 720p and 2.5x at 1080p end to end.
+Against the uniform arm at 16 spp with the whole-frame filter (1.011 s and
+1.976 s), the text frame is now 1.6x faster at 720p and 2.5x at 1080p end
+to end; against the first baseline of the day (fp32 filter, 1.165 s at
+720p) it is 1.9x.
 
 `_pt_adaptive_check.py` at 720p, denoiser on, now compares "filtered
 everywhere" (the uniform arm has no mask) with "filtered where estimated":
