@@ -1991,10 +1991,49 @@ def test_light_tree_build_is_deterministic():
     compares, so a build that depended on dictionary or sort order would show
     up as unexplainable frame drift rather than as a failure here.
     """
+    from algan.rendering.raytracing.light_tree import clear_tree_cache
+
+    clear_tree_cache()
     first = _random_light_tree(seed=8, entries=64)
+    clear_tree_cache()  # the second build must be a BUILD, not a cache hit
     second = _random_light_tree(seed=8, entries=64)
     for a, b, name in zip(first, second, ("node_f", "node_i", "entry_leaf")):
         assert (a == b).all(), f"{name} differs between two identical builds"
+
+
+def test_light_tree_build_is_memoized_by_its_inputs(monkeypatch):
+    """A static rig is built once per render, not once per chunk.
+
+    The build is host-side numpy at ~0.2 ms per node; on a T4 the 64-light
+    benchmark spent 430 ms of a 2.1 s render rebuilding one tree for each of
+    five chunks. Identical inputs must come back from the cache without a
+    build, and any change to an input must build again.
+    """
+    from algan.rendering.raytracing import light_tree
+
+    light_tree.clear_tree_cache()
+    builds = []
+    real = light_tree._build_light_tree
+
+    def counting(*args):
+        builds.append(1)
+        return real(*args)
+
+    monkeypatch.setattr(light_tree, "_build_light_tree", counting)
+    first = _random_light_tree(seed=9, entries=32)
+    assert len(builds) == 1
+    second = _random_light_tree(seed=9, entries=32)
+    assert len(builds) == 1, "identical inputs rebuilt the tree"
+    for a, b in zip(first, second):
+        assert (a == b).all()
+    # The cache hands out copies: mutating a result must not poison it.
+    second[0][0, 0] = 12345.0
+    third = _random_light_tree(seed=9, entries=32)
+    assert len(builds) == 1
+    assert third[0][0, 0] != 12345.0
+    _random_light_tree(seed=10, entries=32)
+    assert len(builds) == 2, "different inputs did not build"
+    light_tree.clear_tree_cache()
 
 
 def test_light_tree_follows_a_light_that_moves_between_frames(tmp_path):

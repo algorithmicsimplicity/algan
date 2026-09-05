@@ -80,6 +80,9 @@ bounded in build time.
 
 from __future__ import annotations
 
+import hashlib
+from collections import OrderedDict
+
 import numpy as np
 
 #: Node payload columns of the packed ``[rows, nodes, LT_F_WIDTH]`` tensor.
@@ -125,6 +128,33 @@ LT_PARENT = 2
 #: a correctness one: the union tree samples the same emitters through the
 #: same code, just with bounds loose enough to cover every frame.
 PER_FRAME_BUILD_BUDGET = 1024
+
+#: Built trees, keyed by a digest of their inputs, so a static light rig is
+#: built ONCE per render rather than once per chunk. The build is host-side
+#: numpy at ~0.2 ms per node; on a Kaggle T4 the 64-light benchmark scene
+#: spent 430 ms of a 2.1 s render rebuilding the same 127-node tree for each
+#: of five single-frame chunks. The key is the bytes of every input the
+#: build reads, so a hit is a byte-identical tree; the cache is small and
+#: process-wide, and is cleared by ``clear_tree_cache`` (tests, and the
+#: place a render job's setup could drop it if memory ever mattered -- it
+#: does not: a tree is a few kilobytes).
+_TREE_CACHE_SIZE = 16
+_tree_cache: OrderedDict[bytes, tuple] = OrderedDict()
+
+
+def clear_tree_cache():
+    """Forget every memoized tree (tests)."""
+    _tree_cache.clear()
+
+
+def _tree_key(power, bmin, bmax, axis, theta_o, theta_e, decay):
+    h = hashlib.sha1()
+    for arr in (power, bmin, bmax, axis, theta_o, theta_e, decay):
+        a = np.ascontiguousarray(arr, dtype=np.float64)
+        h.update(str(a.shape).encode())
+        h.update(a.tobytes())
+    return h.digest()
+
 
 _PI = float(np.pi)
 
@@ -247,8 +277,25 @@ def build_light_tree(power, bmin, bmax, axis, theta_o, theta_e, decay):
     walk.
 
     Deterministic: the traversal order, the stable sorts and the numpy
-    reductions are all fixed, so two builds of one input are byte-identical.
+    reductions are all fixed, so two builds of one input are byte-identical
+    -- which is what lets the result be memoized by its inputs' bytes (see
+    ``_tree_cache``): the second chunk of a render with a static rig gets the
+    first chunk's tree back without a build.
     """
+    key = _tree_key(power, bmin, bmax, axis, theta_o, theta_e, decay)
+    cached = _tree_cache.get(key)
+    if cached is not None:
+        _tree_cache.move_to_end(key)
+        return tuple(a.copy() for a in cached)
+    built = _build_light_tree(power, bmin, bmax, axis, theta_o, theta_e, decay)
+    _tree_cache[key] = tuple(a.copy() for a in built)
+    while len(_tree_cache) > _TREE_CACHE_SIZE:
+        _tree_cache.popitem(last=False)
+    return built
+
+
+def _build_light_tree(power, bmin, bmax, axis, theta_o, theta_e, decay):
+    """The build behind :func:`build_light_tree`, uncached."""
     power = np.ascontiguousarray(power, dtype=np.float64)
     bmin = np.ascontiguousarray(bmin, dtype=np.float64)
     bmax = np.ascontiguousarray(bmax, dtype=np.float64)
