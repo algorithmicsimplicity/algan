@@ -358,6 +358,21 @@ memory budget, where waves are many and short. Revisit if a profile under
 `available_memory_mb` pressure says so; until then the denoiser (§0.1) is
 the item.
 
+**Re-measured 2026-09-05 on a 30-frame render
+(`benchmarks/performance/reports/t4_2026_09/pt_longvideo_1.md`): the
+next §0 candidate.** With every §0–§6 item landed, the fallback renders
+the lit scene at 720p in **193 ms per frame** on the T4 (344 ms at 1080p,
+209 ms with 64 lights), and the per-render fixed host cost (~0.75 s: batch
+prep, preflight, the one `gc.collect()`, the encoder drain) amortises as
+it should. What does not amortise is ~40 ms per frame of host time
+*inside* the render call — the next-event setup per window, the adaptive
+sampler's per-wave `.item()` syncs and pixel-list builds, the compaction's
+host side, 15 launches per frame — against ~100 ms of device work (shade
+43, denoise 38, traverse 21). At 20% of a long render's per-frame cost
+that is now the largest host item, so the rewrite above is the natural
+next §0 item, ahead of anything in §8; it stays "measure first" — the T4
+attributes it, the CPU box cannot.
+
 ### 0.3 The defaults, and what "turn on path tracing" means
 
 A fallback is reached for at the last minute, by a user whose scene just
