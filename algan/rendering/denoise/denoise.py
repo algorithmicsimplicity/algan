@@ -122,11 +122,22 @@ class Denoiser:
         color: torch.Tensor,
         albedo: torch.Tensor,
         normal: torch.Tensor,
+        stochastic: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Denoise linear HDR ``color`` (``[F, H, W, 3]``, values in
         [0, inf)) guided by ``albedo`` (``[F, H, W, 3]`` in [0, 1]) and
         ``normal`` (``[F, H, W, 3]``, roughly unit, any world frame).
         Returns denoised linear HDR of the same shape and dtype float32.
+
+        ``stochastic``, when given, is a ``[F, H, W]`` bool mask of the
+        pixels whose estimate involved any random decision (the path
+        tracer's adaptive-sampling flag). A pixel outside it is exact --
+        an unlit 2-D interior, a background pixel -- so it is passed
+        through UNCHANGED rather than filtered, and a tile whose window
+        holds no flagged pixel is not run through the network at all. That
+        keeps text and vector graphics exactly as rendered (the filter
+        would only soften their edges) and takes the network's cost off
+        frames that have nothing to denoise.
         """
         frames, height, width = color.shape[0], color.shape[1], color.shape[2]
         tile = max(_MIN_TILE, int(rt_settings.denoise_tile_size))
@@ -138,6 +149,11 @@ class Denoiser:
         normal9 = normal.float().clamp(-1.0, 1.0) * 0.5 + 0.5
         for f in range(frames):
             frame = color[f].float().clamp_min(0.0)
+            mask = None if stochastic is None else stochastic[f]
+            if mask is not None and not bool(mask.any()):
+                # Nothing in this frame was estimated: every pixel is exact.
+                out[f] = frame
+                continue
             exposure = autoexposure(frame)
             transferred = _pu_forward(frame * exposure) * _PU_NORM_SCALE
             image = (
@@ -146,7 +162,7 @@ class Denoiser:
                 .unsqueeze(0)
                 .contiguous()
             )
-            result = torch.empty(
+            result = torch.zeros(
                 (3, height, width), dtype=torch.float32, device=color.device
             )
             for ty in range(0, height, core):
@@ -155,16 +171,24 @@ class Denoiser:
                     x0 = max(tx - _TILE_OVERLAP, 0)
                     y1 = min(ty + core + _TILE_OVERLAP, height)
                     x1 = min(tx + core + _TILE_OVERLAP, width)
-                    piece = self._run_aligned(image[:, :, y0:y1, x0:x1])[0]
                     cy1 = min(ty + core, height)
                     cx1 = min(tx + core, width)
+                    if mask is not None and not bool(mask[ty:cy1, tx:cx1].any()):
+                        # The core holds only exact pixels: the select below
+                        # keeps their input values, so the network's answer
+                        # for this tile would be discarded. Skip it.
+                        continue
+                    piece = self._run_aligned(image[:, :, y0:y1, x0:x1])[0]
                     result[:, ty:cy1, tx:cx1] = piece[
                         :, ty - y0 : cy1 - y0, tx - x0 : cx1 - x0
                     ]
             restored = _pu_inverse(
                 result.clamp_min(0.0).permute(1, 2, 0) / _PU_NORM_SCALE
             )
-            out[f] = restored / exposure
+            denoised = restored / exposure
+            if mask is not None:
+                denoised = torch.where(mask.unsqueeze(-1), denoised, frame)
+            out[f] = denoised
         return out
 
 

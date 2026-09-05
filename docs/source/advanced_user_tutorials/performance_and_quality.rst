@@ -154,6 +154,14 @@ text-heavy frame's edges look coarser than you want, or set
 ``pt_error_target = 0`` to restore uniform sampling and give every pixel
 exactly ``samples_per_pixel``.
 
+The denoiser only touches pixels whose light was *estimated*. Under adaptive
+sampling (the default) the path tracer knows which pixels took a random
+decision; every other pixel -- unlit 2-D content, the background -- is exact
+and is passed through untouched, so text and vector graphics come out exactly
+as rendered, and a frame with nothing to denoise costs nothing to denoise.
+``pt_error_target = 0`` turns adaptive sampling off and with it this
+pass-through: the filter then runs over the whole frame.
+
 Noise is stable from frame to frame by default: static regions of a
 path-traced animation get the same estimate every frame, so residual noise
 reads as a fixed grain rather than a shimmer. Set

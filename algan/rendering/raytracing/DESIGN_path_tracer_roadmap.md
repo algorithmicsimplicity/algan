@@ -224,6 +224,13 @@ arm). Five frames, 16 spp, 4 bounces, denoiser on, warm RUN 2:
   8-bit count of difference on a handful of channel samples, 9-14% end to
   end. Batching the tiles into one forward pass and compiling the U-Net
   are the next two steps if it climbs back to the top of the profile.
+  **Also LANDED, after §2**: the filter takes the adaptive sampler's
+  stochastic mask, passes every exact pixel through untouched and skips
+  tiles whose core holds no flagged pixel — so a 2-D text frame, on which
+  the denoiser was 29-44% of the adaptive wall clock at 720p-1080p
+  (`pt_adaptive_1.md`), costs nothing to denoise, and the filter no longer
+  softens exact edges (contract 4). `pt_error_target = 0` restores the
+  whole-frame filter.
 * **Many lights is flat**: 64 point lights cost what 3 do
   (`pt_shade` 20.1 ms against 18.2 ms at 320x180).
 * **The 2-D arm**: 1.4 iterations per wave, 0.30 s of kernel time per five

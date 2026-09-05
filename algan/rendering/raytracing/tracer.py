@@ -1833,7 +1833,15 @@ def render_batch_raytraced(
                     albedo = ((aovs[0] + aovs[2] * aov_bg) * inv_spp).view(shape)
                     normal = (aovs[1] * inv_spp).view(shape)
                     color = (out[:, :, :3] * (1.0 / 255.0)).view(shape)
-                    denoised = denoiser(color, albedo, normal)
+                    # Under adaptive sampling the path tracer knows which
+                    # pixels took a random decision (the stochastic sample
+                    # count in accum_odd's last column); every other pixel
+                    # is exact and the filter passes it through untouched,
+                    # skipping tiles that hold none (Denoiser.__call__).
+                    stochastic = None
+                    if accum_odd is not None:
+                        stochastic = (accum_odd[:, :, 3] > 0.0).view(shape[:3])
+                    denoised = denoiser(color, albedo, normal, stochastic)
                     out[:, :, :3] = (
                         denoised.reshape(end - start, width * height, 3) * 255.0
                     )

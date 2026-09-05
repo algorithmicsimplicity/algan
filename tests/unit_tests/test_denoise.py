@@ -165,6 +165,58 @@ def test_denoise_precision_setting_resolves_per_device_and_validates():
     assert rt_settings.denoise_precision == "auto"
 
 
+class _CountingNet:
+    """Wraps an ``OidnUNet`` and counts the tiles that reach it."""
+
+    def __init__(self, net):
+        self.net = net
+        self.calls = 0
+        self.dtype = net.dtype
+        self.channels_last = net.channels_last
+
+    def __call__(self, x):
+        self.calls += 1
+        return self.net(x)
+
+
+def test_exact_pixels_pass_through_and_exact_tiles_are_skipped():
+    """The path tracer's stochastic mask: a pixel outside it is exact and
+    must come back bit-for-bit as it went in, and a tile whose core holds
+    no flagged pixel must never reach the network. With no mask the filter
+    runs everywhere, as before.
+    """
+    from algan.rendering.denoise.denoise import _MIN_TILE, _TILE_OVERLAP
+
+    net = _CountingNet(OidnUNet(_random_weights(), torch.device("cpu")))
+    filt = denoise_mod.Denoiser(net)
+    core = _MIN_TILE - 2 * _TILE_OVERLAP  # 64 at the floor tile size
+    height, width = 40, 4 * core  # four tiles along x
+    gen = torch.Generator().manual_seed(1)
+    color = torch.rand((1, height, width, 3), generator=gen) * 0.5
+    albedo = torch.rand((1, height, width, 3), generator=gen)
+    normal = torch.rand((1, height, width, 3), generator=gen) * 2 - 1
+    SETTINGS.raytracing.experimental.set(denoise_tile_size=_MIN_TILE)
+    try:
+        full = filt(color, albedo, normal)
+        assert net.calls == 4
+        assert not torch.equal(full, color)
+
+        net.calls = 0
+        mask = torch.zeros((1, height, width), dtype=torch.bool)
+        mask[0, :, :8] = True  # flagged pixels in the first tile's core only
+        partial = filt(color, albedo, normal, mask)
+        assert net.calls == 1
+        assert torch.equal(partial[~mask], color[~mask])
+        assert torch.equal(partial[mask], full[mask])
+
+        net.calls = 0
+        untouched = filt(color, albedo, normal, torch.zeros_like(mask))
+        assert net.calls == 0
+        assert torch.equal(untouched, color)
+    finally:
+        SETTINGS.raytracing.experimental.set(denoise_tile_size=512)
+
+
 def test_unet_rejects_wrong_shapes():
     tensors = _random_weights()
     tensors["dec_conv0.weight"] = torch.randn(3, 31, 3, 3)
@@ -277,7 +329,7 @@ class _SpyDenoiser:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, color, albedo, normal):
+    def __call__(self, color, albedo, normal, stochastic=None):
         self.calls.append((color.clone(), albedo.clone(), normal.clone()))
         return color.clone()
 
