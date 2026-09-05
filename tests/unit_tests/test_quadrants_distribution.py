@@ -57,7 +57,9 @@ def _fake_wheel(path: Path, version: str) -> None:
 
 
 def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
-    upstream = tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+    upstream = (
+        tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+    )
     _fake_wheel(upstream, helper.DOWNSTREAM_VERSION)
     downstream = helper.rebrand_wheel(upstream)
     assert downstream.name.startswith("algan_quadrants-1.3.0.post1-")
@@ -65,7 +67,9 @@ def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
     with zipfile.ZipFile(downstream) as wheel:
         names = set(wheel.namelist())
         assert "quadrants/__init__.py" in names
-        assert not any(name.startswith("quadrants-1.3.0.post1.dist-info/") for name in names)
+        assert not any(
+            name.startswith("quadrants-1.3.0.post1.dist-info/") for name in names
+        )
         prefix = "algan_quadrants-1.3.0.post1.dist-info/"
         metadata = wheel.read(prefix + "METADATA").decode()
         assert "Name: algan-quadrants\n" in metadata
@@ -83,10 +87,16 @@ def test_rebrand_refuses_a_version_not_used_at_native_build_time(helper, tmp_pat
 
 
 def test_validate_refuses_a_wheel_without_quadrants_import(helper, tmp_path):
-    path = tmp_path / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+    path = (
+        tmp_path
+        / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+    )
     prefix = "algan_quadrants-1.3.0.post1.dist-info/"
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr(prefix + "METADATA", "Name: algan-quadrants\nVersion: 1.3.0.post1\n")
+        wheel.writestr(
+            prefix + "METADATA",
+            "Name: algan-quadrants\nVersion: 1.3.0.post1\n",
+        )
         wheel.writestr(prefix + "RECORD", "")
     with pytest.raises(ValueError, match="retain the import package"):
         helper.validate_downstream_wheel(path)
