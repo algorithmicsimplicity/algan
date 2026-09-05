@@ -38,3 +38,18 @@ max 1 count on 2 of 1.84 M pixels (the rounding-count case), 0 interior;
 `all arms agree`. The MIS identity (descent probability equals the upward
 PMF walk) and the "probabilities sum to one" probes are unit tests and ran
 green on the rebased tree.
+
+## With the build memoized (`458e946`, `pt-lighttree-2.txt`)
+
+| arm | end-to-end | `pt_shade` | host |
+| --- | --- | --- | --- |
+| many_lights 1280x720, tree | 2.029 s | 261 ms | 1.340 s |
+| many_lights 1280x720, flat | 1.808 s | 230 ms | 1.132 s |
+| many_lights 1920x1080, tree | 2.688 s | 660 ms | 1.243 s |
+
+This session ran slower overall (the flat arm's host went 0.972 to 1.132 s
+with no code change on its path — box variance), so the reading is the
+gap: tree minus flat on the host fell from 430 ms to **210 ms**. The build
+is gone from it; what remains is the tree path's device-to-host copies of
+the light tensors at chunk setup, which force a sync that costs the render
+loop its prefetch overlap with the previous chunk's kernels.

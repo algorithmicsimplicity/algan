@@ -53,6 +53,7 @@ list.
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 import torch
@@ -1080,6 +1081,11 @@ def path_trace_render(
         )
     # The power-weighted next-event table + environment CDF for this call
     # (before the tile budget is taken, so their bytes are accounted).
+    # Timed and logged at PERF: this is host work per chunk (the light tree
+    # build, the per-frame emitter geometry, the arena uploads) and it is
+    # what a GPU profile cannot see -- a T4 session attributed 430 ms of a
+    # 2.1 s many-light render to the host before the tree build was memoized.
+    setup_t0 = time.perf_counter()
     (
         nee_cdf,
         nee_ref,
@@ -1105,6 +1111,14 @@ def path_trace_render(
         num_frames,
     )
     tri_shell = _build_shell_table(memory, merged)
+    logger.log(
+        PERF,
+        "path tracer: next-event setup %.1f ms (%d entries, %d tree nodes, %d frames)",
+        1000.0 * (time.perf_counter() - setup_t0),
+        int(nee_meta[_NM_COUNT].item()),
+        int(lt_node_f.shape[1]) if lt_node_f.dim() == 3 else 0,
+        num_frames,
+    )
     if aovs is not None:
         nee_meta[_NM_AOV] = 1.0
         aov_albedo_flat = aovs[0].view(-1, 3)
