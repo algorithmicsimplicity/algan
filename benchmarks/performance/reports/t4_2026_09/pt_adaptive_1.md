@@ -71,3 +71,27 @@ the reason the denoiser now passes exact pixels through untouched
   take most of the former off the text arm; that is the next §0.2 item.
 * On lit scenes adaptive sampling is neutral by design; §6 (the light
   tree) and §5 are where those pixels' cost per sample lives.
+
+## The denoiser pass-through (`5651292`), same box, `pt-denoise-skip-1.txt`
+
+With the stochastic mask the filter passes exact pixels through and skips
+tiles whose core holds none:
+
+| arm | before | after | denoiser before | denoiser after |
+| --- | --- | --- | --- | --- |
+| text_2d 1280x720 | 0.750 s | **0.625 s** | 220 ms | 4 ms |
+| text_2d 1920x1080 | 1.301 s | **0.784 s** | 567 ms | 7 ms |
+| lit 1280x720 | 1.597 s | 1.588 s | 222 ms | 184 ms |
+
+Against the uniform arm at 16 spp with the whole-frame filter of before,
+the text frame is now 3.2x faster at 720p and 2.5x at 1080p end to end.
+
+`_pt_adaptive_check.py` at 720p, denoiser on, now compares "filtered
+everywhere" (the uniform arm has no mask) with "filtered where estimated":
+the text scene differs on 408 k pixels, 265 k of them interior, by up to 138
+counts. That is what the whole-frame filter had been doing to exact text —
+softening it — and it is the reason contract 4 wanted the pass-through,
+not a regression: with the denoiser off the same comparison is 0 interior
+pixels. The lit scene's background differs by up to 101 counts along
+object silhouettes, where the filter used to bleed lit pixels outward into
+exact background; that bleed now stops at the coverage boundary.
