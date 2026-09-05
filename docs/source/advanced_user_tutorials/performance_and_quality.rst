@@ -177,6 +177,15 @@ reads as a fixed grain rather than a shimmer. Set
 ``SETTINGS.raytracing.experimental.pt_animated_seed = True`` to re-roll the
 noise every frame instead.
 
+``SETTINGS.raytracing.experimental.pt_blue_noise = True`` redistributes the
+residual noise so that neighbouring pixels' errors cancel under a blur -- the
+same estimate, the same convergence, the error moved to higher spatial
+frequencies, which is the shape the eye and the denoiser both prefer. It is off
+by default because on this renderer the measured gain is only a few percent
+(the sampler derives every random decision from one per-pixel seed, so the
+optimised tile has to serve all of them at once); try it on a low
+``samples_per_pixel`` frame where the noise reads as clumps.
+
 ``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
 changing what the render converges to -- useful for checking that a feature
 you are looking at is real and not a shape in the noise. The path tracer does

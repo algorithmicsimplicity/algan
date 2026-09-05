@@ -346,6 +346,28 @@ def set_pt_authored_light_sampling(value):
 # which averages away under temporal accumulation and is what a denoiser with
 # a temporal pass wants.
 pt_animated_seed = env_flag("ALGAN_PT_ANIMATED_SEED", False)
+# Distribute the path tracer's Monte Carlo error as BLUE NOISE in screen space
+# (Heitz et al. 2019; roadmap section 7). The per-pixel half of every draw's
+# seed stops being a hash of the pixel index and becomes a shipped 64x64 tile
+# of sampler keys (``blue_noise.py``), annealed offline so that neighbouring
+# pixels draw sample sets that are far apart -- and so make errors that cancel
+# under any low-pass filter, which is what the eye and the denoiser both apply.
+# Convergence is untouched: the estimator per pixel is the same estimator, and
+# equal-spp MSE is the same. What moves is the error's SPECTRUM. False restores
+# the hashed key byte for byte (the A/B arm and the regression escape hatch);
+# a missing or malformed tile file falls back to it with one warning.
+#
+# **Off by default, on measurement rather than on taste.** The gain a real
+# render sees is +2 to +4% in both denoised MSE and low-frequency error energy
+# at 2/4/8 spp -- consistent in sign across every arm, and inside one standard
+# error over 24 render seeds (``benchmarks/_pt_blue_noise_check.py``). The
+# reason is structural and is written up in roadmap section 7: this sampler
+# derives EVERY dimension pair from one per-pixel key, so one tile has to serve
+# all of them at once and each gets a fraction of the optimisation, where
+# Heitz et al.'s tiles are per-dimension. The tile does what it was built to do
+# in isolation (1.3-1.6x less low-frequency error energy at 1-2 samples in the
+# pairs it covers); it is the sharing that dilutes it.
+pt_blue_noise = env_flag("ALGAN_PT_BLUE_NOISE", False)
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer

@@ -104,6 +104,36 @@ dimension pair on top of it per draw. That is a hoist, not a weakening --
 the combine avalanches its second argument, so distinct pairs still
 decorrelate.
 
+Blue noise in screen space
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Hashing ``(frame, pixel)`` gives neighbouring pixels independent sequences, so
+the per-pixel error is WHITE noise across the image -- the spectrum both the
+eye and a denoiser's convolutional prior handle worst. With
+``rt_settings.pt_blue_noise`` on -- it ships OFF, and roadmap section 7 has
+the measurement that decided that -- the per-pixel half of the seed comes
+instead from a shipped 64x64 tile of sampler keys (``blue_noise.py``,
+``scripts/generate_blue_noise_tile.py``), optimised by simulated annealing so
+that low-sample-count error is distributed as blue noise (Heitz et al. 2019).
+``_pt_bn_path_seed`` is the whole of it: ``path_seed =
+hash(_PT_BN_SALT, tile[(y + oy) mod 64, (x + ox) mod 64])``, with ``(ox, oy)``
+a toroidal shift hashed from ``(pt_seed, frame-or-0)``.
+
+Three properties this keeps. **Purity** -- a draw is still a pure function of
+``(pt_seed, frame-or-0, pixel, pair, sample index)``, now plus fixed shipped
+data. **Stratification** -- ``pt_sample_2d_seeded`` is untouched, so one pixel
+still walks one Owen-scrambled Sobol sequence and every prefix property holds;
+what changed is only WHICH pixel gets which sequence. **Convergence** -- every
+pixel's estimator is the same estimator, so MSE at equal spp is unchanged;
+what improves is where the error sits in the frequency domain.
+
+Two consequences worth knowing. Pixels 64 apart share a sequence (the tile is
+tiled, as it is in the paper), and the tile is optimised for the dimension
+pairs a low-spp render spends its variance on -- pair 0, bounce 0's, and the
+first crossing's at the SHIPPED ``max_bounces`` / ``pt_light_samples``; a
+render that moves those pairs keeps a correct but less-optimised assignment.
+Off, the key derivation is byte-for-byte what it was.
+
 Dimension-pair allocation (a fixed table; keep in sync with ``pt_shade``).
 ``B`` is the render's ``max_bounces`` and ``L`` is ``pt_light_samples``; the
 per-crossing block sits after every bounce pair because it draws per surface
@@ -314,7 +344,7 @@ _NEE_AUTHORED_ROW = 4
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 20
+NEE_META_WIDTH = 21
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -348,6 +378,36 @@ _NM_QUAD_BASE = 17
 # with ``auth_sampled`` on, so a lit-only scene never loads them.
 _NM_AUTHORED_SAMPLES = 18  # rows the authored branch draws per crossing ...
 _NM_AUTHORED_COUNT = 19  # ... out of this many entries in the authored table
+# 1 = the per-pixel sampler seed comes from the shipped blue-noise tile, which
+# then occupies ``_NM_BN_BASE ...`` of this same vector (roadmap section 7).
+# 0 leaves the vector NEE_META_WIDTH long and the key derivation exactly as it
+# was.
+_NM_BLUE_NOISE = 20
+
+# Blue-noise screen-space error distribution (roadmap section 7; Heitz et al.
+# 2019). The tile is ``PT_BN_TILE x PT_BN_TILE`` per-pixel sampler keys --
+# ``blue_noise.py`` loads the shipped permutation -- and rides ``nee_meta``'s
+# tail rather than a new kernel argument or a new arena entry: it is per-render
+# constant data of exactly the kind that vector already carries, and pt_shade
+# is one of the arena-packed kernels where an argument is expensive. Integer
+# tile values are exact in f32 (they are far below 2^24), so the f32 arena
+# carries them losslessly.
+#
+# ``_PT_BN_SALT`` is what turns a tile value into a path seed, and it is a
+# FIXED constant rather than ``pt_seed``: the map from tile value to sample
+# sequence is what ``scripts/generate_blue_noise_tile.py`` optimises, so
+# nothing per-render may enter it. The render seed and the frame enter as a
+# toroidal SHIFT of the tile lookup instead (``_pt_bn_shift``), which is an
+# isometry of the tile's own torus and therefore preserves the optimisation
+# while still decorrelating seeds and (under ``pt_animated_seed``) frames. The
+# cost of that spelling is that two (seed, frame) pairs landing on the same
+# shift render identically -- one chance in ``PT_BN_TILE ** 2``.
+PT_BN_TILE = 64
+PT_BN_TILE_MASK = PT_BN_TILE - 1
+PT_BN_TILE_VALUES = PT_BN_TILE * PT_BN_TILE
+_PT_BN_SALT = 0x9E3779B1
+#: First word of the tile inside ``nee_meta`` (the header ends there).
+_NM_BN_BASE = 21
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -448,6 +508,42 @@ def _pt_key(f: ti.i32, pixel: ti.i32) -> ti.u32:
     is 0 (see the module docstring's sampler section).
     """
     return _pt_hash_combine(ti.cast(f, ti.u32), ti.cast(pixel, ti.u32))
+
+
+@ti.func
+def _pt_bn_shift(seed_root: ti.u32, f: ti.i32):
+    """Where this ``(pt_seed, frame-or-0)`` reads the blue-noise tile.
+
+    A toroidal translation, and nothing else, is what the render seed and the
+    frame are allowed to do to the tile: it permutes which pixel gets which
+    key without touching the key-to-sequence map the tile was optimised
+    against (see ``_PT_BN_SALT``).
+    """
+    o = _pt_hash_combine(seed_root, ti.cast(f, ti.u32))
+    return (
+        ti.cast(o & ti.u32(PT_BN_TILE_MASK), ti.i32),
+        ti.cast((o >> ti.u32(16)) & ti.u32(PT_BN_TILE_MASK), ti.i32),
+    )
+
+
+@ti.func
+def _pt_bn_path_seed(nee_meta: ti.template(), seed_root: ti.u32, f: ti.i32,
+                     px: ti.i32, py: ti.i32) -> ti.u32:
+    """``_pt_path_seed`` for the blue-noise arm: the per-pixel half of every
+    draw's seed comes from the shipped tile at ``(x, y)`` mod its edge, shifted
+    by ``(pt_seed, frame-or-0)``.
+
+    Purity is unchanged -- the draw is still a pure function of ``(pt_seed,
+    frame-or-0, pixel, pair, sample index)`` plus fixed shipped data -- and so
+    is stratification: one pixel still walks one Owen-scrambled Sobol
+    sequence, just a different one. What changes is WHICH pixel gets which
+    sequence, which is the whole method (roadmap section 7).
+    """
+    ox, oy = _pt_bn_shift(seed_root, f)
+    tx = (px + ox) & PT_BN_TILE_MASK
+    ty = (py + oy) & PT_BN_TILE_MASK
+    v = ti.cast(nee_meta[_NM_BN_BASE + ty * PT_BN_TILE + tx] + 0.5, ti.u32)
+    return _pt_hash_combine(ti.u32(_PT_BN_SALT), v)
 
 
 @ti.func
@@ -1277,6 +1373,32 @@ def pt_sampler_probe(seed_root: ti.u32, f: ti.i32, pixel: ti.i32, pair: ti.i32,
 
 
 @ti.kernel
+def pt_screen_sampler_probe(nee_meta: ti.types.ndarray(), seed_root: ti.u32,
+                            f: ti.i32, blue_noise: ti.i32, width: ti.i32,
+                            pair: ti.i32, sample_index: ti.i32,
+                            out: ti.types.ndarray()):
+    """Test probe: one draw per pixel of an ``out [h, w, 2]`` screen grid.
+
+    The sampler tests probe ONE pixel's sequence; the blue-noise tile is about
+    how sequences are laid out ACROSS pixels (roadmap section 7), which needs a
+    whole grid. ``blue_noise`` picks the arm, and both branches are written the
+    way ``pt_generate`` and ``pt_shade`` write them -- with the probe's own
+    ``width``, so a pixel's flat index in the off arm is the one a render of
+    that width would give it. Keep the two branches in step with those kernels:
+    the off branch's job is to be exactly what they compute.
+    """
+    for py, px in ti.ndrange(out.shape[0], out.shape[1]):
+        path_seed = ti.u32(0)
+        if blue_noise != 0:
+            path_seed = _pt_bn_path_seed(nee_meta, seed_root, f, px, py)
+        else:
+            path_seed = _pt_path_seed(seed_root, _pt_key(f, py * width + px))
+        u = pt_sample_2d_seeded(path_seed, pair, sample_index)
+        out[py, px, 0] = u[0]
+        out[py, px, 1] = u[1]
+
+
+@ti.kernel
 def pt_nee_pick_probe(nee_cdf: ti.types.ndarray(), n: ti.i32,
                       u: ti.types.ndarray(), out: ti.types.ndarray()):
     """Test probe: binary-search each ``u`` through a table CDF, writing
@@ -1382,7 +1504,8 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 pixel_basis_y: ti.types.ndarray(), near_clip: ti.f32,
                 pix_list: ti.types.ndarray(),
                 rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-                rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray()):
+                rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
+                nee_meta: ti.types.ndarray()):
     """Write each slot's jittered primary ray.
 
     Slot layout: ``slot = k * tile_pixels + p_local`` holds wave sample
@@ -1413,8 +1536,16 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     ``animated_seed`` is ``rt_settings.pt_animated_seed`` as 1 / 0 and folds
     the frame out of the sampler key when it is 0; ``pt_shade`` reads the same
     value from ``nee_meta[_NM_ANIM_SEED]`` and the two must agree.
+
+    ``nee_meta`` is the shade kernel's own metadata vector, passed here for
+    the one word (and the one table) both ends of the sampler have to agree
+    on: ``_NM_BLUE_NOISE`` and, behind it, the blue-noise tile at
+    ``_NM_BN_BASE``. An ordinary ndarray parameter rather than an arena
+    binding because this kernel is not arena-packed (it takes eight arrays,
+    not forty).
     """
     pixels_per_frame = width * height
+    blue_noise = nee_meta[_NM_BLUE_NOISE] > 0.5
     for slot in range(num_slots):
         p_local = slot % tile_pixels
         s = sample_base + slot // tile_pixels
@@ -1425,8 +1556,14 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
         py = p // width
         px = p - py * width
         # The per-path half of the sampler seed, hoisted out of the draw the
-        # same way ``pt_shade`` hoists it (roadmap section 0.2).
-        path_seed = _pt_path_seed(seed_root, _pt_key(f * animated_seed, p))
+        # same way ``pt_shade`` hoists it (roadmap section 0.2), and derived
+        # the same way it derives it (roadmap section 7).
+        path_seed = ti.u32(0)
+        if blue_noise:
+            path_seed = _pt_bn_path_seed(nee_meta, seed_root,
+                                         f * animated_seed, px, py)
+        else:
+            path_seed = _pt_path_seed(seed_root, _pt_key(f * animated_seed, p))
         jitter = pt_sample_2d_seeded(path_seed, PAIR_PIXEL, s)
         ro, rd = _generate_ray(f, px, py, jitter[0], jitter[1],
                                half_screen_w, half_screen_h,
@@ -1596,7 +1733,7 @@ def _pt_meta_hit(nee_meta: ti.template()):
     sampler's frame gate, the light tree's selection words and the first
     synthetic area-light quad. Returns
     ``(num_nee, far_clip, amb_packed, amb_count, anim_seed, tree_on,
-    tree_mix, num_inf, quad_base)``.
+    tree_mix, num_inf, quad_base, blue_noise)``.
     """
     return (
         ti.cast(nee_meta[_NM_COUNT] + 0.5, ti.i32),
@@ -1608,6 +1745,7 @@ def _pt_meta_hit(nee_meta: ti.template()):
         nee_meta[_NM_TREE_MIX],
         ti.cast(nee_meta[_NM_INF_COUNT] + 0.5, ti.i32),
         ti.cast(nee_meta[_NM_QUAD_BASE] + 0.5, ti.i32),
+        nee_meta[_NM_BLUE_NOISE] > 0.5,
     )
 
 
@@ -1805,7 +1943,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             (n_ls, env_off, env_w, env_h, env_intensity, env_share,
              cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
             (num_nee, far_clip, amb_packed, amb_count, anim_seed,
-             tree_on, tree_mix, num_inf, quad_base) = _pt_meta_hit(nee_meta)
+             tree_on, tree_mix, num_inf, quad_base,
+             blue_noise) = _pt_meta_hit(nee_meta)
             g = ray_offset + rs_pix[r]
             f_rel = g // pixels_per_frame
             f = time_start + f_rel
@@ -1815,13 +1954,21 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             lt_r = 0
             if tree_on:
                 lt_r = lt_frame[f_rel]
-            key = _pt_key(f * anim_seed, p)
             # Sampler seeds and pair bases that are constant for the whole
             # path, hoisted out of the drain loop (roadmap section 0.2): the
             # per-path seed half every draw shares, the first per-crossing
             # pair, and the width of one crossing's block (``2L`` next-event
             # pairs plus the lobe select; see the module docstring's table).
-            path_seed = _pt_path_seed(seed_root, key)
+            # ``pt_generate`` derives the same seed from the same words and
+            # the two must agree.
+            path_seed = ti.u32(0)
+            if blue_noise:
+                py_bn = p // width
+                path_seed = _pt_bn_path_seed(nee_meta, seed_root,
+                                             f * anim_seed, p - py_bn * width,
+                                             py_bn)
+            else:
+                path_seed = _pt_path_seed(seed_root, _pt_key(f * anim_seed, p))
             s_index = sample_base + r // tile_pixels
             ff = ti.cast(f, ti.f32)
             pixel_size_per_t = pixel_world_scale[f]

@@ -62,6 +62,7 @@ from algan.logging.logger import PERF, get_logger
 from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.area_light_quads import NO_QUAD_BASE
+from algan.rendering.raytracing.blue_noise import blue_noise_tile
 from algan.rendering.raytracing.light_tree import (
     LT_F_WIDTH,
     LT_I_WIDTH,
@@ -81,6 +82,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_AOV,
     _NM_AUTHORED_COUNT,
     _NM_AUTHORED_SAMPLES,
+    _NM_BLUE_NOISE,
     _NM_COUNT,
     _NM_ENV_CDF_H,
     _NM_ENV_CDF_W,
@@ -718,7 +720,8 @@ def _build_nee_tables(
     remains the "this triangle is in the table" predicate either way.
 
     Returns arena tensors ``(nee_cdf [E + R], nee_ref [E + A + R, 2], nee_meta
-    [NEE_META_WIDTH], tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
+    [NEE_META_WIDTH, plus the blue-noise tile when it is on],
+    tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
     [N], lt_node_f [rows, nodes, 14], lt_node_i [rows, nodes, 3],
     lt_entry_leaf [rows, E_finite], lt_frame [frames], nee_inf_cdf [E_inf],
     nee_inf_ref [E_inf], pt_emit_falloff [Q, 2])`` plus the two host-side
@@ -750,7 +753,7 @@ def _build_nee_tables(
     is counted twice. A render with no area light gets a ``[1, 2]``
     placeholder and a base past every primitive index.
     """
-    from algan.rendering.raytracing.tracer import _arena_copy, _arena_values
+    from algan.rendering.raytracing.tracer import _arena_copy
 
     device = memory.data.device
     i64 = torch.int64
@@ -1069,7 +1072,18 @@ def _build_nee_tables(
         meta[_NM_TREE_ON] = 1.0 if tree_on else 0.0
         meta[_NM_TREE_MIX] = float(tree_mix)
         meta[_NM_INF_COUNT] = float(n_inf)
-        nee_meta = _arena_values(memory, meta, torch.float32)
+        # The blue-noise tile rides this vector's tail rather than a kernel
+        # argument or an arena entry of its own (roadmap section 7): it is
+        # per-render constant data, which is what this vector is for, and both
+        # ends of the sampler already receive it. Off -- or with no tile file
+        # to load -- the vector keeps its header length and the kernels take
+        # the hashed key exactly as they did.
+        tile = blue_noise_tile() if rt_settings.pt_blue_noise else None
+        meta[_NM_BLUE_NOISE] = 0.0 if tile is None else 1.0
+        head = torch.tensor(meta, dtype=torch.float32, device="cpu")
+        nee_meta = _arena_copy(
+            memory, head if tile is None else torch.cat((head, tile))
+        )
     return (
         nee_cdf,
         nee_ref,
@@ -1410,6 +1424,7 @@ def path_trace_render(
                     rs_rd,
                     rs_sca,
                     rs_pix,
+                    nee_meta,
                 )
                 active = compactor.initial(slots)
                 it = 0

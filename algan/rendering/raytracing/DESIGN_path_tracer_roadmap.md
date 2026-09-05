@@ -113,7 +113,9 @@ be as fast as it can be, is:
    single BSDF has LANDED, together with §7's stratified lobe select,
    §0.2's sampler hoists and the self-intersection offset, as the one
    re-baseline §5 said to batch them into.
-6. §3 tier 2, §7's real blue noise, §8's pools — only behind a profile.
+6. §3 tier 2 and §8's pools — only behind a profile. §7's blue noise is
+   built and measured (+2..4%, inside the noise), and ships off; what would
+   make it pay is a per-dimension tile, which that section scopes.
 7. §1 and §4 are not fallback work at all (each section says why) and sit
    behind everything above.
 
@@ -1491,8 +1493,9 @@ its own look.
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
 
-Two cheap sampling improvements the survey named. The first has LANDED; the
-second has not.
+Two cheap sampling improvements the survey named. Both have LANDED; the
+second ships off, because it was measured and the measurement did not carry
+it.
 
 **Lobe selection drew white noise — LANDED.** `u_lobe` came from `_pt_rng`,
 not from a Sobol pair, so the diffuse/specular/transmission/pass-through split
@@ -1515,35 +1518,121 @@ sample, so it rides the section 5 batch's single re-baseline of
 arithmetic still partitions the pair space, over the render shapes a scene
 can take.
 
-**No blue-noise error distribution in screen space.** `_pt_key` hashes
-`(frame, pixel)`, so neighbouring pixels get independent sequences — error is
-white noise across the image. Heitz et al. (SIGGRAPH 2019) distribute the
-*same* per-pixel Owen-scrambled Sobol error as blue noise in screen space,
-which at low spp is markedly better perceptually for identical cost and
-identical convergence. That matters more here than for a film renderer:
-Algan's workload is animation at modest spp, fed to a denoiser, and both the
-human eye and the denoiser's convolutional prior prefer high-frequency error.
+**Blue-noise error distribution in screen space — LANDED 2026-09-05, and it
+ships OFF.** `_pt_key` hashed `(frame, pixel)`, so neighbouring pixels got
+independent sequences and the per-pixel error was white noise across the
+image. Heitz et al. (SIGGRAPH 2019) distribute the *same* per-pixel
+Owen-scrambled Sobol error as blue noise in screen space, which at low spp is
+markedly better perceptually for identical cost and identical convergence.
+That should matter more here than for a film renderer: Algan's workload is
+animation at modest spp, fed to a denoiser, and both the human eye and the
+denoiser's convolutional prior prefer high-frequency error. It is built,
+tested and measured; the measurement is why the default is off.
 
-It also composes with §3's Tier-1 correlated seeding rather than competing
-with it — one changes how error is distributed across space, the other across
-time, and the pair is the standard low-spp animation configuration.
+### What shipped
+
+**The tile.** `scripts/generate_blue_noise_tile.py` writes
+`algan/rendering/raytracing/data/blue_noise_tile_64.npy` — a `uint16` 64x64
+**permutation** of `0..4095` (8 KB), each entry a per-pixel sampler key.
+Simulated annealing on Heitz's energy,
+`Σ_{p,q} exp(−|p−q|²/σ_i² − |s_p−s_q|²/(σ_s²·D))` over a 7x7 *toroidal*
+neighbourhood, where `s(v)` is the sampler's own first two draws in pairs
+`(0, 3, 54)` — sub-pixel jitter, bounce 0's BSDF direction, and the first
+crossing's light point at the shipped `max_bounces`/`pt_light_samples`.
+Parameters of record are in the script's docstring (σ_i = 2.1, σ_s = 0.35,
+300 sweeps, seeded; two minutes on one core, reproducible byte for byte).
+Two deviations from the paper, both deliberate and both explained there: the
+sample-space distance is squared and normalised per component rather than
+raised to `d/2` (that exponent is calibrated for a per-dimension tile and goes
+degenerate at `D = 12`), and there is one layer rather than one per dimension,
+because this sampler has one per-pixel key. **Permutation** is load-bearing:
+over a tile period the key multiset is the whole key set, so the assignment
+cannot bias the estimator — picking keys freely from a larger pool optimises
+better and is wrong, since a fixed key is a quadrature rule and only the
+randomness of the assignment makes it unbiased.
+
+**How it enters the key.** `_pt_bn_path_seed`: `path_seed =
+hash(_PT_BN_SALT, tile[(y + oy) mod 64, (x + ox) mod 64])`, replacing
+`_pt_path_seed(seed_root, _pt_key(f·anim, pixel))` and nothing else.
+`pt_sample_2d_seeded`'s Sobol/Owen internals are untouched, so a pixel still
+walks one Owen-scrambled Sobol sequence — only *which* pixel walks *which*
+sequence changed. `(ox, oy)` is hashed from `(pt_seed, frame-or-0)` and is a
+**toroidal shift**, not a rehash: a shift is an isometry of the tile's own
+torus, so it preserves the optimisation while still decorrelating seeds and
+(under `pt_animated_seed`) frames. That spelling is forced — the tile is
+optimised against the map from tile value to sample sequence, so nothing
+per-render may enter that map, which is why `_PT_BN_SALT` is a fixed constant
+and `pt_seed` moves the lookup instead. Its one cost: two `(seed, frame)`
+pairs landing on the same shift render identically, one chance in 4096.
+
+**Transport.** The tile rides `nee_meta`'s tail (`_NM_BN_BASE`, with
+`_NM_BLUE_NOISE` the switch word) — no new arena entry on `pt_shade`, no new
+`ti.template()` variant, and `pt_generate` (not arena-packed) takes
+`nee_meta` as one ordinary ndarray argument so both ends of the sampler read
+one table. Contract 2 holds: one compiled kernel, a runtime word.
+
+**The measurement** (`benchmarks/_pt_blue_noise_check.py`, CPU, 96x96, a
+miniature `lit_and_shadowed`, `pt_error_target = 0` so both arms take equal
+spp, 24 render seeds per arm, scored against a 1024-spp reference of the off
+arm):
+
+| spp | raw MSE | denoised MSE | low-frequency MSE |
+| --- | --- | --- | --- |
+| 2 | −0.7% ± 1.1% | **+1.9% ± 3.6%** | +3.5% ± 2.9% |
+| 4 | +1.5% ± 1.6% | **+2.4% ± 4.5%** | +3.8% ± 3.2% |
+| 8 | +3.9% ± 2.1% | **+2.7% ± 2.4%** | +3.1% ± 4.3% |
+
+(positive = the blue-noise arm is better; the error bar is the quadrature sum
+of the two arms' standard errors.) Raw MSE is equal, which is the prediction —
+blue noise does not change convergence. The other two are positive in every
+single arm, which is not nothing, and inside one standard error, which is not
+a win either. **The bar for defaulting on was >10% denoised at 4 spp; 2.4% is
+not it, so `pt_blue_noise` ships `False` and no baseline moved.**
+
+**Why it is small, which is the useful finding.** The tile does what it was
+built to do *in isolation*: on the pairs it covers it takes 1.3–1.6x the
+low-frequency energy out of the error field at 1–2 samples (the script's
+`--verify` reports it against a random permutation of the same keys). It is
+the sharing that dilutes it. Heitz et al.'s tiles are **per dimension** — a
+scrambling and a ranking value per pixel per dimension — while this sampler
+derives every pair from ONE per-pixel key hashed with the pair index, so one
+tile must serve every dimension at once and each gets a fraction of the
+optimisation. Measured directly: one pair alone in the energy scores 2.4x on
+its own pair and nothing on the others; three pairs score ~1.4x each; six
+score ~1.13x each. A real render then spends most of its variance in pairs the
+tile does not cover at all (later crossings, bounces 1..7, Russian roulette),
+so ~10% of its low-frequency error is in scope and 3% comes back.
+
+**What a follow-up would need**, if this is ever worth revisiting: the tile
+inside `_pt_pair_seed` rather than `_pt_path_seed`, one layer per dimension
+pair, i.e. a tile lookup per *draw* instead of per *path*. That is a signature
+change to `pt_sample_2d_seeded` and every one of its call sites, a global
+load in the inner sampling loop, and 8x-64x the shipped data — a different
+change from the one this section scoped, and it should be gated on a profile
+of that load, not on this section's numbers.
+
+It composes with §3's Tier-1 correlated seeding rather than competing with it
+— one changes how error is distributed across space, the other across time —
+and `pt_animated_seed` on keeps the spatial property per frame, since the
+frame only shifts the lookup.
 
 **What it is not.** An earlier draft offered "a hash of pixel coordinates
 mixed into the sample index" as the cheap way to land it. That gives white
 noise with a different correlation structure, not blue noise: `_pt_key`
 already hashes the pixel, and re-hashing it cannot shape the error's
-spectrum. Blue-noise error distribution needs an *optimised* per-pixel
-permutation — Heitz et al.'s scrambling and ranking tiles, or the
-precomputed permutation of Ahmed & Wonka 2021 / Belcour & Heitz 2021 —
-which is shipped data (a 128x128 tile per dimension pair is tens of
-kilobytes), applied inside `_pt_key` with no new kernel arguments and no
-change to the purity contract. Small, but it is a table to generate and
-carry, not a hash to write.
+spectrum. This is the reason the shipped answer is a table to generate and
+carry rather than a hash to write.
 
-**Verification:** stratification tests as today (unchanged — they probe one
-pixel's sequence); a low-spp render's error spectrum measurably
-high-frequency-weighted; equal-spp perceptual comparison on the
-`lit_and_shadowed` suite scene.
+**Verification:** `tests/unit_tests/test_path_tracer.py`'s
+`test_blue_noise_*` — the tile loads as a permutation and its constants agree
+with the kernel's; the **off arm reproduces `pt_sampler_probe` exactly**, per
+pixel, with no tolerance (and `tests/path_traced` renders md5-identical to
+the pre-change tree with the switch off); a blue-noise pixel's prefix is still
+stratified; the error field's low-frequency energy drops by >15% on the
+sampler probe while its total power does not move; and one real render
+exercises the kernel branch and agrees with the hashed-key arm on the mean.
+`test_dimension_pairs_never_collide` is untouched — no dimension pair was
+added or moved.
 
 
 ## 8. Splitting, continuation pools, and efficiency-aware RR

@@ -8,7 +8,11 @@ Two layers:
   scene pipeline. That purity is a sampling-quality property (stratification,
   and independence from how a render was split into tiles and waves); the
   renderer does **not** promise that two runs produce identical frames, and
-  nothing here asserts it (see ``DESIGN_path_tracer_roadmap.md``).
+  nothing here asserts it (see ``DESIGN_path_tracer_roadmap.md``). The
+  blue-noise tests (``test_blue_noise_*``) are the same layer one step wider:
+  they drive ``pt_screen_sampler_probe``, which asks the same question of a
+  whole screen grid, because where a sequence lands ACROSS pixels is what the
+  tile changes.
 * **Render tests** drive the real dispatch through ``Scene.save_frame``:
   the path tracer's deterministic transparency must reproduce the
   deterministic renderer's composite on unlit 2-D content away from edges
@@ -186,6 +190,201 @@ def test_dimension_pairs_never_collide():
                     claim(base + 2 * s, f"crossing {c} NEE {s} select")
                     claim(base + 2 * s + 1, f"crossing {c} NEE {s} point")
                 claim(base + 2 * light_samples, f"crossing {c} lobe select")
+
+
+# ---------------------------------------------------------------------------
+# Blue-noise screen-space error distribution (roadmap section 7)
+# ---------------------------------------------------------------------------
+
+
+def _bn_meta(blue_noise=True):
+    """The ``nee_meta`` vector a render hands the kernels, tile and all."""
+    from algan.rendering.raytracing.blue_noise import blue_noise_tile
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        _NM_BLUE_NOISE,
+        NEE_META_WIDTH,
+    )
+
+    tile = blue_noise_tile()
+    assert tile is not None, "the shipped blue-noise tile did not load"
+    meta = torch.zeros(NEE_META_WIDTH, dtype=torch.float32)
+    meta[_NM_BLUE_NOISE] = 1.0 if blue_noise else 0.0
+    return torch.cat((meta, tile)).to(DEVICE)
+
+
+def _screen_probe(blue_noise, pair=0, sample_index=0, size=64, seed=0, frame=0):
+    """``[size, size, 2]`` of one draw per pixel, through the render's own
+    key derivation (``pt_screen_sampler_probe``).
+    """
+    from algan.rendering.raytracing.path_tracer_taichi import pt_screen_sampler_probe
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    out = torch.zeros((size, size, 2), dtype=torch.float32, device=DEVICE)
+    pt_screen_sampler_probe(
+        _bn_meta(blue_noise),
+        int(seed),
+        int(frame),
+        1 if blue_noise else 0,
+        int(size),
+        int(pair),
+        int(sample_index),
+        out,
+    )
+    return out.cpu()
+
+
+def _low_frequency_energy(err, box=4):
+    """Mean square of the ``box x box``-averaged error image.
+
+    What blue noise is FOR: the total error power is unchanged, but a
+    low-pass filter (the eye, a denoiser) sees less of it.
+    """
+    k = torch.ones(1, 1, box, box, dtype=torch.float64) / (box * box)
+    x = torch.nn.functional.pad(
+        err.double()[None, None], (0, box - 1, 0, box - 1), mode="circular"
+    )
+    return float((torch.nn.functional.conv2d(x, k) ** 2).mean())
+
+
+def test_blue_noise_tile_loads_as_a_permutation():
+    """The shipped tile is what the kernel's arithmetic assumes it is.
+
+    A permutation of ``0 .. T*T-1`` is not decoration: it is what keeps the
+    tile's key MULTISET equal to the full key set over every tile period, so
+    the assignment cannot bias the estimator toward keys whose samples happen
+    to sit anywhere in particular (the reason Heitz et al. optimise a
+    permutation rather than picking keys freely).
+    """
+    import numpy as np
+
+    from algan.rendering.raytracing.blue_noise import (
+        TILE_PATH,
+        TILE_SIZE,
+        blue_noise_tile,
+    )
+    from algan.rendering.raytracing.path_tracer_taichi import (
+        _NM_BLUE_NOISE,
+        _NM_BN_BASE,
+        NEE_META_WIDTH,
+        PT_BN_TILE,
+        PT_BN_TILE_VALUES,
+    )
+
+    assert TILE_SIZE == PT_BN_TILE, "loader and kernel disagree on the tile edge"
+    assert PT_BN_TILE & (PT_BN_TILE - 1) == 0, "the kernel masks with T-1"
+    assert _NM_BN_BASE == NEE_META_WIDTH, (
+        "the tile must start where the meta header ends"
+    )
+    assert _NM_BLUE_NOISE < NEE_META_WIDTH
+
+    raw = np.load(TILE_PATH)
+    assert raw.dtype == np.uint16
+    assert raw.shape == (TILE_SIZE, TILE_SIZE)
+    assert np.array_equal(
+        np.sort(raw.reshape(-1).astype(np.int64)), np.arange(raw.size)
+    ), "the tile is not a permutation"
+
+    tile = blue_noise_tile()
+    assert tile is not None
+    assert tile.dtype == torch.float32
+    assert tile.shape == (PT_BN_TILE_VALUES,)
+    assert torch.equal(tile, torch.from_numpy(raw.reshape(-1).astype(np.float32))), (
+        "the loader reordered or rescaled the tile"
+    )
+
+
+def test_blue_noise_off_is_the_hashed_key():
+    """Off, every draw is the one the sampler made before the tile existed.
+
+    This is the regression arm: ``pt_screen_sampler_probe``'s off branch is
+    written the way ``pt_generate`` and ``pt_shade`` write theirs, and it has
+    to reproduce ``pt_sampler_probe`` -- the probe that predates blue noise --
+    exactly, for every pixel, with no tolerance.
+    """
+    size = 8
+    for pair in (0, 3, 54):
+        grid = _screen_probe(False, pair=pair, sample_index=2, size=size)
+        for py, px in ((0, 0), (1, 5), (7, 7)):
+            expected = _probe(seed=0, f=0, pixel=py * size + px, pair=pair, n=3)[2]
+            assert torch.equal(grid[py, px], expected), (
+                f"off arm differs from the hashed key at pixel {(px, py)}, pair {pair}"
+            )
+
+
+def test_blue_noise_keeps_one_pixels_sequence_stratified():
+    """The tile changes WHICH sequence a pixel walks, not what a sequence is.
+
+    ``pt_sample_2d_seeded`` is untouched, so a blue-noise pixel's prefix is
+    still an Owen-scrambled (0,2)-sequence: the same elementary-interval
+    assertions ``test_sampler_prefixes_are_stratified`` makes must hold at any
+    pixel of the on arm.
+    """
+    for px, py in ((0, 0), (13, 41)):
+        samples = torch.stack(
+            [_screen_probe(True, sample_index=s, size=64)[py, px] for s in range(16)]
+        )
+        for dim in range(2):
+            assert (_strata_counts(samples[:4, dim], 4) == 1).all(), (
+                f"first 4 samples of pixel {(px, py)} not stratified in dim {dim}"
+            )
+            assert (_strata_counts(samples[:16, dim], 16) == 1).all(), (
+                f"first 16 samples of pixel {(px, py)} not 16-stratified in dim {dim}"
+            )
+        cells = (samples[:16, 0] * 4).long().clamp_(0, 3) * 4 + (
+            samples[:16, 1] * 4
+        ).long().clamp_(0, 3)
+        assert (torch.bincount(cells, minlength=16) == 1).all(), (
+            f"pixel {(px, py)}'s first 16 samples are not jointly 4x4 stratified"
+        )
+
+
+def test_blue_noise_moves_the_error_to_high_frequencies():
+    """The point of the whole exercise, measured on the sampler alone.
+
+    At one sample the error of the simplest estimator there is -- ``u`` as
+    the estimate of ``1/2`` -- is the sample value itself, so its field over
+    the screen IS the sampler's error field. Blue noise must leave its total
+    power alone (same estimator, same variance) and take energy out of the low
+    frequencies, which is what a 4x4 box filter reads.
+    """
+    for pair in (0, 3, 54):
+        off = _screen_probe(False, pair=pair, size=64)[..., 0] - 0.5
+        on = _screen_probe(True, pair=pair, size=64)[..., 0] - 0.5
+        p_off = float((off.double() ** 2).mean())
+        p_on = float((on.double() ** 2).mean())
+        assert abs(p_on - p_off) / p_off < 0.10, (
+            f"pair {pair}: total error power moved ({p_off:.5f} -> {p_on:.5f}); "
+            "blue noise must redistribute error, not change how much there is"
+        )
+        lo_off = _low_frequency_energy(off)
+        lo_on = _low_frequency_energy(on)
+        assert lo_on < 0.85 * lo_off, (
+            f"pair {pair}: low-frequency error energy {lo_on:.3e} against the "
+            f"hashed key's {lo_off:.3e} -- the tile is not shaping the spectrum"
+        )
+
+
+def test_blue_noise_lookup_follows_the_seed_and_the_frame():
+    """``pt_seed`` and the frame shift the tile; they do not rehash it.
+
+    A shift is an isometry of the tile's torus, so each render still gets a
+    blue-noise field -- that is the property the shift spelling exists for
+    (``_pt_bn_shift``) -- while two seeds still decorrelate, which is what
+    ``pt_seed`` promises.
+    """
+    base = _screen_probe(True, size=64, seed=0)[..., 0]
+    other = _screen_probe(True, size=64, seed=1)[..., 0]
+    assert not torch.equal(base, other), "pt_seed does not reach the tile lookup"
+    lo_off = _low_frequency_energy(_screen_probe(False, size=64, seed=1)[..., 0] - 0.5)
+    assert _low_frequency_energy(other - 0.5) < 0.85 * lo_off, (
+        "a shifted tile stopped being blue noise"
+    )
+    # The frame reaches it only through ``pt_animated_seed`` (the caller
+    # passes ``f * animated_seed``), so a probe at frame 3 is a different
+    # shift and, again, still blue.
+    moved = _screen_probe(True, size=64, seed=0, frame=3)[..., 0]
+    assert not torch.equal(base, moved), "the frame does not reach the tile lookup"
 
 
 # ---------------------------------------------------------------------------
@@ -1691,6 +1890,55 @@ def test_offset_ray_origin_scales_with_the_hit_point():
             f"the offset is {step} at magnitude {m} (bound {bound}): too "
             "coarse to be an epsilon"
         )
+
+
+def test_blue_noise_render_arm_estimates_the_same_image(tmp_path):
+    """The kernel branch, exercised through a real render.
+
+    ``pt_blue_noise`` ships OFF (roadmap section 7: the measured gain is
+    small), so nothing else in the suite compiles or runs the branch that
+    reads the tile in ``pt_generate`` and ``pt_shade``. What it has to satisfy
+    is what any re-seeding has to satisfy: the frame changes, and the estimate
+    does not -- both arms are the same estimator over the same integrand, so
+    they must agree on the mean.
+    """
+
+    def build(scene):
+        scene.set_background(BLACK)
+        Scene.clear_lights()
+        PointLight(location=OUT * 5.0 + UP * 1.5, color=WHITE, intensity=2.0).spawn(
+            animate=False
+        )
+        floor = Prism(width=7.0, height=7.0, depth=0.1)
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        blocker = Prism(width=1.6, height=1.6, depth=0.1)
+        blocker.set_material(MeshStandardMaterial(color=RED, roughness=0.4))
+        blocker.move(OUT * 1.5)
+        blocker.spawn(animate=False)
+
+    off = _render_scene_exp(
+        tmp_path,
+        "bn_off.png",
+        build,
+        16,
+        shadows=True,
+        experimental={"pt_blue_noise": False, "pt_error_target": 0.0},
+    ).float()
+    on = _render_scene_exp(
+        tmp_path,
+        "bn_on.png",
+        build,
+        16,
+        shadows=True,
+        experimental={"pt_blue_noise": True, "pt_error_target": 0.0},
+    ).float()
+    assert float(off.mean()) > 5.0, "the probe scene rendered (nearly) empty"
+    assert not torch.equal(off, on), "pt_blue_noise did not reach the render"
+    assert abs(float(off.mean()) - float(on.mean())) <= 2.0, (
+        f"the two arms disagree on the mean ({float(off.mean()):.2f} vs "
+        f"{float(on.mean()):.2f}); the tile is not just a re-seeding"
+    )
 
 
 def test_lobe_select_is_stratified_and_seed_stable(tmp_path):
