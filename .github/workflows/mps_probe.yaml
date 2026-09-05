@@ -65,6 +65,10 @@ on:
         description: "Run id of a taichi_build.yaml run whose patched wheel to install (blank = stock Taichi)"
         type: string
         default: ""
+      quadrants_wheel:
+        description: "Patched Quadrants wheel for the render job: a quadrants_build.yaml run id, or a release-asset URL (blank = the Taichi path above)"
+        type: string
+        default: ""
       probes_only:
         description: "render: skip the test suite and the shader dump, leaving only the probes (~5 min instead of ~17)"
         type: boolean
@@ -346,15 +350,16 @@ jobs:
       # the render device". An arm that forced it would prove the substitutions
       # work and say nothing about whether a Mac user gets them.
       ALGAN_MPS_FRIENDLY: ${{ matrix.friendly }}
-      # Pinned to taichi, and it has to be pinned since Quadrants became the
-      # default compiler. This job is about *Taichi's* Metal path: the wheel it
-      # installs below is a patched `taichi` wheel, and `mps_zero_copy` reaches
-      # for `taichi.lang._ndarray.ExternalMetalNdarray`, which only that wheel
-      # has. Left on the default, the wheel would be installed and then never
-      # compiled against, and the arm would silently measure something else.
-      # Quadrants' own Metal support is a separate question, answered by its
-      # build's `metal ok` smoke test (`taichi_patches/PLAN.md` §6.1, step 2).
-      ALGAN_TAICHI_BACKEND: taichi
+      # Pinned to the compiler whose wheel this run installs, and it has to be
+      # pinned since Quadrants became the default compiler. By default this job
+      # is about *Taichi's* Metal path: the wheel it installs below is a
+      # patched `taichi` wheel, and `mps_zero_copy` reaches for
+      # `<compiler>.lang._ndarray.ExternalMetalNdarray`, which only a patched
+      # wheel has. Left on the default, the wheel would be installed and then
+      # never compiled against, and the arm would silently measure something
+      # else. With `quadrants_wheel` set the same job runs the Quadrants port
+      # (`quadrants_patches/`) instead, on a wheel from `quadrants_build.yaml`.
+      ALGAN_TAICHI_BACKEND: ${{ inputs.quadrants_wheel != '' && 'quadrants' || 'taichi' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -457,6 +462,46 @@ jobs:
           from taichi.lang._ndarray import ExternalMetalNdarray
           print('taichi', ti.__version__, 'patched: ExternalMetalNdarray present')
           "
+
+      # The Quadrants counterpart: a wheel from `quadrants_build.yaml`, named
+      # either by that run's id (fetched from its artifacts; the macOS cp311
+      # artifact, since this job is on 3.11) or by a release-asset URL
+      # (installed directly). macOS only for the same reason the Taichi wheel
+      # is: the artifact is an arm64-macos wheel, and installing it on the
+      # Linux control arm would fail before the arm had run anything.
+      - name: Fetch the patched Quadrants wheel (from a quadrants_build.yaml run)
+        if: ${{ runner.os == 'macOS' && inputs.quadrants_wheel != '' && !startsWith(inputs.quadrants_wheel, 'http') }}
+        uses: actions/download-artifact@v4
+        with:
+          name: quadrants-wheel-macos-py3.11
+          run-id: ${{ inputs.quadrants_wheel }}
+          github-token: ${{ github.token }}
+          path: patched-quadrants
+
+      - name: Put the patched Quadrants in the environment
+        if: ${{ runner.os == 'macOS' && inputs.quadrants_wheel != '' }}
+        env:
+          QUADRANTS_WHEEL: ${{ inputs.quadrants_wheel }}
+        run: |
+          set -euo pipefail
+          case "$QUADRANTS_WHEEL" in
+            http*) wheel="$QUADRANTS_WHEEL" ;;
+            *) wheel=$(find patched-quadrants -name 'quadrants*.whl' | head -1)
+               if [ -z "$wheel" ]; then echo "the build run produced no macOS cp311 wheel"; exit 1; fi ;;
+          esac
+          echo "installing $wheel"
+          uv pip install --no-deps --reinstall-package quadrants "$wheel"
+          # `.venv/bin/python`, never `uv run`, from here on: the patched
+          # wheel's `1.3.1.dev0+g...` version does not satisfy the lockfile's
+          # `quadrants==1.3.0`, so `uv run`'s sync reinstalls stock Quadrants
+          # over it (`run_on_mac.yaml` has the same note and the log that
+          # found it). Later steps go through `uv run`, hence UV_NO_SYNC.
+          .venv/bin/python -c "
+          import quadrants as qd
+          from quadrants.lang._ndarray import ExternalMetalNdarray
+          print('quadrants', qd.__version__, 'patched: ExternalMetalNdarray present')
+          "
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
 
       # Reports the device Algan resolved and whether LaTeX is on PATH. On the
       # macOS arm this is also the first thing that would fail if `mps` were

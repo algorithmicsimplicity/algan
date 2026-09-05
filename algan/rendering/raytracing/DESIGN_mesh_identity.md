@@ -387,8 +387,8 @@ GTX 1050 (4 GB), driver 576.52, Taichi 1.7.4, torch 2.7.1+cu128.
 * **Cold Taichi compiles run 35-45 minutes** after `clear_cached_kernels(
   True)`, and a new `ti.static` template VALUE (a new `aa_grp`, flipping
   `WATERTIGHT_TRI`) is a new variant with its own cold compile. Budget for it.
-  Clear the cache before any kernel A/B: the offline cache does **not** invalidate
-  on `@ti.func` edits.
+  (The offline cache is keyed on the compiled IR, so a `@ti.func` edit misses it
+  by itself; clear it only when the A/B is measuring compile time.)
 * **One render process at a time.** Killed background renders orphan children
   that keep output mp4s locked.
 * **4 GB is a real constraint.** 304 translucent screen-filling cubes exhaust it
@@ -1573,9 +1573,10 @@ baseline debt this leaves.
 4. WHAT MUST BE VERIFIED ON A CUDA DEVICE
 ================================================================================
 
-Clear the Taichi cache (`clear_cached_kernels()`) before any A/B — it
-does not invalidate on `@ti.func` edits. Never edit `*_taichi.py` while a render
-or a warm daemon is running.
+Never edit `*_taichi.py` while a render or a warm daemon is running. (The
+Taichi cache need not be cleared for an A/B: it is keyed on the compiled IR and
+a `@ti.func` edit misses it by itself. The run below cleared it anyway, so its
+timings are cold ones.)
 
 **ALL OF §4 HAS NOW BEEN RUN ON CUDA** (GTX 1050, driver 576.52, Taichi 1.7.4,
 torch 2.7.1+cu128), with the Taichi cache cleared first. Each item below carries
@@ -1634,8 +1635,9 @@ its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
 4.3 **Confirm the kernels did not get slower.** — **DONE: neutral.**
     `benchmarks/_pn_deletion_profile.py`, run once per tree (a `git worktree` at
     `efb3a95` for the pre arm) with a **separate `ALGAN_CACHE_DIR` per arm**,
-    because the offline cache does not invalidate on `@ti.func` edits and both
-    trees compile identically-named kernels. Gates pinned off in both — and note
+    so that the cache entry count each arm reports is that tree's own (the
+    cache is keyed on the compiled IR, so sharing one would not have served
+    the wrong kernel; it would have blurred the count). Gates pinned off in both — and note
     the pre tree warns that `ALGAN_MESH_ID` / `ALGAN_POLYHEDRON_WINDING` are
     unknown variables, which is the right answer: they did not exist yet, so the
     pre arm *is* the gates-off configuration.

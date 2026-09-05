@@ -30,10 +30,15 @@ still the script's to choose.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
+import torch
 
 from algan.taichi_compat import (
     BACKEND,
@@ -41,6 +46,7 @@ from algan.taichi_compat import (
     kernel_specializations,
     program,
     submodule,
+    ti,
 )
 
 _REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -168,6 +174,114 @@ def test_ensure_taichi_for_render_reinitializes_when_the_arch_changes(monkeypatc
     monkeypatch.undo()
     taichi_runtime.ensure_taichi_for_render()
     assert taichi_runtime._arch_matches_render_device()
+
+
+@pytest.mark.parametrize(
+    ("device", "expected"),
+    [("cpu", "cpu"), ("cuda", "cuda"), ("mps", "metal"), ("xpu", "cpu")],
+)
+def test_the_arch_is_concrete_for_every_render_device(monkeypatch, device, expected):
+    """Never ``ti.gpu``: that is a preference list ``init`` resolves by probing
+    Vulkan and OpenGL and, when every probe fails, by falling back to the CPU
+    with a warning -- leaving the live arch ``cpu`` against a ``cuda`` render
+    device, which made ``ensure_taichi_for_render`` re-initialise on every
+    render. The device is faked rather than selected, so this runs anywhere.
+    """
+    from algan.rendering import taichi_runtime
+
+    monkeypatch.setattr(taichi_runtime, "render_device", lambda: torch.device(device))
+    arch = taichi_runtime._taichi_arch()
+    assert arch == getattr(ti, expected)
+    assert arch != ti.gpu
+    assert taichi_runtime.taichi_init_kwargs()["arch"] == arch
+
+
+def test_init_kwargs_refuse_the_cpu_fallback_and_name_the_cache_directory():
+    from algan.rendering import taichi_runtime
+
+    kwargs = taichi_runtime.taichi_init_kwargs()
+    assert kwargs["enable_fallback"] is False
+    assert "gpu_max_reg" not in kwargs, "the knob never reached ptxas and is gone"
+    # The kwarg is how the directory reaches Quadrants at all: it reads QD_
+    # variables, never the TI_OFFLINE_CACHE_FILE_PATH name Algan honours.
+    if not (BACKEND == "taichi" and os.environ.get("TI_OFFLINE_CACHE_FILE_PATH")):
+        assert kwargs["offline_cache_file_path"] == str(
+            taichi_runtime._TAICHI_CACHE_DIRECTORY
+        )
+
+
+def test_full_traceback_is_passed_only_when_asked_for(monkeypatch):
+    from algan.rendering import taichi_runtime
+
+    monkeypatch.delenv("ALGAN_TI_FULL_TRACEBACK", raising=False)
+    assert "print_full_traceback" not in taichi_runtime.taichi_init_kwargs()
+    monkeypatch.setenv("ALGAN_TI_FULL_TRACEBACK", "1")
+    assert taichi_runtime.taichi_init_kwargs()["print_full_traceback"] is True
+
+
+def _touch(path, age_seconds, now):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    os.utime(path, (now - age_seconds, now - age_seconds))
+    return path
+
+
+def test_stale_offline_cache_locks_are_removed_before_init(tmp_path, caplog):
+    """A process killed while holding the cache's metadata lock leaves a bare
+    O_EXCL file behind, and the compilers have no staleness rule: every later
+    run fails to take it (five 50 ms retries), loads nothing and saves nothing,
+    with a warning. Both compilers' names and both depths are covered; a fresh
+    lock, an unrelated ``.lock`` and a lock two levels down are left alone.
+    """
+    from algan.rendering import taichi_runtime
+
+    now = time.time()
+    stale = [
+        _touch(tmp_path / "ticache.lock", 3600, now),
+        _touch(tmp_path / "kernel_compilation_manager" / "qdcache.lock", 3600, now),
+        _touch(tmp_path / "ptx_cache_sm_86" / "ptxcache.lock", 3600, now),
+    ]
+    kept = [
+        _touch(tmp_path / "kernel_compilation_manager" / "qdcache.lock.fresh", 1, now),
+        _touch(tmp_path / "other.lock", 3600, now),
+        _touch(tmp_path / "a" / "b" / "qdcache.lock", 3600, now),
+    ]
+    fresh = _touch(tmp_path / "fresh" / "qdcache.lock", 30, now)
+
+    # Algan's logger does not propagate to the root, so caplog's handler is
+    # attached to it directly rather than relying on ``at_level``.
+    algan_logger = logging.getLogger("algan")
+    algan_logger.addHandler(caplog.handler)
+    try:
+        removed = taichi_runtime._remove_stale_offline_cache_locks(tmp_path, now=now)
+    finally:
+        algan_logger.removeHandler(caplog.handler)
+
+    assert sorted(removed) == sorted(stale)
+    assert not any(path.exists() for path in stale)
+    assert all(path.exists() for path in [*kept, fresh])
+    assert sum("stale kernel-cache lock" in r.message for r in caplog.records) == 3
+
+
+def test_stale_lock_sweep_tolerates_a_missing_cache_directory(tmp_path):
+    from algan.rendering import taichi_runtime
+
+    assert taichi_runtime._remove_stale_offline_cache_locks(tmp_path / "none") == []
+
+
+def test_starting_a_program_sweeps_the_cache_directory(monkeypatch, tmp_path):
+    """The sweep is wired into the one place ``ti.init`` is called from."""
+    from algan.rendering import taichi_runtime
+
+    now = time.time()
+    lock = _touch(tmp_path / "kernel_compilation_manager" / "qdcache.lock", 3600, now)
+    monkeypatch.setattr(taichi_runtime, "_TAICHI_CACHE_DIRECTORY", tmp_path)
+    monkeypatch.setattr(taichi_runtime.ti, "init", lambda **kwargs: None)
+    monkeypatch.setattr(taichi_runtime, "_install_taichi_compile_logger", lambda: None)
+
+    taichi_runtime._start_program()
+
+    assert not lock.exists()
 
 
 def test_importing_algan_does_not_start_taichi():

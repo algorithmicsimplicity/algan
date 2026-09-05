@@ -19,12 +19,15 @@ name: Run on the Mac GPU runner
 # ran at 6.0 / 3.2 GB/s over unified memory -- a virtualization tax on
 # submission and mapping that no physical Mac pays.
 #
-# THE MPS ARM NEEDS THE PATCHED TAICHI WHEEL. On stock Taichi, `auto` refuses
-# the Apple GPU and Algan renders on the CPU, so an MPS arm without a wheel
-# silently duplicates the CPU arm. The default run id below is a
-# `taichi_build.yaml` run that produced one; `taichi_wheel_run_id: none`
-# opts out deliberately (which is a legitimate thing to measure -- it is what
-# an unpatched Mac user gets).
+# THE MPS ARM NEEDS A PATCHED WHEEL. On a stock compiler, `auto` refuses the
+# Apple GPU and Algan renders on the CPU, so an MPS arm without a wheel
+# silently duplicates the CPU arm. Two ways to supply one: the default run id
+# below is a `taichi_build.yaml` run that produced a patched *Taichi* wheel
+# (`taichi_wheel_run_id: none` opts out deliberately, which is a legitimate
+# thing to measure -- it is what an unpatched Mac user gets); and
+# `quadrants_wheel` names a patched *Quadrants* wheel, as a
+# `quadrants_build.yaml` run id or a release-asset URL, which then selects the
+# Quadrants backend for the run. When both are given the Quadrants one wins.
 #
 # COST. This repository is public, so GitHub-hosted runner minutes are free and
 # unlimited. What is finite is CONCURRENCY: 5 concurrent macOS jobs on the Free
@@ -53,6 +56,10 @@ on:
         description: "taichi_build.yaml run id whose patched wheel the MPS arm installs ('none' = stock Taichi)"
         type: string
         default: "33342025517"
+      quadrants_wheel:
+        description: "Patched Quadrants wheel for the Mac arms: a quadrants_build.yaml run id, or a release-asset URL (blank = none; selects ALGAN_TAICHI_BACKEND=quadrants)"
+        type: string
+        default: ""
       artifacts:
         description: "Extra paths to upload, one glob per line"
         type: string
@@ -94,6 +101,7 @@ jobs:
       env: ${{ steps.resolve.outputs.env }}
       latex: ${{ steps.resolve.outputs.latex }}
       wheel: ${{ steps.resolve.outputs.wheel }}
+      quadrants_wheel: ${{ steps.resolve.outputs.quadrants_wheel }}
       artifacts: ${{ steps.resolve.outputs.artifacts }}
       timeout: ${{ steps.resolve.outputs.timeout }}
       matrix: ${{ steps.resolve.outputs.matrix }}
@@ -109,6 +117,7 @@ jobs:
           IN_ENV: ${{ inputs.env }}
           IN_LATEX: ${{ inputs.latex }}
           IN_WHEEL: ${{ inputs.taichi_wheel_run_id }}
+          IN_QUADRANTS_WHEEL: ${{ inputs.quadrants_wheel }}
           IN_ARTIFACTS: ${{ inputs.artifacts }}
           IN_TIMEOUT: ${{ inputs.timeout_minutes }}
         run: |
@@ -236,6 +245,51 @@ jobs:
           # a wheel was installed, and so a request's own `env:` (exported
           # inside the run step) still wins over it.
           echo "ALGAN_TAICHI_BACKEND=taichi" >> "$GITHUB_ENV"
+
+      # The Quadrants counterpart, on every Mac arm rather than only the MPS
+      # one: `scripts/gate/mps_probe_quadrants.sh` runs on `mac-cpu` and
+      # switches the device on itself, so the wheel has to be reachable from
+      # there too. Named by a `quadrants_build.yaml` run id (its macOS cp311
+      # artifact -- every arm here is on 3.11) or by a release-asset URL.
+      # Deliberately after the Taichi steps, so its backend pin is the one
+      # that stands when both wheels were asked for.
+      - name: Fetch the patched Quadrants wheel (from a quadrants_build.yaml run)
+        if: ${{ runner.os == 'macOS' && needs.plan.outputs.quadrants_wheel != '' && !startsWith(needs.plan.outputs.quadrants_wheel, 'http') }}
+        uses: actions/download-artifact@v4
+        with:
+          name: quadrants-wheel-macos-py3.11
+          run-id: ${{ needs.plan.outputs.quadrants_wheel }}
+          github-token: ${{ github.token }}
+          path: patched-quadrants
+
+      - name: Install the patched Quadrants wheel
+        if: ${{ runner.os == 'macOS' && needs.plan.outputs.quadrants_wheel != '' }}
+        env:
+          QUADRANTS_WHEEL: ${{ needs.plan.outputs.quadrants_wheel }}
+        run: |
+          set -euo pipefail
+          case "$QUADRANTS_WHEEL" in
+            http*) wheel="$QUADRANTS_WHEEL" ;;
+            *) wheel=$(find patched-quadrants -name 'quadrants*.whl' | head -1)
+               if [ -z "$wheel" ]; then echo "the named build run produced no macOS cp311 wheel"; exit 1; fi ;;
+          esac
+          echo "installing $wheel"
+          uv pip install --no-deps --reinstall-package quadrants "$wheel"
+          # `.venv/bin/python`, never `uv run`, from here on: a patched wheel is
+          # versioned `1.3.1.dev0+g...`, which does not satisfy the lockfile's
+          # `quadrants==1.3.0`, so the sync `uv run` does first puts the stock
+          # wheel straight back (it did, silently: one "Uninstalled 1 package"
+          # after the install and then an ImportError). The Taichi wheel above
+          # survives `uv run` only because its version matches the lock. Later
+          # steps and the command itself go through `uv run`, so the sync is
+          # switched off for the rest of the job.
+          .venv/bin/python -c "
+          import quadrants as qd
+          from quadrants.lang._ndarray import ExternalMetalNdarray
+          print('quadrants', qd.__version__, '-- patched (ExternalMetalNdarray present)')
+          "
+          echo "ALGAN_TAICHI_BACKEND=quadrants" >> "$GITHUB_ENV"
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
 
       # In the clear, before any number is taken: which device Algan actually
       # resolved. An MPS arm that quietly fell back to the CPU is the failure

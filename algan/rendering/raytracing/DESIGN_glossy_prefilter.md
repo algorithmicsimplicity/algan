@@ -222,8 +222,10 @@ is exactly the behaviour wanted (a reflection that bounces again is still part
 of the same reflection).
 
 `gloss_base` is passed in `layer_offsets[7]` rather than as a new kernel
-argument (the kernel is near Taichi's 64-argument ceiling — the same reason the
-environment map placement rides there). `0` means the feature is off. It is
+argument — every extra ndarray argument costs a `set_arg` per launch and
+per-use argument loads in the kernel, and Metal allows 31 buffers; the
+"64-argument ceiling" is only a Python-side counter (`agent_guidance/taichi.md`).
+The environment map placement rides there for the same reason. `0` means the feature is off. It is
 paired with a `ti.template()` gate so that off compiles the whole thing out.
 
 The one addition to the drain body: at each hit of a glossy ray,

@@ -151,7 +151,7 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_CACHE_DIR`;
 - `TI_OFFLINE_CACHE_FILE_PATH`;
 - `ALGAN_SOFT_SHADOW_SAMPLES`;
-- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`;
+- `ALGAN_TI_DEBUG`, `ALGAN_TAICHI_WARMSTART`, `ALGAN_TAICHI_FAST_LAUNCH`, `ALGAN_TAICHI_SOURCE_KEY`;
 - `ALGAN_TAICHI_BACKEND`.
 
 `ALGAN_TAICHI_BACKEND` selects which Taichi-language compiler builds the kernels:
