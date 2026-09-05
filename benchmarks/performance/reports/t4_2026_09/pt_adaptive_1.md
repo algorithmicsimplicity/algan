@@ -42,9 +42,24 @@ arm saved (5.76 mean spp) is the background — one traversal and out — and
 the kernels drop 28% (410 ms to 294 ms) for a 3% end-to-end gain. The two
 arms' videos have different digests (`b1ce54abbd243261` against
 `4bb792d1cf78159c`) while the CPU harness finds the raw frames
-byte-identical with the denoiser off and on; `benchmarks/_pt_adaptive_check.py`
-run on this box is what settles the size of that difference (its own
-report follows in this directory).
+byte-identical. `benchmarks/_pt_adaptive_check.py` on the T4 at 720p
+(session `pt-adaptive-check-1`, raw frames, `d15c6a5`) settles it:
+
+| scene | denoiser | max diff | pixels differing | of 1.84 M | interior |
+| --- | --- | --- | --- | --- | --- |
+| lit | off | 1 count | 2 | | 0 |
+| lit | on (fp16) | 1 count | 4540 | | 14 |
+| text_2d | off | 152 counts | 4022 | | **0** |
+| text_2d | on (fp16) | 115 counts | 72475 | | 9706 |
+
+The lit difference is float summation order on two exact background
+pixels landing on a rounding boundary, one count each, and the fp16
+network spreads that to 4540 pixels at one count. The text differences
+with the denoiser off all sit on an edge of the uniform reference (the
+floor-count jittered anti-aliasing); with the denoiser on they had spread
+into 9706 interior pixels, which is the filter softening exact content —
+the reason the denoiser now passes exact pixels through untouched
+(`5651292`).
 
 ## What the numbers say about the roadmap
 

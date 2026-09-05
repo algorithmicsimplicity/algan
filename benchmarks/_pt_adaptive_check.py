@@ -25,8 +25,15 @@ shipped default, with the denoiser off and then on:
   difference -- which must be zero.
 
 Prints one ``RESULTS`` JSON line per scene. Exit code 0 only when the lit
-scene is byte-identical with the denoiser off and the text scene moved no
-interior pixel.
+scene is within one rounding count with the denoiser off and the text scene
+moved no interior pixel.
+
+Measured (``benchmarks/performance/reports/t4_2026_09/pt_adaptive_1.md``):
+on a T4 at 1280x720 the lit scene differs on 2 of 1.84 M pixels by one
+count with the denoiser off (float summation order on exact background
+pixels); on a CPU at 320x180 it is byte-identical. The text scene differs
+on 4022 pixels, max 152 counts, every one on an edge of the uniform
+reference: jittered anti-aliasing at the floor count.
 
 Usage::
 
@@ -140,9 +147,13 @@ def main(argv=None):
                 f"{summary[arm]['interior_differences']} of them interior"
             )
         SETTINGS.raytracing.experimental.set(pt_error_target=target_default)
-        if name == "lit" and summary["denoise_off"]["max"] != 0:
+        # One count is float summation order on an EXACT pixel (four samples
+        # scaled by four against sixteen summed) landing on a rounding
+        # boundary: measured 2 pixels of 1.84 M at 720p on a T4, none on a
+        # CPU. A lit pixel that stopped early would show as many counts.
+        if name == "lit" and summary["denoise_off"]["max"] > 1:
             ok = False
-            print("!! lit scene is not byte-identical with the denoiser off")
+            print("!! lit scene moved by more than a rounding count, denoiser off")
         if name == "text_2d" and summary["denoise_off"]["interior_differences"] != 0:
             ok = False
             print("!! text_2d moved an interior pixel")
