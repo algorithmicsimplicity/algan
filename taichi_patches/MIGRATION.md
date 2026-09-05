@@ -365,7 +365,13 @@ Everything else merged clean. `--fast` on the merge: 531 passed, pixel-identical
 | Full unit suite | `tests/unit_tests`, Quadrants | **3168 passed, 139 skipped, 2 failed**, both fixed here: `test_baseline_store` was red because `master`'s CUDA re-baseline (`5d558f1`) never refreshed `tests/baselines.json` (pointer refreshed, tag still null, upload still the maintainer's); `test_taichi_launch_pairing` asserted the "unknown device matches any GPU arch" rule that Track C step 1 replaced with "an unknown device is served by the CPU arch" — the test now states the new rule. Taichi arm: see the note below. |
 | `tests/full_renders` on CPU | this box, after the merge | **4 passed, 3 differ by 13 / 5 / 8** (`materials_and_lighting` frame 63, `solids_and_camera` frame 130, `text_and_media` frame 129) against the second session's re-baseline. **Not the merge's doing:** the second session's own commit (`5846c87`), rendered in this same container, fails `solids_and_camera` by the identical 5 at the identical frame 130. What differs is the container: `torch.compile` fails here (`InductorError: AssertionError: …/distutils/core.py`, four times per run) and the fused triangle projection runs eagerly, so its rounding is not the rounding the baselines were made with. The baselines stand; `pytest tests/full_renders` must be read on a box where `torch.compile` works, and the release-asset upload is still outstanding. |
 
-The Taichi arm of the unit suite: <<PENDING-TAICHI-UNIT>>
+The Taichi arm of the unit suite (`ALGAN_TAICHI_BACKEND=taichi`): **3201
+passed, 155 skipped, 1 failed** — the same launch-pairing test, collected
+before its fix landed; it passes on Taichi in the re-run after the fix (23
+passed in that file), and the baseline-pointer test is backend-independent.
+This box's `torch.compile` failure (§10.2, full renders) is visible in this
+run too as `AlganWarning: torch.compile failed … runs eagerly`; no test
+depends on it.
 
 ### 10.3 Two harness defects found on the way
 
