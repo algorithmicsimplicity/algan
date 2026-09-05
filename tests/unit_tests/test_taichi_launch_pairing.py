@@ -142,17 +142,20 @@ def test_no_live_program_never_matches(arch):
     assert taichi_runtime._arch_matches_render_device() is False
 
 
-def test_unrecognised_device_keeps_the_coarse_rule(arch):
-    """A device type the mapping has never seen falls back to "any GPU arch".
+def test_unrecognised_device_is_served_by_the_cpu_arch(arch):
+    """A device type the mapping has never seen is served by the CPU arch.
 
-    Deliberately not a re-initialization: `ti.init` drops every compiled kernel,
-    and paying that on every render of a device that may well be served
-    correctly is worse than the imprecision it would buy.
+    That is what `_taichi_arch` selects for it (every kernel argument is a torch
+    tensor, so the picture is right and only the staging is paid), and the match
+    has to say the same thing: a GPU arch left up from an earlier device does
+    not serve it, so the next render re-initializes onto the CPU rather than
+    launching on whatever GPU happens to be live. The earlier "any GPU arch"
+    fallback was the rule that let a device change keep the wrong program.
     """
     arch(ti.metal, "xpu")
-    assert taichi_runtime._arch_matches_render_device() is True
-    arch(ti.cpu, "xpu")
     assert taichi_runtime._arch_matches_render_device() is False
+    arch(ti.cpu, "xpu")
+    assert taichi_runtime._arch_matches_render_device() is True
 
 
 def test_cpu_and_cuda_arch_predicates_agree_with_the_live_program(arch):

@@ -137,6 +137,33 @@ def _hash_outputs(repo: Path) -> dict[str, str]:
     return digests
 
 
+def _process_group_options() -> dict[str, object]:
+    """Return the platform's ``Popen`` options for an isolated process tree."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """Forcibly terminate ``process`` and every child started beneath it."""
+    if os.name == "nt":
+        # Python has no Windows equivalent of killpg. ``taskkill /T`` walks the
+        # descendant tree rooted at the cmd.exe created by ``shell=True``.
+        killed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+        )
+        if killed.returncode != 0 and process.poll() is None:
+            # Preserve the timeout guarantee even if taskkill itself is
+            # unavailable. This fallback cannot promise to reach descendants.
+            process.kill()
+        return
+
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+
+
 def run_step(
     name: str,
     command: str,
@@ -167,36 +194,53 @@ def run_step(
             # Its own process group, so the kill below reaches the whole tree.
             # ``shell=True`` means the child is a shell; killing only the shell
             # leaves the python it spawned holding the GPU.
-            start_new_session=True,
+            **_process_group_options(),
         )
 
-        # The output pump has to be on its own thread. Draining the pipe from
-        # this one -- ``for line in process.stdout`` -- blocks until the child
-        # CLOSES stdout, which is to say until it exits; ``wait(timeout=...)``
-        # was then only ever reached after the process had already finished, so
-        # the timeout could not fire on the one case it exists for. A step that
-        # hung ran until the Kaggle session itself timed out and took every
-        # later step in the sweep with it.
-        def _pump():
-            assert process.stdout is not None
-            for line in process.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log_file.write(line)
+        if os.name == "nt":
+            # This runner executes on Linux in Kaggle, but its offline contract
+            # is tested on Windows too. A thread blocked in a Windows pipe read
+            # does not reliably wake after taskkill terminates the writer, so
+            # use communicate's own timed reader here. Live streaming remains
+            # on the production path below.
+            try:
+                output, _ = process.communicate(timeout=timeout)
+                returncode = process.returncode
+            except subprocess.TimeoutExpired as error:
+                _log(f"!! step {name} exceeded its {timeout}s timeout; killing it")
+                _kill_process_tree(process)
+                process.wait()
+                output = error.output or ""
+                returncode = -9
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            log_file.write(output)
+        else:
+            # The output pump has to be on its own thread. Draining the pipe
+            # from this one -- ``for line in process.stdout`` -- blocks until
+            # the child CLOSES stdout, which is to say until it exits;
+            # ``wait(timeout=...)`` would then only ever see a finished process.
+            def _pump():
+                assert process.stdout is not None
+                for line in process.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    log_file.write(line)
 
-        reader = threading.Thread(target=_pump, name=f"pump-{name}", daemon=True)
-        reader.start()
-        try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _log(f"!! step {name} exceeded its {timeout}s timeout; killing it")
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-            returncode = -9
-        # Before leaving the ``with``: the pump writes to ``log_file``, and the
-        # kill above closes the pipe, so this returns promptly.
-        reader.join(timeout=30)
+            reader = threading.Thread(target=_pump, name=f"pump-{name}", daemon=True)
+            reader.start()
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _log(f"!! step {name} exceeded its {timeout}s timeout; killing it")
+                _kill_process_tree(process)
+                process.wait()
+                returncode = -9
+            # Before leaving the ``with``: the pump writes to ``log_file``, and
+            # the process-group kill above closes the pipe.
+            reader.join(timeout=30)
     seconds = time.time() - started
 
     status = "ok" if returncode == 0 else "failed"

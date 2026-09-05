@@ -38,6 +38,7 @@ DEFAULTS = {
     "env": "",
     "latex": "false",
     "wheel": "33342025517",
+    "quadrants_wheel": "",
     "artifacts": "",
     "timeout": "60",
 }
@@ -104,12 +105,18 @@ def resolve(env: dict[str, str], request: dict | None) -> dict[str, str]:
     latex = _truthy(latex or DEFAULTS["latex"])
 
     wheel = pick("IN_WHEEL", "taichi_wheel_run_id", DEFAULTS["wheel"]).strip()
+    # A `quadrants_build.yaml` run id or a release-asset URL; empty means the
+    # run installs no Quadrants wheel, so unlike `wheel` there is no default.
+    quadrants_wheel = pick(
+        "IN_QUADRANTS_WHEEL", "quadrants_wheel", DEFAULTS["quadrants_wheel"]
+    ).strip()
 
     return {
         "command": command,
         "env": extra_env,
         "latex": latex,
         "wheel": wheel or "none",
+        "quadrants_wheel": quadrants_wheel,
         "artifacts": artifacts,
         "timeout": timeout,
         "matrix": json.dumps([ARMS[a] for a in arms]),

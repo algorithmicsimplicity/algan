@@ -20,6 +20,8 @@ import ast
 import importlib.util
 import json
 import os
+import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -27,6 +29,32 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _shell_command(*args: object) -> str:
+    """Quote arguments for the shell used by ``subprocess`` on this host."""
+    strings = [str(arg) for arg in args]
+    if os.name == "nt":
+        return subprocess.list2cmdline(strings)
+    return shlex.join(strings)
+
+
+def _pid_exists(pid: int) -> bool:
+    """Return whether ``pid`` is still live without signalling it on Windows."""
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    processes = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return f'"{pid}"' in processes.stdout
 
 
 def _load(path: Path, name: str):
@@ -119,6 +147,17 @@ class TestResolveGpuRequest:
             resolver.resolve({"IN_COMMAND": "x", "IN_WHEEL": "none"}, None)["wheel"]
             == "none"
         )
+
+    def test_the_quadrants_wheel_is_empty_unless_asked_for(self, resolver):
+        # No default, unlike the Taichi wheel: an empty value means the arm
+        # runs whatever Quadrants `uv sync` installed, and a run id or a
+        # release-asset URL passes through from either entry point untouched.
+        assert resolver.resolve({"IN_COMMAND": "x"}, None)["quadrants_wheel"] == ""
+        out = resolver.resolve({"IN_COMMAND": "x", "IN_QUADRANTS_WHEEL": "123"}, None)
+        assert out["quadrants_wheel"] == "123"
+        url = "https://github.com/o/r/releases/download/t/quadrants-1.3.0.post1.whl"
+        out = resolver.resolve({}, {"command": "x", "quadrants_wheel": url})
+        assert out["quadrants_wheel"] == url
 
     def test_multiline_values_use_the_heredoc_form(self, resolver):
         text = resolver.format_outputs({"env": "A=1\nB=2", "timeout": "60"})
@@ -239,7 +278,7 @@ def test_step_timeout_kills_a_hung_step(runner, tmp_path):
     started = time.monotonic()
     result = runner.run_step(
         name="hang",
-        command=f"{sys.executable} -c 'import time; time.sleep(120)'",
+        command=_shell_command(sys.executable, "-c", "import time; time.sleep(120)"),
         repo=REPO_ROOT,
         out_dir=tmp_path,
         env={},
@@ -271,7 +310,7 @@ def test_step_timeout_kills_the_whole_process_tree(runner, tmp_path):
     )
     result = runner.run_step(
         name="tree",
-        command=f"sh -c '{sys.executable} {script} {marker}'",
+        command=_shell_command(sys.executable, script, marker),
         repo=REPO_ROOT,
         out_dir=tmp_path,
         env={},
@@ -283,9 +322,7 @@ def test_step_timeout_kills_the_whole_process_tree(runner, tmp_path):
 
     pid = int(marker.read_text())
     for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _pid_exists(pid):
             break
         time.sleep(0.1)
     else:
@@ -296,7 +333,7 @@ def test_a_quick_step_is_unaffected_by_the_timeout(runner, tmp_path):
     """The ordinary path still captures output and reports success."""
     result = runner.run_step(
         name="quick",
-        command=f"{sys.executable} -c 'print(\"hello from the step\")'",
+        command=_shell_command(sys.executable, "-c", 'print("hello from the step")'),
         repo=REPO_ROOT,
         out_dir=tmp_path,
         env={},

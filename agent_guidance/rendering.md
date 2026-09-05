@@ -38,7 +38,7 @@ The classes under `../algan/rendering/primitives` are still used for primitive c
 
 ## Kernels, shaders and materials
 
-Kernels live in `*_taichi.py` files. Material pipelines and custom scatter (ray-continuation) functions are injected as `ti.template()` parameters — compose user `@ti.func`s into one func and pass **flat** tuples. Nested tuples do not work as kernel template arguments.
+Kernels live in `*_taichi.py` files. Material pipelines and custom scatter (ray-continuation) functions are injected as `ti.template()` parameters. Each pipeline is composed into one `@ti.func` (`make_pipeline_func`) and the kernel receives a flat tuple of those — not because nested tuples fail as template arguments (they work, on both compilers; `agent_guidance/taichi.md`), but because one composed func per pipeline is one specialization key and one inlined body per pipeline, where a tuple-of-tuples of stages would specialize on every stage/offset combination. The "64-argument ceiling" is likewise a Python-side counter, not a codegen limit — see the same file for why it is still not a number to lean on.
 
 Shaders (`shaders/`): Three.js-style `Material` objects configure shaders and register animatable shader parameters. Per-vertex shaders run in Python/torch; per-fragment shading and custom fragment pipelines (`fragment_shaders.py`, `FragmentStage`) execute inside the Taichi shade kernel.
 

@@ -16,8 +16,8 @@
   "archives": {
     "full_renders/cpu": {
       "file": "full_renders-cpu.tar.gz",
-      "sha256": "653719fa96c7685ca3b4df420c10daf63a0c4b841a5288c4e0799715435bac58",
-      "size": 10392984
+      "sha256": "63426f880425141c5520b0e9bf47ad1d960694ab895aac0f9406de133555f07c",
+      "size": 10392035
     },
     "full_renders/cuda": {
       "file": "full_renders-cuda.tar.gz",

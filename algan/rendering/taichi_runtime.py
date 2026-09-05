@@ -8,21 +8,39 @@ is initialized exactly once, with a consistent performance config -- calling
 rasterizer modules re-initialized each other at import).
 
 Performance config (most are Taichi's own defaults, set explicitly so they
-cannot silently regress, plus two empirically-tuned register knobs):
+cannot silently regress):
 
+* ``arch`` -- the *concrete* backend for the render device (:func:`_taichi_arch`)
+  with ``enable_fallback=False``, so a backend that cannot come up raises
+  instead of quietly rendering on the CPU.
 * ``fast_math`` / ``advanced_optimization`` / ``offline_cache`` -- on by
   default in Taichi 1.7.4; pinned here.
 * ``offline_cache_file_path`` -- Algan's dedicated kernel cache,
-  ``_TAICHI_CACHE_DIRECTORY`` (unless the standard
-  ``TI_OFFLINE_CACHE_FILE_PATH`` env var is set, which then wins).
-* ``ALGAN_GPU_MAX_REG`` (env int) -> ``gpu_max_reg``: cap on registers per
-  thread for CUDA codegen (ptxas ``-maxrregcount``). 0/unset leaves it to
-  ptxas, which for the big deterministic ray-trace kernel settles on 128 and
-  spills heavily to local memory. Raising the cap keeps more values in
-  registers (fewer spills) at the cost of occupancy; the sweet spot is tuned
-  empirically per kernel/GPU.
+  ``_TAICHI_CACHE_DIRECTORY``, which already honours the standard
+  ``TI_OFFLINE_CACHE_FILE_PATH`` env var. Before ``init``, a lock file the
+  cache's previous holder died with is removed (:func:`_remove_stale_offline_cache_locks`).
 * ``ALGAN_OPT_LEVEL`` (env int) -> ``opt_level`` (Taichi default 1). Higher is
   more aggressive but can *increase* register pressure, so it is opt-in.
+* ``ALGAN_TI_FULL_TRACEBACK=1`` -> ``print_full_traceback``: the compiler's
+  own frames in a kernel compile error, instead of the trimmed user-facing one.
+
+There is no register-cap setting, and that is now a *choice* rather than a
+limitation. On taichi 1.7.4 it was a limitation: ``gpu_max_reg`` (and the
+``ALGAN_GPU_MAX_REG`` that fed it) never reached ptxas -- the field was read
+only by the cache key. ``quadrants_patches/0005-cuda-max-reg.patch`` fixed both
+halves on the Quadrants wheel Algan builds: ``gpu_max_reg`` now becomes
+``CU_JIT_MAX_REGISTERS`` at module load, and ``qd.loop_config(max_reg=N)``
+becomes a per-kernel PTX ``.maxnreg`` (both confirmed in PTX on sm_61,
+2026-09-05, by ``quadrants_patches/verify_cuda_patches.py``). Nothing in
+``algan/`` sets either, so **0005 is inert on every render today**; it is a
+lever for the register-pressure work in ``taichi_patches/PLAN.md`` §8-§9, and
+turning it on means adding it here and measuring.
+
+The same is true of ``readonly_ndarray_ldg``
+(``0006-cuda-readonly-ndarray-ldg.patch``): the compiler defaults it off and
+this dict does not set it. ``invariant_arg_loads`` (0004) defaults **on**, and
+``fast_math`` below is what makes 0007's fast ``expf`` live, so those two are
+the patches an Algan render actually runs through.
 """
 
 from __future__ import annotations
@@ -33,12 +51,14 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 import torch
 
 from algan.environment import env_flag, env_int, env_str
+from algan.logging.logger import get_logger
 from algan.settings._startup import _TAICHI_CACHE_DIRECTORY, render_device
-from algan.taichi_compat import ti
+from algan.taichi_compat import BACKEND, ti
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
@@ -72,6 +92,8 @@ def _emit_compile_record(record):
             f"backend={record['backend_seconds']:.3f}s, "
             f"total={record['total_seconds']:.3f}s"
         )
+        if record.get("source_key") == "hit":
+            message += " (fast-cache hit: AST transform skipped)"
     else:
         message = (
             f"[Taichi compile] {status} {name} at {stamp} after "
@@ -267,13 +289,34 @@ def _install_taichi_compile_logger():
 
             frontend_seconds = time.perf_counter() - started
             compiled = specializations.get(key)
-            if compiled is not None:
-                with _COMPILE_LOG_LOCK:
-                    _COMPILE_FRONTEND[id(compiled)] = {
+            if compiled is None:
+                return result
+            # A source-key hit (utils/taichi_source_key.py) loads the kernel
+            # data inside materialize and never reaches compile_kernel, so
+            # the record the backend wrapper below would emit has to be
+            # written here: its whole cost is the frontend it just paid.
+            if getattr(self, "compiled_kernel_data_by_key", {}).get(key) is not None:
+                _emit_compile_record(
+                    {
+                        "phase": "complete",
+                        "status": "complete",
                         "kernel": name,
+                        "timestamp": _datetime.datetime.now(_datetime.timezone.utc)
+                        .astimezone()
+                        .isoformat(timespec="milliseconds"),
                         "frontend_seconds": frontend_seconds,
-                        "started_perf": started,
+                        "backend_seconds": 0.0,
+                        "total_seconds": frontend_seconds,
+                        "source_key": "hit",
                     }
+                )
+                return result
+            with _COMPILE_LOG_LOCK:
+                _COMPILE_FRONTEND[id(compiled)] = {
+                    "kernel": name,
+                    "frontend_seconds": frontend_seconds,
+                    "started_perf": started,
+                }
             return result
 
         _TaichiKernel.materialize = timed_materialize
@@ -382,17 +425,32 @@ def _already_initialized():
 
 
 def _taichi_arch():
-    """Return the explicit Taichi backend for Algan's render device.
+    """The concrete Taichi backend for Algan's render device.
 
-    ``ti.gpu`` is a backend preference list, not a CUDA-only alias.  On a
-    machine without CUDA it falls through to Vulkan, and some headless Vulkan
-    configurations crash inside Taichi instead of returning an error.  Torch
-    has already probed the usable render device, so select the matching Taichi
-    backend directly and never trigger that fallback chain.
+    One arch, never ``ti.gpu``. ``ti.gpu`` is a preference list that ``init``
+    resolves by probing each backend in turn: on a machine without CUDA it
+    reaches Vulkan and OpenGL, where some headless configurations crash inside
+    the probe rather than reporting unavailable, and when every probe fails it
+    *falls back to the CPU with a warning* -- leaving the live arch ``cpu``
+    while the render device says ``cuda``, so :func:`ensure_taichi_for_render`
+    saw a mismatch and re-initialised on every render (+24 s each) instead of
+    anything failing once. Torch has already probed the device, so the arch is
+    decided here, and ``enable_fallback=False`` in :func:`taichi_init_kwargs`
+    turns a backend that cannot come up into an exception.
+
+    The compiler's own ``TI_ARCH`` / ``QD_ARCH`` environment variable still
+    overrides this inside ``init`` (it is how Vulkan is selected on a Mac, see
+    :data:`_ARCHS_SERVING_DEVICE`), which is why the live arch is what the
+    matching functions below compare against. A device type this mapping has
+    never seen renders through the CPU arch: every kernel argument is a torch
+    tensor, so the picture is right and only the staging is paid.
     """
-    if render_device().type == "cpu":
-        return ti.cpu
-    return ti.gpu
+    device_type = render_device().type
+    if device_type == "cuda":
+        return ti.cuda
+    if device_type == "mps":
+        return ti.metal
+    return ti.cpu
 
 
 def _live_arch():
@@ -408,16 +466,16 @@ def _live_arch():
 
 #: Which Taichi backends actually serve each render-device type.
 #:
-#: Written out rather than resolved through ``adaptive_arch_select`` on purpose.
-#: Resolving ``ti.gpu`` means probing every backend in the list, which is the
-#: fallback chain :func:`_taichi_arch` exists to avoid -- it reaches Vulkan and
-#: OpenGL, and some headless configurations crash inside Taichi rather than
-#: reporting that they are unavailable. This comparison runs once per render
-#: job and must not be able to take the process down.
+#: Written out rather than resolved through ``adaptive_arch_select`` on purpose:
+#: that is the probing fallback chain :func:`_taichi_arch` exists to avoid, and
+#: this comparison runs once per render job and must not be able to take the
+#: process down.
 #:
 #: ``mps`` lists both SPIR-V backends because either really does serve an Apple
-#: GPU: ``ti.gpu`` selects metal, ``TI_ARCH=vulkan`` selects vulkan, and both
-#: run on the same physical device.
+#: GPU: :func:`_taichi_arch` selects metal, the compiler's ``TI_ARCH=vulkan`` /
+#: ``QD_ARCH=vulkan`` override selects vulkan, and both run on the same
+#: physical device. A device type outside the mapping is served by the CPU arch,
+#: which is what :func:`_taichi_arch` selects for it.
 _ARCHS_SERVING_DEVICE = {
     "cpu": (ti.cpu,),
     "cuda": (ti.cuda,),
@@ -429,9 +487,9 @@ def _arch_matches_render_device():
     """Whether the live program's arch is one that serves the render device.
 
     Compares against the **live** arch rather than against the last value
-    :func:`_taichi_arch` returned, because ``ti.gpu`` is a preference list:
-    Taichi resolves it to cuda, metal or vulkan at ``ti.init``, so two different
-    render devices can both ask for ``ti.gpu`` and get different programs.
+    :func:`_taichi_arch` returned: the compiler's ``TI_ARCH`` / ``QD_ARCH``
+    environment variable overrides the ``arch`` kwarg inside ``init``, so what
+    was asked for and what came up are not the same question.
 
     And it compares against the arch that serves *this* device, not merely
     against "some GPU". Testing ``live != ti.cpu`` made every GPU backend
@@ -440,17 +498,11 @@ def _arch_matches_render_device():
     kernel on the wrong device with no re-init and no error. The docstring here
     claimed to rule that out while the code was what allowed it; this is the
     comparison it described.
-
-    An unrecognised device type keeps the old, coarse rule. It is the honest
-    answer for a backend this mapping has never seen, and it does not force a
-    re-initialization on every render of a device that may well be fine.
     """
     live = _live_arch()
     if live is None:
         return False
-    serving = _ARCHS_SERVING_DEVICE.get(render_device().type)
-    if serving is None:
-        return live != ti.cpu
+    serving = _ARCHS_SERVING_DEVICE.get(render_device().type, (ti.cpu,))
     return live in serving
 
 
@@ -483,16 +535,13 @@ def taichi_arch_is_cuda():
     CUDA is the only GPU backend that can adopt a torch allocation instead of
     copying it (see :func:`taichi_launch_is_local`).
 
-    Reads the live program's arch when Taichi is already up. Otherwise it
-    answers from the render device, because :func:`_taichi_arch` returns the
-    ``ti.gpu`` *preference list* off the CPU and that list is headed by cuda --
-    so a CUDA render device is exactly the case where the arch will come up
-    cuda. Asking never forces initialization.
+    Reads the live program's arch when Taichi is already up and Algan's
+    selected backend otherwise, so asking never forces initialization.
     """
     live = _live_arch()
     if live is not None:
         return live == ti.cuda
-    return render_device().type == "cuda"
+    return _taichi_arch() == ti.cuda
 
 
 def taichi_launch_is_local(device):
@@ -586,6 +635,9 @@ def taichi_init_kwargs():
     """
     kwargs = {
         "arch": _taichi_arch(),
+        # A backend that cannot come up is an error, not a CPU render; see
+        # _taichi_arch for what the fallback used to cost.
+        "enable_fallback": False,
         "fast_math": True,
         # advanced_optimization defaults off (it raised register
         # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
@@ -612,28 +664,102 @@ def taichi_init_kwargs():
         # the Taichi default.
         #
         # Worth the headroom because the eviction is not free and not
-        # visible: Taichi prunes to 75% of this on program *exit*, so
-        # a working set over the cap is re-compiled by the next run,
-        # every run, with nothing in the log to say so. A single CUDA
-        # megakernel artifact runs 30-45 MB, and one machine's cache
+        # visible. The cleaner runs at program *exit* (both compilers,
+        # `util/offline_cache.h`): it does nothing while the cache is
+        # under this cap, and once the cache is at or over it, it drops
+        # a quarter of the *entries* -- by count, the least recently used
+        # first, whatever their sizes (`offline_cache_cleaning_factor`,
+        # default 0.25; policy `lru`). So a working set over the cap
+        # loses a quarter of its kernels at every exit, and the next run
+        # re-compiles them with nothing in the log to say so. A single
+        # CUDA megakernel artifact runs 30-45 MB, and one machine's cache
         # was measured sitting at 751 MiB of the old 1 GB.
         "offline_cache_max_size_of_files": 2_000_000_000,
     }
     # Keep Algan's compiled kernels in a dedicated directory under Algan's
-    # cache dir instead of Taichi's global default, so they never contend
-    # with other Taichi programs for the LRU budget. A ti.init kwarg beats
-    # the TI_OFFLINE_CACHE_FILE_PATH env var (Taichi warns and ignores the
-    # env), so only pass it when the env var is unset to keep that standard
-    # escape hatch working.
-    if not env_str("TI_OFFLINE_CACHE_FILE_PATH"):
+    # cache dir instead of the compiler's global default, so they never
+    # contend with other programs for the LRU budget. _TAICHI_CACHE_DIRECTORY
+    # already carries TI_OFFLINE_CACHE_FILE_PATH when that is set, and the
+    # kwarg is how the value reaches Quadrants at all: it reads QD_-prefixed
+    # variables, never the TI_ name Algan honours (a probe with the env set
+    # found Quadrants writing to ~/.cache/quadrants/qdcache). On taichi the
+    # kwarg is skipped when the env is set, because taichi reads the env
+    # itself and warns that the kwarg "overrides" it -- with the same value.
+    if not (BACKEND == "taichi" and env_str("TI_OFFLINE_CACHE_FILE_PATH")):
         kwargs["offline_cache_file_path"] = str(_TAICHI_CACHE_DIRECTORY)
-    max_reg = env_int("ALGAN_GPU_MAX_REG", 0)
-    if max_reg > 0:
-        kwargs["gpu_max_reg"] = max_reg
+    if env_flag("ALGAN_TI_FULL_TRACEBACK", False):
+        kwargs["print_full_traceback"] = True
     opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
     return kwargs
+
+
+#: The offline cache's metadata lock files, by compiler: ``ticache.lock``
+#: (taichi, flat under the cache directory), ``qdcache.lock`` (Quadrants,
+#: under ``kernel_compilation_manager/``) and ``ptxcache.lock`` (Quadrants'
+#: CUDA PTX tier, under ``ptx_cache_sm_<cc>/``). Each is a bare
+#: ``O_CREAT | O_EXCL`` file (``util/lock.h``) taken around reading the cache
+#: index at ``init`` and writing it at exit, with five 50 ms retries and no
+#: staleness rule: a process killed while holding one leaves every later run
+#: unable to load or save a single kernel, with only a warning to say so.
+_OFFLINE_CACHE_LOCK_NAMES = frozenset({"ticache.lock", "qdcache.lock", "ptxcache.lock"})
+
+#: How old a lock must be before it is presumed abandoned. It is held for one
+#: metadata read or write -- milliseconds, a few seconds for a dump of several
+#: hundred MB -- so ten minutes is nowhere near a live holder.
+_STALE_LOCK_AGE_SECONDS = 10 * 60.0
+
+
+def _remove_stale_offline_cache_locks(
+    cache_directory, *, max_age_seconds=_STALE_LOCK_AGE_SECONDS, now=None
+):
+    """Delete abandoned offline-cache lock files under ``cache_directory``.
+
+    Only the names in :data:`_OFFLINE_CACHE_LOCK_NAMES`, only at the two depths
+    the compilers use, and only when older than ``max_age_seconds``. Returns the
+    paths removed; a lock that vanishes between the scan and the unlink was
+    another process's to remove and is not reported.
+    """
+    directory = Path(cache_directory)
+    if not directory.is_dir():
+        return []
+    now = time.time() if now is None else now
+    removed = []
+    for pattern in ("*.lock", "*/*.lock"):
+        for path in sorted(directory.glob(pattern)):
+            if path.name not in _OFFLINE_CACHE_LOCK_NAMES:
+                continue
+            try:
+                age = now - path.stat().st_mtime
+            except OSError:
+                continue
+            if age < max_age_seconds:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(path)
+            get_logger().warning(
+                "Removed the stale kernel-cache lock %s, last touched %d minutes "
+                "ago. A process was killed while holding it, and until it was "
+                "gone no run could load or save a compiled kernel.",
+                path,
+                int(age // 60),
+            )
+    return removed
+
+
+def _start_program():
+    """``ti.init`` with Algan's config, and the housekeeping that precedes it.
+
+    The lock sweep goes first because ``init`` is what takes the lock: it reads
+    the cache index under it, and a stale one makes that read fail quietly.
+    """
+    _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
+    ti.init(**taichi_init_kwargs())
+    _install_taichi_compile_logger()
 
 
 def init_taichi():
@@ -647,8 +773,7 @@ def init_taichi():
     if _already_initialized():
         _install_taichi_compile_logger()
         return
-    ti.init(**taichi_init_kwargs())
-    _install_taichi_compile_logger()
+    _start_program()
 
 
 def ensure_taichi_for_render():
@@ -692,8 +817,7 @@ def ensure_taichi_for_render():
         _install_taichi_compile_logger()
         _ARCH_READY_FOR = wanted
         return False
-    ti.init(**taichi_init_kwargs())
-    _install_taichi_compile_logger()
+    _start_program()
     _ARCH_READY_FOR = wanted
     return True
 
@@ -742,6 +866,11 @@ def render_job_holding_the_arch():
             from algan.rendering.mps_zero_copy import clear_import_cache
 
             clear_import_cache()
+            # The source-keyed index's hit/miss/poison counters, beside the
+            # per-kernel compile records they summarize.
+            from algan.utils.taichi_source_key import report_if_logging
+
+            report_if_logging()
 
 
 def render_is_active():

@@ -38,9 +38,10 @@ which is also why a default flip is lower-risk than it sounds, and why the
 front-end-off numbers are the ones that matter.
 
 ``watertight_tri`` is read at **import** (it changes the compiled kernel body),
-so one process exercises one arm. Run it twice, and give each arm its own Taichi
-cache -- the offline cache does not invalidate on ``@ti.func`` edits, and both
-arms compile the same *kernel*::
+so one process exercises one arm. Run it twice. A separate cache directory per
+arm is optional -- the offline cache is keyed on the compiled IR, so the two
+arms' kernels never collide in one cache -- but it keeps each arm's cold-compile
+time attributable to that arm::
 
 **The default is now True**, so it is the Moller-Trumbore arm that needs the env
 var, not the watertight one::

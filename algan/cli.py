@@ -141,6 +141,52 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "Every render pays the compiler's full Python frontend cost."
         )
 
+    # The launch-plan cache is gated the same way and fails the same way: a
+    # compiler release it does not recognise leaves every kernel launch paying
+    # the compiler's full Python argument re-validation (~0.2-0.4 ms a launch,
+    # hundreds of launches a render), with nothing to show for it but a
+    # slower clock.
+    from algan.utils.taichi_fast_launch import skipped_reason as fast_launch_skipped
+
+    fast_launch_off = fast_launch_skipped()
+    if fast_launch_off is not None:
+        print(
+            f"  [WARNING] Kernel fast-launch dispatcher is off: {fast_launch_off}. "
+            "Every kernel launch pays the compiler's full Python argument re-validation."
+        )
+    # The source-keyed index is the other half of the warm frontend: with it
+    # a kernel the process has compiled before skips the AST transform. It is
+    # on by default, so an off state is a WARNING like its two neighbours --
+    # it was INFO only while the feature was opt-in. The failure it names is
+    # the same one: version-gated to compiler internals, so a compiler bump
+    # can stand it down with nothing to show but a frontend that quietly went
+    # back to ~12 s per megakernel. Deliberately turning it off with
+    # ALGAN_TAICHI_SOURCE_KEY=0 prints the same line, which is correct -- the
+    # user asked for it and the cost is worth stating either way.
+    from algan.utils.taichi_source_key import skipped_reason as source_key_skipped
+
+    source_key_off = source_key_skipped()
+    if source_key_off is None:
+        print("  Kernel source-keyed cache index: ON (the default)")
+    else:
+        print(
+            f"  [WARNING] Kernel source-keyed cache index is off: {source_key_off}. "
+            "Every kernel a warm process has already compiled pays the full "
+            "Python AST transform again."
+        )
+    # Same shape of hazard for the early-return rewrite: version-gated to the
+    # compiler it wraps, and when it is off the only symptom is a shader
+    # stage that used to compile now failing with the compiler's own message.
+    from algan.utils.taichi_early_return import skipped_reason as _early_return_off
+
+    early_return_off = _early_return_off()
+    if early_return_off is not None:
+        print(
+            f"  [WARNING] Early `return` in inlined @ti.func bodies is off: "
+            f"{early_return_off}. A `return` under a runtime if/for/while in "
+            "a shader stage will be rejected by the compiler."
+        )
+
     # 4. FFmpeg
     ffmpeg_path, source = _ffmpeg_binary()
     if ffmpeg_path:

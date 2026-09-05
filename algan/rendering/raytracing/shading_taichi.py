@@ -1427,11 +1427,16 @@ def _stage_depth(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
 def make_pipeline_func(stages, offsets):
     """Compose an ordered list of stage ``@ti.func``s into a single ``@ti.func``.
 
-    Taichi cannot take a nested tuple as a ``ti.template()`` argument, so each
-    distinct pipeline is baked into one func here (closing over its ``stages``
-    and per-stage param ``offsets``); the shade kernel then receives just a flat
-    tuple of these composed funcs (see ``taichi-func-injection``). Each stage's
-    ``vec4`` output threads forward as the next stage's ``in_rgb``/``in_glow``.
+    Each distinct pipeline is baked into one func here (closing over its
+    ``stages`` and per-stage param ``offsets``), and the shade kernel receives
+    a flat tuple of these composed funcs (see ``taichi-func-injection``). Not
+    because a nested tuple could not be a ``ti.template()`` argument -- it can,
+    on both compilers (``agent_guidance/taichi.md``) -- but because one
+    composed func per pipeline is one specialization key and one inlined body
+    per pipeline: a tuple of ``(stages, offsets)`` tuples would put every
+    stage and offset into the kernel's template key and inline the same stage
+    once per pipeline that uses it. Each stage's ``vec4`` output threads
+    forward as the next stage's ``in_rgb``/``in_glow``.
     """
     stages = tuple(stages)
     offsets = tuple(int(o) for o in offsets)
