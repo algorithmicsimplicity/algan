@@ -197,16 +197,44 @@ containers were chosen: the aarch64 LLVM archive's own binaries need
 is why the aarch64 leg builds in `manylinux_2_34` and the x86-64 leg in
 `manylinux_2_28`.
 
-| leg | run | result |
-| --- | --- | --- |
-| x86-64 | [`34032073850`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032073850) | **PASS**, 19m21s, `…-manylinux_2_28_x86_64.whl` (30 MiB). auditwheel measured **GLIBC_2.27** — the `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "installs, then fails at import" to working. 0004's IR arms still land (18 → 0 base-pointer loads) |
-| aarch64 | [`34032726212`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032726212) | Builds (12m37s, 28 MiB) but **measures GLIBC_2.35**, one symbol above its container: a GLOBAL `_dl_find_object@GLIBC_2.35`. Stamped `manylinux_2_35_aarch64` accordingly. The symbol comes from the prebuilt LLVM, not from the local toolchain — pinning the image's GCC 11 instead of its gcc-toolset-14 compiles and links the whole tree and changes nothing ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)), so do not spend another run on it |
+Both green together in [`34037781817`](https://github.com/algorithmicsimplicity/algan/actions/runs/34037781817), cp311:
 
-Two things the first container run cost, both now fixed in the workflow: the
-prebuilt clang cannot find AlmaLinux's libstdc++ on its own (`runtime.cpp:16:10:
-fatal error: 'atomic' file not found`, five minutes in), and a refusal from
-`verify_wheel_tag.py` used to name the version without naming the symbol behind
-it. The line to check in a leg's summary is the same one below.
+| leg | build | wheel | measured floor |
+| --- | --- | --- | --- |
+| x86-64 | 19m21s | `…-cp311-cp311-manylinux_2_28_x86_64.whl`, 30 MiB | **GLIBC_2.27**. The `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "pip installs it, then the import fails" to working |
+| aarch64 | 13m35s | `…-cp311-cp311-manylinux_2_35_aarch64.whl`, 28 MiB | **GLIBC_2.35**, one symbol above its own container: a GLOBAL `_dl_find_object@GLIBC_2.35` out of the prebuilt LLVM. Ubuntu 22.04+ and Debian 12+ yes; RHEL 9 and Amazon Linux 2023, both 2.34, no |
+
+0004's IR arms land on both (`18 → 0` base-pointer loads on x86-64, `9 → 0` on
+aarch64 — the first time that patch has been verified on ARM), the `qd.init`
+kwarg and env-var gates pass, 0005-0007 pass, and the CUDA comparison skips for
+want of a driver. The caches key apart as `…-Linux-X64-…` and `…-Linux-ARM64-…`,
+which is `runner.arch` doing its job.
+
+Four things the container work cost, all now fixed in the workflow and worth
+knowing before touching it:
+
+* The prebuilt clang cannot find AlmaLinux's libstdc++ on its own —
+  `runtime.cpp:16:10: fatal error: 'atomic' file not found`, five minutes into
+  the aarch64 build. It is handed the container's own `/c++/` include
+  directories, but only when it needs them.
+* A refusal from `verify_wheel_tag.py` used to name the glibc version without
+  naming the symbol behind it, which is a diagnosis that costs another
+  thirteen-minute build. It now quotes `auditwheel show`.
+* **The aarch64 floor is not the compiler's to fix.** libgcc's unwinder has
+  called `_dl_find_object` since GCC 12, so pinning the image's base GCC 11
+  looked like the answer. It is not: with `CC`/`CXX` pinned the whole tree
+  compiles and links (once `libstdc++-static` supplies the archive `gcc-c++`
+  does not pull in) and auditwheel still says 2.35
+  ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)).
+  The symbol comes from the prebuilt LLVM archive, whose objects were built on
+  a glibc-2.35 system. Do not spend another run on the toolchain; the fix is an
+  LLVM archive built on an older base, which is upstream's to produce.
+* The wheel is installed **before** it is stamped, because the stamp can put a
+  tag on it that its own container rejects — pip refused a `manylinux_2_35`
+  wheel inside the 2.34 image with "not a supported wheel on this platform"
+  ([`34034938922`](https://github.com/algorithmicsimplicity/algan/actions/runs/34034938922)).
+
+The line to check in a leg's summary is the same one below.
 
 That last field is load-bearing and was got wrong once. The first Linux run
 "passed" while proving nothing: the check grepped the build log, and
