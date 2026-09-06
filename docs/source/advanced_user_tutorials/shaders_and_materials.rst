@@ -455,8 +455,11 @@ the scatter contract documented in
     tracer's monolithic shade kernel, which is the only deterministic shade
     path.
 
-    Custom fragment-shader pipelines are also a deterministic-renderer feature --
-    see :ref:`renderer-capabilities`.
+    The path tracer (``samples_per_pixel > 1``) runs the same pipelines and the
+    same scatter functions. It does not split, so instead of following both of
+    a scatter's branches it picks one at random, weighted by the branch
+    weights, and continues along it as a delta lobe. See
+    :ref:`renderer-capabilities`.
 
 See Also
 ========

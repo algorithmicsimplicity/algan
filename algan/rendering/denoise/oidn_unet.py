@@ -65,20 +65,39 @@ def _check_shapes(tensors: dict[str, torch.Tensor]) -> None:
 class OidnUNet:
     """The RT filter network. Input/output are ``[N, C, H, W]`` tensors in
     the transfer-function domain; H and W must be multiples of 16.
+
+    ``dtype`` is the arithmetic precision the convolutions run at (the input
+    is cast on the way in and the output is returned as float32 whatever it
+    is), and ``channels_last`` selects NHWC activations and weights, which is
+    the layout cuDNN's half-precision tensor-core kernels want. Both are
+    chosen by ``denoise.get_denoiser`` from ``denoise_precision``.
     """
 
-    def __init__(self, tensors: dict[str, torch.Tensor], device, dtype=torch.float32):
+    def __init__(
+        self,
+        tensors: dict[str, torch.Tensor],
+        device,
+        dtype=torch.float32,
+        channels_last=False,
+    ):
         _check_shapes(tensors)
+        self.device = device
+        self.dtype = dtype
+        self.channels_last = bool(channels_last)
         self.weights = {
-            name: tensors[name].to(device=device, dtype=dtype).contiguous()
+            name: self._place(tensors[name])
             for name in (
                 f"{layer}.{kind}"
                 for layer in RT_HDR_ALB_NRM_LAYERS
                 for kind in ("weight", "bias")
             )
         }
-        self.device = device
-        self.dtype = dtype
+
+    def _place(self, tensor):
+        tensor = tensor.to(device=self.device, dtype=self.dtype)
+        if self.channels_last and tensor.dim() == 4:
+            return tensor.contiguous(memory_format=torch.channels_last)
+        return tensor.contiguous()
 
     def _conv(self, x, name, activate=True):
         x = F.conv2d(
@@ -89,6 +108,7 @@ class OidnUNet:
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] % ALIGNMENT or x.shape[-2] % ALIGNMENT:
             raise ValueError(f"input {tuple(x.shape)} is not {ALIGNMENT}-aligned")
+        x = self._place(x)
         pool = lambda t: F.max_pool2d(t, 2, 2)  # noqa: E731
         up = lambda t: F.interpolate(t, scale_factor=2, mode="nearest")  # noqa: E731
 
@@ -112,4 +132,4 @@ class OidnUNet:
         y = torch.cat((up(y), x), 1)
         y = self._conv(y, "dec_conv1a")
         y = self._conv(y, "dec_conv1b")
-        return self._conv(y, "dec_conv0", activate=False)
+        return self._conv(y, "dec_conv0", activate=False).float()

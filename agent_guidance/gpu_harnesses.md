@@ -332,6 +332,16 @@ Reference numbers, Kaggle T4, master @ `95271dac`, warm RUN 2:
 `nn_scene_UHD.py` **29.90 s** (30 frames @ 3840×2160; cold 85.85 s),
 `nn_scene_PREVIEW.py` **6.25 s** (50 frames; cold 32.72 s).
 
+Path tracer reference, Kaggle T4, `benchmarks/performance/pt_baseline.py`
+(5 frames, 16 spp, 4 bounces, denoiser on, warm RUN 2; the full tables are in
+`benchmarks/performance/reports/t4_2026_09/pt_baseline_1.md` and
+`pt_denoise_1.md`): `--scene lit --resolution 1280x720` **1.63 s**
+(`pt_shade` 0.25 s, traverse 0.15 s, denoiser 0.22 s, host 0.91 s; the same
+scene deterministic 1.03 s), `--scene text_2d --resolution 1280x720`
+**1.01 s**. Both arms of a kill-switch A/B belong in one session, selected by
+environment variable per step (`ALGAN_PT_SHADOW_ANYHIT=0 python ...` in the
+step command works: the runner's steps go through a shell).
+
 ---
 
 ## Adding to either harness

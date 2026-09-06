@@ -80,6 +80,8 @@ Renderer Settings
 
 ``SETTINGS.raytracing`` controls what the renderer produces.
 
+.. _renderer-settings:
+
 samples_per_pixel
 -----------------
 
@@ -95,18 +97,94 @@ This is the biggest single decision, because it selects the renderer:
   noise-free, and what every example in this documentation uses.
 * Above ``1`` switches to the **path tracer**, which gives true global
   illumination, physically-correct soft shadows and rough reflections, area and
-  emissive lighting, and image-based environment lighting, at dramatically
-  higher cost. Its raw output is noisy at low sample counts, so by default it
+  emissive lighting, and image-based environment lighting, at higher cost per
+  frame. Its raw output is noisy at low sample counts, so by default it
   is **denoised** (``SETTINGS.raytracing.denoise``, on) with a neural filter
   guided by the render's own albedo and normal information; turn it off to see
   or gate the raw estimator.
 
-Reach for path tracing when you need full light transport. For flat 2-D artwork
-and text the deterministic renderer is not merely cheaper but *better*: it
-resolves those edges with exact analytic coverage, where the path tracer must
+**The path tracer is the fallback for scenes the deterministic renderer cannot
+do.** Three kinds of scene fail there and render here:
+
+* **Many lights.** The deterministic renderer's cost grows with every light
+  and it shadows at most 16 light slots (:ref:`limits-truncation`; a 4x4 area
+  light spends 16 on its own). The path tracer samples lights instead of
+  summing them, so its cost per shading point does not depend on how many
+  there are, and every light casts a shadow. That holds for
+  authored-appearance materials as well -- toon, normal, matcap, depth,
+  Manim's material and custom fragment pipelines, whose lighting is *defined*
+  as a sum over the light rows: past the shadow cap the path tracer samples
+  those rows too, so they get a shadow from every light rather than from the
+  first 16 (``SETTINGS.raytracing.experimental.pt_authored_light_sampling``,
+  ``"auto"`` by default; ``"off"`` restores the exact sum and its cap). The
+  price is that their lighting becomes an estimate that converges with
+  ``samples_per_pixel``, which is why the default keeps the exact sum on a rig
+  small enough to afford it.
+* **Reflective and transparent geometry that exhausts render memory.** The
+  deterministic renderer splits a ray at every reflective or refractive
+  surface, so enough such surfaces make one frame not fit; the path tracer
+  never splits, so its memory per path is fixed whatever the scene does.
+* **Global illumination**: colour bleed, soft shadows from real area emitters,
+  rough reflections that see the scene.
+
+When a render fails for one of these reasons the warning or error names the
+switch. The setting to reach for is a modest sample count and a *short* bounce
+budget -- direct lighting needs one bounce, and the denoiser handles the
+residual noise:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)
+
+Raise ``max_bounces`` when the scene needs indirect light, and
+``samples_per_pixel`` when the denoised result still shows structure in the
+noise. Reach for path tracing only for these reasons: for flat 2-D artwork and
+text the deterministic renderer is not merely cheaper but *better*, since it
+resolves those edges with exact analytic coverage where the path tracer must
 estimate them by sampling. The path tracer renders at output resolution and
 anti-aliases by jittering its samples inside each pixel, so
 ``supersampling`` does not apply to it.
+
+``samples_per_pixel`` is a **ceiling, not a count**. A pixel stops early only
+when it was never going to change: the renderer knows which pixels it resolved
+deterministically -- flat 2-D artwork, text, unlit transparency and the
+background all composite with no randomness at all -- and gives those
+``SETTINGS.raytracing.experimental.pt_min_samples`` samples (4) plus whatever
+their own error estimate asks for, up to
+``SETTINGS.raytracing.experimental.pt_error_target`` (0.02). **Any pixel whose
+light was estimated by sampling runs to the full count**, so no lit surface,
+shadow or reflection is ever cut short. That is where the saving comes from on
+a typical frame, and why it does not cost accuracy where it would show.
+``RenderResult.render_plan.path_samples_mean`` reports the samples per pixel a
+render actually took (0 means the path tracer did not run). What adaptive
+sampling does change is the *anti-aliasing* of 2-D edges, which is estimated
+by jittering samples inside the pixel: raise ``pt_min_samples`` if a
+text-heavy frame's edges look coarser than you want, or set
+``pt_error_target = 0`` to restore uniform sampling and give every pixel
+exactly ``samples_per_pixel``.
+
+The denoiser only touches pixels whose light was *estimated*. Under adaptive
+sampling (the default) the path tracer knows which pixels took a random
+decision; every other pixel -- unlit 2-D content, the background -- is exact
+and is passed through untouched, so text and vector graphics come out exactly
+as rendered, and a frame with nothing to denoise costs nothing to denoise.
+``pt_error_target = 0`` turns adaptive sampling off and with it this
+pass-through: the filter then runs over the whole frame.
+
+Noise is stable from frame to frame by default: static regions of a
+path-traced animation get the same estimate every frame, so residual noise
+reads as a fixed grain rather than a shimmer. Set
+``SETTINGS.raytracing.experimental.pt_animated_seed = True`` to re-roll the
+noise every frame instead.
+
+``SETTINGS.raytracing.experimental.pt_blue_noise = True`` redistributes the
+residual noise so that neighbouring pixels' errors cancel under a blur -- the
+same estimate, the same convergence, the error moved to higher spatial
+frequencies, which is the shape the eye and the denoiser both prefer. It is off
+by default because on this renderer the measured gain is only a few percent
+(the sampler derives every random decision from one per-pixel seed, so the
+optimised tile has to serve all of them at once); try it on a low
+``samples_per_pixel`` frame where the noise reads as clumps.
 
 ``SETTINGS.raytracing.experimental.pt_seed`` changes the noise pattern without
 changing what the render converges to -- useful for checking that a feature
@@ -119,9 +197,12 @@ promises they converge to the same image.
 What each renderer supports
 ---------------------------
 
-Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer, and
-a couple of features are implemented only in the deterministic one. Algan checks
-this before it allocates anything and refuses rather than silently dropping them.
+Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer.
+The path tracer refuses nothing -- it is the fallback, so every feature the
+deterministic renderer accepts renders there too -- but several are *reached*
+differently, which the table below spells out. Algan still checks compatibility
+before it allocates anything, and would refuse rather than silently drop a
+feature it could not honour.
 
 .. list-table::
    :header-rows: 1
@@ -138,10 +219,11 @@ this before it allocates anything and refuses rather than silently dropping them
      - Yes
    * - Custom fragment-shader pipelines
      - Yes
-     - Yes (shaded as authored; diffuse for indirect bounces)
+     - Yes (shaded as authored; diffuse for indirect bounces; their light rows
+       are sampled past the shadow cap)
    * - Custom scatter overrides
      - Yes
-     - **Not supported**
+     - Yes (as a delta lobe; no NEE coverage)
    * - Environment maps
      - Yes (order-1 SH diffuse)
      - Yes (importance-sampled, full map)
@@ -156,15 +238,20 @@ this before it allocates anything and refuses rather than silently dropping them
      - Yes
 
 A **custom scatter override** is a fragment pipeline that redefines how a ray
-continues (``FragmentStage(..., scatter=...)``). The pipeline's *shading* is
-honoured under both renderers; only the ray-continuation override is
-deterministic-only, because arbitrary user continuation carries no sampling
-density for stochastic transport to weight.
+continues (``FragmentStage(..., scatter=...)``). Both renderers honour it. The
+deterministic one *splits* into the reflected and transmitted branches the
+scatter returns; the path tracer picks one of the three branches at random,
+weighted by the branch weights, and continues along it as a **delta lobe** --
+your direction, your density, weight 1, no MIS. The one consequence is that a
+scatter surface is outside next-event estimation, so light reaches it only
+through the sampled continuation and it converges more slowly than a
+physically-integrated material in the same place.
 
-If a scene requests an unsupported feature, Algan raises
-:class:`~algan.errors.UnsupportedFeatureError` naming the features it cannot
-honor. Either set ``samples_per_pixel`` back to ``1``, remove the feature, or opt
-into the older behaviour explicitly:
+No feature reaches this today, but the mechanism stands: were a scene to request
+one a renderer could not honour, Algan raises
+:class:`~algan.errors.UnsupportedFeatureError` naming the features rather than
+dropping them. Either set ``samples_per_pixel`` back to ``1``, remove the
+feature, or opt into the older behaviour explicitly:
 
 .. code-block:: python
 
@@ -222,6 +309,20 @@ In rough order of impact:
 3. **Refraction.** Splits every ray in two, and routes the batch to the general
    wavefront tracer.
 4. **Shadows**, multiplied by the number of lights.
+
+   That multiplication is the deterministic renderer's, and it is why a scene
+   with dozens of lights belongs on the path tracer instead. There, a lit
+   surface point does not sum every light: it *chooses* one per shadow ray,
+   and it chooses by descending a tree built over the emitters -- every point,
+   spot and area-light cell and every emissive triangle -- that weighs how far
+   away an emitter is and which way it faces as well as how bright it is. So
+   the cost per shading point grows with the *logarithm* of the light count
+   rather than with the count, and the shadow rays that do get fired are aimed
+   at lights that can actually illuminate the point instead of at whichever
+   one happens to be brightest. On a floor under 32 falling-off point lights
+   that is roughly nine times less noise at the same
+   ``samples_per_pixel``. Directional lights and an environment map have no
+   position to sort by and are chosen by brightness alone, as before.
 5. **Triangle count.** Imported models and high-resolution
    :class:`~algan.mobs.surfaces.surface.Surface` grids.
 6. **Glow and bloom**, which add a full-frame post-processing pass.

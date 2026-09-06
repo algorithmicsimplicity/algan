@@ -148,6 +148,71 @@ pt_seed = env_int("ALGAN_PT_SEED", 0)
 # regardless of the memory budget, which is what an A/B comparison of two
 # kernel variants wants (see agent_guidance/memory_perf.md).
 pt_wave_samples = env_int("ALGAN_PT_WAVE", 0)
+# Adaptive sampling (DESIGN_path_tracer_roadmap.md section 2). With
+# ``pt_error_target > 0``, ``samples_per_pixel`` is a CEILING rather than a
+# count: every pixel first receives ``pt_min_samples`` (forced even and at
+# least 2, because the estimator needs balanced halves), and after that a
+# pixel stops only if BOTH of the following hold.
+#
+# 1. **Every one of its samples was deterministic given the sub-pixel
+#    jitter.** ``pt_shade`` flags a path the moment it takes any random
+#    decision -- a lit crossing (next-event estimation picks one emitter), an
+#    authored crossing or a custom scatter, or a lobe pick with more than the
+#    pass-through branch -- and ``pt_reduce`` counts the flagged samples per
+#    pixel. A pixel with any of them runs to the ceiling, unconditionally.
+#    This is what makes the mechanism SAFE rather than merely usually right:
+#    a Monte Carlo pixel whose first samples all return zero has two sample
+#    halves that agree exactly, and no error threshold can tell that apart
+#    from a converged black pixel. What is left to stop early is what section
+#    2 was always aimed at -- 2-D interiors, unlit stacks and the background,
+#    which are zero-variance by construction.
+# 2. **Its error estimate is at or below ``pt_error_target``**: the relative
+#    disagreement of the pixel's even- and odd-indexed sample halves.
+#    ``pt_reduce`` keeps the odd half in its own buffer, so with ``n`` samples
+#    so far, ``E = (accum - odd)/(n/2)``, ``O = odd/(n/2)`` and
+#    ``err = max_c |E - O| / (max_c (E + O) + 0.02)``. It is computed from
+#    deterministic sums, so which pixels stop, and when, is a reproducible
+#    function of the rendered data.
+#
+# The metric runs on the LINEAR radiance the frame buffer holds (1.0 = display
+# white), with no perceptual transform, for a reason worth writing down: a
+# relative metric is invariant under any power law, so a sqrt or PU transform
+# would only rescale it by a constant -- what actually decides how dark pixels
+# are treated is the absolute floor in the denominator. At 0.02 that floor
+# makes the tolerance, expressed in 8-bit counts of the sRGB-encoded output,
+# very nearly flat: a target of 0.02 accepts a half-buffer difference of about
+# 1.4 counts at linear 0.001, 1.3 at 0.01, 1.9 at 0.1 and 2.2 at 1.0. The
+# OETF's log-like shape is doing the perceptual work already, and a half-buffer
+# difference is roughly twice the estimate's own error, so this is a
+# sub-count-of-noise target.
+#
+# ``pt_error_target = 0`` disables the mechanism entirely: uniform waves over
+# every pixel, no rescale before ``finalize_samples``, output byte-identical to
+# the pre-adaptive renderer.
+#
+# The default was chosen by measurement, on ``benchmarks/performance/
+# pt_baseline.py`` at 320x180, five frames, 16 spp, 4 bounces, denoiser off,
+# warm RUN 2, median of three, on a 4-vCPU x64 box (the whole table is in
+# DESIGN_path_tracer_roadmap.md section 2, "LANDED 2026-09-04"):
+#
+#   text_2d  mean 16.00 -> 5.54 spp, 0.834 s -> 0.622 s (1.34x)
+#   lit      mean 16.00 -> 5.94 spp, 1.511 s -> 1.535 s (neutral)
+#
+# The ``lit`` frames are BYTE-IDENTICAL to the uniform arm at every target
+# from 0.01 to 0.05 -- the stochastic gate means nothing that gambled was
+# stopped, and the 2.7x fewer samples all came from the background. What is
+# left is 2-D anti-aliasing: an edge pixel is deterministic given its jitter,
+# so four jittered samples that happen to agree can freeze a coverage value
+# the 16-sample render resolves further. On ``text_2d`` that is 883 pixels of
+# 288000 more than 8 counts off (mean 0.311, max 119), every one of them on a
+# geometry edge and none in an interior. ``pt_min_samples`` is the knob that
+# buys those back: a floor of 8 leaves 200 such pixels (mean 0.198, max 99)
+# for mean 9.15 spp instead of 5.54 -- half the win. The mean samples per
+# pixel is otherwise FLAT across targets from 0.005 to 0.05, because a pixel
+# here is either exactly converged or not eligible at all; the target is not
+# a throughput knob.
+pt_min_samples = env_int("ALGAN_PT_MIN_SAMPLES", 4)
+pt_error_target = env_float("ALGAN_PT_ERROR_TARGET", 0.02)
 # Bounce ordinal at which the path tracer starts Russian roulette: earlier
 # bounces always continue (low-order transport carries most of the image),
 # later ones survive with probability proportional to their throughput.
@@ -170,6 +235,139 @@ pt_light_samples = env_int("ALGAN_PT_LIGHT_SAMPLES", 1)
 # escapes -- the A/B arm for the sampler, still unbiased, just noisier for
 # concentrated maps (a sun disc).
 pt_env_nee = env_flag("ALGAN_PT_ENV_NEE", True)
+# Choose the emitter each next-event sample aims at by descending a light
+# tree (Conty Estevez & Kulla 2018; algan/rendering/raytracing/light_tree.py)
+# instead of by one flat power-weighted CDF. The tree weighs distance and
+# orientation as well as power, so a shadow ray is not spent on a light
+# across the room or on one facing away -- which is what makes the
+# "too many lights" case the path tracer exists for actually cheap, and it
+# wins even at two lights. False restores the flat CDF exactly (the A/B arm
+# and the byte-parity escape hatch); directional lights and the environment
+# map are position-independent and stay on a flat list either way.
+pt_light_tree = env_flag("ALGAN_PT_LIGHT_TREE", True)
+# Give the path tracer its own view of a ``RectAreaLight``: two emissive
+# triangles covering the rectangle, appended to the merged geometry for this
+# render only, instead of the ``K = k*k`` packed cell rows the deterministic
+# renderer's shadow fans need. The quads ride the emissive-triangle path end
+# to end -- area sampling from the next-event table, ``_pt_lit_f_pdf`` on both
+# ends, power-heuristic MIS, and a BSDF ray that can FIND them, which is what
+# puts an area light in a mirror -- so one light costs 2 table entries instead
+# of 16 and the light tree's leaves stop multiplying. The quads are invisible
+# to camera-segment rays and cast no shadow, matching the deterministic
+# renderer where an area light is neither drawn nor an occluder; the row
+# model's ``decay`` / ``distance`` survive as a per-emitter radiance
+# multiplier evaluated identically at both MIS ends (roadmap section 6a-ter).
+# False restores the packed cell rows exactly, byte for byte: it is the A/B
+# arm and the regression guard, host-side only with no kernel variant.
+pt_area_light_quads = env_flag("ALGAN_PT_AREA_LIGHT_QUADS", True)
+# Let the path tracer's next-event visibility rays take the opaque any-hit
+# shadow query (``_shadow_occluded`` mode 3, the ordered march compiled out)
+# on a batch that provably holds no translucent and no transmissive geometry
+# -- the same host-side decision ``tracer`` makes for the deterministic
+# renderer, reduced to {3 when provably all-opaque, else 1}. Mode 2 (the
+# deferred any-hit for mixed batches) is deliberately NOT offered: it measured
+# as a loss there. A shadow ray on such a batch only ever asks "is anything in
+# the way", so the march's per-surface peel is pure cost. Off restores the
+# ordered march for every batch.
+pt_shadow_anyhit = env_flag("ALGAN_PT_SHADOW_ANYHIT", True)
+# Let the path tracer gather only the NEAREST surface per traversal on a batch
+# whose every visible primitive is opaque (``all_visible_opaque``): with no
+# translucent surface to pass through, the peel ends at the first crossing, so
+# the k-buffer's remaining kbuf-1 slots are filled and drained for nothing.
+# Same ``opaque_closest`` template the deterministic wavefront takes, and it
+# walks the MAIN trees (only ``opaque_prepass``, which the path tracer never
+# enables, reads the dedicated opaque-only ones). Off keeps the full gather.
+pt_opaque_closest = env_flag("ALGAN_PT_OPAQUE_CLOSEST", True)
+# Pack the direction-less light rows (ambient / hemisphere -- the kernel's
+# deterministic fill, never next-event-sampled) into the tail of ``nee_ref``
+# host-side, so ``pt_shade`` visits exactly those rows instead of re-scanning
+# every packed light row's type column at every lit crossing. Off restores the
+# linear scan. Byte-identical either way: the same rows in the same ascending
+# order, and a row's type column is frame-invariant (``Light._build_aux``
+# fills it from the class attribute).
+pt_ambient_rows = env_flag("ALGAN_PT_AMBIENT_ROWS", True)
+# How an authored-appearance surface (manim, toon, normal, matcap, depth and
+# every ``set_fragment_shader`` pipeline) gets its direct light under the path
+# tracer. Those materials are defined as a SUM over the packed light rows, and
+# reproducing that sum literally is the deterministic renderer's cost model --
+# one shadow ray per light, capped at ``max_shadow_lights`` -- running inside
+# the renderer whose whole point is that light count is free:
+#
+# ``"off"``
+#     Sum every row and trace one shadow ray per row up to the cap. What the
+#     path tracer has always done, byte for byte.
+# ``"auto"`` (the default)
+#     That sum where it is affordable (``num_lights <= max_shadow_lights``),
+#     and the estimator below past it -- so nothing about a small rig moves and
+#     a hundred-light scene stops paying a hundred-light loop.
+# ``"always"``
+#     The estimator at every light count. The A/B arm, and what the tests use
+#     to compare the two on a rig small enough to have an exact answer.
+#
+# The estimator: the direction-less (ambient / hemisphere) rows are filled
+# deterministically as they always were, then ``pt_light_samples`` rows are
+# DRAWN from a power-weighted table of the light rows and their radiance is
+# scaled by ``1 / (S * p)``. Every built-in stage carries a light's colour
+# linearly, so the sum over sampled rows is unbiased for the sum over all of
+# them; the residual bias is ``_stage_manim``'s clamp to the display range,
+# which is why "auto" keeps the exact sum where it is cheap. A user stage that
+# uses a light's DIRECTION without multiplying by its colour sees an unweighted
+# sum over the sampled rows instead (see ``FragmentStage``).
+pt_authored_light_sampling = env_str("ALGAN_PT_AUTHORED_LIGHT_SAMPLING", "auto")
+
+_PT_AUTHORED_LIGHT_SAMPLING = ("off", "auto", "always")
+
+
+def set_pt_authored_light_sampling(value):
+    """Select how the path tracer lights authored-appearance materials.
+
+    One of ``"off"``, ``"auto"`` (the default) or ``"always"``; see
+    ``pt_authored_light_sampling``. Host-side, read at the start of each render
+    call, so both arms run in one process.
+    """
+    global pt_authored_light_sampling
+    text = str(value).strip().lower()
+    if text not in _PT_AUTHORED_LIGHT_SAMPLING:
+        raise ValueError(
+            "pt_authored_light_sampling must be one of "
+            f"{_PT_AUTHORED_LIGHT_SAMPLING}, got {value!r}"
+        )
+    pt_authored_light_sampling = text
+
+
+# Whether the path tracer's sampler key includes the frame. Off (the default)
+# keys every frame as frame 0, so a static region draws the IDENTICAL sample
+# set each frame: its Monte Carlo error becomes a fixed noise texture that
+# sits still instead of shimmering, which is what a viewer reads as "grain"
+# rather than "boiling" (Blender Cycles defaults the same way). Nothing about
+# convergence changes -- each frame's estimate is as unbiased as before, and
+# the error is only correlated ACROSS frames, so a moving object still
+# decorrelates where it moves. True restores the per-frame decorrelation,
+# which averages away under temporal accumulation and is what a denoiser with
+# a temporal pass wants.
+pt_animated_seed = env_flag("ALGAN_PT_ANIMATED_SEED", False)
+# Distribute the path tracer's Monte Carlo error as BLUE NOISE in screen space
+# (Heitz et al. 2019; roadmap section 7). The per-pixel half of every draw's
+# seed stops being a hash of the pixel index and becomes a shipped 64x64 tile
+# of sampler keys (``blue_noise.py``), annealed offline so that neighbouring
+# pixels draw sample sets that are far apart -- and so make errors that cancel
+# under any low-pass filter, which is what the eye and the denoiser both apply.
+# Convergence is untouched: the estimator per pixel is the same estimator, and
+# equal-spp MSE is the same. What moves is the error's SPECTRUM. False restores
+# the hashed key byte for byte (the A/B arm and the regression escape hatch);
+# a missing or malformed tile file falls back to it with one warning.
+#
+# **Off by default, on measurement rather than on taste.** The gain a real
+# render sees is +2 to +4% in both denoised MSE and low-frequency error energy
+# at 2/4/8 spp -- consistent in sign across every arm, and inside one standard
+# error over 24 render seeds (``benchmarks/_pt_blue_noise_check.py``). The
+# reason is structural and is written up in roadmap section 7: this sampler
+# derives EVERY dimension pair from one per-pixel key, so one tile has to serve
+# all of them at once and each gets a fraction of the optimisation, where
+# Heitz et al.'s tiles are per-dimension. The tile does what it was built to do
+# in isolation (1.3-1.6x less low-frequency error energy at 1-2 samples in the
+# pairs it covers); it is the sharing that dilutes it.
+pt_blue_noise = env_flag("ALGAN_PT_BLUE_NOISE", False)
 # Denoise path-traced output (samples_per_pixel > 1) with the Open Image
 # Denoise RT filter re-implemented in torch (algan/rendering/denoise/):
 # linear HDR color guided by the albedo/normal AOVs the path tracer
@@ -189,6 +387,35 @@ denoise_tile_size = env_int("ALGAN_DENOISE_TILE_SIZE", 512)
 # cache-and-download resolution (offline machines, pinned deployments).
 # Empty = resolve normally.
 denoise_weights = env_str("ALGAN_DENOISE_WEIGHTS", "")
+# Arithmetic precision of the denoiser's U-Net: ``"auto"`` (the default) runs
+# half precision with channels-last activations on CUDA -- what OIDN's own
+# GPU path does, and what the T4's tensor cores are for -- and float32
+# everywhere else; ``"fp16"`` / ``"fp32"`` force one. Measured before the
+# switch existed (benchmarks/performance/reports/t4_2026_09/pt_baseline_1.md):
+# the fp32 filter was the largest device-side item of a path-traced frame,
+# 77 ms per 720p frame, more than the transport kernels. Half precision moves
+# the denoised pixels by a fraction of a count, so a render that must match a
+# float32 baseline pins "fp32".
+denoise_precision = env_str("ALGAN_DENOISE_PRECISION", "auto")
+
+_DENOISE_PRECISIONS = ("auto", "fp16", "fp32")
+
+
+def set_denoise_precision(value):
+    """Select the denoiser's arithmetic precision (see ``denoise_precision``).
+
+    One of ``"auto"``, ``"fp16"`` or ``"fp32"``. Takes effect at the next
+    render; the loaded network is re-cast when the choice changes.
+    """
+    global denoise_precision
+    text = str(value).strip().lower()
+    if text not in _DENOISE_PRECISIONS:
+        raise ValueError(
+            f"denoise_precision must be one of {_DENOISE_PRECISIONS}, got {value!r}"
+        )
+    denoise_precision = text
+
+
 # When True, the deterministic trace kernel is told which geometry types are
 # actually present and skips the per-ray traversal of any type whose tree is
 # just the empty placeholder (a launch-uniform branch, no divergence). Set

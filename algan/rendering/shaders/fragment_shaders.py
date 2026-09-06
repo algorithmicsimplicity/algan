@@ -47,13 +47,35 @@ class FragmentStage:
     param is at ``off + 0``). ``width`` is 1 for a scalar, 3 for an RGB triple.
 
     ``scatter`` optionally customises how a ray *continues* after this stage's
-    pipeline shades a surface hit (reflection / refraction / pass-through) on
-    the sorted-material wavefront: a ``@ti.func`` following the scatter
-    contract documented in
+    pipeline shades a surface hit (reflection / refraction / pass-through): a
+    ``@ti.func`` following the scatter contract documented in
     :mod:`algan.rendering.raytracing.shading_taichi`. When no stage of a
     pipeline supplies one, the default scatter applies the classic
     opacity/reflectivity/Fresnel-glass behaviour. When several stages supply
     one, the last stage's scatter wins.
+
+    Both renderers honour it. The deterministic wavefront splits into the
+    reflected and transmitted branches the scatter returns; the path tracer
+    (``samples_per_pixel > 1``) never splits, so it picks one of the three
+    branches at random -- weighted by the branch weights -- and continues
+    along it as a delta lobe (weight 1, no MIS coverage, exactly what
+    refraction and a tinted pane get there).
+
+    **What ``num_lights`` counts under the path tracer.** A stage's contract is
+    a loop ``for li in range(num_lights)`` over the packed light rows, and with
+    ``samples_per_pixel == 1`` those are every row in the scene. With
+    ``samples_per_pixel > 1`` and a light count past ``max_shadow_lights``
+    (``SETTINGS.raytracing.experimental.pt_authored_light_sampling``, ``"auto"``
+    by default) the path tracer hands the stage a small SAMPLED SUBSET instead:
+    the direction-less rows, then a few rows drawn from the rig, each with the
+    weight of the rows it stands for folded into the RGB that ``_light_eval``
+    returns. A stage that multiplies by that colour -- every built-in one does,
+    in both its reflection and its energy budget -- is therefore an unbiased
+    estimator of the sum it would have computed. A stage that uses a light's
+    *direction* (or its mere existence) without multiplying by its colour is
+    not: it sees an unweighted sum over the sampled rows. Set the switch to
+    ``"off"`` if a stage needs every row, at the deterministic renderer's cost
+    model and its 16-shadow cap.
     """
 
     def __init__(self, ti_func, param_specs=(), scatter=None):
@@ -251,7 +273,9 @@ def build_frag_pipelines(pids=None):
 
 def build_frag_scatters(pids=None):
     """Per-pipeline custom scatter funcs (None = default scatter), ordered by
-    id, for the monolithic wavefront's per-material continuation dispatch.
+    id, for the monolithic wavefront's per-material continuation dispatch --
+    and for the path tracer's, which takes the same tuple and continues along
+    one sampled branch of it (``pt_shade``).
 
     Narrowed by ``pids`` exactly as :func:`build_frag_pipelines` is, and for
     the same reason.

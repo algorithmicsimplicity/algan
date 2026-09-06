@@ -619,6 +619,13 @@ class RectAreaLight(_TargetedLight):
     one hard ray per row, with
     ``SETTINGS.raytracing.experimental.area_light_soft_shadows``.
 
+    Under the path tracer (``samples_per_pixel > 1``) the rectangle is real
+    emissive geometry instead: two triangles the renderer samples over, still
+    invisible to the camera and still not an occluder, but hittable by
+    bounced rays -- so a mirror shows the light's reflection, and ``samples``
+    no longer affects the cost. ``decay`` and ``distance`` mean the same thing
+    in both renderers.
+
     Parameters
     ----------
     width / height

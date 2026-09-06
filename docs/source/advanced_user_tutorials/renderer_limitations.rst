@@ -123,7 +123,7 @@ row links to the section that explains it.
    * - Custom ray scatter (bounce override)
      - **Falls back**
      - Yes
-     - **Refused**
+     - Yes, as a delta lobe
      - `Which renderer runs your scene`_
    * - Near clipping (``camera.near``)
      - **Falls back**
@@ -187,9 +187,21 @@ row links to the section that explains it.
      - `Not implemented at all`_
 
 "Triangles only" means the feature applies to triangle geometry and not to
-Bezier circuits -- see :ref:`limits-lit`. "Refused" means Algan raises rather
-than dropping the feature silently. "Falls back" means the batch is routed off
-the analytic path onto the supersampled one.
+Bezier circuits -- see :ref:`limits-lit`. "Falls back" means the batch is routed
+off the analytic path onto the supersampled one. Nothing in this table is
+refused: where a renderer cannot honour a feature it says so here rather than
+dropping it silently, and if that ever changes Algan raises
+:class:`~algan.errors.UnsupportedFeatureError` naming the feature rather than
+rendering a wrong frame.
+
+"Yes, as a delta lobe" is how the path tracer takes a **custom ray scatter**.
+Your function picks the direction; the path continues along the branch it
+returns with weight 1 and no MIS coverage, exactly as refraction and a tinted
+pane already do. The one limitation is the flip side of that: such a surface is
+not covered by next-event estimation, so light reaching it arrives only through
+the sampled continuation -- a scatter surface facing a small bright light is
+noisier than a Lambert one in the same place, and needs more samples rather
+than a different renderer.
 
 
 Which renderer runs your scene
@@ -200,11 +212,22 @@ Which renderer runs your scene
 
 ``SETTINGS.raytracing.samples_per_pixel`` selects the renderer, not a quality
 dial. ``1`` (the default) is the deterministic renderer; anything above it is
-the path tracer, which does not implement custom scatter overrides. Algan
-refuses such a combination rather than silently dropping it. See
-:ref:`renderer-capabilities` for the full table.
+the path tracer, and the path tracer **refuses nothing**: every feature the
+deterministic renderer accepts renders there too, custom scatter overrides
+included (as a delta continuation -- see :ref:`renderer-capabilities` for the
+full table). That is deliberate: it is the fallback, so a feature it rejected
+would leave that scene with no renderer at all.
 
-Three further consequences of the split, not covered there:
+The path tracer is the **fallback** for the scenes the deterministic renderer
+cannot render: more lights than its shadow cap (below), reflective or
+transparent geometry whose ray splitting exhausts render memory, and anything
+needing global illumination. A failure of either kind names the switch; the
+setting to reach for is a modest sample count with a short bounce budget,
+``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``, raised from
+there only if the scene needs indirect light or the denoised result is still
+noisy. See :ref:`renderer-settings` in the performance guide.
+
+Five further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
   fragment route. Direct light comes from sampling one entry of a
@@ -213,6 +236,47 @@ Three further consequences of the split, not covered there:
   direction-less ambient and hemisphere lights keep their deterministic fill.
   What it does not reproduce is the deterministic renderer's screen-space
   glossy prefilter: real sampled glossy transport replaces it.
+* **Lit surfaces are not as bright here, and they answer to one BSDF.** The
+  path tracer evaluates every light with the same physically-normalised
+  response its own rays sample -- ``albedo / pi`` diffuse, GGX with the exact
+  Smith masking-shadowing term, Fresnel and multiple-scattering compensation
+  -- where the deterministic renderer uses its stage formulas. So a Lambert
+  surface under a light is about ``pi`` times dimmer than its
+  ``samples_per_pixel = 1`` render, before whatever indirect light the scene
+  bounces back into it. This is deliberate: the path tracer is the fallback
+  for scenes the other renderer cannot do, and one response is what makes an
+  area light and an emissive quad of the same radiance light a surface
+  identically. Two consequences worth knowing:
+
+  * :class:`~.MeshPhongMaterial` has **no Blinn-Phong highlight** under the
+    path tracer. Its ``specular`` colour and ``shininess`` are converted to a
+    GGX lobe (``alpha = sqrt(2 / (shininess + 2))``, F0 = ``specular``), so
+    the material still has a highlight -- it is a slightly different shape
+    and it sits in a slightly different place. Nothing is dropped; nothing
+    matches the deterministic renderer pixel for pixel either.
+  * The ambient and hemisphere fill reaches **diffuse only**. A constant
+    radiance arriving from every direction, integrated over the diffuse
+    lobe, is exactly what the fill contributes; the specular equivalent is
+    real indirect transport, which this renderer has and the other one does
+    not.
+
+  If you are comparing the two renderers side by side, expect to adjust
+  ``intensity``. If you reached for the path tracer because the other one
+  could not render your scene, there is nothing to compare against.
+* **A** :class:`~.RectAreaLight` **is real geometry here.** The deterministic
+  renderer expands one into a grid of ``samples`` point emitters; the path
+  tracer instead treats it as an emissive rectangle, which is what it
+  physically is. Three visible consequences: a mirror or a polished metal
+  **shows the light's reflection**, which the deterministic renderer cannot
+  draw at all; the panel itself is still **invisible to the camera**, so
+  putting a light in shot does not put a white rectangle in the frame; and it
+  still **casts no shadow**, so you can place one between the camera and your
+  subject. Its ``decay`` and ``distance`` mean exactly what they do in the
+  other renderer -- ``decay = 0``, the default, really is no falloff, even
+  though a physical emitter of that size would fade with distance. A
+  ``samples = 16`` area light also costs the sampler two emitters here rather
+  than sixteen, so raising ``samples`` for the deterministic renderer's sake
+  no longer makes path-traced renders slower.
 * Its raw output is stochastic, so low sample counts are visibly noisy. By
   default it is **denoised** (``SETTINGS.raytracing.denoise``) with the Open
   Image Denoise RT filter re-implemented in torch, guided by albedo and
@@ -539,7 +603,30 @@ Limits and approximations
   the first render). Lights past the cap are still lit, just never shadowed, and
   **each emitter sample of a** :class:`~.RectAreaLight` **counts as one slot**, so
   a single 4x4 area light fills the default cap on its own. A render that goes
-  over the cap warns and reports the surplus (:ref:`limits-truncation`).
+  over the cap warns and reports the surplus (:ref:`limits-truncation`). The
+  deterministic renderer's cost also grows with every light, shadowed or not.
+  A scene with more lights than the cap is what the path tracer is for: it
+  samples lights instead of summing them, so every light casts a shadow and
+  the cost per shading point does not depend on how many there are
+  (``SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)``). That now
+  covers the authored-appearance materials too --
+  :class:`~.MeshToonMaterial`, :class:`~.MeshNormalMaterial`,
+  :class:`~.MeshMatcapMaterial`, :class:`~.MeshDepthMaterial`, Manim's
+  material and any :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+  pipeline --
+  which used to reproduce this cap inside the path tracer because their
+  lighting is defined as a sum over the light rows. Past the cap the path
+  tracer samples those rows instead, with each drawn row's radiance carrying
+  the weight of the rows it stands for
+  (``SETTINGS.raytracing.experimental.pt_authored_light_sampling``: ``"auto"``
+  by default, ``"off"`` to restore the sum, ``"always"`` to sample at any
+  light count). Two consequences worth knowing. Their lighting becomes a
+  Monte Carlo estimate like everything else in that renderer, so it converges
+  with ``samples_per_pixel`` rather than being exact; and a **custom**
+  fragment stage that uses a light's *direction* without multiplying by its
+  *colour* sees an unweighted sum over the sampled rows rather than over all
+  of them, because the weight rides the colour (see
+  :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`).
 * **One shadow query point per same-surface region per pixel.** The query is
   taken at the region's largest fragment and, by default, at four sub-pixel
   positions around it
@@ -871,7 +958,9 @@ Hard limits
    * - Shadowed lights
      - 16 (``ALGAN_MAX_SHADOW_LIGHTS``)
      - Further lights are lit but never shadowed. **Warns**
-       (:ref:`limits-truncation`).
+       (:ref:`limits-truncation`). The path tracer has no cap: it samples
+       lights instead of summing them, authored-appearance materials
+       included, and does not warn.
    * - Overlapping layers of one surface in one pixel
      - 16
      - Further layers merge into the last, and attenuate once between them

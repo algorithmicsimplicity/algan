@@ -67,10 +67,13 @@ from algan.rendering.raytracing.settings import (
 )
 from algan.rendering.raytracing.truncation import (
     TruncationCounts,
+    attach_render_stats,
     attach_truncations,
     record_truncation,
     report_truncations,
+    restore_path_samples,
     restore_truncations,
+    snapshot_path_samples,
     snapshot_truncations,
 )
 from algan.rendering.taichi_runtime import (
@@ -164,6 +167,13 @@ class RenderPlan:
     #: of a *finished* batch carries counts; the one built during validation
     #: is necessarily empty.
     truncations: TruncationCounts = TruncationCounts()
+    #: Samples per pixel the path tracer actually took, averaged over every
+    #: path-traced cell of the render job. With adaptive sampling on
+    #: (``pt_error_target > 0``) ``samples_per_pixel`` is only the ceiling and
+    #: this is the measurement: converged pixels -- every unlit 2-D pixel --
+    #: stop at ``pt_min_samples``. **Zero means the path tracer did not run**,
+    #: so it is 0.0 on every deterministic render.
+    path_samples_mean: float = 0.0
 
     @property
     def is_supported(self) -> bool:
@@ -176,6 +186,7 @@ class RenderPlan:
             "requested_features": list(self.requested_features),
             "unsupported_features": list(self.unsupported_features),
             "truncations": self.truncations.as_dict(),
+            "path_samples_mean": self.path_samples_mean,
         }
 
 
@@ -968,6 +979,12 @@ def _build_render_plan(
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
+    # Empty on every path today: the path tracer is the fallback and refuses
+    # nothing (roadmap section 9), and the deterministic renderer never did.
+    # Kept, and kept enumerating, because the rule is that a feature a
+    # renderer cannot honour is NAMED here rather than silently dropped --
+    # tests/unit_tests/test_path_tracer.py asserts the emptiness feature by
+    # feature, so an addition here fails a test rather than a user's render.
     unsupported = []
     if scene_environment_map is not None:
         requested.append("environment maps")
@@ -975,12 +992,6 @@ def _build_render_plan(
         requested.append("refractive materials")
     if _scene_has_user_pipeline(merged):
         requested.append("custom fragment-shader pipelines")
-        if samples_requested > 1 and _scene_has_custom_scatter(merged):
-            # Pipelines are evaluated at hits under the path tracer exactly
-            # as the deterministic renderer evaluates them, but a custom
-            # SCATTER override redefines ray continuation with no sampling
-            # density, which stochastic transport cannot honor.
-            unsupported.append("custom scatter overrides")
     if any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
@@ -999,12 +1010,18 @@ def _validate_render_capabilities(
 ):
     """Validate that the selected renderer can honor the authored scene.
 
-    ``samples_per_pixel > 1`` selects the path tracer, which supports the
-    deterministic renderer's feature set except custom scatter overrides
-    (arbitrary user continuation code has no sampling density for stochastic
-    transport); silently discarding a feature is more dangerous than failing
-    early. The global unsupported-feature policy permits an explicit
-    warning/ignore migration mode for benchmarks and legacy projects.
+    ``samples_per_pixel > 1`` selects the path tracer, and it refuses
+    **nothing**: it is the fallback for the scenes the deterministic renderer
+    cannot do, so a feature it rejected would leave the user with no renderer
+    at all (``DESIGN_path_tracer_roadmap.md`` section 9). Custom scatter
+    overrides were the last rejection and are now continued as a delta lobe.
+    The machinery below stays because the rule it enforces stays: silently
+    discarding a feature is more dangerous than failing early, and the global
+    unsupported-feature policy permits an explicit warning/ignore migration
+    mode for benchmarks and legacy projects.
+    ``tests/unit_tests/test_path_tracer.py`` asserts the empty refusal over
+    every feature ``_build_render_plan`` inspects, so a rejection added there
+    fails a test the moment it is written.
     """
     plan = _build_render_plan(
         samples_per_pixel,
@@ -1048,6 +1065,65 @@ def _retain_persistent(merged, memory):
     retained = merged.get(ARENA_RETAINED_REVERSE_POINTER)
     if retained is None or reverse < retained:
         merged[ARENA_RETAINED_REVERSE_POINTER] = reverse
+
+
+#: Merged-scene tables the area-light quads widen and that a converted kernel
+#: binds through the arena, so they have to be re-homed there as one group --
+#: ``arena_packed`` checks the whole argument list, not one array at a time.
+_QUAD_ARENA_KEYS = (
+    "tri_pos",
+    "tri_norm",
+    "tri_extra",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "tri_mat_id",
+    "tri_mat",
+    "tri_bvh",
+)
+
+#: Merged-scene key under which the batch caches its quad-widened copy.
+_QUAD_CACHE_KEY = "_pt_quad_widened"
+
+
+def _attach_area_light_quads(merged, light_sources, memory, num_frames):
+    """Widen the merge with one emissive quad per ``RectAreaLight``.
+
+    Returns ``merged`` itself when the switch is off or the batch has no area
+    light, and otherwise a private copy whose triangle tables and triangle BVH
+    carry the synthetic geometry (``area_light_quads``). The widened tables are
+    built as ordinary allocations and re-homed into the arena at its persistent
+    end, for exactly the reason a deferred BVH build is: everything a converted
+    kernel binds through the arena has to live in one allocation per dtype.
+    """
+    from algan.rendering.raytracing.area_light_quads import build_area_light_quads
+    from algan.rendering.raytracing.scene_builder import _copy_merged_scene_to_arena
+
+    # Built ONCE per batch and cached on the batch-lived merge, the way the
+    # raster tables and a re-homed deferred BVH are: this function runs once
+    # per render window, and a window is often a single frame, while the
+    # quads cover the whole batch (the light snapshot is batch-wide and the
+    # geometry is per frame of it). Rebuilding the triangle tree per window
+    # measured 120 ms on 3,200 triangles on the CPU box, per frame.
+    if not rt_settings.pt_area_light_quads:
+        return merged
+    cached = merged.get(_QUAD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    widened = build_area_light_quads(merged, light_sources, memory, num_frames)
+    if widened is merged:
+        return merged
+    group = {key: widened[key] for key in _QUAD_ARENA_KEYS if key in widened}
+    widened.update(_copy_merged_scene_to_arena(group, memory, persist=True))
+    # Published on BOTH dicts: the widened one is what this call's rewinds
+    # read, the batch one is what the render loop and the next window's
+    # rewind read -- without the second, the per-window rewind hands the
+    # widened tables back to the allocator while the cache still points at
+    # them.
+    _retain_persistent(widened, memory)
+    _retain_persistent(merged, memory)
+    merged[_QUAD_CACHE_KEY] = widened
+    return widened
 
 
 def _build_raster_tables(
@@ -1323,6 +1399,15 @@ def render_batch_raytraced(
 
         build_deferred_bvhs(merged, memory)
         _retain_persistent(merged, memory)
+    # The path tracer's own view of a RectAreaLight: two emissive triangles
+    # per light instead of K packed cell rows (roadmap section 6a-ter). Built
+    # into a PRIVATE copy of the merged scene -- the deterministic renderer's
+    # persistent device scene, which this batch may be rendered from again,
+    # must never carry them.
+    if int(samples_per_pixel) > 1:
+        merged = _attach_area_light_quads(
+            merged, light_sources, memory, int(num_frames)
+        )
     tri_bvh = merged["tri_bvh"]
     bez_bvh = merged["bez_bvh"]
     # A geometry type absent from the whole batch has only a placeholder BVH;
@@ -1445,14 +1530,12 @@ def render_batch_raytraced(
         # process ever registered -- a scene with no custom shader at all would
         # compile its own uncached kernel variant just because some earlier
         # scene had one. The path tracer evaluates the same pipelines at its
-        # hits; custom SCATTER overrides stay deterministic-only (rejected in
-        # _build_render_plan), so its tuple stays empty there.
+        # hits and takes the same scatter tuple: a custom scatter is a delta
+        # continuation there (pt_shade), not a refusal.
         batch_pids = _batch_user_pipeline_ids(merged)
         frag_pipelines = build_frag_pipelines(batch_pids)
         frag_scatters = (
-            build_frag_scatters(batch_pids)
-            if (samples <= 1 and _scene_has_custom_scatter(merged))
-            else ()
+            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
         )
     else:
         frag_pipelines = ()
@@ -1462,13 +1545,15 @@ def render_batch_raytraced(
     # transmitted-branch code the refraction path compiles in.
     # Continuation-ray supersampling makes every reflector a splitting path, so
     # it needs the same shared pool (see _secondary_split_needed). Deterministic
-    # only: the Monte Carlo path tracer antialiases by jittered sampling already.
+    # only: the Monte Carlo path tracer antialiases by jittered sampling
+    # already, and it never splits -- it samples ONE of a scatter's branches
+    # (contract 3), so a custom scatter buys it no pool either.
     refraction_flag = (
         1
         if (
             refractive_det
             or refl_transparent_det
-            or frag_scatters
+            or (samples <= 1 and frag_scatters)
             or (samples <= 1 and _secondary_split_needed(merged, analytic_raster))
         )
         else 0
@@ -1539,7 +1624,16 @@ def render_batch_raytraced(
     # the first ones sat under. Each RectAreaLight emitter sample already
     # occupies its own row here (``_pack_lights`` expands them), which is why
     # the count is of light SLOTS rather than of the author's lights.
-    if shadow_flag and num_lights > max_shadow_lights:
+    #
+    # Deterministic renders only. The path tracer does not sum light rows at a
+    # lit surface at all -- it samples the next-event table, which has no cap --
+    # and since roadmap 6a-bis its authored-appearance branch samples its rows
+    # too, so at ``samples > 1`` there is nothing here to truncate. Firing it
+    # anyway told a user already rendering with the path tracer to render with
+    # the path tracer. (``pt_authored_light_sampling = "off"`` puts the cap back
+    # on authored materials there and is deliberately not reported: it is an A/B
+    # arm, not a configuration to warn about.)
+    if shadow_flag and num_lights > max_shadow_lights and samples <= 1:
         record_truncation(
             "shadow_lights",
             int(num_lights) - max_shadow_lights,
@@ -1601,6 +1695,7 @@ def render_batch_raytraced(
         # memory: the failed attempt's truncations describe frames that are
         # about to be re-rendered, and counting both attempts would double them.
         entry_truncations = snapshot_truncations()
+        entry_path_samples = snapshot_path_samples()
         try:
             post_tonemap = is_post_process_tonemap_enabled()
             if rt_settings.linear_color_space and not post_tonemap:
@@ -1688,7 +1783,7 @@ def render_batch_raytraced(
                         merged["textures"],
                         out,
                     )
-                accum = None
+                accum = accum_odd = None
                 if samples > 1:
                     # f32 per-pixel sample sums, averaged by finalize_samples.
                     # Its own scope: the accumulator is float32 whatever the
@@ -1702,6 +1797,30 @@ def render_batch_raytraced(
                             (end - start, width * height, 5), torch.float32
                         )
                     accum.zero_()
+                    # Local, like ``path_trace_render`` below: the path
+                    # tracer's modules are imported at dispatch so a
+                    # deterministic render never pays for them.
+                    from algan.rendering.raytracing.path_tracer import (
+                        pt_adaptive_active,
+                    )
+
+                    if pt_adaptive_active(samples_eff):
+                        # Adaptive sampling's stopping-rule buffer: the RGB of
+                        # the ODD sample indices plus the count of stochastic
+                        # samples, which is what the per-pixel rule needs
+                        # (roadmap section 2). Allocated only when the
+                        # mechanism runs, so ``pt_error_target = 0`` charges
+                        # the memory model exactly what it charged before --
+                        # which is what keeps that arm's frame batching, and
+                        # therefore its output, identical.
+                        with memory.scope(
+                            "frame_accum_odd",
+                            accum_cells=(end - start) * width * height * 4,
+                        ):
+                            accum_odd = memory.get_tensor(
+                                (end - start, width * height, 4), torch.float32
+                            )
+                        accum_odd.zero_()
                 aovs = aov_bg = None
                 if denoiser is not None:
                     # The denoiser's guides: per-pixel sample sums of albedo,
@@ -1758,6 +1877,7 @@ def render_batch_raytraced(
                         light_col=light_col,
                         num_lights=num_lights,
                         frag_pipelines=frag_pipelines,
+                        frag_scatters=frag_scatters,
                         shadows=1 if bool(shadows) else 0,
                         max_bounces=int(max_bounces),
                         near_clip=near_clip,
@@ -1768,6 +1888,7 @@ def render_batch_raytraced(
                         aovs=aovs,
                         out=out,
                         accum=accum,
+                        accum_odd=accum_odd,
                     )
                 finalize_samples(
                     samples_eff,
@@ -1790,7 +1911,15 @@ def render_batch_raytraced(
                     albedo = ((aovs[0] + aovs[2] * aov_bg) * inv_spp).view(shape)
                     normal = (aovs[1] * inv_spp).view(shape)
                     color = (out[:, :, :3] * (1.0 / 255.0)).view(shape)
-                    denoised = denoiser(color, albedo, normal)
+                    # Under adaptive sampling the path tracer knows which
+                    # pixels took a random decision (the stochastic sample
+                    # count in accum_odd's last column); every other pixel
+                    # is exact and the filter passes it through untouched,
+                    # skipping tiles that hold none (Denoiser.__call__).
+                    stochastic = None
+                    if accum_odd is not None:
+                        stochastic = (accum_odd[:, :, 3] > 0.0).view(shape[:3])
+                    denoised = denoiser(color, albedo, normal, stochastic)
                     out[:, :, :3] = (
                         denoised.reshape(end - start, width * height, 3) * 255.0
                     )
@@ -1871,6 +2000,7 @@ def render_batch_raytraced(
             logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
             rewind_to(entry_pointers)
             restore_truncations(entry_truncations)
+            restore_path_samples(entry_path_samples)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
@@ -1893,7 +2023,7 @@ def render_batch_raytraced(
     # onto the plan the Scene hands back, so a script can assert on them
     # without parsing logs.
     report_truncations()
-    scene.last_render_plan = attach_truncations(plan)
+    scene.last_render_plan = attach_render_stats(attach_truncations(plan))
     if memory is not None and launched_frames:
         memory.last_launch_frames = max(launched_frames)
     if len(chunks) == 1:

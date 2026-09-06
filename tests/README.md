@@ -210,7 +210,7 @@ material coverage.
 
 ## The path-traced suite
 
-`tests/path_traced/scenes/` holds three small scenes rendered through the
+`tests/path_traced/scenes/` holds four small scenes rendered through the
 `samples_per_pixel > 1` wavefront path tracer (each scene file sets
 `samples_per_pixel` itself, and the harness asserts the plan chose the path
 tracer). They are deliberately tiny — 128×72, five frames — because the path
@@ -223,6 +223,7 @@ only pixels can see.
 | `translucency_and_order` | Deterministic 2-D compositing under PT: same-depth author order, depth-separated overlap, and the closed-shell opacity ring on a rotating translucent solid. |
 | `lit_and_shadowed` | NEE direct lighting with shadows, the sampled emitter table, GGX metal, and diffuse colour bleed. |
 | `environment_and_refraction` | Environment-map NEE and escape, mirror reflection, and refraction through the nested-IOR stack. |
+| `authored_under_many_lights` | The authored-appearance branch past the shadow cap: a toon floor and a Manim box under 24 point lights plus the two direction-less rows, sampling their light rows rather than summing them (roadmap §6a-bis). |
 
 The path tracer promises convergence, not byte-identical frames, but its
 accumulation happens to be atomic-free and its sampler is a pure function of
@@ -231,12 +232,19 @@ everywhere else. Like the full-render suite the baselines are per machine,
 and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
 
 The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
-container. **The CUDA set does not exist yet** — creating it takes a CUDA
-machine: run `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
-tests/path_traced -q` there twice, check the second run's outputs against the
-first (they must be byte-identical), look at the videos, and commit
-`expected_outputs_cuda/`. Until then a CUDA machine renders the scenes and
-skips the comparisons.
+container. The `expected_outputs_cuda/` set was rendered on a Kaggle Tesla T4
+(`benchmarks/performance/reports/t4_2026_09/pt-cudabase-1.txt`: recorded,
+re-rendered byte-identically in the same session, and byte-identically again
+in a second session). Two of the four scenes — `environment_and_refraction`
+and `translucency_and_order` — are byte-identical between the two devices;
+`lit_and_shadowed` and `authored_under_many_lights` differ by a few counts
+where the two backends round the sampler differently. Re-recording either
+set is the same procedure on that device: run
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
+tests/path_traced -q` twice, check the second run's outputs against the first
+(they must be byte-identical), look at the videos, and commit the directory.
+A device without a committed set renders the scenes and skips the
+comparisons.
 
 ## The fast suite's render
 
@@ -260,6 +268,14 @@ are unaffected and green.
 Regenerate with `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and
 `ALGAN_UPDATE_PATH_TRACED_BASELINES=1` (see the invocations in each suite's test
 module), on a machine of each device, and look at the result before committing.
+
+**`tests/path_traced`'s CPU set was regenerated on 2026-09-04** (on the same
+cloud CPU container class it was first rendered on, where the old set still
+passed 4/4 before the change), for the path tracer's new fixed-seed default
+(`pt_animated_seed = False`, `raytracing/DESIGN_path_tracer_roadmap.md` §0.3):
+frame 0 of every scene is byte-identical to before and later frames re-roll
+nothing, which is why the three videos came out at less than half their old
+size. `tests/full_renders` and the CUDA path-traced set are still pending.
 
 ## Baselines are per device
 

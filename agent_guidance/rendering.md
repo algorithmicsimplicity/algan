@@ -30,7 +30,7 @@ Do not casually change merged-field widths, ordering, dtype, or lifetime. Those 
 `render_batch_raytraced` is the production render entry point registered in `KERNEL_REGISTRY`.
 
 - `samples_per_pixel == 1` selects the deterministic wavefront renderer. It uses bounded primary-ray tiles, traversal, shading, compaction, compositing, and a shared continuation pool for reflective/refractive splits. Tile overflow is retried with fewer primaries rather than approximated.
-- `samples_per_pixel > 1` selects the Monte Carlo path-tracing megakernel (`raytrace_kernels_taichi.py`), which has its own cold compile. Some deterministic-only features are rejected or handled according to the unsupported-feature policy.
+- `samples_per_pixel > 1` selects the Monte Carlo path tracer (`path_tracer.py` drives `path_tracer_taichi.py`'s `pt_generate` / `pt_shade` / `pt_reduce` in the same wavefront shape, sharing `wavefront_traverse_events`), which has its own cold compile. It is the **fallback** for scenes the deterministic renderer cannot do — too many lights, global illumination, a split pool that exhausts memory — and `raytracing/DESIGN_path_tracer_roadmap.md` is its plan of record. Some deterministic-only features are rejected or handled according to the unsupported-feature policy.
 
 The deterministic renderer resolves primary visibility through the sheet route (`../algan/rendering/raytracing/DESIGN_sheet_resolve.md`) when the batch qualifies: exact analytic-coverage fragments are emitted for flat triangles and Bezier circuits, compacted on the host into per-pixel depth-banded sheets (`sheets.py`), and resolved/shaded — shadow events included — by the one kernel body in `sheet_resolve_taichi.py`, while reflection/refraction continuations remain in the ray-based wavefront system. It is the only analytic-coverage resolve; batches the route rejects (analytic AA off, transparent background with an env map, SPP > 1, route toggles off) render through the classic supersampled wavefront. `analytic_raster_route_active` in `tracer.py` is the single host-side route decision shared by allocation planning and rendering. Do not describe the current renderer as either a pure rasterizer or a pure one-primary-ray-per-pixel tracer.
 
@@ -129,8 +129,142 @@ Two things worth knowing: the umbra legitimately *lifts* (a `k x k` centre grid 
 
 The flag is read **host-side only** (`ALGAN_AREA_LIGHT_SOFT_SHADOWS` / `SETTINGS.raytracing.experimental.area_light_soft_shadows`): off, `_build_aux` packs zeros and the kernels take their existing path with no recompile and no per-arm process. `benchmarks/_area_light_shadow_check.py` is the acceptance harness; `tests/unit_tests/test_area_light_soft_shadow.py` is the guard, and its render arms exist to **compile both fans** — a host-side test cannot see a Taichi scoping error, which is how one shipped mid-review.
 
+## Under the path tracer an area light is geometry, not rows
+
+Everything above is the **deterministic** renderer's model, and it is unchanged. With
+`samples_per_pixel > 1` the path tracer builds its own view of each `RectAreaLight`:
+**two emissive triangles** covering the rectangle, appended by
+`raytracing/area_light_quads.py` to a *private copy* of the merged scene (the persistent
+device scene the deterministic renderer may render from next never carries them), with the
+triangle BVH rebuilt over the widened primitive set. They ride the emissive-triangle path
+end to end — area sampling from the next-event table, `_pt_lit_f_pdf` at both ends,
+power-heuristic MIS, and a BSDF ray that can hit them, which is what gives an area light a
+reflection in a mirror. The `K` cell rows stay in `light_col` (authored-appearance
+materials still light from them) but stop being selectable in `_build_nee_tables`, so
+nothing is counted twice.
+
+Three properties to keep if you touch it. The quads are **invisible to the camera
+segment** — one `prim >= quad_base` compare in `pt_shade`'s drain loop gated on
+`bounces_left >= max_b`, not a BVH leaf bit, because the deterministic renderer never sees
+these triangles at all — and they are packed **non-opaque** so nothing behind one is
+pruned while it is being skipped (that batch turns `all_visible_opaque` off, which also
+disables `pt_opaque_closest`). They are **non-casting** in the rebuilt tree, the same leaf
+bit `casts_shadows = False` uses, matching the deterministic renderer where an area light
+is not an occluder. And the row model's `decay` (default 0 = no falloff) survives as a
+per-emitter radiance multiplier `d^(2 - decay) * fade(d)^2` in `pt_emit_falloff`, applied
+at the EMITTER so both MIS ends evaluate it from the same distance; an ordinary emissive
+triangle is `prim < quad_base` and is bit-identical.
+
+`SETTINGS.raytracing.experimental.pt_area_light_quads` / `ALGAN_PT_AREA_LIGHT_QUADS=0`
+restores the packed-rows arm byte for byte — host-side, no kernel variant. Measured
+2.09x lower MSE at equal spp (`benchmarks/_pt_area_light_quad_variance.py`);
+`tests/unit_tests/test_path_tracer.py`'s `test_area_light_quad_*` are the guards, and
+roadmap §6a-ter is the record.
+
+## Under the path tracer an authored-appearance material samples its light rows
+
+The manim / toon / normal / matcap / depth stages and every
+`set_fragment_shader` pipeline are *defined* as a sum over the packed light
+rows, and `pt_shade` reproduced that sum literally: `for li in range(num_lights)`
+with a shadow ray per row up to `max_shadow_lights`. That is the deterministic
+renderer's cost model **and its 16-light cap**, running inside the renderer whose
+stated purpose is that light count is free.
+
+It now fills the direction-less rows deterministically (as the lit branch does)
+and **draws `pt_light_samples` of the rest** from a small power-weighted table of
+the light rows, scaling each drawn row's radiance by `1 / (S * p)`. Every
+built-in stage carries a light's colour linearly in both its reflection and its
+energy budget, so the estimate is unbiased for the sum.
+
+Three things to know if you touch it.
+
+**The weight rides the radiance, not `vis`.** `_light_vis` is
+`ti.static(shadows != 0)`-gated and compiles out entirely when shadows are off, so
+a weight parked in the visibility vector would be dead-code-eliminated and every
+shadowless path-traced render would be silently wrong. It rides `light_col`'s
+channels 0-2 through `_SampledLightView`, a read-only view in `ArenaView`'s idiom
+that rewrites `view[tl, slot, c]` into `inner[tl, rows[slot], c]` (times the
+weight for `c < 3`). `shading_taichi.py` is not touched and the stage signature
+does not move. The residual: a **user** stage that uses a light's direction
+without multiplying by its colour sees an unweighted sum over the sampled rows.
+
+**The mode is a `ti.template()` argument (`auth_sampled`), not a `nee_meta`
+word,** and that is forced rather than chosen: the summing arm hands the pipeline
+a row ordinal that may run *past* `vis_lights` (40 lights at the 16-slot cap), so
+it cannot go through a per-thread slot map at all. Taichi specialises on template
+arguments, so both arms still compile and run in one process — a `ti.static` gate
+read off a setting would not.
+
+**The authored table is its own, not the next-event entries.** Since §6a-ter a
+`RectAreaLight` is two emissive triangles in the next-event table and its `K` cell
+rows are withdrawn from it — but those rows are still what an authored material
+lights from, so selecting from the next-event entries would lose the light
+entirely (and would waste draws rejecting emissive meshes and the environment,
+which do not light an authored surface at all). The host appends the authored
+rows after the ambient tail of `nee_ref`, with a self-normalised CDF in the
+matching span of `nee_cdf` — **two different bases**, because the ambient rows
+have no CDF entries.
+
+`SETTINGS.raytracing.experimental.pt_authored_light_sampling` /
+`ALGAN_PT_AUTHORED_LIGHT_SAMPLING` is the switch, and it has three states:
+`"off"` is the summing arm byte for byte, `"auto"` (the default) sums inside
+`max_shadow_lights` and samples past it, `"always"` samples at any light count.
+Three states rather than two because `_stage_manim`'s clamp into the display
+range is a genuine non-linearity: at one sample of a large rig it clips where the
+sum did not. `tests/unit_tests/test_path_tracer.py`'s `test_authored_sampling_*`
+are the guards and roadmap §6a-bis is the record.
+
+## The path tracer can distribute its error as blue noise — and ships not doing it
+
+`_pt_key` hashes `(frame, pixel)`, so neighbouring pixels draw independent
+sequences and the per-pixel error is **white** noise across the image — the
+spectrum the eye and a denoiser's convolutional prior both handle worst.
+`SETTINGS.raytracing.experimental.pt_blue_noise` / `ALGAN_PT_BLUE_NOISE`
+replaces the per-pixel half of the seed with a shipped, annealed 64x64 tile of
+sampler keys (`raytracing/data/blue_noise_tile_64.npy`, 8 KB, loaded by
+`raytracing/blue_noise.py`, generated by `scripts/generate_blue_noise_tile.py`;
+Heitz et al. 2019).
+
+It is **off by default, on measurement**: +2 to +4% in denoised MSE and in
+low-frequency error energy at 2/4/8 spp — positive in every arm, inside one
+standard error over 24 seeds (`benchmarks/_pt_blue_noise_check.py`). The tile
+is not the problem (1.3–1.6x less low-frequency energy at 1–2 samples in the
+pairs it covers); the sharing is. Heitz's tiles are **per dimension**, and
+this sampler derives every dimension pair from ONE per-pixel key, so one tile
+serves them all and each gets a fraction. Roadmap §7 has the numbers and what
+a per-dimension version would cost.
+
+Three things to know if you touch it. The tile rides **`nee_meta`'s tail**
+(`_NM_BN_BASE`; `_NM_BLUE_NOISE` is the switch word) rather than a new arena
+entry or kernel argument, and `pt_generate` — which is not arena-packed — takes
+`nee_meta` as an ordinary ndarray so both ends of the sampler read one table.
+`pt_seed` and the frame enter as a **toroidal shift** of the lookup, never as a
+rehash: the tile is optimised against the map from tile value to sample
+sequence, so nothing per-render may enter that map (hence the fixed
+`_PT_BN_SALT`), and a shift is the one transform that decorrelates without
+destroying the optimisation. And the tile is a **permutation**, which is what
+keeps the estimator unbiased — a fixed key is a quadrature rule, not an
+estimator; only the randomness of the assignment makes it one.
+
+Off is byte-identical: `tests/path_traced` renders md5-identical to the
+pre-change tree, and `test_blue_noise_off_is_the_hashed_key` holds the
+derivation to `pt_sampler_probe` per pixel with no tolerance.
+
 ## The render path's fixed ceilings are counted, not silent
 
 `raytracing/truncation.py` counts surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.
 
 The counters are unconditional, so a zero is a reading rather than a missing instrument; keep them that way when adding a ceiling.
+
+One non-ceiling statistic rides the same recorder because it wants the same three properties (render-job scope, rollback on the OOM chunk retry, a graft onto the frozen plan): `RenderPlan.path_samples_mean`, the samples per pixel the path tracer actually took. It is grafted by `attach_render_stats` rather than `attach_truncations`, it logs at `PERF` rather than `WARNING` — stopping a converged pixel is the sampler working, not a degraded image — and **zero means the path tracer did not run**.
+
+## `samples_per_pixel` is the path tracer's ceiling, not its count
+
+With `SETTINGS.raytracing.experimental.pt_error_target > 0` (0.02, the default) a path-traced pixel gets `pt_min_samples` (4) and then keeps drawing until it is finished. **Eligibility to stop is a property of the paths, not of the statistics**: `pt_shade` sets a sticky flag (`_PT_ACC_STOCH`) the first time a path takes a random decision — a lit crossing's next-event estimation, an authored crossing or a custom scatter, a lobe pick with more than the pass-through branch — `pt_reduce` counts the flagged samples per pixel into column 3 of `accum_odd`, and the host stops a pixel only when that count is zero *and* its even/odd half-sums agree. That gate is load-bearing, not a refinement: a half-buffer difference cannot tell a converged black pixel from one whose first samples all missed the light, and a purely statistical rule left 249 lit pixels of 9216 stuck at pure black on `tests/path_traced/scenes/lit_and_shadowed.py`. Four consequences for anyone editing `path_tracer.py`:
+
+- **A new stochastic decision in `pt_shade` needs a `stoch = 1` beside it.** Adding one without the flag is not a performance bug, it is a wrong-pixel bug: adaptive sampling would freeze that pixel on however few samples it had.
+
+
+- **Every wave runs over a pixel LIST**, not a contiguous tile span. `pt_generate` takes `pix_list`, `rs_pix` holds the GLOBAL flat cell, and traverse and shade take `ray_offset = 0`. The uniform arm passes the identity list, so there is one code path.
+- **`tile_pixels` is the wave's active count**, which is what keeps `s_index = sample_base + r // tile_pixels` a contiguous Sobol prefix per pixel: every pixel alive in a wave has received the same number of samples.
+- **`pt_error_target = 0` must stay byte-identical** — no half-sum buffer is allocated (so the memory model and the frame batching are unchanged) and no rescale runs. `ALGAN_PT_ERROR_TARGET=0 pytest -q tests/path_traced` is the guard, and it is the arm that must be green; at the shipped default those baselines differ on purpose (roadmap §2.1).

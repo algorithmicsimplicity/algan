@@ -7,7 +7,9 @@ through the PU transfer function normalised at the half-float ceiling, and
 concatenated with the auxiliary albedo (in [0, 1], no transfer) and normal
 (rescaled from [-1, 1] to [0, 1], matching the training dataset); the
 network output is clamped non-negative and taken back through the inverse
-transfer and exposure. All of it stays in float32.
+transfer and exposure. The transfer arithmetic stays in float32; the
+network itself runs at ``denoise_precision`` (half on CUDA by default,
+:func:`resolve_precision`), and its output comes back as float32.
 
 Large frames run as overlapping tiles (``denoise_tile_size``, 32-pixel
 overlap; only each tile's core is kept) so peak activation memory is
@@ -120,11 +122,22 @@ class Denoiser:
         color: torch.Tensor,
         albedo: torch.Tensor,
         normal: torch.Tensor,
+        stochastic: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Denoise linear HDR ``color`` (``[F, H, W, 3]``, values in
         [0, inf)) guided by ``albedo`` (``[F, H, W, 3]`` in [0, 1]) and
         ``normal`` (``[F, H, W, 3]``, roughly unit, any world frame).
         Returns denoised linear HDR of the same shape and dtype float32.
+
+        ``stochastic``, when given, is a ``[F, H, W]`` bool mask of the
+        pixels whose estimate involved any random decision (the path
+        tracer's adaptive-sampling flag). A pixel outside it is exact --
+        an unlit 2-D interior, a background pixel -- so it is passed
+        through UNCHANGED rather than filtered, and a tile whose window
+        holds no flagged pixel is not run through the network at all. That
+        keeps text and vector graphics exactly as rendered (the filter
+        would only soften their edges) and takes the network's cost off
+        frames that have nothing to denoise.
         """
         frames, height, width = color.shape[0], color.shape[1], color.shape[2]
         tile = max(_MIN_TILE, int(rt_settings.denoise_tile_size))
@@ -136,6 +149,11 @@ class Denoiser:
         normal9 = normal.float().clamp(-1.0, 1.0) * 0.5 + 0.5
         for f in range(frames):
             frame = color[f].float().clamp_min(0.0)
+            mask = None if stochastic is None else stochastic[f]
+            if mask is not None and not bool(mask.any()):
+                # Nothing in this frame was estimated: every pixel is exact.
+                out[f] = frame
+                continue
             exposure = autoexposure(frame)
             transferred = _pu_forward(frame * exposure) * _PU_NORM_SCALE
             image = (
@@ -144,7 +162,7 @@ class Denoiser:
                 .unsqueeze(0)
                 .contiguous()
             )
-            result = torch.empty(
+            result = torch.zeros(
                 (3, height, width), dtype=torch.float32, device=color.device
             )
             for ty in range(0, height, core):
@@ -153,29 +171,52 @@ class Denoiser:
                     x0 = max(tx - _TILE_OVERLAP, 0)
                     y1 = min(ty + core + _TILE_OVERLAP, height)
                     x1 = min(tx + core + _TILE_OVERLAP, width)
-                    piece = self._run_aligned(image[:, :, y0:y1, x0:x1])[0]
                     cy1 = min(ty + core, height)
                     cx1 = min(tx + core, width)
+                    if mask is not None and not bool(mask[ty:cy1, tx:cx1].any()):
+                        # The core holds only exact pixels: the select below
+                        # keeps their input values, so the network's answer
+                        # for this tile would be discarded. Skip it.
+                        continue
+                    piece = self._run_aligned(image[:, :, y0:y1, x0:x1])[0]
                     result[:, ty:cy1, tx:cx1] = piece[
                         :, ty - y0 : cy1 - y0, tx - x0 : cx1 - x0
                     ]
             restored = _pu_inverse(
                 result.clamp_min(0.0).permute(1, 2, 0) / _PU_NORM_SCALE
             )
-            out[f] = restored / exposure
+            denoised = restored / exposure
+            if mask is not None:
+                denoised = torch.where(mask.unsqueeze(-1), denoised, frame)
+            out[f] = denoised
         return out
 
 
-#: Per-device cache. "" marks a device whose load failed (stay off).
+#: Per-(device, precision) cache. "" marks a load that failed (stay off).
 _denoisers: dict[str, Denoiser | str] = {}
 
 
-def get_denoiser(device) -> Denoiser | None:
-    """The cached :class:`Denoiser` for ``device``, or ``None`` when the
-    weights cannot be had or loaded (warned once; the render continues
-    without denoising).
+def resolve_precision(device) -> tuple[torch.dtype, bool]:
+    """``(dtype, channels_last)`` the network runs with on ``device`` under
+    the live ``denoise_precision`` setting: ``"auto"`` is half precision with
+    channels-last activations on CUDA and float32 elsewhere (a CPU half
+    convolution is slower than float32, and MPS half support is uneven).
     """
-    key = str(device)
+    choice = str(rt_settings.denoise_precision).strip().lower()
+    if choice == "auto":
+        choice = "fp16" if torch.device(device).type == "cuda" else "fp32"
+    if choice == "fp16":
+        return torch.float16, True
+    return torch.float32, False
+
+
+def get_denoiser(device) -> Denoiser | None:
+    """The cached :class:`Denoiser` for ``device`` at the live
+    ``denoise_precision``, or ``None`` when the weights cannot be had or
+    loaded (warned once; the render continues without denoising).
+    """
+    dtype, channels_last = resolve_precision(device)
+    key = f"{device}:{'fp16' if dtype == torch.float16 else 'fp32'}"
     cached = _denoisers.get(key)
     if cached is not None:
         return cached if isinstance(cached, Denoiser) else None
@@ -186,7 +227,7 @@ def get_denoiser(device) -> Denoiser | None:
     try:
         with open(path, "rb") as f:
             tensors = parse_tza(f.read())
-        net = OidnUNet(tensors, device)
+        net = OidnUNet(tensors, device, dtype=dtype, channels_last=channels_last)
     except Exception as exc:  # TzaError, WeightShapeError, IO, device errors
         logger.warning(
             f"Could not load the denoiser weights at {path} ({exc}); "

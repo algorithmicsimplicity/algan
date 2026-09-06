@@ -163,6 +163,37 @@ def test_the_shadow_light_ceiling_reports_the_worst_batch_not_the_sum(recorder):
     assert recorder.snapshot().shadow_lights == 5
 
 
+def test_the_shadow_light_warning_names_the_path_tracer_switch(recorder, algan_logs):
+    """The 16-light cap is one of the three failures the path tracer exists
+    for (DESIGN_path_tracer_roadmap.md section 0.3), so the warning at the
+    failure names the switch rather than leaving the user to find the docs.
+    """
+    from algan.render_loop import PATH_TRACER_FALLBACK_SPELLING
+
+    recorder.record("shadow_lights", 5, cap=16)
+    recorder.report()
+
+    message = algan_logs.records[-1].message
+    assert "path tracer" in message
+    assert PATH_TRACER_FALLBACK_SPELLING in message
+
+
+def test_the_one_frame_oom_message_names_the_switch_only_for_the_deterministic_renderer():
+    """The hint is for a user whose deterministic render did not fit; the
+    path tracer's own out-of-memory must not tell them to switch to it.
+    """
+    from algan.render_loop import (
+        PATH_TRACER_FALLBACK_SPELLING,
+        _one_frame_does_not_fit_message,
+    )
+    from algan.settings import SETTINGS
+
+    with SETTINGS.raytracing.override(samples_per_pixel=1):
+        assert PATH_TRACER_FALLBACK_SPELLING in _one_frame_does_not_fit_message()
+    with SETTINGS.raytracing.override(samples_per_pixel=4):
+        assert PATH_TRACER_FALLBACK_SPELLING not in _one_frame_does_not_fit_message()
+
+
 def test_reset_zeroes_the_counts_and_rearms_the_warning(recorder, algan_logs):
     recorder.record("sheet_layers", 3, cap=16)
     recorder.report()

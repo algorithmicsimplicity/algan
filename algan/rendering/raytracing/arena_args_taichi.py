@@ -172,6 +172,53 @@ def _whole_storage(sample):
     return view
 
 
+#: Offset/shape tables of recent ``pack`` calls, keyed by what they are a pure
+#: function of -- every bound tensor's data pointer, dtype and shape. A path
+#: tracer window launches the same tensor set for every one of its iterations
+#: (30 launches per frame at the shipped bounce count), and validating,
+#: offsetting and uploading the same tables each time measured 13 ms per
+#: 720p frame on a T4 (``benchmarks/performance/reports/t4_2026_09/
+#: pt_longvideo_1.md``), 8% of the frame. The key holds integers only, never a
+#: tensor, so the cache cannot keep a released arena alive -- the reason
+#: ``_whole_storage`` is still rebuilt per launch. Bounded and evicted oldest
+#: first: a render loop cycles through a handful of tensor sets, not
+#: thousands.
+_TABLE_CACHE_SIZE = 64
+_table_cache = {}
+
+
+def clear_pack_cache():
+    """Forget the cached offset/shape tables (tests, and a device change)."""
+    _table_cache.clear()
+
+
+def _table_key(spec, tensors):
+    """The pure inputs of the tables: pointer, dtype and shape per tensor.
+
+    ``None`` when a tensor is not one (so ``pack`` raises its own message).
+    """
+    parts = []
+    for t in tensors:
+        if not isinstance(t, torch.Tensor):
+            return None
+        # The storage's own pointer is part of the key because an offset is
+        # the difference of the two pointers: a tensor at the same address
+        # in a re-allocated arena at another base is a different offset.
+        parts.append(
+            (
+                t.data_ptr(),
+                t.untyped_storage().data_ptr(),
+                t.dtype,
+                tuple(t.shape),
+                t.device,
+            )
+        )
+    # The spec by CONTENT, not identity: a temporary tuple's id is reused once
+    # it is freed, and the spec's ranks and tags are what the validation below
+    # checks the tensors against.
+    return (spec, tuple(parts))
+
+
 def pack(spec, tensors):
     """Bind ``tensors`` as offsets into one buffer per dtype.
 
@@ -186,12 +233,27 @@ def pack(spec, tensors):
     and which the arena is merely the reason for. Anything else raises, naming
     the parameter, because the alternative is a kernel reading a base pointer
     that has nothing to do with the array it was handed.
+
+    The offset and shape tables are a pure function of the tensors' pointers,
+    dtypes and shapes and are cached on exactly that (``_table_cache``); the
+    validation runs on the first sight of a tensor set and the arena views are
+    rebuilt per launch either way.
     """
     if len(spec) != len(tensors):
         raise ArenaBindingError(
             f"this kernel binds {len(spec)} arrays through the arena but was "
             f"handed {len(tensors)}"
         )
+
+    key = _table_key(spec, tensors)
+    cached = _table_cache.get(key) if key is not None else None
+    if cached is not None:
+        n_offsets, table, tags = cached
+        samples = {}
+        for (_name, tag, _ndim), t in zip(spec, tensors):
+            samples.setdefault(tag, t)
+        arenas = [_whole_storage(samples[t]) for t in tags]
+        return (*arenas, table[:n_offsets], table[n_offsets:])
 
     samples = {}
     storages = {}
@@ -251,6 +313,10 @@ def pack(spec, tensors):
     # One allocation and one host-to-device copy for both tables: they are the
     # same dtype and the kernel takes contiguous slices of it.
     table = torch.tensor(offsets + shapes, dtype=torch.int32, device=device)
+    if key is not None:
+        if len(_table_cache) >= _TABLE_CACHE_SIZE:
+            del _table_cache[next(iter(_table_cache))]
+        _table_cache[key] = (len(offsets), table, tags)
     return (*arenas, table[: len(offsets)], table[len(offsets) :])
 
 
