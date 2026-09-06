@@ -226,6 +226,37 @@ jobs:
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
+
+          # One translation unit -- `runtime.cpp`, compiled to the bitcode the
+          # JIT loads -- is built by this *prebuilt* clang rather than by the
+          # container's own compiler, and it does not necessarily know where
+          # the container keeps its C++ standard library: AlmaLinux puts it
+          # under a gcc-toolset prefix rather than /usr/include/c++. On aarch64
+          # that cost five minutes of successful compilation followed by
+          # `runtime.cpp:16:10: fatal error: 'atomic' file not found`
+          # (run 34032073850).
+          #
+          # So: ask clang, in two seconds, before the build. If it already has
+          # a libstdc++ this changes nothing -- which is the point, because
+          # forcing a different standard library on a leg that was compiling
+          # fine is its own way to break one. If it does not, hand it the
+          # container's own `/c++/` include directories (only those: GCC's
+          # `include-fixed` would shadow clang's builtin headers), taken from
+          # `g++` rather than written down here, because the two containers do
+          # not agree on the path and neither will the next one.
+          probe='#include <atomic>'
+          if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
+            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
+              | sed -n '/#include <...> search starts here:/,/End of search list/p' \
+              | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
+            # Loudly, rather than exporting an empty value and failing later in
+            # exactly the way this exists to prevent.
+            test -n "$dirs"
+            export CPLUS_INCLUDE_PATH="$dirs"
+            echo "gave the bitcode clang the container's libstdc++: $dirs"
+            echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
+          fi
+
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
@@ -448,6 +479,37 @@ jobs:
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
+
+          # One translation unit -- `runtime.cpp`, compiled to the bitcode the
+          # JIT loads -- is built by this *prebuilt* clang rather than by the
+          # container's own compiler, and it does not necessarily know where
+          # the container keeps its C++ standard library: AlmaLinux puts it
+          # under a gcc-toolset prefix rather than /usr/include/c++. On aarch64
+          # that cost five minutes of successful compilation followed by
+          # `runtime.cpp:16:10: fatal error: 'atomic' file not found`
+          # (run 34032073850).
+          #
+          # So: ask clang, in two seconds, before the build. If it already has
+          # a libstdc++ this changes nothing -- which is the point, because
+          # forcing a different standard library on a leg that was compiling
+          # fine is its own way to break one. If it does not, hand it the
+          # container's own `/c++/` include directories (only those: GCC's
+          # `include-fixed` would shadow clang's builtin headers), taken from
+          # `g++` rather than written down here, because the two containers do
+          # not agree on the path and neither will the next one.
+          probe='#include <atomic>'
+          if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
+            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
+              | sed -n '/#include <...> search starts here:/,/End of search list/p' \
+              | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
+            # Loudly, rather than exporting an empty value and failing later in
+            # exactly the way this exists to prevent.
+            test -n "$dirs"
+            export CPLUS_INCLUDE_PATH="$dirs"
+            echo "gave the bitcode clang the container's libstdc++: $dirs"
+            echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
+          fi
+
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
