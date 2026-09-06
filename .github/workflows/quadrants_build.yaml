@@ -243,6 +243,12 @@ jobs:
           # base compiler does not have. Empty for a platform that does not
           # care, so the container's default is used.
           if [ -n "${PIN_CXX:-}" ]; then
+            # The manylinux images carry their gcc-toolset and *not* the
+            # distro's own compiler -- there is no /usr/bin/gcc to pin until
+            # one is asked for, which cost a 30-second run to find out.
+            if [ ! -x "$PIN_CXX" ]; then
+              dnf install -y gcc gcc-c++
+            fi
             test -x "$PIN_CC"
             test -x "$PIN_CXX"
             export CC="$PIN_CC" CXX="$PIN_CXX"
@@ -268,7 +274,11 @@ jobs:
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
           if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
-            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
+            # `${CXX:-g++}`, not a bare `g++`: where a leg pins the compiler
+            # that builds the library, the bitcode has to see that one's
+            # headers. Taking them from whatever is first on PATH would give
+            # the .bc a different standard library than the .so it loads into.
+            dirs=$("${CXX:-g++}" -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
             # Loudly, rather than exporting an empty value and failing later in
@@ -512,6 +522,12 @@ jobs:
           # base compiler does not have. Empty for a platform that does not
           # care, so the container's default is used.
           if [ -n "${PIN_CXX:-}" ]; then
+            # The manylinux images carry their gcc-toolset and *not* the
+            # distro's own compiler -- there is no /usr/bin/gcc to pin until
+            # one is asked for, which cost a 30-second run to find out.
+            if [ ! -x "$PIN_CXX" ]; then
+              dnf install -y gcc gcc-c++
+            fi
             test -x "$PIN_CC"
             test -x "$PIN_CXX"
             export CC="$PIN_CC" CXX="$PIN_CXX"
@@ -537,7 +553,11 @@ jobs:
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
           if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
-            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
+            # `${CXX:-g++}`, not a bare `g++`: where a leg pins the compiler
+            # that builds the library, the bitcode has to see that one's
+            # headers. Taking them from whatever is first on PATH would give
+            # the .bc a different standard library than the .so it loads into.
+            dirs=$("${CXX:-g++}" -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
             # Loudly, rather than exporting an empty value and failing later in
