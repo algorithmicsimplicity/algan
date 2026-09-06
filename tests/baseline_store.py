@@ -15,9 +15,9 @@ are present. Resolution order, for one (suite, device key):
    a machine that keeps its own baselines or has no network. Its answer is
    final -- a missing directory under it skips the comparison rather than
    falling through to a download.
-2. The in-repo ``expected_outputs_<key>/``, when it exists and has files.
-   This is why introducing the fetcher changes nothing on its own: while the
-   baselines are still committed, they are still what runs.
+2. A local ``expected_outputs_<key>/``, when it exists and has files. Normal
+   checkouts do not carry these anymore; this is a developer's freshly
+   rendered/rebaselined copy and deliberately wins over the release asset.
 3. The cache: ``~/.algan/cache/baselines/<tag>/`` (see :func:`_cache_root`),
    accepted only when the marker written at extraction time matches the
    sha256 pinned in ``tests/baselines.json`` (a partial or tampered extract
@@ -34,10 +34,9 @@ reported as a passing test: the suites print the skip reason, and
 ``tests/README.md`` repeats the standing warning that a render suite which
 skipped compared nothing.
 
-``tests/baselines.json`` carries a null ``tag`` until the assets are actually
-uploaded. That is not a broken state: step 3 and 4 are simply skipped, so an
-unpublished pointer behaves exactly like an offline machine, silently, and
-the committed baselines answer.
+The committed ``tests/baselines.json`` carries a published release tag. A null
+tag remains a supported bootstrap/test state: steps 3 and 4 are skipped and
+the resolver behaves like an unbaselined offline machine, silently.
 """
 
 from __future__ import annotations
