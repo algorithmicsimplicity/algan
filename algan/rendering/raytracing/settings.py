@@ -570,6 +570,56 @@ def set_wf_deferred_shadows(enabled):
     wf_deferred_shadows = bool(enabled)
 
 
+# Spatial ordering of the bounce drain's active rays: before each iteration's
+# traverse, the active list is permuted into (frame, direction octant, origin
+# Morton code) order (``wavefront_ray_sort_keys`` + one argsort), so a warp's
+# rays walk neighbouring BVH paths and share node loads through the caches.
+# The sheet route hands the drain its continuation rays in SOURCE-pixel order,
+# which a bounce scatters. Every per-ray kernel addresses ray state through the
+# active list, so the permutation changes no ray's arithmetic; the pixel
+# accumulator's atomic order moves, which was never fixed (see
+# split-pixel nondeterminism, |d| <= 1). Iterations below
+# ``wf_ray_sort_min`` rays skip the sort: the key kernel + argsort cost
+# ~1-2 ms, which a small launch cannot recover. ALGAN_WF_RAY_SORT=0 disables.
+wf_ray_sort = env_flag("ALGAN_WF_RAY_SORT", True)
+wf_ray_sort_min = env_int("ALGAN_WF_RAY_SORT_MIN", 8192)
+
+
+def set_wf_ray_sort(enabled):
+    """Toggle the drain's spatial ray ordering (see ``wf_ray_sort``). Takes
+    effect at the next render batch.
+    """
+    global wf_ray_sort
+    wf_ray_sort = bool(enabled)
+
+
+def set_wf_ray_sort_min(count):
+    """Smallest active-ray count the drain bothers to sort (see
+    ``wf_ray_sort``). Takes effect at the next render batch.
+    """
+    global wf_ray_sort_min
+    wf_ray_sort_min = max(0, int(count))
+
+
+# Order of the deferred shadow events (wf_deferred_shadows) handed to the
+# lean trace: True sorts each iteration's accepted events by a Morton code of
+# their frame and hit position before tracing, so the threads of a warp and
+# the warps in flight walk neighbouring BVH paths and share node loads
+# through the caches. The trace's per-event result is independent of the
+# order and is written back through the same index, so the output is
+# byte-identical either way; only the trace time changes.
+# ALGAN_WF_SHADOW_EVENT_SORT=0 keeps ray-slot order.
+wf_shadow_event_sort = env_flag("ALGAN_WF_SHADOW_EVENT_SORT", True)
+
+
+def set_wf_shadow_event_sort(enabled):
+    """Toggle the Morton ordering of deferred shadow events (see
+    ``wf_shadow_event_sort``). Takes effect at the next render batch.
+    """
+    global wf_shadow_event_sort
+    wf_shadow_event_sort = bool(enabled)
+
+
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
 # with every built-in stage reachable -- including ``_stage_physical``'s

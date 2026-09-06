@@ -138,6 +138,57 @@ def compact_ray_slots(
             out_i = ti.atomic_add(output_count[0], 1)
             output[out_i] = r
 
+
+@ti.func
+def _spread_bits_10(v: ti.i32) -> ti.i32:
+    """Spread the low 10 bits of ``v`` to every third bit (Morton interleave)."""
+    x = v & 0x3FF
+    x = (x | (x << 16)) & 0x030000FF
+    x = (x | (x << 8)) & 0x0300F00F
+    x = (x | (x << 4)) & 0x030C30C3
+    x = (x | (x << 2)) & 0x09249249
+    return x
+
+
+@ti.kernel
+def wavefront_ray_sort_keys(
+        active: ti.types.ndarray(), num_active: int,
+        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
+        rs_pix: ti.types.ndarray(), pixels_per_frame: int,
+        lo_x: ti.f32, lo_y: ti.f32, lo_z: ti.f32,
+        inv_x: ti.f32, inv_y: ti.f32, inv_z: ti.f32,
+        keys: ti.types.ndarray()):
+    """Spatial sort key per active ray (rt_settings.wf_ray_sort).
+
+    ``keys[i]`` for the ray in ``active[i]``: its frame in the high bits, then
+    the octant of its direction, then a 30-bit Morton code of its origin over
+    the batch's scene box (``lo`` / ``inv`` = 1023 / extent, host-side). The
+    host argsorts these and permutes the active list, so the threads of a
+    warp start neighbouring rays heading the same way -- the traversal then
+    walks neighbouring tree paths and its node loads hit the caches. Every
+    per-ray kernel indexes its state through ``active``, so the order changes
+    nothing but cache behaviour (and the pixel accumulator's atomic order,
+    which was never fixed).
+    """
+    for i in range(num_active):
+        r = active[i]
+        qx = ti.cast(ti.math.clamp((rs_ro[r, 0] - lo_x) * inv_x, 0.0, 1023.0), ti.i32)
+        qy = ti.cast(ti.math.clamp((rs_ro[r, 1] - lo_y) * inv_y, 0.0, 1023.0), ti.i32)
+        qz = ti.cast(ti.math.clamp((rs_ro[r, 2] - lo_z) * inv_z, 0.0, 1023.0), ti.i32)
+        code = _spread_bits_10(qx) | (_spread_bits_10(qy) << 1) \
+            | (_spread_bits_10(qz) << 2)
+        octant = 0
+        if rs_rd[r, 0] > 0.0:
+            octant |= 1
+        if rs_rd[r, 1] > 0.0:
+            octant |= 2
+        if rs_rd[r, 2] > 0.0:
+            octant |= 4
+        frame = rs_pix[r] // pixels_per_frame
+        keys[i] = (ti.cast(frame, ti.i64) << 33) \
+            | (ti.cast(octant, ti.i64) << 30) | ti.cast(code, ti.i64)
+
+
 # Light type ids of the extended packed light rows (see
 # algan.rendering.lights and scene_builder._pack_lights). Only the ids the
 # shadow code branches on are needed here.
@@ -2157,7 +2208,14 @@ def wavefront_shadow_events(
         ev_accept: ti.types.ndarray(), ev_pos: ti.types.ndarray(),
         ev_snrm: ti.types.ndarray(), ev_fnrm: ti.types.ndarray(),
         ev_frame: ti.types.ndarray(), ev_msk: ti.types.ndarray(),
-        ev_toff: ti.types.ndarray()):
+        ev_toff: ti.types.ndarray(),
+        # Spatial sort key per accepted event (rt_settings.wf_shadow_event_sort):
+        # frame << 32 | 30-bit Morton code of the event position over the
+        # batch scene box (``lo`` / ``inv`` = 1023 / extent, host-side). With
+        # ``sort_keys`` 0 nothing here is read or written.
+        sort_keys: ti.template(), ev_key: ti.types.ndarray(),
+        lo_x: ti.f32, lo_y: ti.f32, lo_z: ti.f32,
+        inv_x: ti.f32, inv_y: ti.f32, inv_z: ti.f32):
     """Shadow events for the bounce loop's lit triangle hits
     (rt_settings.wf_deferred_shadows).
 
@@ -2223,6 +2281,18 @@ def wavefront_shadow_events(
                             ev_fnrm[e, k] = fnrm[k]
                         ev_frame[e] = f
                         ev_msk[e] = 1 | (pid << 8)
+                        if ti.static(sort_keys != 0):
+                            qx = ti.cast(ti.math.clamp(
+                                (spos[0] - lo_x) * inv_x, 0.0, 1023.0), ti.i32)
+                            qy = ti.cast(ti.math.clamp(
+                                (spos[1] - lo_y) * inv_y, 0.0, 1023.0), ti.i32)
+                            qz = ti.cast(ti.math.clamp(
+                                (spos[2] - lo_z) * inv_z, 0.0, 1023.0), ti.i32)
+                            code = _spread_bits_10(qx) \
+                                | (_spread_bits_10(qy) << 1) \
+                                | (_spread_bits_10(qz) << 2)
+                            ev_key[e] = (ti.cast(f, ti.i64) << 32) \
+                                | ti.cast(code, ti.i64)
                         if ti.static(shadow_term == 1):
                             delta = _shadow_terminator_delta(
                                 f, prim, 1.0 - a - b, a, b, spos, snrm,

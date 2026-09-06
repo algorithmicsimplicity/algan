@@ -126,6 +126,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     compact_ray_slots,
     sca_width,
     wavefront_generate_rays,
+    wavefront_ray_sort_keys,
     wavefront_shade,
     wavefront_shadow_events,
     wavefront_traverse_events,
@@ -799,6 +800,17 @@ class _ArenaRayCompactor:
         self.current = self.a
         self.spare = self.b
         self.size = 0
+
+    def reorder(self, active, perm):
+        """Permute ``active`` (the list ``select`` last returned) by ``perm``
+        (an int64 index tensor of its length) into the spare buffer and make
+        that the current list. Returns the new view, as ``select`` does.
+        """
+        n = int(active.numel())
+        torch.index_select(active, 0, perm, out=self.spare[:n])
+        self.current, self.spare = self.spare, self.current
+        self.size = n
+        return self.current[:n]
 
     def initial(self, size):
         self.size = int(size)
@@ -2683,6 +2695,50 @@ def raytrace_render_wavefront(
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
 
+    def _scene_sort_bounds():
+        """The batch scene box the Morton sort keys quantise over, as
+        ``(lo[3], 1023 / extent[3])`` host floats; computed once per merged
+        scene (one readback) and cached on it.
+        """
+        bounds = merged.get("_ray_sort_bounds")
+        if bounds is None:
+            tp = merged["tri_pos"]
+            if tp.numel():
+                flat = tp.reshape(-1, 3).float()
+                vals = torch.cat((flat.amin(0), flat.amax(0))).tolist()
+            else:
+                vals = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+            lo3 = vals[:3]
+            inv3 = [
+                1023.0 / max(hi_v - lo_v, 1e-12) for lo_v, hi_v in zip(lo3, vals[3:])
+            ]
+            bounds = (lo3, inv3)
+            merged["_ray_sort_bounds"] = bounds
+        return bounds
+
+    def _sort_active_rays(active, na, rs_ro, rs_rd, rs_pix, compactor):
+        """Permute the active list into (frame, octant, origin Morton) order
+        (rt_settings.wf_ray_sort); see ``wavefront_ray_sort_keys``.
+        """
+        lo3, inv3 = _scene_sort_bounds()
+        keys = memory.get_tensor((na,), torch.int64)
+        wavefront_ray_sort_keys(
+            active,
+            na,
+            rs_ro,
+            rs_rd,
+            rs_pix,
+            int(width) * int(height),
+            lo3[0],
+            lo3[1],
+            lo3[2],
+            inv3[0],
+            inv3[1],
+            inv3[2],
+            keys,
+        )
+        return compactor.reorder(active, torch.argsort(keys))
+
     def _deferred_wavefront_shadows(
         active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
     ):
@@ -2704,6 +2760,9 @@ def raytrace_render_wavefront(
         ev_frame = memory.get_tensor((rows,), i32)
         ev_msk = memory.get_tensor((rows,), i32)
         ev_toff = memory.get_tensor((rows if term_mode == 1 else 1, 3), f32)
+        ev_sort = 1 if rt_settings.wf_shadow_event_sort else 0
+        ev_key = memory.get_tensor((rows if ev_sort else 1,), torch.int64)
+        lo3, inv3 = _scene_sort_bounds() if ev_sort else ([0.0] * 3, [1.0] * 3)
         wavefront_shadow_events(
             active,
             na,
@@ -2735,6 +2794,14 @@ def raytrace_render_wavefront(
             ev_frame,
             ev_msk,
             ev_toff,
+            ev_sort,
+            ev_key,
+            lo3[0],
+            lo3[1],
+            lo3[2],
+            inv3[0],
+            inv3[1],
+            inv3[2],
         )
         vis_lights = shadow_vis_slots(num_lights)
         vis_tab = memory.get_tensor((rows, 3 * vis_lights), f32)
@@ -2743,6 +2810,16 @@ def raytrace_render_wavefront(
         num_events = int(acc_idx.numel())
         if num_events == 0:
             return vis_tab
+        if ev_sort:
+            # Trace the events in Morton order of (frame, hit position) -- the
+            # key the events kernel wrote per accepted row. The ray sort puts
+            # the rays' ORIGINS in order; a bounce scatters the hit points,
+            # and it is at the hit points that these rays start. The result
+            # rows go back through ``acc_idx`` below, so the permutation
+            # cannot change a single output value.
+            acc_idx = acc_idx.index_select(
+                0, torch.argsort(ev_key.index_select(0, acc_idx))
+            )
         sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
         ev_dp = memory.get_tensor((num_events if sec_aa > 1 else 1, 6), f32)
         ev_dp.zero_()
@@ -2858,6 +2935,11 @@ def raytrace_render_wavefront(
             # past the cap share one label so the table stays small.
             bounce = f"bounce {it - 1}" if it <= _BOUNCE_STAGE_CAP else "bounce 8+"
             with memory.temp():
+                if rt_settings.wf_ray_sort and na >= int(rt_settings.wf_ray_sort_min):
+                    with _stage(f"wavefront:   - {bounce} ray sort", items=na):
+                        active = _sort_active_rays(
+                            active, na, rs_ro, rs_rd, rs_pix, compactor
+                        )
                 with _stage("wavefront:   - drain scratch"):
                     # [kbuf, channel, num_active]: the ray ordinal is LAST so the
                     # traverse kernel's stores and shade's gathers coalesce.

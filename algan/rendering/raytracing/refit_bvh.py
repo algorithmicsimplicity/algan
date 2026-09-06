@@ -187,7 +187,7 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     device = order.device
     K = starts.shape[0]
     S = int(counts.sum())
-    seg = torch.repeat_interleave(torch.arange(K, device=device), counts)
+    seg = torch.repeat_interleave(torch.arange(K, device=device), counts, output_size=S)
     base = torch.zeros(K, dtype=torch.long, device=device)
     base[1:] = counts.cumsum(0)[:-1]
     rank = torch.arange(S, device=device) - base[seg]  # pos in range
@@ -223,24 +223,33 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     )
     blo = torch.full((K * 3 * nb, 3), float("inf"), device=device)
     bhi = torch.full((K * 3 * nb, 3), float("-inf"), device=device)
-    plo = ulo[tp]
-    phi = uhi[tp]
+    # One reduction per side over all three axes at once: ``idx`` is
+    # [S, 3] row-major, so each primitive's box is repeated three times in
+    # step with its three (axis, bin) slots. ``amin`` / ``amax`` are exact
+    # under any reduction order, so this is bit-identical to a per-axis pass.
+    plo = ulo[tp].unsqueeze(1).expand(S, 3, 3).reshape(-1, 3)
+    phi = uhi[tp].unsqueeze(1).expand(S, 3, 3).reshape(-1, 3)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
             message=r"index_reduce\(\) is in beta and the API may change at any time\.",
             category=UserWarning,
         )
-        for a in range(3):
-            blo.index_reduce_(0, idx[:, a], plo, "amin")
-            bhi.index_reduce_(0, idx[:, a], phi, "amax")
+        blo.index_reduce_(0, idx.reshape(-1), plo, "amin")
+        bhi.index_reduce_(0, idx.reshape(-1), phi, "amax")
     cnt = cnt.view(K, 3, nb)
     blo = blo.view(K, 3, nb, 3)
     bhi = bhi.view(K, 3, nb, 3)
 
     # Prefix (left) and suffix (right) sweeps over the bins; split s puts
-    # bins [0, s] left and (s, nb) right, s in [0, nb - 2].
-    lcnt = cnt.cumsum(-1)[..., :-1]  # [K, 3, nb-1]
+    # bins [0, s] left and (s, nb) right, s in [0, nb - 2]. The count prefix
+    # scans the bins as the OUTER dimension: torch's innermost-dimension scan
+    # kernel took ~4 ms per call on these many-short-rows shapes (it was 38%
+    # of the build), the outer-dimension one ~0.4 ms. Integer, so exact
+    # either way.
+    lcnt = (
+        cnt.permute(2, 0, 1).contiguous().cumsum(0).permute(1, 2, 0)[..., :-1]
+    ).contiguous()  # [K, 3, nb-1]
     rcnt = counts.view(K, 1, 1) - lcnt
     llo = cummin_values(blo, 2)[:, :, :-1]
     lhi = cummax_values(bhi, 2)[:, :, :-1]
@@ -377,15 +386,27 @@ def build_refit_bvh(
             sub_block = torch.arange(K, device=device)
             for _ in range(s_rounds):
                 splittable = sub_count >= 2
-                if not bool(splittable.any()):
+                # One host readback partitions the ranges: a stable sort of
+                # the flag puts the kept (count-1) ranges first and the
+                # splittable ones last, each side in its original order --
+                # exactly what six boolean-mask gathers (a device sync each)
+                # produced before. The build is launch-bound, so the syncs
+                # were most of its wall time.
+                n_split = int(splittable.sum())
+                if n_split == 0:
                     break
-                ss = sub_start[splittable]
-                sc = sub_count[splittable]
-                sb = sub_block[splittable]
-                nl = _binary_split(order, ss, sc, forced_blk[sb], cent, ulo, uhi)
-                keep_start = sub_start[~splittable]
-                keep_count = sub_count[~splittable]
-                keep_block = sub_block[~splittable]
+                perm = torch.argsort(splittable.to(torch.int8), stable=True)
+                keep_idx = perm[: perm.numel() - n_split]
+                split_idx = perm[perm.numel() - n_split :]
+                ss = sub_start.index_select(0, split_idx)
+                sc = sub_count.index_select(0, split_idx)
+                sb = sub_block.index_select(0, split_idx)
+                nl = _binary_split(
+                    order, ss, sc, forced_blk.index_select(0, sb), cent, ulo, uhi
+                )
+                keep_start = sub_start.index_select(0, keep_idx)
+                keep_count = sub_count.index_select(0, keep_idx)
+                keep_block = sub_block.index_select(0, keep_idx)
                 sub_start = torch.cat([keep_start, ss, ss + nl])
                 sub_count = torch.cat([keep_count, nl, sc - nl])
                 sub_block = torch.cat([keep_block, sb, sb])
@@ -410,8 +431,9 @@ def build_refit_bvh(
             ref[sub_block, slot] = torch.where(is_leaf, leaf_ref, child_ids)
             kind_rows.append(kind)
             ref_rows.append(ref)
-            r_start = sub_start[~is_leaf]
-            r_count = sub_count[~is_leaf]
+            internal = (~is_leaf).nonzero(as_tuple=True)[0]
+            r_start = sub_start.index_select(0, internal)
+            r_count = sub_count.index_select(0, internal)
             depth += 1
             if depth > MAX_DEPTH:
                 raise RuntimeError("refit BVH exceeded its depth budget (builder bug)")

@@ -714,37 +714,59 @@ def _split_promotable(p, _append_texture, device, scene):
     inv_sorted = inv[order]
 
     # One color + material map per distinct value; each promoted triangle's meta
-    # row points at its group's maps.
+    # row points at its group's maps. Every group's representative, its two
+    # maps' time-constancy and the material flags are computed for all groups
+    # at once and read back in ONE host transfer: the per-group form of this
+    # loop paid ~5 device syncs per group (a scene of a hundred differently
+    # tinted mobs spent 0.45 s here, most of it waiting), and the merge runs
+    # on the prefetch worker beside a live render, where each sync drains the
+    # whole queued chunk (see _dedup_time_group). The maps appended are the
+    # same tensors, group by group, so the texel buffer is byte-identical.
+    G = int(uniq.shape[0])
+    P = int(promo_all.numel())
+    first_pos = torch.full((G,), P, dtype=torch.int64, device=device)
+    first_pos.scatter_reduce_(
+        0, inv, torch.arange(P, device=device), reduce="amin", include_self=True
+    )
+    reps = promo_all.index_select(0, first_pos)  # [G] first triangle per group
+    cmap_all = colors[:, reps, 0, :]  # [Tc, G, 5]
+    e0 = extra[:, reps, :]  # [Te, G, W]
+    mmap_all = torch.stack(
+        [e0[..., 0], e0[..., 1], e0[..., 6], e0[..., 9], torch.zeros_like(e0[..., 0])],
+        -1,
+    )  # [Te, G, 5]
+    ones_g = torch.ones((G,), dtype=torch.bool, device=device)
+    c_const = (cmap_all == cmap_all[:1]).all(-1).all(0) if Tc > 1 else ones_g
+    m_const = (mmap_all == mmap_all[:1]).all(-1).all(0) if Te > 1 else ones_g
+    has_refr = (mmap_all[..., 3] > 1e-6).any()
+    # Promoted metalness/IOR that can produce a nonzero Fresnel lobe
+    # (mirrors _material_reflectance: metalness < 0 is the non-PBR
+    # sentinel with R = 0; metalness 0 still reflects through the
+    # dielectric lobe when IOR > 1).
+    has_refl = (
+        (mmap_all[..., 0] > 0.0)
+        | ((mmap_all[..., 0] >= 0.0) & (mmap_all[..., 2].abs() > 1.0 + 1e-4))
+    ).any()
+    flags = (
+        torch.cat((c_const, m_const, has_refr.reshape(1), has_refl.reshape(1)))
+        .cpu()
+        .tolist()
+    )
+    c_const_h, m_const_h = flags[:G], flags[G : 2 * G]
+    if flags[2 * G]:
+        scene["tex_has_refractive"] = True
+    if flags[2 * G + 1]:
+        scene["tex_has_reflective"] = True
     group_meta = []
-    for gid in range(uniq.shape[0]):
-        rep = int(promo_all[int((inv == gid).nonzero()[0])])
-        cmap = _dedup_time(colors[:, rep : rep + 1, 0, :].contiguous())  # [T',1,5]
+    for gid in range(G):
+        cmap = cmap_all[: 1 if c_const_h[gid] else Tc, gid : gid + 1]  # [T',1,5]
         color_meta = _append_texture(
             cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous(), is_color=True
         )
-        e0 = extra[:, rep : rep + 1, :]
-        z = torch.zeros_like(e0[..., 0])
-        mmap = _dedup_time(
-            torch.stack(
-                [e0[..., 0], e0[..., 1], e0[..., 6], e0[..., 9], z], -1
-            ).contiguous()
-        )
+        mmap = mmap_all[: 1 if m_const_h[gid] else Te, gid : gid + 1]
         material_meta = _append_texture(
             mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous()
         )
-        if bool((mmap[..., 3] > 1e-6).any()):
-            scene["tex_has_refractive"] = True
-        # Promoted metalness/IOR that can produce a nonzero Fresnel lobe
-        # (mirrors _material_reflectance: metalness < 0 is the non-PBR
-        # sentinel with R = 0; metalness 0 still reflects through the
-        # dielectric lobe when IOR > 1).
-        if bool(
-            (
-                (mmap[..., 0] > 0.0)
-                | ((mmap[..., 0] >= 0.0) & (mmap[..., 2].abs() > 1.0 + 1e-4))
-            ).any()
-        ):
-            scene["tex_has_reflective"] = True
         group_meta.append(
             [
                 *color_meta[:3],
