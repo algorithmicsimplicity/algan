@@ -246,13 +246,24 @@ jobs:
             # The manylinux images carry their gcc-toolset and *not* the
             # distro's own compiler -- there is no /usr/bin/gcc to pin until
             # one is asked for, which cost a 30-second run to find out.
+            # `libstdc++-static` because the extension links libstdc++
+            # statically and the distro ships that archive in its own package;
+            # on RHEL derivatives it lives in the CRB repository.
             if [ ! -x "$PIN_CXX" ]; then
-              dnf install -y gcc gcc-c++
+              dnf install -y gcc gcc-c++ libstdc++-static \
+                || dnf install -y --enablerepo=crb gcc gcc-c++ libstdc++-static
             fi
             test -x "$PIN_CC"
             test -x "$PIN_CXX"
             export CC="$PIN_CC" CXX="$PIN_CXX"
             "$CXX" --version | head -1
+            # Ask for the archive by name now, in milliseconds. Without it the
+            # link fails with `cannot find -lstdc++` after twelve minutes of
+            # entirely successful compilation, which is how this line was
+            # earned.
+            static_libstdcxx=$("$CXX" -print-file-name=libstdc++.a)
+            test -f "$static_libstdcxx"
+            echo "static libstdc++ for the pinned compiler: $static_libstdcxx"
           fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
@@ -525,13 +536,24 @@ jobs:
             # The manylinux images carry their gcc-toolset and *not* the
             # distro's own compiler -- there is no /usr/bin/gcc to pin until
             # one is asked for, which cost a 30-second run to find out.
+            # `libstdc++-static` because the extension links libstdc++
+            # statically and the distro ships that archive in its own package;
+            # on RHEL derivatives it lives in the CRB repository.
             if [ ! -x "$PIN_CXX" ]; then
-              dnf install -y gcc gcc-c++
+              dnf install -y gcc gcc-c++ libstdc++-static \
+                || dnf install -y --enablerepo=crb gcc gcc-c++ libstdc++-static
             fi
             test -x "$PIN_CC"
             test -x "$PIN_CXX"
             export CC="$PIN_CC" CXX="$PIN_CXX"
             "$CXX" --version | head -1
+            # Ask for the archive by name now, in milliseconds. Without it the
+            # link fails with `cannot find -lstdc++` after twelve minutes of
+            # entirely successful compilation, which is how this line was
+            # earned.
+            static_libstdcxx=$("$CXX" -print-file-name=libstdc++.a)
+            test -f "$static_libstdcxx"
+            echo "static libstdc++ for the pinned compiler: $static_libstdcxx"
           fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
