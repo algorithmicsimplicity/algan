@@ -36,13 +36,21 @@ import sys
 # (`macosx.yml`, `win.yml`), so they are the configuration upstream tests.
 #
 # **The two Linux images are deprecating together.** `ubuntu-22.04` and
-# `ubuntu-22.04-arm` began deprecation 2026-09-17 (brownouts) and are
-# unsupported after 2027-04-17, so both legs need a new image before then.
-# Bumping the two strings to `-24.04` is the cheap version and silently raises
-# the glibc floor of both wheels (see the aarch64 entry); the move that makes
-# the stamped manylinux tag honest rather than merely newer is to build both in
-# a manylinux container (`quay.io/pypa/manylinux_2_28_*`), which is what
-# upstream's own CI does.
+# `ubuntu-22.04-arm` entered deprecation 2026-09-17; the four ~10-hour
+# brownouts are 2027-03-23, -03-30, -04-06 and -04-13, and the labels stop
+# working on 2027-04-17. Both legs need a new image before then, and moving
+# them is not a one-word edit: what a Linux wheel *actually* requires is the
+# build image's glibc, while `build_wheel` stamps `manylinux_2_27` whatever it
+# was built on. Measured on the published
+# `algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl` (this
+# leg's own output): the maximum versioned symbol is **GLIBC_2.34**
+# (`pthread_create`, `dlopen` -- the 2.34 libpthread/libdl merge), so the tag
+# already overstates by seven versions, and a bump to 24.04 (2.39) or 26.04
+# (2.43) can raise the real floor further without changing the tag that says
+# otherwise. libstdc++ is static (`readelf -d` needs only libc, libm, ld.so),
+# so glibc is the whole compatibility surface. The move that makes the tag a
+# fact rather than a claim is to build both legs in a manylinux container
+# (`quay.io/pypa/manylinux_2_28_*`), which is what upstream's own CI does.
 #
 # A key is also a **job id and an artifact name component**, so it is
 # `[a-z0-9_]+`: `quadrants_build.yaml` names one job per key,
