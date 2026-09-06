@@ -61,21 +61,25 @@ def _fake_wheel(path: Path, version: str) -> None:
 
 
 def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
-    upstream = tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
-    _fake_wheel(upstream, helper.DOWNSTREAM_VERSION)
+    # Read from the script rather than written out: the downstream version
+    # moves every release (`quadrants_patches/PYPI.md`), and a test that spells
+    # it out turns a two-file bump into a hunt through assertions.
+    version = helper.DOWNSTREAM_VERSION
+    upstream = tmp_path / f"quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    _fake_wheel(upstream, version)
     downstream = helper.rebrand_wheel(upstream)
-    assert downstream.name.startswith("algan_quadrants-1.3.0.post1-")
+    assert downstream.name.startswith(f"algan_quadrants-{version}-")
 
     with zipfile.ZipFile(downstream) as wheel:
         names = set(wheel.namelist())
         assert "quadrants/__init__.py" in names
         assert not any(
-            name.startswith("quadrants-1.3.0.post1.dist-info/") for name in names
+            name.startswith(f"quadrants-{version}.dist-info/") for name in names
         )
-        prefix = "algan_quadrants-1.3.0.post1.dist-info/"
+        prefix = f"algan_quadrants-{version}.dist-info/"
         metadata = wheel.read(prefix + "METADATA").decode()
         assert "Name: algan-quadrants\n" in metadata
-        assert "Version: 1.3.0.post1\n" in metadata
+        assert f"Version: {version}\n" in metadata
         record = wheel.read(prefix + "RECORD").decode()
         assert prefix + "METADATA" in record
         assert prefix + "RECORD,," in record
@@ -161,14 +165,13 @@ def test_a_wheel_stamped_with_the_wrong_tag_leaves_its_slot_empty(
 
 
 def test_validate_refuses_a_wheel_without_quadrants_import(helper, tmp_path):
-    path = (
-        tmp_path / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
-    )
-    prefix = "algan_quadrants-1.3.0.post1.dist-info/"
+    version = helper.DOWNSTREAM_VERSION
+    path = tmp_path / f"algan_quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    prefix = f"algan_quadrants-{version}.dist-info/"
     with zipfile.ZipFile(path, "w") as wheel:
         wheel.writestr(
             prefix + "METADATA",
-            "Name: algan-quadrants\nVersion: 1.3.0.post1\n",
+            f"Name: algan-quadrants\nVersion: {version}\n",
         )
         wheel.writestr(prefix + "RECORD", "")
     with pytest.raises(ValueError, match="retain the import package"):

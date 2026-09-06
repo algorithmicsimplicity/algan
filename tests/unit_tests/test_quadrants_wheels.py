@@ -398,6 +398,32 @@ class TestWorkflowMatchesTheResolver:
             assert f"needs.plan.outputs.{name}" in job["if"]
             assert f"needs.plan.outputs.runner_{name}" in job["runs-on"]
 
+    def test_the_workflow_and_the_rebrand_script_agree_on_the_version(self, workflow):
+        """A release is built as one version and rebranded as another, or not.
+
+        `quadrants_patches/PYPI.md` asks for the downstream version to be
+        incremented "consistently" across the workflow, the rebrand script and
+        `pyproject.toml`, and nothing checked the first two. They are one
+        contract: the build stamps `SETUPTOOLS_SCM_PRETEND_VERSION` from the
+        workflow's env, and `rebrand_wheel` refuses any wheel whose version is
+        not its own `DOWNSTREAM_VERSION`. Bump one and the publish job builds
+        sixteen wheels over ~40 minutes of runner time and then throws them
+        away at the rebrand step.
+
+        `pyproject.toml` is deliberately *not* included: it legitimately lags
+        between the build-side bump and the moment the release exists on PyPI,
+        because the lockfile cannot be regenerated before then.
+        """
+        rebrand = _load(
+            REPO_ROOT / "scripts" / "rebrand_quadrants_wheel.py",
+            "rebrand_quadrants_wheel",
+        )
+        assert workflow["env"]["ALGAN_QUADRANTS_VERSION"] == rebrand.DOWNSTREAM_VERSION
+        # The publish job names the version to a human reading the run; a stale
+        # one there is only cosmetic, but it is cosmetic in the place where
+        # somebody checks what they are about to ship.
+        assert rebrand.DOWNSTREAM_VERSION in workflow["jobs"]["publish"]["name"]
+
     def test_the_two_linux_legs_are_one_recipe(self):
         """x86-64 and aarch64 build identically, or the difference is a bug.
 

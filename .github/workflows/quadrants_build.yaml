@@ -45,7 +45,7 @@ concurrency:
 
 env:
   QUADRANTS_REF: v1.3.0
-  ALGAN_QUADRANTS_VERSION: 1.3.0.post1
+  ALGAN_QUADRANTS_VERSION: 1.3.0.post2
 
 jobs:
   plan:
@@ -798,7 +798,7 @@ jobs:
           if-no-files-found: warn
 
   publish:
-    name: Publish algan-quadrants 1.3.0.post1
+    name: Publish algan-quadrants 1.3.0.post2
     needs: [plan, linux, linux_arm64, macos, windows]
     if: >-
       ${{ always() && inputs.publish && inputs.apply_patches &&

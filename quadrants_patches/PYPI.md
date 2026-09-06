@@ -5,9 +5,11 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The first downstream release is `algan-quadrants==1.3.0.post1`. The `post1`
-suffix identifies Algan's patched build of upstream Quadrants v1.3.0 and keeps
-it distinct from the upstream `quadrants==1.3.0` release.
+The first downstream release was `algan-quadrants==1.3.0.post1`; the build
+side is now on `1.3.0.post2` (see "Releasing another downstream revision"
+for why `pyproject.toml` still says `post1` until that is published). The
+`post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
+and keeps it distinct from the upstream `quadrants==1.3.0` release.
 
 ## One-time PyPI setup
 
@@ -35,7 +37,7 @@ The workflow refuses a stock or partial matrix when `publish` is enabled, and
 what it counts as complete is `resolve_wheel_matrix.py`'s platform table rather
 than a list of names in the YAML — so a platform added there is required here
 without this document or that gate being edited. Each platform builds the
-ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION=1.3.0.post1`, so
+ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION=1.3.0.post2`, so
 Quadrants' Python metadata and its native build see the same version. After all
 sixteen wheels succeed, the publish job rewrites only the distribution metadata
 from `quadrants` to `algan-quadrants`, validates the complete matrix, and
@@ -72,15 +74,28 @@ actually serves.
 ## Releasing another downstream revision
 
 For another patch-only revision of upstream v1.3.0, increment the downstream
-version (for example `1.3.0.post2`) consistently in:
+version (for example `1.3.0.post2`) — but **in two stages, not three files at
+once**. The build side and the consumer side cannot move together, because the
+consumer side cannot be locked against a release that does not exist yet:
 
-- `.github/workflows/quadrants_build.yaml`
-- `scripts/rebrand_quadrants_wheel.py`
-- `pyproject.toml`
+1. **Before publishing**, bump the two files that decide what gets built and
+   what it is branded as. They are one contract — the build stamps
+   `SETUPTOOLS_SCM_PRETEND_VERSION` from the first and `rebrand_wheel` refuses
+   any wheel that is not the second — and
+   `test_the_workflow_and_the_rebrand_script_agree_on_the_version` holds them
+   to it:
+   - `.github/workflows/quadrants_build.yaml` (`ALGAN_QUADRANTS_VERSION`)
+   - `scripts/rebrand_quadrants_wheel.py` (`DOWNSTREAM_VERSION`)
+2. Dispatch the complete matrix with `publish` enabled.
+3. **Only then** bump `pyproject.toml` and regenerate `uv.lock` from what PyPI
+   actually serves.
 
-Build and publish the complete wheel matrix, then regenerate `uv.lock` from the
-new PyPI release. Do not overwrite an existing PyPI version; PyPI releases are
-immutable.
+Doing step 3 early is the same mistake the bootstrap section above warns
+about: `uv.lock` pins the old version with its file hashes, `uv lock --locked`
+runs in `code_quality.yaml`, and the session-start hook runs
+`uv sync --locked` — so the repository stops resolving and cannot be fixed
+until the release lands. Do not overwrite an existing PyPI version either;
+PyPI releases are immutable.
 
 **Adding a platform is one of those revisions.** `1.3.0.post1` was published as
 twelve wheels and cannot grow four more: the publish step uploads the whole
