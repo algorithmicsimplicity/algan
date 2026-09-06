@@ -1,0 +1,42 @@
+name: Publish baseline assets
+
+on:
+  push:
+    branches: [chatgpt/release-audit-13-baselines]
+    paths:
+      - .github/workflows/publish_baseline_assets.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      BASELINE_TAG: baselines-2026-09-06
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package reproducible baseline archives
+        run: python scripts/package_baselines.py --tag "$BASELINE_TAG"
+
+      - name: Verify generated pointer against packaged baselines
+        run: python scripts/package_baselines.py --verify
+
+      - name: Publish baseline release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$BASELINE_TAG" >/dev/null 2>&1; then
+            gh release upload "$BASELINE_TAG" dist/baselines/*.tar.gz --clobber
+          else
+            gh release create "$BASELINE_TAG" dist/baselines/*.tar.gz \
+              --target "$GITHUB_SHA" \
+              --title "Render baselines $BASELINE_TAG" \
+              --notes "Canonical full-render and path-traced baseline archives externalized from the Algan source tree."
+          fi
+
+      - name: Show generated pointer
+        run: cat tests/baselines.json
