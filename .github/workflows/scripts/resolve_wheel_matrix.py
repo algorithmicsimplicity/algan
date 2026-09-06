@@ -56,7 +56,19 @@ import sys
 # becomes a measured fact (`scripts/gate/verify_wheel_tag.py` fails the build
 # if auditwheel disagrees with the tag below), and the host runner stops
 # mattering -- so the runner can track whatever GitHub currently supports
-# without touching the wheels.
+# without touching the wheels. Measured, first container build (run
+# 34032073850): the x86-64 wheel came out at **GLIBC_2.27**, down from the
+# 2.34 the `ubuntu-22.04` leg was shipping, which is RHEL 8, Ubuntu 20.04 and
+# Debian 11 going from "pip installs it and the import fails" to working.
+#
+# The tag stamped is the **container's policy**, not that measurement, and the
+# gap is deliberate: auditwheel said 2.27 and the wheel is stamped 2.28. A
+# release matrix needs a tag that is the same on every build --
+# `validate_quadrants_release.py` files sixteen wheels by it and
+# `build_quadrants_wheels.py --install` matches on it -- whereas a measured
+# tag moves whenever a dependency reaches for a newer symbol. The cost is
+# glibc 2.27 exactly (Ubuntu 18.04, EOL); the gate still fails the build if
+# the measurement ever exceeds the stamp, which is the direction that hurts.
 #
 # The two containers differ because **the prebuilt LLVM 22.1.0 toolchain that
 # `download_llvm.py` fetches is not the same binary on the two architectures**,
