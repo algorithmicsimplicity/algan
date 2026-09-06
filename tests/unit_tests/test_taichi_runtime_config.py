@@ -341,3 +341,110 @@ print("KERNELS", len(_impl.get_runtime().kernels))
     assert reported["PROG"] == "False"
     # The point of the exercise: kernels register fine without a program.
     assert int(reported["KERNELS"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Flushing the offline kernel cache
+# ---------------------------------------------------------------------------
+#
+# The compiler writes its ``.qdc`` artifacts from ``Program::finalize``, which
+# it reaches only when the Python ``Program`` is destroyed. A script gets that
+# from interpreter teardown for free; a *host* process does not. Measured on
+# 2026-09-06: a Sphinx docs build compiled eleven kernels (613 s), exited with
+# ``build succeeded``, and wrote zero artifacts, while the identical scene as a
+# plain script wrote two -- so every docs build recompiled the same shadow
+# megakernels. ``flush_kernel_cache`` asks for the write instead of inheriting
+# it. These tests pin the decision, not the compiler's dump; that the dump
+# happens on ``finalize`` was verified by counting the artifact directory
+# either side of a mid-process reset.
+
+
+def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
+    """Wired into ``_start_program``, and not re-registered on a re-init."""
+    import atexit
+
+    from algan.rendering import taichi_runtime
+
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
+    monkeypatch.setattr(taichi_runtime, "_FLUSH_REGISTERED", False)
+    monkeypatch.setattr(taichi_runtime.ti, "init", lambda **kwargs: None)
+    monkeypatch.setattr(taichi_runtime, "_install_taichi_compile_logger", lambda: None)
+    monkeypatch.setattr(taichi_runtime, "_remove_stale_offline_cache_locks", lambda p: [])
+
+    taichi_runtime._start_program()
+    taichi_runtime._start_program()
+
+    assert registered == [taichi_runtime.flush_kernel_cache]
+
+
+def test_a_process_that_compiled_nothing_does_not_flush(monkeypatch):
+    """No new specialization means nothing to write, so the runtime stays up.
+
+    Without this the flush would tear down a warm runtime at the end of every
+    process that only ever hit the cache -- paying a teardown to write nothing.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    live = program()
+    assert live is not None
+
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", False)
+    assert taichi_runtime.flush_kernel_cache() is False
+    assert program() is live
+
+
+def test_the_flush_stands_aside_for_a_running_render(monkeypatch):
+    """A render still holding the arch must not have its kernels pulled.
+
+    The batch-prep worker launches kernels on its own thread, so resetting
+    under a live job could discard a kernel mid-launch. An exit that lands
+    here (a killed process, a hard interrupt) keeps the old
+    dump-at-destruction behaviour rather than risking that.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    live = program()
+    assert live is not None
+
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    with taichi_runtime.render_job_holding_the_arch():
+        assert taichi_runtime.flush_kernel_cache() is False
+    assert program() is live
+
+
+def test_the_flush_can_be_turned_off(monkeypatch):
+    """``ALGAN_FLUSH_KERNEL_CACHE=0`` is the A/B arm and the kill switch."""
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    live = program()
+    assert live is not None
+
+    monkeypatch.setenv("ALGAN_FLUSH_KERNEL_CACHE", "0")
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
+    assert taichi_runtime.flush_kernel_cache() is False
+    assert program() is live
+
+
+def test_flushing_drops_the_program_so_the_compiler_writes_its_cache():
+    """The one that actually tears down -- ``finalize`` is what dumps.
+
+    Deliberately last of the group and paired with a re-init, because a
+    teardown discards every kernel compiled so far in the process.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.ensure_taichi_for_render()
+    assert program() is not None
+
+    assert taichi_runtime.flush_kernel_cache(force=True) is True
+    assert program() is None
+    assert taichi_runtime._BUILT_A_SPECIALIZATION is False
+
+    # Nothing after this may find the runtime missing.
+    taichi_runtime.ensure_taichi_for_render()
+    assert program() is not None
+    assert taichi_runtime._arch_matches_render_device()

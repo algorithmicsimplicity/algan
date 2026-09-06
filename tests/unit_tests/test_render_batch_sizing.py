@@ -15,6 +15,19 @@ from algan.settings import SETTINGS
 from algan.utils.memory_utils import InsufficientMemoryException
 
 
+@pytest.mark.parametrize("remaining", [0, -100])
+def test_exhausted_frame_budget_replaces_optimistic_preflight_measurement(remaining):
+    scene = RenderLoopMixin.__new__(RenderLoopMixin)
+    scene._begin_batch_cost_measurement()
+    # The exact scene upload fits; the subsequent forward-workspace reserve
+    # consumes its budget. Ignoring this second observation used to retain
+    # the optimistic capacity and repeat the same failed search every batch.
+    scene._note_batch_cost("arena", 6, 120, 1000)
+    assert scene._batch_frame_capacity() == 50
+    scene._note_batch_cost("arena", 6, 120, remaining)
+    assert scene._batch_frame_capacity() == 0
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda", "mps", "xpu"])
 def test_no_device_gets_an_unbounded_out_of_arena_budget(device, monkeypatch):
     # Both out-of-arena budgets used to answer float("inf") for any device that

@@ -936,6 +936,12 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
             int(AA_MASK_ALL),
             first_lane,
         )
+        if rt_settings.sheet_depth_reduce_kernel:
+            from algan.rendering.raytracing.sheet_depth_taichi import sheet_lane_depths
+
+            out = torch.empty((nb, AA_NUM_SAMPLES), dtype=torch.float32, device=device)
+            sheet_lane_depths(first_lane, t_o, n, out)
+            return out
         has = first_lane < n
         d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
         return torch.where(has, d_lane, inf).view(nb, AA_NUM_SAMPLES)
@@ -962,6 +968,105 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
         del first_sorted, has, d_lane
     del big, positions, inf
     return sample_depths
+
+
+def _sample_depth_lose_reference(
+    sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
+):
+    """Global expanded-lane reference for the per-pixel depth reduction."""
+    nb, device = sheet_pix.numel(), sheet_pix.device
+    # Per-(pixel, sample) floor over the enforcers: the minimum depth AND
+    # the second minimum over DIFFERENT-surface entries, so each subject
+    # compares against the best OTHER-sid enforcer at that sample.
+    other_d = torch.full(
+        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
+    )
+    enf = enforcer.nonzero(as_tuple=True)[0]
+    if int(enf.numel()) > 0:
+        lanes = torch.arange(AA_NUM_SAMPLES, device=device)
+        epk = (
+            sheet_pix.index_select(0, enf).unsqueeze(1) * AA_NUM_SAMPLES
+            + lanes.view(1, -1)
+        ).reshape(-1)
+        edepth = sample_depths.index_select(0, enf).reshape(-1)
+        esid = (
+            sheet_sid.index_select(0, enf)
+            .unsqueeze(1)
+            .expand(-1, AA_NUM_SAMPLES)
+            .reshape(-1)
+        )
+        ord_e = _lexsort(epk, edepth)
+        epk = epk.index_select(0, ord_e)
+        edepth = edepth.index_select(0, ord_e)
+        esid = esid.index_select(0, ord_e)
+        del ord_e
+        new_group_e = torch.ones_like(epk, dtype=torch.bool)
+        if epk.numel() > 1:
+            new_group_e[1:] = epk[1:] != epk[:-1]
+        grp = torch.cumsum(new_group_e.to(torch.int64), 0) - 1
+        uniq_pk = epk[new_group_e]
+        best_d = edepth[new_group_e]
+        best_sid = esid[new_group_e]
+        diff_sid = esid != best_sid.index_select(0, grp)
+        sec_d = torch.full(
+            (int(uniq_pk.numel()),),
+            float("inf"),
+            dtype=torch.float32,
+            device=device,
+        )
+        if bool(diff_sid.any()):
+            sec_d.scatter_reduce_(
+                0,
+                grp[diff_sid],
+                edepth[diff_sid],
+                reduce="amin",
+                include_self=True,
+            )
+        del diff_sid
+        del new_group_e, epk, edepth, esid
+        qpk = (sheet_pix.unsqueeze(1) * AA_NUM_SAMPLES + lanes.view(1, -1)).reshape(-1)
+        loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
+        found = uniq_pk.index_select(0, loc) == qpk
+        bd = best_d.index_select(0, loc)
+        bsid = best_sid.index_select(0, loc)
+        sd = sec_d.index_select(0, loc)
+        own_here = (
+            bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
+        ).reshape(-1)
+        other_d = torch.where(found & own_here, sd, bd)
+        other_d = torch.where(found, other_d, other_d.new_full((), float("inf")))
+        other_d = other_d.view(nb, AA_NUM_SAMPLES)
+        del found, bd, bsid, sd, loc, qpk, grp, uniq_pk, best_d, best_sid
+        del sec_d, lanes
+
+    # Lose: the subject owns s AND the best other-surface enforcer there
+    # is strictly nearer beyond depth_tie_epsilon -- exact ties and
+    # near-ties keep today's walk order.
+    lane_bits = torch.arange(AA_NUM_SAMPLES, device=device)
+    owns = ((low.unsqueeze(1) >> lane_bits.view(1, -1)) & 1) == 1
+    gate = owns & (other_d < sample_depths - depth_tie_epsilon)
+    gate &= subject.unsqueeze(1)
+    # ALL OR NOTHING, above a floor. A fragment's depth is evaluated at
+    # the centroid of the samples it OWNS (raster_taichi.py:1308-1330), so
+    # a lane's depth is that centroid's rather than the lane's: the finer
+    # the margin, the less the comparison is entitled to decide anything.
+    # A sheet losing only a thin share of its samples is reading exactly
+    # that weakest margin, on a pixel it otherwise wins -- measured, ceding
+    # there regressed two pixels by 110 and 55 channel values while fixing
+    # nothing, because the surface behind does not always claim what was
+    # ceded. So a sheet cedes everything it loses or nothing at all, and
+    # only once it is losing more than sheet_sample_depth_cede of what
+    # it owns.
+    n_lose = gate.sum(dim=1)
+    n_own = owns.sum(dim=1)
+    gate &= (
+        n_lose.to(torch.float32) > sheet_sample_depth_cede * n_own.to(torch.float32)
+    ).unsqueeze(1)
+    del n_lose, n_own
+    lose_word = (
+        (gate.to(torch.int64) << lane_bits.view(1, -1)).sum(dim=1).to(torch.int32)
+    ) << AA_LOSE_SHIFT
+    return lose_word
 
 
 def compact_sheets(
@@ -1791,99 +1896,27 @@ def compact_sheets(
         )
         subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
 
-        # Per-(pixel, sample) floor over the enforcers: the minimum depth AND
-        # the second minimum over DIFFERENT-surface entries, so each subject
-        # compares against the best OTHER-sid enforcer at that sample.
-        other_d = torch.full(
-            (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
-        )
-        enf = enforcer.nonzero(as_tuple=True)[0]
-        if int(enf.numel()) > 0:
-            lanes = torch.arange(AA_NUM_SAMPLES, device=device)
-            epk = (
-                sheet_pix.index_select(0, enf).unsqueeze(1) * AA_NUM_SAMPLES
-                + lanes.view(1, -1)
-            ).reshape(-1)
-            edepth = sample_depths.index_select(0, enf).reshape(-1)
-            esid = (
-                sheet_sid.index_select(0, enf)
-                .unsqueeze(1)
-                .expand(-1, AA_NUM_SAMPLES)
-                .reshape(-1)
-            )
-            ord_e = _lexsort(epk, edepth)
-            epk = epk.index_select(0, ord_e)
-            edepth = edepth.index_select(0, ord_e)
-            esid = esid.index_select(0, ord_e)
-            del ord_e
-            new_group_e = torch.ones_like(epk, dtype=torch.bool)
-            if epk.numel() > 1:
-                new_group_e[1:] = epk[1:] != epk[:-1]
-            grp = torch.cumsum(new_group_e.to(torch.int64), 0) - 1
-            uniq_pk = epk[new_group_e]
-            best_d = edepth[new_group_e]
-            best_sid = esid[new_group_e]
-            diff_sid = esid != best_sid.index_select(0, grp)
-            sec_d = torch.full(
-                (int(uniq_pk.numel()),),
-                float("inf"),
-                dtype=torch.float32,
-                device=device,
-            )
-            if bool(diff_sid.any()):
-                sec_d.scatter_reduce_(
-                    0,
-                    grp[diff_sid],
-                    edepth[diff_sid],
-                    reduce="amin",
-                    include_self=True,
-                )
-            del diff_sid
-            del new_group_e, epk, edepth, esid
-            qpk = (sheet_pix.unsqueeze(1) * AA_NUM_SAMPLES + lanes.view(1, -1)).reshape(
-                -1
-            )
-            loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
-            found = uniq_pk.index_select(0, loc) == qpk
-            bd = best_d.index_select(0, loc)
-            bsid = best_sid.index_select(0, loc)
-            sd = sec_d.index_select(0, loc)
-            own_here = (
-                bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
-            ).reshape(-1)
-            other_d = torch.where(found & own_here, sd, bd)
-            other_d = torch.where(found, other_d, other_d.new_full((), float("inf")))
-            other_d = other_d.view(nb, AA_NUM_SAMPLES)
-            del found, bd, bsid, sd, loc, qpk, grp, uniq_pk, best_d, best_sid
-            del sec_d, lanes
+        if rt_settings.sheet_depth_reduce_kernel:
+            from algan.rendering.raytracing.sheet_depth_taichi import sheet_depth_lose
 
-        # Lose: the subject owns s AND the best other-surface enforcer there
-        # is strictly nearer beyond depth_tie_epsilon -- exact ties and
-        # near-ties keep today's walk order.
-        lane_bits = torch.arange(AA_NUM_SAMPLES, device=device)
-        owns = ((low.unsqueeze(1) >> lane_bits.view(1, -1)) & 1) == 1
-        gate = owns & (other_d < sample_depths - depth_tie_epsilon)
-        gate &= subject.unsqueeze(1)
-        # ALL OR NOTHING, above a floor. A fragment's depth is evaluated at
-        # the centroid of the samples it OWNS (raster_taichi.py:1308-1330), so
-        # a lane's depth is that centroid's rather than the lane's: the finer
-        # the margin, the less the comparison is entitled to decide anything.
-        # A sheet losing only a thin share of its samples is reading exactly
-        # that weakest margin, on a pixel it otherwise wins -- measured, ceding
-        # there regressed two pixels by 110 and 55 channel values while fixing
-        # nothing, because the surface behind does not always claim what was
-        # ceded. So a sheet cedes everything it loses or nothing at all, and
-        # only once it is losing more than sheet_sample_depth_cede of what
-        # it owns.
-        n_lose = gate.sum(dim=1)
-        n_own = owns.sum(dim=1)
-        gate &= (
-            n_lose.to(torch.float32) > sheet_sample_depth_cede * n_own.to(torch.float32)
-        ).unsqueeze(1)
-        del n_lose, n_own
-        lose_word = (
-            (gate.to(torch.int64) << lane_bits.view(1, -1)).sum(dim=1).to(torch.int32)
-        ) << AA_LOSE_SHIFT
+            lose_word = torch.empty(nb, dtype=torch.int32, device=device)
+            sheet_depth_lose(
+                kernel_index(sheet_pix),
+                sheet_sid,
+                sample_depths,
+                low,
+                subject.contiguous().view(torch.uint8),
+                enforcer.contiguous().view(torch.uint8),
+                nb,
+                float(depth_tie_epsilon),
+                float(sheet_sample_depth_cede),
+                int(AA_LOSE_SHIFT),
+                lose_word,
+            )
+        else:
+            lose_word = _sample_depth_lose_reference(
+                sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
+            )
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
 

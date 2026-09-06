@@ -870,9 +870,12 @@ class RenderLoopMixin:
 
     def _note_batch_cost(self, term, num_frames, needed_bytes, usable_bytes):
         """Record what one preflight term cost this batch, and its budget."""
-        if not num_frames or needed_bytes <= 0 or usable_bytes <= 0:
+        if not num_frames or needed_bytes <= 0:
             return
-        self._batch_costs[term].observe(num_frames, needed_bytes, usable_bytes)
+        # A later reservation can exhaust an initially positive budget. Keep
+        # that verdict: discarding it leaves the earlier optimistic capacity
+        # live and repeats the same rejected preflight probes every batch.
+        self._batch_costs[term].observe(num_frames, needed_bytes, max(0, usable_bytes))
 
     def _batch_frame_capacity(self):
         """Frames the tightest measured term leaves room for, or ``None``.

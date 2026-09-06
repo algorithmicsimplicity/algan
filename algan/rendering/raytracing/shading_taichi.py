@@ -269,9 +269,11 @@ def light_vis_index(li, c):
 # the cap are still *lit*, just never shadowed. The visibility vector is
 # dead-code-eliminated when shadows are off (the default), so a larger cap
 # only costs registers on opt-in shadow renders. 16 covers a key/fill/rim rig
-# plus a 4x4-sample area light out of the box; raise ALGAN_MAX_SHADOW_LIGHTS
-# for denser area-light penumbras or larger rigs (more registers, lower
-# occupancy on the shadow kernels). Each area-light emitter sample counts as
+# with an ambient fill several times over, or that rig plus a 3x3-sample area
+# light; a 4x4-sample area light spends all 16 on its own. Raise
+# ALGAN_MAX_SHADOW_LIGHTS for denser area-light penumbras or larger rigs (more
+# registers, lower occupancy on the shadow kernels).
+# Each area-light emitter sample counts as
 # one slot; samples past the cap light without shadowing, so an under-capped
 # area light just gets a shallower umbra, never a wrong one (every built-in
 # stage treats a past-the-cap light as fully lit, exactly as it treats an

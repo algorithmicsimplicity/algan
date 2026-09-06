@@ -760,6 +760,9 @@ _ENV_NOT_IN_KEY = frozenset(
         "ALGAN_TAICHI_FAST_LAUNCH_VERIFY",
         "ALGAN_LOG_TAICHI_COMPILES",
         "ALGAN_TAICHI_COMPILE_LOG",
+        # Exit-time housekeeping: it decides when the artifacts this index
+        # points at are written to disk, never what any of them contain.
+        "ALGAN_FLUSH_KERNEL_CACHE",
         "ALGAN_LOG_LEVEL",
         "ALGAN_PROGRESS",
         "ALGAN_PROFILE_CPROFILE",

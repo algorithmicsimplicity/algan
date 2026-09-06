@@ -45,6 +45,7 @@ the patches an Algan render actually runs through.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import datetime as _datetime
 import json
@@ -56,7 +57,7 @@ from pathlib import Path
 import torch
 
 from algan.environment import env_flag, env_int, env_str
-from algan.logging.logger import get_logger
+from algan.logging.logger import PERF, get_logger
 from algan.settings._startup import _TAICHI_CACHE_DIRECTORY, render_device
 from algan.taichi_compat import BACKEND, ti
 
@@ -369,6 +370,12 @@ def _install_taichi_compile_logger():
             raise
         if observe_cache and not _loaded_from_offline_cache(native_log):
             _notify_compile_notice()
+        # This process built a specialization the source-key index could not
+        # serve, so it holds kernel data the offline cache may not. Only
+        # `flush_kernel_cache` reads this, and only to skip the flush entirely
+        # for a process that compiled nothing.
+        global _BUILT_A_SPECIALIZATION
+        _BUILT_A_SPECIALIZATION = True
         backend_seconds = time.perf_counter() - backend_started
         total_seconds = frontend_seconds + backend_seconds
         _emit_compile_record(
@@ -760,6 +767,7 @@ def _start_program():
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
     ti.init(**taichi_init_kwargs())
     _install_taichi_compile_logger()
+    _register_kernel_cache_flush()
 
 
 def init_taichi():
@@ -876,6 +884,117 @@ def render_job_holding_the_arch():
 def render_is_active():
     """Whether a render job currently depends on the live arch."""
     return _RENDER_JOBS_ACTIVE > 0
+
+
+#: Set when a kernel specialization went through the full front end in this
+#: process (:func:`_install_taichi_compile_logger`). It is deliberately coarse:
+#: it is also set for a specialization the *offline* cache then served, because
+#: the only signal that separates the two is the native compiler log, which is
+#: captured for one kernel per process. Over-setting costs an idempotent dump;
+#: under-setting would lose kernels, which is the bug this exists for.
+_BUILT_A_SPECIALIZATION = False
+
+#: One ``atexit`` registration per process, from :func:`_start_program`.
+_FLUSH_REGISTERED = False
+
+
+def _register_kernel_cache_flush():
+    global _FLUSH_REGISTERED
+    if _FLUSH_REGISTERED:
+        return
+    # Registered after torch is imported, so it runs *before* torch's own exit
+    # handlers (``atexit`` is LIFO): Taichi releases the device first, which is
+    # the order the destructor path used to get for free.
+    atexit.register(flush_kernel_cache)
+    _FLUSH_REGISTERED = True
+
+
+def flush_kernel_cache(*, force=False):
+    """Write this process's newly compiled kernels to the offline cache.
+
+    **Why this is not automatic.** The ``.qdc`` artifacts are written by
+    ``Program::finalize``, which the compiler reaches only when the Python
+    ``Program`` object is destroyed. In a script that is interpreter teardown
+    and it happens for free -- which is why the cache has always looked like it
+    worked. In a *host* process it does not: measured on 2026-09-06, a Sphinx
+    docs build compiled eleven kernels (613 s, three ``sheet_resolve_shade_arena``
+    specializations over 80 s each), exited with ``build succeeded``, and wrote
+    **zero** artifacts, while the identical scene as a plain script wrote two.
+    Something in the host keeps the runtime alive past the point where the
+    destructor would run. The docs build therefore recompiled the same shadow
+    kernels on every invocation, for as long as the documentation has had a
+    shadow example.
+
+    The Python-side source-key index is what makes that state sticky rather
+    than merely wasteful: ``PythonSideCache.store`` writes each entry
+    immediately, so a host process leaves behind index entries pointing at C++
+    artifacts that were never saved. The next run resolves the key, fails
+    ``load_fast_cache``, and scores a miss (``taichi_source_key``) -- a cache
+    that reports a hit and delivers nothing.
+
+    So Algan asks for the write instead of inheriting it. ``ti.reset()`` calls
+    ``prog.finalize()``, and that dumps: the same probe counted the artifact
+    directory either side of a mid-process ``reset`` and saw the two kernels it
+    had just compiled appear. Registered on ``atexit`` at first ``ti.init``,
+    which also covers the interrupted case -- a ``KeyboardInterrupt`` unwinds
+    ``render_job_holding_the_arch`` normally, so an hour of compilation
+    survives a Ctrl-C instead of evaporating.
+
+    Safe for the same reason :func:`ensure_taichi_for_render` may re-init:
+    Algan holds no ``ti.field`` or ``ti.Ndarray``, every kernel argument being a
+    torch tensor. The runtime comes back up on its own if anything renders
+    after this -- ``init_taichi`` sees no program and starts one.
+
+    Skipped, rather than risked, when a render still holds the arch: the
+    batch-prep worker launches kernels on its own thread and resetting under it
+    would discard a kernel mid-launch. Skipped off the main thread for the same
+    reason. ``ALGAN_FLUSH_KERNEL_CACHE=0`` turns it off and restores the
+    destructor-only behaviour, which is the A/B arm.
+
+    Parameters
+    ----------
+    force
+        Flush even though no specialization went through the front end in this
+        process. Only useful for a test that wants the call to do its work.
+
+    Returns
+    -------
+    bool
+        Whether the runtime was actually torn down (and therefore dumped).
+    """
+    global _BUILT_A_SPECIALIZATION, _ARCH_READY_FOR
+    if not env_flag("ALGAN_FLUSH_KERNEL_CACHE", True):
+        return False
+    if not (force or _BUILT_A_SPECIALIZATION):
+        return False
+    if not _already_initialized():
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    if render_is_active():
+        get_logger().log(
+            PERF,
+            "Not flushing the kernel cache: a render job still holds the "
+            "Taichi runtime.",
+        )
+        return False
+    started = time.perf_counter()
+    try:
+        ti.reset()
+    except Exception as exc:
+        # Never the reason a process fails to exit. The old behaviour (dump at
+        # destruction, or not at all) is what a failure here falls back to.
+        get_logger().log(PERF, "Kernel cache flush failed: %r", exc)
+        return False
+    _BUILT_A_SPECIALIZATION = False
+    _ARCH_READY_FOR = None
+    get_logger().log(
+        PERF,
+        "Flushed newly compiled kernels to %s in %.2f s.",
+        _TAICHI_CACHE_DIRECTORY,
+        time.perf_counter() - started,
+    )
+    return True
 
 
 def install_render_arch_guard():

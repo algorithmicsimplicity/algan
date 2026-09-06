@@ -3813,3 +3813,8 @@ def _scene_has_user_pipeline(merged):
         ):
             return True
     return False
+
+# Reduce competing sample depths within each pixel instead of sorting expanded
+# (pixel, lane) arrays. The old tensor path remains an exact A/B reference.
+# Also fuses the lane-owner gather to avoid full-size masking temporaries.
+sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
