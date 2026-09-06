@@ -117,32 +117,33 @@ PLATFORMS: dict[str, dict[str, str]] = {
     # this is a configuration upstream builds too, not new ground. What it does
     # need is its own container, for the reason above.
     #
-    # **Its tag is 2_35 while its container is 2_34, and that is measured.**
-    # The wheel this container produces carries exactly one symbol above 2.34
+    # **It links with the image's base GCC 11 rather than its gcc-toolset-14,
+    # and that is what keeps its floor at 2.34.** Built with the toolset the
+    # image puts on `PATH`, the wheel carried exactly one symbol above 2.34
     # (run 34032726212, `readelf --dyn-syms` on the artifact):
     #
     #     116: ... FUNC GLOBAL DEFAULT UND _dl_find_object@GLIBC_2.35
     #
     # `_dl_find_object` arrived in glibc 2.35 and libgcc's unwinder calls it
-    # from GCC 12 on; the image's toolchain is GCC 14 and AlmaLinux 9's glibc
-    # carries the symbol, so the reference is generated and links. It is
-    # **GLOBAL, not weak** -- the loader must resolve it -- so the wheel really
-    # does fail to import on a true glibc 2.34, and auditwheel is right to
-    # refuse 2_34. The x86-64 leg escapes it because AlmaLinux 8's glibc is
-    # 2.28: the same GCC 14 cannot reference a symbol its libc has never heard
-    # of, which is why that wheel measures 2.27.
+    # from GCC 12 on. The compiler that links the extension is the one whose
+    # libgcc gets statically absorbed into it, so GCC 14 puts that call in,
+    # AlmaLinux 9's glibc carries the symbol so the link succeeds, and the
+    # result is a wheel that needs 2.35. It is **GLOBAL, not weak** -- the
+    # loader must resolve it -- so such a wheel really does fail to import on a
+    # true glibc 2.34, which is RHEL 9 and Amazon Linux 2023. GCC 11 predates
+    # the call entirely, and its libstdc++ is what the LLVM archives were built
+    # against anyway (their `GLIBCXX_3.4.29` is GCC 11's version), so it is the
+    # older toolchain that is the *compatible* one here.
     #
-    # Reclaiming 2.34 means a libgcc without that call -- linking with the
-    # image's base GCC 11 rather than gcc-toolset-14 is the obvious try, and
-    # upstream's own aarch64 wheel (max GLIBC_2.34, no `_dl_find_object`)
-    # suggests they do something of the kind. It is not attempted here because
-    # the LLVM archives are built against a newer libstdc++ and a GCC 11 link
-    # may not find the `GLIBCXX_3.4.3x` symbols they need. The cost of not
-    # doing it is RHEL 9 and Amazon Linux 2023, which are glibc 2.34.
+    # The x86-64 leg needs no such pin: AlmaLinux 8's glibc is 2.28, and the
+    # same GCC 14 cannot reference a symbol its libc has never heard of, which
+    # is why that wheel measures 2.27 on the toolset compiler.
     "linux_arm64": {
         "runner": "ubuntu-24.04-arm",
         "container": "quay.io/pypa/manylinux_2_34_aarch64",
-        "wheel_tag": "manylinux_2_35_aarch64",
+        "cc": "/usr/bin/gcc",
+        "cxx": "/usr/bin/g++",
+        "wheel_tag": "manylinux_2_34_aarch64",
         "label": "linux-aarch64",
     },
     "macos": {
@@ -224,6 +225,11 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
         outputs[f"wheel_tag_{name}"] = spec["wheel_tag"]
         if "container" in spec:
             outputs[f"container_{name}"] = spec["container"]
+            # Empty unless the platform pins one, in which case the build step
+            # exports it. Only a containerised leg can name an absolute
+            # compiler path, because only there is the filesystem known.
+            outputs[f"cc_{name}"] = spec.get("cc", "")
+            outputs[f"cxx_{name}"] = spec.get("cxx", "")
     outputs["pythons"] = json.dumps(ordered_pythons)
     # The selection as a list, which is what `--check-publish` reads back. The
     # per-platform `true`/`false` outputs above are what a job's `if:` can gate

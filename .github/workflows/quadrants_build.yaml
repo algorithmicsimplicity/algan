@@ -67,6 +67,12 @@ jobs:
       container_linux_arm64: ${{ steps.resolve.outputs.container_linux_arm64 }}
       wheel_tag_linux: ${{ steps.resolve.outputs.wheel_tag_linux }}
       wheel_tag_linux_arm64: ${{ steps.resolve.outputs.wheel_tag_linux_arm64 }}
+      # Empty unless a leg pins the compiler that links its extension, which
+      # is what decides whose libgcc it absorbs and so its glibc floor.
+      cc_linux: ${{ steps.resolve.outputs.cc_linux }}
+      cc_linux_arm64: ${{ steps.resolve.outputs.cc_linux_arm64 }}
+      cxx_linux: ${{ steps.resolve.outputs.cxx_linux }}
+      cxx_linux_arm64: ${{ steps.resolve.outputs.cxx_linux_arm64 }}
       pythons: ${{ steps.resolve.outputs.pythons }}
       summary: ${{ steps.resolve.outputs.summary }}
     steps:
@@ -220,12 +226,28 @@ jobs:
 
       - name: Build the wheel
         working-directory: quadrants-src
+        env:
+          PIN_CC: ${{ needs.plan.outputs.cc_linux }}
+          PIN_CXX: ${{ needs.plan.outputs.cxx_linux }}
         run: |
           set -euxo pipefail
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
+
+          # The compiler that links the extension is the one whose libgcc it
+          # statically absorbs, and that decides the wheel's glibc floor -- see
+          # the aarch64 entry in `resolve_wheel_matrix.py`, where the image's
+          # gcc-toolset-14 contributed a `_dl_find_object@GLIBC_2.35` the older
+          # base compiler does not have. Empty for a platform that does not
+          # care, so the container's default is used.
+          if [ -n "${PIN_CXX:-}" ]; then
+            test -x "$PIN_CC"
+            test -x "$PIN_CXX"
+            export CC="$PIN_CC" CXX="$PIN_CXX"
+            "$CXX" --version | head -1
+          fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
           # JIT loads -- is built by this *prebuilt* clang rather than by the
@@ -473,12 +495,28 @@ jobs:
 
       - name: Build the wheel
         working-directory: quadrants-src
+        env:
+          PIN_CC: ${{ needs.plan.outputs.cc_linux_arm64 }}
+          PIN_CXX: ${{ needs.plan.outputs.cxx_linux_arm64 }}
         run: |
           set -euxo pipefail
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
+
+          # The compiler that links the extension is the one whose libgcc it
+          # statically absorbs, and that decides the wheel's glibc floor -- see
+          # the aarch64 entry in `resolve_wheel_matrix.py`, where the image's
+          # gcc-toolset-14 contributed a `_dl_find_object@GLIBC_2.35` the older
+          # base compiler does not have. Empty for a platform that does not
+          # care, so the container's default is used.
+          if [ -n "${PIN_CXX:-}" ]; then
+            test -x "$PIN_CC"
+            test -x "$PIN_CXX"
+            export CC="$PIN_CC" CXX="$PIN_CXX"
+            "$CXX" --version | head -1
+          fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
           # JIT loads -- is built by this *prebuilt* clang rather than by the

@@ -483,6 +483,27 @@ class TestWorkflowMatchesTheResolver:
             else:
                 assert "container" not in job, f"{name} should not have a container"
 
+    def test_no_job_reads_another_platforms_outputs(self, resolver, workflow):
+        """A leg must read its own row of the table, and only its own.
+
+        This is the blind spot in `test_the_two_linux_legs_are_one_recipe` and
+        it has already bitten: the aarch64 leg was given the x86-64 leg's
+        `cc_linux`/`cxx_linux` by a global substitution, and the drift test saw
+        nothing, because rewriting the platform key out maps `cc_linux` and
+        `cc_linux_arm64` to the same token. The two tests are complementary --
+        one says the legs are identical, this one says each is identical to
+        *itself*.
+        """
+        for name in resolver.PLATFORMS:
+            text = yaml.safe_dump(workflow["jobs"][name])
+            for reference in set(re.findall(r"needs\.plan\.outputs\.(\w+)", text)):
+                for other in resolver.PLATFORMS:
+                    if reference == other or reference.endswith(f"_{other}"):
+                        assert other == name, (
+                            f"job {name!r} reads {reference!r}, which belongs "
+                            f"to {other!r}"
+                        )
+
     def test_the_containerised_legs_do_not_reach_for_the_host(self, workflow):
         # The manylinux images are RPM-based and run as root: `sudo` is not
         # installed and `apt-get` does not exist, so either one is a step that
