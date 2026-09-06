@@ -273,7 +273,7 @@ def backend_version() -> tuple:
 
 
 def describe_backend() -> str:
-    """``\"taichi 1.7.4\"`` -- the backend and version, for logs and ``algan info``."""
+    """``"taichi 1.7.4"`` -- the backend and version, for logs and ``algan info``."""
     version = ".".join(str(part) for part in backend_version())
     return f"{BACKEND} {version}" if version else BACKEND
 
