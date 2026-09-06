@@ -187,17 +187,26 @@ Apple GPU and an NVIDIA one. Both passed on 2026-09-04, from
 | **Metal** (0001, 0002) | `bash scripts/gate/quadrants_macos_build.sh` with `GATE_QD_PATCHES=1`, arm `mac-cpu` | PASS, 781 s build, `quadrants-1.3.1.dev0+gab9a58ab5-cp311-cp311-macosx_13_0_arm64.whl` (22.3 MiB), **`qd.init(metal)=ok`**, and clang named **no warning flags at all** |
 | **CUDA** (0003) | `bash scripts/gate/quadrants_linux_build.sh`, arm `linux-cpu` | PASS, 1041 s build, `...-manylinux_2_27_x86_64.whl` (26.4 MiB), `qd.init(cpu)=ok`, `runtime_cuda.bc present -- CUDA backend compiled` |
 
-**The aarch64 Linux leg has never been run, and neither leg has been run in a
-container yet.** `quadrants_build.yaml` builds aarch64 since the platform table
-gained `linux_arm64`, and nothing in these seven patches is x86-specific —
-0001-0002 edit Metal sources a Linux build does not compile, and 0003 and
-0005-0007 are CUDA codegen against the NVPTX target in the same prebuilt LLVM,
-which `download_llvm.py` fetches per architecture. What *is* per-architecture
-and was measured before the containers were chosen: the aarch64 LLVM archive's
-own binaries need `GLIBC_2.34` and `GLIBCXX_3.4.29` (the x86-64 ones need 2.14
-and 3.4.21), which is why the aarch64 leg builds in `manylinux_2_34` and the
-x86-64 leg in `manylinux_2_28`. The first dispatch of either is what turns the
-rest into a fact. The line to check in its summary is the same one below.
+**Both Linux legs now build inside manylinux containers, and both have run
+there.** Nothing in these seven patches is x86-specific — 0001-0002 edit Metal
+sources a Linux build does not compile, and 0003 and 0005-0007 are CUDA codegen
+against the NVPTX target in the same prebuilt LLVM, which `download_llvm.py`
+fetches per architecture. What *is* per-architecture was measured before the
+containers were chosen: the aarch64 LLVM archive's own binaries need
+`GLIBC_2.34` and `GLIBCXX_3.4.29` (the x86-64 ones need 2.14 and 3.4.21), which
+is why the aarch64 leg builds in `manylinux_2_34` and the x86-64 leg in
+`manylinux_2_28`.
+
+| leg | run | result |
+| --- | --- | --- |
+| x86-64 | [`34032073850`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032073850) | **PASS**, 19m21s, `…-manylinux_2_28_x86_64.whl` (30 MiB). auditwheel measured **GLIBC_2.27** — the `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "installs, then fails at import" to working. 0004's IR arms still land (18 → 0 base-pointer loads) |
+| aarch64 | [`34032726212`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032726212) | Builds (12m37s, 28 MiB) but **measures GLIBC_2.35**, one symbol above its container: a GLOBAL `_dl_find_object@GLIBC_2.35` from GCC 14's unwinder. Stamped `manylinux_2_35_aarch64` accordingly; `resolve_wheel_matrix.py` has the reading and the route back to 2.34 |
+
+Two things the first container run cost, both now fixed in the workflow: the
+prebuilt clang cannot find AlmaLinux's libstdc++ on its own (`runtime.cpp:16:10:
+fatal error: 'atomic' file not found`, five minutes in), and a refusal from
+`verify_wheel_tag.py` used to name the version without naming the symbol behind
+it. The line to check in a leg's summary is the same one below.
 
 That last field is load-bearing and was got wrong once. The first Linux run
 "passed" while proving nothing: the check grepped the build log, and

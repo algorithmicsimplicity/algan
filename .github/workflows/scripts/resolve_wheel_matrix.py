@@ -116,10 +116,33 @@ PLATFORMS: dict[str, dict[str, str]] = {
     # aarch64 arm, and upstream ships aarch64 wheels for all four Pythons -- so
     # this is a configuration upstream builds too, not new ground. What it does
     # need is its own container, for the reason above.
+    #
+    # **Its tag is 2_35 while its container is 2_34, and that is measured.**
+    # The wheel this container produces carries exactly one symbol above 2.34
+    # (run 34032726212, `readelf --dyn-syms` on the artifact):
+    #
+    #     116: ... FUNC GLOBAL DEFAULT UND _dl_find_object@GLIBC_2.35
+    #
+    # `_dl_find_object` arrived in glibc 2.35 and libgcc's unwinder calls it
+    # from GCC 12 on; the image's toolchain is GCC 14 and AlmaLinux 9's glibc
+    # carries the symbol, so the reference is generated and links. It is
+    # **GLOBAL, not weak** -- the loader must resolve it -- so the wheel really
+    # does fail to import on a true glibc 2.34, and auditwheel is right to
+    # refuse 2_34. The x86-64 leg escapes it because AlmaLinux 8's glibc is
+    # 2.28: the same GCC 14 cannot reference a symbol its libc has never heard
+    # of, which is why that wheel measures 2.27.
+    #
+    # Reclaiming 2.34 means a libgcc without that call -- linking with the
+    # image's base GCC 11 rather than gcc-toolset-14 is the obvious try, and
+    # upstream's own aarch64 wheel (max GLIBC_2.34, no `_dl_find_object`)
+    # suggests they do something of the kind. It is not attempted here because
+    # the LLVM archives are built against a newer libstdc++ and a GCC 11 link
+    # may not find the `GLIBCXX_3.4.3x` symbols they need. The cost of not
+    # doing it is RHEL 9 and Amazon Linux 2023, which are glibc 2.34.
     "linux_arm64": {
         "runner": "ubuntu-24.04-arm",
         "container": "quay.io/pypa/manylinux_2_34_aarch64",
-        "wheel_tag": "manylinux_2_34_aarch64",
+        "wheel_tag": "manylinux_2_35_aarch64",
         "label": "linux-aarch64",
     },
     "macos": {

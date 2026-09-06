@@ -86,23 +86,35 @@ class TestResolveWheelMatrix:
         assert tags["linux"] not in tags["linux_arm64"]
         assert tags["linux_arm64"] not in tags["linux"]
 
-    def test_the_linux_tags_are_the_policy_of_the_container_they_build_in(
-        self, resolver
-    ):
-        """The tag is only true because of the image, so they are checked as one.
+    def test_no_linux_tag_promises_more_than_its_container(self, resolver):
+        """The tag may exceed the image's floor, never undercut it.
 
         `quay.io/pypa/manylinux_2_28_x86_64` guarantees glibc 2.28 and nothing
-        older; stamping `manylinux_2_27_x86_64` on its output would be a promise
-        the container does not make, and stamping `manylinux_2_34` would throw
-        away reach the container earned. Either way the pair has to agree, and
-        this is the only place both halves are written down.
+        older, so stamping `manylinux_2_27_x86_64` on its output would be a
+        promise the container does not make.
+
+        The other direction is legitimate and aarch64 is living proof: it
+        builds in `manylinux_2_34` and stamps `manylinux_2_35`, because the
+        wheel carries a GLOBAL `_dl_find_object@GLIBC_2.35` that the image's
+        GCC 14 emits and its glibc happens to satisfy. The container sets the
+        floor; the toolchain can still push the wheel above it, and
+        `verify_wheel_tag.py` is what notices when it does.
         """
         for name, spec in resolver.PLATFORMS.items():
             if "container" not in spec:
                 continue
             image = spec["container"].rsplit("/", 1)[-1]
-            assert image == spec["wheel_tag"], (
-                f"{name}: builds in {image} but stamps {spec['wheel_tag']}"
+            image_parts = image.split("_")
+            tag_parts = spec["wheel_tag"].split("_")
+            assert image_parts[0] == tag_parts[0] == "manylinux", name
+            assert image_parts[3:] == tag_parts[3:], (
+                f"{name}: builds for {image_parts[3:]} but stamps {tag_parts[3:]}"
+            )
+            image_glibc = (int(image_parts[1]), int(image_parts[2]))
+            tag_glibc = (int(tag_parts[1]), int(tag_parts[2]))
+            assert tag_glibc >= image_glibc, (
+                f"{name}: stamps {spec['wheel_tag']}, which claims to run on "
+                f"something older than {image} guarantees"
             )
 
     def test_only_the_linux_platforms_build_in_a_container(self, resolver):
