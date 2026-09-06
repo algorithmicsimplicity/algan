@@ -5,9 +5,8 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The first downstream release was `algan-quadrants==1.3.0.post1`; the build
-side is now on `1.3.0.post2` (see "Releasing another downstream revision"
-for why `pyproject.toml` still says `post1` until that is published). The
+The current downstream release is `algan-quadrants==1.3.0.post2`, sixteen
+wheels published 2026-09-06; `1.3.0.post1` was the first, twelve wheels. The
 `post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
 and keeps it distinct from the upstream `quadrants==1.3.0` release.
 
@@ -101,11 +100,12 @@ PyPI releases are immutable.
 twelve wheels and cannot grow four more: the publish step uploads the whole
 directory with no `skip-existing`, so re-running it against that version fails
 on the twelve files that already exist. The `linux_arm64` wheels therefore
-reach users as `1.3.0.post2` — the full sixteen, built and published together,
-followed by the `pyproject.toml` bump and a regenerated `uv.lock`. Until that
-happens the aarch64 leg is a wheel the workflow can build and
-`scripts/build_quadrants_wheels.py --install` can install, and `pip install
-algan` on aarch64 Linux still resolves nothing.
+reached users as `1.3.0.post2` — the full sixteen, built and published
+together, followed by the `pyproject.toml` bump and a regenerated `uv.lock`.
+That is done: [run 34064942236](https://github.com/algorithmicsimplicity/algan/actions/runs/34064942236)
+published all sixteen from `master`. An earlier attempt from a feature branch
+was rejected at the `pypi` environment gate in two seconds with zero steps
+and uploaded nothing — publish from the default branch.
 
 **The Linux wheel filenames change in that revision too.** Both Linux legs now
 build inside manylinux containers and are stamped with the tag the wheel is
@@ -117,9 +117,8 @@ measured rather than chosen — a single GLOBAL `_dl_find_object@GLIBC_2.35`
 coming out of the prebuilt LLVM it links, not out of any local toolchain
 choice; pinning an older compiler was tried and changed nothing.
 `resolve_wheel_matrix.py` carries the readings.) For
-x86-64 users this is a *narrowing on paper and a fix in fact* — the published
+x86-64 users this was a *narrowing on paper and a fix in fact* — the
 `1.3.0.post1` x86-64 wheel claims 2.27 and actually needs 2.34, so systems
-between those two versions (RHEL 8, Ubuntu 20.04, Debian 11) currently install
-it and fail at `import quadrants`. After the revision they are told no such
-wheel exists, which is true, and RHEL 9 / Amazon Linux 2023 / Ubuntu 22.04 gain
-a wheel that genuinely runs.
+between those two versions (RHEL 8, Ubuntu 20.04, Debian 11) install it and
+fail at `import quadrants`. `post2`'s x86-64 wheels measure 2.27 for real, so
+those three now work rather than being told a comfortable lie.
