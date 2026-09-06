@@ -197,7 +197,15 @@ containers were chosen: the aarch64 LLVM archive's own binaries need
 is why the aarch64 leg builds in `manylinux_2_34` and the x86-64 leg in
 `manylinux_2_28`.
 
-Both green together in [`34037781817`](https://github.com/algorithmicsimplicity/algan/actions/runs/34037781817), cp311:
+**The complete matrix builds.** [`34039060946`](https://github.com/algorithmicsimplicity/algan/actions/runs/34039060946)
+took all four platforms across cp310-cp313 — sixteen wheels, 448 MB of
+artifacts, every one green, the first time this fork has built its whole
+matrix in one run. macOS and Windows were carried along unchanged and still
+pass, so nothing in the container work disturbed them.
+
+The two Linux legs first went green together in
+[`34037781817`](https://github.com/algorithmicsimplicity/algan/actions/runs/34037781817),
+which is where these numbers were read, cp311:
 
 | leg | build | wheel | measured floor |
 | --- | --- | --- | --- |
