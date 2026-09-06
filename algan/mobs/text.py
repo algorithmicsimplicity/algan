@@ -88,8 +88,10 @@ def _require_latex_toolchain():
         "sudo tlmgr install standalone preview dvisvgm\n"
         "  Windows:       install MiKTeX (https://miktex.org) and let it "
         "install packages on the fly\n"
-        "Text(...) needs none of this: it renders through Pango and is the "
-        "right class for prose. Tex(..., latex=False) does the same."
+        "Text(...) renders prose through Pango and needs none of this -- but "
+        "only where manimpango is installed, which is automatic on Windows and "
+        'macOS and `pip install "algan[pango]"` on Linux. '
+        "Tex(..., latex=False) does the same."
     )
 
 

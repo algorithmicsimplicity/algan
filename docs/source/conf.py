@@ -64,12 +64,14 @@ myst_enable_extensions = ["colon_fence", "amsmath"]
 
 # redirects (for moved / deleted pages)
 redirects = {
-    "installation/linux": "uv.html",
-    "installation/macos": "uv.html",
-    "installation/windows": "uv.html",
-    # Duplicates of installation/uv, removed so one page is canonical.
-    "installation/installation": "uv.html",
-    "new_user_tutorials/installation": "../installation/uv.html",
+    # The per-OS pages, and the tool-named page that replaced them, all folded
+    # into the single tabbed installation.rst.
+    "installation/linux": "../installation.html",
+    "installation/macos": "../installation.html",
+    "installation/windows": "../installation.html",
+    "installation/uv": "../installation.html",
+    "installation/installation": "../installation.html",
+    "new_user_tutorials/installation": "../installation.html",
     # The Manim quickstart collection became one page.
     "manim_user_quickstart/index": "../manim_migration_guide.html",
     "manim_user_quickstart/migrating_from_manim": "../manim_migration_guide.html",

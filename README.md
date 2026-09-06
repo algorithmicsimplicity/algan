@@ -32,40 +32,28 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ## Installation
 
-Install via [uv](https://docs.astral.sh/uv/) (recommended):
-
-```bash
-uv add algan
-```
-
-Or via `pip`:
-
 ```bash
 pip install algan
 ```
 
 Every dependency ships wheels, so there is nothing to build and no system
-package to install first. The installed footprint is large (~5 GB, mostly the
-CUDA build of `torch` and its NVIDIA dependencies).
+package to install first. The installed footprint is large (~5 GB on Linux,
+mostly the CUDA build of `torch` and its NVIDIA dependencies).
 
-### Optional: Pango text
+### Optional: Pango text on Linux
 
-`Text` typesets through LaTeX's text mode by default. For Pango instead — which
-gives you system fonts, per-span font/weight/slant styling, and Manim's
-`MarkupText` and `Paragraph` — add the `pango` extra:
+`Text` typesets with your system fonts through Pango, which is installed with
+Algan on Windows and macOS. `manimpango` publishes no Linux wheel, so on Linux
+it is an extra instead — without it `Text` falls back to LaTeX's text mode, and
+Manim's `MarkupText` and `Paragraph` are absent. Installing it builds Pango
+from source and wants its headers first:
 
 ```bash
+sudo apt-get install -y build-essential python3-dev libpango1.0-dev pkg-config
 pip install "algan[pango]"
 ```
 
-It is an extra rather than a dependency because `manimpango` publishes no Linux
-wheel; on Linux it builds from source and wants Pango's headers first:
-
-```bash
-sudo apt-get install -y libpango1.0-dev pkg-config
-```
-
-For detailed platform-specific prerequisites (FFmpeg, GPU acceleration, optional LaTeX for formulas), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation/uv.html).
+For per-OS instructions (GPU acceleration, optional LaTeX for formulas, speech), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation.html).
 
 ---
 

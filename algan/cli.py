@@ -198,14 +198,40 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "and none on PATH. Video export will fail."
         )
 
-    # 5. LaTeX (optional)
+    # 5. Text typesetting: Pango and LaTeX.
+    #
+    # Neither is required to render geometry, but *one of them* is required to
+    # render a single character: `Text` typesets through Pango when manimpango
+    # is importable and falls back to LaTeX's text mode when it is not, and
+    # `Tex`/`MathTex` always need LaTeX. Pango used to go unreported here, so
+    # the only way to find out which path `Text` would take was to write a
+    # scene and run it. `find_spec` rather than an import: this is a report,
+    # and it should not be the thing that pays to initialize Pango.
+    import importlib.util
+
+    pango = importlib.util.find_spec("manimpango") is not None
+    if pango:
+        print("Text (Pango): [OK] manimpango installed - Text uses system fonts")
+    else:
+        print(
+            "  [INFO] Pango not found: Text falls back to LaTeX text mode and "
+            'cannot use system fonts. Install it with `pip install "algan[pango]"`.'
+        )
+
     latex_path = shutil.which("latex")
     dvisvgm_path = shutil.which("dvisvgm")
     if latex_path and dvisvgm_path:
         print(f"LaTeX (Tex/MathTex): [OK] latex={latex_path}, dvisvgm={dvisvgm_path}")
+    elif pango:
+        print(
+            "  [INFO] LaTeX not found: Tex and MathTex will fail. Text is "
+            "unaffected - it renders through Pango."
+        )
     else:
         print(
-            "  [INFO] LaTeX not found (optional - standard Text mobs work via Pango without LaTeX)."
+            "  [WARNING] Neither Pango nor LaTeX found: no text can be "
+            'rendered at all. Install one - `pip install "algan[pango]"` for '
+            "prose, a TeX distribution for formulas."
         )
 
     # 6. Paths -- this command's help says it reports them, and "where did my

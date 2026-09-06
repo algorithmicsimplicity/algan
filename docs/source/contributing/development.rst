@@ -4,7 +4,7 @@ Development
 
 This page explains how to set up Algan **from source** to work on Algan itself.
 If you just want to install a released version to make animations, follow
-:doc:`../installation/uv` instead.
+:doc:`../installation` instead.
 
 Have questions or want to discuss changes? Head over to our `Discord server
 <https://discord.gg/NvarFmvXKm>`__ or the `GitHub issue tracker
@@ -58,7 +58,7 @@ Why each dependency is needed:
   compare against Pango-typeset baselines. It publishes no Linux wheel, so it
   is compiled during the install; without the Pango headers that fails with
   ``Package 'pangocairo' was not found``. A plain ``pip install algan`` needs
-  none of this -- see :doc:`/installation/uv`.
+  none of this -- see :doc:`/installation`.
 * **LaTeX** — required for ``Tex`` and ``Text``. See
   :ref:`the LaTeX step <installation-optional-latex>` for what a minimal
   installation needs.

@@ -64,6 +64,13 @@ p.rubric{
     font-weight: bold;
 }
 
+/* The rule above is written for the one-word autosummary rubrics ("Methods",
+   "Attributes"). Inside a tab panel a rubric is a step heading -- a sentence --
+   and capitalizing every word of it gives "Check The Installation". */
+.sd-tab-content p.rubric{
+    text-transform: none;
+}
+
 .sig-param{
     color: var(--color-content-foreground);
 }

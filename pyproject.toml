@@ -95,6 +95,16 @@ dependencies = [
     # static model instead of failing loudly, so it is core rather than an
     # extra.
     "pygltflib>=1.16",
+    # Text typesetting, everywhere it costs nothing. `Text` renders through
+    # Pango when manimpango is importable and falls back to LaTeX's text mode
+    # when it is not -- so without either, a fresh install cannot draw a single
+    # character, which is not a state to ship a `pip install algan` into.
+    # manimpango publishes Windows and macOS wheels, so on those two platforms
+    # this is one more wheel and text works out of the box. It publishes no
+    # Linux wheel, and making it unconditional would put a from-source build of
+    # Pango in front of every Linux install -- so Linux gets it through the
+    # `pango` extra instead, deliberately, and falls back to LaTeX until then.
+    "manimpango>=0.5.0; sys_platform != 'linux'",
 ]
 
 [project.scripts]
@@ -122,12 +132,15 @@ audio = [
 fbx = [
     "pyassimp>=5.0",
 ]
-# Pango text rendering. Without it `algan.Text` typesets its content through
-# LaTeX's text mode instead, and Manim's `mn.Text` / `mn.MarkupText` /
-# `mn.Paragraph` are absent from the compatibility layer -- everything else in
-# it is unaffected. manimpango publishes no Linux wheel, so this is an extra
-# rather than a dependency: making it one would put a from-source build of
-# Pango in front of every Linux `pip install algan`.
+# Pango text rendering **on Linux**. Everywhere else manimpango is a plain
+# dependency (see the marker in `dependencies` above) because it ships a wheel
+# there; on Linux it publishes none, so it is an extra and installing it builds
+# Pango from source -- which is why it is opt-in rather than in front of every
+# Linux `pip install algan`. Without it `algan.Text` typesets its content
+# through LaTeX's text mode instead, and Manim's `mn.Text` / `mn.MarkupText` /
+# `mn.Paragraph` are absent from the compatibility layer; everything else in it
+# is unaffected. The requirement is unconditional so that `algan[pango]` also
+# works as an explicit no-op on Windows and macOS.
 pango = [
     "manimpango>=0.5.0",
 ]
