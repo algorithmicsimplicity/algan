@@ -150,9 +150,18 @@ def main(argv: list[str] | None = None) -> int:
     measured = auditwheel_verdict(text)
     problems = check(measured, args.expect)
     if problems:
+        # With auditwheel's own output, because the verdict alone does not say
+        # *why*: the section it prints names the libraries and the versioned
+        # symbols behind the number, which is the difference between "the
+        # aarch64 wheel wants 2.35" and knowing what dragged it there. A CI
+        # failure that has to be reproduced to be understood costs another
+        # build; this one costs nothing.
         raise SystemExit(
             f"{args.wheel.name}: refusing to stamp a tag the wheel cannot "
-            "keep:\n  - " + "\n  - ".join(problems)
+            "keep:\n  - "
+            + "\n  - ".join(problems)
+            + "\n\n--- auditwheel show ---\n"
+            + text.strip()
         )
     print(
         f"{args.wheel.name}: auditwheel says {measured}, stamping "

@@ -333,6 +333,32 @@ This constrains the platform tag to "manylinux_2_28_x86_64".
         with pytest.raises(SystemExit, match="refusing to stamp a tag"):
             gate.main([*argv, "manylinux_2_17_x86_64"])
 
+    def test_a_refusal_carries_auditwheels_evidence(self, gate, tmp_path):
+        """The verdict says what; only auditwheel's own output says why.
+
+        The aarch64 leg refused with "needs glibc 2.35" and nothing about
+        which library asked for it (run 34032726212), which is a diagnosis
+        that costs another 13-minute build to obtain.
+        """
+        saved = tmp_path / "auditwheel.txt"
+        saved.write_text(self.WRAPPED, encoding="utf-8")
+        wheel = tmp_path / "quadrants-1.3.1-cp311-cp311-linux_x86_64.whl"
+        with pytest.raises(SystemExit) as excinfo:
+            gate.main(
+                [
+                    str(wheel),
+                    "--from-file",
+                    str(saved),
+                    "--expect",
+                    "manylinux_2_17_x86_64",
+                ]
+            )
+        message = str(excinfo.value)
+        assert "--- auditwheel show ---" in message
+        # The section that names the libraries and their symbol versions.
+        assert "references external versioned symbols" in message
+        assert "libc.so.6 with versions" in message
+
 
 class TestWorkflowMatchesTheResolver:
     """The YAML and the resolver are one contract; these are its two halves."""
