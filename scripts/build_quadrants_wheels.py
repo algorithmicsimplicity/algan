@@ -1,6 +1,6 @@
 r"""Build Algan's patched Quadrants wheels on GitHub's runners, and bring them home.
 
-Algan depends on ``algan-quadrants==1.3.0.post1`` and patches it:
+Algan depends on ``algan-quadrants==1.3.0.post2`` and patches it:
 ``quadrants_patches/`` carries seven patches against v1.3.0 that the upstream
 PyPI wheel does not have, and Algan's platforms need different subsets of them
 -- Metal (0001, 0002) is macOS-only, and the CUDA four (0003, 0005-0007) do
