@@ -95,9 +95,9 @@ class TestResolveWheelMatrix:
 
         The other direction is legitimate and aarch64 is living proof: it
         builds in `manylinux_2_34` and stamps `manylinux_2_35`, because the
-        wheel carries a GLOBAL `_dl_find_object@GLIBC_2.35` that the image's
-        GCC 14 emits and its glibc happens to satisfy. The container sets the
-        floor; the toolchain can still push the wheel above it, and
+        prebuilt LLVM it links carries a GLOBAL `_dl_find_object@GLIBC_2.35`
+        that the image's own glibc happens to satisfy. The container sets a
+        floor; something it links can still push the wheel above it, and
         `verify_wheel_tag.py` is what notices when it does.
         """
         for name, spec in resolver.PLATFORMS.items():
@@ -513,6 +513,29 @@ class TestWorkflowMatchesTheResolver:
             text = yaml.safe_dump(workflow["jobs"][name])
             for forbidden in ("sudo ", "apt-get", "actions/setup-python"):
                 assert forbidden not in text, f"{name} still uses {forbidden!r}"
+
+    def test_the_wheel_is_installed_before_it_is_stamped(self, resolver, workflow):
+        """The stamp can put a tag on the wheel that its own container rejects.
+
+        The tag is what the wheel *measures*, and that can exceed the image's
+        glibc: the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and
+        pip then declines its own build with "not a supported wheel on this
+        platform" (run 34034938922). Installing first tests the same bits under
+        the one tag the container will accept.
+        """
+        for name in resolver.PLATFORMS:
+            if "container" not in resolver.PLATFORMS[name]:
+                continue
+            names = [
+                str(step.get("name", "")) for step in workflow["jobs"][name]["steps"]
+            ]
+            install = next(i for i, n in enumerate(names) if n.startswith("Install it"))
+            stamp = next(
+                i for i, n in enumerate(names) if n.startswith("Verify and stamp")
+            )
+            assert install < stamp, (
+                f"{name} installs after stamping, which its own container may refuse"
+            )
 
     def test_every_built_wheel_is_verified_before_it_is_stamped(
         self, resolver, workflow

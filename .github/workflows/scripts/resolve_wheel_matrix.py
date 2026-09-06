@@ -117,33 +117,35 @@ PLATFORMS: dict[str, dict[str, str]] = {
     # this is a configuration upstream builds too, not new ground. What it does
     # need is its own container, for the reason above.
     #
-    # **It links with the image's base GCC 11 rather than its gcc-toolset-14,
-    # and that is what keeps its floor at 2.34.** Built with the toolset the
-    # image puts on `PATH`, the wheel carried exactly one symbol above 2.34
-    # (run 34032726212, `readelf --dyn-syms` on the artifact):
+    # **Its tag is 2_35 while its container is 2_34, and that is measured, not
+    # chosen.** The wheel this container produces carries exactly one symbol
+    # above 2.34 (run 34032726212, `readelf --dyn-syms` on the artifact):
     #
     #     116: ... FUNC GLOBAL DEFAULT UND _dl_find_object@GLIBC_2.35
     #
-    # `_dl_find_object` arrived in glibc 2.35 and libgcc's unwinder calls it
-    # from GCC 12 on. The compiler that links the extension is the one whose
-    # libgcc gets statically absorbed into it, so GCC 14 puts that call in,
-    # AlmaLinux 9's glibc carries the symbol so the link succeeds, and the
-    # result is a wheel that needs 2.35. It is **GLOBAL, not weak** -- the
-    # loader must resolve it -- so such a wheel really does fail to import on a
-    # true glibc 2.34, which is RHEL 9 and Amazon Linux 2023. GCC 11 predates
-    # the call entirely, and its libstdc++ is what the LLVM archives were built
-    # against anyway (their `GLIBCXX_3.4.29` is GCC 11's version), so it is the
-    # older toolchain that is the *compatible* one here.
+    # `_dl_find_object` arrived in glibc 2.35. It is **GLOBAL, not weak** --
+    # the loader must resolve it -- so the wheel really does fail to import on
+    # a true glibc 2.34, which costs RHEL 9 and Amazon Linux 2023.
     #
-    # The x86-64 leg needs no such pin: AlmaLinux 8's glibc is 2.28, and the
-    # same GCC 14 cannot reference a symbol its libc has never heard of, which
-    # is why that wheel measures 2.27 on the toolset compiler.
+    # **The obvious cause was tested and is not the cause.** libgcc's unwinder
+    # has called `_dl_find_object` since GCC 12, and the compiler that links
+    # the extension is the one whose libgcc it statically absorbs, so pinning
+    # the image's base GCC 11 should have removed the reference. It does not:
+    # with `CC`/`CXX` pointed at GCC 11 the whole tree compiles and links
+    # (run 34036846316, after `libstdc++-static` -- `gcc-c++` does not pull the
+    # archive in) and auditwheel still reports `GLIBC_2.35`. So the symbol
+    # comes from the **prebuilt LLVM archive**, whose objects were compiled on
+    # a glibc-2.35 system, and no choice of local toolchain can remove it. Do
+    # not spend another run on the compiler; the fix, if one is wanted, is an
+    # LLVM archive built on an older base, which is upstream's to produce.
+    #
+    # The x86-64 leg escapes the whole problem because AlmaLinux 8's glibc is
+    # 2.28: nothing in that build can reference a symbol its libc has never
+    # heard of, which is why that wheel measures 2.27.
     "linux_arm64": {
         "runner": "ubuntu-24.04-arm",
         "container": "quay.io/pypa/manylinux_2_34_aarch64",
-        "cc": "/usr/bin/gcc",
-        "cxx": "/usr/bin/g++",
-        "wheel_tag": "manylinux_2_34_aarch64",
+        "wheel_tag": "manylinux_2_35_aarch64",
         "label": "linux-aarch64",
     },
     "macos": {
@@ -225,11 +227,6 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
         outputs[f"wheel_tag_{name}"] = spec["wheel_tag"]
         if "container" in spec:
             outputs[f"container_{name}"] = spec["container"]
-            # Empty unless the platform pins one, in which case the build step
-            # exports it. Only a containerised leg can name an absolute
-            # compiler path, because only there is the filesystem known.
-            outputs[f"cc_{name}"] = spec.get("cc", "")
-            outputs[f"cxx_{name}"] = spec.get("cxx", "")
     outputs["pythons"] = json.dumps(ordered_pythons)
     # The selection as a list, which is what `--check-publish` reads back. The
     # per-platform `true`/`false` outputs above are what a job's `if:` can gate

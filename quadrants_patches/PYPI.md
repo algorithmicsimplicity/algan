@@ -98,9 +98,10 @@ measured to earn rather than the `manylinux_2_27` constant upstream's
 `build_wheel` writes: `manylinux_2_28_x86_64` and `manylinux_2_35_aarch64`,
 verified per wheel by `scripts/gate/verify_wheel_tag.py` before the stamp goes
 on. (The aarch64 tag is a version above its own container, and that is
-measured rather than chosen — a single GLOBAL `_dl_find_object@GLIBC_2.35` from
-GCC 14's unwinder. `resolve_wheel_matrix.py` carries the reading and what it
-would take to get back to 2.34.) For
+measured rather than chosen — a single GLOBAL `_dl_find_object@GLIBC_2.35`
+coming out of the prebuilt LLVM it links, not out of any local toolchain
+choice; pinning an older compiler was tried and changed nothing.
+`resolve_wheel_matrix.py` carries the readings.) For
 x86-64 users this is a *narrowing on paper and a fix in fact* — the published
 `1.3.0.post1` x86-64 wheel claims 2.27 and actually needs 2.34, so systems
 between those two versions (RHEL 8, Ubuntu 20.04, Debian 11) currently install

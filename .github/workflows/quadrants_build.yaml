@@ -67,12 +67,6 @@ jobs:
       container_linux_arm64: ${{ steps.resolve.outputs.container_linux_arm64 }}
       wheel_tag_linux: ${{ steps.resolve.outputs.wheel_tag_linux }}
       wheel_tag_linux_arm64: ${{ steps.resolve.outputs.wheel_tag_linux_arm64 }}
-      # Empty unless a leg pins the compiler that links its extension, which
-      # is what decides whose libgcc it absorbs and so its glibc floor.
-      cc_linux: ${{ steps.resolve.outputs.cc_linux }}
-      cc_linux_arm64: ${{ steps.resolve.outputs.cc_linux_arm64 }}
-      cxx_linux: ${{ steps.resolve.outputs.cxx_linux }}
-      cxx_linux_arm64: ${{ steps.resolve.outputs.cxx_linux_arm64 }}
       pythons: ${{ steps.resolve.outputs.pythons }}
       summary: ${{ steps.resolve.outputs.summary }}
     steps:
@@ -226,45 +220,12 @@ jobs:
 
       - name: Build the wheel
         working-directory: quadrants-src
-        env:
-          PIN_CC: ${{ needs.plan.outputs.cc_linux }}
-          PIN_CXX: ${{ needs.plan.outputs.cxx_linux }}
         run: |
           set -euxo pipefail
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
-
-          # The compiler that links the extension is the one whose libgcc it
-          # statically absorbs, and that decides the wheel's glibc floor -- see
-          # the aarch64 entry in `resolve_wheel_matrix.py`, where the image's
-          # gcc-toolset-14 contributed a `_dl_find_object@GLIBC_2.35` the older
-          # base compiler does not have. Empty for a platform that does not
-          # care, so the container's default is used.
-          if [ -n "${PIN_CXX:-}" ]; then
-            # The manylinux images carry their gcc-toolset and *not* the
-            # distro's own compiler -- there is no /usr/bin/gcc to pin until
-            # one is asked for, which cost a 30-second run to find out.
-            # `libstdc++-static` because the extension links libstdc++
-            # statically and the distro ships that archive in its own package;
-            # on RHEL derivatives it lives in the CRB repository.
-            if [ ! -x "$PIN_CXX" ]; then
-              dnf install -y gcc gcc-c++ libstdc++-static \
-                || dnf install -y --enablerepo=crb gcc gcc-c++ libstdc++-static
-            fi
-            test -x "$PIN_CC"
-            test -x "$PIN_CXX"
-            export CC="$PIN_CC" CXX="$PIN_CXX"
-            "$CXX" --version | head -1
-            # Ask for the archive by name now, in milliseconds. Without it the
-            # link fails with `cannot find -lstdc++` after twelve minutes of
-            # entirely successful compilation, which is how this line was
-            # earned.
-            static_libstdcxx=$("$CXX" -print-file-name=libstdc++.a)
-            test -f "$static_libstdcxx"
-            echo "static libstdc++ for the pinned compiler: $static_libstdcxx"
-          fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
           # JIT loads -- is built by this *prebuilt* clang rather than by the
@@ -285,11 +246,7 @@ jobs:
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
           if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
-            # `${CXX:-g++}`, not a bare `g++`: where a leg pins the compiler
-            # that builds the library, the bitcode has to see that one's
-            # headers. Taking them from whatever is first on PATH would give
-            # the .bc a different standard library than the .so it loads into.
-            dirs=$("${CXX:-g++}" -E -x c++ - -v </dev/null 2>&1 \
+            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
             # Loudly, rather than exporting an empty value and failing later in
@@ -303,6 +260,21 @@ jobs:
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
+
+      # Before the restamp, deliberately. What the stamp puts on the wheel is
+      # the floor it *measures*, which can be above the container's own glibc:
+      # the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and pip
+      # then refuses its own build with "not a supported wheel on this
+      # platform" (run 34034938922). The bits are identical either side of
+      # `wheel tags` -- only the filename and WHEEL metadata change -- so this
+      # tests what ships, under the one tag the container will accept.
+      - name: Install it and check it imports
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          pip install dist/*.whl
+          pip install numpy
+          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
 
       # `build.py` stamped `manylinux_2_27` from a constant in its source. This
       # asks auditwheel what the wheel actually requires, refuses to proceed if
@@ -319,14 +291,6 @@ jobs:
             "$wheel" --expect "$WHEEL_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
           python -m wheel tags --platform-tag "$WHEEL_TAG" --remove "$wheel"
           ls -la dist/
-
-      - name: Install it
-        working-directory: quadrants-src
-        run: |
-          set -euxo pipefail
-          pip install dist/*.whl
-          pip install numpy
-          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
 
       - name: Verify the metadata lands and the loads hoist
         if: ${{ env.PATCHED == '1' }}
@@ -516,45 +480,12 @@ jobs:
 
       - name: Build the wheel
         working-directory: quadrants-src
-        env:
-          PIN_CC: ${{ needs.plan.outputs.cc_linux_arm64 }}
-          PIN_CXX: ${{ needs.plan.outputs.cxx_linux_arm64 }}
         run: |
           set -euxo pipefail
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
-
-          # The compiler that links the extension is the one whose libgcc it
-          # statically absorbs, and that decides the wheel's glibc floor -- see
-          # the aarch64 entry in `resolve_wheel_matrix.py`, where the image's
-          # gcc-toolset-14 contributed a `_dl_find_object@GLIBC_2.35` the older
-          # base compiler does not have. Empty for a platform that does not
-          # care, so the container's default is used.
-          if [ -n "${PIN_CXX:-}" ]; then
-            # The manylinux images carry their gcc-toolset and *not* the
-            # distro's own compiler -- there is no /usr/bin/gcc to pin until
-            # one is asked for, which cost a 30-second run to find out.
-            # `libstdc++-static` because the extension links libstdc++
-            # statically and the distro ships that archive in its own package;
-            # on RHEL derivatives it lives in the CRB repository.
-            if [ ! -x "$PIN_CXX" ]; then
-              dnf install -y gcc gcc-c++ libstdc++-static \
-                || dnf install -y --enablerepo=crb gcc gcc-c++ libstdc++-static
-            fi
-            test -x "$PIN_CC"
-            test -x "$PIN_CXX"
-            export CC="$PIN_CC" CXX="$PIN_CXX"
-            "$CXX" --version | head -1
-            # Ask for the archive by name now, in milliseconds. Without it the
-            # link fails with `cannot find -lstdc++` after twelve minutes of
-            # entirely successful compilation, which is how this line was
-            # earned.
-            static_libstdcxx=$("$CXX" -print-file-name=libstdc++.a)
-            test -f "$static_libstdcxx"
-            echo "static libstdc++ for the pinned compiler: $static_libstdcxx"
-          fi
 
           # One translation unit -- `runtime.cpp`, compiled to the bitcode the
           # JIT loads -- is built by this *prebuilt* clang rather than by the
@@ -575,11 +506,7 @@ jobs:
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
           if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
-            # `${CXX:-g++}`, not a bare `g++`: where a leg pins the compiler
-            # that builds the library, the bitcode has to see that one's
-            # headers. Taking them from whatever is first on PATH would give
-            # the .bc a different standard library than the .so it loads into.
-            dirs=$("${CXX:-g++}" -E -x c++ - -v </dev/null 2>&1 \
+            dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
             # Loudly, rather than exporting an empty value and failing later in
@@ -593,6 +520,21 @@ jobs:
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
+
+      # Before the restamp, deliberately. What the stamp puts on the wheel is
+      # the floor it *measures*, which can be above the container's own glibc:
+      # the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and pip
+      # then refuses its own build with "not a supported wheel on this
+      # platform" (run 34034938922). The bits are identical either side of
+      # `wheel tags` -- only the filename and WHEEL metadata change -- so this
+      # tests what ships, under the one tag the container will accept.
+      - name: Install it and check it imports
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          pip install dist/*.whl
+          pip install numpy
+          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
 
       # `build.py` stamped `manylinux_2_27` from a constant in its source. This
       # asks auditwheel what the wheel actually requires, refuses to proceed if
@@ -609,14 +551,6 @@ jobs:
             "$wheel" --expect "$WHEEL_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
           python -m wheel tags --platform-tag "$WHEEL_TAG" --remove "$wheel"
           ls -la dist/
-
-      - name: Install it
-        working-directory: quadrants-src
-        run: |
-          set -euxo pipefail
-          pip install dist/*.whl
-          pip install numpy
-          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
 
       - name: Verify the metadata lands and the loads hoist
         if: ${{ env.PATCHED == '1' }}

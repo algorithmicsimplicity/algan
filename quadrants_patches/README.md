@@ -200,7 +200,7 @@ is why the aarch64 leg builds in `manylinux_2_34` and the x86-64 leg in
 | leg | run | result |
 | --- | --- | --- |
 | x86-64 | [`34032073850`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032073850) | **PASS**, 19m21s, `…-manylinux_2_28_x86_64.whl` (30 MiB). auditwheel measured **GLIBC_2.27** — the `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "installs, then fails at import" to working. 0004's IR arms still land (18 → 0 base-pointer loads) |
-| aarch64 | [`34032726212`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032726212) | Builds (12m37s, 28 MiB) but **measures GLIBC_2.35**, one symbol above its container: a GLOBAL `_dl_find_object@GLIBC_2.35` from GCC 14's unwinder. Stamped `manylinux_2_35_aarch64` accordingly; `resolve_wheel_matrix.py` has the reading and the route back to 2.34 |
+| aarch64 | [`34032726212`](https://github.com/algorithmicsimplicity/algan/actions/runs/34032726212) | Builds (12m37s, 28 MiB) but **measures GLIBC_2.35**, one symbol above its container: a GLOBAL `_dl_find_object@GLIBC_2.35`. Stamped `manylinux_2_35_aarch64` accordingly. The symbol comes from the prebuilt LLVM, not from the local toolchain — pinning the image's GCC 11 instead of its gcc-toolset-14 compiles and links the whole tree and changes nothing ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)), so do not spend another run on it |
 
 Two things the first container run cost, both now fixed in the workflow: the
 prebuilt clang cannot find AlmaLinux's libstdc++ on its own (`runtime.cpp:16:10:
