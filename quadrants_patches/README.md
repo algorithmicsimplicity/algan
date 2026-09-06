@@ -105,14 +105,15 @@ platform is in question, or wider, for a release:
     uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13
     uv run python scripts/build_quadrants_wheels.py --run-id <id> --install
 
-**All three platforms Algan supports**, because each is the only place part of
-this patch set can be compiled at all — Metal (0001, 0002) only exists on macOS,
-where Quadrants forces `QD_WITH_CUDA=OFF`; 0003 is for a pre-Volta card in a
-Windows box; 0004 is LLVM codegen that both CUDA legs see. Of the three CUDA
-patches, 0005 is mostly frontend-IR and LLVM plumbing every leg compiles (only
-its `codegen_cuda.cpp` line and `mark_function_as_cuda_kernel` are CUDA-shaped),
+**All four platforms Algan supports** — `linux`, `linux_arm64`, `macos`,
+`windows` — because each is the only place part of this patch set can be
+compiled at all: Metal (0001, 0002) only exists on macOS, where Quadrants forces
+`QD_WITH_CUDA=OFF`; 0003 is for a pre-Volta card in a Windows box; 0004 is LLVM
+codegen that every CUDA-enabled leg sees. Of the three remaining CUDA patches,
+0005 is mostly frontend-IR and LLVM plumbing every leg compiles (only its
+`codegen_cuda.cpp` line and `mark_function_as_cuda_kernel` are CUDA-shaped),
 while **0006 and 0007 live entirely in `codegen_cuda.cpp`** — a file the macOS
-leg never opens, so only the Linux and Windows legs can fail on them. One wheel per
+leg never opens, so only the three non-Apple legs can fail on them. One wheel per
 platform per Python, ~15-20 minutes each, `fail-fast: false` so one platform's
 failure still lands the others' wheels.
 
@@ -177,6 +178,15 @@ Apple GPU and an NVIDIA one. Both passed on 2026-09-04, from
 | --- | --- | --- |
 | **Metal** (0001, 0002) | `bash scripts/gate/quadrants_macos_build.sh` with `GATE_QD_PATCHES=1`, arm `mac-cpu` | PASS, 781 s build, `quadrants-1.3.1.dev0+gab9a58ab5-cp311-cp311-macosx_13_0_arm64.whl` (22.3 MiB), **`qd.init(metal)=ok`**, and clang named **no warning flags at all** |
 | **CUDA** (0003) | `bash scripts/gate/quadrants_linux_build.sh`, arm `linux-cpu` | PASS, 1041 s build, `...-manylinux_2_27_x86_64.whl` (26.4 MiB), `qd.init(cpu)=ok`, `runtime_cuda.bc present -- CUDA backend compiled` |
+
+**The aarch64 Linux leg has never been run.** `quadrants_build.yaml` builds it
+since the platform table gained `linux_arm64`, and nothing in these seven
+patches is x86-specific — 0001-0002 edit Metal sources a Linux build does not
+compile, and 0003 and 0005-0007 are CUDA codegen against the NVPTX target in the
+same prebuilt LLVM, which `download_llvm.py` fetches per architecture. So the
+expectation is that it builds exactly as the x86-64 leg does, and the first
+dispatch that includes `linux_arm64` is what turns that into a fact. The line
+to check in its summary is the same one below.
 
 That last field is load-bearing and was got wrong once. The first Linux run
 "passed" while proving nothing: the check grepped the build log, and

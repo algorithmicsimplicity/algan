@@ -29,16 +29,53 @@ import sys
 # `scripts/build_quadrants_wheels.py --install` matches a downloaded wheel
 # against, so it belongs next to the runner rather than in the driver.
 #
-# Both images are pinned rather than `-latest`, and that is a finding rather
+# Every image is pinned rather than `-latest`, and that is a finding rather
 # than a preference: `taichi_build.yaml` documents a `macos-latest` roll that
-# moved Xcode forward and broke the build outright. These two are the images
-# Quadrants' own CI builds v1.3.0 on (`macosx.yml`, `win.yml`), so they are the
-# configuration upstream actually tests.
+# moved Xcode forward and broke the build outright. `macos-26` and
+# `windows-2025` are the images Quadrants' own CI builds v1.3.0 on
+# (`macosx.yml`, `win.yml`), so they are the configuration upstream tests.
+#
+# **The two Linux images are deprecating together.** `ubuntu-22.04` and
+# `ubuntu-22.04-arm` began deprecation 2026-09-17 (brownouts) and are
+# unsupported after 2027-04-17, so both legs need a new image before then.
+# Bumping the two strings to `-24.04` is the cheap version and silently raises
+# the glibc floor of both wheels (see the aarch64 entry); the move that makes
+# the stamped manylinux tag honest rather than merely newer is to build both in
+# a manylinux container (`quay.io/pypa/manylinux_2_28_*`), which is what
+# upstream's own CI does.
+#
+# A key is also a **job id and an artifact name component**, so it is
+# `[a-z0-9_]+`: `quadrants_build.yaml` names one job per key,
+# `scripts/build_quadrants_wheels.py`'s `ARTIFACT_RE` parses it back out of
+# `quadrants-wheel-<key>-py<version>`, and a hyphen in an output name would be
+# read as subtraction by GitHub's expression syntax
+# (`needs.plan.outputs.runner_linux-arm64`).
 PLATFORMS: dict[str, dict[str, str]] = {
     "linux": {
         "runner": "ubuntu-22.04",
         "wheel_tag": "manylinux_2_27_x86_64",
         "label": "linux-x86_64",
+    },
+    # aarch64 is the one platform here that needs nothing new from Quadrants:
+    # `qd_build/llvm.py` already matches `("Linux", "aarch64")` and downloads
+    # `taichi-llvm-22.1.0-linux-aarch64.zip`, `qd_build/entry.py::build_wheel`
+    # already stamps `manylinux_2_27_aarch64` for it, and upstream ships
+    # `quadrants-1.3.0-*-manylinux_2_27_aarch64...whl` on PyPI for all four
+    # Pythons -- so this is a configuration upstream builds too, not new ground.
+    #
+    # `ubuntu-22.04-arm` rather than `-24.04-arm`, and the reason is the wheel
+    # tag rather than symmetry. `build_wheel` *stamps* `manylinux_2_27_aarch64`
+    # (`python -m wheel tags --platform-tag`) and nothing audits it, so the tag
+    # is a claim about the oldest glibc the wheel runs on and the runner image
+    # is what makes it true or false. 22.04 is glibc 2.35, the same overclaim
+    # the x86-64 leg above already ships; 24.04 is 2.39, which would put the
+    # aarch64 wheel out of reach of Ubuntu 22.04 and Debian 12 -- JetPack 6 is
+    # 22.04-based, i.e. exactly the CUDA-on-aarch64 user 0003 and 0005-0007
+    # exist for -- while still claiming 2.27.
+    "linux_arm64": {
+        "runner": "ubuntu-22.04-arm",
+        "wheel_tag": "manylinux_2_27_aarch64",
+        "label": "linux-aarch64",
     },
     "macos": {
         "runner": "macos-26",
@@ -61,11 +98,11 @@ DEFAULTS = {
     # Every platform, because the whole point of the fork is that each one
     # carries patches the others cannot exercise: Metal (0001, 0002) is
     # macOS-only, and 0003 exists for a pre-Volta CUDA box that runs Windows.
-    "platforms": "linux,macos,windows",
+    "platforms": "linux,linux_arm64,macos,windows",
     # One Python by default. The build is ~15-20 minutes per wheel and cp311 is
     # what every other wheel in this repo is built for (`taichi_build.yaml`,
     # the `run_on_mac.yaml` arms). Widen it deliberately -- "3.10,3.11,3.12,3.13"
-    # is a release matrix, twelve builds, not an iteration.
+    # is a release matrix, sixteen builds, not an iteration.
     "python_versions": "3.11",
 }
 
@@ -115,11 +152,40 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
     for name, spec in PLATFORMS.items():
         outputs[f"runner_{name}"] = spec["runner"]
     outputs["pythons"] = json.dumps(ordered_pythons)
+    # The selection as a list, which is what `--check-publish` reads back. The
+    # per-platform `true`/`false` outputs above are what a job's `if:` can gate
+    # on; a release gate wants to ask "is every platform here?", and asking that
+    # of a hand-written list of names in the YAML is how a new platform gets
+    # left out of the completeness check that exists to catch exactly that.
+    outputs["selected"] = json.dumps(ordered_platforms)
     outputs["summary"] = (
         f"{','.join(ordered_platforms)} x py{','.join(ordered_pythons)} "
         f"({len(ordered_platforms) * len(ordered_pythons)} wheel(s))"
     )
     return outputs
+
+
+def publish_failures(env: dict[str, str]) -> list[str]:
+    """Why this dispatch may not publish to PyPI -- empty when it may.
+
+    A PyPI release is the complete patched matrix or it is nothing: a version
+    published with one platform missing cannot be amended later, because PyPI
+    files are immutable and the publish step uploads the whole directory. So
+    this reads the *table* rather than a list of platform names copied into the
+    workflow, and a platform added above is in the gate the moment it is added.
+    """
+    failures = []
+    if env.get("APPLY_PATCHES") != "true":
+        failures.append("publish requires apply_patches=true")
+
+    selected = set(json.loads(env.get("SELECTED") or "[]"))
+    for name in PLATFORMS:
+        if name not in selected:
+            failures.append(f"publish requires {name}")
+
+    if set(json.loads(env.get("PYTHONS") or "[]")) != set(PYTHONS):
+        failures.append(f"publish requires Python {list(PYTHONS)}")
+    return failures
 
 
 def format_outputs(values: dict[str, str]) -> str:
@@ -129,7 +195,28 @@ def format_outputs(values: dict[str, str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--check-publish",
+        action="store_true",
+        help=(
+            "instead of resolving, fail unless APPLY_PATCHES/SELECTED/PYTHONS "
+            "describe the complete patched matrix a PyPI release requires"
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    if args.check_publish:
+        failures = publish_failures(dict(os.environ))
+        if failures:
+            raise SystemExit(
+                "Refusing a partial/stock PyPI release:\n  - " + "\n  - ".join(failures)
+            )
+        print(
+            f"complete patched matrix: {len(PLATFORMS)} platforms x "
+            f"{len(PYTHONS)} Pythons = {len(PLATFORMS) * len(PYTHONS)} wheels"
+        )
+        return 0
+
     sys.stdout.write(format_outputs(resolve(dict(os.environ))))
     return 0
 

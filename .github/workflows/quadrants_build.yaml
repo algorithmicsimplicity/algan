@@ -2,16 +2,20 @@ name: Quadrants wheels (patched)
 
 # Build Algan's patched Quadrants v1.3.0 wheels on every supported platform.
 # Normal diagnostic runs leave `publish` off and retain the upstream
-# `quadrants` distribution name. Release runs require the complete 3-platform x
+# `quadrants` distribution name. Release runs require the complete 4-platform x
 # 4-Python matrix, build with a stable downstream version, then rebrand only the
 # distribution metadata to `algan-quadrants` before Trusted Publishing to PyPI.
+#
+# The platform vocabulary is `.github/workflows/scripts/resolve_wheel_matrix.py`,
+# not this file: it owns the runner image and the wheel tag per platform, and
+# the release-completeness gate below asks *it* what complete means.
 on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Platforms to build: any of linux,macos,windows (or 'all')"
+        description: "Platforms: any of linux,linux_arm64,macos,windows (or 'all')"
         type: string
-        default: "linux,macos,windows"
+        default: "linux,linux_arm64,macos,windows"
       python_versions:
         description: "Pythons to build for, comma separated (3.10-3.13)"
         type: string
@@ -47,9 +51,11 @@ jobs:
     timeout-minutes: 5
     outputs:
       linux: ${{ steps.resolve.outputs.linux }}
+      linux_arm64: ${{ steps.resolve.outputs.linux_arm64 }}
       macos: ${{ steps.resolve.outputs.macos }}
       windows: ${{ steps.resolve.outputs.windows }}
       runner_linux: ${{ steps.resolve.outputs.runner_linux }}
+      runner_linux_arm64: ${{ steps.resolve.outputs.runner_linux_arm64 }}
       runner_macos: ${{ steps.resolve.outputs.runner_macos }}
       runner_windows: ${{ steps.resolve.outputs.runner_windows }}
       pythons: ${{ steps.resolve.outputs.pythons }}
@@ -62,34 +68,17 @@ jobs:
           IN_PYTHONS: ${{ inputs.python_versions }}
         run: python .github/workflows/scripts/resolve_wheel_matrix.py >> "$GITHUB_OUTPUT"
 
+      # The completeness check reads the resolver's own table, so a platform
+      # added there is required here without this step being touched. It used
+      # to name linux/macos/windows inline, which is a gate that silently stops
+      # gating the moment the matrix grows.
       - name: Require the full patched matrix for publishing
         if: ${{ inputs.publish }}
         env:
           APPLY_PATCHES: ${{ inputs.apply_patches }}
-          LINUX: ${{ steps.resolve.outputs.linux }}
-          MACOS: ${{ steps.resolve.outputs.macos }}
-          WINDOWS: ${{ steps.resolve.outputs.windows }}
+          SELECTED: ${{ steps.resolve.outputs.selected }}
           PYTHONS: ${{ steps.resolve.outputs.pythons }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-
-          expected = {"3.10", "3.11", "3.12", "3.13"}
-          failures = []
-          if os.environ["APPLY_PATCHES"] != "true":
-              failures.append("publish requires apply_patches=true")
-          for name in ("LINUX", "MACOS", "WINDOWS"):
-              if os.environ[name] != "true":
-                  failures.append(f"publish requires {name.lower()}")
-          if set(json.loads(os.environ["PYTHONS"])) != expected:
-              failures.append(f"publish requires Python {sorted(expected)}")
-          if failures:
-              raise SystemExit(
-                  "Refusing a partial/stock PyPI release:\n  - "
-                  + "\n  - ".join(failures)
-              )
-          PY
+        run: python .github/workflows/scripts/resolve_wheel_matrix.py --check-publish
 
       - name: Say what will be built
         run: |
@@ -97,6 +86,20 @@ jobs:
           echo "patched: ${{ inputs.apply_patches }}" >> "$GITHUB_STEP_SUMMARY"
           echo "publish: ${{ inputs.publish }}" >> "$GITHUB_STEP_SUMMARY"
 
+  # ---------------------------------------------------------------------------
+  # The two Linux legs are ONE RECIPE built on two runner architectures, and
+  # `tests/unit_tests/test_quadrants_wheels.py::test_the_two_linux_legs_are_one_recipe`
+  # holds them to that: it compares the jobs step by step after rewriting
+  # `linux_arm64` to `linux`, so anything edited in one and not the other is a
+  # red unit test rather than a wheel that quietly got built differently.
+  #
+  # Everything that varies with the architecture is already handled below the
+  # workflow: `download_llvm.py` picks the aarch64 LLVM archive and
+  # `qd_build/entry.py::build_wheel` stamps `manylinux_2_27_aarch64`, both off
+  # `platform.uname()`. The only thing this file has to keep straight is that
+  # `runner.arch` is in the cache key -- `runner.os` is `Linux` on both, so
+  # without it the arm leg restores the x86-64 LLVM and fails inside clang.
+  # ---------------------------------------------------------------------------
   linux:
     name: linux / py${{ matrix.python-version }}
     needs: plan
@@ -159,14 +162,17 @@ jobs:
         if: ${{ !inputs.apply_patches }}
         run: echo "PATCHED=0" >> "$GITHUB_ENV"
 
+      # `runner.arch` is load-bearing: both Linux legs report `runner.os ==
+      # 'Linux'`, and what this caches is the ~1 GB prebuilt LLVM that
+      # `download_llvm.py` selects by architecture.
       - name: Cache the Quadrants build deps
         uses: actions/cache@v4
         with:
           path: ~/.cache/qd-build-cache
-          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
+          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
           restore-keys: |
-            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-py${{ matrix.python-version }}-
-            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Prerequisites
         working-directory: quadrants-src
@@ -269,11 +275,198 @@ jobs:
           path: quadrants-src/dist/*.whl
           if-no-files-found: warn
 
+      # Named per platform because two Linux legs would otherwise race to
+      # upload one artifact name, and the second upload is the one that errors.
       - name: Upload the IR arm reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariant-load-arms-py${{ matrix.python-version }}
+          name: invariant-load-arms-linux-py${{ matrix.python-version }}
+          path: arm_*.json
+          if-no-files-found: warn
+
+  linux_arm64:
+    name: linux-arm64 / py${{ matrix.python-version }}
+    needs: plan
+    if: needs.plan.outputs.linux_arm64 == 'true'
+    runs-on: ${{ needs.plan.outputs.runner_linux_arm64 }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.plan.outputs.pythons) }}
+    steps:
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+        with:
+          path: algan
+
+      - name: Runner facts
+        run: |
+          uname -a
+          nproc
+          free -m
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set downstream release version
+        if: ${{ inputs.publish }}
+        shell: bash
+        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${ALGAN_QUADRANTS_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Clone Quadrants at ${{ env.QUADRANTS_REF }}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$QUADRANTS_REF" --recurse-submodules \
+            --shallow-submodules https://github.com/Genesis-Embodied-AI/quadrants.git quadrants-src
+          git -C quadrants-src log -1 --format='%H %d %s'
+
+      - name: Apply the Algan patches
+        if: ${{ inputs.apply_patches }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=("$GITHUB_WORKSPACE"/algan/quadrants_patches/[0-9]*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no patches in quadrants_patches/ -- refusing to build a"
+            echo "wheel that would look patched and not be"
+            exit 1
+          fi
+          cd quadrants-src
+          for patch in "${patches[@]}"; do
+            echo "--- applying $(basename "$patch")"
+            git apply --verbose "$patch"
+          done
+          echo "PATCHED=1" >> "$GITHUB_ENV"
+          git -c core.pager=cat diff --stat
+
+      - name: Note that this is a stock build
+        if: ${{ !inputs.apply_patches }}
+        run: echo "PATCHED=0" >> "$GITHUB_ENV"
+
+      # `runner.arch` is load-bearing: both Linux legs report `runner.os ==
+      # 'Linux'`, and what this caches is the ~1 GB prebuilt LLVM that
+      # `download_llvm.py` selects by architecture.
+      - name: Cache the Quadrants build deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/qd-build-cache
+          key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
+          restore-keys: |
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
+            qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Prerequisites
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          python -m pip install -U pip
+          pip install --group dev
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Build the wheel
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          LLVM_DIR=$(python download_llvm.py | tail -n 1)
+          export PATH=${LLVM_DIR}/bin:$PATH
+          chmod +x ${LLVM_DIR}/bin/* || true
+          clang --version
+          export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
+          time ./build.py wheel
+          ls -la dist/
+
+      - name: Install it
+        working-directory: quadrants-src
+        run: |
+          set -euxo pipefail
+          pip install dist/*.whl
+          pip install numpy
+          python -c "import quadrants as qd; qd.init(arch=qd.cpu); print('import + init OK')"
+
+      - name: Verify the metadata lands and the loads hoist
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_invariant_load.py"
+          python "$V" on  "$GITHUB_WORKSPACE/arm_on.json"
+          python "$V" off "$GITHUB_WORKSPACE/arm_off.json"
+          python "$V" --compare "$GITHUB_WORKSPACE/arm_on.json" "$GITHUB_WORKSPACE/arm_off.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the qd.init kwarg and the env var
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          python -c "
+          import quadrants as qd
+          from quadrants.lang import impl
+          qd.init(arch=qd.cpu, invariant_arg_loads=False)
+          assert impl.current_cfg().invariant_arg_loads is False, 'kwarg ignored'
+          print('qd.init(invariant_arg_loads=False) OK')"
+          QD_INVARIANT_ARG_LOADS=0 python -c "
+          import quadrants as qd
+          from quadrants.lang import impl
+          qd.init(arch=qd.cpu)
+          assert impl.current_cfg().invariant_arg_loads is False, 'env var ignored'
+          print('QD_INVARIANT_ARG_LOADS=0 OK')"
+
+      - name: Check the 0005-0007 gates (the PTX arms skip without a CUDA device)
+        if: ${{ env.PATCHED == '1' }}
+        run: |
+          set -euxo pipefail
+          cat > "$RUNNER_TEMP/gates_0005_0007.py" <<'PY'
+          import numpy as np
+          import quadrants as qd
+          from quadrants.lang import impl
+
+          qd.init(arch=qd.cpu, gpu_max_reg=48, readonly_ndarray_ldg=True, fast_math=True)
+          cfg = impl.current_cfg()
+          assert cfg.gpu_max_reg == 48, cfg.gpu_max_reg
+          assert cfg.readonly_ndarray_ldg is True
+
+          @qd.kernel
+          def k(a: qd.types.ndarray()):
+              qd.loop_config(max_reg=32)
+              for i in range(a.shape[0]):
+                  a[i] = qd.exp(a[i])
+
+          x = np.ones(8, dtype=np.float32)
+          k(x)
+          qd.sync()
+          assert abs(float(x[0]) - 2.718281828) < 1e-5, x[0]
+          print("0005-0007 gates OK")
+          PY
+          python "$RUNNER_TEMP/gates_0005_0007.py"
+          V="$GITHUB_WORKSPACE/algan/quadrants_patches/verify_cuda_patches.py"
+          python "$V" on  "$GITHUB_WORKSPACE/cuda_on.json"
+          python "$V" off "$GITHUB_WORKSPACE/cuda_off.json"
+          python "$V" --compare "$GITHUB_WORKSPACE/cuda_on.json" "$GITHUB_WORKSPACE/cuda_off.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the wheel
+        if: always()
+        run: bash algan/scripts/gate/report_wheel.sh quadrants-src/dist linux_arm64 ${{ matrix.python-version }}
+
+      - name: Upload the wheel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quadrants-wheel-linux_arm64-py${{ matrix.python-version }}
+          path: quadrants-src/dist/*.whl
+          if-no-files-found: warn
+
+      # Named per platform because two Linux legs would otherwise race to
+      # upload one artifact name, and the second upload is the one that errors.
+      - name: Upload the IR arm reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariant-load-arms-linux_arm64-py${{ matrix.python-version }}
           path: arm_*.json
           if-no-files-found: warn
 
@@ -442,11 +635,12 @@ jobs:
 
   publish:
     name: Publish algan-quadrants 1.3.0.post1
-    needs: [plan, linux, macos, windows]
+    needs: [plan, linux, linux_arm64, macos, windows]
     if: >-
       ${{ always() && inputs.publish && inputs.apply_patches &&
           needs.plan.result == 'success' && needs.linux.result == 'success' &&
-          needs.macos.result == 'success' && needs.windows.result == 'success' }}
+          needs.linux_arm64.result == 'success' && needs.macos.result == 'success' &&
+          needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi

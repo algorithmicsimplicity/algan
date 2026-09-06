@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import platform
 import re
 import urllib.request
 from pathlib import Path
@@ -64,16 +65,28 @@ def workflow():
 class TestResolveWheelMatrix:
     def test_the_default_is_every_platform(self, resolver):
         out = resolver.resolve({})
-        assert out["linux"] == "true"
-        assert out["macos"] == "true"
-        assert out["windows"] == "true"
+        assert all(out[name] == "true" for name in resolver.PLATFORMS)
+        assert json.loads(out["selected"]) == list(resolver.PLATFORMS)
         assert json.loads(out["pythons"]) == ["3.11"]
 
     def test_one_platform_leaves_the_others_off(self, resolver):
         out = resolver.resolve({"IN_PLATFORMS": "macos"})
         assert out["macos"] == "true"
-        assert out["linux"] == "false"
-        assert out["windows"] == "false"
+        assert json.loads(out["selected"]) == ["macos"]
+        assert all(
+            out[name] == "false" for name in resolver.PLATFORMS if name != "macos"
+        )
+
+    def test_the_two_linux_platforms_are_distinct_wheels(self, resolver):
+        # Both legs build a manylinux wheel and the release validator files them
+        # by substring, so a shared tag would let one leg satisfy the other's
+        # slot and a 16-wheel release would go out with 8 of one architecture.
+        tags = {name: spec["wheel_tag"] for name, spec in resolver.PLATFORMS.items()}
+        assert tags["linux"] == "manylinux_2_27_x86_64"
+        assert tags["linux_arm64"] == "manylinux_2_27_aarch64"
+        assert len(set(tags.values())) == len(tags)
+        assert tags["linux"] not in tags["linux_arm64"]
+        assert tags["linux_arm64"] not in tags["linux"]
 
     def test_all_expands(self, resolver):
         out = resolver.resolve({"IN_PLATFORMS": "all"})
@@ -82,7 +95,8 @@ class TestResolveWheelMatrix:
     def test_a_full_python_matrix(self, resolver):
         out = resolver.resolve({"IN_PYTHONS": "3.10,3.11,3.12,3.13"})
         assert json.loads(out["pythons"]) == ["3.10", "3.11", "3.12", "3.13"]
-        assert "12 wheel(s)" in out["summary"]
+        expected = len(resolver.PLATFORMS) * len(resolver.PYTHONS)
+        assert f"{expected} wheel(s)" in out["summary"]
 
     def test_whitespace_and_newlines_are_separators(self, resolver):
         out = resolver.resolve(
@@ -133,6 +147,68 @@ class TestResolveWheelMatrix:
             assert "=" in line
         assert rendered.count("\n") == len(resolver.resolve({"IN_PLATFORMS": "all"}))
 
+    def test_a_platform_key_can_be_a_job_id_and_an_artifact_name(self, resolver):
+        # Three things consume a key verbatim: a job id, a `$GITHUB_OUTPUT`
+        # name (`runner_<key>`, read as `needs.plan.outputs.runner_<key>`, where
+        # a hyphen would parse as subtraction), and the artifact name the driver
+        # parses back. `[a-z0-9_]` is the intersection.
+        for name in resolver.PLATFORMS:
+            assert re.fullmatch(r"[a-z][a-z0-9_]*", name), name
+
+
+class TestThePublishGate:
+    """A PyPI version cannot be amended, so "complete" has to mean the table."""
+
+    def complete(self, resolver, **overrides):
+        env = {
+            "APPLY_PATCHES": "true",
+            "SELECTED": json.dumps(list(resolver.PLATFORMS)),
+            "PYTHONS": json.dumps(list(resolver.PYTHONS)),
+        }
+        env.update(overrides)
+        return env
+
+    def test_the_complete_patched_matrix_passes(self, resolver):
+        assert resolver.publish_failures(self.complete(resolver)) == []
+
+    def test_every_platform_in_the_table_is_required(self, resolver):
+        # The point of reading the table: this is what a hardcoded list of
+        # platform names in the YAML stopped doing when the matrix grew.
+        for name in resolver.PLATFORMS:
+            others = [p for p in resolver.PLATFORMS if p != name]
+            failures = resolver.publish_failures(
+                self.complete(resolver, SELECTED=json.dumps(others))
+            )
+            assert failures == [f"publish requires {name}"]
+
+    def test_a_stock_build_cannot_publish(self, resolver):
+        failures = resolver.publish_failures(
+            self.complete(resolver, APPLY_PATCHES="false")
+        )
+        assert failures == ["publish requires apply_patches=true"]
+
+    def test_a_partial_python_matrix_cannot_publish(self, resolver):
+        failures = resolver.publish_failures(
+            self.complete(resolver, PYTHONS=json.dumps(["3.11"]))
+        )
+        assert len(failures) == 1
+        assert "requires Python" in failures[0]
+
+    def test_the_cli_flag_refuses_loudly(self, resolver, monkeypatch):
+        for key, value in self.complete(resolver, SELECTED="[]").items():
+            monkeypatch.setenv(key, value)
+        with pytest.raises(SystemExit, match="Refusing a partial/stock"):
+            resolver.main(["--check-publish"])
+
+    def test_the_workflow_gate_calls_it_with_what_it_reads(self, resolver, workflow):
+        steps = workflow["jobs"]["plan"]["steps"]
+        gate = [s for s in steps if "--check-publish" in str(s.get("run", ""))]
+        assert len(gate) == 1, "the plan job stopped gating the publish inputs"
+        assert gate[0]["if"] == "${{ inputs.publish }}"
+        # The env the script reads and the env the YAML sets are one contract.
+        assert set(gate[0]["env"]) == {"APPLY_PATCHES", "SELECTED", "PYTHONS"}
+        assert "steps.resolve.outputs.selected" in gate[0]["env"]["SELECTED"]
+
 
 class TestWorkflowMatchesTheResolver:
     """The YAML and the resolver are one contract; these are its two halves."""
@@ -159,6 +235,84 @@ class TestWorkflowMatchesTheResolver:
             job = workflow["jobs"][name]
             assert f"needs.plan.outputs.{name}" in job["if"]
             assert f"needs.plan.outputs.runner_{name}" in job["runs-on"]
+
+    def test_the_two_linux_legs_are_one_recipe(self, workflow):
+        """x86-64 and aarch64 build identically, or the difference is a bug.
+
+        GitHub Actions has no way to share a job body between two `runs-on`
+        values -- no anchors, and one job per platform is what
+        `test_every_platform_has_a_job_gated_on_its_output` requires -- so the
+        two Linux legs are a copy. This is what keeps the copy honest: every
+        step, in order, with the platform key rewritten out. Everything that
+        genuinely varies with the architecture varies *below* the workflow
+        (`download_llvm.py` picks the archive, `build_wheel` stamps the tag),
+        so a difference here is a fix applied to one leg and forgotten on the
+        other, not a legitimate divergence.
+        """
+        import difflib
+
+        def rewrite(node):
+            if isinstance(node, str):
+                # Longest first: `linux_arm64` contains `linux`.
+                for spelling in ("linux_arm64", "linux-arm64", "linux"):
+                    node = node.replace(spelling, "PLATFORM")
+                return node
+            if isinstance(node, dict):
+                return {key: rewrite(value) for key, value in node.items()}
+            if isinstance(node, list):
+                return [rewrite(item) for item in node]
+            return node
+
+        def one_recipe(job: dict) -> str:
+            # Substitute first and never wrap: dumping first would compare the
+            # line breaks `safe_dump` chose for two strings of different
+            # lengths, which is a difference in this test rather than in the
+            # workflow.
+            return yaml.safe_dump(rewrite(job), sort_keys=True, width=10**9)
+
+        x86 = one_recipe(workflow["jobs"]["linux"])
+        arm = one_recipe(workflow["jobs"]["linux_arm64"])
+        if x86 != arm:
+            diff = "\n".join(
+                difflib.unified_diff(
+                    x86.splitlines(),
+                    arm.splitlines(),
+                    fromfile="jobs.linux",
+                    tofile="jobs.linux_arm64",
+                    lineterm="",
+                )
+            )
+            raise AssertionError(
+                "the two Linux legs have drifted apart; they build the same "
+                f"wheel on two architectures and must stay one recipe:\n{diff}"
+            )
+
+    def test_the_linux_cache_keys_are_keyed_by_architecture(self, workflow):
+        # `runner.os` is 'Linux' on both legs. Without `runner.arch` the arm
+        # leg restores the x86-64 LLVM archive the other leg cached, and the
+        # failure surfaces much later, inside clang.
+        for name in ("linux", "linux_arm64"):
+            caches = [
+                step
+                for step in workflow["jobs"][name]["steps"]
+                if str(step.get("uses", "")).startswith("actions/cache")
+            ]
+            assert caches, f"{name} caches nothing"
+            for step in caches:
+                assert "runner.arch" in step["with"]["key"], name
+                assert "runner.arch" in step["with"]["restore-keys"], name
+
+    def test_no_two_jobs_upload_the_same_artifact_name(self, workflow):
+        # Two jobs uploading one name is not a merge: the second upload fails.
+        names: list[str] = []
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                name = (step.get("with") or {}).get("name", "")
+                if name and str(step.get("uses", "")).startswith(
+                    "actions/upload-artifact"
+                ):
+                    names.append(name)
+        assert len(names) == len(set(names)), sorted(names)
 
     def test_the_artifact_names_are_the_ones_the_driver_parses(self, driver, workflow):
         # The workflow writes these names and the driver reads them back into
@@ -207,7 +361,16 @@ class TestDriver:
         assert match is not None
         assert match.group("platform") == "windows"
         assert match.group("python") == "3.13"
-        assert driver.ARTIFACT_RE.match("invariant-load-arms-py3.11") is None
+        assert driver.ARTIFACT_RE.match("invariant-load-arms-linux-py3.11") is None
+
+    def test_an_underscored_platform_key_survives_the_round_trip(self, driver):
+        # The name the workflow writes for every platform in the table has to
+        # come back as that platform; `linux_arm64` is the one with a `_` in it.
+        for name in driver.PLATFORMS:
+            match = driver.ARTIFACT_RE.match(f"quadrants-wheel-{name}-py3.11")
+            assert match is not None, name
+            assert match.group("platform") == name
+            assert match.group("python") == "3.11"
 
     def test_it_reads_the_platform_table_from_the_resolver(self, driver, resolver):
         # Not a copy: the driver validates --platforms against what the runner
@@ -266,19 +429,67 @@ class TestDriver:
         )
         assert same_host.get_header("Authorization") == "Bearer secret"
 
-    def test_install_refuses_when_nothing_matches_this_interpreter(
-        self, driver, tmp_path
+    @pytest.mark.parametrize(
+        ("system", "machine", "expected"),
+        [
+            ("linux", "x86_64", "linux"),
+            ("linux", "aarch64", "linux_arm64"),
+            ("linux", "arm64", "linux_arm64"),
+            ("darwin", "arm64", "macos"),
+            ("win32", "AMD64", "windows"),
+            # Nothing here builds these, and saying so is the answer. An Intel
+            # Mac used to be handed the arm64 tag, whose failure reads as a
+            # download that came back short rather than as a wheel that does
+            # not exist.
+            ("darwin", "x86_64", None),
+            ("freebsd14", "x86_64", None),
+        ],
+    )
+    def test_the_machine_decides_which_wheel_belongs_to_it(
+        self, driver, monkeypatch, system, machine, expected
     ):
+        monkeypatch.setattr(driver.sys, "platform", system)
+        monkeypatch.setattr(driver.platform, "machine", lambda: machine)
+        assert driver.platform_key_for_this_machine() == expected
+
+    def test_every_platform_in_the_table_is_reachable_from_some_machine(
+        self, driver, monkeypatch
+    ):
+        # A key nothing maps to is a wheel the build produces and `--install`
+        # can never put anywhere.
+        reached = set()
+        for system, machine in [
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+            ("darwin", "arm64"),
+            ("win32", "AMD64"),
+        ]:
+            monkeypatch.setattr(driver.sys, "platform", system)
+            monkeypatch.setattr(driver.platform, "machine", lambda m=machine: m)
+            reached.add(driver.platform_key_for_this_machine())
+        assert reached == set(driver.PLATFORMS)
+
+    def test_install_refuses_when_nothing_matches_this_interpreter(
+        self, driver, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(driver, "platform_key_for_this_machine", lambda: "linux")
         rows = [{"file": "quadrants-1.3.1-cp99-cp99-nonesuch.whl"}]
         with pytest.raises(SystemExit, match="no downloaded wheel matches"):
             driver.install_matching(tmp_path, rows)
+
+    def test_install_says_so_where_no_wheel_is_built(self, driver, monkeypatch):
+        monkeypatch.setattr(driver, "platform_key_for_this_machine", lambda: None)
+        with pytest.raises(SystemExit, match="does not know what to do"):
+            driver.install_matching(Path("."), [])
 
     def test_install_picks_the_wheel_for_this_interpreter(
         self, driver, monkeypatch, tmp_path
     ):
         import sys
 
-        key = {"linux": "linux", "darwin": "macos", "win32": "windows"}[sys.platform]
+        key = driver.platform_key_for_this_machine()
+        if key is None:
+            pytest.skip(f"no wheel is built for {sys.platform}/{platform.machine()}")
         tag = driver.PLATFORMS[key]["wheel_tag"]
         cp = f"cp{sys.version_info.major}{sys.version_info.minor}"
         mine = f"quadrants-1.3.1.dev0+gabc-{cp}-{cp}-{tag}.whl"
