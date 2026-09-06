@@ -82,11 +82,38 @@ class TestResolveWheelMatrix:
         # by substring, so a shared tag would let one leg satisfy the other's
         # slot and a 16-wheel release would go out with 8 of one architecture.
         tags = {name: spec["wheel_tag"] for name, spec in resolver.PLATFORMS.items()}
-        assert tags["linux"] == "manylinux_2_27_x86_64"
-        assert tags["linux_arm64"] == "manylinux_2_27_aarch64"
         assert len(set(tags.values())) == len(tags)
         assert tags["linux"] not in tags["linux_arm64"]
         assert tags["linux_arm64"] not in tags["linux"]
+
+    def test_the_linux_tags_are_the_policy_of_the_container_they_build_in(
+        self, resolver
+    ):
+        """The tag is only true because of the image, so they are checked as one.
+
+        `quay.io/pypa/manylinux_2_28_x86_64` guarantees glibc 2.28 and nothing
+        older; stamping `manylinux_2_27_x86_64` on its output would be a promise
+        the container does not make, and stamping `manylinux_2_34` would throw
+        away reach the container earned. Either way the pair has to agree, and
+        this is the only place both halves are written down.
+        """
+        for name, spec in resolver.PLATFORMS.items():
+            if "container" not in spec:
+                continue
+            image = spec["container"].rsplit("/", 1)[-1]
+            assert image == spec["wheel_tag"], (
+                f"{name}: builds in {image} but stamps {spec['wheel_tag']}"
+            )
+
+    def test_only_the_linux_platforms_build_in_a_container(self, resolver):
+        # macOS and Windows have no container story: their wheels' floor is the
+        # SDK and the runner, and `container:` on those jobs would be ignored.
+        containerised = {n for n, s in resolver.PLATFORMS.items() if "container" in s}
+        assert containerised == {"linux", "linux_arm64"}
+        out = resolver.resolve({})
+        for name in resolver.PLATFORMS:
+            assert (f"container_{name}" in out) == (name in containerised)
+            assert out[f"wheel_tag_{name}"] == resolver.PLATFORMS[name]["wheel_tag"]
 
     def test_all_expands(self, resolver):
         out = resolver.resolve({"IN_PLATFORMS": "all"})
@@ -210,6 +237,103 @@ class TestThePublishGate:
         assert "steps.resolve.outputs.selected" in gate[0]["env"]["SELECTED"]
 
 
+class TestVerifyWheelTag:
+    """`scripts/gate/verify_wheel_tag.py` -- the thing that makes the tag true.
+
+    Every case here is fed saved `auditwheel show` text, because the failure
+    this guards is a release that goes out with a tag nobody measured, and a
+    test that needed auditwheel and a real wheel would not run in this suite at
+    all.
+    """
+
+    # auditwheel hard-wraps its prose. This sample keeps the wrap in the middle
+    # of the verdict sentence on purpose: it is where a line-oriented regex
+    # stops matching, which is a silently passing gate rather than a failing
+    # one.
+    WRAPPED = """\
+quadrants-1.3.1.dev0-cp311-cp311-linux_x86_64.whl is consistent with the
+following platform tag: "manylinux_2_28_x86_64".
+
+The wheel references external versioned symbols in these system-provided
+shared libraries: libc.so.6 with versions {'GLIBC_2.14', 'GLIBC_2.2.5'}.
+
+This constrains the platform tag to "manylinux_2_28_x86_64".
+"""
+
+    @pytest.fixture(scope="class")
+    def gate(self):
+        return _load(
+            REPO_ROOT / "scripts" / "gate" / "verify_wheel_tag.py", "verify_wheel_tag"
+        )
+
+    def test_it_reads_the_verdict_through_auditwheels_line_wrap(self, gate):
+        assert gate.auditwheel_verdict(self.WRAPPED) == "manylinux_2_28_x86_64"
+
+    def test_it_reads_an_unwrapped_and_unquoted_verdict_too(self, gate):
+        text = "w.whl is consistent with the following platform tag: manylinux_2_34_aarch64."
+        assert gate.auditwheel_verdict(text) == "manylinux_2_34_aarch64"
+
+    def test_output_it_cannot_parse_is_a_failure_not_a_pass(self, gate):
+        with pytest.raises(SystemExit, match="could not find auditwheel's verdict"):
+            gate.auditwheel_verdict("auditwheel: error: cannot read wheel")
+
+    @pytest.mark.parametrize(
+        ("tag", "expected"),
+        [
+            ("manylinux_2_28_x86_64", ((2, 28), "x86_64")),
+            ("manylinux_2_34_aarch64", ((2, 34), "aarch64")),
+            ("manylinux2014_x86_64", ((2, 17), "x86_64")),
+            ("manylinux1_x86_64", ((2, 5), "x86_64")),
+            ("linux_x86_64", None),
+            ("macosx_13_0_arm64", None),
+        ],
+    )
+    def test_tag_parsing(self, gate, tag, expected):
+        assert gate.parse_tag(tag) == expected
+
+    def test_a_wheel_that_matches_its_tag_passes(self, gate):
+        assert gate.check("manylinux_2_28_x86_64", "manylinux_2_28_x86_64") == []
+
+    def test_a_wheel_older_than_its_tag_passes(self, gate):
+        # It would run on more systems than the tag admits, which costs reach,
+        # not correctness -- and it is what the x86-64 container actually does
+        # (its LLVM tops out at GLIBC_2.14).
+        assert gate.check("manylinux2014_x86_64", "manylinux_2_28_x86_64") == []
+
+    def test_a_wheel_newer_than_its_tag_is_refused(self, gate):
+        problems = gate.check("manylinux_2_34_x86_64", "manylinux_2_28_x86_64")
+        assert len(problems) == 1
+        assert "needs glibc 2.34" in problems[0]
+        assert "pip would install it on systems it cannot run on" in problems[0]
+
+    def test_the_wrong_architecture_is_refused(self, gate):
+        # A leg pointed at the wrong runner builds a real wheel with a real
+        # tag; only the architecture gives it away.
+        problems = gate.check("manylinux_2_28_x86_64", "manylinux_2_28_aarch64")
+        assert any("architecture mismatch" in p for p in problems)
+
+    def test_a_wheel_no_policy_accepts_is_refused_with_the_reason(self, gate):
+        problems = gate.check("linux_x86_64", "manylinux_2_28_x86_64")
+        assert len(problems) == 1
+        assert "not a manylinux policy at all" in problems[0]
+
+    def test_the_matrix_tags_are_ones_this_gate_understands(self, gate, resolver):
+        # The workflow passes `wheel_tag_<platform>` straight in as --expect.
+        for name, spec in resolver.PLATFORMS.items():
+            if "container" not in spec:
+                continue
+            assert gate.parse_tag(spec["wheel_tag"]) is not None, name
+
+    def test_end_to_end_through_the_cli(self, gate, tmp_path):
+        saved = tmp_path / "auditwheel.txt"
+        saved.write_text(self.WRAPPED, encoding="utf-8")
+        wheel = tmp_path / "quadrants-1.3.1-cp311-cp311-linux_x86_64.whl"
+        argv = [str(wheel), "--from-file", str(saved), "--expect"]
+        assert gate.main([*argv, "manylinux_2_28_x86_64"]) == 0
+        with pytest.raises(SystemExit, match="refusing to stamp a tag"):
+            gate.main([*argv, "manylinux_2_17_x86_64"])
+
+
 class TestWorkflowMatchesTheResolver:
     """The YAML and the resolver are one contract; these are its two halves."""
 
@@ -236,42 +360,49 @@ class TestWorkflowMatchesTheResolver:
             assert f"needs.plan.outputs.{name}" in job["if"]
             assert f"needs.plan.outputs.runner_{name}" in job["runs-on"]
 
-    def test_the_two_linux_legs_are_one_recipe(self, workflow):
+    def test_the_two_linux_legs_are_one_recipe(self):
         """x86-64 and aarch64 build identically, or the difference is a bug.
 
         GitHub Actions has no way to share a job body between two `runs-on`
         values -- no anchors, and one job per platform is what
         `test_every_platform_has_a_job_gated_on_its_output` requires -- so the
-        two Linux legs are a copy. This is what keeps the copy honest: every
-        step, in order, with the platform key rewritten out. Everything that
-        genuinely varies with the architecture varies *below* the workflow
-        (`download_llvm.py` picks the archive, `build_wheel` stamps the tag),
-        so a difference here is a fix applied to one leg and forgotten on the
-        other, not a legitimate divergence.
+        two Linux legs are a copy. This is what keeps the copy honest: the two
+        blocks, character for character, with the platform key rewritten out.
+        Everything that genuinely varies with the architecture reaches them as
+        a `needs.plan.outputs.*` value (runner, container, wheel tag), so a
+        difference here is a fix applied to one leg and forgotten on the other.
+
+        It reads the **raw text**, not `yaml.safe_load`'s output, because the
+        parser drops comments -- and comments are most of what a reader of this
+        workflow is relying on. Generating the aarch64 twin by substitution
+        mangled `manylinux` into `manylinux_arm64` in four of them, and a
+        parsed comparison saw nothing at all.
         """
         import difflib
 
-        def rewrite(node):
-            if isinstance(node, str):
-                # Longest first: `linux_arm64` contains `linux`.
-                for spelling in ("linux_arm64", "linux-arm64", "linux"):
-                    node = node.replace(spelling, "PLATFORM")
-                return node
-            if isinstance(node, dict):
-                return {key: rewrite(value) for key, value in node.items()}
-            if isinstance(node, list):
-                return [rewrite(item) for item in node]
-            return node
+        # Only where the key stands as its own token: a plain `.replace()` also
+        # rewrites the `linux` inside `manylinux`, so a mangled
+        # `manylinux_arm64_2_27` would normalize to the same text as a correct
+        # `manylinux_2_27` -- the legs comparing equal exactly where one is
+        # wrong. Longest alternative first, so `linux` cannot eat the head of
+        # `linux_arm64`.
+        token = re.compile(
+            r"(?<![A-Za-z0-9])(linux_arm64|linux-arm64|linux)(?![A-Za-z0-9])"
+        )
+        sibling = re.compile(r"^  [A-Za-z_][A-Za-z0-9_-]*:")
 
-        def one_recipe(job: dict) -> str:
-            # Substitute first and never wrap: dumping first would compare the
-            # line breaks `safe_dump` chose for two strings of different
-            # lengths, which is a difference in this test rather than in the
-            # workflow.
-            return yaml.safe_dump(rewrite(job), sort_keys=True, width=10**9)
+        def one_recipe(name: str) -> str:
+            lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+            start = next(i for i, ln in enumerate(lines) if ln.startswith(f"  {name}:"))
+            end = next(
+                (i for i in range(start + 1, len(lines)) if sibling.match(lines[i])),
+                len(lines),
+            )
+            block = "\n".join(lines[start:end]).rstrip()
+            return token.sub("PLATFORM", block)
 
-        x86 = one_recipe(workflow["jobs"]["linux"])
-        arm = one_recipe(workflow["jobs"]["linux_arm64"])
+        x86 = one_recipe("linux")
+        arm = one_recipe("linux_arm64")
         if x86 != arm:
             diff = "\n".join(
                 difflib.unified_diff(
@@ -301,6 +432,47 @@ class TestWorkflowMatchesTheResolver:
             for step in caches:
                 assert "runner.arch" in step["with"]["key"], name
                 assert "runner.arch" in step["with"]["restore-keys"], name
+
+    def test_the_linux_legs_build_in_the_container_the_table_names(
+        self, resolver, workflow
+    ):
+        for name in resolver.PLATFORMS:
+            job = workflow["jobs"][name]
+            if "container" in resolver.PLATFORMS[name]:
+                assert f"needs.plan.outputs.container_{name}" in str(
+                    job.get("container", "")
+                ), f"{name} does not build in its container"
+            else:
+                assert "container" not in job, f"{name} should not have a container"
+
+    def test_the_containerised_legs_do_not_reach_for_the_host(self, workflow):
+        # The manylinux images are RPM-based and run as root: `sudo` is not
+        # installed and `apt-get` does not exist, so either one is a step that
+        # cannot run. `setup-python` would install an interpreter built against
+        # a different libc than the wheel, which is worse -- it would work.
+        for name in ("linux", "linux_arm64"):
+            text = yaml.safe_dump(workflow["jobs"][name])
+            for forbidden in ("sudo ", "apt-get", "actions/setup-python"):
+                assert forbidden not in text, f"{name} still uses {forbidden!r}"
+
+    def test_every_built_wheel_is_verified_before_it_is_stamped(
+        self, resolver, workflow
+    ):
+        """A stamp without the check is exactly the bug this whole thing fixes."""
+        for name in resolver.PLATFORMS:
+            if "container" not in resolver.PLATFORMS[name]:
+                continue
+            steps = workflow["jobs"][name]["steps"]
+            runs = [str(step.get("run", "")) for step in steps]
+            verify = [i for i, r in enumerate(runs) if "verify_wheel_tag.py" in r]
+            stamp = [i for i, r in enumerate(runs) if "wheel tags --platform-tag" in r]
+            assert len(verify) == 1, f"{name} does not verify its tag"
+            assert len(stamp) == 1, f"{name} does not stamp its tag"
+            assert verify[0] <= stamp[0], f"{name} stamps before it verifies"
+            # The tag it checks against and the tag it stamps are one value,
+            # read from the table rather than written twice.
+            step = steps[stamp[0]]
+            assert f"needs.plan.outputs.wheel_tag_{name}" in str(step.get("env", ""))
 
     def test_no_two_jobs_upload_the_same_artifact_name(self, workflow):
         # Two jobs uploading one name is not a merge: the second upload fails.

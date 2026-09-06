@@ -91,3 +91,15 @@ followed by the `pyproject.toml` bump and a regenerated `uv.lock`. Until that
 happens the aarch64 leg is a wheel the workflow can build and
 `scripts/build_quadrants_wheels.py --install` can install, and `pip install
 algan` on aarch64 Linux still resolves nothing.
+
+**The Linux wheel filenames change in that revision too.** Both Linux legs now
+build inside manylinux containers and are stamped with the tag the container
+earns rather than the `manylinux_2_27` constant upstream's `build_wheel`
+writes: `manylinux_2_28_x86_64` and `manylinux_2_34_aarch64`, verified per
+wheel by `scripts/gate/verify_wheel_tag.py` before the stamp goes on. For
+x86-64 users this is a *narrowing on paper and a fix in fact* — the published
+`1.3.0.post1` x86-64 wheel claims 2.27 and actually needs 2.34, so systems
+between those two versions (RHEL 8, Ubuntu 20.04, Debian 11) currently install
+it and fail at `import quadrants`. After the revision they are told no such
+wheel exists, which is true, and RHEL 9 / Amazon Linux 2023 / Ubuntu 22.04 gain
+a wheel that genuinely runs.

@@ -7,8 +7,11 @@ name: Quadrants wheels (patched)
 # distribution metadata to `algan-quadrants` before Trusted Publishing to PyPI.
 #
 # The platform vocabulary is `.github/workflows/scripts/resolve_wheel_matrix.py`,
-# not this file: it owns the runner image and the wheel tag per platform, and
-# the release-completeness gate below asks *it* what complete means.
+# not this file: it owns the runner image, the build container and the wheel tag
+# per platform, and the release-completeness gate below asks *it* what complete
+# means. The Linux legs build inside manylinux containers so that their tag is
+# a measured fact rather than a constant -- that file explains why, and
+# `scripts/gate/verify_wheel_tag.py` is what enforces it per wheel.
 on:
   workflow_dispatch:
     inputs:
@@ -58,6 +61,12 @@ jobs:
       runner_linux_arm64: ${{ steps.resolve.outputs.runner_linux_arm64 }}
       runner_macos: ${{ steps.resolve.outputs.runner_macos }}
       runner_windows: ${{ steps.resolve.outputs.runner_windows }}
+      # Only the Linux legs build in a container, and only they carry a
+      # manylinux tag whose truth depends on which one.
+      container_linux: ${{ steps.resolve.outputs.container_linux }}
+      container_linux_arm64: ${{ steps.resolve.outputs.container_linux_arm64 }}
+      wheel_tag_linux: ${{ steps.resolve.outputs.wheel_tag_linux }}
+      wheel_tag_linux_arm64: ${{ steps.resolve.outputs.wheel_tag_linux_arm64 }}
       pythons: ${{ steps.resolve.outputs.pythons }}
       summary: ${{ steps.resolve.outputs.summary }}
     steps:
@@ -89,22 +98,32 @@ jobs:
   # ---------------------------------------------------------------------------
   # The two Linux legs are ONE RECIPE built on two runner architectures, and
   # `tests/unit_tests/test_quadrants_wheels.py::test_the_two_linux_legs_are_one_recipe`
-  # holds them to that: it compares the jobs step by step after rewriting
-  # `linux_arm64` to `linux`, so anything edited in one and not the other is a
-  # red unit test rather than a wheel that quietly got built differently.
+  # holds them to that: it compares the two blocks as raw text -- these comments
+  # included -- with the platform key rewritten out, so anything edited in one
+  # and not the other is a red unit test rather than a wheel that quietly got
+  # built differently. Edit one leg, copy it to the other, run that test.
   #
-  # Everything that varies with the architecture is already handled below the
-  # workflow: `download_llvm.py` picks the aarch64 LLVM archive and
-  # `qd_build/entry.py::build_wheel` stamps `manylinux_2_27_aarch64`, both off
-  # `platform.uname()`. The only thing this file has to keep straight is that
-  # `runner.arch` is in the cache key -- `runner.os` is `Linux` on both, so
-  # without it the arm leg restores the x86-64 LLVM and fails inside clang.
+  # Everything that varies with the architecture reaches them as data: the
+  # runner, the container and the wheel tag are all `needs.plan.outputs.*`, and
+  # `download_llvm.py` picks the right LLVM archive off `platform.uname()`. The
+  # containers are NOT the same image -- the aarch64 build needs glibc 2.34 and
+  # the x86-64 one does not, see `resolve_wheel_matrix.py` -- but that lives in
+  # the table, so the two job bodies stay one text.
+  #
+  # The only thing this file has to keep straight is that `runner.arch` is in
+  # the cache key: `runner.os` is `Linux` on both, so without it the arm leg
+  # restores the x86-64 LLVM and fails inside clang.
   # ---------------------------------------------------------------------------
   linux:
     name: linux / py${{ matrix.python-version }}
     needs: plan
     if: needs.plan.outputs.linux == 'true'
     runs-on: ${{ needs.plan.outputs.runner_linux }}
+    # The wheel's glibc floor is this image's, not the runner's. That is the
+    # whole point of the container: `build_wheel` stamps a manylinux tag it
+    # never measures, so the only way the tag can be true is for the build
+    # environment to be the oldest thing the tag admits.
+    container: ${{ needs.plan.outputs.container_linux }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -116,16 +135,28 @@ jobs:
         with:
           path: algan
 
-      - name: Runner facts
+      - name: Container facts
         run: |
           uname -a
           nproc
-          free -m
+          grep MemTotal /proc/meminfo
           df -h /
+          head -2 /etc/os-release
+          ldd --version | head -1
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      # No `actions/setup-python` in a container: the manylinux images ship the
+      # interpreters at a known path, and setup-python would install a second
+      # one built against a different libc than the wheel is being built for.
+      - name: Point at the container's CPython
+        env:
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          set -euxo pipefail
+          tag="cp${PYVER//./}"
+          root="/opt/python/${tag}-${tag}"
+          test -x "$root/bin/python"
+          echo "$root/bin" >> "$GITHUB_PATH"
+          "$root/bin/python" -VV
 
       - name: Set downstream release version
         if: ${{ inputs.publish }}
@@ -174,14 +205,18 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
+      # `pip install cmake ninja` rather than a package manager: the manylinux
+      # images are RPM-based and run as root with no sudo, and pip's wheels are
+      # the same binaries on both architectures.
       - name: Prerequisites
         working-directory: quadrants-src
         run: |
           set -euxo pipefail
           python -m pip install -U pip
           pip install --group dev
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          pip install cmake ninja auditwheel
+          cmake --version
+          ninja --version
 
       - name: Build the wheel
         working-directory: quadrants-src
@@ -193,6 +228,22 @@ jobs:
           clang --version
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
+          ls -la dist/
+
+      # `build.py` stamped `manylinux_2_27` from a constant in its source. This
+      # asks auditwheel what the wheel actually requires, refuses to proceed if
+      # that is newer than the tag the matrix promises, and only then restamps.
+      # Without it the tag is a claim nobody checks until a user's import fails.
+      - name: Verify and stamp the platform tag
+        working-directory: quadrants-src
+        env:
+          WHEEL_TAG: ${{ needs.plan.outputs.wheel_tag_linux }}
+        run: |
+          set -euxo pipefail
+          wheel=$(ls dist/quadrants-*.whl)
+          python "$GITHUB_WORKSPACE/algan/scripts/gate/verify_wheel_tag.py" \
+            "$wheel" --expect "$WHEEL_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m wheel tags --platform-tag "$WHEEL_TAG" --remove "$wheel"
           ls -la dist/
 
       - name: Install it
@@ -286,10 +337,15 @@ jobs:
           if-no-files-found: warn
 
   linux_arm64:
-    name: linux-arm64 / py${{ matrix.python-version }}
+    name: linux_arm64 / py${{ matrix.python-version }}
     needs: plan
     if: needs.plan.outputs.linux_arm64 == 'true'
     runs-on: ${{ needs.plan.outputs.runner_linux_arm64 }}
+    # The wheel's glibc floor is this image's, not the runner's. That is the
+    # whole point of the container: `build_wheel` stamps a manylinux tag it
+    # never measures, so the only way the tag can be true is for the build
+    # environment to be the oldest thing the tag admits.
+    container: ${{ needs.plan.outputs.container_linux_arm64 }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -301,16 +357,28 @@ jobs:
         with:
           path: algan
 
-      - name: Runner facts
+      - name: Container facts
         run: |
           uname -a
           nproc
-          free -m
+          grep MemTotal /proc/meminfo
           df -h /
+          head -2 /etc/os-release
+          ldd --version | head -1
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      # No `actions/setup-python` in a container: the manylinux images ship the
+      # interpreters at a known path, and setup-python would install a second
+      # one built against a different libc than the wheel is being built for.
+      - name: Point at the container's CPython
+        env:
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          set -euxo pipefail
+          tag="cp${PYVER//./}"
+          root="/opt/python/${tag}-${tag}"
+          test -x "$root/bin/python"
+          echo "$root/bin" >> "$GITHUB_PATH"
+          "$root/bin/python" -VV
 
       - name: Set downstream release version
         if: ${{ inputs.publish }}
@@ -359,14 +427,18 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
+      # `pip install cmake ninja` rather than a package manager: the manylinux
+      # images are RPM-based and run as root with no sudo, and pip's wheels are
+      # the same binaries on both architectures.
       - name: Prerequisites
         working-directory: quadrants-src
         run: |
           set -euxo pipefail
           python -m pip install -U pip
           pip install --group dev
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          pip install cmake ninja auditwheel
+          cmake --version
+          ninja --version
 
       - name: Build the wheel
         working-directory: quadrants-src
@@ -378,6 +450,22 @@ jobs:
           clang --version
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
+          ls -la dist/
+
+      # `build.py` stamped `manylinux_2_27` from a constant in its source. This
+      # asks auditwheel what the wheel actually requires, refuses to proceed if
+      # that is newer than the tag the matrix promises, and only then restamps.
+      # Without it the tag is a claim nobody checks until a user's import fails.
+      - name: Verify and stamp the platform tag
+        working-directory: quadrants-src
+        env:
+          WHEEL_TAG: ${{ needs.plan.outputs.wheel_tag_linux_arm64 }}
+        run: |
+          set -euxo pipefail
+          wheel=$(ls dist/quadrants-*.whl)
+          python "$GITHUB_WORKSPACE/algan/scripts/gate/verify_wheel_tag.py" \
+            "$wheel" --expect "$WHEEL_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m wheel tags --platform-tag "$WHEEL_TAG" --remove "$wheel"
           ls -la dist/
 
       - name: Install it

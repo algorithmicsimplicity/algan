@@ -141,6 +141,14 @@ here rather than from the index.
 | macos | `macos-26` | 22.21 MiB, via `scripts/gate/quadrants_macos_build.sh` unchanged |
 | windows | `windows-2025` | 26.51 MiB — `quadrants-1.3.1.dev0+gab9a58ab5.d20260904-cp311-cp311-win_amd64.whl`, sha256 `d6db5de8…`. **The first Windows wheel this fork has ever had**, and the only one 0003's sm_61 box can be tried on |
 
+That table is a record of that run, not the current configuration: the Linux
+legs have since moved **inside manylinux containers** (`ubuntu-24.04` and
+`ubuntu-24.04-arm` now only host them), because `build_wheel` stamps
+`manylinux_2_27` from a constant and a stock runner cannot keep that promise —
+the wheel from that very run measures `GLIBC_2.34`. See
+`.github/workflows/scripts/resolve_wheel_matrix.py` for the measurements and
+`scripts/gate/verify_wheel_tag.py` for the check that now runs per wheel.
+
 The download half of `build_quadrants_wheels.py` is the one thing not exercised
 end to end from a sandbox: an artifact download redirects off `api.github.com`
 to blob storage, which some egress policies refuse (the script says so rather
@@ -179,14 +187,17 @@ Apple GPU and an NVIDIA one. Both passed on 2026-09-04, from
 | **Metal** (0001, 0002) | `bash scripts/gate/quadrants_macos_build.sh` with `GATE_QD_PATCHES=1`, arm `mac-cpu` | PASS, 781 s build, `quadrants-1.3.1.dev0+gab9a58ab5-cp311-cp311-macosx_13_0_arm64.whl` (22.3 MiB), **`qd.init(metal)=ok`**, and clang named **no warning flags at all** |
 | **CUDA** (0003) | `bash scripts/gate/quadrants_linux_build.sh`, arm `linux-cpu` | PASS, 1041 s build, `...-manylinux_2_27_x86_64.whl` (26.4 MiB), `qd.init(cpu)=ok`, `runtime_cuda.bc present -- CUDA backend compiled` |
 
-**The aarch64 Linux leg has never been run.** `quadrants_build.yaml` builds it
-since the platform table gained `linux_arm64`, and nothing in these seven
-patches is x86-specific — 0001-0002 edit Metal sources a Linux build does not
-compile, and 0003 and 0005-0007 are CUDA codegen against the NVPTX target in the
-same prebuilt LLVM, which `download_llvm.py` fetches per architecture. So the
-expectation is that it builds exactly as the x86-64 leg does, and the first
-dispatch that includes `linux_arm64` is what turns that into a fact. The line
-to check in its summary is the same one below.
+**The aarch64 Linux leg has never been run, and neither leg has been run in a
+container yet.** `quadrants_build.yaml` builds aarch64 since the platform table
+gained `linux_arm64`, and nothing in these seven patches is x86-specific —
+0001-0002 edit Metal sources a Linux build does not compile, and 0003 and
+0005-0007 are CUDA codegen against the NVPTX target in the same prebuilt LLVM,
+which `download_llvm.py` fetches per architecture. What *is* per-architecture
+and was measured before the containers were chosen: the aarch64 LLVM archive's
+own binaries need `GLIBC_2.34` and `GLIBCXX_3.4.29` (the x86-64 ones need 2.14
+and 3.4.21), which is why the aarch64 leg builds in `manylinux_2_34` and the
+x86-64 leg in `manylinux_2_28`. The first dispatch of either is what turns the
+rest into a fact. The line to check in its summary is the same one below.
 
 That last field is load-bearing and was got wrong once. The first Linux run
 "passed" while proving nothing: the check grepped the build log, and

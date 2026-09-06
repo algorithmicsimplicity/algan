@@ -140,16 +140,16 @@ def test_a_wheel_stamped_with_the_wrong_tag_leaves_its_slot_empty(
 ):
     """The count can be right while a platform is missing, and that is the trap.
 
-    The platform tag is stamped by upstream's `build_wheel` from
-    `platform.uname()` and can move without this repository changing (their PyPI
-    wheels already carry a compound `manylinux_2_27_aarch64.manylinux_2_34_...`
-    that ours does not). A directory of sixteen wheels can therefore have an
-    empty aarch64 slot; counting files does not see that, and asking for one
+    The Linux tag is restamped after the build from the matrix's own table
+    (`scripts/gate/verify_wheel_tag.py`, then `wheel tags`), so it moves
+    whenever the build container does. A directory of sixteen wheels can
+    therefore have an empty aarch64 slot because that leg stamped a different
+    manylinux version; counting files does not see that, and asking for one
     wheel per (platform, Python) does.
     """
     resolver = validator._load_resolver()
     for name, spec in resolver.PLATFORMS.items():
-        tag = "manylinux_2_34_aarch64" if name == "linux_arm64" else spec["wheel_tag"]
+        tag = "manylinux_2_39_aarch64" if name == "linux_arm64" else spec["wheel_tag"]
         for python in resolver.PYTHONS:
             _release_wheel(tmp_path, helper, tag, python)
 

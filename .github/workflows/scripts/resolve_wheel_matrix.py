@@ -24,10 +24,11 @@ import json
 import os
 import sys
 
-# platform -> the runner it builds on, and the wheel platform tag `build.py`
-# stamps for it (`qd_build/entry.py::build_wheel`). The tag is what
-# `scripts/build_quadrants_wheels.py --install` matches a downloaded wheel
-# against, so it belongs next to the runner rather than in the driver.
+# platform -> the runner it builds on, the container it builds *in* where there
+# is one, and the wheel platform tag the finished wheel is stamped with. The
+# tag is what `scripts/build_quadrants_wheels.py --install` matches a downloaded
+# wheel against and what `scripts/validate_quadrants_release.py` files a release
+# by, so it belongs next to the image that makes it true.
 #
 # Every image is pinned rather than `-latest`, and that is a finding rather
 # than a preference: `taichi_build.yaml` documents a `macos-latest` roll that
@@ -35,22 +36,54 @@ import sys
 # `windows-2025` are the images Quadrants' own CI builds v1.3.0 on
 # (`macosx.yml`, `win.yml`), so they are the configuration upstream tests.
 #
-# **The two Linux images are deprecating together.** `ubuntu-22.04` and
-# `ubuntu-22.04-arm` entered deprecation 2026-09-17; the four ~10-hour
-# brownouts are 2027-03-23, -03-30, -04-06 and -04-13, and the labels stop
-# working on 2027-04-17. Both legs need a new image before then, and moving
-# them is not a one-word edit: what a Linux wheel *actually* requires is the
-# build image's glibc, while `build_wheel` stamps `manylinux_2_27` whatever it
-# was built on. Measured on the published
-# `algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl` (this
-# leg's own output): the maximum versioned symbol is **GLIBC_2.34**
-# (`pthread_create`, `dlopen` -- the 2.34 libpthread/libdl merge), so the tag
-# already overstates by seven versions, and a bump to 24.04 (2.39) or 26.04
-# (2.43) can raise the real floor further without changing the tag that says
-# otherwise. libstdc++ is static (`readelf -d` needs only libc, libm, ld.so),
-# so glibc is the whole compatibility surface. The move that makes the tag a
-# fact rather than a claim is to build both legs in a manylinux container
-# (`quay.io/pypa/manylinux_2_28_*`), which is what upstream's own CI does.
+# ---------------------------------------------------------------------------
+# WHY THE LINUX LEGS BUILD IN A CONTAINER, AND WHY THE TWO CONTAINERS DIFFER
+#
+# A Linux wheel's `manylinux_X_Y` tag is a promise about the oldest glibc it
+# runs on, and `qd_build/entry.py::build_wheel` stamps `manylinux_2_27`
+# unconditionally -- nothing measures anything. On a stock GitHub runner that
+# promise is broken by construction: measured on the published
+# `algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl`, which
+# this leg built on `ubuntu-22.04`, the maximum versioned symbol is
+# **GLIBC_2.34** (`pthread_create`, `dlopen` -- the 2.34 libpthread/libdl
+# merge). Seven versions of overclaim, which pip cannot see: it installs the
+# wheel on any glibc >= 2.27 and the failure lands at `import quadrants` as
+# `version GLIBC_2.34 not found`. Moving to a newer runner only makes it worse
+# (24.04 is glibc 2.39, 26.04 is 2.43), which is why "just bump the image"
+# was not the answer to `ubuntu-22.04`'s retirement on 2027-04-17.
+#
+# In a manylinux container the build image's glibc *is* the floor, the tag
+# becomes a measured fact (`scripts/gate/verify_wheel_tag.py` fails the build
+# if auditwheel disagrees with the tag below), and the host runner stops
+# mattering -- so the runner can track whatever GitHub currently supports
+# without touching the wheels.
+#
+# The two containers differ because **the prebuilt LLVM 22.1.0 toolchain that
+# `download_llvm.py` fetches is not the same binary on the two architectures**,
+# measured from the archives themselves:
+#
+#   x86_64  `bin/llvm-config` -> max GLIBC_2.14, GLIBCXX_3.4.21
+#   aarch64 `bin/llvm-config` -> max GLIBC_2.34 (`__libc_start_main`),
+#                                GLIBCXX_3.4.29
+#
+# So AlmaLinux 8 (glibc 2.28) can run the x86-64 clang and *cannot* run the
+# aarch64 one: the aarch64 leg needs an image at glibc >= 2.34, and
+# `manylinux_2_34` (AlmaLinux 9) is the lowest published one that clears it.
+# This is not a guess about upstream's choice, it is upstream's choice --
+# their PyPI wheels measure 2.27 on x86_64 and 2.34 on aarch64, and carry
+# `manylinux_2_28` / `manylinux_2_34` as their second tag.
+#
+# `manylinux_2_34` is marked ALPHA by pypa, and the caveat their README
+# attaches to it is **x86_64-only** (RHEL 9 derivatives target x86-64-v2, which
+# auditwheel cannot detect, pypa/manylinux#1725) -- this uses it for aarch64
+# alone, where that does not arise. Upstream ships production wheels built in
+# it, and the alternative for aarch64 is strictly worse: no container at all
+# means the runner's glibc (2.35 on 22.04, 2.39 on 24.04), which loses RHEL 9
+# and Amazon Linux 2023 -- both exactly 2.34, and much of the aarch64 install
+# base. Revisit if pypa promotes it, drops it, or ships a 2_34-class image that
+# is not alpha; do not reach for `manylinux_2_34_x86_64` for the other leg
+# without reading that issue first.
+# ---------------------------------------------------------------------------
 #
 # A key is also a **job id and an artifact name component**, so it is
 # `[a-z0-9_]+`: `quadrants_build.yaml` names one job per key,
@@ -60,29 +93,21 @@ import sys
 # (`needs.plan.outputs.runner_linux-arm64`).
 PLATFORMS: dict[str, dict[str, str]] = {
     "linux": {
-        "runner": "ubuntu-22.04",
-        "wheel_tag": "manylinux_2_27_x86_64",
+        "runner": "ubuntu-24.04",
+        "container": "quay.io/pypa/manylinux_2_28_x86_64",
+        "wheel_tag": "manylinux_2_28_x86_64",
         "label": "linux-x86_64",
     },
-    # aarch64 is the one platform here that needs nothing new from Quadrants:
-    # `qd_build/llvm.py` already matches `("Linux", "aarch64")` and downloads
-    # `taichi-llvm-22.1.0-linux-aarch64.zip`, `qd_build/entry.py::build_wheel`
-    # already stamps `manylinux_2_27_aarch64` for it, and upstream ships
-    # `quadrants-1.3.0-*-manylinux_2_27_aarch64...whl` on PyPI for all four
-    # Pythons -- so this is a configuration upstream builds too, not new ground.
-    #
-    # `ubuntu-22.04-arm` rather than `-24.04-arm`, and the reason is the wheel
-    # tag rather than symmetry. `build_wheel` *stamps* `manylinux_2_27_aarch64`
-    # (`python -m wheel tags --platform-tag`) and nothing audits it, so the tag
-    # is a claim about the oldest glibc the wheel runs on and the runner image
-    # is what makes it true or false. 22.04 is glibc 2.35, the same overclaim
-    # the x86-64 leg above already ships; 24.04 is 2.39, which would put the
-    # aarch64 wheel out of reach of Ubuntu 22.04 and Debian 12 -- JetPack 6 is
-    # 22.04-based, i.e. exactly the CUDA-on-aarch64 user 0003 and 0005-0007
-    # exist for -- while still claiming 2.27.
+    # aarch64 needs nothing new from Quadrants itself: `qd_build/llvm.py`
+    # already matches `("Linux", "aarch64")` and downloads
+    # `taichi-llvm-22.1.0-linux-aarch64.zip`, `build_wheel` already has an
+    # aarch64 arm, and upstream ships aarch64 wheels for all four Pythons -- so
+    # this is a configuration upstream builds too, not new ground. What it does
+    # need is its own container, for the reason above.
     "linux_arm64": {
-        "runner": "ubuntu-22.04-arm",
-        "wheel_tag": "manylinux_2_27_aarch64",
+        "runner": "ubuntu-24.04-arm",
+        "container": "quay.io/pypa/manylinux_2_34_aarch64",
+        "wheel_tag": "manylinux_2_34_aarch64",
         "label": "linux-aarch64",
     },
     "macos": {
@@ -154,11 +179,16 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
     ordered_pythons = list(dict.fromkeys(pythons))
 
     outputs = {name: str(name in ordered_platforms).lower() for name in PLATFORMS}
-    # The runner image travels as an output so that `runs-on:` reads the table
-    # above rather than a second copy pasted into the YAML, which is exactly
-    # the kind of pair that drifts when one of the two is bumped.
+    # The runner image, the container and the wheel tag all travel as outputs so
+    # that the YAML reads the table above rather than a second copy pasted into
+    # it, which is exactly the kind of pair that drifts when one of the two is
+    # bumped. It is also what keeps the two Linux jobs textually identical
+    # despite building in different containers for different tags.
     for name, spec in PLATFORMS.items():
         outputs[f"runner_{name}"] = spec["runner"]
+        outputs[f"wheel_tag_{name}"] = spec["wheel_tag"]
+        if "container" in spec:
+            outputs[f"container_{name}"] = spec["container"]
     outputs["pythons"] = json.dumps(ordered_pythons)
     # The selection as a list, which is what `--check-publish` reads back. The
     # per-platform `true`/`false` outputs above are what a job's `if:` can gate
