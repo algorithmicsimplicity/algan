@@ -10,7 +10,9 @@ from algan.taichi_compat import ti
 
 
 @ti.kernel
-def _decode_links(blocks: NODE_ARG, choices: ti.types.ndarray(), out: ti.types.ndarray()):
+def _decode_links(
+    blocks: NODE_ARG, choices: ti.types.ndarray(), out: ti.types.ndarray()
+):
     for i in range(choices.shape[0]):
         out[i] = _refit_link(i // bvh_arity, choices[i], blocks)
 
@@ -20,10 +22,14 @@ def test_refit_links_preserve_all_bits_at_dynamic_child_indices():
     device = render_device()
     # Internal, invalid, leaf, opaque and non-casting link words. Several
     # halves represent NaNs as f16: numeric casts would corrupt their payload.
-    words = torch.tensor(
-        [0, 12345, -1, -2147483648, -1073741823, -1610612731, 65535, 2147483647],
-        dtype=torch.int32,
-    ).repeat(bvh_arity).reshape(8, bvh_arity)
+    words = (
+        torch.tensor(
+            [0, 12345, -1, -2147483648, -1073741823, -1610612731, 65535, 2147483647],
+            dtype=torch.int32,
+        )
+        .repeat(bvh_arity)
+        .reshape(8, bvh_arity)
+    )
     dtype = torch.float16 if bvh_block_f16 else torch.float32
     blocks = torch.zeros((8, 8, bvh_arity), dtype=dtype)
     if bvh_block_f16:
