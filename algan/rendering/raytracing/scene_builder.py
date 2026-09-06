@@ -29,6 +29,7 @@ from algan.rendering.raytracing.settings import (
     _constant_promotion_active,
 )
 from algan.rendering.raytracing.shading_taichi import MAT_W
+from algan.rendering.raytracing.sliver_split import sliver_leaf_columns
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import (
     _cat_collections,
@@ -780,6 +781,7 @@ def _build_accel(
     builder="morton",
     refit=None,
     casts=None,
+    leaf_prim=None,
 ):
     """Build one geometry type's acceleration structure: the classic
     spatio-temporal instance tree, or -- under ``settings.bvh_refit`` -- the
@@ -794,8 +796,15 @@ def _build_accel(
     _rts = SETTINGS.raytracing
     if _rts.refit_bvh_active() if refit is None else refit:
         return build_refit_bvh(
-            lo, hi, num_frames=num_frames, opaque=opaque, casts=casts
+            lo,
+            hi,
+            num_frames=num_frames,
+            opaque=opaque,
+            casts=casts,
+            leaf_prim=leaf_prim,
         )
+    if leaf_prim is not None:
+        raise ValueError("only the refit BVH takes a leaf -> primitive map")
     return build_stbvh(
         lo,
         hi,
@@ -805,6 +814,19 @@ def _build_accel(
         builder=builder,
         casts=casts,
     )
+
+
+def _tri_leaf_columns(tri_pos, lo, hi, opaque, casts, refit):
+    """The triangle tree's leaf columns: the per-primitive boxes as they are,
+    or -- under the refit tree, which is the only one whose leaves carry an
+    explicit primitive id -- with every sliver cut into per-strip leaves
+    (``sliver_split``). Returns ``(lo, hi, opaque, casts, leaf_prim)``.
+    """
+    if refit and tri_pos is not None:
+        cols = sliver_leaf_columns(tri_pos, lo, hi, opaque, casts)
+        if cols is not None:
+            return cols
+    return lo, hi, opaque, casts, None
 
 
 def _empty_scene_part(device, refit=None):
@@ -947,14 +969,23 @@ def _finalize_bvhs(scene, tri_inputs, bez_inputs, num_frames, device):
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
         # seam de-dup is discovery-order sensitive (see stbvh.bvh_build).
-        scene["tri_bvh"] = _build_accel(
+        leaf_lo, leaf_hi, leaf_opq, leaf_casts, leaf_prim = _tri_leaf_columns(
+            scene.get("tri_pos"),
             lo,
             hi,
+            opaque,
+            casts,
+            SETTINGS.raytracing.refit_bvh_active(),
+        )
+        scene["tri_bvh"] = _build_accel(
+            leaf_lo,
+            leaf_hi,
             num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque,
-            casts=casts,
+            opaque=leaf_opq,
+            casts=leaf_casts,
             builder="split",
+            leaf_prim=leaf_prim,
         )
         if not scene["tri_has_opaque"]:
             scene["tri_opaque_bvh"] = _empty_scene_part(device)
@@ -1073,15 +1104,19 @@ def build_deferred_bvhs(merged, memory=None):
         hi = merged["tri_frame_hi"]
         opaque = merged["tri_frame_opaque"]
         casts = merged.get("tri_frame_casts")
+        leaf_lo, leaf_hi, leaf_opq, leaf_casts, leaf_prim = _tri_leaf_columns(
+            merged.get("tri_pos"), lo, hi, opaque, casts, refit
+        )
         merged["tri_bvh"] = _build_accel(
-            lo,
-            hi,
+            leaf_lo,
+            leaf_hi,
             num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque,
+            opaque=leaf_opq,
             builder="split",
             refit=refit,
-            casts=casts,
+            casts=leaf_casts,
+            leaf_prim=leaf_prim,
         )
         if not merged["tri_has_opaque"]:
             merged["tri_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)

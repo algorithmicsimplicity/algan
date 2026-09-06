@@ -124,6 +124,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     sca_width,
     wavefront_generate_rays,
     wavefront_shade,
+    wavefront_shadow_events,
     wavefront_traverse_events,
     wf_composite_accum,
     wf_composite_accum_aa,
@@ -2552,6 +2553,144 @@ def raytrace_render_wavefront(
             merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
             _retain_persistent(merged, memory)
 
+    def _deferred_wavefront_shadows(
+        active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
+    ):
+        """Trace this drain iteration's shadow events; return the visibility
+        table the shade kernel's ``deferred_shadows`` arm reads
+        (``[na * kbuf, 3 * vis_lights]`` f32, all-lit where no event).
+        """
+        from algan.rendering.raytracing.raster_pipeline import (
+            _shadow_identity_epsilons,
+        )
+        from algan.rendering.raytracing.raster_taichi import raster_shadow_trace
+
+        rows = na * kbuf
+        term_mode = int(rt_settings.shadow_terminator_mode())
+        ev_accept = memory.get_tensor((rows,), i32)
+        ev_pos = memory.get_tensor((rows, 3), f32)
+        ev_snrm = memory.get_tensor((rows, 3), f32)
+        ev_fnrm = memory.get_tensor((rows, 3), f32)
+        ev_frame = memory.get_tensor((rows,), i32)
+        ev_msk = memory.get_tensor((rows,), i32)
+        ev_toff = memory.get_tensor((rows if term_mode == 1 else 1, 3), f32)
+        wavefront_shadow_events(
+            active,
+            na,
+            rs_ro,
+            rs_rd,
+            rs_int,
+            rs_pix,
+            hit_f,
+            hit_i,
+            a_pos,
+            a_norm,
+            a_uvs,
+            a_meta,
+            merged["textures"],
+            int(merged["num_colored_triangles"]),
+            a_matid,
+            a_mat,
+            int(mem_trim),
+            int(rt_settings.shadow_sided_cull),
+            term_mode,
+            int(time_start),
+            int(width),
+            int(height),
+            0,
+            ev_accept,
+            ev_pos,
+            ev_snrm,
+            ev_fnrm,
+            ev_frame,
+            ev_msk,
+            ev_toff,
+        )
+        vis_lights = shadow_vis_slots(num_lights)
+        vis_tab = memory.get_tensor((rows, 3 * vis_lights), f32)
+        vis_tab.fill_(1.0)
+        acc_idx = ev_accept.nonzero(as_tuple=True)[0]
+        num_events = int(acc_idx.numel())
+        if num_events == 0:
+            return vis_tab
+        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
+        ev_dp = memory.get_tensor((num_events if sec_aa > 1 else 1, 6), f32)
+        ev_dp.zero_()
+        shadow_vis = memory.get_tensor((num_events, max(1, int(num_lights)), 3), f32)
+        shadow_vis.fill_(1.0)
+        dummy_i = memory.get_tensor((1,), i32)
+        dummy_i.zero_()
+        identity_on = bool(rt_settings.shadow_identity_reject)
+        if identity_on:
+            # No source identity on this path, exactly as the inline fan had
+            # none: a -1 source keeps the plain acceptance epsilon per ray.
+            ev_src = memory.get_tensor((num_events,), i32)
+            ev_src.fill_(-1)
+            eps_self, eps_near = _shadow_identity_epsilons(merged)
+        else:
+            ev_src = dummy_i
+            from algan.rendering.raytracing.raytrace_kernels_taichi import (
+                min_hit_distance,
+            )
+
+            eps_self, eps_near = float(min_hit_distance), 0.0
+        raster_shadow_trace(
+            num_events,
+            ev_pos.index_select(0, acc_idx),
+            ev_snrm.index_select(0, acc_idx),
+            ev_fnrm.index_select(0, acc_idx),
+            ev_frame.index_select(0, acc_idx),
+            ev_msk.index_select(0, acc_idx),
+            t_bvh.blocks,
+            t_bvh.node_miss,
+            t_bvh.leaf_prim,
+            t_bvh.leaf_tspan,
+            int(t_bvh.first_leaf),
+            merged["tri_pos"],
+            merged["tri_colors"],
+            merged["tri_uvs"],
+            merged["tri_tex_meta"],
+            merged["textures"],
+            merged["tri_extra"],
+            int(merged["num_colored_triangles"]),
+            bez_bvh.blocks,
+            bez_bvh.node_miss,
+            bez_bvh.leaf_prim,
+            bez_bvh.leaf_tspan,
+            int(bez_bvh.first_leaf),
+            merged["circuit_meta"],
+            merged["circuit_colors"],
+            merged["circuit_border_colors"],
+            merged["edges_2d"],
+            merged["edge_accel"],
+            light_pos,
+            light_col,
+            int(num_lights),
+            pixel_world_scale,
+            float(layer_offset_triangles),
+            1 if bvh_refit else 0,
+            int(has_tri),
+            int(has_bez),
+            ev_dp,
+            ev_toff.index_select(0, acc_idx) if term_mode == 1 else ev_toff,
+            sec_aa,
+            shadow_vis,
+            int(shadow_flag),
+            merged["tri_obj"] if identity_on else dummy_i,
+            ev_src,
+            eps_self,
+            eps_near,
+            1 if identity_on else 0,
+            term_mode,
+            1 if rt_settings.shadow_adaptive_taps else 0,
+        )
+        filled = torch.ones(
+            (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
+        )
+        filled[:, : 3 * int(num_lights)] = shadow_vis.view(num_events, -1)
+        vis_tab.index_copy_(0, acc_idx, filled)
+        return vis_tab
+
     def _drain_sparse_secondary(
         active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis
     ):
@@ -2647,6 +2786,19 @@ def raytrace_render_wavefront(
                         pixel_basis_y,
                         gen_meta,
                     )
+                # Deferred shadows (rt_settings.wf_deferred_shadows): the lit
+                # triangle hits in this iteration's K-buffers become shadow
+                # events, traced by the lean raster_shadow_trace kernel exactly
+                # as the sheet resolve's are; the shade kernel then reads the
+                # traced visibility instead of marching inline.
+                deferred = 0
+                rs_vis_arg = rs_vis
+                if shadow_flag and frag_flag and rt_settings.wf_deferred_shadows:
+                    deferred = 1
+                    with _stage(f"wavefront:   - {bounce} shadow events", items=na):
+                        rs_vis_arg = _deferred_wavefront_shadows(
+                            active, na, hit_f, hit_i, rs_ro, rs_rd, rs_int, rs_pix
+                        )
                 with _stage(f"wavefront:   - {bounce} shade", items=na):
                     wavefront_shade(
                         active,
@@ -2687,10 +2839,11 @@ def raytrace_render_wavefront(
                         bvh_refit,
                         int(has_tri),
                         int(has_bez),
-                        0,
+                        deferred,
                         # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
                         # read live per batch like the other shadow toggles.
                         int(rt_settings.shadow_terminator_mode()),
+                        int(rt_settings.shadow_sided_cull),
                         int(rt_settings.wf_skip_unlit_normal),
                         int(rt_settings.direct_specular_lobe),
                         int(mem_trim),
@@ -2723,7 +2876,7 @@ def raytrace_render_wavefront(
                         rs_pix,
                         pix_accum,
                         rs_alloc,
-                        rs_vis,
+                        rs_vis_arg,
                         cam_origin,
                     )
             active = compactor.select(
@@ -3366,6 +3519,7 @@ def raytrace_render_wavefront(
                     # Shadow terminator gate (RENDERER_WORK_QUEUE.md item 20),
                     # read live per batch like the other shadow toggles.
                     int(rt_settings.shadow_terminator_mode()),
+                    int(rt_settings.shadow_sided_cull),
                     int(rt_settings.wf_skip_unlit_normal),
                     int(rt_settings.direct_specular_lobe),
                     int(mem_trim),

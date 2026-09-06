@@ -2474,6 +2474,17 @@ def _collect_hits(refit: ti.template(),
                                           and not _comes_after(
                                               t, layer, opq_t,
                                               opq_layer))
+                                if accept:
+                                    # A triangle reached through two of its
+                                    # BVH leaves (sliver_split gives a wire's
+                                    # triangle one leaf per strip) is the same
+                                    # hit twice; the nearest-hit and shadow
+                                    # marches reject it as not strictly
+                                    # nearer, and this gather has to look.
+                                    for q in ti.static(range(kbuf)):
+                                        if (q < count) and (hit_prim[q] == prim) \
+                                                and ((hit_flags[q] & 3) == 1):
+                                            accept = False
                                 if accept and (count == kbuf):
                                     accept = _comes_after(
                                         worst_t, worst_layer, t, layer)

@@ -86,6 +86,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_NO_SHADOW_RECEIVE,
+    _MAT_ONE_SIDED,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     SHADOW_VIS_CHANNELS,
@@ -157,6 +158,11 @@ def sheet_resolve_shade_arena(
         # guard; 2 is the diagnostic relax-only arm and never reads
         # ``event_toff``).
         shadow_term: ti.template(),
+        # One-sided back-face shadow cull (rt_settings.shadow_sided_cull):
+        # the mode-1 event build keeps a one-sided surface's own orientation
+        # for the shadow normals it stores, so the trace's light-facing cull
+        # agrees with the side the shading lights.
+        sided_cull: ti.template(),
         # Cross-pass material memoization (rt_settings.sheet_resolve_memo,
         # RENDERER_WORK_QUEUE.md item 9). != 0 makes the mode-1 event walk
         # STORE each processed triangle sheet's fetched material into
@@ -615,10 +621,20 @@ def sheet_resolve_shade_arena(
                                        _MAT_NO_SHADOW_RECEIVE] > 0.5:
                                 recv = 0
                     if (pid_e != _MID_UNLIT) and (recv == 1):
+                        # A one-sided surface's shadow normals keep its own
+                        # orientation (see _orient_hit_normals_sided); the
+                        # same built-in-pipeline guard as the receive flag.
+                        one_sided_e = 0
+                        if ti.static(sided_cull != 0):
+                            if pid_e < _USER_PIPELINE_BASE:
+                                if tri_mat.shape[2] > _MAT_ONE_SIDED:
+                                    if tri_mat[f % tri_mat.shape[0], prim,
+                                               _MAT_ONE_SIDED] > 0.5:
+                                        one_sided_e = 1
                         snrm, fnrm = _tri_shadow_normals(
                             f, prim, a, b, surf_rd, tri_pos, tri_norm,
                             tri_uvs, tri_tex_meta, textures,
-                            num_colored_triangles)
+                            num_colored_triangles, one_sided_e)
                         sheet_accept[idx] = 1
                         for k in ti.static(range(3)):
                             event_pos[idx, k] = surf_pos[k]
@@ -1357,7 +1373,8 @@ _SHEET_RESOLVE_SHADE_PARAMS = (
     "light_col", "num_lights", "vis_lights", "layer_offsets", "frag_shading",
     "frag_pipelines", "tri_pids", "refraction", "ior_stack",
     "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
-    "env_in_composite", "direct_spec", "mode", "shadow_term", "memo",
+    "env_in_composite", "direct_spec", "mode", "shadow_term", "sided_cull",
+    "memo",
     "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
     "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",
     "shadow_vis", "covered_idx", "time_start", "width", "height",

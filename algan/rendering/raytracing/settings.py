@@ -315,6 +315,34 @@ promote_constants = env_flag("ALGAN_PROMOTE_CONSTANTS", True)
 # ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
 wf_skip_unlit_normal = env_flag("ALGAN_WF_SKIP_UNLIT_NORMAL", True)
 
+# Deferred shadows for the bounce loop (the sheet route's continuation drain,
+# tracer._drain_sparse_secondary). ``wavefront_shade`` used to trace each lit
+# hit's shadow fan INLINE, inside the occupancy-starved shade megakernel:
+# measured on the nn benchmark at UHD, those rays cost ~2.8 us each against
+# ~0.6 us for the same march in the lean ``raster_shadow_trace`` kernel, and
+# they were 5.6 s of the shade kernel's 5.9 s (shadows=False: 0.24 s). With
+# this on, a small kernel (``wavefront_shadow_events``) writes one shadow
+# event per lit triangle hit in the K-buffer, ``raster_shadow_trace`` traces
+# them exactly as it traces the sheet resolve's events, and the shade kernel
+# reads the traced visibility (its ``deferred_shadows`` template) instead of
+# marching. Same fan, same march, same acceptance -- the one difference is
+# the bezier-hit LOD inside a shadow march, which the lean kernel evaluates
+# at the camera's own distance rather than the bounced ray's path length.
+# Hits the drain never shades (a K-buffer slot behind a bounce) are traced for
+# nothing; that is bounded by the K-buffer depth and was cheaper than the
+# inline fan on every measured scene. ALGAN_WF_DEFERRED_SHADOWS=0 restores
+# the inline fan.
+wf_deferred_shadows = env_flag("ALGAN_WF_DEFERRED_SHADOWS", True)
+
+
+def set_wf_deferred_shadows(enabled):
+    """Toggle the bounce loop's deferred shadow events (see
+    ``wf_deferred_shadows``). Takes effect at the next render batch.
+    """
+    global wf_deferred_shadows
+    wf_deferred_shadows = bool(enabled)
+
+
 # Compile-time material-pipeline gating. The per-hit material dispatch
 # (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
 # with every built-in stage reachable -- including ``_stage_physical``'s
@@ -567,6 +595,40 @@ def set_bvh_defer(enabled):
 # ALGAN_MERGE_DEDUP_TIME=0 restores the full time bands (byte-level A/B
 # against pre-collapse baselines).
 merge_dedup_time = env_flag("ALGAN_MERGE_DEDUP_TIME", True)
+
+
+# Sliver triangles as several BVH leaves (``sliver_split.py``). A long, thin
+# triangle -- a wire, an axis line, the side of a thin cylinder -- has an
+# axis-aligned box that is almost all empty space, and every ray crossing that
+# box tests the triangle. On the nn benchmark 2,722 synapse-tube faces out of
+# 44k triangles held 96% of the BVH's total box surface area and most of every
+# traversal's work. The refit tree gives such a triangle one leaf per strip
+# across its long axis, each with the strip's own tight box and the SAME
+# primitive as payload: the geometry, and so the image, is untouched, only
+# the boxes a ray has to open shrink.
+#
+# ``sliver_split_max_pieces`` caps the strips per triangle (0 or 1 disables
+# the split); ``sliver_split_aspect`` is the strip aspect ratio (length over
+# height) the split aims for; ``sliver_split_min_piece`` is the shortest
+# strip worth making, in world units -- a sliver shorter than a few of these
+# is not a traversal problem and cutting it would only add leaves.
+sliver_split_max_pieces = env_int("ALGAN_SLIVER_SPLIT_MAX_PIECES", 32)
+sliver_split_aspect = env_float("ALGAN_SLIVER_SPLIT_ASPECT", 4.0)
+sliver_split_min_piece = env_float("ALGAN_SLIVER_SPLIT_MIN_PIECE", 0.02)
+
+
+def set_sliver_split(max_pieces=None, aspect=None, min_piece=None):
+    """Configure the sliver leaf split (see ``sliver_split_max_pieces``).
+    Arguments left ``None`` keep their value. Takes effect at the next batch's
+    BVH build.
+    """
+    global sliver_split_max_pieces, sliver_split_aspect, sliver_split_min_piece
+    if max_pieces is not None:
+        sliver_split_max_pieces = int(max_pieces)
+    if aspect is not None:
+        sliver_split_aspect = float(aspect)
+    if min_piece is not None:
+        sliver_split_min_piece = float(min_piece)
 
 
 # Extend the merge-time collapse to the per-frame GEOMETRY the list above
@@ -1009,6 +1071,73 @@ def set_rgb_shadow_tint(enabled):
 shadow_identity_reject = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
 
 
+# Adaptive sub-pixel shadow taps (raster_shadow_trace). Under analytic AA a
+# hard light's shadow query is answered at four sub-pixel positions of the
+# shading surface (``analytic_aa_secondary_samples``) so the shadow edge is
+# antialiased rather than stair-stepped. Nearly every event sits in the
+# interior of a lit or a shadowed region, where all four answers agree; with
+# this on the fan traces the two diagonal taps first and, when both were
+# traced and agree exactly, takes the other two as equal -- two rays instead of
+# four. Measured on the nn benchmark at UHD the dedicated shadow trace is
+# linear in taps (6.17 s at four, 1.62 s at one), so this is about a 2x cut of
+# that kernel. Not byte-identical: a pixel whose shadow edge leaves the
+# diagonal pair agreeing while an off-diagonal tap differs gets 0 or 1 where
+# it had a quarter step, on a set of pixels too sparse to see.
+# ALGAN_SHADOW_ADAPTIVE_TAPS=0 restores the full fan.
+shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
+
+
+def set_shadow_adaptive_taps(enabled):
+    """Toggle the adaptive sub-pixel shadow fan (see ``shadow_adaptive_taps``).
+    Takes effect at the next render batch.
+    """
+    global shadow_adaptive_taps
+    shadow_adaptive_taps = bool(enabled)
+
+
+# One-sided back-face shadow cull. A one-sided solid (``Mob.two_sided`` False)
+# shades a back-facing hit with its OUTWARD normal (``_sided_shading_normal``),
+# so a light behind that normal contributes nothing to it -- every built-in
+# stage carries ``max(n . l, 0)`` -- and a shadow ray toward such a light is
+# work whose answer is multiplied by zero. The shadow-event build (sheet
+# resolve mode 1) and the wavefront's inline fan used to orient a back-face
+# hit's normals toward the VIEWER before the light-facing cull, exactly the
+# convention the shading does not use for one-sided geometry, so those rays
+# were traced. With this on they keep the surface's own orientation: rays to
+# lights behind the surface are culled, and the inside of a solid lit from
+# within (reachable through transparency) is shadow-tested, which it never was
+# (the known limit noted at ``_sided_shading_normal``). Exact for built-in
+# materials wherever the light is outside the solid; user fragment pipelines
+# keep the viewer-oriented fan. ALGAN_SHADOW_SIDED_CULL=0 restores it for all.
+shadow_sided_cull = env_flag("ALGAN_SHADOW_SIDED_CULL", True)
+
+
+def set_shadow_sided_cull(enabled):
+    """Toggle the one-sided back-face shadow cull (see ``shadow_sided_cull``).
+    Takes effect at the next render batch.
+    """
+    global shadow_sided_cull
+    shadow_sided_cull = bool(enabled)
+
+
+# Sparse discovery: launch the WRITE pass over only the candidate chunks whose
+# COUNT pass accepted at least one pixel. The count kernel records per-pair
+# acceptance bits, so a pair with none has nothing to write; skipping it saves
+# the per-pair projection setup the write kernel pays before it finds that out
+# (measured 1.2% pair acceptance on the nn benchmark's opaque triangles).
+# Exact: every written fragment lands at the same offset. ALGAN_RASTER_WRITE_
+# COMPACT=0 launches over every pair as before.
+raster_write_compact = env_flag("ALGAN_RASTER_WRITE_COMPACT", True)
+
+
+def set_raster_write_compact(enabled):
+    """Toggle the write-pass pair compaction (see ``raster_write_compact``).
+    Takes effect at the next render batch.
+    """
+    global raster_write_compact
+    raster_write_compact = bool(enabled)
+
+
 def set_shadow_identity_reject(enabled):
     """Toggle self-shadow rejection by identity (see
     ``shadow_identity_reject``). Takes effect at the next render batch.
@@ -1392,6 +1521,31 @@ def set_raster_pair_expand_kernel(enabled):
     """
     global raster_pair_expand_kernel
     raster_pair_expand_kernel = bool(enabled)
+
+
+# Row-span candidates for the sparse discovery's triangle pairs. A candidate
+# pair is a 32-pixel chunk of a triangle's screen bounding box, and the count
+# kernel tests every chunk pixel; a long thin diagonal triangle -- a wire --
+# has a bounding box hundreds of times its own area, so nearly every test
+# misses (measured 1.2% acceptance over 4.9 M opaque pairs per UHD frame on
+# the nn benchmark, 1.55 s of count kernel). With this on, a triangle whose
+# box is larger than ``raster_span_min_area`` chunks-worth of pixels (and has
+# a valid screen projection) is instead expanded ROW BY ROW into chunks of
+# the pixels its projection can reach in that row -- the triangle's x-extent
+# over the row's band, with the same one-pixel margin the box already
+# carries -- so the candidate set follows the triangle rather than its box.
+# Exact: every pixel a fragment can land on is still a candidate. Small
+# triangles keep the box, whose one or two chunks are already cheap.
+# ALGAN_RASTER_SPAN_CANDIDATES=0 keeps boxes for all.
+raster_span_candidates = env_flag("ALGAN_RASTER_SPAN_CANDIDATES", True)
+
+
+def set_raster_span_candidates(enabled):
+    """Toggle row-span pair candidates (see ``raster_span_candidates``).
+    Takes effect at the next batch's emission.
+    """
+    global raster_span_candidates
+    raster_span_candidates = bool(enabled)
 
 
 # Covered-pixel-compacted resolve: the emission already knows exactly which

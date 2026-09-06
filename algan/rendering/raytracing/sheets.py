@@ -360,7 +360,9 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
-def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None):
+def _shade_class(
+    merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
+):
     """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
 
     Returns int64 in ``[0, _SHADE_CLASS_BASE)``: 0 for smooth-shaded
@@ -370,9 +372,18 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present=No
     three vertex normals are equal (declared flat) or all degenerate (the
     kernel then substitutes the geometric cross-product normal).
 
+    The class is a property of the (frame, triangle), not of the fragment, so
+    it is computed once per (frame, triangle) -- a ``[F, N]`` table, F the
+    frames of this chunk and N the merged triangles -- and gathered per
+    fragment. The arithmetic per entry is exactly what the per-fragment
+    version did on the same values, so the classes are bit-identical; what
+    changes is that a 4K frame's millions of fragments no longer each
+    re-derive their triangle's face normal (measured 0.29 s -> a few ms per
+    compaction on the nn benchmark).
+
     ``tri_present`` is ``bool(is_tri.any())`` when the caller already has it;
-    the reduction is an ``[n]`` pass and a hard sync, and ``compact_sheets``
-    asks the same question up to three times per compaction.
+    ``num_frames`` is the chunk's frame count (``frame_rel.amax() + 1``),
+    likewise passed in when the caller has already paid that sync.
     """
     n = safe_ref.numel()
     device = safe_ref.device
@@ -382,55 +393,41 @@ def _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present=No
         tri_present = bool(is_tri.any())
     if tri_norm is None or tri_pos is None or not tri_present:
         return torch.zeros(n, dtype=torch.int64, device=device)
-    # Everything here is [n, 3] or [n, 3, 3] over the whole fragment stream --
-    # 42 and 126 MB at 4K -- and the function was the compaction's allocation
-    # peak because it held all of them at once. Each is released the statement
-    # after its last read, and the two reductions below are written to avoid
-    # materializing an [n, 3, 3] temporary at all.
-    nrm = tri_norm[_rows(tri_norm, frame_rel, time_start), safe_ref].view(-1, 3, 3)
-    mag = nrm.norm(dim=2)
-    # In place: the gather is this function's own copy and the normalized
-    # vectors are the only thing wanted from it.
-    unit = nrm.div_(clamp_floor(mag.unsqueeze(2), 1e-12))
-    del nrm
-    # max over vertex j and component c of |unit[j] - unit[0]|. The j = 0 term
-    # is identically zero and the terms are non-negative, so dropping it
-    # leaves the maximum unchanged -- and drops a full [n, 3, 3] temporary.
-    spread = torch.maximum(
-        (unit[:, 1] - unit[:, 0]).abs().amax(dim=1),
-        (unit[:, 2] - unit[:, 0]).abs().amax(dim=1),
+    if num_frames is None:
+        num_frames = int(frame_rel.amax()) + 1 if n else 1
+    frames = torch.arange(num_frames, device=device) + int(time_start)
+    nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
+        num_frames, -1, 3, 3
     )
-    declared_flat = (mag.amin(dim=1) > 1e-6) & (spread < 1e-6)
-    del spread
+    mag = nrm.norm(dim=3)
+    unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
+    spread = torch.maximum(
+        (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
+        (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
+    )
+    declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
     # All-degenerate vertex normals: the kernel falls back to the geometric
     # normal, so the class does too (the Polyhedron family authors none).
-    geometric_flat = mag.amax(dim=1) < 1e-6
-    del mag
-    # A copy, so the [n, 3, 3] storage this row views goes now.
-    vertex_n = unit[:, 0].contiguous()
-    del unit
-    rows = _rows(tri_pos, frame_rel, time_start)
-    p0 = tri_pos[rows, safe_ref, 0:3]
-    e1 = tri_pos[rows, safe_ref, 3:6] - p0
-    e2 = tri_pos[rows, safe_ref, 6:9] - p0
-    del p0, rows
-    gn = torch.cross(e1, e2, dim=1)
-    del e1, e2
-    gn = gn / clamp_floor(gn.norm(dim=1, keepdim=True), 1e-12)
-    face_n = torch.where(geometric_flat.unsqueeze(1), gn, vertex_n)
-    del gn, vertex_n
+    geometric_flat = mag.amax(dim=2) < 1e-6
+    vertex_n = unit[:, :, 0]
+    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
+    p0 = pos[..., 0:3]
+    e1 = pos[..., 3:6] - p0
+    e2 = pos[..., 6:9] - p0
+    gn = torch.cross(e1, e2, dim=-1)
+    gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
+    face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
     q = (
         torch.round(face_n * float(SHADE_CLASS_QUANT))
         .to(torch.int64)
         .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
         + SHADE_CLASS_QUANT
     )
-    del face_n
-    packed = (q[:, 0] << 16) | (q[:, 1] << 8) | q[:, 2]
-    del q
-    flat = is_tri & (declared_flat | geometric_flat)
+    packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
     zero = torch.zeros((), dtype=torch.int64, device=device)
-    return torch.where(flat, packed + 1, zero)
+    table = torch.where(declared_flat | geometric_flat, packed + 1, zero)  # [F, N]
+    cls = table[frame_rel, safe_ref]
+    return torch.where(is_tri, cls, zero)
 
 
 def _popcount_lanes(bits):
@@ -625,29 +622,34 @@ def _prim_split_after(
     t_o,
     order,
     band_c,
+    num_frames=None,
 ):
     """The ``prim`` band rule: ``True`` where a sorted fragment's depth gap to
     its predecessor exceeds the pair's own per-pixel scale (``compact_sheets``
     documents the rule; this is only its evaluation).
 
-    A function rather than an inline block so its gathers are released at the
-    return. They are the largest transients the compaction makes -- a
-    per-fragment copy of the triangle's three world vertices and of its
-    screen bounds -- and inline they stayed live through the rank loop and
-    the segmented reductions, which is where the peak actually is. The
-    vertices are reduced one at a time for the same reason: gathering all
-    three at once cost 126 MB on a 4K frame for an answer that is one float
-    per fragment.
+    The scale's geometric part -- the triangle's depth extent over its
+    projected size -- is a property of the (frame, triangle), so it is
+    computed once per (frame, triangle) as an ``[F, N]`` table and gathered
+    per fragment: the same arithmetic on the same values as evaluating it
+    per fragment, hence bit-identical, without a per-fragment copy of every
+    triangle's three world vertices and screen bounds (the compaction's
+    largest transients, and 0.19 s per compaction on a 4K nn frame). Only
+    the ``pixel_world_scale * t`` term is per fragment.
     """
     tri_pos = merged["tri_pos"]
-    rows = _rows(tri_pos, frame_rel, time_start)
-    ro = cam_origin[_rows(cam_origin, frame_rel, time_start)]
+    device = safe_ref.device
+    if num_frames is None:
+        num_frames = int(frame_rel.amax()) + 1 if safe_ref.numel() else 1
+    frames = torch.arange(num_frames, device=device) + int(time_start)
+    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [F, N, 9]
+    ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(num_frames, 1, 3)
     dmin = dmax = None
     for k in range(3):
-        dk = torch.linalg.norm(tri_pos[rows, safe_ref, 3 * k : 3 * k + 3] - ro, dim=1)
+        dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
         dmin = dk if dmin is None else torch.minimum(dmin, dk)
         dmax = dk if dmax is None else torch.maximum(dmax, dk)
-    del ro, dk, rows
+    del ro, dk, pos
     ext = dmax - dmin
     del dmin, dmax
     # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
@@ -657,21 +659,21 @@ def _prim_split_after(
     # straddler keeps the conservative raw extent.
     slope = ext
     if tri_screen is not None and tri_screen.shape[2] >= 10:
-        rs = _rows(tri_screen, frame_rel, time_start)
-        sx = tri_screen[rs, safe_ref, 0:3]
-        span_x = sx.amax(dim=1) - sx.amin(dim=1)
-        del sx
-        sy = tri_screen[rs, safe_ref, 3:6]
-        span_y = sy.amax(dim=1) - sy.amin(dim=1)
-        del sy
+        scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
+        sx = scr[..., 0:3]
+        span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
+        sy = scr[..., 3:6]
+        span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
         proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-        del span_x, span_y
-        valid = tri_screen[rs, safe_ref, 9] > 0.5
+        valid = scr[..., 9] > 0.5
         slope = torch.where(valid, ext / proj, ext)
-        del rs, proj, valid
+        del scr, sx, sy, span_x, span_y, proj, valid
+    del ext
+    slope_f = slope[frame_rel, safe_ref]
+    del slope
     pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-    scale = torch.where(is_tri, slope + pws * t, torch.zeros_like(t))
-    del pws, slope, ext
+    scale = torch.where(is_tri, slope_f + pws * t, torch.zeros_like(t))
+    del pws, slope_f
     scale_o = scale.index_select(0, order)
     del scale
     thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
@@ -1133,10 +1135,15 @@ def compact_sheets(
     # closure would hold it past that -- and the first consumer, the shading
     # class, is on by default, so the reduction is not new work.
     tri_present = bool(is_tri.any())
+    # Frames this chunk's fragments span: the per-(frame, triangle) tables
+    # below are built for exactly these rows.
+    num_frames = int(frame_rel.amax()) + 1 if n else 1
 
     cls = None
     if shade_split:
-        cls = _shade_class(merged, frame_rel, time_start, safe_ref, is_tri, tri_present)
+        cls = _shade_class(
+            merged, frame_rel, time_start, safe_ref, is_tri, tri_present, num_frames
+        )
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
     order = _lexsort(pix, gkey, t)
@@ -1165,6 +1172,7 @@ def compact_sheets(
             t_o,
             order,
             band_c,
+            num_frames,
         )
         band_start[1:] |= (~new_group[1:]) & split_after
         del split_after

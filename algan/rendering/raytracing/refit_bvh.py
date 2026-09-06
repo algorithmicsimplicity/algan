@@ -280,8 +280,16 @@ def build_refit_bvh(
     tightness=None,
     builder=None,
     casts=None,
+    leaf_prim=None,
 ):
     """Build a shared-topology binned-SAH refit BVH from per-frame bounds.
+
+    ``leaf_prim`` (optional, ``[N]`` long) names the primitive each COLUMN
+    of the bounds stands for; a leaf's link word then carries
+    ``leaf_prim[column]`` rather than the column index. Several columns may
+    name one primitive -- that is how ``sliver_split`` gives a long, thin
+    triangle several tight leaves (its per-strip boxes) while the kernels keep
+    testing the one triangle. ``None`` is the identity.
 
     Parameters mirror :func:`stbvh.build_stbvh` (``tightness`` / ``builder``
     are accepted and ignored so call sites can dispatch on a toggle without
@@ -497,8 +505,11 @@ def build_refit_bvh(
         if leaf_opq.shape[0] != Tb:
             leaf_opq = leaf_opq.expand(Tb, -1, -1)
         leaf_nocast = nocast[safe_prim].view(1, -1, a)
+        leaf_ref = ref
+        if leaf_prim is not None:
+            leaf_ref = leaf_prim.to(device)[safe_prim].view_as(ref)
         leaf_w = (
-            ref.to(torch.int32)
+            leaf_ref.to(torch.int32)
             | LINK_LEAF_BIT
             | (leaf_opq * LINK_OPAQUE_BIT)
             | (leaf_nocast * LINK_NOCAST_BIT)

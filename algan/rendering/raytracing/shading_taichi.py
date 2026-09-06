@@ -562,6 +562,29 @@ def _orient_hit_normals(snrm, fnrm, rd):
 
 
 @ti.func
+def _orient_hit_normals_sided(snrm, fnrm, rd, one_sided):
+    """:func:`_orient_hit_normals`, except that a ONE-SIDED surface keeps its
+    own orientation (``one_sided != 0``): its shading uses the outward normal
+    unflipped (:func:`_sided_shading_normal`), so the shadow ray's light-facing
+    cull has to agree with THAT side -- a light behind the outward normal lights
+    nothing on it, and a back face lit from inside the solid is shadow-tested
+    rather than skipped. ``one_sided == 0`` is exactly the viewer-oriented
+    behaviour. See ``rt_settings.shadow_sided_cull``.
+    """
+    if snrm.norm() > 1e-9:
+        snrm = snrm.normalized()
+    if fnrm.norm() > 1e-9:
+        fnrm = fnrm.normalized()
+    if fnrm.dot(snrm) < 0.0:
+        fnrm = -fnrm
+    if one_sided == 0:
+        if not _faces_viewer(snrm, fnrm, -rd):
+            snrm = -snrm
+            fnrm = -fnrm
+    return snrm, fnrm
+
+
+@ti.func
 def _shadow_terminator_delta(f, prim, w0, a, b, p, snrm,
                              tri_pos: ti.template(),
                              tri_norm: ti.template()):

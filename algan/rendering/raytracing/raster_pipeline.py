@@ -984,15 +984,22 @@ def _class_any_flags(pre_m):
     )
 
 
-def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
+def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None):
     """The kernel arm of ``_class_pairs_flat`` (``raster_pair_expand_kernel``).
 
     One pass counts each candidate's chunks, the host keeps only the prefix
-    sum it kept anyway, and one pass writes each row -- binary-searching the
-    prefix for its candidate. Row content and order match the torch
-    expression exactly (candidates ascending row-major, chunks ascending
-    within a candidate); every column is integer arithmetic on the same
-    inputs, so the arms agree by construction.
+    sum it kept anyway, and one pass writes each candidate's rows from its
+    prefix offset. Row content and order match the torch expression exactly
+    (candidates ascending row-major, chunks ascending within a candidate);
+    every column is integer arithmetic on the same inputs, so the arms agree
+    by construction.
+
+    ``screen`` (the batch's ``tri_screen`` projection table) switches large
+    triangle boxes to row-span candidates (``raster_span_candidates``): a
+    candidate's rows then follow its projection row by row instead of
+    covering its whole box. Only the candidate SET changes -- a superset of
+    every pixel a fragment can land on either way -- so the emitted fragments
+    are the same.
     """
     from algan.rendering.raytracing.sheet_compact_taichi import (
         pair_expand_count,
@@ -1006,8 +1013,29 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
     y0f = y0.reshape(-1).contiguous()
     y1f = y1.reshape(-1).contiguous()
     counts = torch.empty(numel, dtype=torch.int64, device=device)
+    spans = 1 if (screen is not None and rt_settings.raster_span_candidates) else 0
+    if spans:
+        screen_arg = screen.contiguous()
+    else:
+        screen_arg = torch.zeros((1, 1, 10), dtype=torch.float32, device=device)
+    # Boxes of fewer than four chunks keep the box: the row-by-row walk only
+    # pays off where a box is mostly empty, which needs a big one.
+    span_min_area = 4 * raster_chunk
+    f_abs_k = kernel_index(f_abs.contiguous())
     pair_expand_count(
-        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, raster_chunk, counts
+        mflat.view(torch.uint8),
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        numel,
+        raster_chunk,
+        counts,
+        screen_arg,
+        f_abs_k,
+        ncirc,
+        span_min_area,
+        spans,
     )
     offs = torch.cumsum(counts, 0) - counts
     total = int(counts.sum().item())
@@ -1015,22 +1043,25 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device):
         return None
     rows = torch.empty((total, 8), dtype=torch.int32, device=device)
     pair_expand_write(
+        mflat.view(torch.uint8),
         x0f,
         x1f,
         y0f,
         y1f,
-        kernel_index(f_abs.contiguous()),
+        f_abs_k,
         offs,
         numel,
         ncirc,
         raster_chunk,
-        total,
         rows,
+        screen_arg,
+        span_min_area,
+        spans,
     )
     return rows
 
 
-def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
+def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None):
     """Chunk expansion over a ``[frames, C]`` window in one pass.
 
     Row content and ordering are identical to per-frame ``_class_pairs``
@@ -1043,7 +1074,7 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
         and mask.numel()
         and f_abs.numel() * ncirc == mask.numel()
     ):
-        return _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device)
+        return _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen)
     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
     if idx.numel() == 0:
         return None
@@ -1074,7 +1105,7 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     return rows.to(torch.int32).contiguous()
 
 
-def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
+def _window_pairs(bounds, time_start, g0, g1, ppf, width, device, screen=None):
     """Emit a tile's candidate pairs for all covered frames at once.
 
     Consumes the ``precompute_circuit_screen_bounds`` /
@@ -1124,10 +1155,10 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
     x0 = x01[..., 0]
     x1 = x01[..., 1]
     return (
-        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device)
+        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device, screen)
         if need_op
         else None,
-        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device)
+        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device, screen)
         if need_tr
         else None,
     )
@@ -1632,7 +1663,14 @@ def prepare_sparse_raster_coverage(
                     bez_trans.append(pt)
     if use_tri_pre:
         po, pt = _window_pairs(
-            tri_bounds, int(time_start), g0, g1, ppf, int(width), device
+            tri_bounds,
+            int(time_start),
+            g0,
+            g1,
+            ppf,
+            int(width),
+            device,
+            screen=tri_screen,
         )
         if po is not None:
             tri_opaque.append(po)
@@ -1841,11 +1879,22 @@ def prepare_sparse_raster_coverage(
             offsets = prefix[pair_cursor : pair_cursor + npairs].to(torch.int32)
             frag_cursor = frag_bounds[spec_index]
             n_spec = frag_bounds[spec_index + 1] - frag_cursor
+            # The write pass only has work at pairs whose count pass accepted
+            # a pixel (raster_write_compact): launch over those alone. Exact
+            # -- every fragment lands at its pair's own prefix offset.
+            pairs_w, npairs_w, offsets_w, accepts_w = pairs, npairs, offsets, accepts
+            if rt_settings.raster_write_compact and npairs:
+                live = accepts.nonzero(as_tuple=True)[0]
+                if live.numel() < npairs:
+                    pairs_w = pairs.index_select(0, live)
+                    offsets_w = offsets.index_select(0, live)
+                    accepts_w = accepts.index_select(0, live)
+                    npairs_w = int(live.numel())
             if kind == "bez":
                 raster_bez_write(
-                    pairs,
-                    npairs,
-                    offsets,
+                    pairs_w,
+                    npairs_w,
+                    offsets_w,
                     *cam_args,
                     *bez_geom,
                     *geo_args,
@@ -1858,13 +1907,13 @@ def prepare_sparse_raster_coverage(
                     frag_ref_u,
                     frag_ab_u,
                     frag_cov_u,
-                    accepts,
+                    accepts_w,
                 )
             else:
                 raster_tri_write(
-                    pairs,
-                    npairs,
-                    offsets,
+                    pairs_w,
+                    npairs_w,
+                    offsets_w,
                     tri_pos,
                     tri_screen,
                     *tri_color_args,
@@ -1881,7 +1930,7 @@ def prepare_sparse_raster_coverage(
                     frag_ab_u,
                     frag_cov_u,
                     frag_msk_u,
-                    accepts,
+                    accepts_w,
                 )
             if opaque and n_spec:
                 opaque_u[frag_cursor : frag_cursor + n_spec].fill_(True)
@@ -2325,6 +2374,7 @@ def shade_sparse_raster_coverage(
     # what reads rows back).
     term_mode = int(rt_settings.shadow_terminator_mode())
     term_on = term_mode == 1
+    sided_on = 1 if rt_settings.shadow_sided_cull else 0
     if shadow_flag:
         S = max(1, num_slice_sheets)
         sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
@@ -2357,6 +2407,7 @@ def shade_sparse_raster_coverage(
             *pre_args,
             1,
             term_mode,
+            sided_on,
             memo_on,
             sheet_memo,
             sheet_accept,
@@ -2468,11 +2519,13 @@ def shade_sparse_raster_coverage(
                 eps_near,
                 1 if identity_on else 0,
                 term_mode,
+                1 if rt_settings.shadow_adaptive_taps else 0,
             )
         sheet_resolve_shade(
             *pre_args,
             2,
             term_mode,
+            sided_on,
             memo_on,
             sheet_memo,
             sheet_accept,
@@ -2496,6 +2549,7 @@ def shade_sparse_raster_coverage(
         # gate.
         sheet_resolve_shade(
             *pre_args,
+            0,
             0,
             0,
             # The memo exists only to carry mode 1's fetches into mode 2;

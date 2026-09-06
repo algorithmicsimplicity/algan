@@ -334,8 +334,24 @@ def _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs):
     y0f = y0.reshape(-1).contiguous()
     y1f = y1.reshape(-1).contiguous()
     counts = torch.empty(numel, dtype=torch.int64)
+    # Box mode: the span arguments are inert (``spans`` 0), as in the host
+    # when no projection table is handed over.
+    screen = torch.zeros((1, 1, 10), dtype=torch.float32)
+    f_abs_c = f_abs.contiguous()
     pair_expand_count(
-        mflat.view(torch.uint8), x0f, x1f, y0f, y1f, numel, raster_chunk, counts
+        mflat.view(torch.uint8),
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        numel,
+        raster_chunk,
+        counts,
+        screen,
+        f_abs_c,
+        ncirc,
+        4 * raster_chunk,
+        0,
     )
     offs = torch.cumsum(counts, 0) - counts
     total = int(counts.sum().item())
@@ -343,17 +359,20 @@ def _kernel_pair_rows(mask, x0, x1, y0, y1, f_abs):
         return None
     rows = torch.empty((total, 8), dtype=torch.int32)
     pair_expand_write(
+        mflat.view(torch.uint8),
         x0f,
         x1f,
         y0f,
         y1f,
-        f_abs.contiguous(),
+        f_abs_c,
         offs,
         numel,
         ncirc,
         raster_chunk,
-        total,
         rows,
+        screen,
+        4 * raster_chunk,
+        0,
     )
     return rows
 
@@ -444,3 +463,68 @@ def test_class_pairs_flat_routes_by_toggle_and_agrees():
     assert got.dtype == torch.int32
     assert got.is_contiguous()
     assert _bits_equal(want, got)
+
+
+def _candidate_pixels(rows):
+    """Set of (frame, prim, px, py) a pair table names."""
+    out = set()
+    for prim, f, x0, y0, bw, bh, off, _z in rows.tolist():
+        for o in range(off, min(off + raster_chunk, bw * bh)):
+            out.add((f, prim, x0 + o % bw, y0 + o // bw))
+    return out
+
+
+def test_span_candidates_follow_the_triangle_and_cover_every_pixel_it_touches():
+    """Row-span mode (raster_span_candidates): a long thin diagonal triangle's
+    candidates are a subset of its box's chunks and still contain every pixel
+    its projection can touch.
+    """
+    ft, ncirc = 1, 2
+    # Triangle 0: a 400 x 4 pixel diagonal sliver; triangle 1: small (box mode).
+    sx = torch.tensor([[[10.0, 410.0, 412.0], [50.0, 58.0, 55.0]]])  # [F, C, 3]
+    sy = torch.tensor([[[20.0, 300.0, 302.0], [30.0, 34.0, 37.0]]])
+    screen = torch.zeros((ft, ncirc, 13))
+    screen[..., 0:3] = sx
+    screen[..., 3:6] = sy
+    screen[..., 9] = 1.0
+    x0 = (sx.amin(-1) - 1).floor().long()
+    x1 = (sx.amax(-1) + 1).ceil().long()
+    y0 = (sy.amin(-1) - 1).floor().long()
+    y1 = (sy.amax(-1) + 1).ceil().long()
+    mask = torch.ones(ft, ncirc, dtype=torch.bool)
+    f_abs = torch.tensor([3])
+    cpu = torch.device("cpu")
+    with EXPERIMENTAL.override(
+        raster_pair_expand_kernel=True, raster_span_candidates=True
+    ):
+        spans = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, cpu, screen=screen)
+        boxes = _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, cpu, screen=None)
+    span_set = _candidate_pixels(spans)
+    box_set = _candidate_pixels(boxes)
+    assert span_set <= box_set
+    assert len(span_set) < len(box_set) // 20  # the sliver's box is mostly empty
+    # Every pixel a dense sampling of the triangle lands in is a candidate.
+    g = torch.Generator().manual_seed(7)
+    u = torch.rand(20000, generator=g)
+    v = torch.rand(20000, generator=g)
+    flip = u + v > 1
+    u = torch.where(flip, 1 - u, u)
+    v = torch.where(flip, 1 - v, v)
+    for prim in range(ncirc):
+        px = (
+            sx[0, prim, 0]
+            + u * (sx[0, prim, 1] - sx[0, prim, 0])
+            + v * (sx[0, prim, 2] - sx[0, prim, 0])
+        )
+        py = (
+            sy[0, prim, 0]
+            + u * (sy[0, prim, 1] - sy[0, prim, 0])
+            + v * (sy[0, prim, 2] - sy[0, prim, 0])
+        )
+        need = {
+            (3, prim, int(x), int(y))
+            for x, y in zip(px.floor().tolist(), py.floor().tolist())
+        }
+        assert need <= span_set
+    # The small triangle keeps its whole box.
+    assert {c for c in box_set if c[1] == 1} == {c for c in span_set if c[1] == 1}

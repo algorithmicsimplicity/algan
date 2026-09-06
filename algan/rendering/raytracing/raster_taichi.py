@@ -69,7 +69,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
-    _orient_hit_normals,
+    _orient_hit_normals_sided,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
@@ -2767,10 +2767,12 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
 def _tri_shadow_normals(f, prim, a, b, rd,
                         tri_pos: ti.template(), tri_norm: ti.template(),
                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
-                        textures: ti.template(), num_colored_triangles):
+                        textures: ti.template(), num_colored_triangles,
+                        one_sided):
     """Shading + geometric face normals of a triangle hit, oriented for a
     shadow-ray origin exactly as ``wavefront_shade``'s inline shadow block (both
-    defer to :func:`_orient_hit_normals`).
+    defer to :func:`_orient_hit_normals_sided`; ``one_sided`` is the hit's
+    surface declaration, 0 for the viewer-oriented convention).
     """
     w0 = 1.0 - a - b
     snrm = _tri_normal_g(0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
@@ -2783,7 +2785,7 @@ def _tri_shadow_normals(f, prim, a, b, rd,
     v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
                       tri_pos[tp, prim, 8])
     fnrm = (v1 - v0).cross(v2 - v0)
-    return _orient_hit_normals(snrm, fnrm, rd)
+    return _orient_hit_normals_sided(snrm, fnrm, rd, one_sided)
 
 
 
@@ -2812,6 +2814,10 @@ def raster_shadow_trace_arena(
         # sheet_resolve_shade build) AND relax the cull where it moved;
         # 2 = relax the cull WITHOUT moving anything (diagnostic arm).
         shadow_term: ti.template(),
+        # Adaptive sub-pixel fan (rt_settings.shadow_adaptive_taps): under
+        # ``sec_aa`` a hard light's four taps are visited diagonal pair first
+        # and the other two are skipped when that pair agrees exactly.
+        adaptive_taps: ti.template(),
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -3031,7 +3037,24 @@ def raster_shadow_trace_arena(
 
             occ_sum = ti.math.vec3(0.0)
             n_valid = 0.0
-            for s in range(ns):
+            # Adaptive taps (adaptive_taps, hard lights under sec_aa): the
+            # 2x2 sub-pixel positions are visited diagonal pair first (0, 3,
+            # then 2, 1). When both diagonal taps were traced and agree
+            # exactly -- the interior of a lit or of a shadowed region, which
+            # is nearly every event -- the other two are taken as equal and
+            # the fan is two rays instead of four. Only a pixel whose shadow
+            # edge leaves the diagonal pair agreeing while an off-diagonal
+            # tap differs changes: it keeps 0 or 1 where it had a quarter
+            # step. A soft light keeps its full golden-angle fan.
+            adaptive_fan = 0
+            if ti.static(sec_aa > 1 and adaptive_taps != 0):
+                if radius <= 0.0:
+                    adaptive_fan = 1
+            occ_first = ti.math.vec3(0.0)
+            for sk in range(ns):
+                s = sk
+                if adaptive_fan == 1:
+                    s = (3 * sk) & 3
                 wis = wi
                 ldn = ldist
                 ok = 1
@@ -3088,7 +3111,7 @@ def raster_shadow_trace_arena(
                         horizon_ok = snrm.dot(wis) > 1e-4
                 if (ok == 1) and horizon_ok:
                     n_valid += 1.0
-                    occ_sum += _shadow_occluded(
+                    occ = _shadow_occluded(
                         refit, shadow_anyhit, sorg, wis, f, ff,
                         ldn - 20.0 * min_hit_distance,
                         pixel_world_scale[
@@ -3104,6 +3127,19 @@ def raster_shadow_trace_arena(
                         circuit_border_colors, edges_2d, edge_accel,
                         src_sid, src_prim, eps_self, eps_near,
                         tri_obj, shadow_identity)
+                    occ_sum += occ
+                    if adaptive_fan == 1:
+                        if sk == 0:
+                            occ_first = occ
+                        elif sk == 1:
+                            if (n_valid == 2.0) and (occ[0] == occ_first[0]) \
+                                    and (occ[1] == occ_first[1]) \
+                                    and (occ[2] == occ_first[2]):
+                                # Both diagonal taps traced and equal: the
+                                # remaining two are taken as the same.
+                                occ_sum += occ_sum
+                                n_valid += n_valid
+                                break
             if n_valid > 0.0:
                 # Per-channel visibility; the soft-shadow fan still averages
                 # over the SCALAR sample count.
@@ -3157,7 +3193,7 @@ _RASTER_SHADOW_TRACE_PARAMS = (
     "layer_offset_triangles", "refit", "has_tri", "has_bez", "event_dp",
     "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
     "event_src_prim", "eps_self", "eps_near", "shadow_identity",
-    "shadow_term",
+    "shadow_term", "adaptive_taps",
 )
 
 _raster_shadow_trace_launch = arena_packed(

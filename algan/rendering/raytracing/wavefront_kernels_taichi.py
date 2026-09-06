@@ -65,10 +65,11 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
     _MAT_NO_SHADOW_RECEIVE,
+    _MAT_ONE_SIDED,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     SHADOW_VIS_CHANNELS,
-    _orient_hit_normals,
+    _orient_hit_normals_sided,
     _reflect_frame,
     _shadow_terminator_delta,
     direct_specular_lobe,
@@ -2141,6 +2142,97 @@ def wavefront_traverse_events(*args):
 
 
 @ti.kernel
+def wavefront_shadow_events(
+        active: ti.types.ndarray(), num_active: int,
+        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
+        rs_int: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
+        hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
+        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
+        tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
+        mem_trim: ti.template(), sided_cull: ti.template(),
+        shadow_term: ti.template(),
+        time_start: int, width: int, height: int, ray_offset: int,
+        ev_accept: ti.types.ndarray(), ev_pos: ti.types.ndarray(),
+        ev_snrm: ti.types.ndarray(), ev_fnrm: ti.types.ndarray(),
+        ev_frame: ti.types.ndarray(), ev_msk: ti.types.ndarray(),
+        ev_toff: ti.types.ndarray()):
+    """Shadow events for the bounce loop's lit triangle hits
+    (rt_settings.wf_deferred_shadows).
+
+    One row per (active ray ``i``, K-buffer slot ``q``) at ``i * kbuf + q``:
+    ``ev_accept`` 1 where the slot holds a lit triangle hit that receives
+    shadows, and for those the payload ``raster_shadow_trace`` takes --
+    position, the shading and face normals oriented exactly as the inline fan
+    oriented them (``_orient_hit_normals_sided``), frame, the mask (tap 0
+    owned, the material pipeline id above bit 8) and, under the shadow
+    terminator, the Hanika displacement. Every row is written, so the table
+    needs no clearing. The shade kernel's ``deferred_shadows`` arm then reads
+    row ``i * kbuf + sel`` of the traced visibility for the slot it drains.
+    """
+    pixels_per_frame = width * height
+    for i in range(num_active):
+        r = active[i]
+        pix = rs_pix[r]
+        f = time_start + (ray_offset + pix) // pixels_per_frame
+        num_hits = rs_int[r, 3]
+        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+        rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+        for q in ti.static(range(kbuf)):
+            e = i * kbuf + q
+            accept = 0
+            if q < num_hits:
+                prim = hit_i[q, 0, i]
+                flags = hit_i[q, 1, i]
+                if (prim >= 0) and ((flags & 3) == 1):
+                    pid = tri_mat_id[f % tri_mat_id.shape[0], prim]
+                    recv = 1
+                    one_sided = 0
+                    if pid < _USER_PIPELINE_BASE:
+                        tm = f % tri_mat.shape[0]
+                        if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
+                            if tri_mat[tm, prim, _MAT_NO_SHADOW_RECEIVE] > 0.5:
+                                recv = 0
+                        if ti.static(sided_cull != 0):
+                            if tri_mat.shape[2] > _MAT_ONE_SIDED:
+                                if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
+                                    one_sided = 1
+                    if (pid != _MID_UNLIT) and (recv == 1):
+                        t_hit = hit_f[q, 0, i]
+                        a = hit_f[q, 2, i]
+                        b = hit_f[q, 3, i]
+                        snrm = _tri_normal_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                            tri_pos, tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                        tp = f % tri_pos.shape[0]
+                        v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                                          tri_pos[tp, prim, 2])
+                        v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                                          tri_pos[tp, prim, 5])
+                        v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                                          tri_pos[tp, prim, 8])
+                        fnrm = (v1 - v0).cross(v2 - v0)
+                        snrm, fnrm = _orient_hit_normals_sided(snrm, fnrm, rd, one_sided)
+                        spos = ro + t_hit * rd
+                        accept = 1
+                        for k in ti.static(range(3)):
+                            ev_pos[e, k] = spos[k]
+                            ev_snrm[e, k] = snrm[k]
+                            ev_fnrm[e, k] = fnrm[k]
+                        ev_frame[e] = f
+                        ev_msk[e] = 1 | (pid << 8)
+                        if ti.static(shadow_term == 1):
+                            delta = _shadow_terminator_delta(
+                                f, prim, 1.0 - a - b, a, b, spos, snrm,
+                                tri_pos, tri_norm)
+                            for k in ti.static(range(3)):
+                                ev_toff[e, k] = delta[k]
+            ev_accept[e] = accept
+
+
+@ti.kernel
 def wavefront_shade_arena(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH (for shadow rays) + geometry/shading data.
@@ -2175,6 +2267,11 @@ def wavefront_shade_arena(
         # == 1 additionally applies the Hanika offset inline; 0 keeps
         # today's origin and guard exactly (see raster_shadow_trace).
         shadow_term: ti.template(),
+        # One-sided back-face shadow cull (rt_settings.shadow_sided_cull):
+        # the inline fan keeps a one-sided surface's own orientation for its
+        # shadow normals, so the light-facing cull agrees with the side the
+        # shading lights (see _orient_hit_normals_sided).
+        sided_cull: ti.template(),
         skip_unlit_normal: ti.template(),
         # Deliver the direct lights' share of the reflected specular lobe,
         # which the continuation this hit spawns cannot: a ray only finds
@@ -2494,25 +2591,20 @@ def wavefront_shade_arena(
                 # ti.static.
                 if ti.static(frag_shading != 0):
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
-                        # Legacy deferred shadows: read the per-(hit, light)
-                        # binary occlusion bits for this hit's K-buffer slot
-                        # (``sel``). DEAD: the prepass kernel that wrote those
-                        # bits was removed (it measured slower than inline
-                        # shadows and was never launched), and every call site
-                        # compiles ``deferred_shadows == 0``, so this arm is
-                        # never instantiated. Reviving it needs a new producer,
-                        # floats rather than bits (the active shadow contract
-                        # is opacity-weighted) and per-channel values (bits
-                        # cannot carry color).
-                        sbits = rs_vis[i]
+                        # Deferred shadows (rt_settings.wf_deferred_shadows):
+                        # the visibility of this hit's K-buffer slot, traced
+                        # by raster_shadow_trace from the events
+                        # wavefront_shadow_events built for this iteration
+                        # (tracer._drain_sparse_secondary), as RGB per light
+                        # in ``rs_vis[i * kbuf + slot, 3 * li + c]``. Rows of
+                        # slots that built no event hold the all-lit default.
+                        row = i * kbuf + sel
                         for li in range(num_lights):
-                            if li < _DEFERRED_SHADOW_LIGHTS:
-                                if ((sbits
-                                     >> (sel * _DEFERRED_SHADOW_LIGHTS + li))
-                                        & 1) != 0:
-                                    vis[light_vis_index(li, 0)] = 0.0
-                                    vis[light_vis_index(li, 1)] = 0.0
-                                    vis[light_vis_index(li, 2)] = 0.0
+                            if li < vis_lights:
+                                base = light_vis_index(li, 0)
+                                vis[base] = rs_vis[row, 3 * li]
+                                vis[base + 1] = rs_vis[row, 3 * li + 1]
+                                vis[base + 2] = rs_vis[row, 3 * li + 2]
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
@@ -2526,6 +2618,7 @@ def wavefront_shade_arena(
                         do_fan = 0
                         fan_exact = 1
                         fan_geom = 0
+                        one_sided_s = 0
                         if htype == 1:
                             pid_s = tri_mat_id[f % tri_mat_id.shape[0], prim]
                             # ...and a hit whose mob declared
@@ -2554,6 +2647,12 @@ def wavefront_shade_arena(
                                     # multiplies zero either way (see
                                     # _light_zero_radiance).
                                     fan_geom = 1
+                                    if ti.static(sided_cull != 0):
+                                        if tri_mat.shape[2] > _MAT_ONE_SIDED:
+                                            if tri_mat[f % tri_mat.shape[0],
+                                                       prim,
+                                                       _MAT_ONE_SIDED] > 0.5:
+                                                one_sided_s = 1
                         if do_fan == 1:
                             # Smooth shading normal and the *geometric* face
                             # normal of the hit facet/patch.
@@ -2572,7 +2671,8 @@ def wavefront_shade_arena(
                                               tri_pos[tp, prim, 7],
                                               tri_pos[tp, prim, 8])
                             fnrm = (v1 - v0).cross(v2 - v0)
-                            snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
+                            snrm, fnrm = _orient_hit_normals_sided(
+                                snrm, fnrm, rd, one_sided_s)
                             spos = ro + t_hit * rd
                             # Shadow-terminator origin (Hanika; RTGems II ch.
                             # 4), identical to raster_shadow_trace's: the
@@ -3552,7 +3652,7 @@ _WAVEFRONT_SHADE_PARAMS = (
     "pixel_world_scale", "layer_offsets", "frag_shading", "frag_pipelines",
     "frag_scatters", "tri_pids", "shadows", "refraction", "ior_stack",
     "refit", "has_tri", "has_bez", "deferred_shadows", "shadow_term",
-    "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
+    "sided_cull", "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
     "first_iter", "compact", "weight_floor_exit", "vis_lights", "tri_mat_id",
     "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",

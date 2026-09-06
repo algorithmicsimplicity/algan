@@ -53,10 +53,11 @@ from algan.settings import SETTINGS
 # parameter list as the tracer passes it (positionally), and the total the
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
-_WEIGHT_FLOOR_EXIT_ARG_INDEX = 46
-# 69 since the per-batch ``vis_lights`` slot count joined the list at index 47,
-# directly after the gate (the shadow-visibility payload sizing).
-_EXPECTED_SHADE_ARGS = 69
+_WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
+# 70 since the per-batch ``vis_lights`` slot count joined the list directly
+# after the gate (the shadow-visibility payload sizing) and the one-sided
+# shadow cull's ``sided_cull`` template joined it after ``shadow_term``.
+_EXPECTED_SHADE_ARGS = 70
 
 
 @pytest.mark.fast

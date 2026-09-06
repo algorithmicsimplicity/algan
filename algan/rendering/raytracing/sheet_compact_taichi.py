@@ -621,6 +621,72 @@ def band_stats_rep_orig(
             ti.atomic_min(rep_orig[b], ti.cast(pos_o[i], idx_t))
 
 
+@ti.func
+def _span_row_extent(screen: ti.template(), fr, prim, y):
+    """x-extent of the projected triangle ``(fr, prim)`` over the pixel row
+    band ``[y, y + 1]``: ``(ok, xmin, xmax)`` in continuous screen pixels,
+    ``ok == 0`` when no edge crosses the band (the triangle has no point in
+    that row). Each edge is clipped to the band and its clipped endpoints'
+    x taken; a triangle's x-extent over a horizontal band is attained on its
+    edges, so the three clipped segments bound it exactly.
+    """
+    ok = 0
+    xmin = 1e30
+    xmax = -1e30
+    ylo = ti.cast(y, ti.f32)
+    yhi = ylo + 1.0
+    for i in ti.static(range(3)):
+        j = ti.static((i + 1) % 3)
+        ax = screen[fr, prim, i]
+        ay = screen[fr, prim, 3 + i]
+        bx = screen[fr, prim, j]
+        by = screen[fr, prim, 3 + j]
+        if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
+            t0 = 0.0
+            t1 = 1.0
+            dy = by - ay
+            if ti.abs(dy) > 1e-12:
+                ta = (ylo - ay) / dy
+                tb = (yhi - ay) / dy
+                t0 = ti.max(0.0, ti.min(ta, tb))
+                t1 = ti.min(1.0, ti.max(ta, tb))
+            xa = ax + (bx - ax) * t0
+            xb = ax + (bx - ax) * t1
+            xmin = ti.min(xmin, ti.min(xa, xb))
+            xmax = ti.max(xmax, ti.max(xa, xb))
+            ok = 1
+    return ok, xmin, xmax
+
+
+@ti.func
+def _span_mode(mask_e, bw, bh, span_min_area, screen: ti.template(), fr, prim,
+               spans: ti.template()):
+    """Whether candidate ``e`` expands row by row: on, box at least
+    ``span_min_area`` pixels, and a valid screen projection to follow.
+    """
+    use_span = 0
+    if ti.static(spans):
+        if (mask_e != 0) and (bw * bh >= span_min_area):
+            if screen[fr, prim, 9] > 0.5:
+                use_span = 1
+    return use_span
+
+
+@ti.func
+def _span_chunks(screen: ti.template(), fr, prim, y, bx0, bx1, chunk):
+    """Chunks the row ``y`` of a span candidate expands to, and the span."""
+    ok, xmin, xmax = _span_row_extent(screen, fr, prim, y)
+    xs = bx0
+    xe = bx0 - 1
+    nch = 0
+    if ok == 1:
+        xs = ti.max(ti.cast(ti.floor(xmin), ti.i32) - 1, bx0)
+        xe = ti.min(ti.cast(ti.floor(xmax), ti.i32) + 1, bx1)
+        if xe >= xs:
+            nch = (xe - xs + 1 + chunk - 1) // chunk
+    return nch, xs, xe
+
+
 @ti.kernel
 def pair_expand_count(
     mask: ti.types.ndarray(),  # [N] u8 (a bool tensor viewed as bytes), flat
@@ -631,61 +697,104 @@ def pair_expand_count(
     n: ti.i32,  # N = frames * primitives
     chunk: ti.i32,  # raster_chunk
     counts: ti.types.ndarray(),  # [N] i64 OUT -- chunks per candidate, 0 elsewhere
+    screen: ti.types.ndarray(),  # [F, C, >= 10] f32 projection table (spans)
+    f_abs: ti.types.ndarray(),  # [Ft] -- absolute frame per window row
+    ncirc: ti.i32,
+    span_min_area: ti.i32,
+    spans: ti.template(),
 ):
-    """One pass: how many ``raster_chunk`` rows each candidate expands to."""
+    """One pass: how many ``raster_chunk`` rows each candidate expands to --
+    its box's chunks, or under ``spans`` (raster_span_candidates) the sum over
+    its pixel rows of the chunks its projection reaches in that row.
+    """
     for e in range(n):
+        cnt = ti.i64(0)
         if mask[e] != 0:
-            bx0 = x0f[e]
-            by0 = y0f[e]
-            bw = x1f[e] - bx0 + 1
-            bh = y1f[e] - by0 + 1
-            counts[e] = (bw * bh + chunk - 1) // chunk
-        else:
-            counts[e] = 0
+            bx0 = ti.cast(x0f[e], ti.i32)
+            bx1 = ti.cast(x1f[e], ti.i32)
+            by0 = ti.cast(y0f[e], ti.i32)
+            by1 = ti.cast(y1f[e], ti.i32)
+            bw = bx1 - bx0 + 1
+            bh = by1 - by0 + 1
+            fr = 0
+            prim = e % ncirc
+            if ti.static(spans):
+                fr = ti.cast(f_abs[e // ncirc] % screen.shape[0], ti.i32)
+            if _span_mode(mask[e], bw, bh, span_min_area, screen, fr, prim, spans) == 1:
+                for y in range(by0, by1 + 1):
+                    nch, _xs, _xe = _span_chunks(screen, fr, prim, y, bx0, bx1, chunk)
+                    cnt += nch
+            else:
+                cnt = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
+        counts[e] = cnt
 
 
 @ti.kernel
 def pair_expand_write(
+    mask: ti.types.ndarray(),  # [N] u8
     x0f: ti.types.ndarray(),  # [N] i64
     x1f: ti.types.ndarray(),  # [N] i64
     y0f: ti.types.ndarray(),  # [N] i64
     y1f: ti.types.ndarray(),  # [N] i64
-    f_abs: ti.types.ndarray(),  # [Ft] i64 -- absolute frame per window row
+    f_abs: ti.types.ndarray(),  # [Ft] -- absolute frame per window row
     offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the counts
     n: ti.i32,  # N
     ncirc: ti.i32,
     chunk: ti.i32,
-    total: ti.i64,  # number of expanded rows
     rows: ti.types.ndarray(),  # [total, 8] i32 OUT
+    screen: ti.types.ndarray(),  # [F, C, >= 10] f32 projection table (spans)
+    span_min_area: ti.i32,
+    spans: ti.template(),
 ):
-    """One pass: the expanded ``(circuit, frame, bbox, offset)`` pair rows.
+    """One pass: the expanded ``(primitive, frame, bbox, offset)`` pair rows.
 
-    Row ``j`` belongs to the candidate whose half-open offset range contains
-    it -- one binary search over the prefix -- and enumerates candidates in
-    ascending flat order, chunks ascending within each, which is exactly the
-    order ``torch.nonzero`` + ``repeat_interleave`` produced. All eight
-    columns carry the same values as the stack it replaces (i64 narrowed to
-    i32 at the end there, in the store here); every value fits an i32 or the
-    old rows already wrapped.
+    One thread per candidate writes its rows from its prefix offset:
+    candidates ascending in flattened order, and within one candidate its
+    box's chunks ascending -- or under ``spans`` its pixel rows ascending and
+    the chunks of each row's span ascending, each row's span emitted as a
+    one-row-high box so the geometry kernels decode it unchanged. All eight
+    columns carry the values the box expansion always did (i64 narrowed to
+    i32 in the store; every value fits an i32 or the old rows already
+    wrapped).
     """
-    for j in range(ti.cast(total, ti.i32)):
-        lo = 0
-        hi = n - 1
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if offs[mid] <= j:
-                lo = mid
+    for e in range(n):
+        if mask[e] != 0:
+            bx0 = ti.cast(x0f[e], ti.i32)
+            bx1 = ti.cast(x1f[e], ti.i32)
+            by0 = ti.cast(y0f[e], ti.i32)
+            by1 = ti.cast(y1f[e], ti.i32)
+            bw = bx1 - bx0 + 1
+            bh = by1 - by0 + 1
+            prim = e % ncirc
+            f = ti.cast(f_abs[e // ncirc], ti.i32)
+            fr = 0
+            if ti.static(spans):
+                fr = ti.cast(f_abs[e // ncirc] % screen.shape[0], ti.i32)
+            j = offs[e]
+            if _span_mode(mask[e], bw, bh, span_min_area, screen, fr, prim, spans) == 1:
+                for y in range(by0, by1 + 1):
+                    nch, xs, xe = _span_chunks(screen, fr, prim, y, bx0, bx1, chunk)
+                    for c in range(nch):
+                        rows[j, 0] = prim
+                        rows[j, 1] = f
+                        rows[j, 2] = xs
+                        rows[j, 3] = y
+                        rows[j, 4] = xe - xs + 1
+                        rows[j, 5] = 1
+                        rows[j, 6] = c * chunk
+                        rows[j, 7] = 0
+                        j += 1
             else:
-                hi = mid - 1
-        e = lo
-        bx0 = x0f[e]
-        by0 = y0f[e]
-        local = j - offs[e]
-        rows[j, 0] = ti.cast(e % ncirc, ti.i32)
-        rows[j, 1] = ti.cast(f_abs[e // ncirc], ti.i32)
-        rows[j, 2] = ti.cast(bx0, ti.i32)
-        rows[j, 3] = ti.cast(by0, ti.i32)
-        rows[j, 4] = ti.cast(x1f[e] - bx0 + 1, ti.i32)
-        rows[j, 5] = ti.cast(y1f[e] - by0 + 1, ti.i32)
-        rows[j, 6] = ti.cast(local * chunk, ti.i32)
-        rows[j, 7] = 0
+                nch = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
+                for c in range(ti.cast(nch, ti.i32)):
+                    rows[j, 0] = prim
+                    rows[j, 1] = f
+                    rows[j, 2] = bx0
+                    rows[j, 3] = by0
+                    rows[j, 4] = bw
+                    rows[j, 5] = bh
+                    rows[j, 6] = c * chunk
+                    rows[j, 7] = 0
+                    j += 1
+
+
