@@ -46,4 +46,4 @@ For the details of any individual class or method, use the
 :doc:`reference manual <../reference>` and the documentation search.
 
 If you need help with Algan, or just want to chat with the developers and fellow Algan
-users, then join the discord server: <algan_discord>
+users, then join the `Discord server <https://discord.gg/NvarFmvXKm>`__

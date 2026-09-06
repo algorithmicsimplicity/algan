@@ -110,8 +110,8 @@ You can turn them on with one setting:
                          color=WHITE, intensity=3).spawn()
         AmbientLight(color=WHITE, intensity=0.3).spawn()
 
-        sphere = Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
-        Cube(size=4, color=GREY).move(DOWN * 2.6).spawn()
+        sphere = Sphere(radius=0.8, color=BLUE).move(UP * 0.4).spawn()
+        Cube(size=4, color=GREY).move(DOWN * 3).spawn()
 
     sphere.move(RIGHT)
 

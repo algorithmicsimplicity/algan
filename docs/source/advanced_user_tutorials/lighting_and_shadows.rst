@@ -246,8 +246,10 @@ a proportional cost.
 
     with Off():
         Scene.clear_lights()
+        # 9 samples is a 3x3 emitter grid, which spends 9 of the 16 shadow
+        # slots and leaves room for the ambient light (see below).
         RectAreaLight(location=UP * 5, target=ORIGIN, width=4, height=4,
-                      samples=16, color=WHITE, intensity=1.2).spawn()
+                      samples=9, color=WHITE, intensity=1.2).spawn()
         AmbientLight(color=WHITE, intensity=0.2).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()
@@ -324,12 +326,14 @@ proportional cost.
    :class: seealso
 
    Shadow-casting lights are collected into a fixed-size per-pixel list whose
-   length is a compile-time constant (default 16, enough for a key/fill/rim rig
-   plus a 4×4-sample area light). Lights beyond that are still *lit*, just not
-   shadowed, and each sample of a :class:`~.RectAreaLight` counts toward the limit,
-   so an under-capped area light simply gets a shallower shadow. If you need denser
-   area-light penumbras or a larger rig, set ``ALGAN_MAX_SHADOW_LIGHTS`` before the
-   first render (more GPU registers, slightly lower shadow-kernel occupancy).
+   length is a compile-time constant (default 16). Lights beyond that are still
+   *lit*, just not shadowed, and each sample of a :class:`~.RectAreaLight` counts
+   toward the limit, so an under-capped area light simply gets a shallower shadow.
+   Sixteen slots is a key/fill/rim rig with an ambient fill several times over, or
+   a 3×3-sample area light plus that same rig -- but a 4×4-sample area light spends
+   all sixteen on its own. If you need denser area-light penumbras or a larger rig,
+   set ``ALGAN_MAX_SHADOW_LIGHTS`` before the first render (more GPU registers,
+   slightly lower shadow-kernel occupancy).
 
 Environment Maps
 ================

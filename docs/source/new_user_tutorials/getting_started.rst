@@ -7,13 +7,6 @@ Getting Started
   Before proceeding, install Algan and make sure it is running properly by
   following the detailed steps in :doc:`../installation`.
 
-.. important::
-
-  If you installed Algan using the recommended Python management tool ``uv``,
-  either activate its virtual environment (following the instructions ``uv venv``
-  prints) or run your scripts through ``uv run``, as below. Otherwise Python will
-  not find Algan.
-
 Your First Algan Program
 ========================
 
@@ -33,7 +26,7 @@ and copy this code into it:
 
     Scene.save_video("my_video")
 
-Now run the script from your terminal using ``uv run python my_first_algan.py``.
+Now run the script from your terminal using ``python my_first_algan.py``.
 If the execution is successful, you should find a new directory named
 ``algan_outputs`` in the same directory as your Python script, and inside of that
 directory there should be a video file ``my_video.mp4``. Open this video file,
