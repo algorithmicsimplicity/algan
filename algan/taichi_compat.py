@@ -42,7 +42,7 @@ installs the other arm.
 What binding does
 -----------------
 Binding is also the one moment that is guaranteed to precede the first
-``@ti.func`` in the process, so two things that must happen before then happen
+``@ti.func`` in the process, so three things that must happen before then happen
 here rather than in ``algan/__init__.py``:
 
 * **Taichi's version check is switched off.** taichi 1.7.x's
@@ -53,6 +53,12 @@ here rather than in ``algan/__init__.py``:
   nothing to the other. It is not an ``ALGAN_`` variable, so it is not declared
   in :mod:`algan.environment` -- like ``ENABLE_TAICHI_HEADER_PRINT`` and
   ``TI_OFFLINE_CACHE_FILE_PATH``, it belongs to the compiler.
+* **Quadrants' two known-safe template-mapper weakref warnings are hidden.**
+  Algan deliberately passes dtype objects and tuples as ``ti.template()``
+  arguments. Quadrants computes the specialization key correctly, then fails to
+  weak-reference those objects for an optional launch-time mapper cache and
+  warns that the cache is disabled. The filter is restricted to those two exact
+  messages from Quadrants' warning helper so a new cache failure still surfaces.
 * **The warm-start patches are installed** (:func:`algan.utils.taichi_warmstart.apply`).
   One of them replaces the decorators' ``_inside_class`` frame walk, which runs
   when a kernel or func is *defined*, so it has to be in place before
@@ -93,6 +99,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import warnings
 from types import ModuleType
 
 from algan.environment import env_str
@@ -129,6 +136,24 @@ def _select_backend():
 BACKEND = _select_backend()
 
 
+_QUADRANTS_BENIGN_TEMPLATE_CACHE_WARNING = (
+    r"cannot create weak reference to '(?:DataTypeCxx|tuple)' object\. "
+    r"Template mapper caching disabled\."
+)
+
+
+def _install_backend_warning_filters():
+    """Hide only Quadrants warnings Algan knowingly triggers and accepts."""
+    if BACKEND != "quadrants":
+        return
+    warnings.filterwarnings(
+        "ignore",
+        message=_QUADRANTS_BENIGN_TEMPLATE_CACHE_WARNING,
+        category=UserWarning,
+        module=r"quadrants\._test_tools\.warnings_helper",
+    )
+
+
 def __getattr__(name):
     """Bind ``ti`` on first use (PEP 562).
 
@@ -139,7 +164,7 @@ def __getattr__(name):
     ``from algan.taichi_compat import ti`` still pays it at that module's import,
     exactly as ``import taichi as ti`` used to.
 
-    See "What binding does" in the module docstring for the two side effects.
+    See "What binding does" in the module docstring for the three side effects.
     ``ti`` is bound *before* the warm-start installer runs, so a module the
     installer imports that itself asks for ``ti`` gets the bound module rather
     than re-entering here.
@@ -149,6 +174,7 @@ def __getattr__(name):
             os.environ.setdefault("TI_SKIP_VERSION_CHECK", "1")
         module = importlib.import_module(BACKEND)
         globals()["ti"] = module
+        _install_backend_warning_filters()
         from algan.utils.taichi_warmstart import apply as _apply_warmstart
 
         _apply_warmstart()

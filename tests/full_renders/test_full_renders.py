@@ -2,7 +2,11 @@
 
 Each file in ``scenes/`` authors one dense Scene covering a whole subsystem.
 This module renders it at ``PREVIEW`` and compares every frame against the
-checked-in baseline in ``expected_outputs_<device>/``.
+checked-in baseline in ``expected_outputs_<baseline-key>/``. The baseline
+contract pins ``SETTINGS.computing.torch_compile=False``: compiled and eager
+triangle projection have produced different rounding on otherwise identical
+renders, so the oracle must not depend on whether ``torch.compile`` happens to
+work on the host.
 
 Re-baselining
 -------------
@@ -40,6 +44,13 @@ ERRORS_DIR = HERE / "output_errors"
 # skips the comparisons.
 DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
+# The committed CPU corpus predates the eager baseline contract and was rendered
+# on Linux with torch.compile working. Never compare eager pixels against it:
+# use a new key so CPU renders skip until that canonical machine produces the
+# one-time eager rebaseline. The committed CUDA corpus was generated on Windows,
+# where this path was already eager, so its existing key remains valid.
+if BASELINE_KEY == "cpu":
+    BASELINE_KEY = "cpu_eager"
 # Where a rebaseline *writes*: always the tree, never the cache. The author of
 # a rendering change reviews the new mp4s here and packages them from here
 # (scripts/package_baselines.py), so a downloaded set can never become the
@@ -134,7 +145,9 @@ def render_environment(monkeypatch):
     directory first.
 
     ``available_memory_override`` pins the frame-window split; see
-    ``AVAILABLE_MEMORY_OVERRIDE``.
+    ``AVAILABLE_MEMORY_OVERRIDE``. ``torch_compile=False`` is equally part of
+    the baseline contract: every comparison and every rebaseline runs the
+    PyTorch stages eagerly.
     """
     snapshot = SETTINGS.snapshot()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,7 +158,11 @@ def render_environment(monkeypatch):
         output_directory=OUTPUT_DIR.name,
         cache_directory=str(CACHE_DIR),
     )
-    SETTINGS.computing.set(available_memory_override=AVAILABLE_MEMORY_OVERRIDE)
+    # Baseline contract: eager PyTorch. The legacy compiled CPU corpus is kept
+    # under expected_outputs_cpu; this fixture writes/reads cpu_eager instead.
+    SETTINGS.computing.set(
+        available_memory_override=AVAILABLE_MEMORY_OVERRIDE, torch_compile=False
+    )
     SceneManager.reset()
     try:
         yield

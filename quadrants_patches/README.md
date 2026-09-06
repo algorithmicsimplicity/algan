@@ -159,12 +159,13 @@ rather than one the script builds first.
 
 ## What has been verified, and what has not
 
-**0001-0004 apply, and they compile.** "Applying them" above is the apply half.
-The gate runs below are the compile half, and they predate 0004: they measured
-0001-0003 at 15 files, +492/−8. 0004 adds 5 files and 135 lines and was built
-and checked separately, on Linux — see its own section. **0005-0007 are outside
-every claim in this section**: they have not been applied, built or run, and
-their own section (below, before "Upstreaming") is the record of that.
+**All seven patches apply and compile, and the CUDA behaviour that requires a
+real device has now been verified on sm_61.** The historical gate runs below
+predate 0004 and measured 0001-0003 at 15 files, +492/−8; 0004 was built and
+checked separately on Linux. 0005-0007 were subsequently built in the
+three-platform wheel workflow and their PTX/IR behaviour was verified on the
+maintainer's GTX 1050. See the dedicated sections below and
+`../taichi_patches/MIGRATION.md` §11 for the hardware record.
 
 Compilation takes two legs, and it has to be two because no single machine can
 build all of it: Quadrants forces `QD_WITH_CUDA=OFF` on Apple, so the macOS
@@ -333,12 +334,7 @@ same way on the same wheel (run
 `33847294165`: means 39.23 on both arms, 1,059 of 12,545,280 over tolerance,
 max 24).
 
-**Still unverified: that the CUDA half works.** A compile check cannot tell you
-that an sm_61 card loads the runtime module; that needs the maintainer's GTX
-1050, and `PORTING-NOTES.md` §7 lists exactly what to look for there
-(`atom.gpu.cas.b64` and no remaining `atom.sys`). Read `PORTING-NOTES.md` §5 for
-where the Metal port is most likely to be wrong — the ranked list starts with
-the nanobind integer default and the `LaunchContextBufferCache` interaction.
+**Verified on real pre-Volta CUDA hardware (2026-09-05).** On the maintainer's Windows 10 GTX 1050 (sm_61, 4 GB, driver 576.52), the patched wheel brings `qd.init(arch=qd.cuda)` up and runs kernels correctly. Runtime PTX contains no `atom.sys`, contains the expected `atom.gpu.cas.b64`, and targets `.version 5.0 / .target sm_61`. The 0005–0007 on/off verifier also passes on that card: `.maxnreg` appears only on the enabled arm, `ld.global.nc` is gated by `readonly_ndarray_ldg`, and `fast_math` selects `__nv_fast_expf`. `../taichi_patches/MIGRATION.md` §11 is the full run record.
 
 ## 0004 — `!invariant.load` on kernel argument loads
 

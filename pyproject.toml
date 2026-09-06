@@ -60,7 +60,7 @@ dependencies = [
     # a thing to read the diff for, not to pick up silently. The upstream
     # policy this pin follows is to track public releases (no pinned commits,
     # no vendored fork), so lifting the cap is a deliberate, tested edit.
-    "quadrants>=1.3.0,<1.4",
+    "algan-quadrants==1.3.0.post1",
     "pyttsx3>=2.0",
     "moviepy>=2.2.0",
     "dendroid>=1.6.0",

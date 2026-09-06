@@ -23,7 +23,7 @@ So this module does three things:
   (:func:`install_zero_copy_launch`), the way ``taichi_runtime`` installs its
   arch guard, so no kernel and no call site changes.
 
-Three hazards, all of them the kind that produce a wrong picture rather than an
+Five hazards, all of them the kind that produce a wrong picture rather than an
 error, and all handled here rather than left to call sites:
 
 **Lifetime.** Taichi marks an imported allocation ``dont_destroy`` and holds no
@@ -40,6 +40,13 @@ That is heavier than necessary -- ``DESIGN_mps_zero_copy.md`` §3.3 wants them
 once per frame batch -- and it is where to look first for the next speedup, but
 a per-batch fence needs the render loop to declare its batches and a wrong
 answer here is invisible.
+
+**Program device.** An MPS tensor does not prove the compiler program is Metal.
+The portable macOS CI job deliberately renders on the CPU while hardware tests
+can still construct MPS tensors directly. The render-arch guard runs outside
+this wrapper, so its live ``_ARCH_READY_FOR`` value is authoritative here: when
+it is not MPS, the argument stays untouched and the compiler's ordinary staging
+path owns the transfer.
 
 **Element types.** Taichi type-checks an ndarray argument against the
 *annotation's* element type, so an array a kernel declares as
@@ -461,6 +468,11 @@ def install_zero_copy_launch():
     time it sees these arguments they are ndarrays and it declines them, which
     is correct but only because this ran first.
 
+    The render-arch guard itself sits outside this wrapper. By the time control
+    reaches here it has brought the compiler program up on the current render
+    device, so the guard's live ``_ARCH_READY_FOR`` value is also the gate for
+    whether importing an MTLBuffer is valid.
+
     Idempotent, and a no-op unless the patched build is present.
     """
     global _INSTALLED
@@ -468,6 +480,7 @@ def install_zero_copy_launch():
         return
     import torch
 
+    from algan.rendering import taichi_runtime
     from algan.taichi_compat import submodule, ti
 
     Kernel = submodule("lang.kernel_impl").Kernel
@@ -475,6 +488,11 @@ def install_zero_copy_launch():
     previous_call = Kernel.__call__
 
     def zero_copy_call(self, *args, **kwargs):
+        ready_for = taichi_runtime._ARCH_READY_FOR
+        if ready_for is None or ready_for.type != "mps":
+            STATS["passthrough_launches"] += 1
+            return previous_call(self, *args, **kwargs)
+
         positions = _ndarray_positions(self)
         converted = None
         count = 0

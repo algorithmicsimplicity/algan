@@ -33,6 +33,7 @@ name = "algan"
 version = "0.2.2"
 source = { editable = "." }
 dependencies = [
+    { name = "algan-quadrants" },
     { name = "beautifulsoup4" },
     { name = "decision" },
     { name = "decorator" },
@@ -48,7 +49,6 @@ dependencies = [
     { name = "pygltflib" },
     { name = "pygments" },
     { name = "pyttsx3" },
-    { name = "quadrants" },
     { name = "reprit" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -106,6 +106,7 @@ taichi = [
 [package.metadata]
 requires-dist = [
     { name = "algan", extras = ["audio", "fbx", "taichi"], marker = "extra == 'dev'", editable = "." },
+    { name = "algan-quadrants", specifier = "==1.3.0.post1" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "decision", specifier = ">=0.3.0" },
     { name = "decorator", specifier = ">=4.3.2" },
@@ -132,7 +133,6 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=2.2,<3.0" },
     { name = "pyttsx3", specifier = ">=2.0" },
-    { name = "quadrants", specifier = ">=1.3.0,<1.4" },
     { name = "reprit", specifier = ">=0.9.0" },
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.32.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.3" },
@@ -158,6 +158,35 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.0" },
 ]
 provides-extras = ["audio", "fbx", "pango", "taichi", "dev"]
+
+[[package]]
+name = "algan-quadrants"
+version = "1.3.0.post1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi" },
+    { name = "colorama" },
+    { name = "dill" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "setuptools" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/f2/c31a35d59e03db9ec9e953e8e4667feb4f3e03a01106dddb238571e9e4c3/algan_quadrants-1.3.0.post1-cp310-cp310-macosx_13_0_arm64.whl", hash = "sha256:077a27058ee4ca2e89982813e98428bd00177d1e95c0ca156d9230532e4f1e56", size = 23334704, upload-time = "2026-09-05T12:50:09.781Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/2b/bcd053b6d70f1718f45948ba074db171519390fc38cf4085bfc7c82ef4a4/algan_quadrants-1.3.0.post1-cp310-cp310-manylinux_2_27_x86_64.whl", hash = "sha256:ff46d60d12c0ae6972926f44681e215f735286b63efa06eac5346bc8a2baa52c", size = 27720080, upload-time = "2026-09-05T12:50:13.001Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/b9/04c159dcb4be06025e3dbc80fe4079a52b00404613b7529c580f4625907b/algan_quadrants-1.3.0.post1-cp310-cp310-win_amd64.whl", hash = "sha256:910a3790bf1be365c470bd309eceded0375224d7970aa6617765951d74de283b", size = 27974170, upload-time = "2026-09-05T12:50:15.499Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/c3/7efd0cf1d99ecb2c52b4fc15bed9da304ccccf0ba458efdf0d50bd4ab920/algan_quadrants-1.3.0.post1-cp311-cp311-macosx_13_0_arm64.whl", hash = "sha256:b494715b837e9fec4c0b8b0eaca2171c9bf2f896f20b36fe39f48bdc3a0ca018", size = 23334677, upload-time = "2026-09-05T12:50:18.122Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/90/f45ab673d540df43db728472c5ab7456b63f883c5d1d95fdf6cb4c6236a6/algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:8e476504332e9be7a0049e88e0b127ffa3566a00b74433025173eea9644e3b41", size = 27719439, upload-time = "2026-09-05T12:50:20.613Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/4f/35238d92b59a4c4c0c03fdee77ed1635b9b9f11cbddb4f8f01b843f8c2ee/algan_quadrants-1.3.0.post1-cp311-cp311-win_amd64.whl", hash = "sha256:47867c11fd2727ed531a17ea43c8c2b9eba720ddb814d76829defb177955d8cf", size = 27977973, upload-time = "2026-09-05T12:50:23.318Z" },
+    { url = "https://files.pythonhosted.org/packages/16/30/bab8864ac963301c879e70dfdb369732d7178b5c4668156d1310d0863253/algan_quadrants-1.3.0.post1-cp312-cp312-macosx_13_0_arm64.whl", hash = "sha256:f9d791d98e99a357cef9788d816a4d006d80c154ed4fcc11d675302d0669f7f0", size = 23333308, upload-time = "2026-09-05T12:50:25.704Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/47/d9b8cdf0e4e327eaa2bcad3e43b4f678410e64f664e2a4e34f79847eef90/algan_quadrants-1.3.0.post1-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:5309aeedb52ec4f8ec0cb280ddfacd462375a2eaf471b7a4f0cb76657274973d", size = 27718065, upload-time = "2026-09-05T12:50:28.28Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/9a/660349f048ec2567b79a95458fc801692550c44ee8e99eeafec039cd8f67/algan_quadrants-1.3.0.post1-cp312-cp312-win_amd64.whl", hash = "sha256:b4f2b59448d1e5da254ce7bc1505887c56ea72f5ec40bc4829fea9010f781a40", size = 27979024, upload-time = "2026-09-05T12:50:31.001Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/53/95126e95a3d0e1f3ab5c5f204c25449a2d8c059ae047587b5c0bac759755/algan_quadrants-1.3.0.post1-cp313-cp313-macosx_13_0_arm64.whl", hash = "sha256:47a49e5da0f732b96fabe0f26db9156d33a6544ede4f503709187193e9fcefc2", size = 23333160, upload-time = "2026-09-05T12:50:33.477Z" },
+    { url = "https://files.pythonhosted.org/packages/99/c5/aec9191d2e0d5ffb4d43e4c0ca3606ee77c54fff0f8eb59c97cda4933467/algan_quadrants-1.3.0.post1-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:78a5961f6ff12c6a65d09ef4dc80cbf75723fcba6462176fa29420ff1b2e8c83", size = 27718568, upload-time = "2026-09-05T12:50:35.686Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/8d/1e709a63b2d66a1a6cce2e6a7295c745494dca1403bf0a33daadf72487ba/algan_quadrants-1.3.0.post1-cp313-cp313-win_amd64.whl", hash = "sha256:f831b66ef681bf56463b33870242c587e233eb3c8f86d7c5908e050cab841c0f", size = 27979766, upload-time = "2026-09-05T12:50:37.995Z" },
+]
 
 [[package]]
 name = "annotated-doc"
@@ -625,7 +654,7 @@ name = "exceptiongroup"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0b/9f/a65090624ecf468cdca03533906e7c69ed7588582240cfe7cc9e770b50eb/exceptiongroup-1.3.0.tar.gz", hash = "sha256:b241f5885f560bc56a59ee63ca4c6a8bfa46ae4ad651af316d4e81817bb9fd88", size = 29749, upload-time = "2025-05-10T17:42:51.123Z" }
 wheels = [
@@ -4713,39 +4742,6 @@ wheels = [
 ]
 
 [[package]]
-name = "quadrants"
-version = "1.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cffi" },
-    { name = "colorama" },
-    { name = "dill" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "pydantic" },
-    { name = "rich" },
-    { name = "setuptools" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/13/aafc1a02b354086636b8cb2439bf3084acee4a4635e05e1794c0a39dd111/quadrants-1.3.0-cp310-cp310-macosx_13_0_arm64.whl", hash = "sha256:28cdc1290eecbb16e956c90fe8de1ecf27a3233eab9875490ad189cebd65add7", size = 26681758, upload-time = "2026-08-12T14:25:38.603Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/98/0dcfc021a83388c56ef35e8e440e62816650895d8713fa0fa1b6fbbdf1e1/quadrants-1.3.0-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_34_aarch64.whl", hash = "sha256:5faf4f067c1404febc05fd12bf32b4aa5d7c4a3d2dfa79de3af7bc62446962c4", size = 38293619, upload-time = "2026-08-11T21:08:03.468Z" },
-    { url = "https://files.pythonhosted.org/packages/d0/62/16ef6186468e807db3eb47ed4fd169e603bfa08b374ebb4e3c72b3d4ebc6/quadrants-1.3.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3ab881eeb9173b62787bf54d2949ae07ef745cde43228ad8b2c0037a0b4575e4", size = 40980560, upload-time = "2026-08-11T21:08:01.337Z" },
-    { url = "https://files.pythonhosted.org/packages/10/20/879067189d24e513befdb556b1cca26b9f68d61b2b43a5a6de71ef8da7f8/quadrants-1.3.0-cp310-cp310-win_amd64.whl", hash = "sha256:247be967a9aedd1979b6499e3161e9486cbdf5bff49f1d5b0aae61081da0d83e", size = 30985427, upload-time = "2026-08-11T19:52:13.489Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/cb/a537c1360b8185c1c6e62837f25347736ed450f20457691aca7836578934/quadrants-1.3.0-cp311-cp311-macosx_13_0_arm64.whl", hash = "sha256:46bed8c9ddfd2a787f68e77e09961752155684f49615315b3aa1f75f97ed2369", size = 26682035, upload-time = "2026-08-12T14:25:46.714Z" },
-    { url = "https://files.pythonhosted.org/packages/40/f6/b59101a6c35dbb420da2d5c5fb76db813c11330772c6055b68307d47e939/quadrants-1.3.0-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_34_aarch64.whl", hash = "sha256:b25b16e13e7ab77c2c3ea8e4863dcd8e41efdbc91788a56c11c04f03dbb6c585", size = 38294125, upload-time = "2026-08-11T21:08:01.45Z" },
-    { url = "https://files.pythonhosted.org/packages/7e/3a/cb96b77751e7ed8d0dc74e5a83229f29d2bda2bb6799b8e9f06091b61c20/quadrants-1.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:908bb35442b27de346fa17aa7d6458fc782a668dcfb4c6192dec08a7808509bb", size = 40979986, upload-time = "2026-08-11T21:07:56.668Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/27/1ae772c0328ee191040ac99e6c2d27c396f9b85a7cc06dd0aa9c5a965876/quadrants-1.3.0-cp311-cp311-win_amd64.whl", hash = "sha256:bed8fcf39738fe68890d60233287f2cb338f1ca20141c3072c87f8ab14b290a3", size = 30987172, upload-time = "2026-08-11T19:52:08.714Z" },
-    { url = "https://files.pythonhosted.org/packages/74/3c/8bf3d846b0e385b6fcdfb0ef9760a6f99b73e9fc9d5f7052a644add6b7d3/quadrants-1.3.0-cp312-cp312-macosx_13_0_arm64.whl", hash = "sha256:83c9f4fa87b1d70ff279e8e1a1e8cf65344880802b792655a7ef49535dd780c2", size = 26681677, upload-time = "2026-08-12T14:25:46.491Z" },
-    { url = "https://files.pythonhosted.org/packages/1c/e0/15cdcea47a587db6ccc03e04eb16cf2983ad7bef6557bce4a4de85019284/quadrants-1.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_34_aarch64.whl", hash = "sha256:edfbd97648e3a0d23b4bb592b51352ddcc4cfb186c11535002c171316321fe29", size = 38293972, upload-time = "2026-08-11T21:07:58.482Z" },
-    { url = "https://files.pythonhosted.org/packages/56/48/68405594c33062faa77d349d5f320300c7bca3a7e6b6f332c8f7e22bde9e/quadrants-1.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:79b09a7af4df51f4733dec6b755491ef2b8418cbda3ec042130c555f89e8003a", size = 40973824, upload-time = "2026-08-11T21:08:01.92Z" },
-    { url = "https://files.pythonhosted.org/packages/68/d6/d1b72956a40016260d2197fef80ec27a5611bb1d57f3fcf0bde22f3180e4/quadrants-1.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:c1e5ede6dff01afab65c22b33ce0a651753743dddd1fb99041af0c7059e67e68", size = 30988310, upload-time = "2026-08-11T19:52:05.92Z" },
-    { url = "https://files.pythonhosted.org/packages/62/56/822c0b2d8f61b44d272941ad2e137a54cdf3f5ea107bb494f0e5ca511043/quadrants-1.3.0-cp313-cp313-macosx_13_0_arm64.whl", hash = "sha256:f078eaa672d7b7793e3d045287b2caa1bc2ed56dbe9dc4577ebf3ce6f721fe8b", size = 26681512, upload-time = "2026-08-12T14:25:43.407Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/5f/fd875f16b75e3f021e9fd6f89cbd5a862e2b2b32de275044ffee3fb40544/quadrants-1.3.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_34_aarch64.whl", hash = "sha256:e84d152b6bcb7ace8604918f157023f1890703d591ba3dda235d52ea71667688", size = 38293514, upload-time = "2026-08-11T21:07:59.306Z" },
-    { url = "https://files.pythonhosted.org/packages/59/dc/ab888de75da5604d8a604822a32be2761d5716195d04e467347681215f53/quadrants-1.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f2593e5a1078c511dd33e22225da8ea024023564feac331f17820d71ce577194", size = 40974418, upload-time = "2026-08-11T21:07:57.525Z" },
-    { url = "https://files.pythonhosted.org/packages/0c/2f/f6ab0908b931e347789634b2f65bc5f1fd07137bc847376fb2abe982bacd/quadrants-1.3.0-cp313-cp313-win_amd64.whl", hash = "sha256:70c2985fa986b908b1e12564f9ed40b3cd45bae8986d0e5bd41d033d7cf48daf", size = 30988240, upload-time = "2026-08-11T19:52:12.915Z" },
-]
-
-[[package]]
 name = "regex"
 version = "2026.6.28"
 source = { registry = "https://pypi.org/simple" }
@@ -4932,7 +4928,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ae/00/48c2f661e2816ccf2ecd77982f6605b2950afe60f60a52b4cbbc2504aa8f/scipy-1.13.1.tar.gz", hash = "sha256:095a87a0312b08dfd6a6155cbbd310a8c51800fc931b8c0b84003014b874ed3c", size = 57210720, upload-time = "2024-05-23T03:29:26.079Z" }
 wheels = [
@@ -4965,7 +4961,7 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/37/6964b830433e654ec7485e45a00fc9a27cf868d622838f6b6d9c5ec0d532/scipy-1.15.3.tar.gz", hash = "sha256:eae3cf522bc7df64b42cad3925c876e1b0b6c35c1337c93e12c0f366f55b0eaf", size = 59419214, upload-time = "2025-05-08T16:13:05.955Z" }
 wheels = [

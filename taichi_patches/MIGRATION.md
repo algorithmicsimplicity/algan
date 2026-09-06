@@ -204,7 +204,7 @@ backend it landed on.** `../quadrants_patches/README.md` has the full account.
 | The Apple GPU renders correctly on the patched Quadrants wheel | **verified on one scene** (`shapes_and_timeline`), one virtualized M1 — and since on `fast` and `materials_and_lighting`, §10 |
 | …on a scene using bloom, glow, surfaces or glossy prefilter | was **NOT verified** at the time (the scene picked for it crashed on Metal on *both* compilers, see below); **verified since**, §10 |
 | Defect 2's fix works | was **NOT verified on hardware**; **verified since**, §10 |
-| pre-Volta CUDA works on sm_61 | **NOT verified** — compile-only; needs the maintainer's GTX 1050 |
+| pre-Volta CUDA works on sm_61 | **verified** on the maintainer's Windows 10 GTX 1050 (sm_61, 4 GB, driver 576.52): `qd.init(qd.cuda)` and kernels run; runtime PTX has 0 `atom.sys`, the expected `atom.gpu.cas.b64`, and `.version 5.0 / .target sm_61` — §11.1 |
 | `tests/full_renders` on CPU | **known to differ**; re-baselined in the second session (§9), re-checked in the third (§10) |
 
 **The crash, attributed: it is not the port, and it is not new.** Rendering
@@ -245,8 +245,9 @@ runs); the live list is §10's.*
    `grid_normals_sides_crosses`.
 3. **Re-baseline `tests/full_renders`** on CPU, scene by scene, then
    `scripts/package_baselines.py --tag …` and upload. Maintainer's call.
-4. **Run 0003 on the GTX 1050.** Look for `atom.gpu.cas.b64` and no remaining
-   `atom.sys` (`quadrants_patches/PORTING-NOTES.md` §7).
+4. **DONE — run 0003 on the GTX 1050.** §11.1 records the successful sm_61
+   run: `qd.init(qd.cuda)` and kernels execute, runtime PTX contains the expected
+   `atom.gpu.cas.b64`, and no `atom.sys` remains.
 5. **The frontend's remaining 1.7×**: Quadrants builds every kernel AST twice.
 6. **Upstream what deserves it**: 0003's two CUDA edits (defensible on their own
    merits), 0002's `ContinueStmt` fix to taichi-dev, and both Metal defects to

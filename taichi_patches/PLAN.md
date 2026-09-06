@@ -683,9 +683,9 @@ Track B is blocked on any pre-Volta machine, which today includes the primary de
 
 > **Written 2026-09-04 as `quadrants_patches/0003-pre-volta-cuda.patch`, and writing it corrected
 > the diagnosis above in two load-bearing ways** (`quadrants_patches/PORTING-NOTES.md` §7 has the
-> evidence; the patch is **unbuilt and unrun** — `scripts/gate/quadrants_linux_build.sh` is the
+> evidence; the patch was **unbuilt and unrun when this plan was written**, and was later hardware-verified on the maintainer's GTX 1050 (sm_61) on 2026-09-05; see `MIGRATION.md` §11.1 — `scripts/gate/quadrants_linux_build.sh` is the
 > compile check, since Quadrants forces CUDA off on Apple and the macOS leg never compiles a line of
-> it, and only the maintainer's sm_61 box can answer whether it actually works):
+> it, and at the time only the maintainer's sm_61 box could answer whether it actually worked; that check is now PASS in `MIGRATION.md` §11.1):
 >
 > * **The source-level fix for (a) does not work.** `__scoped_atomic_compare_exchange_n(...,
 >   __MEMORY_SCOPE_DEVICE)` emits IR byte-identical to the unscoped builtin — no `syncscope` at all —
