@@ -100,8 +100,10 @@ def test_the_committed_pointer_file_is_well_formed():
     """The file that ships in the repository has to parse and validate."""
     pointer = baseline_store.load_pointer()
     assert isinstance(pointer.get("base_url"), str)
-    # Every archive names a suite that exists and a device key, and the null
-    # tag is the published/unpublished switch.
+    # Every archive names a suite that exists and a device key. The committed
+    # pointer is published; null tags remain covered below as a bootstrap state.
+    assert isinstance(pointer.get("tag"), str)
+    assert pointer["tag"]
     for name in pointer["archives"]:
         suite, _, key = name.partition("/")
         assert key, f"{name} does not name a device"
@@ -112,11 +114,11 @@ def test_the_committed_pointer_file_is_well_formed():
     )
 
 
-def test_the_committed_pointer_describes_the_committed_baselines():
-    """A rebaseline that is committed but not re-packaged fails here.
+def test_the_committed_pointer_is_published_and_local_rebaselines_match():
+    """A local rebaseline that was not re-packaged fails here.
 
-    Without this the pointer silently goes stale, and the day the mp4s leave
-    the tree every suite starts comparing against last release's pixels.
+    A clean checkout has no heavy baselines, so --verify instead checks that
+    the committed pointer names a published release.
     """
     sys.path.insert(0, str(TESTS_ROOT.parent / "scripts"))
     try:
@@ -128,7 +130,7 @@ def test_the_committed_pointer_describes_the_committed_baselines():
 
 
 def test_the_local_directory_wins(tmp_path):
-    """While the mp4s are committed, the fetcher must change nothing."""
+    """A freshly rendered local baseline must win over the release asset."""
     pointer, _, _ = _published(tmp_path)
     local = tmp_path / "expected_outputs_cuda"
     local.mkdir()

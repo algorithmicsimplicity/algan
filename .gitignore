@@ -1,4 +1,8 @@
 # Algan videos
+# Heavy render baselines are release assets. Local rebaselines remain
+# discoverable by scripts/package_baselines.py but must not be recommitted.
+tests/full_renders/expected_outputs_*/
+tests/path_traced/expected_outputs_*/
 **/output_errors/
 benchmarks/_*_out/
 **/algan_outputs/

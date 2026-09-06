@@ -482,15 +482,19 @@ every fetch warn and every comparison skip. The tarballs are byte-reproducible
 pinned sha256 is a fact about the baselines rather than about the machine that
 packaged them, and anyone can re-derive it from an uploaded asset.
 
-`scripts/package_baselines.py --verify` re-packages into a temporary directory
-and reports whether `tests/baselines.json` still describes the working tree.
+`scripts/package_baselines.py --verify` re-packages any local hosted baseline
+directories into a temporary directory and reports whether they match the
+published pointer. A clean checkout has none, so it verifies that the pointer
+names a published release instead.
 `tests/unit_tests/test_baseline_store.py` runs it, so a rebaseline that is
 committed but never uploaded fails a test instead of going unnoticed until the
 mp4s leave the tree.
 
-While the mp4s are still committed, step 2 answers and none of this runs; the
-pointer's `tag` is `null` until the first upload, which the resolver treats
-exactly like an offline machine, silently.
+The heavy MP4s are no longer committed, so a normal checkout reaches the cache
+or release download. `ALGAN_BASELINE_DIR` still supplies a local canonical copy,
+and a freshly rendered `expected_outputs_<key>/` directory still takes precedence
+until it is packaged and published. A null tag remains supported only as a
+bootstrap/test state.
 
 ## The unit suite
 
