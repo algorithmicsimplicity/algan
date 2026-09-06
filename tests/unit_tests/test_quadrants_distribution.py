@@ -30,6 +30,10 @@ def helper():
 
 def _fake_wheel(path: Path, version: str) -> None:
     dist_info = f"quadrants-{version}.dist-info"
+    # The tag follows the filename rather than being pinned to one platform:
+    # the release matrix is four platforms now, and a fixture that says x86-64
+    # inside every wheel cannot be used to test the other three.
+    tag = "-".join(path.stem.split("-")[2:])
     metadata = (
         "Metadata-Version: 2.4\n"
         "Name: quadrants\n"
@@ -38,7 +42,7 @@ def _fake_wheel(path: Path, version: str) -> None:
     ).encode()
     wheel = (
         b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: false\n"
-        b"Tag: cp311-cp311-manylinux_2_27_x86_64\n"
+        b"Tag: " + tag.encode() + b"\n"
     )
     members = {
         "quadrants/__init__.py": f"__version__ = {version!r}\n".encode(),
@@ -57,21 +61,25 @@ def _fake_wheel(path: Path, version: str) -> None:
 
 
 def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
-    upstream = tmp_path / "quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
-    _fake_wheel(upstream, helper.DOWNSTREAM_VERSION)
+    # Read from the script rather than written out: the downstream version
+    # moves every release (`quadrants_patches/PYPI.md`), and a test that spells
+    # it out turns a two-file bump into a hunt through assertions.
+    version = helper.DOWNSTREAM_VERSION
+    upstream = tmp_path / f"quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    _fake_wheel(upstream, version)
     downstream = helper.rebrand_wheel(upstream)
-    assert downstream.name.startswith("algan_quadrants-1.3.0.post1-")
+    assert downstream.name.startswith(f"algan_quadrants-{version}-")
 
     with zipfile.ZipFile(downstream) as wheel:
         names = set(wheel.namelist())
         assert "quadrants/__init__.py" in names
         assert not any(
-            name.startswith("quadrants-1.3.0.post1.dist-info/") for name in names
+            name.startswith(f"quadrants-{version}.dist-info/") for name in names
         )
-        prefix = "algan_quadrants-1.3.0.post1.dist-info/"
+        prefix = f"algan_quadrants-{version}.dist-info/"
         metadata = wheel.read(prefix + "METADATA").decode()
         assert "Name: algan-quadrants\n" in metadata
-        assert "Version: 1.3.0.post1\n" in metadata
+        assert f"Version: {version}\n" in metadata
         record = wheel.read(prefix + "RECORD").decode()
         assert prefix + "METADATA" in record
         assert prefix + "RECORD,," in record
@@ -84,15 +92,86 @@ def test_rebrand_refuses_a_version_not_used_at_native_build_time(helper, tmp_pat
         helper.rebrand_wheel(upstream)
 
 
-def test_validate_refuses_a_wheel_without_quadrants_import(helper, tmp_path):
-    path = (
-        tmp_path / "algan_quadrants-1.3.0.post1-cp311-cp311-manylinux_2_27_x86_64.whl"
+@pytest.fixture(scope="module")
+def validator():
+    """`validate_quadrants_release.py`, which imports its sibling by module name."""
+    import sys
+
+    scripts = str(REPO_ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    path = REPO_ROOT / "scripts" / "validate_quadrants_release.py"
+    spec = importlib.util.spec_from_file_location("validate_quadrants_release", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _release_wheel(directory: Path, helper, tag: str, python: str) -> Path:
+    """One rebranded release wheel, the way the publish job would have it."""
+    cp = "cp" + python.replace(".", "")
+    upstream = directory / f"quadrants-{helper.DOWNSTREAM_VERSION}-{cp}-{cp}-{tag}.whl"
+    _fake_wheel(upstream, helper.DOWNSTREAM_VERSION)
+    return helper.rebrand_wheel(upstream, delete_original=True)
+
+
+def test_the_complete_matrix_validates(validator, helper, tmp_path):
+    resolver = validator._load_resolver()
+    for spec in resolver.PLATFORMS.values():
+        for python in resolver.PYTHONS:
+            _release_wheel(tmp_path, helper, spec["wheel_tag"], python)
+    wheels = validator.validate_release(tmp_path)
+    assert len(wheels) == len(resolver.PLATFORMS) * len(resolver.PYTHONS)
+
+
+def test_a_platform_that_did_not_build_is_refused(validator, helper, tmp_path):
+    resolver = validator._load_resolver()
+    for name, spec in resolver.PLATFORMS.items():
+        if name == "linux_arm64":
+            continue
+        for python in resolver.PYTHONS:
+            _release_wheel(tmp_path, helper, spec["wheel_tag"], python)
+
+    expected = len(resolver.PLATFORMS) * len(resolver.PYTHONS)
+    with pytest.raises(ValueError, match=f"expected {expected} wheels"):
+        validator.validate_release(tmp_path)
+
+
+def test_a_wheel_stamped_with_the_wrong_tag_leaves_its_slot_empty(
+    validator, helper, tmp_path
+):
+    """The count can be right while a platform is missing, and that is the trap.
+
+    The Linux tag is restamped after the build from the matrix's own table
+    (`scripts/gate/verify_wheel_tag.py`, then `wheel tags`), so it moves
+    whenever the build container does. A directory of sixteen wheels can
+    therefore have an empty aarch64 slot because that leg stamped a different
+    manylinux version; counting files does not see that, and asking for one
+    wheel per (platform, Python) does.
+    """
+    resolver = validator._load_resolver()
+    for name, spec in resolver.PLATFORMS.items():
+        tag = "manylinux_2_39_aarch64" if name == "linux_arm64" else spec["wheel_tag"]
+        for python in resolver.PYTHONS:
+            _release_wheel(tmp_path, helper, tag, python)
+
+    assert len(list(tmp_path.glob("*.whl"))) == len(resolver.PLATFORMS) * len(
+        resolver.PYTHONS
     )
-    prefix = "algan_quadrants-1.3.0.post1.dist-info/"
+    with pytest.raises(ValueError, match="expected one linux_arm64/py"):
+        validator.validate_release(tmp_path)
+
+
+def test_validate_refuses_a_wheel_without_quadrants_import(helper, tmp_path):
+    version = helper.DOWNSTREAM_VERSION
+    path = tmp_path / f"algan_quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    prefix = f"algan_quadrants-{version}.dist-info/"
     with zipfile.ZipFile(path, "w") as wheel:
         wheel.writestr(
             prefix + "METADATA",
-            "Name: algan-quadrants\nVersion: 1.3.0.post1\n",
+            f"Name: algan-quadrants\nVersion: {version}\n",
         )
         wheel.writestr(prefix + "RECORD", "")
     with pytest.raises(ValueError, match="retain the import package"):

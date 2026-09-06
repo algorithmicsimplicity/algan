@@ -4,10 +4,10 @@
 #
 #   bash scripts/gate/report_wheel.sh <dist-dir> <platform> <python-version>
 #
-# Shared by all three legs of `.github/workflows/quadrants_build.yaml` so that a
-# Linux, a macOS and a Windows wheel are described in the same words and the
-# same order -- otherwise reading three job summaries side by side is three
-# different exercises.
+# Shared by all four legs of `.github/workflows/quadrants_build.yaml` so that
+# the two Linux wheels, the macOS one and the Windows one are described in the
+# same words and the same order -- otherwise reading four job summaries side by
+# side is four different exercises.
 #
 # It reports rather than gates: the `if: always()` steps that call it run after
 # a failed build too, where "no wheel" is the answer and a non-zero exit here

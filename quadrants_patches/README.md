@@ -105,14 +105,15 @@ platform is in question, or wider, for a release:
     uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13
     uv run python scripts/build_quadrants_wheels.py --run-id <id> --install
 
-**All three platforms Algan supports**, because each is the only place part of
-this patch set can be compiled at all — Metal (0001, 0002) only exists on macOS,
-where Quadrants forces `QD_WITH_CUDA=OFF`; 0003 is for a pre-Volta card in a
-Windows box; 0004 is LLVM codegen that both CUDA legs see. Of the three CUDA
-patches, 0005 is mostly frontend-IR and LLVM plumbing every leg compiles (only
-its `codegen_cuda.cpp` line and `mark_function_as_cuda_kernel` are CUDA-shaped),
+**All four platforms Algan supports** — `linux`, `linux_arm64`, `macos`,
+`windows` — because each is the only place part of this patch set can be
+compiled at all: Metal (0001, 0002) only exists on macOS, where Quadrants forces
+`QD_WITH_CUDA=OFF`; 0003 is for a pre-Volta card in a Windows box; 0004 is LLVM
+codegen that every CUDA-enabled leg sees. Of the three remaining CUDA patches,
+0005 is mostly frontend-IR and LLVM plumbing every leg compiles (only its
+`codegen_cuda.cpp` line and `mark_function_as_cuda_kernel` are CUDA-shaped),
 while **0006 and 0007 live entirely in `codegen_cuda.cpp`** — a file the macOS
-leg never opens, so only the Linux and Windows legs can fail on them. One wheel per
+leg never opens, so only the three non-Apple legs can fail on them. One wheel per
 platform per Python, ~15-20 minutes each, `fail-fast: false` so one platform's
 failure still lands the others' wheels.
 
@@ -139,6 +140,14 @@ here rather than from the index.
 | linux | `ubuntu-22.04` | 26.34 MiB, and the 0004 IR arms still land (`invariant-load-arms-py3.11`) |
 | macos | `macos-26` | 22.21 MiB, via `scripts/gate/quadrants_macos_build.sh` unchanged |
 | windows | `windows-2025` | 26.51 MiB — `quadrants-1.3.1.dev0+gab9a58ab5.d20260904-cp311-cp311-win_amd64.whl`, sha256 `d6db5de8…`. **The first Windows wheel this fork has ever had**, and the only one 0003's sm_61 box can be tried on |
+
+That table is a record of that run, not the current configuration: the Linux
+legs have since moved **inside manylinux containers** (`ubuntu-24.04` and
+`ubuntu-24.04-arm` now only host them), because `build_wheel` stamps
+`manylinux_2_27` from a constant and a stock runner cannot keep that promise —
+the wheel from that very run measures `GLIBC_2.34`. See
+`.github/workflows/scripts/resolve_wheel_matrix.py` for the measurements and
+`scripts/gate/verify_wheel_tag.py` for the check that now runs per wheel.
 
 The download half of `build_quadrants_wheels.py` is the one thing not exercised
 end to end from a sandbox: an artifact download redirects off `api.github.com`
@@ -177,6 +186,63 @@ Apple GPU and an NVIDIA one. Both passed on 2026-09-04, from
 | --- | --- | --- |
 | **Metal** (0001, 0002) | `bash scripts/gate/quadrants_macos_build.sh` with `GATE_QD_PATCHES=1`, arm `mac-cpu` | PASS, 781 s build, `quadrants-1.3.1.dev0+gab9a58ab5-cp311-cp311-macosx_13_0_arm64.whl` (22.3 MiB), **`qd.init(metal)=ok`**, and clang named **no warning flags at all** |
 | **CUDA** (0003) | `bash scripts/gate/quadrants_linux_build.sh`, arm `linux-cpu` | PASS, 1041 s build, `...-manylinux_2_27_x86_64.whl` (26.4 MiB), `qd.init(cpu)=ok`, `runtime_cuda.bc present -- CUDA backend compiled` |
+
+**Both Linux legs now build inside manylinux containers, and both have run
+there.** Nothing in these seven patches is x86-specific — 0001-0002 edit Metal
+sources a Linux build does not compile, and 0003 and 0005-0007 are CUDA codegen
+against the NVPTX target in the same prebuilt LLVM, which `download_llvm.py`
+fetches per architecture. What *is* per-architecture was measured before the
+containers were chosen: the aarch64 LLVM archive's own binaries need
+`GLIBC_2.34` and `GLIBCXX_3.4.29` (the x86-64 ones need 2.14 and 3.4.21), which
+is why the aarch64 leg builds in `manylinux_2_34` and the x86-64 leg in
+`manylinux_2_28`.
+
+**The complete matrix builds.** [`34039060946`](https://github.com/algorithmicsimplicity/algan/actions/runs/34039060946)
+took all four platforms across cp310-cp313 — sixteen wheels, 448 MB of
+artifacts, every one green, the first time this fork has built its whole
+matrix in one run. macOS and Windows were carried along unchanged and still
+pass, so nothing in the container work disturbed them.
+
+The two Linux legs first went green together in
+[`34037781817`](https://github.com/algorithmicsimplicity/algan/actions/runs/34037781817),
+which is where these numbers were read, cp311:
+
+| leg | build | wheel | measured floor |
+| --- | --- | --- | --- |
+| x86-64 | 19m21s | `…-cp311-cp311-manylinux_2_28_x86_64.whl`, 30 MiB | **GLIBC_2.27**. The `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "pip installs it, then the import fails" to working |
+| aarch64 | 13m35s | `…-cp311-cp311-manylinux_2_35_aarch64.whl`, 28 MiB | **GLIBC_2.35**, one symbol above its own container: a GLOBAL `_dl_find_object@GLIBC_2.35` out of the prebuilt LLVM. Ubuntu 22.04+ and Debian 12+ yes; RHEL 9 and Amazon Linux 2023, both 2.34, no |
+
+0004's IR arms land on both (`18 → 0` base-pointer loads on x86-64, `9 → 0` on
+aarch64 — the first time that patch has been verified on ARM), the `qd.init`
+kwarg and env-var gates pass, 0005-0007 pass, and the CUDA comparison skips for
+want of a driver. The caches key apart as `…-Linux-X64-…` and `…-Linux-ARM64-…`,
+which is `runner.arch` doing its job.
+
+Four things the container work cost, all now fixed in the workflow and worth
+knowing before touching it:
+
+* The prebuilt clang cannot find AlmaLinux's libstdc++ on its own —
+  `runtime.cpp:16:10: fatal error: 'atomic' file not found`, five minutes into
+  the aarch64 build. It is handed the container's own `/c++/` include
+  directories, but only when it needs them.
+* A refusal from `verify_wheel_tag.py` used to name the glibc version without
+  naming the symbol behind it, which is a diagnosis that costs another
+  thirteen-minute build. It now quotes `auditwheel show`.
+* **The aarch64 floor is not the compiler's to fix.** libgcc's unwinder has
+  called `_dl_find_object` since GCC 12, so pinning the image's base GCC 11
+  looked like the answer. It is not: with `CC`/`CXX` pinned the whole tree
+  compiles and links (once `libstdc++-static` supplies the archive `gcc-c++`
+  does not pull in) and auditwheel still says 2.35
+  ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)).
+  The symbol comes from the prebuilt LLVM archive, whose objects were built on
+  a glibc-2.35 system. Do not spend another run on the toolchain; the fix is an
+  LLVM archive built on an older base, which is upstream's to produce.
+* The wheel is installed **before** it is stamped, because the stamp can put a
+  tag on it that its own container rejects — pip refused a `manylinux_2_35`
+  wheel inside the 2.34 image with "not a supported wheel on this platform"
+  ([`34034938922`](https://github.com/algorithmicsimplicity/algan/actions/runs/34034938922)).
+
+The line to check in a leg's summary is the same one below.
 
 That last field is load-bearing and was got wrong once. The first Linux run
 "passed" while proving nothing: the check grepped the build log, and

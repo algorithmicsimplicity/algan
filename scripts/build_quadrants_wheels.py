@@ -1,11 +1,13 @@
 r"""Build Algan's patched Quadrants wheels on GitHub's runners, and bring them home.
 
-Algan depends on ``quadrants>=1.3.0,<1.4`` and patches it: ``quadrants_patches/``
-carries four patches against v1.3.0 that the PyPI wheel does not have, and
-three of Algan's platforms need a different subset of them. There is no machine
-here that can build all of that -- the Metal patches need an Apple GPU box and
-the CUDA ones need a toolchain this container does not have -- so the build
-happens on GitHub's runners and the wheels come back over the API.
+Algan depends on ``algan-quadrants==1.3.0.post1`` and patches it:
+``quadrants_patches/`` carries seven patches against v1.3.0 that the upstream
+PyPI wheel does not have, and Algan's platforms need different subsets of them
+-- Metal (0001, 0002) is macOS-only, and the CUDA four (0003, 0005-0007) do
+nothing without an NVIDIA GPU. There is no machine here that can build all of
+that -- the Metal patches need an Apple GPU box and the CUDA ones need a
+toolchain this container does not have -- so the build happens on GitHub's
+runners and the wheels come back over the API.
 
 This script is the front door to ``.github/workflows/quadrants_build.yaml``.
 One command dispatches the build, waits for it, downloads every wheel it
@@ -14,7 +16,7 @@ which commit and which patches each wheel came from::
 
     uv run python scripts/build_quadrants_wheels.py
 
-That builds all three platforms for the default Python (3.11), which is four
+That builds all four platforms for the default Python (3.11), which is four
 wheels' worth of runner time and about 20-40 minutes of waiting. Narrower::
 
     uv run python scripts/build_quadrants_wheels.py --platforms macos
@@ -32,7 +34,7 @@ And to put the wheel for *this* machine into the current environment::
 Where the wheels land
 ---------------------
 ``quadrants_wheels/`` in the repository root, which is **gitignored** except
-for its manifest. The wheels are 20-30 MiB each and a full matrix is twelve of
+for its manifest. The wheels are 20-30 MiB each and a full matrix is sixteen of
 them; this repository already refuses to carry binaries that size in git
 (``tests/README.md``, "Where the heavy baselines live" -- the render baselines
 are release assets for the same reason). What *is* committed is
@@ -69,6 +71,7 @@ import importlib.util
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -92,8 +95,12 @@ API = "https://api.github.com"
 # them back into. Kept as one pattern in one place: the workflow writes it, this
 # reads it, and a change to either without the other is the bug.
 ARTIFACT_GLOB = "quadrants-wheel-*"
+# The platform group takes `_` because a platform key is one: `linux_arm64`.
+# Not `-`, and that is the resolver's constraint rather than this one -- a
+# hyphen in a `$GITHUB_OUTPUT` name reads as subtraction in a GitHub
+# expression, so `runner_linux-arm64` could not be referenced at all.
 ARTIFACT_RE = re.compile(
-    r"^quadrants-wheel-(?P<platform>[a-z0-9]+)-py(?P<python>[\d.]+)$"
+    r"^quadrants-wheel-(?P<platform>[a-z0-9_]+)-py(?P<python>[\d.]+)$"
 )
 
 
@@ -367,7 +374,7 @@ def download_wheels(
             print(f"  {artifact['name']}: EXPIRED, skipping")
             continue
         match = ARTIFACT_RE.match(artifact["name"])
-        platform = match.group("platform") if match else "unknown"
+        platform_key = match.group("platform") if match else "unknown"
         python = match.group("python") if match else "unknown"
         print(f"  {artifact['name']} ({artifact['size_in_bytes'] / 1048576:.1f} MiB)")
         blob = api(
@@ -386,7 +393,7 @@ def download_wheels(
                 rows.append(
                     {
                         "file": target.name,
-                        "platform": platform,
+                        "platform": platform_key,
                         "python": python,
                         "version": target.name.split("-")[1]
                         if "-" in target.name
@@ -485,11 +492,39 @@ def write_manifest(out_dir: Path, run: dict, rows: list[dict]) -> Path:
 # Install
 
 
+def platform_key_for_this_machine() -> str | None:
+    """Which `PLATFORMS` key describes the machine this is running on.
+
+    Keyed on the architecture as well as the OS, because ``sys.platform`` alone
+    stopped answering the question the moment Linux had two entries -- on an
+    aarch64 box it would have asked for the x86-64 wheel tag and reported the
+    aarch64 wheel it *did* download as "nothing matches".
+
+    `None` means this repository builds no wheel for this machine, which is a
+    real answer rather than a gap: an Intel Mac reaches it, and the honest
+    thing to say there is that no such wheel exists, not to hand it the
+    arm64 one.
+    """
+    machine = platform.machine().lower()
+    return {
+        ("linux", "x86_64"): "linux",
+        ("linux", "amd64"): "linux",
+        ("linux", "aarch64"): "linux_arm64",
+        ("linux", "arm64"): "linux_arm64",
+        ("darwin", "arm64"): "macos",
+        ("win32", "amd64"): "windows",
+    }.get((sys.platform, machine))
+
+
 def install_matching(out_dir: Path, rows: list[dict]) -> None:
     """Install the one downloaded wheel this interpreter can actually use."""
-    key = {"linux": "linux", "darwin": "macos", "win32": "windows"}.get(sys.platform)
+    key = platform_key_for_this_machine()
     if key is None:
-        raise SystemExit(f"--install does not know what to do on {sys.platform}")
+        raise SystemExit(
+            f"--install does not know what to do on {sys.platform}/"
+            f"{platform.machine()}; this repository builds wheels for "
+            f"{', '.join(spec['label'] for spec in PLATFORMS.values())}"
+        )
     want_python = f"cp{sys.version_info.major}{sys.version_info.minor}"
     want_tag = PLATFORMS[key]["wheel_tag"]
 
