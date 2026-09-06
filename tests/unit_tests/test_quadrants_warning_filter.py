@@ -25,7 +25,9 @@ def _warn_explicit(message, *, module=_WARNING_MODULE):
     )
 
 
-def test_quadrants_filter_hides_only_the_two_known_template_cache_warnings(monkeypatch):
+def test_quadrants_filter_hides_only_the_two_known_template_cache_warnings(
+    monkeypatch,
+):
     monkeypatch.setattr(taichi_compat, "BACKEND", "quadrants")
 
     with warnings.catch_warnings(record=True) as caught:
