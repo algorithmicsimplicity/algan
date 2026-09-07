@@ -194,7 +194,7 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
 
     # Pinned, or this test reads the machine it runs on: the figure is also
     # bounded by host free memory, so a busy CI box would change the answer.
-    _plenty_of_host_memory(monkeypatch)
+    _machine_with_ram(monkeypatch)
 
     free = mu.get_num_available_bytes(torch.device("mps"))
 
@@ -207,25 +207,32 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     assert free < (5 << 30) - (1 << 30), "no headroom was reserved"
 
 
-def _plenty_of_host_memory(monkeypatch, available=64 << 30):
-    """Make the host-memory bound non-binding, so a test measures what it means."""
+def _machine_with_ram(monkeypatch, total=1024 << 30):
+    """Pin the machine's total RAM, which the MPS free figure is capped against.
+
+    Default is large enough that the cap never binds, so a test that is about
+    something else measures that something else rather than the box it runs on.
+    """
     from algan.utils import memory_utils as mu
 
     monkeypatch.setattr(
-        mu.psutil, "virtual_memory", lambda: types.SimpleNamespace(available=available)
+        mu.psutil, "virtual_memory", lambda: types.SimpleNamespace(total=total)
     )
 
 
-def test_the_host_bound_counts_the_gpu_pool_as_spendable(monkeypatch):
-    """The host bound is ``available + driver_allocated``, not ``available``.
+def test_the_mps_figure_is_capped_by_a_share_of_total_ram(monkeypatch):
+    """Unified memory: the arena is capped against the machine's TOTAL RAM.
 
-    ``psutil``'s ``available`` EXCLUDES the GPU pool: across a render on the
-    7 GB Mac runner it and ``driver_allocated`` sum to a near-constant ~5.4 G
-    (2.69 + 2.74, then 1.46 + 3.84, then 1.19 + 2.96), with macOS holding the
-    balance. So what the process can spend is the sum, and subtracting a reserve
-    from ``available`` alone charges the GPU allocation twice -- which is
-    exactly what killed the first attempt, inside a minute, with the
-    "Insufficient memory to ray trace a single frame" this round began with.
+    The GPU pool is carved out of the same RAM as everything else, so sizing
+    from Metal's advice alone can leave the machine with nothing -- which on the
+    7 GB runner showed up as a kill, three wedges (two below the GPU
+    recommendation) and one 455 s chunk that thrashed and recovered.
+
+    Total RAM is used rather than ``psutil``'s ``available`` because two
+    attempts at the latter died with "Insufficient memory to ray trace a single
+    frame": it excludes the GPU pool and moves constantly, ranging 3.87 to
+    6.19 G when summed with ``driver_allocated`` across a single render. Total
+    RAM does not move.
     """
     from algan.utils import memory_utils as mu
 
@@ -235,25 +242,19 @@ def test_the_host_bound_counts_the_gpu_pool_as_spendable(monkeypatch):
     monkeypatch.setattr(
         "algan.rendering.mps_zero_copy.clear_import_cache", lambda: None
     )
-    monkeypatch.setenv("ALGAN_MPS_HOST_RESERVE", str(1 << 30))
+    monkeypatch.setenv("ALGAN_MPS_HOST_SHARE", "0.4")
 
-    # Half the spendable memory sits in the GPU pool, which `available` does not
-    # report. Counting only `available` would halve the answer.
-    monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 2 << 30)
-    _plenty_of_host_memory(monkeypatch, available=2 << 30)
-    assert mu.get_num_available_bytes(torch.device("mps")) == (4 << 30) - (1 << 30)
+    # A small machine: the share of total RAM decides, and the GPU's generous
+    # recommendation does not get to.
+    _machine_with_ram(monkeypatch, total=8 << 30)
+    assert mu.get_num_available_bytes(torch.device("mps")) == int((8 << 30) * 0.4)
 
-    # The same spendable total, all of it on the host side: same answer.
-    monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 0)
-    _plenty_of_host_memory(monkeypatch, available=4 << 30)
-    assert mu.get_num_available_bytes(torch.device("mps")) == (4 << 30) - (1 << 30)
-
-    # Less spendable than the reserve hands out nothing rather than going
-    # negative.
-    _plenty_of_host_memory(monkeypatch, available=0)
-    assert mu.get_num_available_bytes(torch.device("mps")) == 0
-
-    # And 0 disables the bound, leaving the GPU-side figure to decide.
-    monkeypatch.setenv("ALGAN_MPS_HOST_RESERVE", "0")
+    # A large one: the GPU-side figure binds first and the cap never applies.
+    _machine_with_ram(monkeypatch, total=1024 << 30)
     budget = (64 << 30) - int((64 << 30) * mu._MPS_HEADROOM)
+    assert mu.get_num_available_bytes(torch.device("mps")) == budget
+
+    # And 0 disables the cap outright.
+    monkeypatch.setenv("ALGAN_MPS_HOST_SHARE", "0")
+    _machine_with_ram(monkeypatch, total=8 << 30)
     assert mu.get_num_available_bytes(torch.device("mps")) == budget
