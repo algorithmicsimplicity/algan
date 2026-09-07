@@ -383,6 +383,13 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
+#: (frame, triangle) pairs one block of :func:`_shade_class`'s table may carry.
+#: Its intermediates are ``[block, N, 3, 3]`` float32 -- 36 bytes a pair, half a
+#: dozen live at once -- so this is roughly a 220 MB ceiling on the transient,
+#: whatever the chunk's frame count is.
+_SHADE_CLASS_TABLE_BUDGET = 1 << 20
+
+
 def _shade_class(
     merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
 ):
@@ -418,37 +425,49 @@ def _shade_class(
         return torch.zeros(n, dtype=torch.int64, device=device)
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if n else 1
-    frames = torch.arange(num_frames, device=device) + int(time_start)
-    nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
-        num_frames, -1, 3, 3
-    )
-    mag = nrm.norm(dim=3)
-    unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
-    spread = torch.maximum(
-        (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
-        (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
-    )
-    declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
-    # All-degenerate vertex normals: the kernel falls back to the geometric
-    # normal, so the class does too (the Polyhedron family authors none).
-    geometric_flat = mag.amax(dim=2) < 1e-6
-    vertex_n = unit[:, :, 0]
-    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
-    p0 = pos[..., 0:3]
-    e1 = pos[..., 3:6] - p0
-    e2 = pos[..., 6:9] - p0
-    gn = torch.cross(e1, e2, dim=-1)
-    gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
-    face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
-    q = (
-        torch.round(face_n * float(SHADE_CLASS_QUANT))
-        .to(torch.int64)
-        .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
-        + SHADE_CLASS_QUANT
-    )
-    packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
+    num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
     zero = torch.zeros((), dtype=torch.int64, device=device)
-    table = torch.where(declared_flat | geometric_flat, packed + 1, zero)  # [F, N]
+    table = torch.empty((num_frames, num_tri), dtype=torch.int64, device=device)
+    # The table itself is one int64 per (frame, triangle) and is small; its
+    # INTERMEDIATES are [block, N, 3, 3] floats and there are half a dozen of
+    # them live at once, so the frame axis is walked in blocks. A one-frame
+    # chunk -- what a 4K render takes today -- is one block and the arithmetic
+    # is exactly what it was. A wide chunk used to size those intermediates by
+    # its whole frame count, which is how a Metal render at PREVIEW came to ask
+    # for a single 6.45 GB buffer here.
+    block = max(1, _SHADE_CLASS_TABLE_BUDGET // max(1, num_tri))
+    for f0 in range(0, num_frames, block):
+        f1 = min(num_frames, f0 + block)
+        frames = torch.arange(f0, f1, device=device) + int(time_start)
+        nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
+            f1 - f0, -1, 3, 3
+        )
+        mag = nrm.norm(dim=3)
+        unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
+        spread = torch.maximum(
+            (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
+            (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
+        )
+        declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
+        # All-degenerate vertex normals: the kernel falls back to the geometric
+        # normal, so the class does too (the Polyhedron family authors none).
+        geometric_flat = mag.amax(dim=2) < 1e-6
+        vertex_n = unit[:, :, 0]
+        pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
+        p0 = pos[..., 0:3]
+        e1 = pos[..., 3:6] - p0
+        e2 = pos[..., 6:9] - p0
+        gn = torch.cross(e1, e2, dim=-1)
+        gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
+        face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
+        q = (
+            torch.round(face_n * float(SHADE_CLASS_QUANT))
+            .to(torch.int64)
+            .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
+            + SHADE_CLASS_QUANT
+        )
+        packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
+        table[f0:f1] = torch.where(declared_flat | geometric_flat, packed + 1, zero)
     cls = table[frame_rel, safe_ref]
     return torch.where(is_tri, cls, zero)
 

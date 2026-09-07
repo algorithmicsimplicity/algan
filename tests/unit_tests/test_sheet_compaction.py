@@ -1093,3 +1093,46 @@ def test_sheet_sample_depth_setting_reaches_the_live_module():
         assert rt.sheet_sample_depth is True
     finally:
         rt.sheet_sample_depth = old
+
+
+def test_the_shading_class_table_is_blocked_without_changing_a_class():
+    """``_shade_class`` walks the frame axis in blocks; the classes must not move.
+
+    The table is one int64 per (frame, triangle) and is small, but its
+    intermediates are ``[block, N, 3, 3]`` floats with half a dozen live at
+    once. Sizing those by a whole chunk's frame count is how a Metal render
+    came to ask for a single 6.45 GB buffer; blocking bounds the transient. The
+    arithmetic per entry is untouched, so a one-block run and a one-frame-per-
+    block run must agree exactly.
+    """
+    from algan.rendering.raytracing import sheets as sh
+
+    torch.manual_seed(20260907)
+    num_frames, num_tri = 6, 5
+    # Frame 0's triangles are declared flat (three equal vertex normals), the
+    # rest carry distinct ones, so both branches of the class rule are covered.
+    normals = torch.randn(num_frames, num_tri, 9)
+    normals[0] = normals[0, :, :3].repeat(1, 3)
+    merged = {
+        "tri_norm": normals,
+        "tri_pos": torch.randn(num_frames, num_tri, 9),
+    }
+    frame_rel = torch.arange(num_frames).repeat_interleave(num_tri)
+    safe_ref = torch.arange(num_tri).repeat(num_frames)
+    is_tri = torch.ones_like(safe_ref, dtype=torch.bool)
+
+    def classes(budget):
+        old = sh._SHADE_CLASS_TABLE_BUDGET
+        try:
+            sh._SHADE_CLASS_TABLE_BUDGET = budget
+            return sh._shade_class(
+                merged, frame_rel, 0, safe_ref, is_tri, True, num_frames
+            )
+        finally:
+            sh._SHADE_CLASS_TABLE_BUDGET = old
+
+    whole = classes(1 << 20)
+    assert whole.shape == frame_rel.shape
+    assert int(whole.max()) > 0, "the fixture classified nothing as flat"
+    for budget in (num_tri * 4, num_tri * 2, 1):
+        assert torch.equal(classes(budget), whole), f"budget {budget} moved a class"
