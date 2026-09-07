@@ -370,7 +370,9 @@ def test_the_cache_flush_is_registered_once_at_exit(monkeypatch):
     monkeypatch.setattr(taichi_runtime, "_FLUSH_REGISTERED", False)
     monkeypatch.setattr(taichi_runtime.ti, "init", lambda **kwargs: None)
     monkeypatch.setattr(taichi_runtime, "_install_taichi_compile_logger", lambda: None)
-    monkeypatch.setattr(taichi_runtime, "_remove_stale_offline_cache_locks", lambda p: [])
+    monkeypatch.setattr(
+        taichi_runtime, "_remove_stale_offline_cache_locks", lambda p: []
+    )
 
     taichi_runtime._start_program()
     taichi_runtime._start_program()

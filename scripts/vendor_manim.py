@@ -1252,6 +1252,20 @@ it does. It asserts on each targeted patch, so an upstream bump that moves one
 of these lines fails the build instead of quietly producing a tree that imports
 the wrong thing.
 
+## License
+
+Manim is double-licensed under the MIT license and ships both notices, so this
+directory carries both verbatim:
+
+* `LICENSE` -- copyright 3blue1brown LLC.
+* `LICENSE.community` -- copyright the Manim Community Developers. This is the
+  half that covers the {version} code here.
+
+Algan is MIT too, so nothing about vendoring is restricted; the notices simply
+have to travel with the copy. `pyproject.toml`'s `license-files` glob ends in
+`LICENSE*` so both reach `dist-info/licenses/` in the built wheel and sdist --
+if you narrow that pattern, the community notice stops shipping.
+
 ## Why vendor at all
 
 Depending on the `manim` distribution drags in `pycairo` and `manimpango`.
@@ -1343,18 +1357,32 @@ def build(src_root: Path, version: str) -> None:
     if not (src / "mobject" / "mobject.py").is_file():
         raise SystemExit(f"{src} does not look like a Manim package")
 
-    license_text = next(
-        (
-            (src_root / name).read_text(encoding="utf-8")
-            for name in ("LICENSE", "LICENSE.md", "LICENSE.txt")
-            if (src_root / name).is_file()
-        ),
-        None,
-    )
-    if license_text is None:
-        if not (DST / "LICENSE").is_file():
-            raise SystemExit("no LICENSE in the sdist and none to carry over")
-        license_text = (DST / "LICENSE").read_text(encoding="utf-8")
+    # Manim is double-licensed and says so: `LICENSE` carries 3blue1brown LLC's
+    # copyright, `LICENSE.community` the Manim Community Developers'. The
+    # second is the half that covers the 0.21.0 code this script copies, so
+    # both have to land beside it -- MIT requires the notice in every copy, and
+    # a PyPI upload is permanent. Both are in the sdist; each is required, and
+    # a miss is a build failure rather than a silently half-attributed tree.
+    # `pyproject.toml`'s `license-files` glob is `LICENSE*` so both reach
+    # `dist-info/licenses/`; keep the two in step.
+    license_files: list[tuple[str, str]] = []
+    for name, alternatives in (
+        ("LICENSE", ("LICENSE", "LICENSE.md", "LICENSE.txt")),
+        ("LICENSE.community", ("LICENSE.community",)),
+    ):
+        text = next(
+            (
+                (src_root / candidate).read_text(encoding="utf-8")
+                for candidate in alternatives
+                if (src_root / candidate).is_file()
+            ),
+            None,
+        )
+        if text is None:
+            if not (DST / name).is_file():
+                raise SystemExit(f"no {name} in the sdist and none to carry over")
+            text = (DST / name).read_text(encoding="utf-8")
+        license_files.append((name, text))
 
     if DST.exists():
         shutil.rmtree(DST)
@@ -1403,7 +1431,7 @@ def build(src_root: Path, version: str) -> None:
         ("_pango.py", PANGO_PY),
         ("_config/__init__.py", CONFIG_INIT_PY),
         ("__init__.py", INIT_PY.format(version=version)),
-        ("LICENSE", license_text),
+        *license_files,
         ("VENDORING.md", VENDORING_MD.format(version=version)),
     ):
         (DST / name).write_text(body, encoding="utf-8", newline="\n")

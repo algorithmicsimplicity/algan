@@ -6,7 +6,12 @@ authors = [
   {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
 ]
 license = "MIT"
-license-files = ["LICENSE", "algan/external_libraries/*/LICENSE"]
+# The `LICENSE*` glob is load-bearing, not tidiness: Manim Community is
+# double-licensed and ships two files (`LICENSE`, 3blue1brown LLC; and
+# `LICENSE.community`, the Manim Community Developers). A bare `/LICENSE`
+# pattern shipped only the first, which is not the half that covers the 0.21.0
+# code in algan/external_libraries/manim.
+license-files = ["LICENSE", "algan/external_libraries/*/LICENSE*"]
 readme = "README.md"
 classifiers = [
     "Development Status :: 4 - Beta",

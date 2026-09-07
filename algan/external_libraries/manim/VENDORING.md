@@ -15,6 +15,20 @@ it does. It asserts on each targeted patch, so an upstream bump that moves one
 of these lines fails the build instead of quietly producing a tree that imports
 the wrong thing.
 
+## License
+
+Manim is double-licensed under the MIT license and ships both notices, so this
+directory carries both verbatim:
+
+* `LICENSE` -- copyright 3blue1brown LLC.
+* `LICENSE.community` -- copyright the Manim Community Developers. This is the
+  half that covers the 0.21.0 code here.
+
+Algan is MIT too, so nothing about vendoring is restricted; the notices simply
+have to travel with the copy. `pyproject.toml`'s `license-files` glob ends in
+`LICENSE*` so both reach `dist-info/licenses/` in the built wheel and sdist --
+if you narrow that pattern, the community notice stops shipping.
+
 ## Why vendor at all
 
 Depending on the `manim` distribution drags in `pycairo` and `manimpango`.
