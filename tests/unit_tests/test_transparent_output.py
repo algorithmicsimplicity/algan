@@ -22,8 +22,6 @@ from algan.utils.algan_utils import (
     _check_transparent_container_is_supported,
 )
 
-pytestmark = pytest.mark.fast
-
 
 def _srgb_to_linear(c: float) -> float:
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
@@ -38,6 +36,7 @@ def _prefill_solid(color, *, channels, linear, monkeypatch):
     return out[0, 0].tolist()
 
 
+@pytest.mark.fast
 @pytest.mark.parametrize("opacity", [0.25, 0.5, 0.75])
 def test_transparent_background_color_is_premultiplied_by_its_own_alpha(
     opacity, monkeypatch
@@ -65,6 +64,7 @@ def test_transparent_background_color_is_premultiplied_by_its_own_alpha(
     assert row[1] == row[2] == 0.0
 
 
+@pytest.mark.fast
 def test_premultiply_is_linear_in_alpha(monkeypatch):
     """Halving the background's alpha halves the color it stores.
 
@@ -81,6 +81,7 @@ def test_premultiply_is_linear_in_alpha(monkeypatch):
     assert half[0] == pytest.approx(full[0] * 0.5, abs=1e-3)
 
 
+@pytest.mark.fast
 def test_encoded_buffer_premultiplies_the_encoded_value(monkeypatch):
     """The 8-bit buffer holds encoded color, so alpha multiplies that.
 
@@ -93,6 +94,7 @@ def test_encoded_buffer_premultiplies_the_encoded_value(monkeypatch):
     assert row[0] == pytest.approx(round(0.4 * 0.5 * 255), abs=1)
 
 
+@pytest.mark.fast
 def test_opaque_render_is_untouched_by_the_premultiply(monkeypatch):
     """A 4-channel render has no alpha channel to premultiply against.
 
@@ -106,6 +108,7 @@ def test_opaque_render_is_untouched_by_the_premultiply(monkeypatch):
         assert got == pytest.approx(_srgb_to_linear(authored) * 255, abs=1e-3)
 
 
+@pytest.mark.fast
 def test_fully_transparent_background_contributes_no_color(monkeypatch):
     """Alpha 0 means the background's color cannot leak into the composite.
 
@@ -118,6 +121,7 @@ def test_fully_transparent_background_contributes_no_color(monkeypatch):
     assert row[:3] == [0.0, 0.0, 0.0]
 
 
+@pytest.mark.fast
 def test_image_background_is_premultiplied_per_pixel(monkeypatch):
     """The image path owes the composite the same contract as a solid color."""
     monkeypatch.setattr(rt_settings, "linear_color_space", False)
