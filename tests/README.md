@@ -99,17 +99,15 @@ and runs everything under them, `fast`-marked or not (see the comment in
 `.github/workflows/test.yaml`). The fast suite is a development loop; CI can
 afford twelve minutes and should keep spending them.
 
-It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Linux
-takes the ordinary `auto` probe and lands on the CPU. **macOS is pinned to
-`ALGAN_RENDER_DEVICE=cpu`**, because `auto` there resolves to MPS — the runner
-does offer one — and Algan does not run on MPS: the raster pipeline allocates
-in `float64`, which MPS refuses, and `ti.gpu` on a Mac resolves through Vulkan,
-whose SPIR-V builder refuses `f64` in the same kernels. 88 tests failed that
-way on the first macOS CI run. Supporting MPS means taking `float64` out of the
-raster pipeline and the kernels; until that happens the Mac job tests the CPU
-path, which is what makes it a portability check rather than a standing
-failure. The `algan check` step ahead of the tests prints the device that came
-out, along with whether LaTeX and FFmpeg are on `PATH`.
+It runs those paths in four ordinary matrix arms: Linux 3.10/3.13 with the
+`auto` render device, plus macOS 3.10 once on CPU and once on MPS. The macOS
+CPU arm preserves the portability check. The MPS arm pins
+`ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
+MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
+fallback therefore makes the required check fail. Both macOS arms use the
+normal locked dependency graph and published `algan-quadrants` wheel. The
+`algan check` step then prints the resolved device/compiler along with whether
+LaTeX and FFmpeg are on `PATH`.
 
 ## The full suite
 

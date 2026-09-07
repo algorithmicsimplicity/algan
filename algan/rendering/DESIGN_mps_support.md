@@ -1,17 +1,32 @@
 # Algan on Apple GPUs (MPS / Metal): measured verdict
 
-Status: **NO-GO on the port as such.** Measured on GitHub's `macos-latest` runner
+Current status (2026-09-07): **SUPPORTED AND REQUIRED IN ORDINARY CI.**
+`.github/workflows/test.yaml` has a normal `macos-latest` MPS arm for gated
+PRs/pushes. It pins `ALGAN_RENDER_DEVICE=mps`, asserts Algan's startup resolver
+actually returns `mps` before pytest, and runs `tests/unit_tests` plus
+`tests/fast` with the locked published `algan-quadrants` distribution. The
+separate `mps_probe.yaml` remains a diagnostic/measurement workflow, not the
+only place Apple-GPU regressions are exercised.
+
+The remainder of this document is the measurement history that got the port to
+that state. Its early NO-GO language is retained as a superseded historical
+verdict, not as the current support status.
+
+Historical starting status (superseded): **NO-GO on the port as such.**
+Measured on GitHub's `macos-latest` runner
 (Apple Silicon, macOS 26.5.2 arm64, torch 2.7.1, taichi 1.7.4) by
 `benchmarks/_mps_capability_probe.py`, run from `../../.github/workflows/mps_probe.yaml`.
 
-The macOS CI job is pinned to `ALGAN_RENDER_DEVICE=cpu` because MPS renders fail.
+Historically, the macOS CI job was pinned to `ALGAN_RENDER_DEVICE=cpu` because
+MPS renders failed.
 The workflow comment attributes that to `float64` and says supporting MPS "means
 taking float64 out of the raster pipeline and the kernels". **That is true and it
 is the least of it.** Three independent Metal limits block the port, f64 is the
 smallest, and the one that decides the question is the kernel argument limit,
 which nobody had looked at.
 
-Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
+Read §1 for the original blocker analysis, §2 for the measurements behind it,
+and the later status notes for how those blockers were cleared.
 
 **Status, added later.** All three blockers are cleared and *measured cleared on
 the hardware*: §1.1 by packing kernel arguments into arena offsets, §1.2 by
@@ -31,8 +46,9 @@ Algan's two wide int64s are composite keys — the packed fragment key at 2**50
 and the shading-class key at 2**40 — so both lost the low bits that carry their
 meaning. The verdict below is no longer NO-GO on any of the three counts.
 
-**What is not yet clear** — §1.2c below. The macOS suite is at **1 failed, 2425
-passed, 167 skipped**; the Linux control arm, running the same suite with
+**Historical intermediate status.** At that point §1.2c remained and the macOS
+suite was at **1 failed, 2425 passed, 167 skipped**; the Linux control arm,
+running the same suite with
 MPS-friendly mode forced on over a CPU render device, is **fully green**, which
 is what says the mode itself is sound and the remainder is Metal.
 

@@ -8,9 +8,11 @@ GPU hardware costs one launch rather than a new piece of infrastructure:
 | **Mac runner** | GitHub's Apple-silicon runner: virtualized M1, **real** Metal GPU, 3 CPUs, 7 GB | `.github/workflows/run_on_mac.yaml` |
 | **Kaggle T4** | Kaggle notebook: Tesla T4 (Turing, 16 GB), 4 vCPUs, ~30 GB weekly quota | `scripts/kaggle/` + the Kaggle MCP |
 
-Both run **any command in this repository** and hand back its output. Neither
-is a test: nothing here guards a regression, so nothing here runs on the
-ordinary push matrix.
+Both run **any command in this repository** and hand back its output. They are
+measurement harnesses, not release gates. Ordinary Apple-GPU regressions are
+guarded separately by `.github/workflows/test.yaml`, whose required macOS MPS
+arm asserts Algan resolved `mps` before running `tests/unit_tests` and
+`tests/fast` on every gated PR/push.
 
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
 much VRAM" for CUDA — it is the only box that runs the real render path at UHD.
@@ -72,6 +74,10 @@ is the **control** — without it, a Mac arm that reports nothing is ambiguous
 between "Metal refused" and "the harness is broken".
 
 Things worth setting deliberately:
+
+The ordinary MPS regression gate needs **neither** wheel input: it uses the
+locked published `algan-quadrants` distribution. The wheel controls below are
+only for experiments that intentionally replace that supported dependency.
 
 * **`latex: true`** if the scene uses `Tex`/`MathTex`. Off by default because
   BasicTeX plus the packages is ~4 minutes and most measurement scripts never
