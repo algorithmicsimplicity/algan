@@ -1,5 +1,11 @@
 # Mac GPU round, 2026-09: what the Metal render actually costs
 
+> **The single self-contained record of this round is
+> [`FINDINGS.md`](FINDINGS.md)** -- what landed, what was measured, the
+> hypotheses that were refuted and by what, and the failure that is still
+> open. This file is the earlier working report and its section 1 predates
+> the arena cap; where the two disagree, FINDINGS.md is current.
+
 Workload: `benchmarks/performance/nn_scene_UHD.py`, unchanged — 18 frames at
 3840×2160, `shadows=False`, `libx264 -preset ultrafast`. Box: the Mac harness
 (`agent_guidance/gpu_harnesses.md`), GitHub's Apple-silicon runner, a
