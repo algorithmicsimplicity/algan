@@ -23,8 +23,10 @@ import gc
 import sys
 from contextlib import contextmanager
 
+import psutil
 import torch
 
+from algan.constants.math import GIGABYTES
 from algan.environment import env_int
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
@@ -75,9 +77,22 @@ def is_cuda_oom(exc):
 #: than every number this was calibrated against, and it is over the 4.67 G
 #: recommended max -- which is the common thread through three failures at that
 #: ceiling: run 39 killed outright at 4.68 G, runs 40 and 41 wedged so hard that
-#: even a daemon heartbeat thread stopped printing. 0.25 aims the peak, not the
-#: trough, below the recommendation.
-_MPS_HEADROOM = 0.25
+#: even a daemon heartbeat thread stopped printing.
+#:
+#: Back to 0.1 now that the host-memory bound below carries the actual safety.
+#: 0.25 was a guess stacked on a guess, and two wedges since -- at 3.14 G and
+#: 3.56 G, well under the recommendation -- say the GPU figure was never the
+#: binding constraint. Keeping both at their most conservative would cost arena
+#: size for a reason that does not hold.
+_MPS_HEADROOM = 0.1
+
+#: Host memory left for everything that is not this render: the video encoder
+#: holding 4K frames, the OS, and the CPU side of the process itself. Subtracted
+#: from ``psutil.virtual_memory().available`` before it bounds the render arena.
+#: On a 7 GB box this is the difference between a render that fits and one the
+#: kernel has to fight; it is a first estimate and wants checking against the
+#: host-free figure the warm-regression instrument now records.
+_HOST_RESERVE_BYTES = 2 * GIGABYTES
 
 
 def get_num_available_bytes(device=torch.device("cuda")):
@@ -174,6 +189,23 @@ def get_num_available_bytes(device=torch.device("cuda")):
         total_bytes = torch.mps.recommended_max_memory()
         total_bytes = max(0, total_bytes - int(total_bytes * _MPS_HEADROOM))
         free_bytes = max(0, total_bytes - allocated_bytes)
+        # And bound by what the MACHINE has free, which is a different question.
+        # `recommendedMaxWorkingSetSize` describes what the GPU should hold; on
+        # unified memory the CPU side, the video encoder and the OS are drawing
+        # on the very same pool, and nothing above accounts for them. The Mac
+        # runner has 7 GB in total against that 4.67 G recommendation, and at
+        # the peak this instrument measured -- 4.87 G of driver allocation
+        # alongside 1.45 G of process RSS -- the render alone is over 6 G of it
+        # before ffmpeg encodes a 24 MB 4K frame or macOS takes its share. So a
+        # figure derived from the recommendation alone can hand out memory the
+        # machine does not have, which is the one variable common to a render
+        # that thrashed for 455 s and recovered, a process killed outright at
+        # 4.68 G, and three that wedged so completely that a daemon thread doing
+        # nothing but `sleep` stopped printing -- two of those below the
+        # recommendation entirely, at 3.14 G and 3.56 G, where a GPU working-set
+        # story cannot reach.
+        host_free = int(psutil.virtual_memory().available)
+        free_bytes = min(free_bytes, max(0, host_free - _HOST_RESERVE_BYTES))
         cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)
         if cap > 0:
             free_bytes = min(free_bytes, cap)

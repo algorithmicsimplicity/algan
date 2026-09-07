@@ -1,3 +1,5 @@
+import types
+
 import pytest
 import torch
 
@@ -190,6 +192,10 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 4 << 30)
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 5 << 30)
 
+    # Pinned, or this test reads the machine it runs on: the figure is also
+    # bounded by host free memory, so a busy CI box would change the answer.
+    _plenty_of_host_memory(monkeypatch)
+
     free = mu.get_num_available_bytes(torch.device("mps"))
 
     assert order == ["clear", "drain", "measure"], order
@@ -199,3 +205,49 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     budget = (5 << 30) - int((5 << 30) * mu._MPS_HEADROOM)
     assert free == budget - (1 << 30), "sized from the high-water mark, not live bytes"
     assert free < (5 << 30) - (1 << 30), "no headroom was reserved"
+
+
+def _plenty_of_host_memory(monkeypatch, available=64 << 30):
+    """Make the host-memory bound non-binding, so a test measures what it means."""
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(
+        mu.psutil, "virtual_memory", lambda: types.SimpleNamespace(available=available)
+    )
+
+
+def test_the_mps_figure_is_bounded_by_host_memory(monkeypatch):
+    """Unified memory: the arena cannot exceed what the MACHINE has free.
+
+    ``recommendedMaxWorkingSetSize`` describes what the GPU should hold, and on
+    Apple silicon the CPU side, the video encoder and the OS draw on the very
+    same pool. Sizing from the GPU figure alone hands out memory that is not
+    there: on the 7 GB Mac runner the render peaked at 4.87 G of driver
+    allocation beside 1.45 G of process RSS, and the jobs that then died did so
+    at 3.14 G and 3.56 G -- under the recommendation, where a GPU working-set
+    story cannot reach.
+    """
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.mps, "current_allocated_memory", lambda: 0)
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 64 << 30)
+    monkeypatch.setattr(
+        "algan.rendering.mps_zero_copy.clear_import_cache", lambda: None
+    )
+
+    # A machine with room to spare: the GPU figure decides.
+    _plenty_of_host_memory(monkeypatch)
+    roomy = mu.get_num_available_bytes(torch.device("mps"))
+
+    # The same GPU figure on a machine that is nearly full: the host decides.
+    _plenty_of_host_memory(monkeypatch, available=mu._HOST_RESERVE_BYTES + (1 << 30))
+    cramped = mu.get_num_available_bytes(torch.device("mps"))
+
+    assert cramped == 1 << 30, "the host bound did not apply"
+    assert cramped < roomy
+
+    # And a machine with less free than the reserve hands out nothing rather
+    # than going negative.
+    _plenty_of_host_memory(monkeypatch, available=0)
+    assert mu.get_num_available_bytes(torch.device("mps")) == 0

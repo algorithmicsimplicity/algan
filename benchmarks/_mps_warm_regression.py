@@ -46,6 +46,7 @@ WORLD_MAP = str(Path(__file__).resolve().parent / "performance" / "world_map.png
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 os.environ.setdefault("ALGAN_VIDEO_ENCODER", "software")
 
+import psutil  # noqa: E402
 import torch  # noqa: E402
 
 from algan import *  # noqa: E402, F403
@@ -96,6 +97,9 @@ CHUNK_STARTED = [0.0]
 #: heartbeat last spoke. The boundary readings understate the in-chunk peak by
 #: ~1.1 G, which is what run 41's heartbeat found.
 PEAK = [0]
+#: Lowest host_free seen since the last chunk line. The unified-memory
+#: hypothesis says THIS is the number that runs out, not the GPU one.
+TROUGH = [1 << 62]
 LAST_BEAT = [0.0]
 
 #: Reclaim accounting, reset at every chunk boundary. The per-chunk trace from
@@ -192,6 +196,7 @@ def _heartbeat():
         time.sleep(2)
         if torch.mps.is_available():
             PEAK[0] = max(PEAK[0], torch.mps.driver_allocated_memory())
+        TROUGH[0] = min(TROUGH[0], psutil.virtual_memory().available)
         held = time.perf_counter() - CHUNK_STARTED[0]
         if not CHUNK_STARTED[0] or held < 45:
             continue
@@ -224,6 +229,7 @@ def _wavefront(*args, **kwargs):
     )
     CHUNK_STARTED[0] = time.perf_counter()
     PEAK[0] = 0
+    TROUGH[0] = 1 << 62
     RECLAIM["calls"] = RECLAIM["pressured"] = 0
     RECLAIM["seconds"] = 0.0
     ZC["clears"] = ZC["imports"] = 0
@@ -283,7 +289,9 @@ def _pool():
     return (
         f"driver={torch.mps.driver_allocated_memory() / 2**30:.2f}G "
         f"current={torch.mps.current_allocated_memory() / 2**30:.2f}G "
-        f"recommended={torch.mps.recommended_max_memory() / 2**30:.2f}G"
+        f"recommended={torch.mps.recommended_max_memory() / 2**30:.2f}G "
+        f"| host_free={psutil.virtual_memory().available / 2**30:.2f}G "
+        f"rss={psutil.Process().memory_info().rss / 2**30:.2f}G"
     )
 
 
