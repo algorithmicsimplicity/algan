@@ -52,7 +52,24 @@ below it renders to completion on Metal for the first time:
 | cold (first render in the process) | **595.7 s** — 33 s a frame |
 | of which Taichi kernel compile | ~66 s |
 | emissions | 18, i.e. **one frame per render chunk** |
-| warm | **not measured** — see the caveat below |
+| warm | **1522.8 s** — 2.04× *slower* than cold |
+
+The warm number is from `benchmarks/_mps_warm_regression.py 2 UHD`, run 34
+(both renders in one process, no profiler hooks; the cold pass measures 747.0 s
+under the instrument rather than 595.7 s because it is a second scene build in
+the same interpreter):
+
+| render | wall | arena | batches | chunks | `driver_allocated` after |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| cold | 747.0 s | 1898 MB | 12 | 18 | 4.56 G of 4.67 G recommended |
+| warm | **1522.8 s** | **1212 MB** | 12 | 18 | 4.18 G |
+
+The arena **collapsed 36%** between the two renders while the work stayed
+identical (same batches, same chunks), and both renders logged the preflight
+binary search. `driver_allocated` sitting at 4.56 G of a 4.67 G ceiling after
+the cold pass is the mechanism: the pool is genuinely *retained*, not merely
+cached, so the clear-drain-measure fix in `get_num_available_bytes` (present in
+this run) does not recover it.
 
 **`nn_scene`'s scene at PREVIEW (704×396), four renders in one process**
 (`benchmarks/_mps_warm_regression.py`, no profiler hooks):
@@ -74,9 +91,14 @@ so there is no general "the second render is slow" defect on this backend.
 
 Two UHD jobs were killed inside their *warm* pass, at 30+ minutes against a
 10-minute cold pass, which is what prompted the PREVIEW experiment above. The
-PREVIEW result says the mechanism is not "warm"; it is **headroom**. At 4K the
-per-frame buffers are far larger, so the second render starts near the ceiling,
-and run 31's log shows the consequence directly:
+PREVIEW result says the mechanism is not "warm"; it is **headroom**. Warm at
+PREVIEW is 6.3× *faster* with a stable arena; warm at UHD is 2.04× slower with
+an arena down 36%. The variable that separates them is how close the pool sits
+to `recommendedMaxWorkingSetSize`, not whether the kernels are compiled.
+
+At 4K the per-frame buffers are far larger, so the second render starts near
+the ceiling — measured, `driver_allocated` 4.56 G of 4.67 G — and both passes
+log the consequence directly:
 
     Prepared batch does not fit the render arena;
     binary-searching the largest fitting runtime.
@@ -86,8 +108,16 @@ Every rejected probe throws away a complete projection, merge and BVH build
 are **eager CPU torch on three cores** — `project_on_gpu_active()`,
 `merge_on_gpu_active()` and `pn_criterion_kernel_active()` all gate on
 `render_device().type == "cuda"`. So this is not a new defect: it is candidates
-3, 10 and 4 of the list below, compounding under pressure. It is also why a UHD
-warm number is still missing — the job is reclaimed before it finishes.
+3, 10 and 4 of the list below, compounding under pressure.
+
+What the measurement rules **out** is that the free-bytes probe was merely
+reading a stale cache. Run 34 carried the clear–drain–measure fix, and the
+arena still collapsed, so the retained 4.56 G is live allocation the process is
+holding across renders — a lifetime question (what survives `reset=True`), not
+a probe question. Finding what that is, is the follow-up this round leaves
+open. Run 34 also logged, in the warm pass only, 62 primary rays hitting the
+256-surface `max_surfaces_per_ray` ceiling; unexplained, and worth a look on
+its own since it did not occur cold on identical geometry.
 
 ### Cost of measuring here
 
