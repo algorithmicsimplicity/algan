@@ -12,24 +12,38 @@ name: Release
 # `dry_run` (the default) runs the three read-only jobs -- gate, build, docs --
 # and stops before anything is pushed. Use it to rehearse a release; the wheel
 # and the built HTML land as artifacts you can inspect.
+#
+# `docs_only` builds and publishes the documentation and nothing else: no
+# version gate, no wheel, no tag, no PyPI. Two uses. The first is that the Pages
+# deploy would otherwise run for the very first time during a real release,
+# which is the worst place to discover that Settings -> Pages -> Source is still
+# on "Deploy from a branch". The second is ordinary: a typo fix in the docs
+# should not need a version bump to reach the site. `dry_run` still applies --
+# `docs_only` with `dry_run` builds the HTML and publishes nothing.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without a leading v (e.g. 0.2.2). Must match pyproject."
+        description: "Version to release, without a leading v (e.g. 0.2.2). Must match pyproject. Ignored by docs_only."
         type: string
-        required: true
+        # Not `required`, because docs_only has no version to speak of. The gate
+        # job demands it for a real release; Actions cannot express that here.
+        required: false
       dry_run:
         description: "Build and check everything, publish nothing"
         type: boolean
         default: true
+      docs_only:
+        description: "Build and publish only the docs -- no wheel, no tag, no PyPI"
+        type: boolean
+        default: false
       skip_docs_examples:
         description: "Build docs without rendering examples (escape hatch; produces a videoless site)"
         type: boolean
         default: false
 
 run-name: >-
-  Release ${{ inputs.version }}${{ inputs.dry_run && ' [dry run]' || '' }}${{ inputs.skip_docs_examples && ' [no examples]' || '' }}
+  ${{ inputs.docs_only && 'Docs' || format('Release {0}', inputs.version) }}${{ inputs.dry_run && ' [dry run]' || '' }}${{ inputs.skip_docs_examples && ' [no examples]' || '' }}
 
 # One release at a time, and never cancel one in flight: a cancelled run between
 # the tag push and the PyPI upload leaves the two out of step.
@@ -45,11 +59,8 @@ jobs:
   # 1. Gate. Everything that can be known before spending a build.
   # --------------------------------------------------------------------------
   gate:
-    name: Gate ${{ inputs.version }}
+    name: Gate ${{ inputs.docs_only && 'docs' || inputs.version }}
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.check.outputs.version }}
-      sha: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,8 +71,25 @@ jobs:
         with:
           python-version: "3.11"
 
+      # `version` cannot be conditionally `required:` in workflow_dispatch, so
+      # the requirement lives here instead. Fail on the input rather than three
+      # jobs later on an empty tag name.
+      - name: The inputs make sense together
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.docs_only }}" != "true" ] && [ -z "${{ inputs.version }}" ]; then
+            echo "::error::version is required unless docs_only is set."
+            exit 1
+          fi
+          if [ "${{ inputs.docs_only }}" = "true" ] && [ -n "${{ inputs.version }}" ]; then
+            echo "::warning::docs_only ignores the version input (${{ inputs.version }}); nothing is tagged or published but the docs."
+          fi
+
+      # Everything below is about *releasing*, so docs_only skips it: a docs
+      # republish has no version to match, no tag to claim, and no reason to
+      # care whether the render baselines are still hosted.
       - name: The declared version is the requested one
-        id: check
+        if: ${{ !inputs.docs_only }}
         run: |
           set -euo pipefail
           declared=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
@@ -71,9 +99,9 @@ jobs:
             echo "::error::pyproject.toml says $declared, this run asks for ${{ inputs.version }}. Bump the version in a PR first -- this workflow does not edit the tree it releases."
             exit 1
           fi
-          echo "version=$declared" >> "$GITHUB_OUTPUT"
 
       - name: The tag is free
+        if: ${{ !inputs.docs_only }}
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/v${{ inputs.version }}" >/dev/null; then
@@ -86,6 +114,7 @@ jobs:
       # commits. Cut the release from a commit that has its *own* green run --
       # not from one that merely sits after a green one.
       - name: This exact commit has a green Test run
+        if: ${{ !inputs.docs_only }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -111,6 +140,7 @@ jobs:
       # it just quietly stops testing six dense scenes and the path tracer.
       # Cheap to check here, invisible everywhere else.
       - name: The baseline pointer still resolves
+        if: ${{ !inputs.docs_only }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -141,6 +171,7 @@ jobs:
   build:
     name: Build sdist and wheel
     needs: gate
+    if: ${{ !inputs.docs_only }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -155,43 +186,12 @@ jobs:
       - name: Metadata is well formed
         run: uvx twine check dist/*
 
-      # §3 of RELEASE_AUDIT.md, turned into something CI enforces. Manim is
-      # double-licensed and ships two notices; the first fix shipped only one,
-      # because `algan/external_libraries/*/LICENSE` is a glob that silently
-      # matches half of what it should. A PyPI artifact cannot be edited after
-      # upload, so this is checked here rather than trusted.
-      - name: Every vendored license notice is in the wheel
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import pathlib, sys, zipfile
-
-          required = {
-              "LICENSE",
-              "algan/external_libraries/ground/LICENSE",
-              "algan/external_libraries/manim/LICENSE",
-              "algan/external_libraries/manim/LICENSE.community",
-              "algan/external_libraries/sect/LICENSE",
-          }
-          wheel = next(pathlib.Path("dist").glob("*.whl"))
-          with zipfile.ZipFile(wheel) as archive:
-              names = set(archive.namelist())
-              metadata = next(n for n in names if n.endswith(".dist-info/METADATA"))
-              prefix = metadata[: -len("METADATA")] + "licenses/"
-              missing = sorted(n for n in required if prefix + n not in names)
-              declared = {
-                  line.split(": ", 1)[1]
-                  for line in archive.read(metadata).decode().splitlines()
-                  if line.startswith("License-File: ")
-              }
-          undeclared = sorted(required - declared)
-          if missing or undeclared:
-              print(f"::error::{wheel.name} is missing license notices.")
-              print(f"  absent from dist-info/licenses/: {missing}")
-              print(f"  absent from License-File headers: {undeclared}")
-              sys.exit(1)
-          print(f"{wheel.name}: all {len(required)} notices present and declared")
-          PY
+      # §3 of RELEASE_AUDIT.md. The same gate runs per-push in code_quality.yaml,
+      # which is where a narrowed glob gets caught in the PR that narrows it;
+      # this run is the backstop on the artifacts actually being uploaded, and
+      # a PyPI upload cannot be edited afterwards.
+      - name: Every vendored license notice is shipped
+        run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
@@ -269,7 +269,7 @@ jobs:
   promote:
     name: Promote to stable and tag
     needs: [gate, build, docs]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -320,7 +320,15 @@ jobs:
   publish_docs:
     name: Publish docs
     needs: [gate, docs, promote]
-    if: ${{ !inputs.dry_run }}
+    # `always()` because docs_only skips `promote`, and a skipped dependency
+    # would otherwise skip this job with it. The results are then asserted
+    # by hand -- without that, `always()` would also run this after a
+    # *failed* docs build and publish a half-built site.
+    if: >-
+      ${{ always() && !inputs.dry_run
+          && needs.gate.result == 'success'
+          && needs.docs.result == 'success'
+          && (needs.promote.result == 'success' || inputs.docs_only) }}
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -347,7 +355,7 @@ jobs:
   github_release:
     name: GitHub release
     needs: [gate, build, promote]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -380,7 +388,7 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: [gate, build, promote, publish_docs, github_release]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     environment:
       name: pypi

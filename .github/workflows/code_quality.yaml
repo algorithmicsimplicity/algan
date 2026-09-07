@@ -88,6 +88,15 @@ jobs:
       - name: Build the wheel and sdist
         run: uv build
 
+      # `algan/external_libraries/` is copied from three MIT projects, and MIT
+      # requires the notice in every copy. This is here rather than only in the
+      # release workflow because the failure is silent: the wheel that shipped
+      # with half of Manim's double license installed, imported and rendered
+      # fine. Catching it in the PR that narrows the glob is the whole point --
+      # a PyPI artifact cannot be edited afterwards, only yanked.
+      - name: Check every vendored license notice is shipped
+        run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
+
       # The tests import Algan from the source tree, so nothing else in CI can
       # see the wheel at all. What that hides is packaging, not code: hatchling
       # is told `include = ["/algan"]` and ships whatever is under it, so a new
