@@ -13,6 +13,8 @@ small Taichi compile between them, which is why nothing here is marked ``fast``.
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 import torch
 
@@ -1122,17 +1124,93 @@ def test_the_shading_class_table_is_blocked_without_changing_a_class():
     is_tri = torch.ones_like(safe_ref, dtype=torch.bool)
 
     def classes(budget):
-        old = sh._SHADE_CLASS_TABLE_BUDGET
+        old = sh._FRAME_TABLE_BUDGET
         try:
-            sh._SHADE_CLASS_TABLE_BUDGET = budget
+            sh._FRAME_TABLE_BUDGET = budget
             return sh._shade_class(
                 merged, frame_rel, 0, safe_ref, is_tri, True, num_frames
             )
         finally:
-            sh._SHADE_CLASS_TABLE_BUDGET = old
+            sh._FRAME_TABLE_BUDGET = old
 
     whole = classes(1 << 20)
     assert whole.shape == frame_rel.shape
     assert int(whole.max()) > 0, "the fixture classified nothing as flat"
     for budget in (num_tri * 4, num_tri * 2, 1):
         assert torch.equal(classes(budget), whole), f"budget {budget} moved a class"
+
+
+def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
+    """``_prim_split_after``'s ``[F, N]`` slope table blocks the same way.
+
+    Its intermediates are the triangles' world positions and screen bounds,
+    ``[frames, N, 9]`` with several live at once, which is the allocation a
+    Metal render at PREVIEW could not make. Blocking bounds them; a one-frame-
+    per-block run must produce the identical split decisions.
+    """
+    from algan.rendering.raytracing import sheets as sh
+
+    torch.manual_seed(20260907)
+    num_frames, num_tri, per_frame = 5, 4, 4
+    merged = {"tri_pos": torch.randn(num_frames, num_tri, 9)}
+    cam_origin = torch.randn(num_frames, 3)
+    pixel_world_scale = torch.rand(num_frames) * 0.01 + 0.001
+    # Column 9 is the projection-valid flag; make some rows take each branch.
+    tri_screen = torch.rand(num_frames, num_tri, 10) * 4.0
+    tri_screen[..., 9] = torch.tensor([1.0, 0.0, 1.0, 0.0]).expand(num_frames, num_tri)
+
+    n = num_frames * per_frame
+    frame_rel = torch.arange(num_frames).repeat_interleave(per_frame)
+    safe_ref = torch.arange(per_frame).repeat(num_frames) % num_tri
+    is_tri = torch.ones(n, dtype=torch.bool)
+    t = torch.rand(n) * 5.0 + 0.5
+    order = torch.argsort(t, stable=True)
+    t_o = t.index_select(0, order)
+
+    def splits(budget):
+        old = sh._FRAME_TABLE_BUDGET
+        try:
+            sh._FRAME_TABLE_BUDGET = budget
+            return sh._prim_split_after(
+                merged,
+                cam_origin,
+                pixel_world_scale,
+                tri_screen,
+                frame_rel,
+                0,
+                safe_ref,
+                is_tri,
+                t,
+                t_o,
+                order,
+                2.0,
+                num_frames,
+            )
+        finally:
+            sh._FRAME_TABLE_BUDGET = old
+
+    whole = splits(1 << 20)
+    assert whole.shape == (n - 1,)
+    for budget in (num_tri * 3, num_tri, 1):
+        assert torch.equal(splits(budget), whole), f"budget {budget} moved a split"
+
+
+def test_an_implausible_frame_table_warns_once_and_still_returns():
+    from algan.errors import AlganWarning
+    from algan.rendering.raytracing import sheets as sh
+
+    sh._IMPLAUSIBLE_REPORTED.discard("probe-site")
+    try:
+        with pytest.warns(AlganWarning, match="not a frame count"):
+            sh._check_frame_table("probe-site", 7141, 1 << 15, 1000)
+        # Once per site: a second call is silent.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sh._check_frame_table("probe-site", 7141, 1 << 15, 1000)
+        # A plausible table says nothing at all.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sh._check_frame_table("other-site", 18, 50_000, 3_000_000)
+    finally:
+        sh._IMPLAUSIBLE_REPORTED.discard("probe-site")
+        sh._IMPLAUSIBLE_REPORTED.discard("other-site")

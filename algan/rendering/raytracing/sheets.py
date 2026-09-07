@@ -60,9 +60,12 @@ contributed twice has provably fused at least two sheets.
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 
 from algan.environment import env_flag, env_float
+from algan.errors import AlganWarning
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     band_class_groups,
@@ -383,11 +386,44 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
-#: (frame, triangle) pairs one block of :func:`_shade_class`'s table may carry.
-#: Its intermediates are ``[block, N, 3, 3]`` float32 -- 36 bytes a pair, half a
+#: (frame, triangle) pairs one block of a per-(frame, triangle) table may carry.
+#: Their intermediates are ``[block, N, 9]`` float32 -- 36 bytes a pair, half a
 #: dozen live at once -- so this is roughly a 220 MB ceiling on the transient,
-#: whatever the chunk's frame count is.
-_SHADE_CLASS_TABLE_BUDGET = 1 << 20
+#: whatever the chunk's frame count is. Read by :func:`_shade_class` and
+#: :func:`_prim_split_after`, the two functions that build such a table.
+_FRAME_TABLE_BUDGET = 1 << 20
+
+#: Above this many (frame, triangle) pairs the table is not merely large, it is
+#: evidence that ``frame_rel`` is wrong: a chunk holds tens of frames and a
+#: scene holds a few hundred thousand triangles, so a plausible product is
+#: single-digit millions. Blocking means the render survives it either way; the
+#: warning is what stops it being silent.
+_FRAME_TABLE_IMPLAUSIBLE = 64 << 20
+_IMPLAUSIBLE_REPORTED = set()
+
+
+def _check_frame_table(where, num_frames, num_tri, n):
+    """Warn once per site when a per-(frame, triangle) table is implausible.
+
+    The table's height is ``frame_rel.amax() + 1``, so an implausible height is
+    an implausible fragment key, and the fragment key is packed inside a Taichi
+    kernel. Naming the numbers here is what turns "a single 6.45 GB allocation
+    failed" into a diagnosis.
+    """
+    if num_frames * num_tri < _FRAME_TABLE_IMPLAUSIBLE:
+        return
+    if where in _IMPLAUSIBLE_REPORTED:
+        return
+    _IMPLAUSIBLE_REPORTED.add(where)
+    warnings.warn(
+        f"{where}: the per-(frame, triangle) table is {num_frames} frames by "
+        f"{num_tri} triangles for {n} fragments, which is not a frame count a "
+        "render chunk can have. The fragment stream's pixel ordinals are "
+        "suspect; the table is built in blocks so this does not exhaust "
+        "memory, but the classes it feeds may be wrong.",
+        AlganWarning,
+        stacklevel=3,
+    )
 
 
 def _shade_class(
@@ -426,6 +462,7 @@ def _shade_class(
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if n else 1
     num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
+    _check_frame_table("sheets._shade_class", num_frames, num_tri, n)
     zero = torch.zeros((), dtype=torch.int64, device=device)
     table = torch.empty((num_frames, num_tri), dtype=torch.int64, device=device)
     # The table itself is one int64 per (frame, triangle) and is small; its
@@ -435,7 +472,7 @@ def _shade_class(
     # is exactly what it was. A wide chunk used to size those intermediates by
     # its whole frame count, which is how a Metal render at PREVIEW came to ask
     # for a single 6.45 GB buffer here.
-    block = max(1, _SHADE_CLASS_TABLE_BUDGET // max(1, num_tri))
+    block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
     for f0 in range(0, num_frames, block):
         f1 = min(num_frames, f0 + block)
         frames = torch.arange(f0, f1, device=device) + int(time_start)
@@ -683,34 +720,49 @@ def _prim_split_after(
     device = safe_ref.device
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if safe_ref.numel() else 1
-    frames = torch.arange(num_frames, device=device) + int(time_start)
-    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [F, N, 9]
-    ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(num_frames, 1, 3)
-    dmin = dmax = None
-    for k in range(3):
-        dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
-        dmin = dk if dmin is None else torch.minimum(dmin, dk)
-        dmax = dk if dmax is None else torch.maximum(dmax, dk)
-    del ro, dk, pos
-    ext = dmax - dmin
-    del dmin, dmax
-    # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
-    # differ by about one pixel's worth of the surface's depth gradient,
-    # not by the triangle's whole extent. Where the projection table is
-    # valid, divide by the projected size in pixels; a camera-plane
-    # straddler keeps the conservative raw extent.
-    slope = ext
-    if tri_screen is not None and tri_screen.shape[2] >= 10:
-        scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
-        sx = scr[..., 0:3]
-        span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
-        sy = scr[..., 3:6]
-        span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
-        proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-        valid = scr[..., 9] > 0.5
-        slope = torch.where(valid, ext / proj, ext)
-        del scr, sx, sy, span_x, span_y, proj, valid
-    del ext
+    num_tri = tri_pos.numel() // (tri_pos.shape[0] * 9)
+    _check_frame_table("sheets._prim_split_after", num_frames, num_tri, t.numel())
+    # Blocked over the frame axis for the reason ``_shade_class`` gives: the
+    # table is one float per (frame, triangle), but the world positions and
+    # screen bounds it is derived from are ``[block, N, 9]`` with several live
+    # at once, and sizing those by the chunk's whole frame count is what asked
+    # a Metal render for a single 6.45 GB buffer on the line below.
+    slope = torch.empty((num_frames, num_tri), dtype=tri_pos.dtype, device=device)
+    block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
+    for f0 in range(0, num_frames, block):
+        f1 = min(num_frames, f0 + block)
+        frames = torch.arange(f0, f1, device=device) + int(time_start)
+        pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [B, N, 9]
+        ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(
+            f1 - f0, 1, 3
+        )
+        dmin = dmax = None
+        for k in range(3):
+            dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
+            dmin = dk if dmin is None else torch.minimum(dmin, dk)
+            dmax = dk if dmax is None else torch.maximum(dmax, dk)
+        del ro, dk, pos
+        ext = dmax - dmin
+        del dmin, dmax
+        # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
+        # differ by about one pixel's worth of the surface's depth gradient,
+        # not by the triangle's whole extent. Where the projection table is
+        # valid, divide by the projected size in pixels; a camera-plane
+        # straddler keeps the conservative raw extent.
+        block_slope = ext
+        if tri_screen is not None and tri_screen.shape[2] >= 10:
+            scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
+            sx = scr[..., 0:3]
+            span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
+            sy = scr[..., 3:6]
+            span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
+            proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
+            valid = scr[..., 9] > 0.5
+            block_slope = torch.where(valid, ext / proj, ext)
+            del scr, sx, sy, span_x, span_y, proj, valid
+        del ext
+        slope[f0:f1] = block_slope
+        del block_slope
     slope_f = slope[frame_rel, safe_ref]
     del slope
     pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
