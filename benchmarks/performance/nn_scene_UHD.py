@@ -8,7 +8,7 @@ from algan.utils.profiling_utils import profile_scene
 
 
 def scene():
-    duration = 0.3
+    duration = 0.5
     SETTINGS.raytracing.set(shadows=False)
 
     with Off():

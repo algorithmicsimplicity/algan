@@ -1,6 +1,8 @@
 # Release audit: what to fix before Algan goes on PyPI
 
-> **Status: partly acted on, on this branch.** Fixed: §1, §3, §4, §6 (all four
+> **Status: partly acted on, on this branch.** Fixed: §1, §3 (fully closed on
+> 2026-09-07 — the first pass missed Manim's second notice; see the note under
+> that finding), §4, §6 (all four
 > bugs; the auto-spawn default and `~/.algan` were kept by decision, the daemon
 > knobs stay environment variables because they are read before `SETTINGS`
 > exists), §7 except the Manim root-logger item (kept by decision), §8 except
@@ -145,6 +147,24 @@ identity; changing it after users have written scenes against real-Manim
 behaviour is a breaking change.
 
 ## 3. Vendored code ships without license notices
+
+> **Resolved, in two passes.** The first added upstream `LICENSE` files beside
+> `algan/external_libraries/{manim,ground,sect}` and listed them in
+> `[project] license-files`, as the fix below prescribes. That was incomplete:
+> Manim is **double-licensed** and ships two notices — `LICENSE` (3blue1brown
+> LLC) and `LICENSE.community` (the Manim Community Developers) — and only the
+> first was carried, which is not the half that covers the 0.21.0 code in the
+> tree. `LICENSE.community` is now vendored verbatim from the `v0.21.0` tag,
+> the glob is `algan/external_libraries/*/LICENSE*` so both reach
+> `dist-info/licenses/`, and `scripts/vendor_manim.py` requires both rather
+> than taking the first `LICENSE*` it finds — a re-vendor that cannot resolve
+> one fails the build. Verified in a built wheel and sdist: five `License-File`
+> headers, and the notices land in `dist-info/licenses/`, beside the code in
+> the package tree, and in the sdist. `ground` and `sect` were correct as
+> shipped. The bundled test fonts were checked at the same time and are sound:
+> `tests/assets/fonts/LICENSE.txt` carries the full OFL 1.1 text and the
+> upstream copyrights, and the faces are renamed off the reserved name
+> "Liberation", which is what OFL §3 requires of a modified copy.
 
 **Verified.** `algan/external_libraries/{manim,ground,sect}` are copied from
 MIT-licensed projects. The only license text in the repo, the sdist or the

@@ -1,0 +1,48 @@
+name: Master source archive
+
+on:
+  push:
+    branches: [master]
+  # Public-repository artifacts expire after at most 90 days. Refresh monthly
+  # so a current master archive remains available even if the branch is quiet.
+  schedule:
+    - cron: "17 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# If master changes again while an archive is being made, only the newest state
+# matters. This also prevents an older run finishing after a newer one.
+concurrency:
+  group: master-source-archive
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    name: Upload master source
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Keep manual runs honest too: this artifact always means master,
+          # regardless of the ref selected when workflow_dispatch is invoked.
+          ref: master
+
+      # Export only files tracked by Git. Staging the archive before upload
+      # keeps runner metadata (especially .git/) out while retaining tracked
+      # dotfiles such as .github/ and .gitignore.
+      - name: Export tracked source
+        run: |
+          mkdir source
+          git archive HEAD | tar -x -C source
+
+      - name: Upload master source
+        uses: actions/upload-artifact@v4
+        with:
+          name: algan-master-source
+          path: source/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90

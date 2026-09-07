@@ -12,7 +12,7 @@ quality preset and its output is embedded beside the source code::
         Square().spawn().move(RIGHT)
         Scene.save_video()
 
-Use the ``skip-manim`` Sphinx tag to replace rendered examples with source-code
+Use the ``skip-algan`` Sphinx tag to replace rendered examples with source-code
 placeholders. The historical tag name is retained for compatibility with the
 documentation toolchain.
 """
@@ -141,7 +141,7 @@ class AlganDirective(Directive):
     def run(self) -> list[nodes.Element]:
         environment = self.state.document.settings.env
         should_skip = (
-            "skip-manim" in environment.app.builder.tags
+            "skip-algan" in environment.app.builder.tags
             or environment.app.builder.name == "gettext"
         )
         if should_skip:
