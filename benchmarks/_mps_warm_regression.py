@@ -52,9 +52,19 @@ from algan.utils import memory_utils as mu  # noqa: E402
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 QUALITY = (sys.argv[2] if len(sys.argv) > 2 else "UHD").upper()
 PRESET = {"UHD": UHD, "HD": HD, "MD": MD, "PREVIEW": PREVIEW}[QUALITY]
+#: Stop before starting a render that would push the process past this many
+#: seconds. A macOS runner is reclaimed before its timeout and a reclaimed job
+#: publishes NOTHING (agent_guidance/gpu_harnesses.md), so a run that would not
+#: finish is worth less than one that stops and reports.
+BUDGET = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 
 #: Filled by the hooks below, reset per render.
 STATS = {"arenas": [], "batches": 0, "chunks": 0}
+WALL_START = time.perf_counter()
+
+#: When the render in progress started, so the per-chunk trace can say where
+#: its time went rather than only how much there was of it.
+RENDER_STARTED = [0.0]
 
 _real_arena_init = mu.ManualMemory.__init__
 
@@ -86,6 +96,11 @@ _real_wavefront = rtr.raytrace_render_wavefront
 
 def _wavefront(*args, **kwargs):
     STATS["chunks"] += 1
+    # Printed BEFORE the chunk runs, so the gap between two lines is that
+    # chunk's cost and a long gap before chunk 1 is the batch preparation --
+    # which is what a preflight that binary-searches the window looks like.
+    started = time.perf_counter() - RENDER_STARTED[0]
+    print(f"    chunk {STATS['chunks']:>3} begins at +{started:7.1f} s", flush=True)
     return _real_wavefront(*args, **kwargs)
 
 
@@ -121,7 +136,7 @@ def scene():
 
 
 def main():
-    print(f"quality={QUALITY} runs={RUNS}", flush=True)
+    print(f"quality={QUALITY} runs={RUNS} budget={BUDGET or 'none'}", flush=True)
     print(f"pool before any render: {_pool()}", flush=True)
     for i in range(1, RUNS + 1):
         STATS["arenas"].clear()
@@ -130,6 +145,7 @@ def main():
         Scene.set_video_settings(PRESET)
         scene()
         started = time.perf_counter()
+        RENDER_STARTED[0] = started
         Scene.save_video(
             os.path.join("algan_outputs", f"warm_regression_run{i}.mp4"),
             video_settings=PRESET,
@@ -144,6 +160,14 @@ def main():
             flush=True,
         )
         print(f"  pool after run {i}: {_pool()}", flush=True)
+        if BUDGET and (time.perf_counter() - WALL_START) > BUDGET:
+            print(
+                f"stopping after run {i}: {time.perf_counter() - WALL_START:.0f} s "
+                f"is past the {BUDGET:.0f} s budget, and a job that is reclaimed "
+                "reports nothing at all",
+                flush=True,
+            )
+            break
     return 0
 
 
