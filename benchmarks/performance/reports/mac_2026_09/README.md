@@ -124,31 +124,61 @@ prep A/B on a fresh machine, exactly as `CLAUDE.md` says for `--fast`.
   construction (visibility flags, chord decisions, texture promotion, the
   STBVH), and a different window is measurably different pixels.
 
-## 3. The two Metal-only defects a wide window exposes
+## 3. One Metal defect, and what it is not
 
-Both appeared on the first Metal render whose chunks held more than one frame,
-and neither reproduces on the CPU with the same 4 GB pool and the same 50-frame
-window.
+Two failures appeared on the first Metal render whose chunks held more than one
+frame, and neither reproduces on the CPU with the same 4 GB pool and the same
+50-frame window:
 
-**(a) `sheets._shade_class` asked for a 6.45 GB buffer at PREVIEW.** Its table
-is `[num_frames, num_triangles, 9]`, and `num_frames` is
-`int(frame_rel.amax()) + 1` where `frame_rel = (frag_key >> 32) // (W*H)`. A
-6.45 GB table is a `num_frames` that is not the chunk's frame count by three
-orders of magnitude, which points at the 64-bit key arithmetic rather than at
-the table.
+**(a) A 6.45 GB allocation** in `sheets._shade_class`, and after that was
+blocked, the identical one in `sheets._prim_split_after`. Both build a
+`[frames, triangles, 9]` float32 table whose height is
+`int(frame_rel.amax()) + 1`.
 
-**(b) `tracer`'s glossy scatter walked past the end of `gl_bounds`.** The bounds
-come from `searchsorted(covered_idx, per-frame edges)`; the loop can only
-overrun if the last bound is below the covered count, i.e. if the ordinals or
-the search disagree with the frame partition.
+**(b) `tracer`'s glossy scatter walked past the end of `gl_bounds`**, whose
+bounds partition the covered-pixel ordinals by frame.
 
-Both are consistent with one cause: **the sheet route's packed 64-bit fragment
-key and the ordinals derived from it were never exercised on Metal with a
-non-zero frame ordinal**, because the 1 GiB clamp made every Metal chunk one
-frame — and in a one-frame chunk the high half of every key is zero and every
-frame ordinal is 0. `benchmarks/_mps_int64_probe.py` runs exactly those
-operations on both devices and reports the first disagreement; it needs no
-scene and no kernels, so it costs seconds on the harness.
+**They are one defect.** The instrumented run says so outright:
+
+```
+sheets._shade_class: the per-(frame, triangle) table is 7673 frames by
+25082 triangles for 2000094 fragments.  Frame ordinals run -4175..7672.
+```
+
+The triangle count is right. The frame ordinal is not, and it is **negative at
+one end**, which is the whole diagnosis: the emission kernel computes
+`lpi = (f - time_start) * W * H + py * W + px - tile_start` and writes a
+fragment only `if (lpi >= 0) and (lpi < tile_pixels)`
+(`raster_taichi._pair_pixel`), with `tile_pixels` the chunk's whole ordinal
+span (`raster_pipeline`'s `g1`). **A negative ordinal cannot have been written
+by that kernel.** And `frag_key_u` is deliberately *uninitialized* arena memory
+— the count pass says how many fragments each pair will emit and the write pass
+fills exactly those slots — so a slot the write pass skipped holds whatever the
+arena held before. Both failures are then the same thing: ordinals outside the
+chunk's span produce an absurd table height in one place and a `gl_bounds`
+partition that does not cover the stream in the other.
+
+**Three hypotheses are ruled out, not merely unconsidered:**
+
+* *Metal 64-bit integer arithmetic.* `benchmarks/_mps_int64_probe.py` runs the
+  pack, both unpacks, the frame ordinal, the reduction, both argsorts and the
+  `searchsorted` on MPS and on the CPU: **every operation agrees exactly.**
+* *MPS-friendly mode* (float32 accumulators, int32 reductions). Forced on for a
+  CPU render of the same scene and window, the merge produces the identical
+  25,090 triangles and the render completes.
+* *An unbounded frame count.* It is bounded by the kernel guard above.
+
+What remains is a slot the write pass did not fill, and
+`ALGAN_RASTER_KEY_CHECK` is the discriminator: it validates every emitted key
+against `[0, tile_pixels)` right after the write pass and reports whether the
+bad ones are a **contiguous tail** (the write pass emitted fewer than the count
+pass promised — the two passes re-evaluate the same acceptance geometry through
+*different* compiled kernel variants, `store_exact=0` against `store_exact=1`)
+or **scattered** (something upstream of them).
+
+Both tables are blocked over their frame axis regardless, so a render survives
+this rather than dying on the allocation — but a wrong ordinal is wrong pixels,
+not just a big buffer, which is why the warning is loud.
 
 ## 4. Landed in this round
 
