@@ -1658,6 +1658,11 @@ class Scene(RenderLoopMixin):
             ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
             environment variable to ``software`` or ``nvenc`` to pin that
             choice (see :doc:`/advanced_user_tutorials/saving_videos_and_images`).
+            A transparent background picks from the container instead:
+            lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
+            ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
+            plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
+            at all and is refused before the render.
 
         Returns
         -------

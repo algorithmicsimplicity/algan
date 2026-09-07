@@ -221,6 +221,49 @@ _SUPPORTED_VIDEO_CONTAINERS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".gif")
 #: Still-image formats :meth:`~algan.scene.Scene.save_frame` will write.
 _SUPPORTED_IMAGE_FORMATS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
+#: How Algan encodes transparent output, by container. The codec cannot be
+#: chosen blind to the container: ``png`` carries RGBA losslessly in the
+#: QuickTime/Matroska/AVI muxers, but WebM has no PNG track, and asking for one
+#: leaves FFmpeg to fail *after* the whole render (as an empty temporary file,
+#: or -- what this map was written for -- a write that never returns). WebM
+#: carries alpha in VP9's own layer instead, which FFmpeg emits only when the
+#: *output* pixel format names it; the input stays RGBA either way.
+#: A container absent from this map cannot hold alpha at all and is refused up
+#: front by :func:`_check_transparent_container_is_supported`.
+_TRANSPARENT_CODECS = {
+    ".mov": ("png", []),
+    ".mkv": ("png", []),
+    ".avi": ("png", []),
+    # ``-crf`` needs ``-b:v 0`` to mean constant quality at all; without the
+    # pair libvpx falls back to its own 256 kbit/s default, which is a fixed
+    # budget rather than a quality target and starves anything above a
+    # thumbnail. 20 is the VP9 counterpart of the ``-crf 17`` the opaque path
+    # asks x264 for. ``-row-mt`` because VP9 is otherwise slow enough to
+    # dominate the render it is encoding.
+    ".webm": (
+        "libvpx-vp9",
+        ["-pix_fmt", "yuva420p", "-crf", "20", "-b:v", "0", "-row-mt", "1"],
+    ),
+}
+
+
+def _check_transparent_container_is_supported(destination) -> None:
+    """Fail before the render on a container that cannot carry alpha.
+
+    Raised up front, and by name: the alternative is paying for a whole render
+    and then having FFmpeg reject the codec, which surfaces as a hang or a
+    missing temporary file rather than as anything naming the format.
+    """
+    suffix = Path(destination).suffix.lower()
+    if suffix in _TRANSPARENT_CODECS:
+        return
+    raise AlganConfigurationError(
+        f"{suffix.lstrip('.').upper() or 'That container'} does not support "
+        f"Algan's transparent output. Use "
+        f"{', '.join(sorted(_TRANSPARENT_CODECS))}, or choose an opaque "
+        f"background."
+    )
+
 
 def _check_container_is_supported(destination, *, still: bool = False) -> None:
     """Fail before the render on an output extension Algan cannot write.
@@ -356,11 +399,8 @@ def _render_scene_to_file(
             return RenderResult("skipped", destination)
 
         suffix = destination.suffix.lower()
-        if suffix == ".mp4" and scene.background_is_transparent():
-            raise AlganConfigurationError(
-                "MP4 does not support Algan's transparent output. Use .mov or "
-                ".webm, or choose an opaque background."
-            )
+        if scene.background_is_transparent():
+            _check_transparent_container_is_supported(destination)
 
         if scene.camera is None:
             scene.camera = Camera(False, scene=scene)
@@ -424,6 +464,14 @@ def _render_scene_to_file(
         codec, ffmpeg_params = select_video_encoder(
             codec, ffmpeg_params, transparent, tuple(video_settings.resolution)
         )
+        # Transparent output picks its codec from the container (selection
+        # leaves it None), and does so *before* the availability check below --
+        # a build without the WebM encoder should say so by name now, not fail
+        # once the frames are already rendered.
+        if codec is None and transparent:
+            codec, container_params = _TRANSPARENT_CODECS[suffix]
+            if ffmpeg_params is None:
+                ffmpeg_params = list(container_params)
         # A hardware pick can land on a binary other than moviepy's own
         # (moviepy is often configured with a static build that has no NVENC
         # encoders); None keeps moviepy's configuration untouched.
@@ -432,7 +480,7 @@ def _render_scene_to_file(
         check_codec_is_available(codec)
         encode_binary = resolve_encode_binary(codec)
         if codec is None:
-            codec = "png" if transparent else "libx264"
+            codec = "libx264"
         if audio_codec is None:
             audio_codec = "mp3"
         if ffmpeg_params is None:

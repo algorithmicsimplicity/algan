@@ -2666,8 +2666,26 @@ def _prefill_background(out, background, frame_offset, device, background_frames
     # conversion directly into the reserved destination instead.
     bg = background
     linear = rt_settings.linear_color_space
+    # A transparent render (and only that) carries alpha in a fifth channel,
+    # and everything downstream of here treats color as *premultiplied* by it:
+    # the composite adds ``weight * bg`` against geometry that already carries
+    # its own coverage, and the tonemap divides the result back out before
+    # encoding. The background is the one contributor that arrives with alpha
+    # beside its color rather than folded in, so fold it in here. Left alone,
+    # a half-opaque background survived the tonemap's unpremultiply as
+    # ``encode(color / a) * a`` -- too bright, and by more the more
+    # transparent it was. Opaque renders have no alpha channel to be
+    # premultiplied against and are untouched.
+    premultiply = C_out > 4
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = bg.float().flatten()[:5]
+        # Whatever the buffer holds is what gets premultiplied -- the linear
+        # value below, the encoded one in the else branch -- so this happens
+        # after the transfer function, never across it. The channel count is
+        # checked because ``vals[-1]`` is only alpha when there is an alpha:
+        # on a bare RGB triple it is blue, and scaling color by it would be a
+        # new bug rather than a fix.
+        alpha = vals[-1].clamp(0.0, 1.0) if premultiply and vals.shape[0] >= 4 else None
         if linear:
             # The background is the second color ingest, and it composites
             # against linear geometry (``rs_acc * 255 + weight * bg``), so it
@@ -2677,8 +2695,13 @@ def _prefill_background(out, background, frame_offset, device, background_frames
             # buffer, see the guard in tracer.py) and rounding a linear value
             # to a byte grid would crush the darks, which is exactly why 8-bit
             # buffers hold *encoded* values in the first place.
-            vals = torch.cat((srgb_to_linear(vals[:3]), vals[3:]), 0) * 255
+            rgb = srgb_to_linear(vals[:3])
+            if alpha is not None:
+                rgb = rgb * alpha
+            vals = torch.cat((rgb, vals[3:]), 0) * 255
         else:
+            if alpha is not None:
+                vals = torch.cat((vals[:3] * alpha, vals[3:]), 0)
             vals = (vals * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
         out[..., :k].copy_(vals[:k])
@@ -2702,14 +2725,35 @@ def _prefill_background(out, background, frame_offset, device, background_frames
         ]
         rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
+        # Per pixel, but the same contract as the solid color above: an image
+        # background with an alpha channel owes the composite a premultiplied
+        # color too. Same channel-count guard, for the same reason.
+        alpha = (
+            rows[..., -1:].float() * (1.0 / 255.0)
+            if premultiply and rows.shape[-1] >= 4
+            else None
+        )
         if linear:
             # An image background is 8-bit sRGB like any other texture, so it
             # decodes the same way the solid color above does. Done in float
             # at 0-255 scale to match what the composite expects.
             head = rows[..., : min(3, k)].float() * (1.0 / 255.0)
-            out[..., : min(3, k)].copy_(srgb_to_linear(head) * 255.0)
+            head = srgb_to_linear(head)
+            if alpha is not None:
+                head = head * alpha
+            out[..., : min(3, k)].copy_(head * 255.0)
             if k > 3:
                 out[..., 3:k].copy_(rows[..., 3:k])
+        elif alpha is not None:
+            # Rounded, not truncated: this buffer is uint8, and ``copy_`` from
+            # a float would drop the fraction and cost a least-significant bit
+            # the direct uint8 copy below never loses.
+            head_channels = min(3, k)
+            out[..., :head_channels].copy_(
+                (rows[..., :head_channels].float() * alpha).round_()
+            )
+            if k > head_channels:
+                out[..., head_channels:k].copy_(rows[..., head_channels:k])
         else:
             out[..., :k].copy_(rows[..., :k])
         if C_out > k:
