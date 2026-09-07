@@ -340,6 +340,29 @@ def resolve_pixel_reference(
     return claims, T
 
 
+#: Largest magnitude an int32 sort key can carry.
+_INT32_MAX = 2**31 - 1
+
+
+def _narrow_sort_key(key, magnitude_bound):
+    """``key`` as int32 when every value provably fits, else ``key`` itself.
+
+    Only ever used for a key handed to :func:`_lexsort`. Narrowing is safe
+    there in the strongest sense: a stable argsort depends on the *order* of
+    the values and on the input index, and an exact int32 copy of an int64
+    key has the same order and the same indices -- so the permutation is
+    identical, bit for bit. What changes is the radix sort's pass count, which
+    is one per key byte.
+
+    ``magnitude_bound`` must bound ``abs(key)``, and it is the caller's job to
+    know it without asking the device: the point of this is to remove work
+    from the stream, not to add a reduction and a sync to it.
+    """
+    if key.dtype is torch.int64 and magnitude_bound <= _INT32_MAX:
+        return key.to(torch.int32)
+    return key
+
+
 def _lexsort(*keys):
     """Stable argsort by ``keys`` in priority order (first key most
     significant). Composes least-significant-first, the classic LSD trick the
@@ -744,7 +767,15 @@ def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
     """
     # ``cid_band`` is the pre-rank band of each sub-band, in the ORIGINAL band
     # numbering; compact it so it can index a reduction output.
-    uniq_pre, pool_of_cid = torch.unique(cid_band, sorted=True, return_inverse=True)
+    #
+    # ``unique_consecutive``, not ``unique``: ``cid_band`` is
+    # ``uniq_cid // 16`` of an ALREADY SORTED ``uniq_cid`` (the caller's
+    # ``torch.unique(cid)``), so it is non-decreasing -- and on non-decreasing
+    # input the two agree exactly, values and inverse alike, because equal
+    # values cannot be non-adjacent. What that saves is the sort: ``unique``
+    # is a clone, an index array, a full sort and a scatter over ``[nb]``,
+    # which at 4K is millions of entries, where this is one linear scan.
+    uniq_pre, pool_of_cid = torch.unique_consecutive(cid_band, return_inverse=True)
     n_pool = int(uniq_pre.numel())
     del uniq_pre
     if n_pool == nb:
@@ -774,7 +805,12 @@ def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
         fuse.index_select(0, pool_of_cid), torch.zeros_like(rank_of_cid), rank_of_cid
     )
     del fuse, pool_of_cid
-    uniq_key, group_of_cid = torch.unique(key, sorted=True, return_inverse=True)
+    # Non-decreasing again, and for the reason the comment above the key says:
+    # ``pool_of_cid`` ascends with the sub-band ordinal, and within one pool
+    # the ranks either ascend (``uniq_cid`` was sorted by ``(band, rank)``) or
+    # are all zeroed by the fuse. So ``unique_consecutive`` is the same answer
+    # without the sort.
+    uniq_key, group_of_cid = torch.unique_consecutive(key, return_inverse=True)
     n_group = int(uniq_key.numel())
     del uniq_key, key
     if n_group == nb:
@@ -1239,10 +1275,27 @@ def compact_sheets(
     # ``is_tri`` is deleted further down to free the [n] flags early and a
     # closure would hold it past that -- and the first consumer, the shading
     # class, is on by default, so the reduction is not new work.
-    tri_present = bool(is_tri.any())
-    # Frames this chunk's fragments span: the per-(frame, triangle) tables
-    # below are built for exactly these rows.
-    num_frames = int(frame_rel.amax()) + 1 if n else 1
+    # Three host-side answers, one readback. Each of these used to be its own
+    # ``bool()``/``int()`` -- three full pipeline drains where the values are
+    # available at the same moment, which on Metal is three command-buffer
+    # commits and waits rather than three cheap stream syncs.
+    if n:
+        probe = torch.stack(
+            [
+                is_tri.any().to(torch.int64),
+                frame_rel.amax(),
+                gkey.amax(),
+            ]
+        ).tolist()
+        tri_present = bool(probe[0])
+        # Frames this chunk's fragments span: the per-(frame, triangle) tables
+        # below are built for exactly these rows.
+        num_frames = int(probe[1]) + 1
+        gkey_bound = max(int(probe[2]), n + 1)
+    else:
+        tri_present = False
+        num_frames = 1
+        gkey_bound = 1
 
     cls = None
     if shade_split:
@@ -1251,7 +1304,18 @@ def compact_sheets(
         )
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
-    order = _lexsort(pix, gkey, t)
+    # The sort keys are narrowed to int32 where the values provably fit. A
+    # stable argsort of an int32 copy of an int64 key returns the SAME
+    # permutation -- the value sequence is identical and ties still break by
+    # index -- while torch's radix sort does four passes over a 4-byte key
+    # instead of eight over an 8-byte one, and each pass reads and writes the
+    # whole [n] array. At 4K this stream is millions of fragments and the
+    # lexsort is one of the compaction's largest items.
+    order = _lexsort(
+        _narrow_sort_key(pix, num_frames * ppf),
+        _narrow_sort_key(gkey, gkey_bound),
+        t,
+    )
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
     t_o = t.index_select(0, order)
