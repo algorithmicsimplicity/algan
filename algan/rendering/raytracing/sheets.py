@@ -402,23 +402,32 @@ _FRAME_TABLE_IMPLAUSIBLE = 64 << 20
 _IMPLAUSIBLE_REPORTED = set()
 
 
-def _check_frame_table(where, num_frames, num_tri, n):
+def _check_frame_table(where, num_frames, num_tri, n, frame_rel=None):
     """Warn once per site when a per-(frame, triangle) table is implausible.
 
     The table's height is ``frame_rel.amax() + 1``, so an implausible height is
     an implausible fragment key, and the fragment key is packed inside a Taichi
     kernel. Naming the numbers here is what turns "a single 6.45 GB allocation
     failed" into a diagnosis.
+
+    The extra reductions on ``frame_rel`` run only on the warning path, so the
+    ordinary render pays one integer comparison for this.
     """
     if num_frames * num_tri < _FRAME_TABLE_IMPLAUSIBLE:
         return
     if where in _IMPLAUSIBLE_REPORTED:
         return
     _IMPLAUSIBLE_REPORTED.add(where)
+    span = ""
+    if frame_rel is not None and frame_rel.numel():
+        span = (
+            f" Frame ordinals run {int(frame_rel.amin())}..{int(frame_rel.amax())}"
+            f" ({frame_rel.dtype})."
+        )
     warnings.warn(
         f"{where}: the per-(frame, triangle) table is {num_frames} frames by "
         f"{num_tri} triangles for {n} fragments, which is not a frame count a "
-        "render chunk can have. The fragment stream's pixel ordinals are "
+        f"render chunk can have.{span} The fragment stream's pixel ordinals are "
         "suspect; the table is built in blocks so this does not exhaust "
         "memory, but the classes it feeds may be wrong.",
         AlganWarning,
@@ -462,7 +471,7 @@ def _shade_class(
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if n else 1
     num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
-    _check_frame_table("sheets._shade_class", num_frames, num_tri, n)
+    _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
     zero = torch.zeros((), dtype=torch.int64, device=device)
     table = torch.empty((num_frames, num_tri), dtype=torch.int64, device=device)
     # The table itself is one int64 per (frame, triangle) and is small; its
@@ -721,7 +730,9 @@ def _prim_split_after(
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if safe_ref.numel() else 1
     num_tri = tri_pos.numel() // (tri_pos.shape[0] * 9)
-    _check_frame_table("sheets._prim_split_after", num_frames, num_tri, t.numel())
+    _check_frame_table(
+        "sheets._prim_split_after", num_frames, num_tri, t.numel(), frame_rel
+    )
     # Blocked over the frame axis for the reason ``_shade_class`` gives: the
     # table is one float per (frame, triangle), but the world positions and
     # screen bounds it is derived from are ``[block, N, 9]`` with several live
