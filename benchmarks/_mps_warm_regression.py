@@ -34,6 +34,7 @@ import multiprocessing
 import os
 import resource
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -87,6 +88,9 @@ WALL_START = time.perf_counter()
 #: When the render in progress started, so the per-chunk trace can say where
 #: its time went rather than only how much there was of it.
 RENDER_STARTED = [0.0]
+
+#: When the chunk in flight began, for the heartbeat below.
+CHUNK_STARTED = [0.0]
 
 #: Reclaim accounting, reset at every chunk boundary. The per-chunk trace from
 #: run 36 put the warm cost INSIDE the chunks (warm 54.8 s a chunk against a
@@ -156,6 +160,29 @@ def _batch(self, *args, **kwargs):
 
 RenderLoopMixin._render_primitive_batch = _batch
 
+
+def _heartbeat():
+    """Print every 30 s while a chunk is in flight.
+
+    The chunk line is printed at chunk START, so a chunk that takes 12 minutes
+    and a process that has died look identical from the log until the next line
+    appears -- which has twice cost a diagnosis: run 38's cold pass had one
+    455.6 s chunk among 25-42 s ones, and run 40 sat past 730 s on chunk 5 with
+    the driver figure at 3.14 G of 4.67, nowhere near the ceiling that killed
+    run 39. A live process says so here, with the pool figures at the moment of
+    asking, so "slow" and "dead" stop looking the same. A daemon thread, so it
+    never holds the interpreter open.
+    """
+    while True:
+        time.sleep(30)
+        held = time.perf_counter() - CHUNK_STARTED[0]
+        if CHUNK_STARTED[0] and held > 45:
+            print(
+                f"      ... chunk {STATS['chunks']} still running, {held:.0f} s in"
+                f" | {_pool()}",
+                flush=True,
+            )
+
 import algan.rendering.raytracing.tracer as rtr  # noqa: E402
 
 _real_wavefront = rtr.raytrace_render_wavefront
@@ -174,6 +201,7 @@ def _wavefront(*args, **kwargs):
         f"{ZC['imports']:>6} imports | {_pool()}",
         flush=True,
     )
+    CHUNK_STARTED[0] = time.perf_counter()
     RECLAIM["calls"] = RECLAIM["pressured"] = 0
     RECLAIM["seconds"] = 0.0
     ZC["clears"] = ZC["imports"] = 0
@@ -277,6 +305,7 @@ def main():
         f"pin_arena={PIN_ARENA}",
         flush=True,
     )
+    threading.Thread(target=_heartbeat, daemon=True).start()
     print(f"pool before any render: {_pool()} | {_host()}", flush=True)
     for i in range(1, RUNS + 1):
         STATS["arenas"].clear()
