@@ -42,9 +42,60 @@ frame per render chunk had never occurred on Metal before. Both are recorded in
 §3; neither reproduces on the CPU at the same pool size and the same window, so
 both are Metal-specific.
 
-## 1. Where the Mac time goes
+## 1. What the Apple GPU actually measures
 
-*(filled in from the profile below)*
+**`nn_scene_UHD.py`, 18 frames at 3840×2160, shadows off.** With the fixes
+below it renders to completion on Metal for the first time:
+
+| | |
+| --- | --- |
+| cold (first render in the process) | **595.7 s** — 33 s a frame |
+| of which Taichi kernel compile | ~66 s |
+| emissions | 18, i.e. **one frame per render chunk** |
+| warm | **not measured** — see the caveat below |
+
+**`nn_scene`'s scene at PREVIEW (704×396), four renders in one process**
+(`benchmarks/_mps_warm_regression.py`, no profiler hooks):
+
+| render | wall | arena | batches | chunks |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 81.2 s | 1898 MB | 1 | 2 |
+| 2 | **12.9 s** | 1828 MB | 1 | 2 |
+| 3 | 12.7 s | 1827 MB | 1 | 2 |
+| 4 | 11.1 s | 1819 MB | 1 | 2 |
+
+Pool: `recommended_max` 4.67 GB; after a render, `driver_allocated` 3.16 GB and
+`current_allocated` 1.85 GB.
+
+**Warm is 6.3× faster, and the arena is stable** (4% drift over four renders),
+so there is no general "the second render is slow" defect on this backend.
+
+### The warm UHD pass is a memory-pressure cascade, not a warm-path defect
+
+Two UHD jobs were killed inside their *warm* pass, at 30+ minutes against a
+10-minute cold pass, which is what prompted the PREVIEW experiment above. The
+PREVIEW result says the mechanism is not "warm"; it is **headroom**. At 4K the
+per-frame buffers are far larger, so the second render starts near the ceiling,
+and run 31's log shows the consequence directly:
+
+    Prepared batch does not fit the render arena;
+    binary-searching the largest fitting runtime.
+
+Every rejected probe throws away a complete projection, merge and BVH build
+(`_release_preflight_candidate` nulls every `_rt_*`), and on Metal those three
+are **eager CPU torch on three cores** — `project_on_gpu_active()`,
+`merge_on_gpu_active()` and `pn_criterion_kernel_active()` all gate on
+`render_device().type == "cuda"`. So this is not a new defect: it is candidates
+3, 10 and 4 of the list below, compounding under pressure. It is also why a UHD
+warm number is still missing — the job is reclaimed before it finishes.
+
+### Cost of measuring here
+
+A macOS job is reclaimed well before `timeout_minutes` (72 min against 120,
+57 min against 100) and a reclaimed job **publishes nothing**, so a command
+must fit in roughly 40 minutes and must print per unit of work.
+`agent_guidance/gpu_harnesses.md` now carries this; it cost four jobs an hour
+each to learn.
 
 ## 2. The ranked list
 
