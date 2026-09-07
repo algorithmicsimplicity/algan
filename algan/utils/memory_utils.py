@@ -25,7 +25,6 @@ from contextlib import contextmanager
 
 import torch
 
-from algan.constants.math import GIGABYTES
 from algan.environment import env_int
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
@@ -79,10 +78,27 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
     elif device.type == "mps":
+        # Metal's ``recommendedMaxWorkingSetSize`` minus what the MPS driver
+        # already holds for this process -- the direct analogue of the CUDA
+        # branch above, and the same figure ``_render_device_pool_bytes``
+        # already sizes the out-of-arena budgets from.
+        #
+        # This used to be clamped to 1 GiB unconditionally, which is not a
+        # safety margin but a ceiling: the render arena is
+        # ``rendering_memory_fraction`` (0.4) of what this returns, so *every*
+        # Metal render, on any Mac, sized its arena at 410 MB. That makes a 4K
+        # frame impossible outright ("Insufficient memory to ray trace a single
+        # frame" on a machine with gigabytes free) and, below that, forces
+        # frame windows small enough that the per-batch projection, merge and
+        # BVH build are paid several times over. The clamp is available again
+        # as ``ALGAN_MPS_MEMORY_CAP`` (bytes) for A/B, and
+        # ``available_memory_override`` remains the way to pin the figure.
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
-        free_bytes = total_bytes - allocated_bytes
-        free_bytes = min(free_bytes, 1 * GIGABYTES)
+        free_bytes = max(0, total_bytes - allocated_bytes)
+        cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)
+        if cap > 0:
+            free_bytes = min(free_bytes, cap)
         return free_bytes
     else:
         return SETTINGS.computing.max_cpu_memory_used
