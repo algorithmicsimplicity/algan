@@ -33,7 +33,12 @@ arch=$(uname -m)
   exit 1
 }
 
-glibc_line=$(ldd --version | sed -n '1p')
+# Avoid a version-probe pipeline here. This script runs with pipefail, and the
+# manylinux ldd probe can otherwise surface SIGPIPE as exit 141 before the
+# actual LLVM build starts. Capture all output, then take the first line in
+# Bash so the compatibility check itself cannot fail because of pipe plumbing.
+glibc_output=$(ldd --version 2>&1)
+glibc_line=${glibc_output%%$'\n'*}
 glibc_version=$(sed -nE 's/.* ([0-9]+\.[0-9]+)$/\1/p' <<<"$glibc_line")
 [[ "$glibc_version" == "2.34" ]] || {
   echo "expected a genuine glibc 2.34 userspace, got: $glibc_line" >&2
