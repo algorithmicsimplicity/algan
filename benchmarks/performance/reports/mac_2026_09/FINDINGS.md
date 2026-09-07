@@ -177,6 +177,7 @@ hooks — its synchronising hooks would distort the wall time being measured).
 | **52 (post-merge, cap, 55-min timeout)** | **1147 / 1147 MB** | **1146.8 s** | **1010.3 s** | **completed — warm 0.88× cold** |
 | **55 `mac-cpu` (post-merge, matched arena)** | **1147 MB** | **140.0 s** | — | **completed — see §0** |
 | 55 `mac-mps` (cap off) | ~1.9 GB | — | — | crashed: MPS SymInt, §7.5 |
+| 56 (cap off, `torch.compile` off) | ~1.9 GB | — | — | **wedged** at chunk 3, §7.6 |
 
 [^stall]: Job 38's cold pass contained one 455.6 s chunk against 25–42 s for
 every other chunk. A stall, not a baseline — and see §7, since it may be the
@@ -335,7 +336,8 @@ recovered on its own after 455.6 s (job 38).
 | 44 | no cap, 1911 MB | after chunk 3 | 2.96 G | 4.05 G | 1.19 G |
 | 47 | 0.4 × RAM, 1147 MB | *unclassified* — 30-min timeout, see §7.0 | 3.87 G | 4.90/5.04 G | 1.12 G |
 | ~~50~~ | post-merge, 1147 MB | **not a wedge** — progressing when killed | 2.40 G | 4.40 G | 1.19 G |
-| ~~51~~ | post-merge, `torch.compile` off | **not a wedge** — progressing when killed | — | — | — |
+| ~~51~~ | post-merge, `torch.compile` off, cap ON | **not a wedge** — progressing when killed | — | — | — |
+| 56 | post-merge, `torch.compile` off, **cap OFF** | after chunk 3 (36 min silent) | 2.96 G | 4.04 G | 1.51 G |
 
 ### 7.3 What is established
 
@@ -392,23 +394,48 @@ traced with dynamic shapes — i.e. `torch.compile`, which was on for this job a
 whose Metal backend warns it is a prototype in every run and *fails* on
 `_triangle_projection_fused` in every run.
 
-Not fixed here, deliberately: the hypothesis is testable in one job
-(`ALGAN_TORCH_COMPILE=0` with the cap off) and this round has enough
-committed-then-reverted guesses in it. But it is a concrete, reproducible bug
-with a stack trace, which nothing else in §7 is.
+**Confirmed by job 56.** The same configuration with `ALGAN_TORCH_COMPILE=0`
+produced **no SymInt crash at all** — it rendered past the point job 55 died at.
+So the prototype Metal codegen path owns this crash, and the fix is to pin
+`torch_compile` off on MPS (or to stop `_pair_expand_rows` being traced).
 
-### 7.6 The one experiment that would settle it
+That is the one hypothesis this round proposed and then confirmed rather than
+retracted. It is **not** the wedge, though: job 56 wedged anyway (§7.6).
 
-Run the pair post-merge with `ALGAN_MPS_HOST_SHARE=0`, which removes the cap and
-restores the ~1.9 GB arena that every confirmed wedge ran with.
+### 7.6 Answered by job 56: the cap is load-bearing
 
-* **Completes** → the cap is unnecessary post-merge, master's batching is what
-  fixed it, and the cap should come out, recovering the time it costs (cold
-  1146.8 s capped against 649.8 s uncapped pre-merge).
-* **Wedges** → the cap is load-bearing and should stay, at that cost.
+Job 56 ran the pair post-merge with `ALGAN_MPS_HOST_SHARE=0` (~1.9 GB arena) and
+`ALGAN_TORCH_COMPILE=0`. It **wedged**:
 
-Until that runs, the honest position is that the wedge is **not reproduced since
-the merge**, cause unattributed between two simultaneous changes.
+```
+22:50:34  chunk 3 begins at + 171.6 s | ... peak 4.04G | driver=2.96G | host_free=1.51G
+23:26:45  ##[error]The operation was canceled.
+```
+
+**36 minutes of total silence after chunk 3**, the heartbeat included — the
+signature established in §7.1, and the first wedge observed live rather than
+inferred from a timeout. Terminated as an orphan with an ffmpeg child alive.
+
+**The attribution is clean**, because two jobs differ in the cap alone:
+
+| job | `torch.compile` | cap | outcome |
+| --- | --- | --- | --- |
+| 51 | off | **on** | progressing when its short timeout killed it |
+| 52 | on | **on** | **completed**, cold 1146.8 s / warm 1010.3 s |
+| 56 | off | **off** | **wedged** at chunk 3 |
+
+51 and 56 hold `torch.compile` off and differ only in the cap, so the cap is
+what separates a healthy run from a wedged one. **Keep it.** Master's batching
+alone does not prevent the wedge, and `torch.compile` neither causes nor
+prevents it.
+
+The cost is real and should be stated with the decision: ~1147 MB against
+~1911 MB, and cold 1146.8 s against 649.8 s, on this 7 GB box. On a machine with
+memory the cap never binds (§3.4), so it costs nothing there.
+
+Still unexplained: *why* a larger arena wedges. Nothing in §7.3 separates the
+runs — job 56 wedged at `driver` 2.96 G, `host_free` 1.51 G and a 4.04 G peak,
+all mid-range. The cap is a mitigation, not a diagnosis.
 
 ### 7.7 Untested hypotheses, in the order worth trying
 
@@ -476,10 +503,15 @@ and the arena is genuinely larger.
 649.8 s at 1911 MB — about 57%. That is the price of not wedging, on a 7 GB
 machine. It should be re-measured on a real Mac, where it does not apply.
 
-**The wedge has not reproduced since the merge, and job 52 completed both
-renders.** But two things changed at once — master's batching and the arena cap
-— so the cause is unattributed. Run §7.6 before deciding whether the cap stays:
-if it is unnecessary, removing it is worth roughly 500 s a render on this box.
+**Keep the arena cap.** §7.6 settles it: with the cap off the render wedges at
+chunk 3, with it on the pair completes. Two jobs differ in the cap alone, so the
+attribution is clean. It costs ~500 s a render on a 7 GB box and nothing at all
+on a machine with memory.
+
+**Pin `torch_compile` off on MPS**, or stop `_pair_expand_rows` being traced.
+§7.5 is confirmed: the prototype Metal codegen path owns the `SymIntArrayRef`
+crash, which disappears with `ALGAN_TORCH_COMPILE=0`. It is a separate defect
+from the wedge and worth fixing on its own.
 
 **Do not tune the arena further** on the strength of over-commit: job 52 peaked
 at 5.61 G against a 4.67 G recommendation and was fine (§7.4).
