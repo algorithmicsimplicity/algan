@@ -128,7 +128,7 @@ jobs:
         run: |
           uname -a
           head -2 /etc/os-release
-          ldd --version | head -1
+          ldd --version | sed -n '1p'
           nproc
           grep MemTotal /proc/meminfo
           df -h /
@@ -221,7 +221,7 @@ jobs:
           grep MemTotal /proc/meminfo
           df -h /
           head -2 /etc/os-release
-          ldd --version | head -1
+          ldd --version | sed -n '1p'
 
       # No `actions/setup-python` in a container: the manylinux images ship the
       # interpreters at a known path, and setup-python would install a second
@@ -310,7 +310,7 @@ jobs:
           mkdir -p "$dest"
           python -m zipfile -e "$archive" "$dest"
           test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
-          "$dest/bin/clang" --version | head -4
+          "$dest/bin/clang" --version | sed -n '1,4p'
 
       # `pip install cmake ninja` rather than a package manager: the manylinux
       # images are RPM-based and run as root with no sudo, and pip's wheels are
@@ -335,8 +335,8 @@ jobs:
               "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}" \
               || dnf install -y --enablerepo=crb \
                    "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}"
-            /usr/bin/gcc --version | head -1
-            /usr/bin/g++ --version | head -1
+            /usr/bin/gcc --version | sed -n '1p'
+            /usr/bin/g++ --version | sed -n '1p'
             test "$(/usr/bin/gcc -dumpfullversion -dumpversion)" = "11.5.0"
             test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc)" = "$gcc_nvr"
             test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc-c++)" = "$gcc_nvr"
@@ -542,7 +542,7 @@ jobs:
           grep MemTotal /proc/meminfo
           df -h /
           head -2 /etc/os-release
-          ldd --version | head -1
+          ldd --version | sed -n '1p'
 
       # No `actions/setup-python` in a container: the manylinux images ship the
       # interpreters at a known path, and setup-python would install a second
@@ -631,7 +631,7 @@ jobs:
           mkdir -p "$dest"
           python -m zipfile -e "$archive" "$dest"
           test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
-          "$dest/bin/clang" --version | head -4
+          "$dest/bin/clang" --version | sed -n '1,4p'
 
       # `pip install cmake ninja` rather than a package manager: the manylinux
       # images are RPM-based and run as root with no sudo, and pip's wheels are
@@ -656,8 +656,8 @@ jobs:
               "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}" \
               || dnf install -y --enablerepo=crb \
                    "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}"
-            /usr/bin/gcc --version | head -1
-            /usr/bin/g++ --version | head -1
+            /usr/bin/gcc --version | sed -n '1p'
+            /usr/bin/g++ --version | sed -n '1p'
             test "$(/usr/bin/gcc -dumpfullversion -dumpversion)" = "11.5.0"
             test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc)" = "$gcc_nvr"
             test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc-c++)" = "$gcc_nvr"
@@ -853,7 +853,7 @@ jobs:
           set -euxo pipefail
           uname -a
           head -2 /etc/os-release
-          ldd --version | head -1 | tee /tmp/ldd-version
+          ldd --version | sed -n '1p' | tee /tmp/ldd-version
           grep -E ' 2\.34$' /tmp/ldd-version
 
       - name: Download the final aarch64 wheels
