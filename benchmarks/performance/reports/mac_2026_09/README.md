@@ -52,24 +52,31 @@ below it renders to completion on Metal for the first time:
 | cold (first render in the process) | **595.7 s** — 33 s a frame |
 | of which Taichi kernel compile | ~66 s |
 | emissions | 18, i.e. **one frame per render chunk** |
-| warm | **1522.8 s** — 2.04× *slower* than cold |
+| warm, before the arena fix | 968–1523 s — 1.19× to 2.04× *slower* than cold |
+| warm, after it | **568.5 s** — 1.9× *faster* than cold |
 
-The warm number is from `benchmarks/_mps_warm_regression.py 2 UHD`, run 34
-(both renders in one process, no profiler hooks; the cold pass measures 747.0 s
-under the instrument rather than 595.7 s because it is a second scene build in
-the same interpreter):
+Warm numbers are from `benchmarks/_mps_warm_regression.py 2 UHD` (both renders
+in one process, no profiler hooks; a cold pass measures 747–816 s under the
+instrument rather than 595.7 s because it is a second scene build in the same
+interpreter). Four jobs:
 
-| render | wall | arena | batches | chunks | `driver_allocated` after |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| cold | 747.0 s | 1898 MB | 12 | 18 | 4.56 G of 4.67 G recommended |
-| warm | **1522.8 s** | **1212 MB** | 12 | 18 | 4.18 G |
+| job | cold | warm | warm arena | imports/chunk warm |
+| --- | ---: | ---: | ---: | ---: |
+| 34 | 747.0 s | 1522.8 s | 1212 MB | — |
+| 36 | 810.4 s | 967.9 s | 1226 MB | — |
+| 37 | 816.3 s | 1026.4 s | 1226 MB | 48 766 |
+| 38, arena pinned | 1105.3 s [^stall] | **568.5 s** | **1898 MB** | **12 388** |
 
-The arena **collapsed 36%** between the two renders while the work stayed
-identical (same batches, same chunks), and both renders logged the preflight
-binary search. `driver_allocated` sitting at 4.56 G of a 4.67 G ceiling after
-the cold pass is the mechanism: the pool is genuinely *retained*, not merely
-cached, so the clear-drain-measure fix in `get_num_available_bytes` (present in
-this run) does not recover it.
+[^stall]: One chunk of job 38's cold pass took 455.6 s on its own against 25–42 s
+for every other chunk. A runner stall, not a code path; it is not a cold
+baseline.
+
+**The wall-time ratio is noisy; the arena collapse is not.** Three unpinned jobs
+put warm at 1.19×, 1.26× and 2.04× — so the 2.04× is an outlier, not the
+headline — while the warm arena landed at 1212/1226/1226 MB every time, a
+reproducible 35% drop against the cold 1898 MB.
+
+That arena is the whole effect, and §1.1 is how it was established.
 
 **`nn_scene`'s scene at PREVIEW (704×396), four renders in one process**
 (`benchmarks/_mps_warm_regression.py`, no profiler hooks):
@@ -87,37 +94,76 @@ Pool: `recommended_max` 4.67 GB; after a render, `driver_allocated` 3.16 GB and
 **Warm is 6.3× faster, and the arena is stable** (4% drift over four renders),
 so there is no general "the second render is slow" defect on this backend.
 
-### The warm UHD pass is a memory-pressure cascade, not a warm-path defect
+### 1.1 The warm UHD pass: a sizing defect, reached by discarding three wrong answers
 
-Two UHD jobs were killed inside their *warm* pass, at 30+ minutes against a
-10-minute cold pass, which is what prompted the PREVIEW experiment above. The
-PREVIEW result says the mechanism is not "warm"; it is **headroom**. Warm at
-PREVIEW is 6.3× *faster* with a stable arena; warm at UHD is 2.04× slower with
-an arena down 36%. The variable that separates them is how close the pool sits
-to `recommendedMaxWorkingSetSize`, not whether the kernels are compiled.
+The finding is one line of `get_num_available_bytes`. Getting there took four
+jobs, and the three discarded explanations are worth recording because each was
+plausible and each was killed by a measurement rather than by argument.
 
-At 4K the per-frame buffers are far larger, so the second render starts near
-the ceiling — measured, `driver_allocated` 4.56 G of 4.67 G — and both passes
-log the consequence directly:
+**Wrong answer 1: the preflight binary search.** Both passes log
 
     Prepared batch does not fit the render arena;
     binary-searching the largest fitting runtime.
 
-Every rejected probe throws away a complete projection, merge and BVH build
-(`_release_preflight_candidate` nulls every `_rt_*`), and on Metal those three
-are **eager CPU torch on three cores** — `project_on_gpu_active()`,
-`merge_on_gpu_active()` and `pn_criterion_kernel_active()` all gate on
-`render_device().type == "cuda"`. So this is not a new defect: it is candidates
-3, 10 and 4 of the list below, compounding under pressure.
+and every rejected probe throws away a complete projection, merge and BVH build
+(`_release_preflight_candidate` nulls every `_rt_*`), which on Metal are eager
+CPU torch on three cores. A compelling story, and false: a per-chunk trace put
+warm batch preparation at **8.4 s against the cold pass's 28.2 s**. Warm
+preparation is the *faster* of the two. The cost is inside the chunks.
 
-What the measurement rules **out** is that the free-bytes probe was merely
-reading a stale cache. Run 34 carried the clear–drain–measure fix, and the
-arena still collapsed, so the retained 4.56 G is live allocation the process is
-holding across renders — a lifetime question (what survives `reset=True`), not
-a probe question. Finding what that is, is the follow-up this round leaves
-open. Run 34 also logged, in the warm pass only, 62 primary rays hitting the
-256-surface `max_surfaces_per_ray` ceiling; unexplained, and worth a look on
-its own since it did not occur cold on identical geometry.
+**Wrong answer 2: a gc storm from the pressure predicate.** `_gpu_memory_pressure`
+judges from `driver_allocated_memory`, which after a render reads 4.56 G of a
+4.67 G recommended max while live bytes are 0.00 G — permanently above the 0.8
+threshold, so all nineteen `force_gc=False` reclaim sites should pay a full
+`gc.collect()` and drop the import cache. Counting it killed it:
+`release_torch_memory` accounts for **0.1–1.9 s a chunk** against chunks costing
+25–79 s, and through the cold pass the cache clears rise 1 → 7 a chunk without
+moving that pass's import count off 12 388.
+
+**Wrong answer 3: a memory knee at the 0.8 threshold.** Cold chunks 11 and 12
+cost 75.6 s and 78.9 s against a 25–37 s baseline, exactly as `driver_allocated`
+crosses 3.74 G. Coincidence: chunks 13–18 fall straight back to 26–44 s while
+still 7/7 pressured at 4.0–4.5 G, and the same two chunks spike in a job with a
+different memory profile. It is a batch boundary.
+
+**What it actually is.** The variable is *launch count*, and the arena sets it:
+
+| | cold | warm | ratio |
+| --- | ---: | ---: | ---: |
+| zero-copy imports per chunk | 12 388 | 48 766 | 3.94× |
+| cost per chunk (2–10) | 31.2 s | 55.2 s | 1.77× |
+| arena | 1898 MB | 1226 MB | 0.65× |
+
+36 378 extra imports against a 24.0 s per-chunk gap is **0.66 ms an import** —
+this box's dispatch cost (432 µs synchronized). The warm render does no extra
+work; it does the same work in four times as many launches.
+
+And the arena shrinks because **`driver_allocated_memory` is a high-water mark on
+Metal.** It does not come back down after `empty_cache`: within one pass it
+climbs monotonically 2.91 → 4.49 G while live bytes hold flat at 1.91 G, through
+seven pressured drains a chunk in the last third that never move it. Sizing from
+it charges each render for the previous one's peak.
+
+**The A/B.** Holding the second render to the first's free-byte figure
+(`_mps_warm_regression.py … pin-arena`) took the warm pass to **568.5 s**, put
+its import count back to **12 388 exactly**, and left warm 1.9× *faster* than
+cold. `driver_allocated` reached 4.76 G doing it — past
+`recommendedMaxWorkingSetSize`, with no failure — so on unified memory that
+ceiling is advisory and the blocks behind the driver figure are reusable.
+
+The fix measures `current_allocated_memory` after the drain. Its known gap is
+that Taichi's allocations outside torch are not in that figure; the preflight
+already searches the window down when a batch does not fit, and
+`ALGAN_MPS_MEMORY_CAP` still imposes a ceiling by hand.
+
+This supersedes the clear–drain–measure fix recorded earlier in this round,
+which was necessary but not sufficient: the drain does return memory at a render
+boundary, but the figure read after it does not reflect that.
+
+**Still open.** The `max_surfaces_per_ray` truncation warning fires with wildly
+varying counts across otherwise identical passes (0, 2, 62, 559 rays) and
+appeared only in warm passes. Unexplained, and unrelated to the above as far as
+these jobs show.
 
 ### Cost of measuring here
 
