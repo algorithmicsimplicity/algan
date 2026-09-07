@@ -112,6 +112,17 @@ class _GuardedMethod:
         raise AttributeError(self._message)
 
 
+def _validate_opacity(value, *, given=None):
+    """Validate the documented ``Mob.opacity`` unit interval at authoring time."""
+    value = reject_non_finite("opacity", value, given=given)
+    if torch.is_tensor(value) and bool(((value < 0) | (value > 1)).any()):
+        shown = value if given is None else given
+        raise AlganConfigurationError(
+            f"opacity must be between 0 and 1 inclusive; got {shown!r}"
+        )
+    return value
+
+
 def _coerce_if_color(attr, value):
     """Parse the color spellings users reach for, on color attributes only.
 
@@ -483,7 +494,7 @@ class Mob(
         self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
         self._init_default_attr(
-            "opacity", reject_non_finite("opacity", cast_to_tensor(opacity))
+            "opacity", _validate_opacity(cast_to_tensor(opacity), given=opacity)
         )
         self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
         self.num_points_per_object = 1
@@ -1380,12 +1391,17 @@ class Mob(
         if self._prevent_recursive_sets:
             recursive = False
         value = _coerce_if_color(attr, value)
+        given = value
         value = cast_to_tensor(value)
         # The funnel every animatable write reaches -- assignment, `set`,
         # `scale` -- and the one place a NaN can still be traced back to the
         # line that wrote it. Checked here rather than in `_apply_change`,
-        # which replay re-enters once per frame batch.
-        reject_non_finite(attr, value)
+        # which replay re-enters once per frame batch. Opacity has the stronger
+        # documented [0, 1] contract, so validate that range here too.
+        if attr == "opacity":
+            _validate_opacity(value, given=given)
+        else:
+            reject_non_finite(attr, value)
 
         if self._writes_through_property_setter(attr):
             # The generic path below writes timeline rows, which for these
@@ -1512,6 +1528,10 @@ class Mob(
                 f"shape it was given, {tuple(current.shape)}, but returned "
                 f"{tuple(target.shape)}."
             )
+        if attr == "opacity":
+            _validate_opacity(target)
+        else:
+            reject_non_finite(attr, target)
         # One recorded event carrying a per-row change, rather than one per
         # descendant: _apply_change re-reads the same rows at replay and adds
         # this change scaled by the interpolant, so each row travels from its

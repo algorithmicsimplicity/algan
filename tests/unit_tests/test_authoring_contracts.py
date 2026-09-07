@@ -20,6 +20,7 @@ from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.errors import AlganConfigurationError, HierarchyError
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
+from algan.mobs.surfaces.surface import Surface
 from algan.mobs.text import Text
 from algan.scene import Scene
 from algan.scene_manager import SceneManager
@@ -57,6 +58,62 @@ def test_a_mob_is_truthy_however_many_batch_members_it_has():
     assert bool(text) is True
     assert len(square) == 0
     assert (square or "fallback") is square
+
+
+# --------------------------------------------------------------------------
+# Release-audit authoring diagnostics stay on Algan's public error contract
+# --------------------------------------------------------------------------
+
+
+def test_constructor_location_rejects_a_two_dimensional_vector_early():
+    with pytest.raises(AlganConfigurationError, match=r"location.*3-D vector"):
+        Square(location=(1, 2))
+
+
+def test_bad_updater_id_and_become_target_name_the_authoring_error():
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"No updater with id 9999"):
+        square.remove_updater(9999)
+    with pytest.raises(AlganConfigurationError, match=r"become\(\) takes the Mob"):
+        square.become(None)
+
+
+@pytest.mark.parametrize("opacity", [-0.01, 1.01, 5.0])
+def test_opacity_must_stay_in_the_documented_unit_interval(opacity):
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        Square(opacity=opacity)
+
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        square.opacity = opacity
+
+
+def test_opacity_unit_interval_endpoints_remain_valid():
+    assert Square(opacity=0).opacity.item() == 0
+    assert Square(opacity=1).opacity.item() == 1
+
+
+def test_opacity_mapping_cannot_create_an_out_of_range_target():
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        square.map_animated_attribute("opacity", lambda opacity: opacity * 2)
+
+
+@pytest.mark.parametrize("render_tolerance_pixels", [0, -1, float("nan")])
+def test_surface_tolerance_errors_are_algan_configuration_errors(
+    render_tolerance_pixels,
+):
+    with pytest.raises(
+        AlganConfigurationError, match=r"render_tolerance_pixels"
+    ) as raised:
+        Surface(render_tolerance_pixels=render_tolerance_pixels)
+    # AlganConfigurationError intentionally preserves ValueError compatibility.
+    assert isinstance(raised.value, ValueError)
+
+
+def test_zero_and_negative_scale_remain_legal_transforms():
+    Square().scale(0)
+    Square().scale(-1)
 
 
 # --------------------------------------------------------------------------

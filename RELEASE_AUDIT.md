@@ -6,13 +6,12 @@
 > exists), §7 except the Manim root-logger item (kept by decision), §8 except
 > the five Three.js material spellings (kept by decision), §9, §10, §11, §12
 > (OpenCV became a dev-only dependency: the tests decode frames with it, the
-> library no longer imports it), §14, and §2 (see the resolution note under
-> that finding). Still open: §5 (docs deploy), §13 (repository weight), §15,
-> §16, §17, and one
-> leftover from §7: `algan --version` still takes ~3 s because the console
-> script is `algan.cli:main`, so importing `algan.cli` runs the package
-> `__init__`; the fix is an entry point outside the package. The findings below
-> are kept in their original wording as the record of what was wrong.
+> library no longer imports it), §14, §16 (see its current-resolution table),
+> and §2 (see the resolution note under that finding). Still open: §5 (docs
+> deploy), §13 (repository weight), §15 and §17. The former §7 `algan
+> --version` startup-cost leftover is also fixed: the version path reads package
+> metadata without importing the full package. The findings below are kept in
+> their original wording as the record of what was wrong.
 
 **What this is.** A pre-release audit of Algan `0.2.2` at `3c03536` (branch
 `claude/algan-release-audit-a06q1y`), carried out on 2026-09-02. The brief was to
@@ -336,7 +335,27 @@ before the public announcement.
 
 ## 16. Smaller items
 
-Correctness and UX, all **verified**, none contract-breaking to fix later:
+### Current resolution (2026-09-07)
+
+Re-audited against `master` at `074184375d138f5525d75a9e4ee1d62c5c7979f9`.
+The original bullets are preserved below as historical findings; this table is
+the current status and is what should be used for release decisions.
+
+| # | Original topic | Current resolution |
+|---|---|---|
+| 1 | Color/glow/opacity read-back | **Intentional behavior.** The renderer composes the Mob multiplier with the color's own glow/alpha channels, while the two controls read back independently. `basic_animations.rst` now says this explicitly and shows which color channels to inspect. |
+| 2 | Constructor diagnostics | **Already fixed.** `Mob.__init__` runs `location` through `cast_to_direction`, so `Square(location=(1, 2))` raises `AlganConfigurationError` at construction. `_MANIM_CONSTRUCTOR_HINTS` supplies migrations such as `side_length` → `size`. |
+| 3 | Updater / `become` / still-frame diagnostics | **Already fixed.** `remove_updater` validates ids with `AlganConfigurationError`; `become(None)` rejects the target before reading `.scene`; negative `save_frame(at=...)` values are now documented as offsets from the current authoring time and an offset before scene start reports both the user's value and the resolved context. |
+| 4 | Opacity / scale / non-finite values | **Fixed / intentional.** Non-finite animatable values already fail at the authoring line. This re-audit adds the documented `[0, 1]` validation for `Mob.opacity`, including constructor, assignment and row-wise mapping targets. `scale(0)` and negative scale remain legal deliberately; they are transform operations, not configuration errors. |
+| 5 | Spatial constants documentation | **Already fixed.** `spatial.py` documents direction tensors as `(3,)` and `DEFAULT_BASIS` as `(3, 3)`. |
+| 6 | CLI / first-run behavior | **Already fixed.** A script that requests no render still exits successfully but now prints an explicit stderr diagnostic naming `save_video`/`save_frame`/`view`; `algan check` reports Algan/Python/compiler/render-device/FFmpeg and paths; `algan --version` is the lightweight metadata path; and the default `SETTINGS.video` is exactly the named `LD` preset. |
+| 7 | Raw `ValueError` surface | **Fixed for the remaining public constructor leak.** The old count is obsolete: there are 52 non-vendored textual `raise ValueError` sites and none sits directly in a non-vendored `__init__`. Reproduction found one public transitive leak, `Surface(render_tolerance_pixels=0/NaN)`, through the internal logical-PN normalizer; `Surface` now translates that user-input failure to `AlganConfigurationError` (which remains `ValueError`-compatible). Internal algorithmic `ValueError` sites stay unchanged. |
+| 8 | Magic scalar vocabulary | **Intentional compatibility / superseded.** Material sidedness now has the public `Side` `IntEnum` (`FrontSide`/`BackSide`/`DoubleSide` aliases); legacy `0/1/2` inputs are accepted and normalized to it. Three.js-style integer colors remain accepted compatibility spellings while material defaults use `Color` constants. `Text` slant/weight names are case-insensitive, normalized and validated against Pango instead of silently accepting unknown strings. |
+| 9 | Viewer shutdown / Host hardening | **Already fixed.** Each viewer has a `secrets.token_urlsafe` session token carried in its URL/API calls; API requests without it are refused, and non-loopback/rebound `Host` names are refused before serving the app. `test_viewer_server.py` covers missing/bad shutdown tokens, the normal tokened API path and hostile `Host` headers. |
+
+### Historical findings (preserved verbatim)
+
+Correctness and UX, all **verified at the original audit commit**, none contract-breaking to fix later:
 
 - `mob.glow` / `mob.opacity` do not read back a glow or opacity set through `color` (`GREEN.set_glow(0.5)` → `mob.glow` is 0.0); rendering is right, and the two spellings *compose*. One sentence in the tutorial's colour note.
 - `Square(location=(1, 2))` → `RuntimeError: The size of tensor a (3) must match...`, while `mob.move(1)` gets the model error message. Run `cast_to_direction` on constructor kwargs; add a constructor-kwarg hint table beside `_MANIM_METHOD_HINTS` (`mob.py:137`) for `side_length` and friends.
