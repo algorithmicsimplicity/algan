@@ -101,3 +101,59 @@ def test_cuda_available_bytes_clears_the_requested_device(monkeypatch):
         ("info", torch.device("cuda:2")),
         ("exit", torch.device("cuda:2")),
     ]
+
+
+def test_memory_pressure_answers_per_device(monkeypatch):
+    """A device without CUDA is not automatically "under pressure".
+
+    ``release_torch_memory`` is called from twenty sites, nineteen with
+    ``force_gc=False`` so a steady-state call is cheap. Answering ``True`` for
+    every non-CUDA device made every one of those pay a full ``gc.collect()``
+    on a Metal render -- and, before the gate below, an import-cache drop and a
+    device drain with it. Metal reports the same two numbers CUDA does, so the
+    same ratio decides; only a device with no telemetry keeps the conservative
+    default.
+    """
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 8 << 30)
+
+    monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 1 << 30)
+    assert mu._gpu_memory_pressure() is False, "an eighth of the pool is not pressure"
+
+    monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 7 << 30)
+    assert mu._gpu_memory_pressure() is True
+
+    # No telemetry at all keeps the conservative answer.
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+    assert mu._gpu_memory_pressure() is True
+
+
+def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
+    """The zero-copy import cache is not dropped by a steady-state call.
+
+    Dropping it makes the next launch of every kernel re-import every arena
+    array it takes; the widest take twenty. It is still dropped under pressure,
+    which is what the leak it exists for actually is, and on any forced call.
+    """
+    from algan.rendering import mps_zero_copy
+    from algan.utils import memory_utils as mu
+
+    cleared = []
+    monkeypatch.setattr(mps_zero_copy, "clear_import_cache", lambda: cleared.append(1))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: None)
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda *a, **k: False)
+
+    mu.release_torch_memory(force_gc=False)
+    assert cleared == [], "a steady-state reclaim dropped the import cache"
+
+    mu.release_torch_memory(force_gc=True)
+    assert cleared == [1], "a forced reclaim must still drop it"
+
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda *a, **k: True)
+    mu.release_torch_memory(force_gc=False)
+    assert cleared == [1, 1], "a pressured reclaim must still drop it"

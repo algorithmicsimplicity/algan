@@ -105,16 +105,37 @@ def get_num_available_bytes(device=torch.device("cuda")):
 
 
 def _gpu_memory_pressure(threshold=0.8):
-    """True when the CUDA device is using more than ``threshold`` of its memory
-    (driver-level, so it accounts for Taichi + torch + everything).
+    """True when the render device is using more than ``threshold`` of its
+    memory (driver-level, so it accounts for Taichi + torch + everything).
+
+    **MPS answers for itself.** This used to return ``True`` for every device
+    that was not CUDA, which reads as a conservative default and is not one:
+    :func:`release_torch_memory` is called from twenty sites, nineteen of them
+    with ``force_gc=False`` precisely so that a steady-state call is cheap, and
+    an unconditional ``True`` made every one of them pay a full
+    ``gc.collect()`` on a Metal render. Metal reports the same two numbers CUDA
+    does -- what the driver holds for this process, and what it recommends the
+    process hold -- so the same ratio decides.
+
+    A device with no telemetry at all still answers ``True``, which is where
+    that default belongs: it is the fallback for "cannot tell", not the answer
+    for "not CUDA".
     """
-    if not torch.cuda.is_available():
-        return True  # No CUDA telemetry; keep the original (always-gc) behavior.
-    try:
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        return (total_bytes - free_bytes) > threshold * total_bytes
-    except Exception:
-        return True
+    if torch.cuda.is_available():
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            return (total_bytes - free_bytes) > threshold * total_bytes
+        except Exception:
+            return True
+    if torch.mps.is_available():
+        try:
+            total_bytes = torch.mps.recommended_max_memory()
+            return total_bytes <= 0 or (
+                torch.mps.driver_allocated_memory() > threshold * total_bytes
+            )
+        except Exception:
+            return True
+    return True
 
 
 #: Reclaimable torch cache below which a steady-state ``release_torch_memory`` call is
@@ -168,16 +189,24 @@ def release_torch_memory(force_gc=True):
         and (force_gc or _reclaimable_cuda_bytes() >= _MIN_RECLAIMABLE_BYTES)
     ):
         torch.cuda.empty_cache()
-    if torch.mps.is_available():
-        # Before the cache drain, not after, and not conditionally: the MPS
-        # zero-copy import cache holds a torch storage per buffer it has ever
-        # handed a kernel (it must -- Taichi's imported ndarray keeps no
-        # reference, so nothing else stops the caching allocator recycling a
-        # buffer under a live kernel), and a storage held here is a storage
-        # `empty_cache` cannot reclaim. Clearing it first is what makes the
-        # drain mean anything on Metal; a re-import afterwards is a dict miss
-        # and an ExternalMetalNdarray, which is why this is affordable at the
-        # rate this function is called. A no-op off MPS and on a stock build.
+    if torch.mps.is_available() and pressured:
+        # Before the cache drain, not after: the MPS zero-copy import cache
+        # holds a torch storage per buffer it has ever handed a kernel (it must
+        # -- Taichi's imported ndarray keeps no reference, so nothing else
+        # stops the caching allocator recycling a buffer under a live kernel),
+        # and a storage held here is a storage `empty_cache` cannot reclaim.
+        # Clearing it first is what makes the drain mean anything on Metal.
+        #
+        # Gated on the same pressure as the CUDA drain above, which it was not:
+        # it ran on EVERY call, including the nineteen ``force_gc=False`` ones
+        # a render makes several times per chunk. Dropping the import cache is
+        # not free -- the next launch of every kernel re-imports every arena
+        # array it takes, and the widest of them take twenty -- and neither is
+        # draining the device. The §1.4 leak this clear exists for (the cache
+        # walking torch's live MPS bytes from 0.64 GB to 6.74 GB over fifteen
+        # batches) is a pressure phenomenon by construction, so it is still
+        # cleared exactly when it matters, and every failure and retry path
+        # passes ``force_gc=True``. A no-op off MPS and on a stock build.
         from algan.rendering.mps_zero_copy import clear_import_cache
 
         clear_import_cache()
