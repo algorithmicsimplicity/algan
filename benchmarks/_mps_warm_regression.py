@@ -60,6 +60,26 @@ PRESET = {"UHD": UHD, "HD": HD, "MD": MD, "PREVIEW": PREVIEW}[QUALITY]
 #: finish is worth less than one that stops and reports.
 BUDGET = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 
+#: ``pin-arena`` as a fourth argument: never let a later render size itself
+#: smaller than the first one did.
+#:
+#: Run 37 traced the warm penalty to launch count, not to reclaim. Its counters
+#: are flat where the reclaim hypothesis needed them to move -- 0.1 to 1.9 s a
+#: chunk inside ``release_torch_memory``, and cache clears rising 1 -> 7 a chunk
+#: through the cold pass without moving its import count off 12388. What DOES
+#: move is between the renders: 12388 imports a chunk cold against 48766 warm,
+#: 3.94x, against a per-chunk cost of 31.2 s cold and 55.2 s warm. The 36378
+#: extra imports divide into the 24.0 s gap at 0.66 ms each, which is this box's
+#: measured dispatch cost. The arena is 1898 MB cold and 1226 MB warm, 0.65x,
+#: because ``driver_allocated_memory`` reads as a high-water mark here (it
+#: climbs monotonically 2.91 -> 4.49 G across the cold pass while live bytes sit
+#: at 1.91 G, and the pressured drains do not bring it down).
+#:
+#: So: smaller arena -> narrower launches -> more of them. Pinning the arena
+#: tests exactly that link. If warm returns to cold's per-chunk cost, the defect
+#: is the sizing probe; if it stays slow, it is not.
+PIN_ARENA = "pin-arena" in sys.argv[4:]
+
 #: Filled by the hooks below, reset per render.
 STATS = {"arenas": [], "batches": 0, "chunks": 0}
 WALL_START = time.perf_counter()
@@ -97,6 +117,21 @@ def _release(force_gc=True):
 
 
 mu.release_torch_memory = _release
+
+_real_available = mu.get_num_available_bytes
+#: The first render's free-byte figure, which every later one is held to.
+_FIRST_AVAILABLE = []
+
+
+def _available(*args, **kwargs):
+    got = _real_available(*args, **kwargs)
+    if not _FIRST_AVAILABLE:
+        _FIRST_AVAILABLE.append(got)
+        return got
+    return max(got, _FIRST_AVAILABLE[0]) if PIN_ARENA else got
+
+
+mu.get_num_available_bytes = _available
 
 _real_arena_init = mu.ManualMemory.__init__
 
@@ -187,6 +222,8 @@ for _name, _module in list(sys.modules.items()):
         _module.clear_import_cache = _clear_cache
     if getattr(_module, "import_tensor", None) is _real_import:
         _module.import_tensor = _import_tensor
+    if getattr(_module, "get_num_available_bytes", None) is _real_available:
+        _module.get_num_available_bytes = _available
 
 
 def _pool():
@@ -235,7 +272,11 @@ def scene():
 
 
 def main():
-    print(f"quality={QUALITY} runs={RUNS} budget={BUDGET or 'none'}", flush=True)
+    print(
+        f"quality={QUALITY} runs={RUNS} budget={BUDGET or 'none'} "
+        f"pin_arena={PIN_ARENA}",
+        flush=True,
+    )
     print(f"pool before any render: {_pool()} | {_host()}", flush=True)
     for i in range(1, RUNS + 1):
         STATS["arenas"].clear()
