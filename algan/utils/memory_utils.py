@@ -86,13 +86,19 @@ def is_cuda_oom(exc):
 #: size for a reason that does not hold.
 _MPS_HEADROOM = 0.1
 
-#: Host memory left for everything that is not this render: the video encoder
-#: holding 4K frames, the OS, and the CPU side of the process itself. Subtracted
-#: from ``psutil.virtual_memory().available`` before it bounds the render arena.
-#: On a 7 GB box this is the difference between a render that fits and one the
-#: kernel has to fight; it is a first estimate and wants checking against the
-#: host-free figure the warm-regression instrument now records.
-_HOST_RESERVE_BYTES = 2 * GIGABYTES
+#: Memory left to everything that is not this render, subtracted from what the
+#: process can actually spend (host ``available`` PLUS the GPU pool, which
+#: ``available`` excludes -- the two sum to a near-constant ~5.4 G on the 7 GB
+#: Mac runner). It covers macOS, the video encoder holding 4K frames, and the
+#: ~1.1 G by which a render's in-chunk peak exceeds its own boundary figure.
+#:
+#: 2.5 GB is calibrated, not guessed: it puts that box at 2.93 G free and a
+#: ~1.17 GB arena, which is the size that ran many jobs without a wedge before
+#: the sizing fix raised it to 1.9 GB and destabilised it. Absolute rather than
+#: a fraction, because what it stands for does not scale with the machine; on a
+#: Mac with real memory the GPU-side bound binds first and this never applies.
+#: ``ALGAN_MPS_HOST_RESERVE`` overrides it; 0 disables the bound.
+_HOST_RESERVE_BYTES = int(2.5 * GIGABYTES)
 
 
 def get_num_available_bytes(device=torch.device("cuda")):
@@ -204,23 +210,39 @@ def get_num_available_bytes(device=torch.device("cuda")):
         # nothing but `sleep` stopped printing -- two of those below the
         # recommendation entirely, at 3.14 G and 3.56 G, where a GPU working-set
         # story cannot reach.
-        # OFF by default, because the first job to run it died with the very
-        # error this round began with -- "Insufficient memory to ray trace a
-        # single frame" -- inside a minute. A 2 GB reserve should have left
-        # plenty on a 7 GB box, so `available` must itself be far smaller than
-        # 7 GB at render time, and subtracting a fixed 2 GB from it leaves an
-        # arena too small for one 4K frame. That is evidence FOR the machine
-        # being nearly full, and against this particular arithmetic: quite
-        # possibly `available` already excludes the GPU allocation, in which
-        # case the reserve double-counts it.
+        # The first attempt at this subtracted the reserve from `available`
+        # alone and died inside a minute with "Insufficient memory to ray trace
+        # a single frame". The trace that followed says why, and gives the right
+        # arithmetic: **`available` EXCLUDES the GPU pool**. Across a render it
+        # and `driver_allocated` sum to a near-constant ~5.4 G on the 7 GB
+        # runner -- 2.69 + 2.74, then 1.46 + 3.84, then 1.19 + 2.96 -- with
+        # macOS holding the balance. So what this process can spend is the SUM,
+        # and subtracting a reserve from `available` by itself charges the GPU
+        # allocation twice.
         #
-        # So it is a knob to be calibrated rather than a default to be trusted.
-        # Set ALGAN_MPS_HOST_RESERVE to the bytes to hold back; 0 (the default)
-        # leaves the bound off entirely.
-        host_reserve = env_int("ALGAN_MPS_HOST_RESERVE", 0)
+        # The same trace shows what the reserve is for. At the chunk-3 boundary
+        # `available` reads 1.19 G while the in-chunk peak runs 1.09 G above the
+        # boundary driver figure, which leaves the machine about 100 MB at the
+        # moment of peak -- and the process's own resident set is being evicted
+        # as it works, 1.29 G down to 0.22 G, which is macOS paging it out
+        # rather than the render freeing anything. That is the exhaustion behind
+        # every failure this round: a kill at 4.68 G, three wedges (two of them
+        # under the GPU recommendation, where no working-set story reaches), and
+        # one 455 s chunk that thrashed and recovered.
+        #
+        # 2.5 GB of reserve puts this box at 2.93 G free and a ~1.17 GB arena --
+        # the size that ran for many jobs without a wedge, before the sizing fix
+        # raised it to 1.9 GB. It is an absolute, not a fraction, because what
+        # it stands for is absolute: macOS, the video encoder holding 4K frames,
+        # and the ~1.1 G the render peaks above its own boundary figure. On a
+        # machine with real memory the GPU bound above binds first and this one
+        # never applies.
+        host_reserve = env_int("ALGAN_MPS_HOST_RESERVE", _HOST_RESERVE_BYTES)
         if host_reserve > 0:
-            host_free = int(psutil.virtual_memory().available)
-            free_bytes = min(free_bytes, max(0, host_free - host_reserve))
+            spendable = int(psutil.virtual_memory().available) + int(
+                torch.mps.driver_allocated_memory()
+            )
+            free_bytes = min(free_bytes, max(0, spendable - host_reserve))
         cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)
         if cap > 0:
             free_bytes = min(free_bytes, cap)
