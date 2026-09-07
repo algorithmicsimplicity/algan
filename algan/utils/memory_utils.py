@@ -93,6 +93,24 @@ def get_num_available_bytes(device=torch.device("cuda")):
         # BVH build are paid several times over. The clamp is available again
         # as ``ALGAN_MPS_MEMORY_CAP`` (bytes) for A/B, and
         # ``available_memory_override`` remains the way to pin the figure.
+        #
+        # ``empty_cache`` FIRST, exactly as the CUDA branch does, and for the
+        # same reason: ``driver_allocated_memory`` counts the whole MPS pool,
+        # cached-but-free blocks included, so without the drain this reports
+        # what the process has ever grown to rather than what it is using. The
+        # second render in a process then sees a fraction of the first one's
+        # headroom -- measured on the Mac runner as a warm pass that took over
+        # three times the cold pass's ten minutes and had to be killed, where
+        # the only thing warm should remove is the kernel compile. The old
+        # 1 GiB clamp hid this: the figure was below the clamp either way.
+        # The import cache is cleared with it, because an entry there is a
+        # storage ``empty_cache`` cannot reclaim -- the same order
+        # ``release_torch_memory`` uses. This is a sizing point (once per batch
+        # or chunk), not a launch, so it is the one place that cost belongs.
+        from algan.rendering.mps_zero_copy import clear_import_cache
+
+        clear_import_cache()
+        torch.mps.empty_cache()
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         free_bytes = max(0, total_bytes - allocated_bytes)

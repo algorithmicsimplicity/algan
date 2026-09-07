@@ -157,3 +157,34 @@ def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
     monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda *a, **k: True)
     mu.release_torch_memory(force_gc=False)
     assert cleared == [1, 1], "a pressured reclaim must still drop it"
+
+
+def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
+    """MPS reclaims before measuring, exactly as the CUDA branch does.
+
+    ``driver_allocated_memory`` counts the whole MPS pool, cached-but-free
+    blocks included, so measuring without draining reports what the process has
+    ever grown to rather than what it is using -- and the second render in a
+    process then sizes its arena against the first one's high-water mark. The
+    import cache is dropped first because an entry there is a storage
+    ``empty_cache`` cannot reclaim.
+    """
+    from algan.rendering import mps_zero_copy
+    from algan.utils import memory_utils as mu
+
+    order = []
+    monkeypatch.setattr(
+        mps_zero_copy, "clear_import_cache", lambda: order.append("clear")
+    )
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: order.append("drain"))
+    monkeypatch.setattr(
+        torch.mps,
+        "driver_allocated_memory",
+        lambda: order.append("measure") or (1 << 30),
+    )
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 5 << 30)
+
+    free = mu.get_num_available_bytes(torch.device("mps"))
+
+    assert order == ["clear", "drain", "measure"], order
+    assert free == (5 << 30) - (1 << 30)
