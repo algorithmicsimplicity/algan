@@ -97,6 +97,22 @@ Things worth setting deliberately:
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
 
+> ### The push entry point only fires when `mac.json` actually changes
+>
+> `run_on_mac.yaml`'s push trigger is filtered on `paths: .github/gpu-run/mac.json`,
+> so a commit that edits only source or tests launches **nothing** — and a
+> commit that rewrites `mac.json` with values identical to the ones already
+> there changes no bytes, so it launches nothing either. That second case is
+> silent and easy to miss: the commit succeeds, the push succeeds, and there is
+> simply no new run. It cost two rounds in one session, both times while
+> announcing that a run had started.
+>
+> Keep a `_request` field in the file and give it a new value every time — a
+> run number and what the run is for. It guarantees the diff and doubles as a
+> label for what you were asking. Then **verify the run exists** before saying
+> it is running: list the workflow's runs and check the head SHA matches the
+> commit you just pushed.
+>
 > ### Size the command for ~40 minutes, and make it report as it goes
 >
 > **A macOS job here gets reclaimed well before `timeout_minutes`.** Three in
