@@ -12,7 +12,7 @@ from pathlib import Path
 def _sphinx_command(docs_dir: Path, *, skip_examples: bool) -> list[str]:
     source_dir = docs_dir / "source"
     build_dir = docs_dir / "build"
-    # The Algan directive resolves skip-manim while Sphinx reads sources, so a
+    # The Algan directive resolves skip-algan while Sphinx reads sources, so a
     # shared doctree cache would preserve placeholders when the tag is removed.
     doctree_dir = build_dir / (
         "doctrees-without-examples" if skip_examples else "doctrees-with-examples"
@@ -30,7 +30,7 @@ def _sphinx_command(docs_dir: Path, *, skip_examples: bool) -> list[str]:
         str(doctree_dir),
     ]
     if skip_examples:
-        command.extend(["-t", "skip-manim"])
+        command.extend(["-t", "skip-algan"])
     return command
 
 

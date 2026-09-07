@@ -47,7 +47,7 @@ jobs:
         run: |
           uv run python -m sphinx -M html docs/source docs/build \
             -d docs/build/doctrees-without-examples \
-            -t skip-manim -W --keep-going
+            -t skip-algan -W --keep-going
 
       - name: Upload built HTML
         if: always()

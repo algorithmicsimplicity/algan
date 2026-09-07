@@ -18,7 +18,8 @@ import threading
 import pytest
 
 import algan
-from algan import SETTINGS, cli, taichi_compat
+import algan_cli as cli
+from algan import SETTINGS, taichi_compat
 
 # --------------------------------------------------------------------------
 # Scripts that report what the CLI did to them, instead of rendering

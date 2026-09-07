@@ -186,7 +186,7 @@ def test_reset_forgets_compiled_callables_and_verdicts(monkeypatch):
 
 
 def test_the_cli_health_check_reports_the_switch(capsys):
-    from algan.cli import _cmd_check
+    from algan_cli import _cmd_check
 
     _cmd_check(None)
     out = capsys.readouterr().out

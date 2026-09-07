@@ -113,7 +113,13 @@ dependencies = [
 ]
 
 [project.scripts]
-algan = "algan.cli:main"
+# Deliberately NOT `algan.cli:main`. Python imports parent packages first, so
+# routing the console script through a submodule of `algan` runs
+# `algan/__init__.py` before argparse sees argv -- 8.4s of torch, Quadrants and
+# the vendored Manim config, for `algan --version`. `algan_cli` is a top-level
+# module whose own imports are stdlib-only; it reaches into `algan` from inside
+# the subcommands that actually need it, so the cheap paths stay cheap.
+algan = "algan_cli:main"
 
 [project.urls]
 repository = "https://github.com/algorithmicsimplicity/algan"
@@ -199,6 +205,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["algan"]
+# The console script's entry module, which lives outside the package on
+# purpose (see [project.scripts]). `packages` alone would not ship it.
+force-include = { "algan_cli.py" = "algan_cli.py" }
 exclude = [
   # Working-design notes, not user-facing documentation.
   "algan/**/DESIGN_*.md",
@@ -211,6 +220,8 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/algan",
+  # The console script's entry module; see [project.scripts].
+  "/algan_cli.py",
   "/tests",
   "/taichi_patches",
   "/quadrants_patches",

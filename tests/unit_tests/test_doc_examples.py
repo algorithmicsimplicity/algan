@@ -19,7 +19,7 @@ what each block can actually support, in four tiers:
     pages *and* docstrings in ``algan/`` -- no execution. Checks what the
     directive itself requires of a block before it runs: a name argument, a body
     that star-imports algan, one video out. The docs job in CI builds with
-    ``-t skip-manim``, so it never executes a body but does parse every
+    ``-t skip-algan``, so it never executes a body but does parse every
     directive; this tier is the cheap stand-in for both halves.
 
 ``test_doc_example_uses_public_api``
@@ -324,7 +324,7 @@ def test_algan_directive_is_well_formed(example: DocExample):
     """Every ``.. algan::`` block is one the documentation build can render.
 
     The build is the only thing that executes these, it takes minutes because it
-    renders each one, and CI runs it *without* rendering (``-t skip-manim -W``).
+    renders each one, and CI runs it *without* rendering (``-t skip-algan -W``).
     So the structural half of a broken directive fails the docs job while the
     body's half only shows up in a full local build. Both are cheap to check
     here, and the alternative -- noticing on master -- has happened: a nameless

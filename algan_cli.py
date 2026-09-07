@@ -3,6 +3,17 @@
 Provides commands for rendering scenes, managing the warm daemon, checking
 environment health, and scaffolding new scenes.
 
+**This module lives outside the ``algan`` package on purpose, and moving it
+back in would be a 40x regression on every cheap command.** Python imports a
+submodule's parents first, so ``algan.cli:main`` as a console-script entry
+point runs ``algan/__init__.py`` before argparse ever sees argv: 8.4 s of
+torch (4.3 s), Quadrants through ``rendering.taichi_runtime`` (2.3 s) and the
+vendored Manim ``_config`` (0.9 s), paid by ``algan --version`` and
+``algan --help`` alike. Nothing at module scope here may import ``algan`` --
+every subcommand that needs the package imports it inside its own function,
+and ``_version`` reads the version from installed metadata instead. Keep it
+that way; ``tests/unit_tests/test_cli_startup.py`` fails if it drifts.
+
 ``algan render`` runs a scene script; the script is what calls
 ``Scene.save_video()``, so the flags that change *what* it renders are applied
 to ``SETTINGS`` in the process the script runs in, and only fill in what the
