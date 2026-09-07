@@ -60,6 +60,17 @@ def is_cuda_oom(exc):
     return False
 
 
+#: Fraction of Metal's ``recommendedMaxWorkingSetSize`` held back from the free
+#: figure, standing in for what Taichi allocates outside torch (which
+#: ``current_allocated_memory`` cannot see). Calibrated on two Mac jobs, which
+#: is thin: an arena of ~1900 MB survived a warm pass at a 4.76 G driver figure
+#: in one and was killed at 4.68 G in the other. 0.1 puts the arena near
+#: 1.7 GB on that box -- still well clear of the 1226 MB the high-water figure
+#: produced -- and the peak inside what has survived repeatedly. Revisit it with
+#: numbers, not by taste; ``ALGAN_MPS_MEMORY_CAP`` overrides from outside.
+_MPS_HEADROOM = 0.1
+
+
 def get_num_available_bytes(device=torch.device("cuda")):
     device = torch.device(device)
     # A pinned figure stands in for the *measured* branches only. The CPU
@@ -138,8 +149,21 @@ def get_num_available_bytes(device=torch.device("cuda")):
         # is the known gap; the arena preflight already binary-searches the
         # window down when a batch does not fit, and `ALGAN_MPS_MEMORY_CAP`
         # remains the way to impose a ceiling by hand.
+        #
+        # A reserve is held back because live bytes alone leave NO margin. The
+        # first job to size this way rendered its cold pass in 649.8 s -- the
+        # fastest measured -- and its warm pass ran at 28.4 s a chunk with the
+        # arena and the import count both healthy, and then the process was
+        # killed outright at warm chunk 14: no traceback, no Python exception,
+        # exit 1, with `driver_allocated` pinned at 4.68 G against a 4.67 G
+        # recommended max. The pinned-arena A/B had survived 18 chunks at
+        # 4.76 G, so at this arena size it is a coin flip -- the render is
+        # running with zero headroom and the OS decides. What Taichi holds
+        # outside torch is invisible to `current_allocated_memory`, and this
+        # reserve is what stands in for it.
         allocated_bytes = torch.mps.current_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
+        total_bytes = max(0, total_bytes - int(total_bytes * _MPS_HEADROOM))
         free_bytes = max(0, total_bytes - allocated_bytes)
         cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)
         if cap > 0:

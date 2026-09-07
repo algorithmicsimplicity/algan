@@ -193,4 +193,9 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     free = mu.get_num_available_bytes(torch.device("mps"))
 
     assert order == ["clear", "drain", "measure"], order
-    assert free == (5 << 30) - (1 << 30), "sized from the high-water mark, not live bytes"
+    # A reserve is held back from the recommended max: live bytes alone left no
+    # margin at all, and a warm UHD pass was killed outright at warm chunk 14
+    # with the driver figure pinned at the ceiling.
+    budget = (5 << 30) - int((5 << 30) * mu._MPS_HEADROOM)
+    assert free == budget - (1 << 30), "sized from the high-water mark, not live bytes"
+    assert free < (5 << 30) - (1 << 30), "no headroom was reserved"
