@@ -10,5 +10,5 @@
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 30,
-  "_request": "46: cap free at 0.4 x TOTAL ram (~1.12G arena on 7GB); both renders to finish"
+  "_request": "48: first run on master's optimized batching (merge 767836e); 2x UHD"
 }
