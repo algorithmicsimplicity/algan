@@ -92,6 +92,12 @@ RENDER_STARTED = [0.0]
 #: When the chunk in flight began, for the heartbeat below.
 CHUNK_STARTED = [0.0]
 
+#: Highest driver_allocated seen since the last chunk line, and when the
+#: heartbeat last spoke. The boundary readings understate the in-chunk peak by
+#: ~1.1 G, which is what run 41's heartbeat found.
+PEAK = [0]
+LAST_BEAT = [0.0]
+
 #: Reclaim accounting, reset at every chunk boundary. The per-chunk trace from
 #: run 36 put the warm cost INSIDE the chunks (warm 54.8 s a chunk against a
 #: cold 34.8 s over the same 18 chunks and 12 batches), not in batch
@@ -172,16 +178,31 @@ def _heartbeat():
     run 39. A live process says so here, with the pool figures at the moment of
     asking, so "slow" and "dead" stop looking the same. A daemon thread, so it
     never holds the interpreter open.
+
+    Its first outing found what the chunk lines cannot see: DURING a chunk the
+    driver figure reaches 4.85-4.87 G, while at chunk boundaries it reads
+    3.70-4.07 G. The peak is ~1.1 G above every number this instrument had been
+    reporting, and above the 4.67 G recommended max -- so the headroom reserve
+    was calibrated against a figure that understates the peak by a quarter of
+    the pool. Hence the watermark below: sample often, report the peak at the
+    next chunk line, so the reserve can be set against the real high point
+    rather than against the troughs between chunks.
     """
     while True:
-        time.sleep(30)
+        time.sleep(2)
+        if torch.mps.is_available():
+            PEAK[0] = max(PEAK[0], torch.mps.driver_allocated_memory())
         held = time.perf_counter() - CHUNK_STARTED[0]
-        if CHUNK_STARTED[0] and held > 45:
-            print(
-                f"      ... chunk {STATS['chunks']} still running, {held:.0f} s in"
-                f" | {_pool()}",
-                flush=True,
-            )
+        if not CHUNK_STARTED[0] or held < 45:
+            continue
+        if time.perf_counter() - LAST_BEAT[0] < 30:
+            continue
+        LAST_BEAT[0] = time.perf_counter()
+        print(
+            f"      ... chunk {STATS['chunks']} still running, {held:.0f} s in"
+            f" | {_pool()}",
+            flush=True,
+        )
 
 import algan.rendering.raytracing.tracer as rtr  # noqa: E402
 
@@ -198,10 +219,11 @@ def _wavefront(*args, **kwargs):
         f"    chunk {STATS['chunks']:>3} begins at +{started:7.1f} s | "
         f"reclaim {RECLAIM['calls']:>4} calls, {RECLAIM['pressured']:>4} pressured, "
         f"{RECLAIM['seconds']:6.1f} s | zc {ZC['clears']:>4} clears, "
-        f"{ZC['imports']:>6} imports | {_pool()}",
+        f"{ZC['imports']:>6} imports | peak {PEAK[0] / 2**30:.2f}G | {_pool()}",
         flush=True,
     )
     CHUNK_STARTED[0] = time.perf_counter()
+    PEAK[0] = 0
     RECLAIM["calls"] = RECLAIM["pressured"] = 0
     RECLAIM["seconds"] = 0.0
     ZC["clears"] = ZC["imports"] = 0

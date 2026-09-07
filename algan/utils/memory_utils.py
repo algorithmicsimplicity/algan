@@ -68,7 +68,16 @@ def is_cuda_oom(exc):
 #: 1.7 GB on that box -- still well clear of the 1226 MB the high-water figure
 #: produced -- and the peak inside what has survived repeatedly. Revisit it with
 #: numbers, not by taste; ``ALGAN_MPS_MEMORY_CAP`` overrides from outside.
-_MPS_HEADROOM = 0.1
+#:
+#: Raised from 0.1 once a heartbeat sampling the pool *during* a chunk showed
+#: what the chunk-boundary readings hide: the driver figure reaches 4.85-4.87 G
+#: mid-chunk where the boundaries report 3.70-4.07 G. The peak is ~1.1 G higher
+#: than every number this was calibrated against, and it is over the 4.67 G
+#: recommended max -- which is the common thread through three failures at that
+#: ceiling: run 39 killed outright at 4.68 G, runs 40 and 41 wedged so hard that
+#: even a daemon heartbeat thread stopped printing. 0.25 aims the peak, not the
+#: trough, below the recommendation.
+_MPS_HEADROOM = 0.25
 
 
 def get_num_available_bytes(device=torch.device("cuda")):
