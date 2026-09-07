@@ -30,7 +30,9 @@ Usage:
 
 from __future__ import annotations
 
+import multiprocessing
 import os
+import resource
 import sys
 import time
 from pathlib import Path
@@ -118,6 +120,23 @@ def _pool():
     )
 
 
+def _host():
+    """Host-side footprint, which the MPS pool is carved out of.
+
+    The runner has 7 GB of unified memory and a 4.67 GB
+    ``recommendedMaxWorkingSetSize``, so a live child process or a growing
+    resident set competes with the render arena rather than sitting beside it.
+    ``children`` is here because run 34 exited with a leaked-semaphore warning
+    that run 35 did not: one semaphore explains no memory by itself, but an
+    unreaped child that owns it would.
+    """
+    kids = multiprocessing.active_children()
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS, kilobytes on Linux.
+    scale = 2**30 if sys.platform == "darwin" else 2**20
+    return f"rss_peak={rss / scale:.2f}G children={len(kids)}{[c.name for c in kids] or ''}"
+
+
 def scene():
     duration = 0.3
     SETTINGS.raytracing.set(shadows=False)
@@ -137,7 +156,7 @@ def scene():
 
 def main():
     print(f"quality={QUALITY} runs={RUNS} budget={BUDGET or 'none'}", flush=True)
-    print(f"pool before any render: {_pool()}", flush=True)
+    print(f"pool before any render: {_pool()} | {_host()}", flush=True)
     for i in range(1, RUNS + 1):
         STATS["arenas"].clear()
         STATS["batches"] = STATS["chunks"] = 0
@@ -159,7 +178,7 @@ def main():
             f"batches {STATS['batches']} | chunks {STATS['chunks']}",
             flush=True,
         )
-        print(f"  pool after run {i}: {_pool()}", flush=True)
+        print(f"  pool after run {i}: {_pool()} | {_host()}", flush=True)
         if BUDGET and (time.perf_counter() - WALL_START) > BUDGET:
             print(
                 f"stopping after run {i}: {time.perf_counter() - WALL_START:.0f} s "
