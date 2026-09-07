@@ -97,6 +97,29 @@ Things worth setting deliberately:
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
 
+> ### Size the command for ~40 minutes, and make it report as it goes
+>
+> **A macOS job here gets reclaimed well before `timeout_minutes`.** Three in
+> one session, all killed with `conclusion: cancelled`: run 26 at 72 min
+> against a 120-min timeout, run 32 at 57 min against 100. (Run 31 did hit its
+> own 45-min timeout, so the setting still binds when it is the smaller of the
+> two.) So `timeout_minutes` buys nothing above about an hour — the command has
+> to fit, not the timeout.
+>
+> **And a reclaimed job yields NOTHING.** The kill leaves "Run the command"
+> stuck at `in_progress` with the publish and upload steps `pending`, so the
+> `if: always()` that would have saved the partial output never runs; the
+> artifact is a few hundred bytes and `get_job_logs` shows only the setup. Four
+> jobs in a row cost an hour each and produced no reading this way, every one of
+> them running `profile_scene`, which prints its table only at the very end.
+>
+> The lesson is about the *script*, not the harness: **print a result line after
+> every unit of work.** `benchmarks/_mps_warm_regression.py` is the shape —
+> one line per render with the wall time and the numbers that would explain it —
+> so a job that dies half way still leaves the comparison behind. Reach for
+> `profile_scene` when the attribution is the point and the render is known to
+> fit; reach for something that streams when it is not.
+
 ### Wait
 
 ~10–14 min of setup before the command runs (brew, `uv sync`, and the wheel),
