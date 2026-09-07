@@ -1,6 +1,6 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
-  "command": "uv run python -c \"import torch; print('MPS recommended_max GB', torch.mps.recommended_max_memory()/2**30, 'driver_allocated GB', torch.mps.driver_allocated_memory()/2**30)\"; (uv run python benchmarks/performance/nn_scene_PREVIEW.py || echo STEP_FAILED_PREVIEW); (uv run python benchmarks/performance/nn_scene_UHD.py || echo STEP_FAILED_UHD)",
+  "command": "uv run python -c \"import torch; print('MPS recommended_max GB', torch.mps.recommended_max_memory()/2**30)\"; (ALGAN_MPS_MEMORY_CAP=3221225472 uv run python benchmarks/performance/nn_scene_UHD.py || echo STEP_FAILED_UHD_CAP3); (uv run python benchmarks/performance/nn_scene_UHD.py || echo STEP_FAILED_UHD_FULL)",
   "arms": ["mac-mps"],
   "env": {"ALGAN_VIDEO_ENCODER": "software"},
   "latex": false,
