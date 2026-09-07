@@ -143,11 +143,20 @@ scene and no kernels, so it costs seconds on the harness.
    `DataTypeCxxWrapper`, and the old exact-name test fell back to a `repr`
    carrying an object address, i.e. a key no second process could match.
 3. **The sheet lexsort narrows its keys to int32** where the values provably
-   fit, and the three readbacks that precede it are one stacked readback.
+   fit — 20 radix passes over the fragment stream become 12 — and the three
+   readbacks that precede it are one stacked readback, taken at the widths
+   `reduction_index_dtype()` already narrows the renderer's other integer
+   reductions to.
 4. **Two `torch.unique` calls whose input is provably sorted became
    `unique_consecutive`.**
+5. **`_shade_class`'s per-(frame, triangle) table walks its frame axis in
+   blocks**, so its `[frames, N, 3, 3]` intermediates have a ceiling whatever
+   the chunk holds. This is defect (a) of §3, and it is a defect on every
+   device — a one-frame chunk simply never reached it.
 
-All four are bit-identical by construction; 1 and 2 change no arithmetic at all.
+All five are bit-identical by construction; 1 and 2 change no arithmetic at
+all, and 5 is guarded by a test that pins a one-frame-per-block run against a
+one-block run entry for entry.
 
 ## 5. Reproducing
 
