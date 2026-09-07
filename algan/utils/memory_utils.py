@@ -111,7 +111,34 @@ def get_num_available_bytes(device=torch.device("cuda")):
 
         clear_import_cache()
         torch.mps.empty_cache()
-        allocated_bytes = torch.mps.driver_allocated_memory()
+        # Measure LIVE bytes, not the driver's figure. `driver_allocated_memory`
+        # behaves as a high-water mark on Metal: it does not come back down
+        # after the drain above, so the second render in a process is charged
+        # for the first one's peak. Measured on the Mac runner across five UHD
+        # jobs, one render per pass:
+        #
+        #   * within a pass it climbs monotonically 2.91 -> 4.49 G while live
+        #     bytes hold flat at 1.91 G, through seven pressured drains a chunk
+        #     in the last third that never move it;
+        #   * so the second pass sized a 1226 MB arena against the first's
+        #     1898 MB, reproducibly (1212/1226/1226 MB over three jobs);
+        #   * and that arena drove the render's launch count, 12388 zero-copy
+        #     imports a chunk against 48766, which is the whole of the warm
+        #     slowdown at this box's 0.66 ms a dispatch.
+        #
+        # Holding the second render to the first's figure took the warm pass
+        # from 968-1523 s to 568.5 s, put its import count back to 12388 exactly,
+        # and left it FASTER than the cold pass, which is the direction a warm
+        # render belongs. `driver_allocated` reached 4.76 G doing it -- past
+        # `recommendedMaxWorkingSetSize`, with no failure -- so on unified
+        # memory that figure is advisory and the blocks behind it are reusable.
+        #
+        # `current_allocated_memory` therefore, after the drain: what torch is
+        # actually holding. What Taichi holds outside torch is not in it, which
+        # is the known gap; the arena preflight already binary-searches the
+        # window down when a batch does not fit, and `ALGAN_MPS_MEMORY_CAP`
+        # remains the way to impose a ceiling by hand.
+        allocated_bytes = torch.mps.current_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         free_bytes = max(0, total_bytes - allocated_bytes)
         cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)

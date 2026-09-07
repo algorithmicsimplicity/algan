@@ -162,12 +162,16 @@ def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
 def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     """MPS reclaims before measuring, exactly as the CUDA branch does.
 
-    ``driver_allocated_memory`` counts the whole MPS pool, cached-but-free
-    blocks included, so measuring without draining reports what the process has
-    ever grown to rather than what it is using -- and the second render in a
-    process then sizes its arena against the first one's high-water mark. The
-    import cache is dropped first because an entry there is a storage
+    The import cache is dropped first because an entry there is a storage
     ``empty_cache`` cannot reclaim.
+
+    What is measured afterwards is ``current_allocated_memory``, the live
+    bytes, NOT ``driver_allocated_memory``: the driver figure behaves as a
+    high-water mark on Metal and does not come back down after the drain, so
+    sizing from it charges each render for the previous one's peak. On the Mac
+    runner that cost the second UHD render a third of its arena (1898 -> 1226 MB,
+    reproducibly) and 4x its launch count, and holding it to the first figure
+    took the warm pass from 968-1523 s to 568.5 s.
     """
     from algan.rendering import mps_zero_copy
     from algan.utils import memory_utils as mu
@@ -179,12 +183,14 @@ def test_the_mps_free_figure_drains_before_it_measures(monkeypatch):
     monkeypatch.setattr(torch.mps, "empty_cache", lambda: order.append("drain"))
     monkeypatch.setattr(
         torch.mps,
-        "driver_allocated_memory",
+        "current_allocated_memory",
         lambda: order.append("measure") or (1 << 30),
     )
+    # The high-water figure is deliberately NOT what the arena is sized from.
+    monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 4 << 30)
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 5 << 30)
 
     free = mu.get_num_available_bytes(torch.device("mps"))
 
     assert order == ["clear", "drain", "measure"], order
-    assert free == (5 << 30) - (1 << 30)
+    assert free == (5 << 30) - (1 << 30), "sized from the high-water mark, not live bytes"
