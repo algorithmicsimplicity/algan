@@ -45,7 +45,10 @@ concurrency:
 
 env:
   QUADRANTS_REF: v1.3.0
-  ALGAN_QUADRANTS_VERSION: 1.3.0.post2
+  # Build-side next revision only. pyproject.toml/uv.lock intentionally remain
+  # on published post2 until post3 exists; quadrants_patches/PYPI.md documents
+  # the two-stage release order.
+  ALGAN_QUADRANTS_VERSION: 1.3.0.post3
 
 jobs:
   plan:
@@ -67,6 +70,14 @@ jobs:
       container_linux_arm64: ${{ steps.resolve.outputs.container_linux_arm64 }}
       wheel_tag_linux: ${{ steps.resolve.outputs.wheel_tag_linux }}
       wheel_tag_linux_arm64: ${{ steps.resolve.outputs.wheel_tag_linux_arm64 }}
+      portable_llvm_version: ${{ steps.resolve.outputs.portable_llvm_version }}
+      portable_llvm_commit: ${{ steps.resolve.outputs.portable_llvm_commit }}
+      portable_llvm_container: ${{ steps.resolve.outputs.portable_llvm_container }}
+      portable_llvm_artifact: ${{ steps.resolve.outputs.portable_llvm_artifact }}
+      portable_llvm_archive: ${{ steps.resolve.outputs.portable_llvm_archive }}
+      portable_llvm_cache_dir: ${{ steps.resolve.outputs.portable_llvm_cache_dir }}
+      portable_llvm_gcc_nvr: ${{ steps.resolve.outputs.portable_llvm_gcc_nvr }}
+      portable_llvm_cache_key: ${{ steps.resolve.outputs.portable_llvm_cache_key }}
       pythons: ${{ steps.resolve.outputs.pythons }}
       summary: ${{ steps.resolve.outputs.summary }}
     steps:
@@ -95,6 +106,74 @@ jobs:
           echo "patched: ${{ inputs.apply_patches }}" >> "$GITHUB_STEP_SUMMARY"
           echo "publish: ${{ inputs.publish }}" >> "$GITHUB_STEP_SUMMARY"
 
+  # Build the aarch64 LLVM once, rather than once per Python wheel. The upstream
+  # aarch64 archive is the source of the lone GLIBC_2.35 reference documented
+  # in resolve_wheel_matrix.py; this rebuilds the same LLVM 22.1.0 commit with
+  # GCC 11 in a pinned glibc-2.34 userspace, verifies the archive itself, caches
+  # it across runs and uploads it for this run's wheel jobs.
+  portable_llvm_arm64:
+    name: portable LLVM / linux_arm64
+    needs: plan
+    if: needs.plan.outputs.linux_arm64 == 'true'
+    runs-on: ${{ needs.plan.outputs.runner_linux_arm64 }}
+    container: ${{ needs.plan.outputs.portable_llvm_container }}
+    timeout-minutes: 180
+    steps:
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+        with:
+          path: algan
+
+      - name: Container facts
+        run: |
+          uname -a
+          head -2 /etc/os-release
+          ldd --version | head -1
+          nproc
+          grep MemTotal /proc/meminfo
+          df -h /
+
+      - name: Restore the portable LLVM archive
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: algan/.portable-llvm
+          key: ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}
+
+      - name: Build portable LLVM 22.1.0
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          PORTABLE_LLVM_VERSION: ${{ needs.plan.outputs.portable_llvm_version }}
+          PORTABLE_LLVM_COMMIT: ${{ needs.plan.outputs.portable_llvm_commit }}
+          PORTABLE_LLVM_BUILD_IMAGE: ${{ needs.plan.outputs.portable_llvm_container }}
+          PORTABLE_LLVM_GCC_NVR: ${{ needs.plan.outputs.portable_llvm_gcc_nvr }}
+          PORTABLE_LLVM_ARCHIVE: ${{ needs.plan.outputs.portable_llvm_archive }}
+        run: |
+          set -euxo pipefail
+          mkdir -p algan/.portable-llvm
+          bash algan/scripts/gate/build_portable_quadrants_llvm.sh \
+            "algan/.portable-llvm/$PORTABLE_LLVM_ARCHIVE" \
+            algan/.portable-llvm/provenance.txt
+
+      - name: Verify portable LLVM archive provenance
+        env:
+          PORTABLE_LLVM_ARCHIVE: ${{ needs.plan.outputs.portable_llvm_archive }}
+        run: |
+          set -euxo pipefail
+          cd algan/.portable-llvm
+          sha256sum -c "$PORTABLE_LLVM_ARCHIVE.sha256"
+          test -s provenance.txt
+          grep -F "Measured maximum GLIBC symbol in install tree/archive members:" provenance.txt
+          cat provenance.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload portable LLVM for the wheel matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
+          path: algan/.portable-llvm/
+          if-no-files-found: error
+          compression-level: 0
+
   # ---------------------------------------------------------------------------
   # The two Linux legs are ONE RECIPE built on two runner architectures, and
   # `tests/unit_tests/test_quadrants_wheels.py::test_the_two_linux_legs_are_one_recipe`
@@ -116,8 +195,8 @@ jobs:
   # ---------------------------------------------------------------------------
   linux:
     name: linux / py${{ matrix.python-version }}
-    needs: plan
-    if: needs.plan.outputs.linux == 'true'
+    needs: [plan, portable_llvm_arm64]
+    if: ${{ always() && needs.plan.outputs.linux == 'true' }}
     runs-on: ${{ needs.plan.outputs.runner_linux }}
     # The wheel's glibc floor is this image's, not the runner's. That is the
     # whole point of the container: `build_wheel` stamps a manylinux tag it
@@ -205,6 +284,34 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
+      # Quadrants v1.3.0 already skips its LLVM download when its fixed
+      # cache directory is populated. Put Algan's portable tree in that exact
+      # slot on ARM, so the override needs no extra Quadrants patch and cannot
+      # affect x86-64. The artifact is checksummed before it is trusted.
+      - name: Download the portable aarch64 LLVM
+        if: runner.arch == 'ARM64'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
+          path: algan/.portable-llvm
+
+      - name: Put portable LLVM in Quadrants' cache slot
+        if: runner.arch == 'ARM64'
+        env:
+          PORTABLE_LLVM_ARCHIVE: ${{ needs.plan.outputs.portable_llvm_archive }}
+          PORTABLE_LLVM_CACHE_DIR: ${{ needs.plan.outputs.portable_llvm_cache_dir }}
+        run: |
+          set -euxo pipefail
+          archive="$GITHUB_WORKSPACE/algan/.portable-llvm/$PORTABLE_LLVM_ARCHIVE"
+          cd "$GITHUB_WORKSPACE/algan/.portable-llvm"
+          sha256sum -c "$PORTABLE_LLVM_ARCHIVE.sha256"
+          dest="$HOME/.cache/qd-build-cache/$PORTABLE_LLVM_CACHE_DIR"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          python -m zipfile -e "$archive" "$dest"
+          test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
+          "$dest/bin/clang" --version | head -4
+
       # `pip install cmake ninja` rather than a package manager: the manylinux
       # images are RPM-based and run as root with no sudo, and pip's wheels are
       # the same binaries on both architectures.
@@ -218,11 +325,38 @@ jobs:
           cmake --version
           ninja --version
 
+          # The portable LLVM archive removes the inherited 2.35 reference.
+          # Keep the final aarch64 link on AlmaLinux 9's GCC 11 as well, so the
+          # image's newer gcc-toolset cannot add `_dl_find_object` back through
+          # its static unwind/runtime libraries. x86-64 keeps its existing toolchain.
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            gcc_nvr="${{ needs.plan.outputs.portable_llvm_gcc_nvr }}"
+            dnf install -y \
+              "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}" \
+              || dnf install -y --enablerepo=crb \
+                   "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}"
+            /usr/bin/gcc --version | head -1
+            /usr/bin/g++ --version | head -1
+            test "$(/usr/bin/gcc -dumpfullversion -dumpversion)" = "11.5.0"
+            test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc)" = "$gcc_nvr"
+            test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc-c++)" = "$gcc_nvr"
+            test -f "$(/usr/bin/g++ -print-file-name=libstdc++.a)"
+          fi
+
       - name: Build the wheel
         working-directory: quadrants-src
         run: |
           set -euxo pipefail
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            export CC=/usr/bin/gcc CXX=/usr/bin/g++
+            test "$("$CC" -dumpfullversion -dumpversion)" = "11.5.0"
+          fi
+
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            expected="$HOME/.cache/qd-build-cache/${{ needs.plan.outputs.portable_llvm_cache_dir }}"
+            test "$LLVM_DIR" = "$expected"
+          fi
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
@@ -245,29 +379,35 @@ jobs:
           # `g++` rather than written down here, because the two containers do
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
-          if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            # Do not let clang auto-discover gcc-toolset-14 just because those
+            # headers happen to work. The .so link and runtime bitcode use one
+            # GCC 11 standard-library provenance on aarch64.
+            dirs=$("$CXX" -E -x c++ - -v </dev/null 2>&1 \
+              | sed -n '/#include <...> search starts here:/,/End of search list/p' \
+              | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
+            test -n "$dirs"
+            export CPLUS_INCLUDE_PATH="$dirs"
+            echo "gave the bitcode clang GCC 11 libstdc++ headers: $dirs"
+          elif ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
             dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
-            # Loudly, rather than exporting an empty value and failing later in
-            # exactly the way this exists to prevent.
             test -n "$dirs"
             export CPLUS_INCLUDE_PATH="$dirs"
             echo "gave the bitcode clang the container's libstdc++: $dirs"
-            echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
           fi
+          echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
 
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
 
-      # Before the restamp, deliberately. What the stamp puts on the wheel is
-      # the floor it *measures*, which can be above the container's own glibc:
-      # the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and pip
-      # then refuses its own build with "not a supported wheel on this
-      # platform" (run 34034938922). The bits are identical either side of
-      # `wheel tags` -- only the filename and WHEEL metadata change -- so this
-      # tests what ships, under the one tag the container will accept.
+      # Before the restamp, deliberately. This proves the built extension can
+      # import and initialize before filename/WHEEL metadata are changed; the
+      # later auditwheel gate independently decides whether the promised tag is
+      # legal. The aarch64 target is now the container's own 2.34 policy rather
+      # than the old 2.35 workaround.
       - name: Install it and check it imports
         working-directory: quadrants-src
         run: |
@@ -376,8 +516,8 @@ jobs:
 
   linux_arm64:
     name: linux_arm64 / py${{ matrix.python-version }}
-    needs: plan
-    if: needs.plan.outputs.linux_arm64 == 'true'
+    needs: [plan, portable_llvm_arm64]
+    if: ${{ always() && needs.plan.outputs.linux_arm64 == 'true' }}
     runs-on: ${{ needs.plan.outputs.runner_linux_arm64 }}
     # The wheel's glibc floor is this image's, not the runner's. That is the
     # whole point of the container: `build_wheel` stamps a manylinux tag it
@@ -465,6 +605,34 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
+      # Quadrants v1.3.0 already skips its LLVM download when its fixed
+      # cache directory is populated. Put Algan's portable tree in that exact
+      # slot on ARM, so the override needs no extra Quadrants patch and cannot
+      # affect x86-64. The artifact is checksummed before it is trusted.
+      - name: Download the portable aarch64 LLVM
+        if: runner.arch == 'ARM64'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
+          path: algan/.portable-llvm
+
+      - name: Put portable LLVM in Quadrants' cache slot
+        if: runner.arch == 'ARM64'
+        env:
+          PORTABLE_LLVM_ARCHIVE: ${{ needs.plan.outputs.portable_llvm_archive }}
+          PORTABLE_LLVM_CACHE_DIR: ${{ needs.plan.outputs.portable_llvm_cache_dir }}
+        run: |
+          set -euxo pipefail
+          archive="$GITHUB_WORKSPACE/algan/.portable-llvm/$PORTABLE_LLVM_ARCHIVE"
+          cd "$GITHUB_WORKSPACE/algan/.portable-llvm"
+          sha256sum -c "$PORTABLE_LLVM_ARCHIVE.sha256"
+          dest="$HOME/.cache/qd-build-cache/$PORTABLE_LLVM_CACHE_DIR"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          python -m zipfile -e "$archive" "$dest"
+          test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
+          "$dest/bin/clang" --version | head -4
+
       # `pip install cmake ninja` rather than a package manager: the manylinux
       # images are RPM-based and run as root with no sudo, and pip's wheels are
       # the same binaries on both architectures.
@@ -478,11 +646,38 @@ jobs:
           cmake --version
           ninja --version
 
+          # The portable LLVM archive removes the inherited 2.35 reference.
+          # Keep the final aarch64 link on AlmaLinux 9's GCC 11 as well, so the
+          # image's newer gcc-toolset cannot add `_dl_find_object` back through
+          # its static unwind/runtime libraries. x86-64 keeps its existing toolchain.
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            gcc_nvr="${{ needs.plan.outputs.portable_llvm_gcc_nvr }}"
+            dnf install -y \
+              "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}" \
+              || dnf install -y --enablerepo=crb \
+                   "gcc-${gcc_nvr}" "gcc-c++-${gcc_nvr}" "libstdc++-static-${gcc_nvr}"
+            /usr/bin/gcc --version | head -1
+            /usr/bin/g++ --version | head -1
+            test "$(/usr/bin/gcc -dumpfullversion -dumpversion)" = "11.5.0"
+            test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc)" = "$gcc_nvr"
+            test "$(rpm -q --qf '%{VERSION}-%{RELEASE}' gcc-c++)" = "$gcc_nvr"
+            test -f "$(/usr/bin/g++ -print-file-name=libstdc++.a)"
+          fi
+
       - name: Build the wheel
         working-directory: quadrants-src
         run: |
           set -euxo pipefail
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            export CC=/usr/bin/gcc CXX=/usr/bin/g++
+            test "$("$CC" -dumpfullversion -dumpversion)" = "11.5.0"
+          fi
+
           LLVM_DIR=$(python download_llvm.py | tail -n 1)
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            expected="$HOME/.cache/qd-build-cache/${{ needs.plan.outputs.portable_llvm_cache_dir }}"
+            test "$LLVM_DIR" = "$expected"
+          fi
           export PATH=${LLVM_DIR}/bin:$PATH
           chmod +x ${LLVM_DIR}/bin/* || true
           clang --version
@@ -505,29 +700,35 @@ jobs:
           # `g++` rather than written down here, because the two containers do
           # not agree on the path and neither will the next one.
           probe='#include <atomic>'
-          if ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
+          if [ "$RUNNER_ARCH" = "ARM64" ]; then
+            # Do not let clang auto-discover gcc-toolset-14 just because those
+            # headers happen to work. The .so link and runtime bitcode use one
+            # GCC 11 standard-library provenance on aarch64.
+            dirs=$("$CXX" -E -x c++ - -v </dev/null 2>&1 \
+              | sed -n '/#include <...> search starts here:/,/End of search list/p' \
+              | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
+            test -n "$dirs"
+            export CPLUS_INCLUDE_PATH="$dirs"
+            echo "gave the bitcode clang GCC 11 libstdc++ headers: $dirs"
+          elif ! echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only - 2>/dev/null; then
             dirs=$(g++ -E -x c++ - -v </dev/null 2>&1 \
               | sed -n '/#include <...> search starts here:/,/End of search list/p' \
               | grep '^ /' | tr -d ' ' | grep '/c++' | paste -sd:)
-            # Loudly, rather than exporting an empty value and failing later in
-            # exactly the way this exists to prevent.
             test -n "$dirs"
             export CPLUS_INCLUDE_PATH="$dirs"
             echo "gave the bitcode clang the container's libstdc++: $dirs"
-            echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
           fi
+          echo "$probe" | clang -x c++ -std=c++17 -fsyntax-only -
 
           export CMAKE_ARGS="-DQD_WITH_VULKAN:BOOL=OFF -DQD_WITH_AMDGPU:BOOL=OFF -DQD_WITH_CUDA:BOOL=ON -DQD_BUILD_TESTS:BOOL=OFF"
           time ./build.py wheel
           ls -la dist/
 
-      # Before the restamp, deliberately. What the stamp puts on the wheel is
-      # the floor it *measures*, which can be above the container's own glibc:
-      # the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and pip
-      # then refuses its own build with "not a supported wheel on this
-      # platform" (run 34034938922). The bits are identical either side of
-      # `wheel tags` -- only the filename and WHEEL metadata change -- so this
-      # tests what ships, under the one tag the container will accept.
+      # Before the restamp, deliberately. This proves the built extension can
+      # import and initialize before filename/WHEEL metadata are changed; the
+      # later auditwheel gate independently decides whether the promised tag is
+      # legal. The aarch64 target is now the container's own 2.34 policy rather
+      # than the old 2.35 workaround.
       - name: Install it and check it imports
         working-directory: quadrants-src
         run: |
@@ -633,6 +834,83 @@ jobs:
           name: invariant-load-arms-linux_arm64-py${{ matrix.python-version }}
           path: arm_*.json
           if-no-files-found: warn
+
+  linux_arm64_glibc34_smoke:
+    name: linux_arm64 / fresh glibc 2.34 smoke
+    needs: [plan, linux_arm64]
+    if: ${{ always() && needs.plan.outputs.linux_arm64 == 'true' && needs.linux_arm64.result == 'success' }}
+    runs-on: ${{ needs.plan.outputs.runner_linux_arm64 }}
+    container: ${{ needs.plan.outputs.portable_llvm_container }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Algan
+        uses: actions/checkout@v4
+        with:
+          path: algan
+
+      - name: Confirm this is a genuine glibc 2.34 userspace
+        run: |
+          set -euxo pipefail
+          uname -a
+          head -2 /etc/os-release
+          ldd --version | head -1 | tee /tmp/ldd-version
+          grep -E ' 2\.34$' /tmp/ldd-version
+
+      - name: Download the final aarch64 wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: quadrants-wheel-linux_arm64-py*
+          path: wheels
+          merge-multiple: true
+
+      - name: Re-verify, install and execute each selected wheel
+        env:
+          PYTHONS: ${{ needs.plan.outputs.pythons }}
+          WHEEL_TAG: ${{ needs.plan.outputs.wheel_tag_linux_arm64 }}
+        run: |
+          set -euxo pipefail
+          base_python=/opt/python/cp311-cp311/bin/python
+          "$base_python" -m pip install auditwheel
+          for pyver in $("$base_python" -c 'import json, os; print(" ".join(json.loads(os.environ["PYTHONS"])))'); do
+            tag="cp${pyver//./}"
+            py="/opt/python/${tag}-${tag}/bin/python"
+            wheel=$(find wheels -maxdepth 1 -type f -name "*-${tag}-${tag}-${WHEEL_TAG}.whl" -print -quit)
+            test -n "$wheel"
+            "$base_python" "$GITHUB_WORKSPACE/algan/scripts/gate/verify_wheel_tag.py" \
+              "$wheel" --expect "$WHEEL_TAG"
+            unpack="$RUNNER_TEMP/wheel-${tag}"
+            rm -rf "$unpack"
+            mkdir -p "$unpack"
+            "$base_python" -m zipfile -e "$wheel" "$unpack"
+            so=$(find "$unpack" -name '*.so' -print -quit)
+            test -n "$so"
+            if readelf --wide --dyn-syms "$so" | grep -F '_dl_find_object@GLIBC_2.35'; then
+              echo "the final wheel still requires _dl_find_object@GLIBC_2.35" >&2
+              exit 1
+            fi
+            "$py" -m pip install numpy "$wheel"
+            "$py" - <<'PYKERNEL'
+          import numpy as np
+          import quadrants as qd
+          from quadrants.lang import impl
+
+          qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
+          cfg = impl.current_cfg()
+          assert cfg.invariant_arg_loads is False
+          assert cfg.readonly_ndarray_ldg is True
+
+          @qd.kernel
+          def add_one(a: qd.types.ndarray()):
+              for i in range(a.shape[0]):
+                  a[i] += 1
+
+          x = np.arange(8, dtype=np.float32)
+          add_one(x)
+          qd.sync()
+          np.testing.assert_array_equal(x, np.arange(8, dtype=np.float32) + 1)
+          print("fresh glibc-2.34 import + qd.init + kernel OK")
+          PYKERNEL
+          done
 
   macos:
     name: macos / py${{ matrix.python-version }}
@@ -798,12 +1076,14 @@ jobs:
           if-no-files-found: warn
 
   publish:
-    name: Publish algan-quadrants 1.3.0.post2
-    needs: [plan, linux, linux_arm64, macos, windows]
+    name: Publish algan-quadrants 1.3.0.post3
+    needs: [plan, linux, linux_arm64, linux_arm64_glibc34_smoke, macos, windows]
     if: >-
       ${{ always() && inputs.publish && inputs.apply_patches &&
           needs.plan.result == 'success' && needs.linux.result == 'success' &&
-          needs.linux_arm64.result == 'success' && needs.macos.result == 'success' &&
+          needs.linux_arm64.result == 'success' &&
+          needs.linux_arm64_glibc34_smoke.result == 'success' &&
+          needs.macos.result == 'success' &&
           needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     environment:

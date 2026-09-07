@@ -22,6 +22,7 @@ import importlib.util
 import json
 import platform
 import re
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -91,14 +92,9 @@ class TestResolveWheelMatrix:
 
         `quay.io/pypa/manylinux_2_28_x86_64` guarantees glibc 2.28 and nothing
         older, so stamping `manylinux_2_27_x86_64` on its output would be a
-        promise the container does not make.
-
-        The other direction is legitimate and aarch64 is living proof: it
-        builds in `manylinux_2_34` and stamps `manylinux_2_35`, because the
-        prebuilt LLVM it links carries a GLOBAL `_dl_find_object@GLIBC_2.35`
-        that the image's own glibc happens to satisfy. The container sets a
-        floor; something it links can still push the wheel above it, and
-        `verify_wheel_tag.py` is what notices when it does.
+        promise the container does not make. Something linked into a wheel can
+        still push its measured requirement above the container policy;
+        `verify_wheel_tag.py` is what refuses that case before stamping.
         """
         for name, spec in resolver.PLATFORMS.items():
             if "container" not in spec:
@@ -116,6 +112,19 @@ class TestResolveWheelMatrix:
                 f"{name}: stamps {spec['wheel_tag']}, which claims to run on "
                 f"something older than {image} guarantees"
             )
+
+    def test_aarch64_now_targets_glibc_234(self, resolver):
+        arm = resolver.PLATFORMS["linux_arm64"]
+        assert arm["container"].endswith("manylinux_2_34_aarch64")
+        assert arm["wheel_tag"] == "manylinux_2_34_aarch64"
+
+        portable = resolver.PORTABLE_LLVM
+        assert portable["version"] == "22.1.0"
+        assert portable["commit"] == "4434dabb69916856b824f68a64b029c67175e532"
+        assert portable["container"].startswith(
+            "quay.io/pypa/manylinux_2_34_aarch64@sha256:"
+        )
+        assert portable["cache_dir"] == "llvm-22.1.0-aarch64-202603120808"
 
     def test_only_the_linux_platforms_build_in_a_container(self, resolver):
         # macOS and Windows have no container story: their wheels' floor is the
@@ -541,13 +550,11 @@ class TestWorkflowMatchesTheResolver:
                 assert forbidden not in text, f"{name} still uses {forbidden!r}"
 
     def test_the_wheel_is_installed_before_it_is_stamped(self, resolver, workflow):
-        """The stamp can put a tag on the wheel that its own container rejects.
+        """Import the extension before metadata restamping changes the filename.
 
-        The tag is what the wheel *measures*, and that can exceed the image's
-        glibc: the aarch64 leg stamps `manylinux_2_35` inside a 2.34 image, and
-        pip then declines its own build with "not a supported wheel on this
-        platform" (run 34034938922). Installing first tests the same bits under
-        the one tag the container will accept.
+        The runtime check and the auditwheel check deliberately stay separate:
+        first prove the built extension imports, then measure whether the final
+        platform promise is legal, then change only the wheel metadata/tag.
         """
         for name in resolver.PLATFORMS:
             if "container" not in resolver.PLATFORMS[name]:
@@ -582,6 +589,135 @@ class TestWorkflowMatchesTheResolver:
             step = steps[stamp[0]]
             assert f"needs.plan.outputs.wheel_tag_{name}" in str(step.get("env", ""))
 
+    def test_the_portable_aarch64_llvm_is_built_once_from_pinned_provenance(
+        self, resolver, workflow
+    ):
+        portable = resolver.PORTABLE_LLVM
+        assert portable["version"] == "22.1.0"
+        assert portable["commit"] == "4434dabb69916856b824f68a64b029c67175e532"
+        assert portable["container"].startswith(
+            "quay.io/pypa/manylinux_2_34_aarch64@sha256:"
+        )
+        assert portable["gcc_nvr"] == "11.5.0-14.el9.alma.1"
+        assert portable["cache_dir"] == "llvm-22.1.0-aarch64-202603120808"
+        assert portable["version"] in portable["cache_key"]
+        assert portable["commit"][:12] in portable["cache_key"]
+        assert portable["gcc_nvr"] in portable["cache_key"]
+        image_digest = portable["container"].rsplit("@sha256:", 1)[-1]
+        assert image_digest[:12] in portable["cache_key"]
+
+        out = resolver.resolve({})
+        for key, value in portable.items():
+            assert out[f"portable_llvm_{key}"] == value
+
+        job = workflow["jobs"]["portable_llvm_arm64"]
+        assert job["needs"] == "plan"
+        assert "needs.plan.outputs.linux_arm64" in job["if"]
+        assert job["container"] == "${{ needs.plan.outputs.portable_llvm_container }}"
+
+        steps = job["steps"]
+        build = next(
+            step for step in steps if step.get("name") == "Build portable LLVM 22.1.0"
+        )
+        env = build["env"]
+        assert "portable_llvm_version" in env["PORTABLE_LLVM_VERSION"]
+        assert "portable_llvm_commit" in env["PORTABLE_LLVM_COMMIT"]
+        assert "portable_llvm_container" in env["PORTABLE_LLVM_BUILD_IMAGE"]
+        assert "portable_llvm_gcc_nvr" in env["PORTABLE_LLVM_GCC_NVR"]
+        assert "build_portable_quadrants_llvm.sh" in build["run"]
+
+        cache = next(
+            step
+            for step in steps
+            if step.get("name") == "Restore the portable LLVM archive"
+        )
+        assert "portable_llvm_cache_key" in cache["with"]["key"]
+        assert "hashFiles" in cache["with"]["key"]
+        assert "resolve_wheel_matrix.py" in cache["with"]["key"]
+        assert "build_portable_quadrants_llvm.sh" in cache["with"]["key"]
+
+        script = (
+            REPO_ROOT / "scripts" / "gate" / "build_portable_quadrants_llvm.sh"
+        ).read_text(encoding="utf-8")
+        assert "export CC=/usr/bin/gcc" in script
+        assert "export CXX=/usr/bin/g++" in script
+        assert "PORTABLE_LLVM_GCC_NVR" in script
+        assert '"gcc-${PORTABLE_LLVM_GCC_NVR}"' in script
+        assert "readelf --wide --dyn-syms" in script
+        assert "llvm-nm" in script
+        assert "2.34" in script
+        assert "_dl_find_object" in script
+
+        builder = REPO_ROOT / "scripts" / "gate" / "build_portable_quadrants_llvm.sh"
+        syntax = subprocess.run(
+            ["bash", "-n", str(builder)],
+            capture_output=True,
+            text=True,
+        )
+        assert syntax.returncode == 0, syntax.stderr
+
+    def test_linux_recipes_consume_portable_llvm_only_on_arm(self, workflow):
+        for name in ("linux", "linux_arm64"):
+            job = workflow["jobs"][name]
+            assert "portable_llvm_arm64" in job["needs"]
+            downloads = [
+                step
+                for step in job["steps"]
+                if step.get("name") == "Download the portable aarch64 LLVM"
+            ]
+            assert len(downloads) == 1
+            assert downloads[0]["if"] == "runner.arch == 'ARM64'"
+
+            install = next(
+                step
+                for step in job["steps"]
+                if step.get("name") == "Put portable LLVM in Quadrants' cache slot"
+            )
+            assert install["if"] == "runner.arch == 'ARM64'"
+            assert (
+                "portable_llvm_cache_dir" in install["env"]["PORTABLE_LLVM_CACHE_DIR"]
+            )
+            assert "python -m zipfile -e" in install["run"]
+
+            prereq = next(
+                step for step in job["steps"] if step.get("name") == "Prerequisites"
+            )
+            assert 'if [ "$RUNNER_ARCH" = "ARM64" ]' in prereq["run"]
+            assert "portable_llvm_gcc_nvr" in prereq["run"]
+            assert '"gcc-${gcc_nvr}"' in prereq["run"]
+            assert '"libstdc++-static-${gcc_nvr}"' in prereq["run"]
+
+            build = next(
+                step for step in job["steps"] if step.get("name") == "Build the wheel"
+            )
+            assert "export CC=/usr/bin/gcc CXX=/usr/bin/g++" in build["run"]
+            assert "portable_llvm_cache_dir" in build["run"]
+            assert "QD_LLVM_DIR_OVERRIDE" not in build["run"]
+
+    def test_a_fresh_glibc_234_job_executes_the_final_arm_wheels(self, workflow):
+        job = workflow["jobs"]["linux_arm64_glibc34_smoke"]
+        assert set(job["needs"]) == {"plan", "linux_arm64"}
+        assert "needs.linux_arm64.result == 'success'" in job["if"]
+        assert job["container"] == "${{ needs.plan.outputs.portable_llvm_container }}"
+
+        facts = next(
+            step
+            for step in job["steps"]
+            if step.get("name") == "Confirm this is a genuine glibc 2.34 userspace"
+        )
+        assert r"2\.34$" in facts["run"]
+
+        text = yaml.safe_dump(job)
+        assert "quadrants-wheel-linux_arm64-py*" in text
+        assert "verify_wheel_tag.py" in text
+        assert "_dl_find_object@GLIBC_2.35" in text
+        assert "@qd.kernel" in text
+        assert "fresh glibc-2.34 import + qd.init + kernel OK" in text
+
+        publish = workflow["jobs"]["publish"]
+        assert "linux_arm64_glibc34_smoke" in publish["needs"]
+        assert "needs.linux_arm64_glibc34_smoke.result == 'success'" in publish["if"]
+
     def test_no_two_jobs_upload_the_same_artifact_name(self, workflow):
         # Two jobs uploading one name is not a merge: the second upload fails.
         names: list[str] = []
@@ -600,6 +736,8 @@ class TestWorkflowMatchesTheResolver:
         found = 0
         for name, job in workflow["jobs"].items():
             for step in job.get("steps", []):
+                if not str(step.get("uses", "")).startswith("actions/upload-artifact"):
+                    continue
                 artifact = (step.get("with") or {}).get("name", "")
                 if not artifact.startswith("quadrants-wheel-"):
                     continue

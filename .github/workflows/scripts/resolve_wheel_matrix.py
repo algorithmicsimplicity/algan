@@ -97,6 +97,38 @@ import sys
 # without reading that issue first.
 # ---------------------------------------------------------------------------
 #
+# Algan does not use the upstream aarch64 LLVM archive for its aarch64 wheel.
+# That archive is the source of the wheel's lone GLIBC_2.35 requirement.  The
+# wheel workflow builds LLVM 22.1.0 from the exact upstream commit in a pinned
+# glibc-2.34 image with AlmaLinux 9's GCC 11, caches the resulting archive, and
+# places it in the cache slot `qd_build/llvm.py` already uses.  Keeping this
+# provenance here makes the runner/container/tag/toolchain contract reviewable
+# in one place; the build script verifies these values at runtime.
+PORTABLE_LLVM: dict[str, str] = {
+    "version": "22.1.0",
+    "commit": "4434dabb69916856b824f68a64b029c67175e532",
+    "container": (
+        "quay.io/pypa/manylinux_2_34_aarch64"
+        "@sha256:effc0e17319a56b2c7eaff0cb5dd81a2d2c2850410841d3f017378f52ead6442"
+    ),
+    "artifact": "quadrants-portable-llvm-linux-aarch64",
+    "archive": "taichi-llvm-22.1.0-linux-aarch64-portable-glibc234.zip",
+    # Must match upstream Quadrants v1.3.0's qd_build/llvm.py output directory.
+    # Populating it before `download_llvm.py` runs makes download_dep() reuse the
+    # portable tree without patching Quadrants' dependency downloader.
+    "cache_dir": "llvm-22.1.0-aarch64-202603120808",
+    "gcc_nvr": "11.5.0-14.el9.alma.1",
+}
+# Cache identity is derived rather than duplicated. A maintainer changing the
+# LLVM commit, image digest or exact compiler package cannot accidentally reuse
+# a binary built under the old provenance.
+PORTABLE_LLVM["cache_key"] = (
+    f"quadrants-portable-llvm-{PORTABLE_LLVM['version']}-"
+    f"{PORTABLE_LLVM['commit'][:12]}-"
+    f"{PORTABLE_LLVM['container'].rsplit('@sha256:', 1)[-1][:12]}-"
+    f"gcc{PORTABLE_LLVM['gcc_nvr']}-v1"
+)
+
 # A key is also a **job id and an artifact name component**, so it is
 # `[a-z0-9_]+`: `quadrants_build.yaml` names one job per key,
 # `scripts/build_quadrants_wheels.py`'s `ARTIFACT_RE` parses it back out of
@@ -117,35 +149,25 @@ PLATFORMS: dict[str, dict[str, str]] = {
     # this is a configuration upstream builds too, not new ground. What it does
     # need is its own container, for the reason above.
     #
-    # **Its tag is 2_35 while its container is 2_34, and that is measured, not
-    # chosen.** The wheel this container produces carries exactly one symbol
-    # above 2.34 (run 34032726212, `readelf --dyn-syms` on the artifact):
+    # The original upstream aarch64 LLVM archive made this wheel measure 2.35:
+    # run 34032726212 found one GLOBAL `_dl_find_object@GLIBC_2.35`, and run
+    # 34036846316 proved that pinning *only the wheel build* to GCC 11 did not
+    # remove it. The symbol was already present in objects from the prebuilt
+    # LLVM archive.
     #
-    #     116: ... FUNC GLOBAL DEFAULT UND _dl_find_object@GLIBC_2.35
-    #
-    # `_dl_find_object` arrived in glibc 2.35. It is **GLOBAL, not weak** --
-    # the loader must resolve it -- so the wheel really does fail to import on
-    # a true glibc 2.34, which costs RHEL 9 and Amazon Linux 2023.
-    #
-    # **The obvious cause was tested and is not the cause.** libgcc's unwinder
-    # has called `_dl_find_object` since GCC 12, and the compiler that links
-    # the extension is the one whose libgcc it statically absorbs, so pinning
-    # the image's base GCC 11 should have removed the reference. It does not:
-    # with `CC`/`CXX` pointed at GCC 11 the whole tree compiles and links
-    # (run 34036846316, after `libstdc++-static` -- `gcc-c++` does not pull the
-    # archive in) and auditwheel still reports `GLIBC_2.35`. So the symbol
-    # comes from the **prebuilt LLVM archive**, whose objects were compiled on
-    # a glibc-2.35 system, and no choice of local toolchain can remove it. Do
-    # not spend another run on the compiler; the fix, if one is wanted, is an
-    # LLVM archive built on an older base, which is upstream's to produce.
-    #
-    # The x86-64 leg escapes the whole problem because AlmaLinux 8's glibc is
-    # 2.28: nothing in that build can reference a symbol its libc has never
-    # heard of, which is why that wheel measures 2.27.
+    # The supported workflow now fixes the source of that dependency. A
+    # separate `portable_llvm_arm64` job builds the exact LLVM 22.1.0 commit on
+    # glibc 2.34 using GCC 11, verifies the install tree/archive members do not
+    # reference a newer GLIBC symbol, and feeds that archive to every aarch64
+    # wheel build. The wheel itself is still linked with GCC 11 so a newer
+    # libgcc cannot reintroduce `_dl_find_object`. `verify_wheel_tag.py` remains
+    # the final authority: this row promises 2.34 and the build fails if the
+    # finished wheel measures anything newer. A fresh-container smoke job then
+    # installs the stamped wheel and executes a kernel under glibc 2.34.
     "linux_arm64": {
         "runner": "ubuntu-24.04-arm",
         "container": "quay.io/pypa/manylinux_2_34_aarch64",
-        "wheel_tag": "manylinux_2_35_aarch64",
+        "wheel_tag": "manylinux_2_34_aarch64",
         "label": "linux-aarch64",
     },
     "macos": {
@@ -227,6 +249,8 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
         outputs[f"wheel_tag_{name}"] = spec["wheel_tag"]
         if "container" in spec:
             outputs[f"container_{name}"] = spec["container"]
+    for key, value in PORTABLE_LLVM.items():
+        outputs[f"portable_llvm_{key}"] = value
     outputs["pythons"] = json.dumps(ordered_pythons)
     # The selection as a list, which is what `--check-publish` reads back. The
     # per-platform `true`/`false` outputs above are what a job's `if:` can gate

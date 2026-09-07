@@ -210,7 +210,7 @@ which is where these numbers were read, cp311:
 | leg | build | wheel | measured floor |
 | --- | --- | --- | --- |
 | x86-64 | 19m21s | `…-cp311-cp311-manylinux_2_28_x86_64.whl`, 30 MiB | **GLIBC_2.27**. The `ubuntu-22.04` leg it replaces was shipping 2.34 under a `manylinux_2_27` tag, so RHEL 8, Ubuntu 20.04 and Debian 11 go from "pip installs it, then the import fails" to working |
-| aarch64 | 13m35s | `…-cp311-cp311-manylinux_2_35_aarch64.whl`, 28 MiB | **GLIBC_2.35**, one symbol above its own container: a GLOBAL `_dl_find_object@GLIBC_2.35` out of the prebuilt LLVM. Ubuntu 22.04+ and Debian 12+ yes; RHEL 9 and Amazon Linux 2023, both 2.34, no |
+| aarch64 | historical post2: 13m35s wheel build | post3 target: `…-manylinux_2_34_aarch64.whl` | post2 measured **GLIBC_2.35** from one GLOBAL `_dl_find_object@GLIBC_2.35` in the upstream LLVM archive. The supported post3 path rebuilds LLVM 22.1.0 under glibc 2.34/GCC 11, gates the final wheel at <=2.34, then imports it and executes a kernel in a fresh glibc-2.34 container. |
 
 0004's IR arms land on both (`18 → 0` base-pointer loads on x86-64, `9 → 0` on
 aarch64 — the first time that patch has been verified on ARM), the `qd.init`
@@ -228,15 +228,22 @@ knowing before touching it:
 * A refusal from `verify_wheel_tag.py` used to name the glibc version without
   naming the symbol behind it, which is a diagnosis that costs another
   thirteen-minute build. It now quotes `auditwheel show`.
-* **The aarch64 floor is not the compiler's to fix.** libgcc's unwinder has
-  called `_dl_find_object` since GCC 12, so pinning the image's base GCC 11
-  looked like the answer. It is not: with `CC`/`CXX` pinned the whole tree
-  compiles and links (once `libstdc++-static` supplies the archive `gcc-c++`
-  does not pull in) and auditwheel still says 2.35
-  ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)).
-  The symbol comes from the prebuilt LLVM archive, whose objects were built on
-  a glibc-2.35 system. Do not spend another run on the toolchain; the fix is an
-  LLVM archive built on an older base, which is upstream's to produce.
+* **The aarch64 floor was not the wheel compiler's to fix.** libgcc's
+  unwinder has called `_dl_find_object` since GCC 12, so pinning only the wheel
+  build to GCC 11 looked like the answer. It was not sufficient: the whole
+  Quadrants tree compiled and linked and auditwheel still said 2.35
+  ([`34036846316`](https://github.com/algorithmicsimplicity/algan/actions/runs/34036846316)),
+  isolating the remaining reference to the upstream LLVM archive. The supported
+  path now rebuilds LLVM 22.1.0 commit
+  `4434dabb69916856b824f68a64b029c67175e532` in pinned image
+  `quay.io/pypa/manylinux_2_34_aarch64@sha256:effc0e17319a56b2c7eaff0cb5dd81a2d2c2850410841d3f017378f52ead6442`
+  with AlmaLinux GCC/G++/libstdc++-static `11.5.0-14.el9.alma.1`.
+  `scripts/gate/build_portable_quadrants_llvm.sh` measures installed linked ELF
+  files for a maximum GLIBC version <=2.34 and rejects `_dl_find_object` in
+  static archive members, then writes a SHA-256 and provenance record, and the wheel workflow places that tree in the exact cache directory
+  Quadrants v1.3.0 already uses. No extra Quadrants source patch is needed. The
+  final aarch64 link also uses GCC 11, `verify_wheel_tag.py` remains strict, and
+  a separate fresh glibc-2.34 job tests the final stamped wheel.
 * The wheel is installed **before** it is stamped, because the stamp can put a
   tag on it that its own container rejects — pip refused a `manylinux_2_35`
   wheel inside the 2.34 image with "not a supported wheel on this platform"
