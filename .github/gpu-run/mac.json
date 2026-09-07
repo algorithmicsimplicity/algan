@@ -5,10 +5,11 @@
     "mac-mps"
   ],
   "env": {
-    "ALGAN_VIDEO_ENCODER": "software"
+    "ALGAN_VIDEO_ENCODER": "software",
+    "ALGAN_MPS_HOST_SHARE": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 55,
-  "_request": "52: long timeout, default config -- can the pair actually FINISH post-merge?"
+  "_request": "53: cap OFF post-merge (HOST_SHARE=0, ~1.9G arena) -- is the cap still needed?"
 }

@@ -120,6 +120,7 @@ hooks — its synchronising hooks would distort the wall time being measured).
 | 38 (`pin-arena`) | 1898 / 1898 MB | 1105.3 s [^stall] | **568.5 s** | completed |
 | 39 (live-bytes) | 1911 MB | **649.8 s** | — | **killed** at warm chunk 14 |
 | 47 (0.4 × RAM cap) | 1147 MB | 1019.5 s | — | killed at a 30-min timeout; **unclassified**, see §7.0 |
+| **52 (post-merge, cap, 55-min timeout)** | **1147 / 1147 MB** | **1146.8 s** | **1010.3 s** | **completed — warm 0.88× cold** |
 
 [^stall]: Job 38's cold pass contained one 455.6 s chunk against 25–42 s for
 every other chunk. A stall, not a baseline — and see §7, since it may be the
@@ -129,6 +130,29 @@ same failure as the wedges in a form that recovered.
 1147 MB a cold pass is ~1020 s against 649.8 s at 1911 MB, so a two-render job
 needs ~34 minutes. Jobs sized against the old 20-minute expectation were killed
 mid-flight; see §7.0.
+
+### 4.1 Job 52: the pair completing, which settles several things at once
+
+The first two-render UHD job to finish since the cap landed, on master's
+optimised batching, with a timeout long enough to fit it (36.6 min of work).
+
+| | cold | warm |
+| --- | ---: | ---: |
+| wall | 1146.8 s | **1010.3 s** |
+| arena | 1147 MB | 1147 MB |
+| batches | 2 | 2 |
+| chunks | 18 | 18 |
+| mean chunk | — | 55.4 s |
+| in-chunk peak | 4.93 G | **5.61 G** |
+
+* **The warm regression is gone.** Warm is **0.88× cold** — faster, which is the
+  direction it belongs, since all a warm render saves is the kernel compile.
+  Both renders size the *same* 1147 MB arena; the collapse to ~1226 MB that
+  drove §5 does not happen.
+* **Master's batching cut 12 batches to 2.** That is `808de65`, not this branch.
+* **The peak reached 5.61 G — nearly a gigabyte over the 4.67 G
+  `recommendedMaxWorkingSetSize` — and nothing failed.** See §7.6; this is the
+  observation that ends the over-commit theory.
 
 **PREVIEW (704×396), four renders in one process** — the control:
 
@@ -278,6 +302,36 @@ recovered on its own after 455.6 s (job 38).
   their timeout still progressing (§7.0), so the claim that it "survived master's
   batching optimisation" is withdrawn — that job never wedged.
 
+### 7.6 Job 52: the over-commit theory is dead
+
+Job 52 ran both renders to completion with the in-chunk peak at **5.53–5.61 G
+against a 4.67 G recommendation** — the highest figure recorded this round,
+about 0.7 G above the peak in jobs that wedged — and nothing went wrong.
+`host_free` sat at 1.2–2.5 G throughout, the same band as the wedged jobs.
+
+So exceeding `recommendedMaxWorkingSetSize` is **normal on this box, not a
+failure mode**, and neither the peak nor the host-free figure separates a
+healthy run from a wedged one. Every hypothesis in this round that rested on
+over-commit — hypotheses 6 and 7 in §6, and the reasoning behind the reserve
+and the cap — is refuted by this run.
+
+What actually changed between the wedges and job 52 is two things at once:
+master's batching (`808de65`, 12 batches → 2) and the arena cap. The cap is
+**not** established as the fix; it is confounded. §7.7 says how to separate them.
+
+### 7.7 The one experiment that would settle it
+
+Run the pair post-merge with `ALGAN_MPS_HOST_SHARE=0`, which removes the cap and
+restores the ~1.9 GB arena that every confirmed wedge ran with.
+
+* **Completes** → the cap is unnecessary post-merge, master's batching is what
+  fixed it, and the cap should come out, recovering the time it costs (cold
+  1146.8 s capped against 649.8 s uncapped pre-merge).
+* **Wedges** → the cap is load-bearing and should stay, at that cost.
+
+Until that runs, the honest position is that the wedge is **not reproduced since
+the merge**, cause unattributed between two simultaneous changes.
+
 ### 7.4 Untested hypotheses, in the order worth trying
 
 0. **Already tested, and negative.** Job 51 ran with
@@ -330,6 +384,10 @@ render on Metal at all, and they are independent of everything unresolved.
 charges each render for the last one's peak — but on its own it hands a 7 GB box
 a 1.9 GB arena, and that is where the instability concentrated.
 
+**Update from job 52:** the warm regression the §5 fix targets is gone in
+practice — warm now runs at 0.88× cold with both renders on an identical arena.
+That is the outcome the fix was for, at a cold cost the cap imposes.
+
 **Do not claim the 568.5 s warm figure.** It was measured with a pinned 1.9 GB
 arena on a box that cannot hold one safely. What survives is the real defect and
 its removal: both renders now size the same arena, so the collapse to 1226 MB
@@ -340,11 +398,13 @@ and the arena is genuinely larger.
 649.8 s at 1911 MB — about 57%. That is the price of not wedging, on a 7 GB
 machine. It should be re-measured on a real Mac, where it does not apply.
 
-**Treat the wedge as open but possibly already addressed.** No confirmed wedge
-has occurred since the `0.4 × total RAM` cap landed — jobs 50 and 51 both ran to
-their timeout still progressing (§7.0). What is needed is one job with enough
-wall clock to finish the pair, not another change. Do not tune the arena
-further: three changes aimed at it and the in-chunk peak did not move.
+**The wedge has not reproduced since the merge, and job 52 completed both
+renders.** But two things changed at once — master's batching and the arena cap
+— so the cause is unattributed. Run §7.7 before deciding whether the cap stays:
+if it is unnecessary, removing it is worth roughly 500 s a render on this box.
+
+**Do not tune the arena further** on the strength of over-commit: job 52 peaked
+at 5.61 G against a 4.67 G recommendation and was fine (§7.6).
 
 **Post-merge note.** Job 50, the first run on master's optimised batching, is
 faster per chunk — chunk 2 at 51.8 s against 67.3 s for the same chunk in job 47
