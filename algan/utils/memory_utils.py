@@ -204,8 +204,23 @@ def get_num_available_bytes(device=torch.device("cuda")):
         # nothing but `sleep` stopped printing -- two of those below the
         # recommendation entirely, at 3.14 G and 3.56 G, where a GPU working-set
         # story cannot reach.
-        host_free = int(psutil.virtual_memory().available)
-        free_bytes = min(free_bytes, max(0, host_free - _HOST_RESERVE_BYTES))
+        # OFF by default, because the first job to run it died with the very
+        # error this round began with -- "Insufficient memory to ray trace a
+        # single frame" -- inside a minute. A 2 GB reserve should have left
+        # plenty on a 7 GB box, so `available` must itself be far smaller than
+        # 7 GB at render time, and subtracting a fixed 2 GB from it leaves an
+        # arena too small for one 4K frame. That is evidence FOR the machine
+        # being nearly full, and against this particular arithmetic: quite
+        # possibly `available` already excludes the GPU allocation, in which
+        # case the reserve double-counts it.
+        #
+        # So it is a knob to be calibrated rather than a default to be trusted.
+        # Set ALGAN_MPS_HOST_RESERVE to the bytes to hold back; 0 (the default)
+        # leaves the bound off entirely.
+        host_reserve = env_int("ALGAN_MPS_HOST_RESERVE", 0)
+        if host_reserve > 0:
+            host_free = int(psutil.virtual_memory().available)
+            free_bytes = min(free_bytes, max(0, host_free - host_reserve))
         cap = env_int("ALGAN_MPS_MEMORY_CAP", 0)
         if cap > 0:
             free_bytes = min(free_bytes, cap)

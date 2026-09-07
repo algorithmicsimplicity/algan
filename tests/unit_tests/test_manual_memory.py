@@ -216,16 +216,17 @@ def _plenty_of_host_memory(monkeypatch, available=64 << 30):
     )
 
 
-def test_the_mps_figure_is_bounded_by_host_memory(monkeypatch):
-    """Unified memory: the arena cannot exceed what the MACHINE has free.
+def test_the_host_memory_bound_is_off_unless_asked_for(monkeypatch):
+    """The host bound applies only when ``ALGAN_MPS_HOST_RESERVE`` is set.
 
-    ``recommendedMaxWorkingSetSize`` describes what the GPU should hold, and on
-    Apple silicon the CPU side, the video encoder and the OS draw on the very
-    same pool. Sizing from the GPU figure alone hands out memory that is not
-    there: on the 7 GB Mac runner the render peaked at 4.87 G of driver
-    allocation beside 1.45 G of process RSS, and the jobs that then died did so
-    at 3.14 G and 3.56 G -- under the recommendation, where a GPU working-set
-    story cannot reach.
+    On unified memory the machine's free RAM is a real constraint the GPU figure
+    knows nothing about -- but the first job to enforce it died inside a minute
+    with "Insufficient memory to ray trace a single frame", the very error this
+    round began with. A 2 GB reserve should have been unremarkable on a 7 GB
+    box, so ``available`` is itself far below 7 GB at render time and quite
+    possibly already excludes the GPU allocation, in which case subtracting a
+    reserve double-counts it. Off by default until a measurement says what the
+    number should be.
     """
     from algan.utils import memory_utils as mu
 
@@ -235,19 +236,19 @@ def test_the_mps_figure_is_bounded_by_host_memory(monkeypatch):
     monkeypatch.setattr(
         "algan.rendering.mps_zero_copy.clear_import_cache", lambda: None
     )
+    # A nearly-full machine, which would bind hard if the bound were on.
+    _plenty_of_host_memory(monkeypatch, available=1 << 30)
 
-    # A machine with room to spare: the GPU figure decides.
-    _plenty_of_host_memory(monkeypatch)
-    roomy = mu.get_num_available_bytes(torch.device("mps"))
+    monkeypatch.delenv("ALGAN_MPS_HOST_RESERVE", raising=False)
+    unbounded = mu.get_num_available_bytes(torch.device("mps"))
+    budget = (64 << 30) - int((64 << 30) * mu._MPS_HEADROOM)
+    assert unbounded == budget, "the host bound applied without being asked for"
 
-    # The same GPU figure on a machine that is nearly full: the host decides.
-    _plenty_of_host_memory(monkeypatch, available=mu._HOST_RESERVE_BYTES + (1 << 30))
-    cramped = mu.get_num_available_bytes(torch.device("mps"))
+    monkeypatch.setenv("ALGAN_MPS_HOST_RESERVE", str(512 << 20))
+    bounded = mu.get_num_available_bytes(torch.device("mps"))
+    assert bounded == (1 << 30) - (512 << 20), "the host bound did not apply"
+    assert bounded < unbounded
 
-    assert cramped == 1 << 30, "the host bound did not apply"
-    assert cramped < roomy
-
-    # And a machine with less free than the reserve hands out nothing rather
-    # than going negative.
+    # Less free than the reserve hands out nothing rather than going negative.
     _plenty_of_host_memory(monkeypatch, available=0)
     assert mu.get_num_available_bytes(torch.device("mps")) == 0
