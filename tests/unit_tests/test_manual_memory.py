@@ -1,5 +1,6 @@
 import types
 
+import psutil
 import pytest
 import torch
 
@@ -258,3 +259,38 @@ def test_the_mps_figure_is_capped_by_a_share_of_total_ram(monkeypatch):
     monkeypatch.setenv("ALGAN_MPS_HOST_SHARE", "0")
     _machine_with_ram(monkeypatch, total=8 << 30)
     assert mu.get_num_available_bytes(torch.device("mps")) == budget
+
+
+def test_a_cpu_render_is_sized_against_the_machine_not_a_flat_2gb(monkeypatch):
+    """The CPU branch scales with the box, as the CUDA and MPS branches do.
+
+    It used to return a flat 2 GB, and the render arena is
+    ``rendering_memory_fraction`` (0.4) of it, so **every** CPU machine got a
+    0.75 GB arena -- too small for one 4K frame. A UHD CPU render therefore died
+    with "Insufficient memory to ray trace a single frame" on a 7 GB runner and
+    would have on a 512 GB workstation too. That is the same defect the MPS
+    branch carried as a 1 GiB clamp, and it was found the same way: by rendering
+    the scene and reading the error.
+    """
+    from algan.settings import computing_settings as cs
+
+    monkeypatch.setattr(
+        cs.psutil if hasattr(cs, "psutil") else psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total=64 << 30),
+        raising=False,
+    )
+    assert cs._default_cpu_memory() == int((64 << 30) * cs._CPU_MEMORY_SHARE)
+
+    # A frame-sized arena on a small machine, and never below the old floor.
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: types.SimpleNamespace(total=1 << 30)
+    )
+    assert cs._default_cpu_memory() == 2 * cs.GIGABYTES, "dropped below the old floor"
+
+    # And a platform that cannot report its memory keeps the old constant.
+    def _no_telemetry():
+        raise OSError("no meminfo here")
+
+    monkeypatch.setattr(psutil, "virtual_memory", _no_telemetry)
+    assert cs._default_cpu_memory() == 2 * cs.GIGABYTES

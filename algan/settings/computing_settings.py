@@ -69,6 +69,23 @@ def _coerce_mps_friendly(value):
     return _coerce_tristate(value, "mps_friendly", "follows the render device")
 
 
+#: Share of total RAM a CPU render may size its arena against by default. The
+#: same fraction the Metal branch is capped at, for the same reason: on a CPU
+#: render the arena, the frame buffers and the OS all come out of one pool.
+_CPU_MEMORY_SHARE = 0.4
+
+
+def _default_cpu_memory():
+    """Total RAM times :data:`_CPU_MEMORY_SHARE`, or 2 GB if it cannot be read."""
+    try:
+        import psutil
+
+        total = int(psutil.virtual_memory().total)
+    except Exception:
+        return 2 * GIGABYTES
+    return max(2 * GIGABYTES, int(total * _CPU_MEMORY_SHARE))
+
+
 def _coerce_torch_compile(value):
     return _coerce_tristate(
         value, "torch_compile", "is on wherever torch.compile is supported"
@@ -221,7 +238,22 @@ class ComputingSettings(Settings):
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
-    max_cpu_memory_used: int = 2 * GIGABYTES
+    #: What a CPU render may size its arena against, in bytes.
+    #:
+    #: This is the CPU analogue of the device queries the CUDA and MPS branches
+    #: of ``get_num_available_bytes`` make, and it used to be a flat 2 GB. The
+    #: render arena is ``rendering_memory_fraction`` (0.4) of it, so that gave
+    #: **every** CPU machine a 0.75 GB arena -- which does not hold one 4K
+    #: frame, so a UHD CPU render died with "Insufficient memory to ray trace a
+    #: single frame" on a 7 GB laptop and on a 512 GB workstation alike. It is
+    #: the same shape of defect as the 1 GiB clamp the MPS branch carried, and
+    #: it was found the same way: by rendering the scene and reading the error.
+    #:
+    #: So it defaults to a share of the machine's RAM, the figure the MPS branch
+    #: is capped against, and stays an explicit setting for anyone who wants to
+    #: pin it. ``psutil`` is already a dependency; the fallback keeps the old
+    #: constant for a platform that cannot report its memory.
+    max_cpu_memory_used: int = field(default_factory=_default_cpu_memory)
     available_memory_override: int | None = None
     use_torch_scatter: bool = True
     #: Let the batch-prep worker run the render-device projection and scene

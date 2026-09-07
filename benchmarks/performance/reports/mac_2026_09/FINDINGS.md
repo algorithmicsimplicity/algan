@@ -5,8 +5,48 @@ Apple silicon. It covers what was fixed, what was measured, the one substantial
 performance finding, and an unresolved failure that the same work introduced.
 It is written so that someone picking this up cold needs nothing else.
 
-**Read §7 first if you only want the open problem**, and §8 if you are deciding
-what to ship.
+**Read §0 first.** It was written last and it changes how to read §4 and §5.
+Then §8 if you are deciding what to ship, §7 for the open failure.
+
+---
+
+## 0. The headline, established last: this box's GPU loses to its own CPU
+
+The same scene, the same machine, the same arena, the same instrument, one
+variable — the render device:
+
+| | CPU (`mac-cpu`) | Metal (job 52, warm) |
+| --- | ---: | ---: |
+| total | **140.0 s** | 1010.3 s |
+| arena | 1147 MB | 1147 MB |
+| batches / chunks | 2 / 18 | 2 / 18 |
+| steady-state chunk | **4.2 s** | 55.4 s |
+| zero-copy imports per chunk | 0 | 73,044 |
+
+**The CPU is 7.2× faster overall and 13.1× faster per chunk**, on a box whose
+GPU has a 3× compute advantage (~1.3 TFLOP/s against ~450 GFLOP/s).
+
+The launch arithmetic accounts for it:
+
+```
+73,044 imports/chunk × 432 µs  (this box's dispatch) = 31.6 s of a 55.4 s chunk
+73,044 imports/chunk ×   2 µs  (a physical Mac)      =  0.15 s
+```
+
+So **the wall times in §4 are substantially a measurement of this runner's
+virtualisation tax, not of the renderer.** The caveat under §1 said as much from
+the start; it was quoted and then not applied, and most of this round ranked
+work by those wall times anyway. Three consequences:
+
+1. **Do not optimise against Mac-runner wall time.** Re-measure on a physical
+   Mac or the Kaggle T4 before trusting any GPU-versus-baseline number here.
+2. **§5 survives, because it is a launch-count finding** — fewer launches,
+   faster — and it is internally consistent. Its *magnitude* is a property of
+   this box.
+3. **The real target is the launch count itself.** ~73,000 dispatches a chunk is
+   design-level pressure that costs on any device with a non-trivial submission
+   cost; on this one it is most of the render. That should displace the arena
+   work at the top of any ranked list.
 
 ---
 
@@ -84,7 +124,21 @@ per render chunk had never occurred on Metal before (§3).
 correct and the true root cause of the key corruption is **not** identified. It
 is gated off on Metal, not fixed.
 
-### 3.3 Sizing (the subject of §5–§7)
+### 3.3 The CPU branch had the same defect as the Metal one
+
+`max_cpu_memory_used` defaulted to a flat **2 GB**, and the arena is
+`rendering_memory_fraction` (0.4) of it, so **every** CPU machine got a 0.75 GB
+arena — too small for one 4K frame. A UHD CPU render therefore died with
+"Insufficient memory to ray trace a single frame" on the 7 GB runner, and would
+have on a 512 GB workstation identically. That is structurally the same defect
+as the 1 GiB Metal clamp in §2, in the branch nobody had pointed a 4K render at,
+and it was found the same way: by rendering the scene and reading the error.
+
+It now defaults to a share of the machine's RAM (`_CPU_MEMORY_SHARE`, 0.4),
+never below the old 2 GB floor, falling back to that constant where memory
+cannot be read. It remains an explicit setting for anyone pinning it.
+
+### 3.4 Sizing (the subject of §5–§7)
 
 * MPS 1 GiB clamp removed; branch sizes from the device.
 * `_gpu_memory_pressure` answers per device instead of returning `True` for
@@ -94,7 +148,7 @@ is gated off on Metal, not fixed.
 * `get_num_available_bytes` MPS branch: clear import cache → `empty_cache()` →
   measure **`current_allocated_memory`**, capped at `0.4 ×` total RAM.
 
-### 3.4 Test status
+### 3.5 Test status
 
 * `pytest -q --fast`: **537 passed** on the merged tree (36 s on a second run;
   the first pays a cold compile for master's new kernel).
@@ -121,6 +175,8 @@ hooks — its synchronising hooks would distort the wall time being measured).
 | 39 (live-bytes) | 1911 MB | **649.8 s** | — | **killed** at warm chunk 14 |
 | 47 (0.4 × RAM cap) | 1147 MB | 1019.5 s | — | killed at a 30-min timeout; **unclassified**, see §7.0 |
 | **52 (post-merge, cap, 55-min timeout)** | **1147 / 1147 MB** | **1146.8 s** | **1010.3 s** | **completed — warm 0.88× cold** |
+| **55 `mac-cpu` (post-merge, matched arena)** | **1147 MB** | **140.0 s** | — | **completed — see §0** |
+| 55 `mac-mps` (cap off) | ~1.9 GB | — | — | crashed: MPS SymInt, §7.5 |
 
 [^stall]: Job 38's cold pass contained one 455.6 s chunk against 25–42 s for
 every other chunk. A stall, not a baseline — and see §7, since it may be the
@@ -151,7 +207,7 @@ optimised batching, with a timeout long enough to fit it (36.6 min of work).
   drove §5 does not happen.
 * **Master's batching cut 12 batches to 2.** That is `808de65`, not this branch.
 * **The peak reached 5.61 G — nearly a gigabyte over the 4.67 G
-  `recommendedMaxWorkingSetSize` — and nothing failed.** See §7.6; this is the
+  `recommendedMaxWorkingSetSize` — and nothing failed.** See §7.4; this is the
   observation that ends the over-commit theory.
 
 **PREVIEW (704×396), four renders in one process** — the control:
@@ -302,7 +358,7 @@ recovered on its own after 455.6 s (job 38).
   their timeout still progressing (§7.0), so the claim that it "survived master's
   batching optimisation" is withdrawn — that job never wedged.
 
-### 7.6 Job 52: the over-commit theory is dead
+### 7.4 Job 52: the over-commit theory is dead
 
 Job 52 ran both renders to completion with the in-chunk peak at **5.53–5.61 G
 against a 4.67 G recommendation** — the highest figure recorded this round,
@@ -317,9 +373,31 @@ and the cap — is refuted by this run.
 
 What actually changed between the wedges and job 52 is two things at once:
 master's batching (`808de65`, 12 batches → 2) and the arena cap. The cap is
-**not** established as the fix; it is confounded. §7.7 says how to separate them.
+**not** established as the fix; it is confounded. §7.6 says how to separate them.
 
-### 7.7 The one experiment that would settle it
+### 7.5 An uncapped post-merge render crashes on a real MPS bug
+
+The MPS arm of job 55 (`ALGAN_MPS_HOST_SHARE=0`, ~1.9 GB arena) did not wedge —
+it **crashed**, in `raster_pipeline._pair_expand_rows`:
+
+```
+rows = torch.empty((total, 8), dtype=torch.int32, device=device)
+RuntimeError: RegisterMPS_0.cpp:7210:
+SymIntArrayRef expected to contain only concrete integers
+```
+
+`total` is already `int(counts.sum().item())`, so a plain Python int reaches
+that line in eager mode. A **SymInt** reaching it means the region was being
+traced with dynamic shapes — i.e. `torch.compile`, which was on for this job and
+whose Metal backend warns it is a prototype in every run and *fails* on
+`_triangle_projection_fused` in every run.
+
+Not fixed here, deliberately: the hypothesis is testable in one job
+(`ALGAN_TORCH_COMPILE=0` with the cap off) and this round has enough
+committed-then-reverted guesses in it. But it is a concrete, reproducible bug
+with a stack trace, which nothing else in §7 is.
+
+### 7.6 The one experiment that would settle it
 
 Run the pair post-merge with `ALGAN_MPS_HOST_SHARE=0`, which removes the cap and
 restores the ~1.9 GB arena that every confirmed wedge ran with.
@@ -332,7 +410,7 @@ restores the ~1.9 GB arena that every confirmed wedge ran with.
 Until that runs, the honest position is that the wedge is **not reproduced since
 the merge**, cause unattributed between two simultaneous changes.
 
-### 7.4 Untested hypotheses, in the order worth trying
+### 7.7 Untested hypotheses, in the order worth trying
 
 0. **Already tested, and negative.** Job 51 ran with
    `ALGAN_TORCH_COMPILE=0` and behaved like job 50 with it on: both progressed
@@ -362,7 +440,7 @@ the merge**, cause unattributed between two simultaneous changes.
 5. **Resolution threshold.** Never seen at PREVIEW, always at UHD.
    **Test:** HD and MD, to find where it starts.
 
-### 7.5 A loose end
+### 7.8 A loose end
 
 A `resource_tracker: There appear to be 1 leaked semaphore objects` warning
 appears at shutdown in exactly the jobs that **died** (34, 39) and in none that
@@ -400,11 +478,11 @@ machine. It should be re-measured on a real Mac, where it does not apply.
 
 **The wedge has not reproduced since the merge, and job 52 completed both
 renders.** But two things changed at once — master's batching and the arena cap
-— so the cause is unattributed. Run §7.7 before deciding whether the cap stays:
+— so the cause is unattributed. Run §7.6 before deciding whether the cap stays:
 if it is unnecessary, removing it is worth roughly 500 s a render on this box.
 
 **Do not tune the arena further** on the strength of over-commit: job 52 peaked
-at 5.61 G against a 4.67 G recommendation and was fine (§7.6).
+at 5.61 G against a 4.67 G recommendation and was fine (§7.4).
 
 **Post-merge note.** Job 50, the first run on master's optimised batching, is
 faster per chunk — chunk 2 at 51.8 s against 67.3 s for the same chunk in job 47

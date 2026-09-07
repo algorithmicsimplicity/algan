@@ -313,28 +313,21 @@ def _host():
     return f"rss_peak={rss / scale:.2f}G children={len(kids)}{[c.name for c in kids] or ''}"
 
 
-def _match_cpu_arena_to_the_gpu_one():
-    """Give a CPU render the same arena the Metal cap would produce.
+def _report_cpu_arena_budget():
+    """Say what a CPU render was given, since it is no longer a flat 2 GB.
 
-    The CPU branch of ``get_num_available_bytes`` returns a *setting*,
-    ``max_cpu_memory_used``, whose default is 2 GB -- a 0.75 GB arena, which
-    cannot hold one 4K frame, so a UHD CPU render dies with the same
-    "Insufficient memory to ray trace a single frame" the Metal branch used to.
-    That is a configured floor, not a property of the CPU, and comparing a
-    GPU render against a CPU one that died of it would measure nothing.
-
-    So size it exactly as the MPS branch does -- 0.4 of total RAM -- which on the
-    7 GB runner gives 2.8 GB and a ~1.12 GB arena, the same arena job 52's Metal
-    pass ran on. Same scene, same box, same arena, same instrument: the only
-    difference left is the device.
+    That default gave every CPU machine a 0.75 GB arena and made a UHD CPU
+    render impossible outright -- the same shape of defect as the MPS branch's
+    1 GiB clamp. ``max_cpu_memory_used`` now defaults to a share of the
+    machine's RAM, so the CPU arm lands on the same ~1.12 GB arena the Metal one
+    does on this runner, and the comparison between them has one variable.
     """
     if render_device().type != "cpu":
         return
-    budget = int(psutil.virtual_memory().total * 0.4)
-    SETTINGS.computing.set(max_cpu_memory_used=budget)
+    budget = SETTINGS.computing.max_cpu_memory_used
     print(
-        f"cpu arena budget set to {budget / 2**30:.2f}G "
-        f"(arena ~{0.4 * budget / 2**30:.2f}G), to match the Metal cap",
+        f"cpu arena budget {budget / 2**30:.2f}G "
+        f"(arena ~{0.4 * budget / 2**30:.2f}G)",
         flush=True,
     )
 
@@ -362,7 +355,7 @@ def main():
         f"pin_arena={PIN_ARENA}",
         flush=True,
     )
-    _match_cpu_arena_to_the_gpu_one()
+    _report_cpu_arena_budget()
     threading.Thread(target=_heartbeat, daemon=True).start()
     print(f"pool before any render: {_pool()} | {_host()}", flush=True)
     for i in range(1, RUNS + 1):
