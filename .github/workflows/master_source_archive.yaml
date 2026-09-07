@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# If master changes again while an archive is being made, only the newest state
+# matters. This also prevents an older run finishing after a newer one.
+concurrency:
+  group: master-source-archive
+  cancel-in-progress: true
+
 jobs:
   archive:
     name: Upload master source
@@ -19,6 +25,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keep manual runs honest too: this artifact always means master,
+          # regardless of the ref selected when workflow_dispatch is invoked.
+          ref: master
 
       # Export only files tracked by Git. Staging the archive before upload
       # keeps runner metadata (especially .git/) out while retaining tracked
