@@ -33,6 +33,12 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
+
+#: The scene's texture lives beside the performance benchmarks, and the harness
+#: runs its command from the repository root rather than from there. Resolved
+#: against this file so the script works from any working directory.
+WORLD_MAP = str(Path(__file__).resolve().parent / "performance" / "world_map.png")
 
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
 os.environ.setdefault("ALGAN_VIDEO_ENCODER", "software")
@@ -102,7 +108,7 @@ def scene():
     SETTINGS.raytracing.set(shadows=False)
     with Off():
         nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
-        x = ImageMob("world_map.png").move_next_to(nn, LEFT).spawn()
+        x = ImageMob(WORLD_MAP).move_next_to(nn, LEFT).spawn()
         label = (
             Text("Neural Net MLP v3 processing an image of the globe")
             .move_next_to(nn, DOWN)
