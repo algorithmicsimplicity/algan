@@ -1298,19 +1298,32 @@ def compact_sheets(
     # ``bool()``/``int()`` -- three full pipeline drains where the values are
     # available at the same moment, which on Metal is three command-buffer
     # commits and waits rather than three cheap stream syncs.
+    #
+    # ``reduction_index_dtype()`` on the frame reduction, and the SURFACE ids
+    # rather than the group key for the second: both narrow what is reduced to
+    # the width the renderer's other integer reductions already narrow to, and
+    # the surface reduction runs over the small ``[frames, triangles]`` table
+    # instead of the fragment stream.
     if n:
+        surface_max = (
+            tri_obj.amax().to(torch.int64)
+            if tri_obj.numel()
+            else torch.zeros((), dtype=torch.int64, device=device)
+        )
         probe = torch.stack(
             [
                 is_tri.any().to(torch.int64),
-                frame_rel.amax(),
-                gkey.amax(),
+                frame_rel.to(reduction_index_dtype()).amax().to(torch.int64),
+                surface_max,
             ]
         ).tolist()
         tri_present = bool(probe[0])
         # Frames this chunk's fragments span: the per-(frame, triangle) tables
         # below are built for exactly these rows.
         num_frames = int(probe[1]) + 1
-        gkey_bound = max(int(probe[2]), n + 1)
+        # ``gkey`` is ``sid * 2 + facing`` for a triangle and ``-(position + 2)``
+        # for a bezier fragment, so this bounds both of its ends.
+        gkey_bound = max(2 * int(probe[2]) + 2, n + 2)
     else:
         tri_present = False
         num_frames = 1
