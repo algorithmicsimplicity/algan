@@ -32,6 +32,7 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import ACC_GEO as _ACC_G
 from algan.rendering.raytracing.glossy_prefilter_taichi import (
     GL_ROW_DIST as _GL_ROW_DIST,
 )
+from algan.rendering.raytracing.ray_origin_taichi import _offset_ray_origin
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -942,7 +943,8 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
     n = n.normalized()
     if n.dot(out_dir) < 0.0:
         n = -n
-    return hit_point + (n + out_dir) * (10.0 * min_hit_distance)
+    surface_origin = _offset_ray_origin(hit_point, n)
+    return _offset_ray_origin(surface_origin, out_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -1412,7 +1414,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         trans_w = trans_energy * tint
         if (refl_max > min_alpha) and (refl_max >= cover_pass):
             refl_dir, nref = _reflect_frame(rd, normal, face_n)
-            refl_orig = hit_point + nref * (10.0 * min_hit_distance)
+            refl_orig = _offset_ray_origin(hit_point, nref)
             refl_w = refl_energy
         else:
             pass_w = cover3
@@ -1422,13 +1424,13 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         # which spends no bounce) along with the coverage-miss. Only the
         # reflection needs a ray of its own, so it takes the split slot.
         trans_dir, nref = _reflect_frame(rd, normal, face_n)
-        trans_orig = hit_point + nref * (10.0 * min_hit_distance)
+        trans_orig = _offset_ray_origin(hit_point, nref)
         trans_w = refl_energy
         pass_w = cover3 + trans_energy * tint
     elif split_refl or ((refl_max > min_alpha)
                         and (refl_max >= cover_pass)):
         rdir, nref = _reflect_frame(rd, normal, face_n)
-        rorig = hit_point + nref * (10.0 * min_hit_distance)
+        rorig = _offset_ray_origin(hit_point, nref)
         if split_refl:
             # Reflection into the split slot; the pass-through stays the
             # primary ray. It continues the depth-layer walk (no bounce
@@ -2755,7 +2757,7 @@ def wavefront_shade_arena(
                             # constant normal field) to license the
                             # horizon-cull relaxation in the sample loop
                             # below. RENDERER_WORK_QUEUE.md item 20.
-                            sorigin = spos + fnrm * (10.0 * min_hit_distance)
+                            sorigin = _offset_ray_origin(spos, fnrm)
                             lifted = 0
                             if ti.static(shadow_term != 0):
                                 if ti.static(shadow_term == 1):
@@ -3263,7 +3265,7 @@ def wavefront_shade_arena(
                                 and (refl_max >= cover_pass):
                             hit_point = ro + t_hit * rd
                             rd, nref = _reflect_frame(rd, normal, geo_normal)
-                            ro = hit_point + nref * (10.0 * min_hit_distance)
+                            ro = _offset_ray_origin(hit_point, nref)
                             weight *= refl_energy
                             base_dist += t_hit
                             t_prev = 0.0
@@ -3291,10 +3293,9 @@ def wavefront_shade_arena(
                                     rdr, nref = _reflect_frame(rd, normal,
                                                                geo_normal)
                                     hp = ro + t_hit * rd
+                                    rorig = _offset_ray_origin(hp, nref)
                                     for k in ti.static(range(3)):
-                                        rs_ro[c, k] = (
-                                            hp[k] + nref[k]
-                                            * (10.0 * min_hit_distance))
+                                        rs_ro[c, k] = rorig[k]
                                         rs_rd[c, k] = rdr[k]
                                     for k in ti.static(range(4)):
                                         rs_acc[c, k] = 0.0
@@ -3332,9 +3333,9 @@ def wavefront_shade_arena(
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
                                 hp = ro + t_hit * rd
+                                rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
-                                    rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * min_hit_distance))
+                                    rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3368,9 +3369,9 @@ def wavefront_shade_arena(
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
                                 hp = ro + t_hit * rd
+                                rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
-                                    rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * min_hit_distance))
+                                    rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3401,7 +3402,7 @@ def wavefront_shade_arena(
                           and (refl_max >= cover_pass)):
                         hit_point = ro + t_hit * rd
                         rd, nref = _reflect_frame(rd, normal, geo_normal)
-                        ro = hit_point + nref * (10.0 * min_hit_distance)
+                        ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
                         base_dist += t_hit
                         t_prev = 0.0
