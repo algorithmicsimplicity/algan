@@ -5,10 +5,11 @@
     "mac-mps"
   ],
   "env": {
-    "ALGAN_VIDEO_ENCODER": "software"
+    "ALGAN_VIDEO_ENCODER": "software",
+    "ALGAN_TORCH_COMPILE": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 30,
-  "_request": "48: first run on master's optimized batching (merge 767836e); 2x UHD"
+  "_request": "51: torch.compile OFF (ALGAN_TORCH_COMPILE=0) -- does the wedge survive it?"
 }
