@@ -88,7 +88,9 @@ def _default_cpu_memory():
 
 def _coerce_torch_compile(value):
     return _coerce_tristate(
-        value, "torch_compile", "is on wherever torch.compile is supported"
+        value,
+        "torch_compile",
+        "is on wherever torch.compile is supported and its backend is trusted",
     )
 
 
@@ -227,10 +229,18 @@ class ComputingSettings(Settings):
     #: post-processing chain -- through ``torch.compile``, which fuses each
     #: chain of small tensor operations into one kernel. ``'auto'`` (the
     #: default) is on wherever ``torch.compile`` runs and off where it does not
-    #: (Windows, a Python that Dynamo does not support); ``True`` tries
-    #: regardless and ``False`` is off everywhere. A function whose compile
-    #: fails warns once and runs eagerly, so the switch can never fail a
-    #: render. The first render of a process pays the compile (seconds per
+    #: (Windows, a Python that Dynamo does not support) or where its backend is
+    #: not trustworthy yet (**Metal** -- PyTorch calls that backend an early
+    #: prototype, and on this codebase it fails on
+    #: ``_triangle_projection_fused`` in every run and crashed a UHD render
+    #: outright on a SymInt shape; see
+    #: ``benchmarks/performance/reports/mac_2026_09/FINDINGS.md`` §7.5).
+    #: ``True`` tries regardless and ``False`` is off everywhere, so the Metal
+    #: backend stays re-testable once PyTorch fixes it.
+    #:
+    #: A function whose compile *fails* warns once and runs eagerly, so that
+    #: much cannot fail a render. A backend that compiles and then generates
+    #: wrong code still can, which is what the Metal default is for. The first render of a process pays the compile (seconds per
     #: function on the CPU, cached across processes by Inductor); every later
     #: one is faster. Env override ``ALGAN_TORCH_COMPILE``. Read it through
     #: :func:`algan.utils.torch_compile.torch_compile_enabled`.

@@ -107,19 +107,51 @@ def _probe_support() -> tuple[bool, str]:
     return True, ""
 
 
+def _auto_declines_this_device() -> str:
+    """Why ``'auto'`` should decline on the current render device, or ``""``.
+
+    **Metal.** PyTorch's own Inductor backend calls itself an early prototype
+    there ("torch.compile for Metal is an early protoype and might not work as
+    expected", `pytorch#150121`), and on this codebase it does two things. It
+    fails: every Mac run logs ``torch.compile failed for
+    _triangle_projection_fused (NameError: name 'ps0' is not defined)``, after
+    which that function runs eagerly anyway, so the switch buys nothing. And it
+    breaks a render outright: a UHD pass died in
+    ``raster_pipeline._pair_expand_rows`` on
+
+        RuntimeError: SymIntArrayRef expected to contain only concrete integers
+
+    at a ``torch.empty`` whose size argument is already ``int(...)`` in eager
+    mode -- a SymInt reaches it only under dynamic-shape tracing. The same job
+    with ``ALGAN_TORCH_COMPILE=0`` rendered past that point with no crash
+    (`benchmarks/performance/reports/mac_2026_09/FINDINGS.md` §7.5).
+
+    This is a default, not a refusal -- exactly as Windows is treated above.
+    ``SETTINGS.computing.torch_compile = True`` and ``ALGAN_TORCH_COMPILE=1``
+    both still force it on, which is how the next person re-tests whether
+    PyTorch has fixed its Metal backend.
+    """
+    from algan.settings._startup import render_device
+
+    if render_device().type == "mps":
+        return "torch.compile's Metal backend is an early prototype"
+    return ""
+
+
 def torch_compile_enabled() -> bool:
     """Whether pipeline functions run compiled right now.
 
     ``SETTINGS.computing.torch_compile`` decides; its default ``'auto'``
-    resolves to :func:`torch_compile_support`. ``ALGAN_TORCH_COMPILE``
-    overrides both. Call it; never bind the result at import time -- the
-    setting is live and a script may flip it between renders.
+    resolves to :func:`torch_compile_support`, and declines on devices
+    :func:`_auto_declines_this_device` names. ``ALGAN_TORCH_COMPILE`` overrides
+    both. Call it; never bind the result at import time -- the setting is live,
+    and so is the render device, which a script may change between renders.
     """
     from algan.settings import SETTINGS
 
     configured = SETTINGS.computing.torch_compile
     if configured == "auto":
-        configured = torch_compile_support()[0]
+        configured = torch_compile_support()[0] and not _auto_declines_this_device()
     return env_flag("ALGAN_TORCH_COMPILE", bool(configured))
 
 

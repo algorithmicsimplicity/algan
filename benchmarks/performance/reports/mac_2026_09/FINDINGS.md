@@ -508,10 +508,17 @@ chunk 3, with it on the pair completes. Two jobs differ in the cap alone, so the
 attribution is clean. It costs ~500 s a render on a 7 GB box and nothing at all
 on a machine with memory.
 
-**Pin `torch_compile` off on MPS**, or stop `_pair_expand_rows` being traced.
-§7.5 is confirmed: the prototype Metal codegen path owns the `SymIntArrayRef`
-crash, which disappears with `ALGAN_TORCH_COMPILE=0`. It is a separate defect
-from the wedge and worth fixing on its own.
+**`torch_compile` is now pinned off on MPS** (landed). `'auto'` declines there
+via `_auto_declines_this_device` in `utils/torch_compile.py`, while
+`torch_compile=True` and `ALGAN_TORCH_COMPILE=1` still force it on, so the Metal
+backend stays re-testable when PyTorch fixes it. §7.5 is confirmed: that backend
+owns the `SymIntArrayRef` crash, and it buys nothing in exchange — it also fails
+on `_triangle_projection_fused` in every Mac run, after which that function runs
+eagerly regardless.
+
+It corrects a claim in the setting's own docs, too: "the switch can never fail a
+render" was true of a compile that *fails* (warn once, run eagerly) and false of
+a backend that compiles and then generates wrong code, which is what happened.
 
 **Do not tune the arena further** on the strength of over-commit: job 52 peaked
 at 5.61 G against a 4.67 G recommendation and was fine (§7.4).

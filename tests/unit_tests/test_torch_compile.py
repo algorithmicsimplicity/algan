@@ -237,3 +237,44 @@ def test_a_backend_that_fails_when_its_code_runs_is_demoted(monkeypatch, tmp_pat
     assert [w for w in caught if w.category is AlganWarning]
     assert _wrapped_state(f).failed
     assert "NameError" in _wrapped_state(f).reason
+
+
+def test_auto_declines_torch_compile_on_metal(monkeypatch):
+    """``'auto'`` is off on MPS, and an explicit setting still forces it on.
+
+    PyTorch's Inductor backend calls itself an early prototype on Metal, and on
+    this codebase it both fails harmlessly (``torch.compile failed for
+    _triangle_projection_fused``, after which that function runs eagerly, so the
+    switch buys nothing) and breaks a render outright: a UHD pass died in
+    ``raster_pipeline._pair_expand_rows`` on "SymIntArrayRef expected to contain
+    only concrete integers" at a ``torch.empty`` whose size is already an
+    ``int``. The same job with the switch off rendered past that point.
+
+    A default, not a refusal -- which is what lets someone re-test whether
+    PyTorch has fixed it.
+    """
+    import torch as _torch
+
+    monkeypatch.setattr(tc, "torch_compile_support", lambda: (True, ""))
+    monkeypatch.delenv("ALGAN_TORCH_COMPILE", raising=False)
+    SETTINGS.computing.set(torch_compile="auto")
+
+    monkeypatch.setattr(
+        "algan.settings._startup.render_device", lambda: _torch.device("cpu")
+    )
+    assert tc.torch_compile_enabled() is True, "auto should stay on elsewhere"
+
+    monkeypatch.setattr(
+        "algan.settings._startup.render_device", lambda: _torch.device("mps")
+    )
+    assert tc.torch_compile_enabled() is False, "auto should decline on Metal"
+    assert "prototype" in tc._auto_declines_this_device()
+
+    # Explicitly asked for, it still runs -- the switch is a default, not a ban.
+    SETTINGS.computing.set(torch_compile=True)
+    assert tc.torch_compile_enabled() is True
+
+    # And the env override wins over both, in either direction.
+    SETTINGS.computing.set(torch_compile="auto")
+    monkeypatch.setenv("ALGAN_TORCH_COMPILE", "1")
+    assert tc.torch_compile_enabled() is True
