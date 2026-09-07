@@ -21,7 +21,7 @@ import math
 
 import torch
 
-from algan.environment import env_str
+from algan.environment import env_flag, env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
@@ -1485,6 +1485,52 @@ def _one_mesh_pixel_caps(
     return msk_s, cap_s
 
 
+def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
+    """Assert the emission filled every fragment slot it counted (opt-in).
+
+    ``frag_key_u`` is deliberately UNINITIALIZED arena memory: the count pass
+    says how many fragments each pair will emit, and the write pass fills
+    exactly that many. So a slot the write pass skipped holds whatever the
+    arena held before, and the first thing downstream does with a key is
+    ``pix = key >> 32``, which for arena garbage is an arbitrary 32-bit value.
+
+    The emission kernel guards ``0 <= lp < tile_pixels``
+    (``raster_taichi._pair_pixel``), so a key outside that range CANNOT have
+    been written by it. This reports how many are outside, and -- the part that
+    names the mechanism -- whether they form a contiguous tail (the write pass
+    emitted fewer than the count pass promised) or are scattered (a gather or
+    an ordering problem upstream of them).
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is two reductions and a
+    host readback over the whole fragment stream.
+    """
+    if not env_flag("ALGAN_RASTER_KEY_CHECK", False) or num_frags <= 0:
+        return
+    pix = frag_key_u[:num_frags] >> 32
+    bad = (pix < 0) | (pix >= tile_pixels)
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        print(
+            f"[raster-key-check] ok: {num_frags} keys, all pixel ordinals in "
+            f"[0, {tile_pixels})"
+        )
+        return
+    idx = bad.nonzero(as_tuple=True)[0]
+    first, last = int(idx[0]), int(idx[-1])
+    tail = (last == num_frags - 1) and (n_bad == num_frags - first)
+    shape = (
+        "CONTIGUOUS TAIL -- the write pass emitted fewer than the count pass promised"
+        if tail
+        else "SCATTERED -- not a short write"
+    )
+    print(
+        f"[raster-key-check] {n_bad} of {num_frags} keys have a pixel ordinal "
+        f"outside [0, {tile_pixels}): first at {first}, last at {last}, "
+        f"{shape}. "
+        f"Ordinals run {int(pix.amin())}..{int(pix.amax())}."
+    )
+
+
 def _tri_obj_row(pix, ppf, time_start, rows):
     """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
     ``pix``, which is the row the host has to read to ask the same question.
@@ -1935,6 +1981,8 @@ def prepare_sparse_raster_coverage(
             if opaque and n_spec:
                 opaque_u[frag_cursor : frag_cursor + n_spec].fill_(True)
             pair_cursor += npairs
+
+        _check_emitted_keys(frag_key_u, int(g1), num_frags)
 
         order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
