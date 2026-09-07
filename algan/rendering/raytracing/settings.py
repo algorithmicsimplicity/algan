@@ -1415,6 +1415,34 @@ def set_raster_write_compact(enabled):
     raster_write_compact = bool(enabled)
 
 
+def raster_write_compact_active():
+    """True when the write pass should be launched over the live pairs only.
+
+    **Off on MPS**, where it corrupts the fragment stream. Measured on the Mac
+    runner, both arms in one session with everything else identical
+    (``benchmarks/performance/reports/mac_2026_09``): with the compaction the
+    emitted keys carry scattered pixel ordinals the write kernel cannot have
+    produced -- it guards ``0 <= lp < tile_pixels`` -- and the values are stale
+    arena bytes, i.e. slots the write pass never visited. The same emission
+    without it is clean, and so is every later one, including the whole 4K
+    render that the compaction had never let finish.
+
+    The *selection* is not what breaks: ``_check_write_compaction`` compares
+    the pairs with ``counts > 0``, the pairs with ``accepts != 0``, and what
+    ``nonzero`` returns, and on the failing run all three agree. What is left
+    is the gathered argument tensors the compacted launch passes instead of the
+    originals, and that is a torch-MPS / Taichi-Metal interaction this gate
+    does not attempt to fix -- it declines to depend on it.
+
+    ``ALGAN_RASTER_WRITE_COMPACT=0`` still turns it off everywhere, and setting
+    it to 1 does **not** force it back on for MPS: a wrong picture is not a
+    thing to opt into by accident. Use ``set_raster_write_compact`` for the A/B.
+    """
+    if not raster_write_compact:
+        return False
+    return render_device().type != "mps"
+
+
 def set_shadow_identity_reject(enabled):
     """Toggle self-shadow rejection by identity (see
     ``shadow_identity_reject``). Takes effect at the next render batch.

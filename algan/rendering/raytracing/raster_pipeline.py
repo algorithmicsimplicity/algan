@@ -1965,7 +1965,7 @@ def prepare_sparse_raster_coverage(
             # a pixel (raster_write_compact): launch over those alone. Exact
             # -- every fragment lands at its pair's own prefix offset.
             pairs_w, npairs_w, offsets_w, accepts_w = pairs, npairs, offsets, accepts
-            if rt_settings.raster_write_compact and npairs:
+            if rt_settings.raster_write_compact_active() and npairs:
                 live = accepts.nonzero(as_tuple=True)[0]
                 _check_write_compaction(live, accepts, _counts)
                 if live.numel() < npairs:

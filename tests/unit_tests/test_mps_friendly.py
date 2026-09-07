@@ -898,3 +898,37 @@ def test_a_scene_renders_in_mps_friendly_mode(
     assert float((difference == 0).sum()) / channels > 0.99
     assert float((difference > 2).sum()) / channels < 0.005
     assert int(difference.max()) <= 64
+
+
+@pytest.mark.fast
+def test_the_write_pass_compaction_is_off_on_mps(computing_settings, monkeypatch):
+    """The compaction corrupts the fragment stream on Metal; the gate declines it.
+
+    Measured on the Mac runner, both arms in one session: with the compaction
+    the emitted keys carry scattered pixel ordinals the write kernel cannot
+    have produced, and without it the same emission -- and the whole 4K render
+    -- is clean. The gate is on the render DEVICE, not on ``mps_friendly``,
+    because this is not a narrowing: it is an operation that gives the wrong
+    answer there.
+    """
+    import torch
+
+    from algan.rendering.raytracing import settings as rt
+
+    old = rt.raster_write_compact
+    try:
+        rt.set_raster_write_compact(True)
+        monkeypatch.setattr(rt, "render_device", lambda: torch.device("cuda"))
+        assert rt.raster_write_compact_active() is True
+        monkeypatch.setattr(rt, "render_device", lambda: torch.device("cpu"))
+        assert rt.raster_write_compact_active() is True
+        monkeypatch.setattr(rt, "render_device", lambda: torch.device("mps"))
+        assert rt.raster_write_compact_active() is False, (
+            "asking for the compaction must not switch it back on for Metal"
+        )
+        # Off everywhere stays off everywhere.
+        rt.set_raster_write_compact(False)
+        monkeypatch.setattr(rt, "render_device", lambda: torch.device("cuda"))
+        assert rt.raster_write_compact_active() is False
+    finally:
+        rt.raster_write_compact = old
