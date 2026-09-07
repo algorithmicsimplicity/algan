@@ -35,7 +35,7 @@ import logging
 import threading
 from collections import deque
 
-from algan.environment import env_float, env_int
+from algan.environment import env_flag, env_float, env_int
 
 logger = logging.getLogger("algan.memory_model")
 
@@ -78,6 +78,11 @@ memory_minimum_pad = max(0, env_int("ALGAN_MEMORY_MINIMUM_PAD", 1 << 16))
 # extrapolating more than this far beyond evidence.
 memory_probe_growth = max(1, env_int("ALGAN_MEMORY_PROBE_GROWTH", 8))
 
+# An auto-sized ray tile spends the available capacity rather than measuring
+# the minimum workspace a frame needs. Such a peak can still bound render
+# chunks, but must not make scene preparation reject every multi-frame batch.
+elastic_preflight = env_flag("ALGAN_ELASTIC_PREFLIGHT", True)
+
 
 class ChunkMemoryModel:
     """Affine fit of arena peak against chunk frame count.
@@ -96,14 +101,14 @@ class ChunkMemoryModel:
 
     # -- measurement -------------------------------------------------------
 
-    def observe(self, signature, num_frames, peak_bytes):
+    def observe(self, signature, num_frames, peak_bytes, *, capacity_limited=False):
         """Record that ``num_frames`` frames peaked at ``peak_bytes``."""
         num_frames = max(1, int(num_frames))
         peak_bytes = max(0, int(peak_bytes))
         window = self._by_signature.setdefault(
             signature, deque(maxlen=memory_model_history)
         )
-        window.append((num_frames, peak_bytes))
+        window.append((num_frames, peak_bytes, bool(capacity_limited)))
 
     def _samples(self, signature):
         """Frame count -> worst peak seen at it, over the recent window.
@@ -116,7 +121,7 @@ class ChunkMemoryModel:
         if not window:
             return {}
         samples = {}
-        for num_frames, peak in window:
+        for num_frames, peak, _capacity_limited in window:
             if peak > samples.get(num_frames, -1):
                 samples[num_frames] = peak
         return samples
@@ -214,6 +219,21 @@ class ChunkMemoryModel:
         planned = int(usable // slope)
         ceiling = memory_probe_growth * max(self._samples(signature))
         return max(1, min(requested_frames, planned, ceiling))
+
+    def predict_preflight(self, signature, num_frames):
+        """Predict intrinsic workspace, or leave preparation in probe mode.
+
+        Auto-sized tiles adapt to the arena left by the prepared scene. Their
+        high-water marks describe supplied capacity, not required capacity.
+        Keep using those actual peaks for conservative render chunk planning;
+        scene preflight instead retains its unmeasured-batch guard and OOM
+        retry until the recent window contains only fixed-size observations.
+        """
+        if elastic_preflight and any(
+            limited for _, _, limited in self._by_signature.get(signature, ())
+        ):
+            return None
+        return self.predict(signature, num_frames)
 
     def describe(self, signature):
         line = self._line(signature)

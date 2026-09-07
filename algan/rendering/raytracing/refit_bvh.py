@@ -55,10 +55,11 @@ every launch site's ``(blocks, node_miss, leaf_prim, leaf_tspan, first_leaf)``
 quintuple, the merged-scene arena upload and the memory accounting work
 unchanged; the kernels select the walk with a compile-time ``refit`` template.
 
-Everything here is vectorized PyTorch (level-synchronous: one batched binned-
-SAH split pass per binary level across every node of that level), so the
-build runs on the render device under ``merge_on_gpu`` like the classic
-builders.
+Topology uses vectorized PyTorch: one batched binned-SAH split pass per binary
+level across every node of that level. The optional ``refit_pack_kernel``
+path fuses each bottom-up refit level with traversal-block packing on a local
+Taichi backend, retaining only node unions and final blocks. The torch path
+remains the default and the fallback for non-local tensor/backend pairs.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ import warnings
 
 import torch
 
-from algan.environment import env_int
+from algan.environment import env_flag, env_int
 from algan.rendering.mps_compat import clamp_floor, cummax_values, cummin_values
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
@@ -84,6 +85,11 @@ from algan.rendering.raytracing.stbvh import (
 # -- the traversal is arrangement-invariant -- so it is exposed for tuning
 # rather than fixed.
 bvh_sah_bins = max(2, env_int("ALGAN_SAH_BINS", 16))
+
+# Opt-in: saves ~169 MiB on nn_scene_UHD and speeds up an isolated captured
+# build, but the full UHD A/B did not establish an end-to-end speedup.
+# See benchmarks/performance/refit_optimization_report.md.
+refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", False)
 
 # Depth budget of the emitted ARITY-ary tree. Must not exceed the traversal
 # kernels' fixed sibling-stack depth (raytrace_kernels_taichi._GROUP_STACK,
@@ -491,6 +497,55 @@ def build_refit_bvh(
         nocast = (~c).to(torch.int32).to(device)
     nb_lo = torch.empty((Tb, B, 3), device=device)
     nb_hi = torch.empty((Tb, B, 3), device=device)
+    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+    if (
+        refit_pack_kernel
+        and _live_arch() is not None
+        and taichi_launch_is_local(device)
+        and vlo.dtype == torch.float32
+        and vhi.dtype == torch.float32
+    ):
+        from algan.rendering.raytracing.refit_bvh_taichi import refit_pack_level
+
+        # No full-sized child bounds or link tensors: each level writes the
+        # final packed blocks and only its exact node unions survive for the
+        # parent level. f16 conversion happens after the float32 union, just
+        # as in the torch path, so rounding never accumulates up the tree.
+        blocks = torch.empty(
+            (Tb * B, 8, a),
+            dtype=torch.int16 if bvh_block_f16 else torch.float32,
+            device=device,
+        )
+        opq_bytes = opq.to(dtype=torch.uint8).contiguous()
+        prim_ids = (
+            leaf_prim.to(device=device, dtype=torch.long).contiguous()
+            if leaf_prim is not None
+            else torch.zeros(1, dtype=torch.long, device=device)
+        )
+        for lv_s, lv_e in reversed(levels):
+            refit_pack_level(
+                vlo,
+                vhi,
+                child_kind,
+                child_ref,
+                opq_bytes,
+                nocast,
+                prim_ids,
+                nb_lo,
+                nb_hi,
+                blocks,
+                lv_s,
+                lv_e,
+                bvh_block_f16,
+                a,
+                leaf_prim is not None,
+                device.type == "cuda",
+            )
+        if bvh_block_f16:
+            blocks = blocks.view(torch.float16)
+        return RefitBVH(blocks, B, Tb, device)
+
     ch_lo = torch.empty((Tb, B, a, 3), device=device)
     ch_hi = torch.empty((Tb, B, a, 3), device=device)
     link = torch.empty((Tb, B, a), dtype=torch.int32, device=device)

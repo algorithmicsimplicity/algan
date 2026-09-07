@@ -12,17 +12,17 @@
     "publishing a new tag, so one machine need not possess every device baseline."
   ],
   "base_url": "https://github.com/algorithmicsimplicity/algan/releases/download",
-  "tag": "baselines-2026-09-06",
+  "tag": "baselines-2026-09-07-elastic-shadows",
   "archives": {
+    "full_renders/cuda": {
+      "file": "full_renders-cuda.tar.gz",
+      "sha256": "cbf9817c0d23a68ac158e8250e160a54f0af5e9b6a86b4cdb29650e181885f0c",
+      "size": 10381319
+    },
     "full_renders/cpu": {
       "file": "full_renders-cpu.tar.gz",
       "sha256": "63426f880425141c5520b0e9bf47ad1d960694ab895aac0f9406de133555f07c",
       "size": 10392035
-    },
-    "full_renders/cuda": {
-      "file": "full_renders-cuda.tar.gz",
-      "sha256": "3feaab6b34ca7e62dfe2f08fade3ddcb1a22189fb9f39680065b0eadcda4b7bf",
-      "size": 10381354
     },
     "path_traced/cpu": {
       "file": "path_traced-cpu.tar.gz",

@@ -774,6 +774,10 @@ def _auto_primary_per_tile(
     budget = max(0, usable) // bytes_per_primary
     hi = max(1, rt_settings.wavefront_tile_max // pool_ratio)
     lo = min(hi, max(1, rt_settings.wavefront_tile_min // pool_ratio))
+    if budget < hi:
+        # This chunk's peak depends on the capacity supplied by scene prep.
+        # It cannot establish a minimum workspace for the next scene batch.
+        memory.last_chunk_capacity_limited = True
     # The minimum is a launch-amortisation preference, not permission to
     # overrun the arena.  When less than the preferred floor fits, use the
     # exact smaller value; a one-primary allocation is attempted only when no

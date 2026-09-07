@@ -1233,7 +1233,7 @@ class RenderLoopMixin:
             num_triangles=merged_host.get("num_triangles", 0),
             num_circuits=merged_host.get("num_circuits", 0),
         )
-        modelled_forward = self._chunk_memory_model.predict(signature, 1)
+        modelled_forward = self._chunk_memory_model.predict_preflight(signature, 1)
         forward_bytes = modelled_forward or 0
         need_bytes = scene_bytes + forward_bytes
         self._last_arena_preflight = (need_bytes, bytes_remaining)
@@ -1595,6 +1595,7 @@ class RenderLoopMixin:
                 chunk_base = render_pointers[0] + len(self.memory) - render_pointers[1]
                 self.memory.max_pointer = chunk_base
                 self.memory.last_launch_frames = None
+                self.memory.last_chunk_capacity_limited = False
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,
@@ -1625,6 +1626,7 @@ class RenderLoopMixin:
                         signature,
                         self._observed_chunk_frames(duration),
                         max(0, self.memory.max_pointer - chunk_base),
+                        capacity_limited=self.memory.last_chunk_capacity_limited,
                     )
 
                 # Some batch-wide data is allocated at the arena's persistent

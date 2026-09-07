@@ -96,6 +96,7 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
         fixed_bytes=fixed,
     )
     assert got == wanted
+    assert memory.last_chunk_capacity_limited
 
     pool = got * split_k
     # global_hits=False is the route the maintained renderer takes (and the one
@@ -109,6 +110,18 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     tracer._ArenaRayCompactor(memory, pool)
     # The tile is maximal: everything fit, and one more primary would not have.
     assert 0 <= memory.get_num_bytes_remaining() < per_primary
+
+
+def test_tile_limit_and_static_tiles_do_not_mark_capacity_pressure(monkeypatch):
+    memory = ManualMemory(0, device="cpu", num_bytes=4096)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_auto", True)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_safety", 1.0)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_max", 1)
+    assert tracer._auto_primary_per_tile(memory, 1, static_primary=7) == 1
+    assert not getattr(memory, "last_chunk_capacity_limited", False)
+    monkeypatch.setattr(rt_settings, "wavefront_tile_auto", False)
+    assert tracer._auto_primary_per_tile(memory, 1, static_primary=7) == 7
+    assert not getattr(memory, "last_chunk_capacity_limited", False)
 
 
 def test_state_charge_follows_sca_width_argument_not_nested_ior_setting(monkeypatch):

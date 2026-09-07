@@ -102,6 +102,36 @@ def test_the_window_is_bounded():
     assert len(model._by_signature[SIG]) == memory_model_history
 
 
+def test_elastic_peak_does_not_reject_scene_batches(monkeypatch):
+    from algan.rendering import memory_model
+
+    monkeypatch.setattr(memory_model, "elastic_preflight", True)
+    model = ChunkMemoryModel()
+    model.observe(SIG, 1, GB, capacity_limited=True)
+    # Render chunks still pay the full measured peak and safety margin.
+    assert model.predict(SIG, 1) > GB
+    assert model.plan(SIG, 10, GB) == 1
+    # Scene preparation must probe instead of rejecting every larger batch.
+    assert model.predict_preflight(SIG, 1) is None
+    model.observe(("other",), 1, 1000)
+    assert model.predict_preflight(("other",), 1) == model.predict(("other",), 1)
+    monkeypatch.setattr(memory_model, "elastic_preflight", False)
+    assert model.predict_preflight(SIG, 1) == model.predict(SIG, 1)
+
+
+def test_elastic_preflight_recovers_when_fixed_workspace_is_observed(monkeypatch):
+    from algan.rendering import memory_model
+
+    monkeypatch.setattr(memory_model, "elastic_preflight", True)
+    model = ChunkMemoryModel()
+    model.observe(SIG, 1, GB, capacity_limited=True)
+    for _ in range(memory_model_history - 1):
+        model.observe(SIG, 1, 1000)
+    assert model.predict_preflight(SIG, 1) is None
+    model.observe(SIG, 1, 1000)
+    assert model.predict_preflight(SIG, 1) == model.predict(SIG, 1)
+
+
 def test_prediction_is_monotone_in_the_frame_count():
     # render_loop binary-searches runtimes elsewhere and the retry path halves
     # them; a non-monotone predictor makes both incoherent.
