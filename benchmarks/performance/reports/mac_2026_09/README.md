@@ -75,7 +75,7 @@ kernel, 15.3%) outright and shrinks `wavefront_shade` substantially.
 | 8 | **Densely renumber `band_id*16 + rank` by arithmetic instead of `torch.unique`** | ranks within a band are provably a contiguous prefix `{0..R}`, so `offset[band] + rank` reproduces the sorted-unique ids exactly; replaces a full `[n]` int64 sort | the largest single remaining `unique` |
 | 9 | **Stop the diced attribute fan** | 21 of 26 diced attributes are corner-uniform per-mob constants that are barycentrically interpolated across three corners and then reduced back to corner 0 by `_pack_material` | ~2/3 of the dice's largest transient; buys longer windows, which compounds |
 | 10 | **Let the chunk model escape one-frame chunks** | `ChunkMemoryModel.plan` returns 1 until calibrated, and with one distinct frame count observed `_safety_for` stays at the 1.6 probe margin — at 4K the single-frame peak can never satisfy `peak ≤ arena/3.2`, so the job is pinned at one frame per chunk *and* pays a 60% margin forever | pays every per-chunk fixed cost 18× at UHD; needs a forced-2-frame experiment to price |
-| 11 | **Overlap the arena preflight (`prefetch_gpu_prep`)** | projection + merge + BVH run on the render thread between batches with nothing in flight; the setting exists and is off | up to 8% on a T4; needs the merge's ~20–25 device readbacks batched first, or each one waits out the whole queued render (one such class measured +5.3 s of a 24 s render) |
+| 11 | **Overlap the arena preflight (`prefetch_gpu_prep`)** | projection + merge + BVH run on the render thread between batches with nothing in flight; the setting exists and is off | up to 8% on a T4. A readback on the worker waits out the whole queued render — one such class measured +5.3 s of a 24 s render — but a *counted* run of the prep path (12 surfaces, 6 frames, every `.item()`/`.tolist()`/`.nonzero()`/`bool()` attributed by call site) found **128 in the batch fetch and 54 in the prewarm**, of which the merge's ~17 are already the deliberately-batched collapses. So the sync half of this is smaller than it looks; the per-mob Python dispatch is the larger half |
 | 12 | **Cache the refit-BVH topology across batches** (triangles only) | consecutive batches carry the same actor set and near-identical primitive counts; refit the bounds, keep the SAH topology | ~0.2 s/batch, and it removes 30–50 of the readbacks candidate 11 needs gone |
 | 13 | **Pinned, stream-ordered device→host frame handover** | `_frames_to_host` is a blocking pageable `.cpu()` on the render thread | part of a 0.64 s stage, much of which is really the chunk's kernel tail |
 | 14 | **Cache `_authored_draw_order()` per render** | rebuilt every batch; its own docstring establishes it is render-invariant | small, but `O(mobs × batches)` |
@@ -91,6 +91,25 @@ kernel, 15.3%) outright and shrinks `wavefront_shade` substantially.
 | 19 | **Compute `_axis_cos` once per frame** | it is `normalize(screen_point[f] - cam_origin[f])`, a per-frame constant, recomputed per active ray per bounce and per candidate pixel in the bezier kernels |
 | 20 | **Bucket `_GROUP_STACK` from the built tree's depth** | two 16-entry stacks = 128 B/thread of dynamically indexed thread-private memory for a tree that is 9–11 deep |
 | 21 | **Sweep `ti.loop_config(block_dim=...)`** | no kernel sets it; on Metal threadgroup size and register budget interact directly. One line per kernel, byte-identical |
+
+### One measured caution about the cold half
+
+A counted run of `_prewarm_render_batch` on a *trivial* scene — 12 small
+surfaces, 6 frames, two contended cores — spent **930 s** against a 0.43 s
+batch fetch, essentially all of it cold Inductor compilation of
+`evaluate_logical_pn`, `_evaluate_logical_pn_normals_fused` and
+`_snap_boundary_values_fused` across the distinct `uv` extents each dice level
+produces. `evaluate_logical_pn` takes `dynamic=None`, so every distinct
+trailing extent is a fresh specialization, and the dice's anisotropic
+`(along, across, apex)` patterns produce many.
+
+It is a cold cost — the T4 profile has `logical PN:   - subdivision levels` at
+0.831 s cold against 0.071 s warm — so it does not move the warm ranking. What
+it does move is candidate 9's justification and any proposal to *compile more*
+of the dice: on a Mac each new shape variant pays that compile again, so prefer
+changes that **reduce the number of distinct shapes** reaching those functions
+over changes that add compiled regions. And discard the first two runs of any
+prep A/B on a fresh machine, exactly as `CLAUDE.md` says for `--fast`.
 
 ### Explicitly not worth doing
 
