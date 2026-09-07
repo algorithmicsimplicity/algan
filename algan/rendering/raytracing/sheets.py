@@ -72,6 +72,7 @@ from algan.rendering.mps_compat import (
     clamp_floor,
     cummax_values,
     gather_packed_key,
+    index_copy_rows,
     kernel_index,
     reduction_index_dtype,
     taichi_accumulate_dtype,
@@ -1685,7 +1686,7 @@ def compact_sheets(
             # A fragment clamped to zero carries no area into any band aggregate:
             # its sheet falls out at the resolve's ``eff <= min_alpha`` branch,
             # claiming nothing and occluding nothing.
-            cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
+            index_copy_rows(cov_o, o2, (c2 * scale).to(torch.float32))
             del scale, c2, o2
         closed_s = None
     # ``band_id`` is now the SUB-BAND -- the sheet this compaction would build

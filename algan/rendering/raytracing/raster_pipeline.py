@@ -1485,6 +1485,42 @@ def _one_mesh_pixel_caps(
     return msk_s, cap_s
 
 
+def _check_write_compaction(live, accepts, counts):
+    """Is the write pass launched over every pair that emits a fragment? (opt-in)
+
+    ``raster_write_compact`` launches the write kernel only at the pairs whose
+    accept mask is non-zero. That is exact **provided** two things hold, and a
+    Metal render violates one of them: the emitted keys come back with
+    scattered slots the write pass never visited, which the A/B in
+    ``reports/mac_2026_09`` pins to this compaction.
+
+    The two invariants, separated so the answer says which one broke:
+
+    * the count kernel's two outputs agree -- it does ``cnt += 1`` and
+      ``bits |= 1 << j`` together, so ``counts > 0`` and ``accepts != 0`` are
+      the same set of pairs;
+    * ``nonzero`` returns all of them.
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set.
+    """
+    if not env_flag("ALGAN_RASTER_KEY_CHECK", False):
+        return
+    n_live = int(live.numel())
+    n_accept = int((accepts != 0).sum())
+    n_count = int((counts > 0).sum())
+    if n_live == n_accept == n_count:
+        return
+    print(
+        f"[raster-compaction-check] pairs with counts>0: {n_count}; with "
+        f"accepts!=0: {n_accept}; returned by nonzero: {n_live}. "
+        + (
+            "The COUNT KERNEL's two outputs disagree."
+            if n_accept != n_count
+            else "NONZERO dropped pairs the accept mask holds."
+        )
+    )
+
+
 def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
     """Assert the emission filled every fragment slot it counted (opt-in).
 
@@ -1931,6 +1967,7 @@ def prepare_sparse_raster_coverage(
             pairs_w, npairs_w, offsets_w, accepts_w = pairs, npairs, offsets, accepts
             if rt_settings.raster_write_compact and npairs:
                 live = accepts.nonzero(as_tuple=True)[0]
+                _check_write_compaction(live, accepts, _counts)
                 if live.numel() < npairs:
                     pairs_w = pairs.index_select(0, live)
                     offsets_w = offsets.index_select(0, live)

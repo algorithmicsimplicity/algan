@@ -122,6 +122,29 @@ def reduction_index_dtype() -> torch.dtype:
     return torch.int32 if mps_friendly() else torch.int64
 
 
+def index_copy_rows(destination, index, source):
+    """``destination.index_copy_(0, index, source)``, on a backend that has it.
+
+    Torch has not implemented ``aten::index_copy.out`` for MPS
+    (``DESIGN_mps_support.md`` §, where it took down the one A/B that would
+    have separated the closed-shell ceiling's kernel from its inputs), and it
+    raises ``NotImplementedError`` mid-render rather than degrading -- measured
+    on the Mac runner in ``_deferred_wavefront_shadows``, which is on the
+    deferred-shadow path of every lit scene with secondary rays.
+
+    The substitute is an advanced-index assignment, which lowers to
+    ``index_put_`` and which MPS does implement. The two agree exactly for the
+    distinct indices every call site here passes: both write ``source[i]`` to
+    row ``index[i]``, and neither promises anything about duplicates. Off the
+    mode this stays ``index_copy_``, so CUDA and CPU keep the operation they
+    were measured with.
+    """
+    if mps_friendly():
+        destination[index] = source
+        return destination
+    return destination.index_copy_(0, index, source)
+
+
 def reduction_index_sentinel() -> int:
     """The "nothing reduced into this slot" fill for the dtype above.
 

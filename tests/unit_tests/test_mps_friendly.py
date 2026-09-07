@@ -46,6 +46,7 @@ from algan.rendering.mps_compat import (
     cummax_values,
     cummin_values,
     gather_packed_key,
+    index_copy_rows,
     mps_friendly,
     reduction_index_dtype,
     reduction_index_sentinel,
@@ -225,6 +226,34 @@ def _packed_keys(n, seed=0):
     pixel = torch.randint(0, 1920 * 1080, (n,), generator=g, dtype=torch.int64)
     depth = torch.rand(n, generator=g, dtype=torch.float32) * 4.0 + 4.0
     return (pixel << 32) | depth.view(torch.int32).to(torch.int64), pixel, depth
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("friendly", [False, True])
+def test_the_row_copy_matches_index_copy(computing_settings, friendly):
+    """Both arms write exactly what ``index_copy_`` writes.
+
+    Torch has not implemented ``aten::index_copy.out`` for MPS, and it raises
+    mid-render rather than degrading -- measured on the Mac runner inside
+    ``_deferred_wavefront_shadows``. The substitute is an advanced-index
+    assignment; for the distinct indices every call site passes, the two are
+    the same write.
+    """
+    computing_settings.set(mps_friendly=friendly)
+    torch.manual_seed(20260907)
+    rows, cols = 512, 7
+    index = torch.randperm(rows)[:200]
+    source = torch.randn(200, cols)
+
+    got = torch.zeros(rows, cols)
+    index_copy_rows(got, index, source)
+
+    want = torch.zeros(rows, cols)
+    want.index_copy_(0, index, source)
+    assert torch.equal(got, want)
+
+    # It must write IN PLACE -- every call site relies on that.
+    assert int((got != 0).any(dim=1).sum()) == index.numel()
 
 
 @pytest.mark.fast
