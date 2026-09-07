@@ -3,6 +3,11 @@ name: Master source archive
 on:
   push:
     branches: [master]
+  # Public-repository artifacts expire after at most 90 days. Refresh monthly
+  # so a current master archive remains available even if the branch is quiet.
+  schedule:
+    - cron: "17 3 1 * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
