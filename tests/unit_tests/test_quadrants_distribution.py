@@ -34,11 +34,22 @@ def _fake_wheel(path: Path, version: str) -> None:
     # the release matrix is four platforms now, and a fixture that says x86-64
     # inside every wheel cannot be used to test the other three.
     tag = "-".join(path.stem.split("-")[2:])
+    # A real wheel's METADATA has a description after the blank line, and
+    # upstream ships the Apache 2.0 text in .dist-info/licenses/. The rebrand
+    # needs both -- the modification notice goes at the top of the description,
+    # and the license has to travel with a modified redistribution -- so the
+    # fixture carries them rather than the bare header block a stub would have.
     metadata = (
         "Metadata-Version: 2.4\n"
         "Name: quadrants\n"
         f"Version: {version}\n"
         "Summary: test wheel\n"
+        "License-File: licenses/LICENSE\n"
+        "Description-Content-Type: text/markdown\n"
+        "\n"
+        "# Quadrants\n"
+        "\n"
+        "The upstream description body.\n"
     ).encode()
     wheel = (
         b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: false\n"
@@ -48,6 +59,7 @@ def _fake_wheel(path: Path, version: str) -> None:
         "quadrants/__init__.py": f"__version__ = {version!r}\n".encode(),
         f"{dist_info}/METADATA": metadata,
         f"{dist_info}/WHEEL": wheel,
+        f"{dist_info}/licenses/LICENSE": b"Apache License\nVersion 2.0\n",
     }
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, data in members.items():
@@ -83,6 +95,52 @@ def test_rebrand_changes_distribution_but_not_import_package(helper, tmp_path):
         record = wheel.read(prefix + "RECORD").decode()
         assert prefix + "METADATA" in record
         assert prefix + "RECORD,," in record
+
+
+def test_rebrand_carries_the_apache_obligations_of_a_modified_build(helper, tmp_path):
+    """Section 4(a) and 4(b): the license travels, and the changes are stated."""
+    version = helper.DOWNSTREAM_VERSION
+    upstream = tmp_path / f"quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    _fake_wheel(upstream, version)
+    downstream = helper.rebrand_wheel(upstream)
+
+    prefix = f"algan_quadrants-{version}.dist-info/"
+    with zipfile.ZipFile(downstream) as wheel:
+        record = wheel.read(prefix + "RECORD").decode()
+        assert "Apache License" in wheel.read(prefix + "licenses/LICENSE").decode()
+
+        notice = wheel.read(prefix + "MODIFICATIONS.txt").decode()
+        assert prefix + "MODIFICATIONS.txt" in record
+        for patch in helper._applied_patches():
+            assert patch in notice
+
+        # The notice goes at the top of the description, not into the headers,
+        # so it is what renders first on the PyPI page.
+        metadata = wheel.read(prefix + "METADATA").decode()
+        headers, _, description = metadata.partition("\n\n")
+        assert "modified build of Quadrants" not in headers
+        assert description.startswith("> **This is a modified build of Quadrants")
+        assert "The upstream description body." in description
+
+
+def test_rebrand_refuses_a_wheel_that_dropped_the_upstream_license(helper, tmp_path):
+    version = helper.DOWNSTREAM_VERSION
+    upstream = tmp_path / f"quadrants-{version}-cp311-cp311-manylinux_2_27_x86_64.whl"
+    _fake_wheel(upstream, version)
+    stripped = tmp_path / "stripped" / upstream.name
+    stripped.parent.mkdir()
+    license_member = f"quadrants-{version}.dist-info/licenses/LICENSE"
+    with (
+        zipfile.ZipFile(upstream) as source,
+        zipfile.ZipFile(stripped, "w") as target,
+    ):
+        for info in source.infolist():
+            if info.filename != license_member:
+                target.writestr(info, source.read(info))
+
+    with pytest.raises(ValueError, match="must travel with the wheel"):
+        helper.rebrand_wheel(stripped)
+    assert not list(stripped.parent.glob("algan_quadrants-*.whl"))
 
 
 def test_rebrand_refuses_a_version_not_used_at_native_build_time(helper, tmp_path):
