@@ -1,6 +1,6 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
-  "command": "uv run python benchmarks/_mps_warm_regression.py 2 UHD 1500",
+  "command": "uv run python benchmarks/_mps_warm_regression.py 2 UHD 1400",
   "arms": ["mac-mps"],
   "env": {"ALGAN_VIDEO_ENCODER": "software"},
   "latex": false,

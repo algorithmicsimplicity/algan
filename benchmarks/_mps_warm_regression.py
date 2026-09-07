@@ -68,6 +68,36 @@ WALL_START = time.perf_counter()
 #: its time went rather than only how much there was of it.
 RENDER_STARTED = [0.0]
 
+#: Reclaim accounting, reset at every chunk boundary. The per-chunk trace from
+#: run 36 put the warm cost INSIDE the chunks (warm 54.8 s a chunk against a
+#: cold 34.8 s over the same 18 chunks and 12 batches), not in batch
+#: preparation -- warm preparation is the faster of the two, 8.4 s against
+#: 28.2 s. So the preflight search is not what costs, and the suspect is the
+#: reclaim path: `_gpu_memory_pressure` judges from `driver_allocated_memory`,
+#: which counts cached-but-free blocks, and after run 1 that figure sits at
+#: 4.56 G of a 4.67 G recommended max while torch's LIVE bytes are 0.00 G. Over
+#: the 0.8 threshold, every one of the nineteen `force_gc=False` reclaim sites
+#: pays a full gc.collect() and drops the zero-copy import cache, which the
+#: next launch of every kernel then re-imports. These counters say whether that
+#: is what the extra ~20 s a chunk is.
+RECLAIM = {"calls": 0, "pressured": 0, "seconds": 0.0}
+
+_real_release = mu.release_torch_memory
+
+
+def _release(force_gc=True):
+    started = time.perf_counter()
+    RECLAIM["calls"] += 1
+    if force_gc or mu._gpu_memory_pressure():
+        RECLAIM["pressured"] += 1
+    try:
+        return _real_release(force_gc=force_gc)
+    finally:
+        RECLAIM["seconds"] += time.perf_counter() - started
+
+
+mu.release_torch_memory = _release
+
 _real_arena_init = mu.ManualMemory.__init__
 
 
@@ -102,11 +132,61 @@ def _wavefront(*args, **kwargs):
     # chunk's cost and a long gap before chunk 1 is the batch preparation --
     # which is what a preflight that binary-searches the window looks like.
     started = time.perf_counter() - RENDER_STARTED[0]
-    print(f"    chunk {STATS['chunks']:>3} begins at +{started:7.1f} s", flush=True)
+    print(
+        f"    chunk {STATS['chunks']:>3} begins at +{started:7.1f} s | "
+        f"reclaim {RECLAIM['calls']:>4} calls, {RECLAIM['pressured']:>4} pressured, "
+        f"{RECLAIM['seconds']:6.1f} s | zc {ZC['clears']:>4} clears, "
+        f"{ZC['imports']:>6} imports | {_pool()}",
+        flush=True,
+    )
+    RECLAIM["calls"] = RECLAIM["pressured"] = 0
+    RECLAIM["seconds"] = 0.0
+    ZC["clears"] = ZC["imports"] = 0
     return _real_wavefront(*args, **kwargs)
 
 
+import algan.rendering.mps_zero_copy as zc  # noqa: E402
+
+#: The reclaim hypothesis charges most of its cost NOT to the reclaim call but
+#: to the launches after it: clearing the zero-copy import cache means the next
+#: launch of every kernel re-imports every arena array it takes, and the widest
+#: take twenty. So count the clears and the re-imports too; reclaim seconds
+#: alone would under-report the mechanism by design.
+ZC = {"clears": 0, "imports": 0}
+
+_real_clear = zc.clear_import_cache
+_real_import = zc.import_tensor
+
+
+def _clear_cache():
+    ZC["clears"] += 1
+    return _real_clear()
+
+
+def _import_tensor(tensor, element_shape=()):
+    ZC["imports"] += 1
+    return _real_import(tensor, element_shape)
+
+
+zc.clear_import_cache = _clear_cache
+zc.import_tensor = _import_tensor
+
 rtr.raytrace_render_wavefront = _wavefront
+
+# Every module that did `from ...memory_utils import release_torch_memory` holds
+# its own binding, so rebinding the name on memory_utils alone intercepts
+# nothing -- which is what a first local run showed: 0 calls against a render
+# that makes several a chunk. Rebind wherever the original is already bound,
+# after every algan module this script needs has been imported.
+for _name, _module in list(sys.modules.items()):
+    if not _name.startswith("algan"):
+        continue
+    if getattr(_module, "release_torch_memory", None) is _real_release:
+        _module.release_torch_memory = _release
+    if getattr(_module, "clear_import_cache", None) is _real_clear:
+        _module.clear_import_cache = _clear_cache
+    if getattr(_module, "import_tensor", None) is _real_import:
+        _module.import_tensor = _import_tensor
 
 
 def _pool():
