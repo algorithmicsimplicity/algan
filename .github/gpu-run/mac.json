@@ -1,15 +1,14 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
-  "command": "uv run python benchmarks/_mps_warm_regression.py 2 UHD 1200",
+  "command": "uv run python benchmarks/_mps_warm_regression.py 2 UHD 1800",
   "arms": [
     "mac-mps"
   ],
   "env": {
-    "ALGAN_VIDEO_ENCODER": "software",
-    "ALGAN_TORCH_COMPILE": "0"
+    "ALGAN_VIDEO_ENCODER": "software"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 30,
-  "_request": "51: torch.compile OFF (ALGAN_TORCH_COMPILE=0) -- does the wedge survive it?"
+  "timeout_minutes": 55,
+  "_request": "52: long timeout, default config -- can the pair actually FINISH post-merge?"
 }

@@ -119,11 +119,16 @@ hooks — its synchronising hooks would distort the wall time being measured).
 | 37 | 1898 / 1226 MB | 816.3 s | 1026.4 s | completed |
 | 38 (`pin-arena`) | 1898 / 1898 MB | 1105.3 s [^stall] | **568.5 s** | completed |
 | 39 (live-bytes) | 1911 MB | **649.8 s** | — | **killed** at warm chunk 14 |
-| 47 (0.4 × RAM cap) | 1147 MB | 1019.5 s | — | **wedged** at warm chunk 2 |
+| 47 (0.4 × RAM cap) | 1147 MB | 1019.5 s | — | killed at a 30-min timeout; **unclassified**, see §7.0 |
 
 [^stall]: Job 38's cold pass contained one 455.6 s chunk against 25–42 s for
-every other chunk. A stall, not a baseline — and see §7, since it is probably
-the same failure as the wedges, in a form that recovered.
+every other chunk. A stall, not a baseline — and see §7, since it may be the
+same failure as the wedges in a form that recovered.
+
+**The cap costs time, and that is what a 30-minute timeout could not fit.** At
+1147 MB a cold pass is ~1020 s against 649.8 s at 1911 MB, so a two-render job
+needs ~34 minutes. Jobs sized against the old 20-minute expectation were killed
+mid-flight; see §7.0.
 
 **PREVIEW (704×396), four renders in one process** — the control:
 
@@ -208,6 +213,26 @@ changing behaviour that depends on it.*
 
 ## 7. The open problem: the wedge
 
+### 7.0 A classification error to read first
+
+**Jobs 50 and 51 were NOT wedges.** They were rendering and printing the whole
+time, and were killed by a `timeout_minutes` I had lowered from 50 to 30 on the
+reasoning that "a wedge is visible within a minute, so there is nothing to learn
+from the remaining half hour". That reasoning is fine for a wedge and wrong for
+a slow run: with the arena capped at 1147 MB a cold pass alone takes ~1020 s, so
+a pair needs ~34 minutes and a 30-minute timeout cannot fit one. I then read the
+kill as a wedge, twice.
+
+**Job 47 is now uncertain** for the same reason and should be treated as
+unclassified rather than as evidence.
+
+What that leaves as genuinely wedged is jobs **40, 41, 42 and 44** — each with
+minutes to tens of minutes of total silence observed live, job 41 with 38
+minutes of it. Every one of those ran with a ~1.4-1.9 GB arena, *before* the
+0.4 x total-RAM cap. **No confirmed wedge has yet occurred with the cap in
+place**, which is a materially better position than the rest of this section
+was written to describe — and the reason the next run is a long-timeout one.
+
 ### 7.1 What happens
 
 The process stops making progress and never resumes. It is **alive** — the
@@ -228,8 +253,9 @@ recovered on its own after 455.6 s (job 38).
 | 41 | live bytes, 1911 MB | after cold chunk 15 | 4.07 G | **4.85–4.87 G** | — |
 | 42 | headroom 0.25, ~1.4 GB | cold chunk 1 | 3.56 G | — | — |
 | 44 | no cap, 1911 MB | after chunk 3 | 2.96 G | 4.05 G | 1.19 G |
-| 47 | 0.4 × RAM, 1147 MB | warm chunk 2 | 3.87 G | 4.90/5.04 G | 1.12 G |
-| 50 | post-merge, 1147 MB | chunk 3 | 2.40 G | 4.40 G | 1.19 G |
+| 47 | 0.4 × RAM, 1147 MB | *unclassified* — 30-min timeout, see §7.0 | 3.87 G | 4.90/5.04 G | 1.12 G |
+| ~~50~~ | post-merge, 1147 MB | **not a wedge** — progressing when killed | 2.40 G | 4.40 G | 1.19 G |
+| ~~51~~ | post-merge, `torch.compile` off | **not a wedge** — progressing when killed | — | — | — |
 
 ### 7.3 What is established
 
@@ -248,10 +274,18 @@ recovered on its own after 455.6 s (job 38).
   explanation.
 * **Never reproduced on CPU, and never at PREVIEW** (four renders, no
   instability, pool peaked at 3.16 G).
-* **It survived master's batching optimisation** (job 50), and it survived every
-  sizing change made this round.
+* **It has not been confirmed since the cap landed.** Jobs 50 and 51 both ran to
+  their timeout still progressing (§7.0), so the claim that it "survived master's
+  batching optimisation" is withdrawn — that job never wedged.
 
 ### 7.4 Untested hypotheses, in the order worth trying
+
+0. **Already tested, and negative.** Job 51 ran with
+   `ALGAN_TORCH_COMPILE=0` and behaved like job 50 with it on: both progressed
+   until their timeout. The prototype codegen path is therefore **not** what
+   distinguishes a wedging run from a healthy one, and hypothesis 1 below is
+   retired as the leading candidate. It is left on record because the failing
+   compile is still worth removing on its own account.
 
 1. **`torch.compile` on Metal.** Every single run logs
    `torch.compile for Metal is an early protoype` from
@@ -306,12 +340,15 @@ and the arena is genuinely larger.
 649.8 s at 1911 MB — about 57%. That is the price of not wedging, on a 7 GB
 machine. It should be re-measured on a real Mac, where it does not apply.
 
-**Treat the wedge as open**, and start with §7.4's first item. Do not tune the
-arena further: three changes aimed at it and the peak did not move.
+**Treat the wedge as open but possibly already addressed.** No confirmed wedge
+has occurred since the `0.4 × total RAM` cap landed — jobs 50 and 51 both ran to
+their timeout still progressing (§7.0). What is needed is one job with enough
+wall clock to finish the pair, not another change. Do not tune the arena
+further: three changes aimed at it and the in-chunk peak did not move.
 
 **Post-merge note.** Job 50, the first run on master's optimised batching, is
 faster per chunk — chunk 2 at 51.8 s against 67.3 s for the same chunk in job 47
-— and still wedged, at chunk 3.
+— and did **not** wedge; it was still progressing when its timeout killed it.
 
 ---
 
