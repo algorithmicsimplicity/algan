@@ -211,6 +211,86 @@ def test_a_torch_dtype_is_keyed_by_name():
     assert _render(torch.float32) != _render(torch.float16)
 
 
+@quadrants_only
+def test_a_compiler_ndarray_subclass_is_keyed_by_its_features():
+    """An ndarray argument is keyed by the base class, not by three names.
+
+    The Metal zero-copy path binds an ``ExternalMetalNdarray`` -- a fourth
+    ``Ndarray`` subclass, added by ``quadrants_patches/0001`` and therefore not
+    importable on a box with no Apple GPU. A rule that enumerated the three
+    concrete names poisoned the key for it, so on Metal every kernel taking an
+    arena array paid the full Python frontend in every process. The stand-in
+    below has exactly the shape that class has: a tensor element type built
+    through ``DataTypeCxxWrapper``, and a physical shape it derives itself.
+    """
+    from algan.taichi_compat import submodule, ti
+
+    ndarray_base = submodule("lang._ndarray").Ndarray
+    core = submodule("_lib.core.quadrants_python")
+    wrapper = submodule("lang.util").DataTypeCxxWrapper
+
+    class _ForeignNdarray(ndarray_base):
+        def __init__(self):  # never allocates: no runtime is needed here
+            self.dtype = ti.f16
+            self._element_shape = (4,)
+            self.element_type = wrapper(
+                core.get_type_factory_instance()
+                .get_tensor_type(self._element_shape, self.dtype)
+                .get_ptr()
+            )
+            self._physical_shape = (128, 4)
+            self.grad = None
+            self.arr = None  # nothing was allocated; keep ``__del__`` quiet
+
+        @property
+        def element_shape(self):
+            return self._element_shape
+
+        @property
+        def shape(self):
+            return self._physical_shape[: len(self._physical_shape) - 1]
+
+    annotation = ti.types.ndarray(dtype=ti.types.vector(4, ti.f16), ndim=1)
+    ctx = sk._KeyContext(BACKEND)
+    sk._argument_descriptor(_ForeignNdarray(), annotation, ctx)
+    rendered = " ".join(ctx.out)
+
+    assert "f16" in rendered, rendered
+    assert "element_shape=(4,)" in rendered, rendered
+    # A ``repr`` fallback would put an object address in the key, which is a
+    # key no second process can match -- a permanent silent miss.
+    assert "0x" not in rendered, rendered
+    assert " object at " not in rendered, rendered
+
+    second = sk._KeyContext(BACKEND)
+    sk._argument_descriptor(_ForeignNdarray(), annotation, second)
+    assert tuple(second.out) == tuple(ctx.out), "the rendering is not stable"
+
+
+@quadrants_only
+def test_an_ndarray_element_type_with_no_stable_name_poisons():
+    from algan.taichi_compat import submodule, ti
+
+    ndarray_base = submodule("lang._ndarray").Ndarray
+
+    class _OpaqueElement(ndarray_base):
+        def __init__(self):
+            self.element_type = object()
+            self.grad = None
+            self.arr = None
+
+        @property
+        def shape(self):
+            return (8,)
+
+    with pytest.raises(sk.Poison):
+        sk._argument_descriptor(
+            _OpaqueElement(),
+            ti.types.ndarray(dtype=ti.f32, ndim=1),
+            sk._KeyContext(BACKEND),
+        )
+
+
 def test_unknown_values_poison():
     with pytest.raises(sk.Poison):
         _render(_CFG)

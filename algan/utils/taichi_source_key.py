@@ -247,11 +247,19 @@ def _is_compiler_object(obj, ctx):
 
 
 def _dtype_name(value):
-    """The stable name of a compiler dtype (``DataTypeCxx``/``DataType``), or ``None``."""
-    type_name = type(value).__name__
-    if type_name in ("DataTypeCxx", "DataType"):
-        to_string = getattr(value, "to_string", None)
-        return to_string() if callable(to_string) else str(value)
+    """The stable name of a compiler dtype (``DataTypeCxx``/``DataType``), or ``None``.
+
+    Walks the type's MRO rather than reading ``type(value).__name__``: a dtype
+    can arrive wrapped (``DataTypeCxxWrapper``, which the Metal zero-copy
+    ndarray builds its tensor element type as), and an exact-name test answers
+    ``None`` for it -- which reaches the caller as a ``repr`` carrying an object
+    address, i.e. a key that is different in every process and can therefore
+    never hit.
+    """
+    for base in type(value).__mro__:
+        if base.__name__ in ("DataTypeCxx", "DataType"):
+            to_string = getattr(value, "to_string", None)
+            return to_string() if callable(to_string) else str(value)
     return None
 
 
@@ -920,10 +928,34 @@ def _argument_descriptor(value, annotation, ctx, depth=0):
                 f"numpy({value.dtype},ndim={value.ndim},element_shape={element_shape})"
             )
             return
-        if type(value).__name__ in ("ScalarNdarray", "VectorNdarray", "MatrixNdarray"):
+        # Every compiler-side ndarray, by the base class rather than by an
+        # enumeration of the three concrete names: the Metal zero-copy path
+        # binds an ``ExternalMetalNdarray`` (a fourth subclass, added by
+        # ``quadrants_patches/0001``), and an exact-name test poisoned the key
+        # for it -- so on Metal every kernel taking an arena array paid the full
+        # Python frontend in every process, which is the whole cost this index
+        # exists to remove. The features rendered here are the ones the
+        # transform reads, and they are defined on the base class.
+        ndarray_base = submodule("lang._ndarray").Ndarray
+        if isinstance(value, ndarray_base):
+            element_dtype = getattr(value, "element_type", None)
+            element_name = _dtype_name(element_dtype)
+            if element_name is None:
+                # Never fall back to a ``repr``: an object address in the key
+                # is a key no second process can ever match, which is a silent
+                # permanent miss rather than the loud poison it should be.
+                raise Poison(
+                    f"ndarray element type {type(element_dtype).__name__} "
+                    "has no stable name"
+                )
+            layout = getattr(value, "_qd_layout", None)
+            if layout is None:
+                layout = getattr(value, "layout", None)
             out.append(
-                f"ndarray({_dtype_name(value.element_type) or value.element_type},ndim={len(value.shape)},"
-                f"grad={value.grad is not None},layout={getattr(value, '_qd_layout', None)})"
+                f"ndarray({element_name},"
+                f"ndim={len(value.shape)},"
+                f"element_shape={tuple(getattr(value, 'element_shape', ()) or ())},"
+                f"grad={getattr(value, 'grad', None) is not None},layout={layout})"
             )
             return
         raise Poison(f"ndarray argument of type {type_qualname} has no key rule")
