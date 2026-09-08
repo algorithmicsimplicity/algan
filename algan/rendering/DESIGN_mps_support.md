@@ -6,7 +6,7 @@ exceptions.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
 fails before pytest unless Algan's own startup resolver returns `mps`, and runs
 `tests/unit_tests` plus `tests/fast` against the locked published
 `algan-quadrants` — no private wheel anywhere in the path. Measured on that
-scope: **3563 passed, 217 skipped, 2 xfailed**, down from 32 failures and 3
+scope: **3564 passed, 217 skipped, 2 xfailed**, down from 32 failures and 3
 errors when the arm was first turned on. The two are named in
 `tests/mps_known_failures.py` and run as strict xfails, so the arm reports them
 on every run and goes red the moment either starts passing.

@@ -113,7 +113,9 @@ LaTeX and FFmpeg are on `PATH`.
 
 **The MPS arm carries an xfail list, and it is meant to shrink.** When the arm
 was first turned on it reported 32 failures and 3 errors against 3311 passes;
-it now reports **3563 passed, 217 skipped, 2 xfailed**.
+it now reports **3564 passed, 217 skipped, 2 xfailed** (run 34213125405
+measured 3563 passed and 1 failed, and that 1 was this list's own last stale
+entry XPASSing; removing it moves that test into the passed column).
 `tests/mps_known_failures.py` names those two, one entry per test with the
 defect it waits on and a pointer to the measurement in
 `../algan/rendering/DESIGN_mps_support.md` §4;
