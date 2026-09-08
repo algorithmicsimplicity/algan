@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from functools import partial
+
 import torch
 
+from algan.errors import AlganConfigurationError
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
+from algan.rendering.post_processing.bloom import bloom_filter
 from algan.settings import SETTINGS
 from algan.utils.color_space import linear_to_srgb
 from algan.utils.torch_compile import compiled
@@ -199,6 +203,28 @@ def _strip_aux_channel(frame, original_num_channels, memory):
     return frame[..., :-1]
 
 
+def _validate_premultiplied_over(*, tonemap_enabled=None, tonemapping=None):
+    """Reject settings that destroy the linear-light export contract."""
+    rt = SETTINGS.raytracing
+    if not rt.linear_color_space:
+        raise AlganConfigurationError(
+            "premultiplied_over requires linear_color_space=True."
+        )
+    if tonemap_enabled is None:
+        tonemap_enabled = rt.is_post_process_tonemap_enabled()
+    if not tonemap_enabled:
+        raise AlganConfigurationError(
+            "premultiplied_over requires experimental.post_process_tonemap=True."
+        )
+    if tonemapping is None:
+        tonemapping = rt.tonemapping
+    if tonemapping:
+        raise AlganConfigurationError(
+            "premultiplied_over requires tonemapping=False; apply a nonlinear "
+            "tone curve after compositing in the editor."
+        )
+
+
 def _finalize_on_device(
     frame,
     original_num_channels,
@@ -208,8 +234,18 @@ def _finalize_on_device(
     tonemapping,
     tonemap_method,
     exposure,
+    premultiplied_over=False,
 ):
     """Strip render-only channels and return arena-owned uint8 frames."""
+    if premultiplied_over:
+        _validate_premultiplied_over(
+            tonemap_enabled=tonemap_enabled, tonemapping=tonemapping
+        )
+        if frame.dtype == torch.uint8 or frame.shape[-1] != 5:
+            raise AlganConfigurationError(
+                "premultiplied_over requires a float [RGB, glow, alpha] frame; "
+                "custom post-processes must preserve that layout."
+            )
     # Fast path: the input is already byte output.  Only the transparent
     # five-channel layout needs a copied/reordered result.
     if not tonemap_enabled and frame.dtype == torch.uint8:
@@ -255,6 +291,7 @@ def _finalize_on_device(
             float(exposure),
             1 if frame.shape[-1] == 5 else 0,
             1 if _rt.linear_color_space else 0,
+            1 if premultiplied_over else 0,
         )
         return output
 
@@ -266,6 +303,10 @@ def _finalize_on_device(
             if rgb_source.dtype == torch.uint8:
                 rgb = memory.cast(rgb_source, torch.float32)
                 rgb.div_(255.0)
+            elif premultiplied_over:
+                # Match the kernel's f32 exposure/OETF even when the optional
+                # HDR render buffer is f16. Half arithmetic can move a byte.
+                rgb = memory.cast(rgb_source, torch.float32)
             else:
                 rgb = rgb_source
 
@@ -290,7 +331,7 @@ def _finalize_on_device(
             if _rt.linear_color_space:
                 # Twin of the OETF in ``tonemap_to_u8``; kept in step with it.
                 # Applied last, after exposure and after any curve.
-                if stripped.shape[-1] == 4:
+                if stripped.shape[-1] == 4 and not premultiplied_over:
                     # RGB is premultiplied by coverage with alpha carried
                     # separately, and the transfer function is not linear, so
                     # the premultiplied value cannot be encoded directly --
@@ -322,7 +363,13 @@ def _finalize_on_device(
 
 
 def post_process_frames(
-    self, frames, anti_alias_level, post_processes=(), apply_fxaa=False
+    self,
+    frames,
+    anti_alias_level,
+    post_processes=(),
+    apply_fxaa=False,
+    *,
+    premultiplied_over=False,
 ):
     """Downsample, anti-alias, run the post-process chain and tonemap.
 
@@ -332,6 +379,14 @@ def post_process_frames(
     running it, not by describing it.
     """
     rt_settings = SETTINGS.raytracing
+    # The Scene's export preference is inert for an opaque render.
+    premultiplied_over = premultiplied_over and frames.shape[-1] == 5
+    if premultiplied_over:
+        _validate_premultiplied_over()
+        if frames.dtype == torch.uint8:
+            raise AlganConfigurationError(
+                "premultiplied_over requires float linear-HDR input frames."
+            )
     # Byte frames are never linear-HDR, whatever the toggle says: the render
     # loop picks the float buffer from the same setting, but a caller that
     # hands over uint8 frames (or a scene rendered before the toggle flipped)
@@ -387,7 +442,13 @@ def post_process_frames(
 
     num_channels = frame_out.shape[-1]
     for process in post_processes:
-        frame_out = process(frame_out, memory=self)
+        base = process.func if isinstance(process, partial) else process
+        if premultiplied_over and base is bloom_filter:
+            # Covers the default, explicit built-in, and tuned partials. Call
+            # keywords override a partial's old flag without losing its tuning.
+            frame_out = process(frame_out, memory=self, premultiplied_over=True)
+        else:
+            frame_out = process(frame_out, memory=self)
 
     frame_out = _finalize_on_device(
         frame_out,
@@ -397,6 +458,7 @@ def post_process_frames(
         tonemapping=rt_settings.tonemapping,
         tonemap_method=rt_settings.tonemap_method,
         exposure=rt_settings.tonemap_exposure,
+        premultiplied_over=premultiplied_over,
     )
 
     return _frames_to_host(frame_out)

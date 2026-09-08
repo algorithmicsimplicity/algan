@@ -247,6 +247,13 @@ _TRANSPARENT_CODECS = {
 }
 
 
+def _transparent_encoder(suffix, premultiplied_over=False):
+    """Select an alpha codec; higher codec depth does not restore 8-bit input."""
+    if premultiplied_over and suffix == ".mov":
+        return "prores_ks", ["-profile:v", "4444", "-pix_fmt", "yuva444p10le"]
+    return _TRANSPARENT_CODECS[suffix]
+
+
 def _check_transparent_container_is_supported(destination) -> None:
     """Fail before the render on a container that cannot carry alpha.
 
@@ -401,6 +408,12 @@ def _render_scene_to_file(
         suffix = destination.suffix.lower()
         if scene.background_is_transparent():
             _check_transparent_container_is_supported(destination)
+            if getattr(scene, "premultiplied_over", False):
+                from algan.rendering.post_processing.post_process import (
+                    _validate_premultiplied_over,
+                )
+
+                _validate_premultiplied_over()
 
         if scene.camera is None:
             scene.camera = Camera(False, scene=scene)
@@ -469,9 +482,14 @@ def _render_scene_to_file(
         # a build without the WebM encoder should say so by name now, not fail
         # once the frames are already rendered.
         if codec is None and transparent:
-            codec, container_params = _TRANSPARENT_CODECS[suffix]
+            over = getattr(scene, "premultiplied_over", False)
+            codec, container_params = _transparent_encoder(suffix, over)
             if ffmpeg_params is None:
                 ffmpeg_params = list(container_params)
+            elif over and suffix == ".mov":
+                # Keep the required alpha profile with caller rate-control or
+                # metadata flags. FFmpeg lets later explicit options win.
+                ffmpeg_params = [*container_params, *ffmpeg_params]
         # A hardware pick can land on a binary other than moviepy's own
         # (moviepy is often configured with a static build that has no NVENC
         # encoders); None keeps moviepy's configuration untouched.
