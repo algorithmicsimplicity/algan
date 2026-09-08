@@ -125,4 +125,10 @@ def can_use_bloom_taichi(device):
         return arch == ti.cuda
     if device.type == "cpu":
         return arch == ti.cpu
+    if device.type == "mps" and arch == ti.metal:
+        from algan.rendering import mps_zero_copy
+
+        # Stock interop stages arena views independently through the CPU.
+        # Require the installed conversion hook as well as the patched wheel.
+        return mps_zero_copy.zero_copy_available() and mps_zero_copy.installed()
     return False

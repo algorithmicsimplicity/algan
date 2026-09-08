@@ -124,6 +124,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     ALLOC_WIDTH,
     SCA_WIDTH_PLAIN,
     compact_ray_slots,
+    reorder_ray_slots,
     sca_width,
     wavefront_generate_rays,
     wavefront_ray_sort_keys,
@@ -811,7 +812,10 @@ class _ArenaRayCompactor:
         that the current list. Returns the new view, as ``select`` does.
         """
         n = int(active.numel())
-        torch.index_select(active, 0, perm, out=self.spare[:n])
+        if active.device.type == "mps":
+            reorder_ray_slots(active, perm, self.spare, n)
+        else:
+            torch.index_select(active, 0, perm, out=self.spare[:n])
         self.current, self.spare = self.spare, self.current
         self.size = n
         return self.current[:n]
