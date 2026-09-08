@@ -408,7 +408,7 @@ def _render_scene_to_file(
         suffix = destination.suffix.lower()
         if scene.background_is_transparent():
             _check_transparent_container_is_supported(destination)
-            if getattr(scene, "premultiplied_over", False):
+            if scene.premultiplied_over:
                 from algan.rendering.post_processing.post_process import (
                     _validate_premultiplied_over,
                 )
@@ -482,7 +482,7 @@ def _render_scene_to_file(
         # a build without the WebM encoder should say so by name now, not fail
         # once the frames are already rendered.
         if codec is None and transparent:
-            over = getattr(scene, "premultiplied_over", False)
+            over = scene.premultiplied_over
             codec, container_params = _transparent_encoder(suffix, over)
             if ffmpeg_params is None:
                 ffmpeg_params = list(container_params)

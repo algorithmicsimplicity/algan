@@ -549,7 +549,6 @@ def _make_loop_scene(monkeypatch, *, overlap_enabled):
     reject_first_overlapped = [False]
     scene = Scene.__new__(Scene)
     scene.background_frame = torch.ones(4)
-    scene.premultiplied_over = False
     scene.memory = None
     scene.light_sources = []
     scene.camera = SimpleNamespace(screen=SimpleNamespace())

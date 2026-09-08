@@ -413,7 +413,6 @@ def _make_preflight_scene(
 
     scene = Scene.__new__(Scene)
     scene.background_frame = torch.ones(4)
-    scene.premultiplied_over = False
     scene.memory = None
     scene.light_sources = []
     scene.camera = SimpleNamespace(screen=SimpleNamespace())
@@ -541,7 +540,6 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
 
     scene = Scene.__new__(Scene)
     scene.background_frame = torch.ones(4)
-    scene.premultiplied_over = False
     scene.memory = None
     scene.light_sources = []
     scene.camera = SimpleNamespace(screen=SimpleNamespace())
@@ -642,7 +640,6 @@ def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
 
     scene = Scene.__new__(Scene)
     scene.background_frame = torch.ones(4)
-    scene.premultiplied_over = False
     scene.memory = None
     scene.light_sources = []
     scene.camera = SimpleNamespace(screen=SimpleNamespace())

@@ -476,6 +476,14 @@ class RenderLoopMixin:
     #: list. Instance attribute on first write; see :meth:`_actor_window_index`.
     _actor_window_cache = None
 
+    #: Whether frames are exported for linear-light ``over`` compositing; see
+    #: :meth:`~algan.scene.Scene.set_premultiplied_over`, which owns the
+    #: setting. Declared here because the render loop reads it directly and a
+    #: Scene need not have run ``__init__`` to be rendered from -- the memory
+    #: preflight tests build one with ``Scene.__new__``. Off is the inert
+    #: value, so the default is the pre-feature behaviour.
+    premultiplied_over = False
+
     def _batch_prep_context(self):
         """The context a render puts around **all** of its batch preparation.
 

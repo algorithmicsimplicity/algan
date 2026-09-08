@@ -59,6 +59,21 @@ def test_setting_is_scene_local_and_survives_reset():
         assert first.premultiplied_over is True
 
 
+def test_the_flag_reads_off_a_scene_that_never_ran_init():
+    """The render loop reads ``self.premultiplied_over`` with no fallback.
+
+    Nothing guarantees a Scene reaching the render loop was built by
+    ``__init__``: the memory-preflight fixtures construct one with
+    ``Scene.__new__`` and set only the handful of attributes they exercise. A
+    setting that lived solely on the instance therefore turned every render
+    path into an ``AttributeError`` for them, which is how this landed on CI
+    rather than in the suite. The class-level default is the guarantee, and
+    off is the value that leaves those renders as they were.
+    """
+    assert Scene.premultiplied_over is False
+    assert Scene.__new__(Scene).premultiplied_over is False
+
+
 @pytest.mark.parametrize("value", ["false", 1, None])
 def test_setting_requires_a_boolean(value):
     with pytest.raises(AlganConfigurationError, match="premultiplied_over"):
