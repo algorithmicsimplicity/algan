@@ -17,6 +17,7 @@ jobs:
         with:
           ref: codex/memory-pressure-reclaim
           fetch-depth: 0
+      - uses: ./.github/actions/install-uv
       - name: Fix transfer typo and Ruff findings
         shell: bash
         run: |
