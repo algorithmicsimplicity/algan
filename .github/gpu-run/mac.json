@@ -11,5 +11,5 @@
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 30,
-  "_request": "66: replace broken MPS arena reorder, verify permutation and uncapped UHD render"
+  "_request": "67: reproduce faulty out-offset on disposable storage; fixed uncapped UHD render"
 }
