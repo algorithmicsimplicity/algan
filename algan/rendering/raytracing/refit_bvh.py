@@ -64,12 +64,15 @@ remains the default and the fallback for non-local tensor/backend pairs.
 
 from __future__ import annotations
 
-import warnings
-
 import torch
 
 from algan.environment import env_flag, env_int
-from algan.rendering.mps_compat import clamp_floor, cummax_values, cummin_values
+from algan.rendering.mps_compat import (
+    clamp_floor,
+    cummax_values,
+    cummin_values,
+    index_reduce_,
+)
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
     EMPTY_LO,
@@ -205,16 +208,11 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     cmin = torch.full((K, 3), float("inf"), device=device)
     cmax = torch.full((K, 3), float("-inf"), device=device)
     # ``index_reduce_`` remains the supported vectorized operation for this
-    # reduction, but PyTorch intentionally warns that its API is beta. Keep
-    # that implementation warning local to these internal uses.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"index_reduce\(\) is in beta and the API may change at any time\.",
-            category=UserWarning,
-        )
-        cmin.index_reduce_(0, seg, pc, "amin")
-        cmax.index_reduce_(0, seg, pc, "amax")
+    # reduction; ``mps_compat`` carries torch's beta-API warning filter and the
+    # ``scatter_reduce_`` spelling MPS needs, which has no ``index_reduce`` at
+    # all (``DESIGN_mps_support.md`` §2.3d).
+    index_reduce_(cmin, seg, pc, "amin")
+    index_reduce_(cmax, seg, pc, "amax")
     ext = cmax - cmin
     nb = bvh_sah_bins
     t = (pc - cmin[seg]) / clamp_floor(ext[seg], 1e-30)
@@ -235,14 +233,8 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     # under any reduction order, so this is bit-identical to a per-axis pass.
     plo = ulo[tp].unsqueeze(1).expand(S, 3, 3).reshape(-1, 3)
     phi = uhi[tp].unsqueeze(1).expand(S, 3, 3).reshape(-1, 3)
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"index_reduce\(\) is in beta and the API may change at any time\.",
-            category=UserWarning,
-        )
-        blo.index_reduce_(0, idx.reshape(-1), plo, "amin")
-        bhi.index_reduce_(0, idx.reshape(-1), phi, "amax")
+    index_reduce_(blo, idx.reshape(-1), plo, "amin")
+    index_reduce_(bhi, idx.reshape(-1), phi, "amax")
     cnt = cnt.view(K, 3, nb)
     blo = blo.view(K, 3, nb, 3)
     bhi = bhi.view(K, 3, nb, 3)

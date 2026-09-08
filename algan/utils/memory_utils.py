@@ -79,9 +79,27 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
     elif device.type == "mps":
+        # ``empty_cache`` first, for the same reason the CUDA branch does it:
+        # ``driver_allocated_memory`` counts every block torch has taken from
+        # the driver, including the ones it is holding cached and not using,
+        # and those are precisely the bytes the next arena would be allocated
+        # out of. Without it a long-lived process measures its own cache as
+        # occupied and shrinks the arena on every render -- which is what a
+        # test session does, one render after another in one interpreter, and
+        # is how ``test_arena_binding_live`` came to be told an LD frame did
+        # not fit on a 7 GB Mac. It is not free (it drains the queue and hands
+        # blocks back), and neither is the CUDA one; both are called once per
+        # arena sizing rather than per frame.
+        torch.mps.empty_cache()
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         free_bytes = total_bytes - allocated_bytes
+        # The arena is capped well below what the driver would allow, and the
+        # cap is not timidity: an Apple GPU shares one physical pool with the
+        # host, so an arena sized against ``recommended_max_memory`` competes
+        # with the operating system rather than with another tenant of a card.
+        # ``SETTINGS.computing.available_memory_override`` is the way past it
+        # on a machine with memory to spare.
         free_bytes = min(free_bytes, 1 * GIGABYTES)
         return free_bytes
     else:

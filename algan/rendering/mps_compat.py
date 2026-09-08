@@ -71,6 +71,8 @@ thing, and this mode does not make it work.
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 
 from algan.environment import env_flag
@@ -130,6 +132,55 @@ def reduction_index_sentinel() -> int:
     compared against, so which one a slot holds is unobservable.
     """
     return (1 << 40) if reduction_index_dtype() is torch.int64 else 2147483647
+
+
+def index_reduce_(out, index, source, reduce):
+    """``out.index_reduce_(0, index, source, reduce)``, spelled for MPS.
+
+    Torch has not implemented ``aten::index_reduce.out`` for the MPS device at
+    all, so unlike the defects around it this one is loud: a
+    ``NotImplementedError`` naming the op, from inside the BVH build. It takes
+    down every scene whose tree is rebuilt rather than refitted, which on the
+    ordinary macOS gate was ten path-tracer tests.
+
+    ``scatter_reduce_`` is the same reduction with the index broadcast to the
+    source's shape instead of addressing whole rows, and it **is** implemented
+    on MPS at this dtype -- measured, in ``benchmarks/_mps_torch_op_probe.py``
+    (``probe_index_reduce``), against the CPU's ``index_reduce_`` over the same
+    input. Substituting it is a spelling change rather than a numerical one:
+    ``amin`` and ``amax`` are exact and order-independent, so no reduction
+    order the backend picks can move a value, and neither reduction is one of
+    the float sums §6.6.4 widened.
+
+    Gated on the mode like everything else here, and for the usual reason: off
+    it this is ``index_reduce_``, the one op, so CPU and CUDA keep the call
+    they have always made and pay nothing for a gap they do not have.
+
+    ``dim`` is not a parameter because both call sites reduce over dim 0 and
+    the broadcast below is written for it; a dim-1 caller would need a
+    different expand and should not get a silently wrong one.
+
+    The beta-API warning is filtered here rather than at the call sites: it is
+    torch's own notice about the op this function is wrapping, so it belongs
+    with the one call that can raise it.
+    """
+    if not mps_friendly():
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    r"index_reduce\(\) is in beta and the API may change at any time\."
+                ),
+                category=UserWarning,
+            )
+            return out.index_reduce_(0, index, source, reduce, include_self=True)
+    return out.scatter_reduce_(
+        0,
+        index.reshape(-1, *([1] * (source.ndim - 1))).expand_as(source),
+        source,
+        reduce,
+        include_self=True,
+    )
 
 
 #: Float16's smallest positive subnormal, and the floor every ``clamp_min``

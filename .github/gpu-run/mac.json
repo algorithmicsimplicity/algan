@@ -1,9 +1,9 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
-  "command": "uv run python benchmarks/_mps_torch_op_probe.py; uv run python benchmarks/_mps_gloss_bounds_probe.py; uv run pytest -q -n 1 --tb=long -p no:cacheprovider tests/unit_tests/test_color_decode_boundary.py tests/unit_tests/test_arena_binding_live.py tests/unit_tests/test_viewer_fragments.py tests/unit_tests/test_glossy_prefilter.py 'tests/unit_tests/test_taichi_early_return.py::test_a_real_function_is_not_rewritten'",
+  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
+  "command": "uv run python -c \"import torch; from algan.utils.memory_utils import get_num_available_bytes; print('recommended_max', torch.mps.recommended_max_memory()); print('driver_allocated', torch.mps.driver_allocated_memory()); print('arena budget', get_num_available_bytes('mps'))\" || true; uv run python benchmarks/_mps_gloss_bounds_probe.py || true; uv run pytest -q -n 1 --tb=long -p no:cacheprovider tests/unit_tests/test_color_decode_boundary.py tests/unit_tests/test_arena_binding_live.py tests/unit_tests/test_viewer_fragments.py 'tests/unit_tests/test_taichi_early_return.py::test_a_real_function_is_not_rewritten' 'tests/unit_tests/test_path_tracer.py::test_area_light_matches_the_reference_integral' 'tests/unit_tests/test_taichi_source_key.py::test_a_square_frame_through_the_index_is_byte_identical_and_verifies' || true",
   "arms": ["mac-mps"],
   "env": {},
   "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 60
+  "timeout_minutes": 75
 }

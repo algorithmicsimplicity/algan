@@ -920,7 +920,23 @@ def _argument_descriptor(value, annotation, ctx, depth=0):
                 f"numpy({value.dtype},ndim={value.ndim},element_shape={element_shape})"
             )
             return
-        if type(value).__name__ in ("ScalarNdarray", "VectorNdarray", "MatrixNdarray"):
+        # ``ExternalMetalNdarray`` is the patched build's imported-MTLBuffer
+        # ndarray (``mps_zero_copy``), and it is here because on an Apple GPU
+        # it is what EVERY converted kernel argument arrives as -- so without
+        # it the index poisons every renderer kernel and the whole optimization
+        # is off exactly on the device that pays the most for a frontend pass.
+        # It reads the same four features as the three allocated forms: it is
+        # an ``Ndarray`` subclass, so ``element_type``, ``shape``, ``grad`` and
+        # ``_qd_layout`` all mean what they mean above. What it does NOT carry
+        # into the key is the buffer it adopted, which is right: the compiled
+        # kernel depends on the element type and rank of an argument, never on
+        # which allocation it was bound to.
+        if type(value).__name__ in (
+            "ScalarNdarray",
+            "VectorNdarray",
+            "MatrixNdarray",
+            "ExternalMetalNdarray",
+        ):
             out.append(
                 f"ndarray({_dtype_name(value.element_type) or value.element_type},ndim={len(value.shape)},"
                 f"grad={value.grad is not None},layout={getattr(value, '_qd_layout', None)})"

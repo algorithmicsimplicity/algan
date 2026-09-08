@@ -457,6 +457,70 @@ def test_a_clamped_grid_reproduces_border_padding(h, w):
     assert torch.allclose(border, zeros, rtol=0.0, atol=1e-12)
 
 
+# ------------------------------------------------- the BVH build's reduction
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("reduce_op", ["amin", "amax"])
+@pytest.mark.parametrize("width", [1, 3])
+def test_the_segment_reduction_matches_index_reduce(
+    computing_settings, reduce_op, width
+):
+    """The narrow spelling answers exactly what ``index_reduce_`` answers.
+
+    ``refit_bvh._binary_split`` reduces per-range centroid extents and per-bin
+    box unions this way, and MPS has no ``aten::index_reduce.out`` at all -- so
+    what the mode substitutes is the whole operation rather than a dtype.
+    ``amin``/``amax`` are exact under any order, so this is checked for
+    **equality**, not tolerance: a substitution that needed a tolerance would
+    be the wrong substitution.
+
+    Both widths are covered because the two call sites differ in shape -- one
+    reduces ``[S, 3]`` centroids, the other a flattened ``[S * 3, 3]`` box
+    stream -- and the broadcast that replaces the row addressing is where a
+    shape mistake would land.
+    """
+    g = torch.Generator().manual_seed(7)
+    segments = 40
+    index = torch.randint(0, segments, (500,), generator=g, dtype=torch.int64)
+    source = torch.rand((500, width), generator=g, dtype=torch.float32) * 20 - 10
+    fill = float("inf") if reduce_op == "amin" else float("-inf")
+
+    def run(friendly):
+        computing_settings.set(mps_friendly=friendly)
+        out = torch.full((segments, width), fill, dtype=torch.float32)
+        mps_compat.index_reduce_(out, index, source, reduce_op)
+        return out
+
+    wide, narrow = run(False), run(True)
+    # Not vacuous: every segment must actually have been reduced into, or two
+    # untouched sentinel tables would compare equal and prove nothing.
+    assert torch.isfinite(wide).all()
+    assert torch.equal(wide, narrow)
+
+
+@pytest.mark.fast
+def test_the_segment_reduction_leaves_untouched_rows_at_their_fill(computing_settings):
+    """A segment nothing reduces into keeps the sentinel, on both arms.
+
+    ``_binary_split`` allocates one row per (range, axis, bin) and most bins
+    are empty, so the empty-row behaviour is not an edge case there -- it is
+    most of the table, and the sweeps that follow read it.
+    """
+    index = torch.tensor([0, 0, 3], dtype=torch.int64)
+    source = torch.tensor([[1.0], [-2.0], [5.0]], dtype=torch.float32)
+
+    def run(friendly):
+        computing_settings.set(mps_friendly=friendly)
+        out = torch.full((4, 1), float("inf"), dtype=torch.float32)
+        mps_compat.index_reduce_(out, index, source, "amin")
+        return out.reshape(-1)
+
+    want = torch.tensor([-2.0, float("inf"), float("inf"), 5.0])
+    assert torch.equal(run(False), want)
+    assert torch.equal(run(True), want)
+
+
 # ------------------------------------------------- the band/class grouping
 
 
@@ -679,11 +743,15 @@ _BANNED_ATTRIBUTES = {
     "torch.double": "float64 does not exist on Metal; use accumulate_dtype()",
     "ti.f64": "Taichi's SPIR-V codegen refuses f64; take it as a template arg",
 }
-#: Method spellings of the same thing, plus the two scans MPS lacks.
+#: Method spellings of the same thing, plus the scans and the reduction MPS
+#: lacks. ``index_reduce_`` is here for the same reason ``cummax`` is: torch
+#: has no ``aten::index_reduce.out`` for the MPS device, so a new call site
+#: raises on an Apple GPU and on nothing else.
 _BANNED_METHODS = {
     "double": "float64 does not exist on Metal; use accumulate_dtype()",
     "cummax": "unimplemented on MPS; use mps_compat.cummax_values",
     "cummin": "unimplemented on MPS; use mps_compat.cummin_values",
+    "index_reduce_": "unimplemented on MPS; use mps_compat.index_reduce_",
 }
 
 #: Renderer modules that may still say float64, and why each is not a

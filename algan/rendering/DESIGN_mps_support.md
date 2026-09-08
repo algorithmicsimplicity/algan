@@ -886,18 +886,29 @@ threshold.
 
 ## 3. What to do
 
-### 3.1 Do now, regardless: stop offering a device that cannot render
+### 3.1 Do now, regardless: stop offering a device that cannot render — **DONE**
 
 Independent of everything above, and worth doing whether or not MPS is ever
-supported. `auto` currently selects a device that fails 88 tests.
+supported. `auto` selected a device that failed 88 tests.
 
-* `_startup._auto_render_device()` should not return MPS.
-* An explicit `mps` should raise `AlganConfigurationError` from `coerce_device`
-  naming the reason, instead of failing deep inside the renderer.
-* `cli.py:45-46` prints "Apple Silicon MPS acceleration available", which is not
-  true.
-* Then the `test.yaml` macOS pin is redundant — the runner resolves to CPU on its
-  own — and that 15-line comment becomes a pointer here.
+All four are in, and what shipped is finer than what this section asked for:
+the answer is not "never MPS" but "MPS exactly when it can render", which is a
+property of the *installed compiler* rather than of the platform.
+
+* `_startup._mps_is_usable()` gates both paths on
+  `mps_zero_copy.zero_copy_available()` — the patched build's imported-MTLBuffer
+  ndarray. `_auto_render_device()` returns MPS only when that answers True, and
+  falls back to the CPU otherwise; a stock build is what §1.3b measured drawing
+  a black frame, so this is the difference between a render and a wrong picture.
+* An explicit `mps` raises `AlganConfigurationError` from `coerce_device`,
+  quoting `mps_zero_copy.unavailable_reason()`, which names the compiler this
+  process actually bound rather than saying "Taichi" at a Quadrants user.
+* `algan_cli._cmd_check` prints the device Algan **resolved**
+  (`SETTINGS.computing.render_device`) beside the accelerators that exist, and
+  says so when MPS-friendly mode is on. The two are different questions and the
+  old line answered only the second.
+* The `test.yaml` macOS pin is gone; the matrix has an explicit `render=mps`
+  arm instead. §3.3 has where that arm stands.
 
 ### 3.2 Two engine bugs this turned up — **fixed**
 
