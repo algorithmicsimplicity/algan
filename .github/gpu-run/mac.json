@@ -1,15 +1,14 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_reorder_diagnose.py",
+  "command": ".venv/bin/python benchmarks/_mac_reorder_speed.py",
   "arms": [
     "mac-mps"
   ],
   "env": {
     "ALGAN_VIDEO_ENCODER": "software",
-    "ALGAN_TORCH_COMPILE": "0",
-    "DIAG_DISPATCH_LIMIT": "0"
+    "ALGAN_TORCH_COMPILE": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 35,
-  "_request": "68: two uncapped UHD passes with verified direct ray reorder"
+  "timeout_minutes": 30,
+  "_request": "70: equal 1720 MiB arenas, two CPU and repaired MPS renders on one VM"
 }
