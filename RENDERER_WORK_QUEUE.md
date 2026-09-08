@@ -674,11 +674,14 @@ What that costs to keep:
   `SearchTex.png`. **Never imported by anything**; `post_process_frames` wires
   up FXAA only. The module's own `__init__.py` advertises "anti-aliasing" as a
   built-in pass.
-* `bloom.py` — three unused implementations beside the live one:
+* `bloom.py` — two unused implementations beside the live one:
   `bloom_filter_old` (with a `# TODO fix up this code`, ~90 lines of
   commented-out experiments, and statements whose results are discarded:
-  `xb[..., -1:] + k`), `bloom_filter_premultiply`, and `bloom_filter_conv`
-  (which has ~20 lines of unreachable code after its `return`).
+  `xb[..., -1:] + k`) and `bloom_filter_conv` (which has ~20 lines of
+  unreachable code after its `return`). `bloom_filter_premultiply` was the
+  third and is gone: the premultiplied-over export replaced what it was
+  reaching for, and it premultiplied on the way *out* of the filter, which
+  the live pipeline no longer means by the name.
 * `is_ray_tracing_enabled()` (`tracer.py:3490`) — "Vestigial: always False",
   kept only because `post_processing.bloom` probes for it. And that probe is
   itself dead: `_should_bypass_bloom` imports `is_raytraced_glow_enabled`, which
