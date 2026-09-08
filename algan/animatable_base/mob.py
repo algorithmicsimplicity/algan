@@ -68,6 +68,7 @@ from algan.utils.tensor_utils import (
     cast_to_tensor,
     dot_product,
     reject_non_finite,
+    reject_outside_unit_interval,
     squish,
     unsquish,
 )
@@ -113,14 +114,12 @@ class _GuardedMethod:
 
 
 def _validate_opacity(value, *, given=None):
-    """Validate the documented ``Mob.opacity`` unit interval at authoring time."""
-    value = reject_non_finite("opacity", value, given=given)
-    if torch.is_tensor(value) and bool(((value < 0) | (value > 1)).any()):
-        shown = value if given is None else given
-        raise AlganConfigurationError(
-            f"opacity must be between 0 and 1 inclusive; got {shown!r}"
-        )
-    return value
+    """Validate the documented ``Mob.opacity`` unit interval at authoring time.
+
+    The same check guards :meth:`~algan.constants.color.Color.set_opacity`, so
+    both spellings of "make this half transparent" report the same way.
+    """
+    return reject_outside_unit_interval("opacity", value, given=given)
 
 
 def _coerce_if_color(attr, value):
@@ -1493,6 +1492,12 @@ class Mob(
         AttributeError
             If ``attr`` is not an animatable attribute of this Mob, or is a
             derived or hierarchical one that cannot be mapped row-wise.
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``func`` returns a NaN or an infinity for any row, or a value
+            outside ``[0, 1]`` when ``attr`` is ``"opacity"``. Both are
+            checked on the target ``func`` computed, at this line: the target
+            is what every later frame interpolates towards, and a bad one
+            renders as a blank or missing shape rather than raising.
 
         See Also
         --------
@@ -1528,6 +1533,12 @@ class Mob(
                 f"shape it was given, {tuple(current.shape)}, but returned "
                 f"{tuple(target.shape)}."
             )
+        # This path does not go through set_animated_attribute, so it has to
+        # run that funnel's checks itself: `_apply_change` below records the
+        # target as a delta, and a NaN in it is silent from here on -- replay
+        # re-reads the row every frame batch and nothing downstream raises.
+        # `func` is user arithmetic on live values, which is exactly where a
+        # divide-by-zero or a `log(0)` gets in.
         if attr == "opacity":
             _validate_opacity(target)
         else:
