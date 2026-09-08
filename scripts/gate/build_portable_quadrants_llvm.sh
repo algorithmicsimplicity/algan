@@ -108,6 +108,11 @@ cmake_args=(
   -DLLVM_ENABLE_ZSTD=OFF
   '-DLLVM_TARGETS_TO_BUILD=host;NVPTX;AMDGPU'
   -DLLVM_ENABLE_TERMINFO=OFF
+  # llvm-exegesis is a development/benchmarking utility, not part of the SDK
+  # Quadrants consumes. It is also the only installed LLVM tool observed to
+  # import glibc's GLIBC_2.35 rseq symbols. Disable the tool at configure time
+  # so LLVM's exported CMake package remains internally consistent.
+  -DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF
   -DLLVM_INCLUDE_TESTS=OFF
   -DLLVM_INCLUDE_EXAMPLES=OFF
   -DLLVM_INCLUDE_BENCHMARKS=OFF
@@ -123,14 +128,6 @@ cmake --build "$build" --target install -- -k 0
 
 "$prefix/bin/llvm-config" --version | grep -Fx "$PORTABLE_LLVM_VERSION"
 "$prefix/bin/clang" --version | sed -n '1,4p'
-
-# llvm-exegesis is an LLVM development/benchmarking utility, not part of the
-# SDK surface Quadrants consumes. LLVM 22.1.0's aarch64 build links this one
-# tool to glibc's __rseq_size/__rseq_offset symbols at GLIBC_2.35 even in the
-# pinned 2.34 userspace. Do not weaken the ABI scan to ignore it: remove the
-# unused tool so every ELF that actually ships in the SDK still has to satisfy
-# the same GLIBC_2.34 gate below.
-rm -f "$prefix/bin/llvm-exegesis"
 
 # Match the upstream SDK packaging recipe: stripping is not required for ABI
 # correctness, but it keeps this cached/uploaded install tree near the size of
