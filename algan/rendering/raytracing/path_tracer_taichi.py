@@ -27,10 +27,12 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     (emitter radiometry via the shared ``_light_eval``; the SURFACE response
     is the physical BSDF, not the deterministic stage formula -- see
     ``_pt_lit_f_pdf``), and scatter one importance-sampled continuation:
-    cosine-hemisphere diffuse, GGX specular via spherical-cap VNDF sampling
-    (Dupuy & Benyoub 2023) with Turquin-style multiple-scattering
-    compensation, or a refracted transmission ray through the shared
-    nested-IOR stack with Beer-Lambert interior absorption.
+    cosine-hemisphere diffuse, opaque GGX specular with Turquin-style
+    multiple-scattering compensation, or one unified GGX dielectric
+    interface. Both rough reflection and refraction use spherical-cap VNDF
+    sampling (Dupuy & Benyoub 2023); smooth glass is delta. Transmitted
+    radiance includes the relative index-squared factor, with eta-aware
+    roulette and the shared nested-IOR stack and Beer-Lambert absorption.
 ``pt_reduce``
     Folds a wave's per-path accumulators into the chunk's per-pixel sample
     sums (``accum``), applying leftover throughput to the background. One
@@ -45,7 +47,7 @@ Surface treatment by pipeline id (see ``shading_taichi``):
 
 * lambert/phong/standard/physical (2-5): physically integrated -- NEE direct
   lighting through ONE BSDF (``_pt_lit_f_pdf``: ``albedo/pi`` diffuse, exact
-  Smith ``G2``, Fresnel, Turquin compensation) for every emitter kind, plus
+  Smith ``G2``, Fresnel, opaque-reflection Turquin compensation) for every emitter kind, plus
   the sampled continuation above. The direction-less ambient / hemisphere
   rows contribute ``e_diff * L``, the physical answer for a constant-radiance
   environment over the diffuse lobe, and no specular fill (indirect transport
@@ -301,6 +303,9 @@ _INV_PI = 0.3183098861837907
 # -2 marks an authored diffuse continuation whose direct term already
 # includes area-light rows. Pass-throughs preserve it; another scatter replaces it.
 _SCA_PREV_PDF = 5
+# Cancels radiance's cumulative eta^2 factor ONLY for path termination.
+# Column 6 is unused by the shared traverse; PT owns throughput separately.
+_SCA_ETA_SCALE = 6
 
 # rs_int columns.  The shared traverse kernel touches only columns 0-4
 # (bounces_left, processed, status, num_hits, max_bounces); the four columns
@@ -1070,8 +1075,10 @@ def _pt_ggx_ndf(n_dot_h, alpha):
     an evaluated pdf matches the sampled one exactly.
     """
     a2 = alpha * alpha
-    d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0
-    return a2 / ti.max(_PI * d * d, 1e-12)
+    nh2 = n_dot_h * n_dot_h
+    # Avoid cancelling alpha^2 at the peak of a nearly smooth lobe.
+    d = ti.max(1.0 - nh2, 0.0) + nh2 * a2
+    return a2 / ti.max(_PI * d * d, 1e-30)
 
 
 @ti.func
@@ -1101,6 +1108,133 @@ def _pt_fresnel(f0, cos_i, eta, metalness, albedo):
                 fres = metal + dielectric_f0 \
                     + ((1.0 - m) - dielectric_f0) * thin_tail
     return ti.math.clamp(fres, 0.0, 1.0)
+
+
+@ti.func
+def _pt_dielectric_fresnel(cos_i, eta):
+    """Unpolarised Fresnel, with eta = n_incident / n_transmitted."""
+    c = ti.math.clamp(cos_i, 0.0, 1.0)
+    F = 0.0
+    if ti.abs(eta - 1.0) >= 1e-4:
+        sin2_t = eta * eta * ti.max(0.0, 1.0 - c * c)
+        F = 1.0
+        if sin2_t < 1.0:
+            ct = ti.sqrt(ti.max(0.0, 1.0 - sin2_t))
+            rs = (eta * c - ct) / ti.max(eta * c + ct, 1e-12)
+            rp = (c - eta * ct) / ti.max(c + eta * ct, 1e-12)
+            F = 0.5 * (rs * rs + rp * rp)
+    return ti.math.clamp(F, 0.0, 1.0)
+
+
+@ti.func
+def _pt_glass_terms(f0, cos_i, eta, metalness, albedo, T):
+    """Facet reflection/transmission colours and reflection probability.
+
+    Default physical glass uses exact Fresnel. Authored specular F0/tint
+    still controls normal incidence, and the conductor fraction keeps its
+    Schlick tint. All three consumers use these same branch probabilities.
+    """
+    m = ti.math.clamp(metalness, 0.0, 1.0)
+    F = _pt_dielectric_fresnel(cos_i, eta)
+    ratio = (eta - 1.0) / ti.max(eta + 1.0, 1e-6)
+    base = ratio * ratio
+    tail = ti.math.clamp((F - base) / ti.max(1.0 - base, 1e-6), 0.0, 1.0)
+    diel_f0 = f0 - m * albedo
+    conductor = m * (albedo + (1.0 - albedo)
+                    * ti.pow(1.0 - ti.math.clamp(cos_i, 0.0, 1.0), 5.0))
+    R = ti.math.clamp(conductor + diel_f0
+                      + ((1.0 - m) - diel_f0) * tail, 0.0, 1.0)
+    trans = albedo * ((1.0 - m) * T * (1.0 - F))
+    wr = ti.max(R[0], ti.max(R[1], R[2]))
+    wt = ti.max(trans[0], ti.max(trans[1], trans[2]))
+    pr = wr / ti.max(wr + wt, 1e-12)
+    return R, trans, pr
+
+
+@ti.func
+def _pt_glass_f_pdf(f0, rough, n, rd, wi, eta, metalness, albedo, T):
+    """Single-scatter GGX dielectric f*cos and conditional solid-angle PDF.
+
+    PBRT-v4 section 9.7: both outcomes share one visible-normal distribution.
+    The transmission Jacobian differs from reflection's and radiance carries
+    (n_incident/n_transmitted)^2. Smooth interfaces are delta distributions.
+    """
+    fc = ti.math.vec3(0.0, 0.0, 0.0)
+    pdf = 0.0
+    nv = n.dot(-rd)
+    ni = n.dot(wi)
+    if (rough * rough >= 1e-4) and (nv > 1e-6) and (ti.abs(ni) > 1e-6):
+        v = -rd
+        h = v + wi
+        if ni < 0.0:
+            h = v + wi / eta
+        h2 = h.dot(h)
+        if h2 > 1e-20:
+            h = h / ti.sqrt(h2)
+            if n.dot(h) < 0.0:
+                h = -h
+            vh = v.dot(h)
+            ih = wi.dot(h)
+            if (vh > 1e-6) and (ih * ni > 0.0):
+                ag = ti.max(rough * rough, 1e-4)
+                D = _pt_ggx_ndf(ti.max(n.dot(h), 0.0), ag)
+                lv = _pt_smith_lambda(nv, ag)
+                li = _pt_smith_lambda(ti.abs(ni), ag)
+                G1 = 1.0 / (1.0 + lv)
+                G = 1.0 / (1.0 + lv + li)
+                R, trans, pr = _pt_glass_terms(
+                    f0, vh, eta, metalness, albedo, T)
+                if ni > 0.0:
+                    fc = R * (D * G / (4.0 * nv))
+                    pdf = pr * D * G1 / (4.0 * nv)
+                else:
+                    denom = ih + eta * vh
+                    denom2 = denom * denom
+                    if denom2 > 1e-20:
+                        jacobian = ti.abs(ih) / denom2
+                        fc = trans * (D * G * vh * jacobian / nv) * (eta * eta)
+                        pdf = (1.0 - pr) * D * G1 * vh / nv * jacobian
+    return fc, pdf
+
+
+@ti.func
+def _pt_sample_glass(rd, n, rough, eta, f0, metalness, albedo, T,
+                     u_dir, u_branch):
+    """Sample the shared facet, then its Fresnel-weighted outcome.
+
+    Returns direction, delta throughput (rough events use the full BSDF),
+    transmitted, delta, valid. Rejected facets are zero-contribution samples;
+    no resampling, splitting, or variable-size path state is introduced.
+    """
+    delta = 1 if rough * rough < 1e-4 else 0
+    h = n
+    if delta == 0:
+        tb, bb = _pt_onb(n)
+        wo = ti.math.vec3(tb.dot(-rd), bb.dot(-rd), ti.max(n.dot(-rd), 1e-6))
+        hl = _pt_vndf_half_vector(wo, ti.max(rough * rough, 1e-4), u_dir)
+        h = (tb * hl[0] + bb * hl[1] + n * hl[2]).normalized()
+    ci = ti.math.clamp((-rd).dot(h), 0.0, 1.0)
+    R, trans, pr = _pt_glass_terms(f0, ci, eta, metalness, albedo, T)
+    wi = rd
+    tint = ti.math.vec3(0.0, 0.0, 0.0)
+    transmitted = 0
+    valid = 1
+    if u_branch < pr:
+        wi = (rd + 2.0 * ci * h).normalized()
+        tint = R / ti.max(pr, 1e-12)
+        if n.dot(wi) <= 1e-6:
+            valid = 0
+    else:
+        transmitted = 1
+        sin2_t = eta * eta * ti.max(0.0, 1.0 - ci * ci)
+        if (sin2_t >= 1.0) or (pr >= 1.0):
+            valid = 0
+        else:
+            wi = (eta * rd + (eta * ci - ti.sqrt(1.0 - sin2_t)) * h).normalized()
+            tint = trans * (eta * eta / ti.max(1.0 - pr, 1e-12))
+            if n.dot(wi) >= -1e-6:
+                valid = 0
+    return wi, tint, transmitted, delta, valid
 
 
 @ti.func
@@ -1182,6 +1316,8 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
             diel = _pt_fresnel(one3 * interface_f0, n_dot_v, eta, 0.0, one3)
             diel_pass = (1.0 - met) * (1.0 - diel[0])
             e_spec = ti.max(e_spec, _pt_fresnel(f0, n_dot_v, eta, met, albedo3))
+            if ti.abs(eta - 1.0) < 1e-4:
+                e_spec = met * _pt_ggx_energy(albedo3, n_dot_v, rough)
         e_trans = albedo3 * (diel_pass * T)
         e_diff = albedo3 * ((1.0 - met) * (1.0 - T)) * (one3 - e_spec)
     return e_diff, e_spec, e_trans, f0, rough_eff
@@ -1189,16 +1325,15 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
 
 @ti.func
 def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
-                  w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo):
+                  w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, T):
     """Physical BSDF response of a lit vertex toward ``wi`` and the pdf with
     which its continuation sampler generates ``wi``.
 
-    Returns ``(f_cos, pdf)``: the BRDF times the surface cosine (diffuse
-    ``e_diff / pi``, plus exact GGX with the sampled lobe's own alpha,
-    Fresnel and Turquin compensation), and the lobe-mixture solid-angle
-    density (cosine and VNDF terms weighted by the same lobe-selection
-    weights the continuation draws from; the pass/transmission lobes are
-    deltas and add no density). Both ends of every MIS pair -- next-event
+    Returns ``(f_cos, pdf)``: BSDF times absolute surface cosine and the
+    continuation's mixture density. Rough glass includes reflection and
+    transmission from one GGX distribution; opaque GGX retains Turquin
+    compensation. Smooth glass and straight pass-through are deltas and
+    add no solid-angle density. Both ends of every MIS pair -- next-event
     samples toward emitters and BSDF paths that find them -- use this one
     function, which is what makes the power-heuristic weights sum to one.
     """
@@ -1213,7 +1348,13 @@ def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
     if spec_n.dot(rd) > 0.0:
         spec_n = -spec_n
     cos_s = spec_n.dot(wi)
-    if (cos_s > 1e-6) and (w_sum > 1e-6):
+    glass = (eta > 0.0) and (ti.abs(eta - 1.0) >= 1e-4)
+    if glass and (w_sum > 1e-6):
+        fg, pg = _pt_glass_f_pdf(f0, rough, spec_n, rd, wi,
+                                eta, metalness, albedo, T)
+        f_cos += fg
+        pdf += ((w_spec + w_trans) / w_sum) * pg
+    elif (cos_s > 1e-6) and (w_sum > 1e-6):
         if w_spec > 0.0:
             one3 = ti.math.vec3(1.0, 1.0, 1.0)
             v = -rd
@@ -2034,6 +2175,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             seam_t = rs_sca[r, 3]
             base_dist = rs_sca[r, 4]
             prev_pdf = rs_sca[r, _SCA_PREV_PDF]
+            eta_scale = rs_sca[r, _SCA_ETA_SCALE]
             bounces_left = rs_int[r, 0]
             processed = rs_int[r, 1]
             acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -2275,10 +2417,16 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     spec_n = -shade_n
 
                 eta = 0.0
-                if (T > 1e-4) and (htype == 1):
+                if (T > 1e-4) and (metalness < 1.0 - 1e-6) and (htype == 1):
                     entering_f = rd.dot(fnrm) < 0.0
                     rel_f = _relative_ior(rs_sca, r, ior, entering_f, 1)
                     eta = 1.0 / ti.max(rel_f, 1e-6) if entering_f else rel_f
+                glass = lit and (eta > 0.0) and (ti.abs(eta - 1.0) >= 1e-4)
+                if glass:
+                    # The diffuse part of a partially transmitting material
+                    # reflects on the incident side too. Otherwise an inside
+                    # diffuse pick could cross without updating the medium.
+                    shade_n = spec_n
 
                 hit_p = ro + t_hit * rd
 
@@ -2325,6 +2473,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     wl_trans = alpha * ti.max(e_trans_l[0],
                                               ti.max(e_trans_l[1],
                                                      e_trans_l[2]))
+                rough_glass = glass and (rough * rough >= 1e-4)
 
                 # Custom-scatter state for this crossing: whether a user
                 # scatter owns it, the radiance it committed, and its three
@@ -2522,7 +2671,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, ld,
                                             wl_pass, wl_diff, wl_spec,
-                                            wl_trans, eta, metalness, albedo3)
+                                            wl_trans, eta, metalness, albedo3, T)
                                         contrib = f_cos_r * lc \
                                             * (inv_ls / p_sel)
                                         wi_vis = wi_v
@@ -2574,7 +2723,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 e_diff_l, e_spec_l, f0_l,
                                                 rough, shade_n, rd, wi,
                                                 wl_pass, wl_diff, wl_spec,
-                                                wl_trans, eta, metalness, albedo3)
+                                                wl_trans, eta, metalness, albedo3, T)
                                             if bounces_left <= 0:
                                                 pdf_b = 0.0
                                             pdf_sa = p_tri * (d_e * d_e) \
@@ -2599,7 +2748,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     if (pdf_sa > 1e-12) \
                                             and ((shade_n.dot(dir_e) > 1e-6)
                                                  or ((wl_spec > 0.0) and
-                                                     (spec_n.dot(dir_e) > 1e-6))):
+                                                     (spec_n.dot(dir_e) > 1e-6))
+                                                 or rough_glass):
                                         ec = _sample_env_map(
                                             f, dir_e, env_off, env_w,
                                             env_h, env_intensity,
@@ -2608,7 +2758,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, dir_e,
                                             wl_pass, wl_diff, wl_spec,
-                                            wl_trans, eta, metalness, albedo3)
+                                            wl_trans, eta, metalness, albedo3, T)
                                         if bounces_left <= 0:
                                             pdf_b = 0.0
                                         pdf_h = pdf_sa \
@@ -2622,14 +2772,32 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         ldist = 1e7
                             if (contrib[0] != 0.0) or (contrib[1] != 0.0) \
                                     or (contrib[2] != 0.0):
+                                if rough_glass:
+                                    # Same geometric support as the sampler:
+                                    # a perturbed normal must not turn a
+                                    # reflected direction into a crossing.
+                                    geom_refl = rd.dot(fnrm) * wi_vis.dot(fnrm) < 0.0
+                                    if (spec_n.dot(wi_vis) > 0.0) != geom_refl:
+                                        contrib = ti.math.vec3(0.0, 0.0, 0.0)
                                 vis3 = ti.math.vec3(1.0, 1.0, 1.0)
                                 if ti.static(shadows != 0):
                                     if recv == 1:
-                                        if spec_n.dot(wi_vis) > 1e-4:
+                                        if (spec_n.dot(wi_vis) > 1e-4) or rough_glass:
+                                            shadow_origin = sorigin
+                                            if rough_glass:
+                                                shadow_origin = _pt_offset_ray_origin(
+                                                    hit_p, fnrm if fnrm.dot(wi_vis) >= 0.0 else -fnrm)
+                                            # ldist was measured at hit_p.
+                                            # Pulling the origin toward the
+                                            # light must shorten the segment,
+                                            # or a near-origin emitter can
+                                            # shadow itself after refraction.
+                                            shadow_ldist = ldist \
+                                                - (shadow_origin - hit_p).dot(wi_vis)
                                             vis3 = _pt_nee_visibility(
                                                 refit, shadow_mode,
                                                 has_tri, has_bez,
-                                                sorigin, wi_vis, ldist,
+                                                shadow_origin, wi_vis, shadow_ldist,
                                                 f, ff,
                                                 pixel_size_per_t,
                                                 base_dist,
@@ -2955,7 +3123,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             sc_next = 1
                             if ti.max(thru[0],
                                       ti.max(thru[1],
-                                             thru[2])) < min_weight:
+                                             thru[2])) * eta_scale < min_weight:
                                 done = True
                                 break
                         else:
@@ -2974,7 +3142,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                     + _PAIR_LOBE, s_index)[1]
                                 p_rr_c = ti.math.clamp(
                                     ti.max(thru[0],
-                                           ti.max(thru[1], thru[2])),
+                                           ti.max(thru[1], thru[2])) * eta_scale,
                                     _PT_RR_FLOOR, 1.0)
                                 if u_rr_c >= p_rr_c:
                                     survived_c = 0
@@ -2987,7 +3155,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 break
                             if ti.max(thru[0],
                                       ti.max(thru[1],
-                                             thru[2])) < min_weight:
+                                             thru[2])) * eta_scale < min_weight:
                                 done = True
                                 break
                             # A new geometric segment needs a fresh shell
@@ -3081,7 +3249,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     t_alpha *= scale
                     t_prev = t_hit
                     layer_prev = hit_layer
-                    if ti.max(thru[0], ti.max(thru[1], thru[2])) < min_weight:
+                    if ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale < min_weight:
                         done = True
                         break
                 else:
@@ -3102,12 +3270,25 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         aov_open = 0
                         p_sel = w_diff / w_sum
                         new_rd = _pt_cosine_direction(shade_n, u_dir)
+                        if glass and (rd.dot(fnrm) * new_rd.dot(fnrm) >= 0.0):
+                            ok = 0
                         tint = e_diff * (alpha / ti.max(p_sel, 1e-6))
+                        if glass:
+                            # A mixed diffuse/glass material must evaluate
+                            # the full mixture for either sampling strategy.
+                            fc_mix, pdf_mix = _pt_lit_f_pdf(
+                                e_diff_l, e_spec_l, f0_l, rough, shade_n,
+                                rd, new_rd, wl_pass, wl_diff, wl_spec,
+                                wl_trans, eta, metalness, albedo3, T)
+                            tint = fc_mix * (alpha / ti.max(pdf_mix, 1e-12))
+                        diff_mean = (alpha / ti.max(p_sel, 1e-6)) \
+                            * ((e_diff[0] + e_diff[1] + e_diff[2]) / 3.0)
+                        if glass:
+                            diff_mean = (tint[0] + tint[1] + tint[2]) / 3.0
                         thru = ti.math.vec4(
                             thru[0] * tint[0], thru[1] * tint[1],
                             thru[2] * tint[2],
-                            thru[3] * (alpha / ti.max(p_sel, 1e-6))
-                            * ((e_diff[0] + e_diff[1] + e_diff[2]) / 3.0))
+                            thru[3] * diff_mean)
                         new_ro = _pt_offset_ray_origin(
                             hit_p,
                             fnrm if fnrm.dot(new_rd) >= 0.0 else -fnrm)
@@ -3119,7 +3300,42 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             _fc_d, prev_pdf = _pt_lit_f_pdf(
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
-                                wl_trans, eta, metalness, albedo3)
+                                wl_trans, eta, metalness, albedo3, T)
+                    elif glass:
+                        # Remapping the outer lobe draw leaves a uniform
+                        # independent Fresnel draw after choosing the facet.
+                        wg = w_spec + w_trans
+                        ug = (pick - w_pass - w_diff) / ti.max(wg, 1e-12)
+                        new_rd, tint_g, crossed, delta_g, ok = _pt_sample_glass(
+                            rd, spec_n, rough, eta, f0, metalness, albedo3, T,
+                            u_dir, ug)
+                        geometric_cross = rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0
+                        if (crossed == 1) != geometric_cross:
+                            ok = 0
+                        prev_pdf = 0.0
+                        if delta_g == 1:
+                            tint_g *= alpha * w_sum / ti.max(wg, 1e-12)
+                        else:
+                            aov_open = 0
+                            fc_g, prev_pdf = _pt_lit_f_pdf(
+                                e_diff_l, e_spec_l, f0_l, rough, shade_n,
+                                rd, new_rd, wl_pass, wl_diff, wl_spec,
+                                wl_trans, eta, metalness, albedo3, T)
+                            if prev_pdf <= 1e-12:
+                                ok = 0
+                            tint_g = fc_g * (alpha / ti.max(prev_pdf, 1e-12))
+                        if ok == 1:
+                            gmean = (tint_g[0] + tint_g[1] + tint_g[2]) / 3.0
+                            thru = ti.math.vec4(thru[0] * tint_g[0],
+                                                thru[1] * tint_g[1],
+                                                thru[2] * tint_g[2],
+                                                thru[3] * gmean)
+                            if crossed == 1:
+                                _write_ior_stack(rs_sca, r, r, ior,
+                                                 rd.dot(fnrm) < 0.0, 1, 1)
+                                eta_scale /= ti.max(eta * eta, 1e-12)
+                            new_ro = _pt_offset_ray_origin(
+                                hit_p, fnrm if fnrm.dot(new_rd) >= 0.0 else -fnrm)
                     elif pick < w_pass + w_diff + w_spec:
                         # GGX is non-delta (any roughness): close the prefix.
                         aov_open = 0
@@ -3167,7 +3383,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 _fc_s, prev_pdf = _pt_lit_f_pdf(
                                     e_diff_l, e_spec_l, f0_l, rough,
                                     shade_n, rd, new_rd, wl_pass, wl_diff,
-                                    wl_spec, wl_trans, eta, metalness, albedo3)
+                                    wl_spec, wl_trans, eta, metalness, albedo3, T)
                     else:
                         p_sel = w_trans / w_sum
                         if htype == 1:
@@ -3202,7 +3418,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         u_rr = pt_sample_2d_seeded(
                             path_seed, pair_base + _PAIR_LOBE, s_index)[1]
                         p_rr = ti.math.clamp(
-                            ti.max(thru[0], ti.max(thru[1], thru[2])),
+                            ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale,
                             _PT_RR_FLOOR, 1.0)
                         if u_rr >= p_rr:
                             survived = 0
@@ -3213,7 +3429,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         absorbed = True
                         done = True
                         break
-                    if ti.max(thru[0], ti.max(thru[1], thru[2])) < min_weight:
+                    if ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale < min_weight:
                         done = True
                         break
                     ring = ti.Vector([-1, -1, -1, -1])
@@ -3250,6 +3466,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             rs_sca[r, 3] = seam_t
             rs_sca[r, 4] = base_dist
             rs_sca[r, _SCA_PREV_PDF] = prev_pdf
+            rs_sca[r, _SCA_ETA_SCALE] = eta_scale
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE

@@ -1994,14 +1994,44 @@ Tracked here so they are one search away, in rough order of effort:
 
 ## 10. Design improvements identified during the correctness follow-up
 
-* **Unify the full dielectric BSDF next.** Reflection now shares side-aware
-  Fresnel and a matching pdf, but transmission is still a delta direction
-  while reflection can be rough. A rough dielectric BTDF sampled from the
-  same microfacet distribution would make rough glass internally consistent.
-  Include the radiance-transport eta-squared factor and eta-aware roulette
-  together; changing one without the other can move energy or variance for
-  the wrong reason. PBRT's [dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF)
-  gives a reference formulation. This should precede caustic estimators.
+* **Unified rough dielectric BSDF — implemented (2026-09-08).** A physical
+  triangle's transmitting interface now draws one GGX visible microfacet,
+  then chooses reflection or refraction using that facet's Fresnel weights.
+  `_pt_sample_glass`, `_pt_glass_terms` and `_pt_glass_f_pdf` share the exact
+  dielectric Fresnel term, Snell direction, correlated Smith masking and
+  branch probabilities. The evaluated transmission density includes its
+  half-vector-to-direction Jacobian. NEE can sample the opposite hemisphere;
+  continuation and NEE evaluate the same full diffuse/interface mixture,
+  including partial transmission and authored specular tint.
+
+  `eta = n_incident / n_transmitted` comes from the existing nested-medium
+  stack. Transmitted radiance carries `eta^2`; the inverse accumulated factor
+  lives in previously unused scalar slot 6, keeping roulette and minimum
+  throughput decisions independent of this reversible radiance change. No
+  path-state width, split pool or random dimension is added. The old outer
+  reflection/transmission choice is combined and remapped to supply the
+  facet's Fresnel draw. The medium stack changes only after a valid crossing.
+  Perturbed normals use matching geometric support for NEE and continuation.
+
+  `roughness^2 < 1e-4` gives an exact delta interface. Equal indices give
+  straight transmission regardless of roughness. Pure conductors retain
+  their existing reflection compensation. Transmitting interfaces use the
+  **single-scatter** dielectric model: applying reflection-only Turquin
+  compensation here would create power, so very rough glass can still lose
+  energy to omitted microfacet multiple scattering. A coupled dielectric
+  multiple-scattering model is a future improvement. Custom scatter and
+  thin Bezier panes retain their authored delta behavior. Transparent shadow
+  rays still travel straight through additional interfaces; this is not a
+  caustic estimator.
+
+  Tests integrate each hemisphere's PDF independently and compare sampled
+  outcome frequencies; check power bounds, radiance reciprocity, Snell/TIR,
+  and rough-facet transmission above the macro critical angle. Render checks
+  cover transmission blur, an index-matched control, NEE/MIS agreement with
+  an emitter behind glass, occlusion, and entry/exit with early roulette.
+  PBRT's [rough dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Rough_Dielectric_BSDF)
+  supplies the reference formulation. This completes the interface model
+  needed before the caustic work in section 4.
 * **Make area-light radiance independent of the receiver.** The retained
   `d^(2-decay)` multiplier preserves the current controls but is not physical
   emission for `decay != 2`. A deliberate API/default change to physical area

@@ -3483,4 +3483,167 @@ def test_internal_glass_reflection_keeps_furnace_energy(tmp_path):
             "pt_rr_start_bounce": 16,
         },
     )
-    assert _center_patch_mean(image, half=4) == pytest.approx(255 * 0.25, abs=4)
+    # The camera is in glass: radiance at its eventual glass-to-air exit
+    # scales by (n_incident/n_transmitted)^2. TIR itself must lose no power.
+    assert _center_patch_mean(image, half=4) == pytest.approx(
+        255 * 0.25 * 1.5**2, abs=4
+    )
+
+
+def test_rough_glass_blurs_transmission_but_index_matched_glass_does_not(tmp_path):
+    """A striped environment resolves through smooth glass and blurs through rough glass."""
+
+    def build_at(rough, ior):
+        def build(scene):
+            Scene.clear_lights()
+            stripes = (torch.arange(256) // 4 % 2).float() * 0.6 + 0.1
+            scene.set_environment_map(stripes[None, :, None].expand(64, 256, 3).clone())
+            glass = Prism(width=5, height=5, depth=0.5)
+            glass.set_material(
+                MeshPhysicalMaterial(
+                    color=WHITE, transmission=1, roughness=rough, ior=ior
+                )
+            )
+            glass.spawn(animate=False)
+            camera = scene.get_camera()
+            camera.move_to(OUT * 7)
+            camera.look_at(ORIGIN)
+            camera.set_fov(25)
+
+        return build
+
+    images = []
+    for name, rough, ior in (
+        ("smooth", 0.001, 1.5),
+        ("rough", 0.65, 1.5),
+        ("matched", 0.65, 1.0),
+    ):
+        images.append(
+            _render_scene_exp(
+                tmp_path,
+                f"glass_stripes_{name}.png",
+                build_at(rough, ior),
+                128,
+                max_bounces=12,
+                linear_color_space=False,
+                tonemapping=False,
+                experimental={
+                    "post_process_tonemap": False,
+                    "pt_firefly_clamp": 0,
+                    "pt_error_target": 0,
+                    "pt_rr_start_bounce": 16,
+                },
+            )[16:48, 16:48, :3].float()
+        )
+    smooth, rough, matched = images
+    assert float(smooth.std()) > 40
+    assert float(matched.std()) > 40
+    assert float(rough.std()) < 0.5 * float(smooth.std())
+    assert float(rough.mean()) > 20
+
+
+@pytest.mark.parametrize("transmission", [1.0, 0.4])
+def test_rough_glass_transmission_nee_and_mis_agree_and_obey_shadows(
+    tmp_path, transmission
+):
+    """An emitter behind one interface exercises the opposite-hemisphere NEE path."""
+    from algan import TriangleMesh
+
+    def quad(size):
+        h = size / 2
+        return TriangleMesh(
+            vertices=[[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0]],
+            faces=[[0, 1, 2], [0, 2, 3]],
+        )
+
+    def build_at(blocked):
+        def build(scene):
+            Scene.clear_lights()
+            scene.set_background(BLACK)
+            glass = quad(6)
+            glass.set_material(
+                MeshPhysicalMaterial(
+                    color=WHITE, transmission=transmission, roughness=0.65, ior=1.5
+                )
+            )
+            glass.move(OUT * 2.5).spawn(animate=False)
+            panel = quad(4)
+            panel.set_material(
+                MeshLambertMaterial(color=BLACK, emissive=WHITE, emissive_intensity=0.5)
+            )
+            panel.spawn(animate=False)
+            if blocked:
+                blocker = quad(5)
+                blocker.set_material(MeshLambertMaterial(color=BLACK))
+                blocker.move(OUT).spawn(animate=False)
+            camera = scene.get_camera()
+            camera.move_to(OUT * 7)
+            camera.look_at(ORIGIN)
+            camera.set_fov(5)
+
+        return build
+
+    means = []
+    for name, bounces, blocked in (
+        ("nee", 0, False),
+        ("mis", 2, False),
+        ("blocked", 2, True),
+    ):
+        image = _render_scene_exp(
+            tmp_path,
+            f"glass_emitter_{name}.png",
+            build_at(blocked),
+            512,
+            video=SMOKE_TEST.set(resolution=(24, 24)),
+            max_bounces=bounces,
+            linear_color_space=False,
+            tonemapping=False,
+            shadows=True,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+                "pt_rr_start_bounce": 16,
+            },
+        )
+        means.append(_center_patch_mean(image, half=6))
+    nee, mis, blocked = means
+    assert 20 * transmission < nee < 60 * transmission, means
+    assert mis == pytest.approx(nee, rel=0.06, abs=1), means
+    assert blocked < 1, means
+
+
+def test_glass_entry_exit_eta_factors_cancel_with_early_roulette(tmp_path):
+    """Roulette must not mistake the refractive radiance factor for absorption."""
+
+    def build(scene):
+        Scene.clear_lights()
+        scene.set_environment_map(torch.full((4, 8, 3), 0.25))
+        glass = Prism(width=10, height=10, depth=1)
+        glass.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1, roughness=0.001, ior=1.5)
+        )
+        glass.spawn(animate=False)
+        camera = scene.get_camera()
+        camera.move_to(OUT * 7)
+        camera.look_at(ORIGIN)
+        camera.set_fov(5)
+
+    for rr_start in (0, 16):
+        image = _render_scene_exp(
+            tmp_path,
+            f"glass_roulette_{rr_start}.png",
+            build,
+            32,
+            max_bounces=12,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+                "pt_rr_start_bounce": rr_start,
+            },
+        )
+        assert _center_patch_mean(image, half=8) == pytest.approx(255 * 0.25, abs=1)
+        assert float(image[24:40, 24:40, :3].float().std()) < 1

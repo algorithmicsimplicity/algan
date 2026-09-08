@@ -1324,13 +1324,13 @@ def path_trace_render(
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
     # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0,
-    # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), 0] plus the zeroed
+    # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), eta_scale=1] plus the zeroed
     # nested-IOR stack columns (air outside); rs_int =
     # [bounces_left=max_bounces, processed=0, _ACTIVE, no hits,
     # max_bounces (the bounce ordinal's reference)] plus the empty (-1)
     # closed-shell ring.
     sca_init = torch.tensor(
-        [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 0.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
+        [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 1.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
         dtype=f32,
         device=device,
     )

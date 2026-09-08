@@ -130,6 +130,7 @@ def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
         eta,
         0.0,
         one,
+        1.0,
     )
     out[1, 0] = fc[0]
     out[1, 1] = pdf
