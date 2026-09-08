@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_bloom_stage_probe.py",
+  "command": ".venv/bin/python benchmarks/_mac_bloom_validate.py",
   "arms": [
     "mac-mps"
   ],
@@ -9,6 +9,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 8,
-  "_request": "77: isolate bloom resize error against CPU interpolation and full-pipeline intermediates on fixed small fixtures"
+  "timeout_minutes": 20,
+  "_request": "78: production bloom gate and arena border regression tests; four UHD renders alternating corrected fallback/Metal"
 }

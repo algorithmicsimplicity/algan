@@ -187,8 +187,8 @@ def child(args):
 
         def bloom_gate(device):
             device = torch.device(device)
-            if candidate and device.type == "mps":
-                return runtime._live_arch() == ti.metal and zc.zero_copy_available()
+            if device.type == "mps":
+                return candidate and original_bloom_gate(device)
             return original_bloom_gate(device)
 
         bloom_kernels.can_use_bloom_taichi = bloom_gate
