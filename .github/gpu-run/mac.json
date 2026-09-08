@@ -1,13 +1,15 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_globals_probe.py",
+  "command": ".venv/bin/python benchmarks/_mac_reorder_diagnose.py",
   "arms": [
     "mac-mps"
   ],
   "env": {
-    "ALGAN_TORCH_COMPILE": "0"
+    "ALGAN_VIDEO_ENCODER": "software",
+    "ALGAN_TORCH_COMPILE": "0",
+    "DIAG_DISPATCH_LIMIT": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 15,
-  "_request": "65: minimal serial-to-parallel global-temporary correctness on Metal"
+  "timeout_minutes": 30,
+  "_request": "66: replace broken MPS arena reorder, verify permutation and uncapped UHD render"
 }
