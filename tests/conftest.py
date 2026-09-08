@@ -340,6 +340,46 @@ def pytest_addoption(parser):
     )
 
 
+def _known_mps_failures():
+    """``tests/mps_known_failures.py``'s table, loaded by path.
+
+    By path because ``tests/`` is not a package -- there is no ``__init__.py``,
+    which is what keeps the three suites' same-named modules from colliding --
+    so ``import tests.mps_known_failures`` would depend on the rootdir being on
+    ``sys.path``, which depends on how pytest was invoked.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "mps_known_failures.py"
+    spec = importlib.util.spec_from_file_location("algan_mps_known_failures", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.KNOWN_FAILURES
+
+
+def _mark_known_mps_failures(items):
+    """xfail the tests ``tests/mps_known_failures.py`` names, on MPS only.
+
+    The macOS MPS arm of ``test.yaml`` is a required check and the port is not
+    finished, so the arm needs a way to be honest about what is outstanding
+    without either going red on every PR or hiding it. ``xfail(strict=True)``
+    is that way: the listed tests still run and still report, the summary
+    counts them, and a fix that makes one pass turns the arm red with
+    ``XPASS(strict)`` until its line is removed. The list, and why each entry
+    is on it, is in that module.
+
+    Off MPS this does nothing at all -- these are ordinary tests on every other
+    device, and a failure in one there is an ordinary failure.
+    """
+    if SETTINGS.computing.render_device.type != "mps":
+        return
+    known = _known_mps_failures()
+    for item in items:
+        reason = known.get(item.nodeid)
+        if reason is not None:
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
+
+
 def pytest_collection_modifyitems(config, items):
     """Reduce the run to the ``fast`` marker when ``--fast`` is passed.
 
@@ -349,6 +389,7 @@ def pytest_collection_modifyitems(config, items):
     absent optional dependency).
     """
     if not config.getoption("fast"):
+        _mark_known_mps_failures(items)
         return
     selected, deselected = [], []
     for item in items:
@@ -357,6 +398,7 @@ def pytest_collection_modifyitems(config, items):
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         items[:] = selected
+    _mark_known_mps_failures(items)
 
 
 @pytest.hookimpl(trylast=True)

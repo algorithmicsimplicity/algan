@@ -84,10 +84,18 @@ only for experiments that intentionally replace that supported dependency.
   touch it. A scene that needs it and did not ask fails minutes later, inside
   the render.
 * **`taichi_wheel_run_id`**. The MPS arm installs a patched Taichi wheel from a
-  `taichi_build.yaml` run (default `33342025517`). **On stock Taichi the Apple
-  GPU is refused and Algan renders on the CPU**, so an MPS arm without a wheel
-  silently duplicates the CPU arm. `"none"` opts out on purpose — which is a
-  real thing to measure, since it is what an unpatched Mac user gets.
+  `taichi_build.yaml` run (default `33342025517`). **Set it to `"none"` to
+  reproduce what the ordinary gate runs**, which is what a plain `uv sync
+  --locked` puts on the machine: the published patched `algan-quadrants`,
+  which carries `quadrants_patches/0001` and therefore renders on the Apple
+  GPU with no override at all. The default is the historical *Taichi* control
+  arm and it also flips `ALGAN_TAICHI_BACKEND=taichi`, so leaving it alone
+  measures a different compiler from the one CI and users have.
+  (The bullet used to say `"none"` meant a silent CPU fallback. That was true
+  while the only patched build was a private wheel; since the patched
+  Quadrants distribution is the normal dependency it is the other way round,
+  and `_startup._mps_is_usable` is the thing that decides — it asks the
+  installed compiler, not the platform.)
 * **`quadrants_wheel`**. The Quadrants counterpart: a `quadrants_build.yaml`
   run id (its `quadrants-wheel-macos-py3.11` artifact) or a release-asset URL.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
@@ -102,6 +110,13 @@ only for experiments that intentionally replace that supported dependency.
   the run id.
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
+
+**Chain several commands with `|| true`.** The run step is
+`bash --noprofile --norc -e -o pipefail`, so a `;`-separated chain stops at the
+first non-zero exit — and a probe that *reports* a disagreement by exiting 1 is
+exactly such an exit. A round that meant to run a probe and then a test suite
+came back with the probe's answer and nothing else, having spent the whole
+Apple slot on it.
 
 ### Wait
 

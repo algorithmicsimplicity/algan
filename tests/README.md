@@ -110,6 +110,26 @@ normal locked dependency graph and published `algan-quadrants` wheel. The
 `algan check` step then prints the resolved device/compiler along with whether
 LaTeX and FFmpeg are on `PATH`.
 
+**The MPS arm carries an xfail list, and it is meant to shrink.** The Apple-GPU
+port is not finished: when the arm was first turned on it reported 32 failures
+against 3311 passes. `tests/mps_known_failures.py` names what is still
+outstanding, one entry per test with the defect it waits on and a pointer to
+the measurement in `../algan/rendering/DESIGN_mps_support.md` §4;
+`conftest.py` applies it as a **strict** `xfail`, and only when the resolved
+render device is MPS. Three consequences worth knowing before adding or
+removing a line:
+
+* the listed tests still **run**, and the summary counts them, so the arm's
+  output says how much of the port is left on every run;
+* `strict` means a fix turns the arm **red** with `XPASS`, naming the test.
+  Deleting the entry is the last step of the fix, not an optional tidy-up;
+* nothing applies off MPS. On Linux, on CUDA and on the macOS CPU arm these are
+  ordinary tests and a failure in one is an ordinary failure.
+
+`test_mps_known_failures.py` keeps the list from rotting the other way: an
+entry whose test has been renamed or deleted is an `xfail` that silently marks
+nothing, so it fails collection-time rather than passing quietly.
+
 ## The full suite
 
 ```bash

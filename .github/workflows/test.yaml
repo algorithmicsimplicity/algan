@@ -212,6 +212,15 @@ jobs:
       # Mac job proves about the renderer is that the pipeline works there --
       # kernel compilation, tessellation, LaTeX, the fonts, the encoder -- not
       # that the frames are right. See tests/fast/test_fast_render.py.
+      #
+      # The MPS arm additionally xfails what the port has not finished:
+      # tests/mps_known_failures.py is the list, one entry per test with the
+      # defect it is waiting on, and tests/conftest.py applies it ONLY when the
+      # resolved render device is MPS. They are strict xfails, so the arm goes
+      # red on an XPASS -- a fix cannot leave a stale entry behind -- and the
+      # summary counts them on every run, which is what keeps a required check
+      # from quietly meaning less than it looks like it means.
+      # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 

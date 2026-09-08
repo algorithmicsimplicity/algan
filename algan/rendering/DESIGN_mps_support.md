@@ -1,16 +1,23 @@
 # Algan on Apple GPUs (MPS / Metal): measured verdict
 
-Current status (2026-09-07): **SUPPORTED AND REQUIRED IN ORDINARY CI.**
-`.github/workflows/test.yaml` has a normal `macos-latest` MPS arm for gated
-PRs/pushes. It pins `ALGAN_RENDER_DEVICE=mps`, asserts Algan's startup resolver
-actually returns `mps` before pytest, and runs `tests/unit_tests` plus
-`tests/fast` with the locked published `algan-quadrants` distribution. The
-separate `mps_probe.yaml` remains a diagnostic/measurement workflow, not the
-only place Apple-GPU regressions are exercised.
+Current status: **the port works, the gate is built, and the gate is not green
+yet.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
+`render=mps` arm on every gated PR and push: it pins `ALGAN_RENDER_DEVICE=mps`,
+fails before pytest unless Algan's own startup resolver returns `mps`, and runs
+`tests/unit_tests` plus `tests/fast` against the locked published
+`algan-quadrants` — no private wheel anywhere in the path. **§4 is the
+scoreboard**: what that arm reports, which failures have been diagnosed, and
+which are still open. Read it before quoting a support claim from this
+document, because it is the only section written against a run rather than
+against an argument.
 
-The remainder of this document is the measurement history that got the port to
-that state. Its early NO-GO language is retained as a superseded historical
-verdict, not as the current support status.
+`mps_probe.yaml` remains the diagnostic workflow. It is no longer the only
+place Apple-GPU regressions are exercised, which was the point of building the
+arm.
+
+The rest of this document is the measurement history that got the port here.
+Its early NO-GO language is a superseded verdict, kept because the reasoning
+is what the next capability question will be answered with.
 
 Historical starting status (superseded): **NO-GO on the port as such.**
 Measured on GitHub's `macos-latest` runner
@@ -306,8 +313,20 @@ permutations, the band ids, the sorted order.
 > launch site, and `vkCreateComputePipelines failed` where Metal gives a nil
 > pipeline. Extracting the module from Taichi's offline cache and running
 > `spirv-val` on it is what produced the error above; after the fix `spirv-val`
-> reports nothing. **That is the loop to use for the next codegen question**,
-> not a 30-minute round trip through the Apple runner.
+> reports nothing. **That was the loop to use for the next codegen question**,
+> and it saved a 30-minute round trip through the Apple runner.
+>
+> **It does not work on the published Quadrants wheel**, which is worth knowing
+> before planning a round against it. Measured 2026-09-08 on the Linux
+> `algan-quadrants==1.3.0.post2` wheel with `mesa-vulkan-drivers` installed and
+> `vulkaninfo` reporting an llvmpipe device: `qd.init(qd.vulkan)` answers
+> `Arch=[Arch.vulkan] is not supported, falling back to CPU`, and
+> `quadrants._lib.core.with_vulkan()` is **False** — the distribution is built
+> without the Vulkan backend, so it carries no SPIR-V codegen to reproduce
+> against. Taichi's wheel had one, which is what made the loop above possible.
+> Restoring it means a Vulkan-enabled Quadrants build; until there is one, a
+> codegen question costs an Apple runner. The check is one line and needs no
+> probe: `python -c "from quadrants._lib import core; print(core.with_vulkan())"`.
 
 What follows is how the section read while it was open. Kept, because the two
 readings it got wrong are the ones anyone re-treading this path will get wrong
@@ -867,6 +886,61 @@ min=1e-12)` in `primitives.py`, spelled differently from the other twenty-two �
 which is the argument for having written it. `*_taichi.py` is exempt and must
 be: those bodies reach MSL through Taichi and never touch torch's MPS dispatch.
 
+### 2.3d `index_reduce_` is not implemented at all
+
+The loud one, and the only defect in this family that announces itself:
+
+```
+NotImplementedError: The operator 'aten::index_reduce.out' is not currently
+implemented for the MPS device.
+```
+
+`refit_bvh._binary_split` reduces per-range centroid extents and per-bin box
+unions with `Tensor.index_reduce_(0, seg, src, 'amin'/'amax')`, and that is the
+BVH *build* rather than the refit — so it takes down every scene whose topology
+is rebuilt, which on the gate's first run was ten path-tracer tests. The
+suggested `PYTORCH_ENABLE_MPS_FALLBACK=1` is not the fix: it would move a
+whole-BVH reduction to the host on every build, silently, for a gap that has a
+device-side spelling.
+
+**`scatter_reduce_` is that spelling**, and it is implemented on MPS at this
+dtype and shape. It is the same reduction with the index broadcast to the
+source's shape instead of addressing whole rows, so the substitution is a
+spelling change and not a numerical one: `amin` and `amax` are exact under any
+reduction order — unlike the float sums §6.6.4 widened — so nothing the backend
+does to the order can move a value. `probe_index_reduce` measures both against
+the CPU's `index_reduce_` over the same input; `mps_compat.index_reduce_` is
+the one call site, gated on the mode like everything else here, and
+`test_mps_friendly` pins the two arms against each other at both call-site
+shapes.
+
+### 2.3e The source-key index was poisoned on every renderer kernel
+
+Not a wrong answer and not a missing op — an optimization silently off, on the
+device that needs it most.
+
+`taichi_source_key` skips the compiler frontend when it can describe a launch's
+arguments by their type features, and it refuses (`Poison`) rather than guess
+at a type it has no rule for. On an Apple GPU **every** converted argument
+arrives as `ExternalMetalNdarray`, the patched build's imported-`MTLBuffer`
+ndarray (`mps_zero_copy`), which had no rule — so every renderer kernel paid a
+full frontend pass on a machine whose frontend passes are the slowest of the
+three platforms, and `test_taichi_source_key` failed with **0 keyed**. The
+symptom in a log is a wall of
+
+```
+RuntimeWarning: taichi_source_key: <kernel> cannot be source-keyed and pays the
+full frontend: ndarray argument of type
+quadrants.lang._ndarray.ExternalMetalNdarray has no key rule
+```
+
+It is an `Ndarray` subclass and reads the same four features as the three
+allocated forms (`element_type`, rank, `grad`, `_qd_layout`). What it
+deliberately does **not** contribute to the key is the buffer it adopted: a
+compiled kernel depends on an argument's element type and rank, never on which
+allocation it was bound to, and putting the pointer in the key would turn every
+launch into a miss rather than a hit.
+
 ### 2.4 How non-deterministic MPS actually is
 
 400k fragments reduced into 5k segments, six runs:
@@ -980,9 +1054,9 @@ same staging producing a *wrong answer*, and the frame is black until it is
 addressed. Its option 1 -- packing each kernel's arena arguments into a
 per-dtype staging buffer -- is the small end of step 1 and is where to start.
 
-`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` stays until the render job
-is green, which it is not: it gets through kernel compilation and dies on the
-smoke frame's blackness check.
+`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` is gone, replaced by an
+explicit `render=mps` arm beside the `render=cpu` one. §4 is where that arm
+stands and what it still fails.
 
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.
@@ -993,7 +1067,111 @@ to the Python frontend (the backend primitive already exists — see
 one), or Metal's argument limit ceasing to bind through argument buffers.
 Re-running the probe answers both in about three minutes.
 
-### 3.4 What Mac users should be told meanwhile
+### 3.4 What Mac users are told
 
-The CPU path is the Mac path. It is the same arch CI exercises, so effort spent
-making it faster pays twice.
+**The Apple GPU is the Mac path**, and it needs nothing installed for it:
+`pip install algan` resolves the published patched `algan-quadrants`, whose
+macOS arm64 wheels carry `quadrants_patches/0001`, so `auto` finds an Apple GPU
+that can actually render and takes it. `algan check` prints the device that
+came out, which is the question a user has (`docs/source/installation.rst`
+walks through it).
+
+The CPU path is still there and still supported — it is what `auto` falls back
+to when the compiler cannot bind an `MTLBuffer` — so effort spent making it
+faster is not wasted. It is no longer the *recommended* Mac path.
+
+---
+
+## 4. The gate's scoreboard
+
+Everything above is a capability question answered on a probe. This section is
+the other kind: what the **required** `render=mps` arm of
+`.github/workflows/test.yaml` reports when it runs the ordinary portable scope
+(`tests/unit_tests tests/fast`) on `macos-latest` against the locked published
+`algan-quadrants`. It is written from runs, not from arguments, and it is the
+section to update when one changes.
+
+### 4.1 Where it stands
+
+| run | result |
+| --- | --- |
+| [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
+
+That is the baseline every entry below is measured against. The three
+green arms of the same run (Linux 3.10, Linux 3.13, macOS CPU) say the
+failures are the Apple GPU and not the change that added the arm.
+
+**32 failures, six causes.** Counting causes rather than tests is what makes
+the list tractable: two of them are more than two thirds of the arm.
+
+| # | cause | tests | state |
+| --- | --- | --- | --- |
+| A | `index_reduce_` is unimplemented on MPS | 10 | **fixed** — §2.3d |
+| B | the glossy tile loop walks off its frame table | 13 | open — §4.2 |
+| C | an unlit/emissive slab renders black | 2 | open |
+| D | the glossy prefilter loses its reflection | 2 | open |
+| E | the path-traced and deterministic composites disagree by 107 | 1 | open |
+| F | a `ti.real_func` early return will not compile | 1 | open — §4.3 |
+| G | the source-key index is poisoned on every kernel | 1 | **fixed** — §2.3e |
+| — | `test_arena_binding_live` cannot size an arena | 3 errors | **fixed** — §4.4 |
+
+### 4.2 B: the glossy tile loop, the one worth doing next
+
+Thirteen tests, one line: `tracer.py`'s
+
+```
+frame_end = gl_bounds[gl_frame + 1]
+IndexError: list index out of range
+```
+
+`_gloss_frame_bounds` returns one ordinal per frame boundary and the tile loop
+walks them in order, so running past the end means a boundary came back
+**smaller than the number of covered pixels** — the loop still had pixels to
+place after it had finished the last frame.
+
+**It is not `searchsorted`**, which was the first hypothesis and the cheap one
+to rule out: `probe_frame_bounds` in `benchmarks/_mps_torch_op_probe.py`
+searches the int32 ordinals the call site actually uses (the int64 sequence
+`probe_lookup` searches is a different call site, and the width was the only
+difference between them) and MPS agrees with the CPU at 1, 8 and 179 frames.
+So the bounds are a correct search of a wrong `covered_idx`, and
+`benchmarks/_mps_gloss_bounds_probe.py` is what says which — it renders the
+smallest scene that reaches the glossy route and prints the device's ordinals,
+their range, whether they ascend, and both bounds.
+
+Worth reading beside it: `test_viewer_fragments.py::test_pixel_rows_are_not_flipped`
+fails with the cube's lit rows at 5..15 **plus a single stray pixel in row 35**,
+the bottom row of a 36-row frame — one fragment composited at a pixel nothing
+should have written. A corrupted covered ordinal explains both that and this,
+and if it does then C and D are candidates for the same cause.
+
+### 4.3 F: `ti.real_func` with an early return, on a SPIR-V backend
+
+```
+RuntimeError: [spirv_ir_builder.cpp:query_value@1062] Value "tmp6" does not yet exist.
+```
+
+`test_taichi_early_return.py::test_a_real_function_is_not_rewritten` declares a
+real function with an early `return` and launches it. The *claim* is about
+Algan's rewrite pass keeping its hands off (`_outcome(early) is None`); the
+launch is only how the test proves the function still works. It is the launch
+that fails, in Quadrants' SPIR-V builder, and it has the shape of §1.2c's
+defect — a block left un-reopened — one layer down in the compiler rather than
+in an Algan kernel.
+
+No renderer kernel uses `ti.real_func`, so this blocks a test rather than a
+render. It is also the failure the Vulkan loop of §1.2c would have localized
+for free, and that loop no longer exists on the published wheel (same section).
+
+### 4.4 The three errors: an arena the render device would not size
+
+`test_arena_binding_live` raised `OutOfRenderMemory` for a single **LD** frame
+of a square and a cube on a 7 GB machine, which is not a plausible budget.
+`get_num_available_bytes`'s MPS branch subtracted `driver_allocated_memory()`
+from `recommended_max_memory()` **without emptying torch's cache first**, where
+the CUDA branch beside it has always called `empty_cache()` before
+`mem_get_info`. Cached-but-unused blocks are exactly the bytes the next arena
+comes out of, so a process that had already rendered measured its own cache as
+occupied — and a pytest session is one such process, hundreds of renders deep
+by the time this module's fixture runs. The branch now empties the cache like
+its CUDA twin, and the 1 GB cap beside it says what it is for.

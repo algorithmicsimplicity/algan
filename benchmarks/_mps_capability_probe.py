@@ -1,11 +1,15 @@
 """Is an MPS render device viable? Eight questions, answered on real Apple hardware.
 
-Algan pins the macOS CI job to ``ALGAN_RENDER_DEVICE=cpu`` because an MPS render
-fails in two families -- torch cannot make the raster pipeline's ``float64``
-tensors, and Taichi's SPIR-V codegen (which serves **both** the Metal and the
-Vulkan backends) answers "Type f64 not supported" to the same kernels. Removing
-f64 is bounded work. Whether it is *worth* doing depends on facts that only an
-Apple GPU can supply, and this script is how they get supplied.
+**Historical, and kept because its ladders are still the way to ask.** It was
+written when Algan pinned the macOS CI job to ``ALGAN_RENDER_DEVICE=cpu``
+because an MPS render failed in two families -- torch could not make the raster
+pipeline's ``float64`` tensors, and Taichi's SPIR-V codegen (which serves
+**both** the Metal and the Vulkan backends) answered "Type f64 not supported" to
+the same kernels -- and the question was whether removing f64 was worth the
+work. It was: every blocker below is cleared, ``test.yaml`` now has a required
+``render=mps`` arm, and ``DESIGN_mps_support.md`` §1 records how each fell.
+What this script is *for* now is the next capability question, which is why the
+ladders stayed rather than being deleted with the verdict they produced.
 
     uv run python benchmarks/_mps_capability_probe.py
 
