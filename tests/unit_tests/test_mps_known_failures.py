@@ -65,7 +65,6 @@ def test_every_entry_names_a_test_that_exists():
     )
 
 
-@pytest.mark.fast
 def test_every_entry_carries_a_reason_pointing_at_the_measurement():
     """An entry's reason has to point at the measurement behind it.
 
