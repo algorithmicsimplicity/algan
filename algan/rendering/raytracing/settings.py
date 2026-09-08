@@ -3854,3 +3854,7 @@ sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
 # The Mac A/B removes allocator work in the helper, but has not established an
 # end-to-end speedup. Keep the candidate opt-in until that is demonstrated.
 sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)
+
+# Two device passes replace the Torch sibling-weight graph and its host read.
+# Live A/B switch; opt-in until whole-render measurements justify enabling it.
+sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", False)

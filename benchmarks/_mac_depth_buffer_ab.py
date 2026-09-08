@@ -1,4 +1,4 @@
-"""Warm depth-buffer A/B on one device, with optional bracketing CPU controls.
+"""Warm sheet-optimization A/B, with optional bracketing CPU controls.
 
 Run with the venv interpreter directly. --matched runs all blocks on ONE Mac
 VM. Each backend gets its own process, with both buffer variants warmed before
@@ -23,18 +23,26 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path("algan_outputs/depth_buffer_ab")
+PREFIX = "DEPTH_BUFFER_AB"
 
 
-def run_logged(command, log_path, timeout):
+def run_logged(command, log_path, timeout, shutdown_timeout=60):
     """Preserve child output on disk and show it while the child is running."""
     finished = threading.Event()
+    renders_complete = threading.Event()
 
     def forward():
+        pending = ""
         with log_path.open() as reader:
             while True:
                 text = reader.read()
                 if text:
                     print(text, end="", flush=True)
+                    pending += text
+                    while "\n" in pending:
+                        line, pending = pending.split("\n", 1)
+                        if '"event": "renders_complete"' in line:
+                            renders_complete.set()
                 elif finished.is_set():
                     break
                 else:
@@ -49,12 +57,26 @@ def run_logged(command, log_path, timeout):
         )
         forwarding = threading.Thread(target=forward, daemon=True)
         forwarding.start()
+        deadline = time.monotonic() + timeout
+        teardown_deadline = None
         try:
             try:
-                return process.wait(timeout=timeout)
+                while True:
+                    if renders_complete.is_set() and teardown_deadline is None:
+                        teardown_deadline = time.monotonic() + shutdown_timeout
+                    remaining = (
+                        min(deadline, teardown_deadline or deadline) - time.monotonic()
+                    )
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    try:
+                        return process.wait(timeout=min(0.25, remaining))
+                    except subprocess.TimeoutExpired:
+                        continue
             except subprocess.TimeoutExpired:
+                phase = "teardown" if renders_complete.is_set() else "render block"
                 print(
-                    f"DEPTH_BUFFER_AB timeout: {log_path}, pid={process.pid}",
+                    f"{PREFIX} timeout: {log_path}, pid={process.pid}, phase={phase}",
                     flush=True,
                 )
                 # Only sample a timed-out process: profiling must not perturb
@@ -108,13 +130,15 @@ def matched(args):
             args.quality,
             "--arena-mib",
             str(args.arena_mib),
+            "--target",
+            args.target,
         ]
-        print(f"DEPTH_BUFFER_AB block_start: {tag} ({sequence})", flush=True)
+        print(f"{PREFIX} block_start: {tag} ({sequence})", flush=True)
         started = time.perf_counter()
         code = run_logged(
             command, ROOT / f"{tag}.log", timeout=1600 if device == "mps" else 500
         )
-        print(f"DEPTH_BUFFER_AB block_end: {tag}, exit_code={code}", flush=True)
+        print(f"{PREFIX} block_end: {tag}, exit_code={code}", flush=True)
         outcomes.append(
             {"tag": tag, "exit_code": code, "wall": time.perf_counter() - started}
         )
@@ -156,7 +180,12 @@ def render(args):
     from algan.rendering.post_processing.bloom_kernels_taichi import (
         can_use_bloom_taichi,
     )
-    from algan.rendering.raytracing import sheet_depth_taichi, sheets, tracer
+    from algan.rendering.raytracing import (
+        sheet_depth_taichi,
+        sheet_sibling_taichi,
+        sheets,
+        tracer,
+    )
     from algan.settings._startup import render_device
     from algan.taichi_compat import ti
     from algan.utils import memory_utils as mu
@@ -189,7 +218,7 @@ def render(args):
         )
         with (output / "events.jsonl").open("a") as stream:
             stream.write(line + "\n")
-        print("DEPTH_BUFFER_AB " + line, flush=True)
+        print(PREFIX + " " + line, flush=True)
 
     def pool():
         try:
@@ -202,6 +231,7 @@ def render(args):
                 driver=torch.mps.driver_allocated_memory(),
                 live=torch.mps.current_allocated_memory(),
                 recommended=torch.mps.recommended_max_memory(),
+                imports=zc.cache_stats(),
             )
             result["swap"] = subprocess.run(
                 ["sysctl", "vm.swapusage"], capture_output=True, text=True, timeout=10
@@ -239,6 +269,8 @@ def render(args):
         hook(sheets, name)
     for name in ("sheet_lane_depths", "sheet_lane_depths_inplace"):
         hook(sheet_depth_taichi, name)
+    for name in ("sibling_band_counts", "sibling_coverage_weights"):
+        hook(sheet_sibling_taichi, name)
 
     original_arena = mu.ManualMemory.__init__
 
@@ -269,7 +301,12 @@ def render(args):
         emit("chunk_start", chunk=state["chunks"])
         started = time.perf_counter()
         result = original_wavefront(*a, **kw)
-        emit("chunk_end", chunk=state["chunks"], wall=time.perf_counter() - started)
+        emit(
+            "chunk_end",
+            chunk=state["chunks"],
+            wall=time.perf_counter() - started,
+            imports=zc.cache_stats(),
+        )
         return result
 
     replace_aliases(original_wavefront, wavefront)
@@ -285,6 +322,7 @@ def render(args):
         arch=str(runtime._live_arch()),
         threads=torch.get_num_threads(),
         quality=args.quality,
+        target=args.target,
         arena_mib=args.arena_mib,
         sequence=args.sequence,
         seed=20260908,
@@ -303,7 +341,10 @@ def render(args):
         SceneManager.reset()
         Scene.set_video_settings(preset)
         SETTINGS.raytracing.set(shadows=False)
-        SETTINGS.raytracing.experimental.sheet_depth_buffer_reuse = reuse
+        SETTINGS.raytracing.experimental.set(
+            sheet_depth_buffer_reuse=reuse and args.target == "depth",
+            sheet_sibling_weights_kernel=reuse and args.target == "sibling",
+        )
         with Off():
             nn = NeuralNetMLPV3([5, 5, 5, 5]).move(LEFT).spawn()
             image = ImageMob(str(world_map)).move_next_to(nn, LEFT).spawn()
@@ -325,10 +366,18 @@ def render(args):
             ffmpeg_params=["-crf", "17", "-preset", "ultrafast"],
         )
         wall = time.perf_counter() - started
-        expected_kernel = "sheet_lane_depths_inplace" if reuse else "sheet_lane_depths"
-        other_kernel = "sheet_lane_depths" if reuse else "sheet_lane_depths_inplace"
-        assert totals[expected_kernel]["calls"] > 0
-        assert totals[other_kernel]["calls"] == 0
+        if args.target == "depth":
+            expected_kernel = (
+                "sheet_lane_depths_inplace" if reuse else "sheet_lane_depths"
+            )
+            other_kernel = "sheet_lane_depths" if reuse else "sheet_lane_depths_inplace"
+            assert totals[expected_kernel]["calls"] > 0
+            assert totals[other_kernel]["calls"] == 0
+        else:
+            assert totals["sheet_lane_depths"]["calls"] > 0
+            assert totals["sheet_lane_depths_inplace"]["calls"] == 0
+            for name in ("sibling_band_counts", "sibling_coverage_weights"):
+                assert (totals[name]["calls"] > 0) == reuse
         emit(
             "render_end",
             arm=arm,
@@ -352,6 +401,7 @@ def render(args):
 
 
 def main():
+    global ROOT, PREFIX
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matched", action="store_true")
     parser.add_argument("--device", choices=["cpu", "mps"], default="cpu")
@@ -359,9 +409,13 @@ def main():
     parser.add_argument("--tag", default="local")
     parser.add_argument("--sequence", default="ABABBAAB")
     parser.add_argument("--arena-mib", type=int, default=1720)
+    parser.add_argument("--target", choices=["depth", "sibling"], default="depth")
     args = parser.parse_args()
     if not args.sequence or set(args.sequence) - {"A", "B"}:
         parser.error("--sequence must contain only A (original) and B (reuse)")
+    if args.target == "sibling":
+        ROOT = Path("algan_outputs/sibling_weights_ab")
+        PREFIX = "SIBLING_WEIGHTS_AB"
     return matched(args) if args.matched else render(args)
 
 

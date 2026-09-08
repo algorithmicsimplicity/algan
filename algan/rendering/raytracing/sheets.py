@@ -944,6 +944,34 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     """
     nb = sheet_band.numel()
     device = cov.device
+    if rt_settings.sheet_sibling_weights_kernel:
+        if nb < 2:
+            return cov, msk
+        from algan.rendering.raytracing.sheet_sibling_taichi import (
+            sibling_band_counts,
+            sibling_coverage_weights,
+        )
+
+        counts = torch.zeros((band_area.numel(), 2), dtype=torch.int32, device=device)
+        weights = torch.empty_like(cov)
+        masks = torch.empty_like(msk)
+        band = sheet_band.contiguous()
+        sibling_band_counts(band, nb, counts)
+        sibling_coverage_weights(
+            band,
+            cov.contiguous(),
+            msk.contiguous(),
+            band_area.contiguous(),
+            band_union.contiguous(),
+            band_corr.contiguous(),
+            counts,
+            nb,
+            weights,
+            masks,
+            taichi_accumulate_dtype(),
+        )
+        return weights, masks
+
     members = torch.zeros_like(band_area, dtype=torch.int64)
     members.scatter_add_(
         0, sheet_band, torch.ones(nb, dtype=torch.int64, device=device)

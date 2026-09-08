@@ -88,3 +88,22 @@ def test_child_timeout_is_bounded_and_preserves_output(tmp_path, capsys, monkeyp
     visible = capsys.readouterr().out
     assert "started" in visible
     assert "timeout:" in visible
+
+
+def test_completed_render_has_a_separate_teardown_deadline(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setattr(sys, "platform", "linux")
+    started = time.monotonic()
+    command = [
+        sys.executable,
+        "-u",
+        "-c",
+        'import time; print(\'{"event": "renders_complete"}\', flush=True); time.sleep(20)',
+    ]
+    code = _run_logged()(
+        command, tmp_path / "teardown.log", timeout=10, shutdown_timeout=0.5
+    )
+    assert code == 124
+    assert time.monotonic() - started < 5
+    assert "phase=teardown" in capsys.readouterr().out
