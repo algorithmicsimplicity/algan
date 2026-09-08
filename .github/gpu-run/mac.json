@@ -8,11 +8,10 @@
     "ALGAN_TORCH_COMPILE": "0",
     "DIAG_DISPATCH_LIMIT": "0",
     "MTL_DEBUG_LAYER": "1",
-    "MTL_SHADER_VALIDATION": "1",
-    "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1"
+    "MTL_SHADER_VALIDATION": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 30,
-  "_request": "60: uncapped arena, Metal API and shader validation on fresh VM"
+  "_request": "61: API validation alone; GPU validation requires unsupported PV residency sets"
 }
