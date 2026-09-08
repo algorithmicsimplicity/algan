@@ -10,6 +10,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 30,
-  "_request": "67: reproduce faulty out-offset on disposable storage; fixed uncapped UHD render"
+  "timeout_minutes": 35,
+  "_request": "68: two uncapped UHD passes with verified direct ray reorder"
 }

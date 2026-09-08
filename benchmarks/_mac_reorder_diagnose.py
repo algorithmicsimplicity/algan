@@ -40,7 +40,7 @@ def child():
     faulthandler.enable()
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     sys.path.insert(0, str(ROOT))
-    sys.argv = [str(ROOT / "benchmarks/_mps_warm_regression.py"), "1", "UHD", "1000"]
+    sys.argv = [str(ROOT / "benchmarks/_mps_warm_regression.py"), "2", "UHD", "1400"]
     ns = runpy.run_path(sys.argv[0], run_name="diagnostic_target")
     import torch
     from algan.taichi_compat import ti
@@ -200,7 +200,7 @@ def supervise(arm, cap):
                     sample_number += 1
                     snapshot(proc, arm, sample_number)
                     next_sample = time.monotonic() + 180
-                if now - last_progress > 240 or now - started > 1200:
+                if now - last_progress > 240 or now - started > 1700:
                     reason = "no_progress" if now-last_progress > 240 else "time_budget"
                     snapshot(proc, arm, sample_number + 1)
                     break
