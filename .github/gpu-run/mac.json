@@ -1,15 +1,13 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_shade_diagnose.py",
+  "command": ".venv/bin/python benchmarks/_mac_globals_probe.py",
   "arms": [
     "mac-mps"
   ],
   "env": {
-    "ALGAN_VIDEO_ENCODER": "software",
-    "ALGAN_TORCH_COMPILE": "0",
-    "DIAG_DISPATCH_LIMIT": "0"
+    "ALGAN_TORCH_COMPILE": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 20,
-  "_request": "64: capture first GPU shade inputs, state changes, and generated Metal shaders"
+  "timeout_minutes": 15,
+  "_request": "65: minimal serial-to-parallel global-temporary correctness on Metal"
 }
