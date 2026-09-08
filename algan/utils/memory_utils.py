@@ -122,7 +122,6 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
     elif device.type == "mps":
-
         from algan.rendering.mps_zero_copy import clear_import_cache
 
         clear_import_cache()
