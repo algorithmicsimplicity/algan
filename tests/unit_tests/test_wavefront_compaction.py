@@ -29,7 +29,10 @@ def test_ray_reorder_preserves_other_views_of_the_same_arena(count):
         torch.arange(count + 5, dtype=torch.int32, device=device) + 17
     )
     active = compactor.current[:count]
-    permutation = torch.arange(count - 1, -1, -1, device=device)
+    # Keep real backing storage even for the empty view: the Metal import
+    # layer cannot import a freshly allocated empty tensor's null buffer.
+    # This tests a zero-iteration gather, not null-buffer import support.
+    permutation = torch.arange(max(count, 1) - 1, -1, -1, device=device)[:count]
     expected = active.cpu()[permutation.cpu()]
     before = memory.data.cpu().clone()
     offset = compactor.spare.storage_offset() * compactor.spare.element_size()
