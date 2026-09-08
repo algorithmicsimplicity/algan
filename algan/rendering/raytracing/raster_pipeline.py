@@ -1512,6 +1512,18 @@ def _tri_obj_row(pix, ppf, time_start, rows):
     return ((pix // ppf) + time_start) % rows
 
 
+def _order_primary_shadow_events(indices, sheet_refs):
+    if (
+        rt_settings.shadow_primary_sort
+        and indices.device.type == "cuda"
+        and indices.numel() >= 8192
+    ):
+        sources = sheet_refs.index_select(0, indices).to(torch.int32)
+        order = torch.argsort(sources)
+        return indices.index_select(0, order), sources.index_select(0, order)
+    return indices, None
+
+
 def _shadow_identity_epsilons(merged):
     """The shadow acceptance floors for this batch, in world units.
 
@@ -2434,6 +2446,11 @@ def shade_sparse_raster_coverage(
             1.0,
         )
         if num_events:
+            # Sort before the existing gathers and ID scatter: each sheet still
+            # reads its own visibility, without copying gathered event payloads.
+            acc_idx, ordered_sources = _order_primary_shadow_events(
+                acc_idx, coverage["sheet_ref"][s_start:s_end]
+            )
             sheet_event_id[:num_slice_sheets].scatter_(
                 0,
                 acc_idx,
@@ -2453,7 +2470,9 @@ def shade_sparse_raster_coverage(
             identity_on = bool(rt_settings.shadow_identity_reject)
             if identity_on:
                 ev_src_prim = (
-                    coverage["sheet_ref"][s_start:s_end]
+                    ordered_sources
+                    if ordered_sources is not None
+                    else coverage["sheet_ref"][s_start:s_end]
                     .index_select(0, acc_idx)
                     .to(torch.int32)
                 )

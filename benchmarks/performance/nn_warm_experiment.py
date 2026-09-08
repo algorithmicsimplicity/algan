@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--max-reg", type=int, default=0)
     parser.add_argument("--readonly", action="store_true")
     parser.add_argument("--kernel-profiler", action="store_true")
+    parser.add_argument("--shadows", action="store_true")
     parser.add_argument("--legacy-refit-links", action="store_true")
     args = parser.parse_args()
     if args.runs < 2:
@@ -48,34 +49,51 @@ def main():
 
     taichi_runtime.taichi_init_kwargs = experiment_kwargs
     if args.legacy_refit_links:
-        from benchmarks.performance.refit_link_control_taichi import legacy_refit_link
         from algan.rendering.raytracing import raytrace_kernels_taichi
+        from benchmarks.performance.refit_link_control_taichi import legacy_refit_link
 
         raytrace_kernels_taichi._refit_link = legacy_refit_link
     original_profile = profiling.profile_scene
 
     def experiment_profile(scene, quality, tag, **kwargs):
         kwargs.update(runs=args.runs, kernel_profiler=args.kernel_profiler)
-        result = original_profile(scene, quality, tag + "_" + args.tag, **kwargs)
+
+        def build_scene():
+            scene()
+            if args.shadows:
+                from algan import SETTINGS
+
+                SETTINGS.raytracing.shadows = True
+
+        result = original_profile(build_scene, quality, tag + "_" + args.tag, **kwargs)
         cfg = program().config()
         summary = {
             "tag": args.tag,
             "seconds": [r["total"] for r in result],
             "warm_seconds": [r["total"] for r in result[1:]],
             "legacy_refit_links": args.legacy_refit_links,
+            "shadows": args.shadows,
         }
         summary_path = Path(__file__).with_name(args.tag + "_summary.json")
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print("MEASUREMENTS " + json.dumps(summary), flush=True)
-        print("LIVE_CONFIG " + json.dumps({
-            "gpu_max_reg": cfg.gpu_max_reg,
-            "readonly_ndarray_ldg": getattr(cfg, "readonly_ndarray_ldg", None),
-            "invariant_arg_loads": getattr(cfg, "invariant_arg_loads", None),
-        }), flush=True)
+        print(
+            "LIVE_CONFIG "
+            + json.dumps(
+                {
+                    "gpu_max_reg": cfg.gpu_max_reg,
+                    "readonly_ndarray_ldg": getattr(cfg, "readonly_ndarray_ldg", None),
+                    "invariant_arg_loads": getattr(cfg, "invariant_arg_loads", None),
+                }
+            ),
+            flush=True,
+        )
         return result
 
     profiling.profile_scene = experiment_profile
-    runpy.run_path(str(Path(__file__).with_name("nn_scene_UHD.py")), run_name="__main__")
+    runpy.run_path(
+        str(Path(__file__).with_name("nn_scene_UHD.py")), run_name="__main__"
+    )
 
 
 if __name__ == "__main__":

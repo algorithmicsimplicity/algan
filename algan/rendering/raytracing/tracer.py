@@ -296,6 +296,23 @@ def _gloss_pyramid_levels(width, height, max_levels):
     return levels, off
 
 
+def _deferred_shadow_sample_count(samples, light_columns):
+    # Deferred events expose only sample zero and have zero footprints.
+    # Compact RGB light rows prove every emitter is a hard point light.
+    # Extended/soft lights must keep their original masked emitter fan.
+    if rt_settings.shadow_deferred_single_sample and light_columns == 3:
+        return 1
+    return samples
+
+
+def _ray_sort_key_format(frame_count, device):
+    # Sparse slots retain indices into the full frame window, not the ray
+    # pool. Bound frame bits from that window even when coverage is tiny.
+    if rt_settings.wf_ray_sort_compact and device.type == "cuda" and frame_count <= 16:
+        return torch.int32, 2
+    return torch.int64, 0
+
+
 def _gloss_frame_bounds(covered_idx, pixels_per_frame, num_frames):
     """Where each frame's covered pixels start and end in ordinal space.
 
@@ -2725,7 +2742,10 @@ def raytrace_render_wavefront(
         (rt_settings.wf_ray_sort); see ``wavefront_ray_sort_keys``.
         """
         lo3, inv3 = _scene_sort_bounds()
-        keys = memory.get_tensor((na,), torch.int64)
+        key_dtype, origin_shift = _ray_sort_key_format(
+            int(time_end) - int(time_start), rs_ro.device
+        )
+        keys = memory.get_tensor((na,), key_dtype)
         wavefront_ray_sort_keys(
             active,
             na,
@@ -2740,6 +2760,7 @@ def raytrace_render_wavefront(
             inv3[1],
             inv3[2],
             keys,
+            origin_shift,
         )
         return compactor.reorder(active, torch.argsort(keys))
 
@@ -2824,7 +2845,9 @@ def raytrace_render_wavefront(
             acc_idx = acc_idx.index_select(
                 0, torch.argsort(ev_key.index_select(0, acc_idx))
             )
-        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
+        sec_aa = _deferred_shadow_sample_count(
+            rt_settings.effective_analytic_aa_secondary_samples(), light_col.shape[2]
+        )
         ev_dp = memory.get_tensor((num_events if sec_aa > 1 else 1, 6), f32)
         ev_dp.zero_()
         shadow_vis = memory.get_tensor((num_events, max(1, int(num_lights)), 3), f32)
