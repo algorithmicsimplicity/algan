@@ -68,6 +68,7 @@ from algan.utils.tensor_utils import (
     cast_to_tensor,
     dot_product,
     reject_non_finite,
+    reject_outside_unit_interval,
     squish,
     unsquish,
 )
@@ -110,6 +111,15 @@ class _GuardedMethod:
 
     def __set__(self, obj, value):
         raise AttributeError(self._message)
+
+
+def _validate_opacity(value, *, given=None):
+    """Validate the documented ``Mob.opacity`` unit interval at authoring time.
+
+    The same check guards :meth:`~algan.constants.color.Color.set_opacity`, so
+    both spellings of "make this half transparent" report the same way.
+    """
+    return reject_outside_unit_interval("opacity", value, given=given)
 
 
 def _coerce_if_color(attr, value):
@@ -483,7 +493,7 @@ class Mob(
         self._init_default_attr("basis", basis)
         self._init_default_attr("color", color)
         self._init_default_attr(
-            "opacity", reject_non_finite("opacity", cast_to_tensor(opacity))
+            "opacity", _validate_opacity(cast_to_tensor(opacity), given=opacity)
         )
         self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
         self.num_points_per_object = 1
@@ -1380,12 +1390,17 @@ class Mob(
         if self._prevent_recursive_sets:
             recursive = False
         value = _coerce_if_color(attr, value)
+        given = value
         value = cast_to_tensor(value)
         # The funnel every animatable write reaches -- assignment, `set`,
         # `scale` -- and the one place a NaN can still be traced back to the
         # line that wrote it. Checked here rather than in `_apply_change`,
-        # which replay re-enters once per frame batch.
-        reject_non_finite(attr, value)
+        # which replay re-enters once per frame batch. Opacity has the stronger
+        # documented [0, 1] contract, so validate that range here too.
+        if attr == "opacity":
+            _validate_opacity(value, given=given)
+        else:
+            reject_non_finite(attr, value)
 
         if self._writes_through_property_setter(attr):
             # The generic path below writes timeline rows, which for these
@@ -1477,6 +1492,12 @@ class Mob(
         AttributeError
             If ``attr`` is not an animatable attribute of this Mob, or is a
             derived or hierarchical one that cannot be mapped row-wise.
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``func`` returns a NaN or an infinity for any row, or a value
+            outside ``[0, 1]`` when ``attr`` is ``"opacity"``. Both are
+            checked on the target ``func`` computed, at this line: the target
+            is what every later frame interpolates towards, and a bad one
+            renders as a blank or missing shape rather than raising.
 
         See Also
         --------
@@ -1512,6 +1533,16 @@ class Mob(
                 f"shape it was given, {tuple(current.shape)}, but returned "
                 f"{tuple(target.shape)}."
             )
+        # This path does not go through set_animated_attribute, so it has to
+        # run that funnel's checks itself: `_apply_change` below records the
+        # target as a delta, and a NaN in it is silent from here on -- replay
+        # re-reads the row every frame batch and nothing downstream raises.
+        # `func` is user arithmetic on live values, which is exactly where a
+        # divide-by-zero or a `log(0)` gets in.
+        if attr == "opacity":
+            _validate_opacity(target)
+        else:
+            reject_non_finite(attr, target)
         # One recorded event carrying a per-row change, rather than one per
         # descendant: _apply_change re-reads the same rows at replay and adds
         # this change scaled by the interpolant, so each row travels from its

@@ -27,7 +27,12 @@ import torch
 
 from algan.errors import InvalidColorError
 from algan.settings._startup import _ANIMATION_DEVICE
-from algan.utils.tensor_utils import broadcast, cast_to_tensor, unsqueeze_left
+from algan.utils.tensor_utils import (
+    broadcast,
+    cast_to_tensor,
+    reject_outside_unit_interval,
+    unsqueeze_left,
+)
 
 CSS_COLORS: dict[str, str] = {
     "black": "#000000",
@@ -330,21 +335,69 @@ class Color(torch.Tensor):
         ----------
         opacity
             The new opacity, in ``[0, 1]``: 0 is invisible, 1 fully opaque.
+            A value outside that range raises rather than being clamped.
             A tensor is broadcast against this color, giving one opacity per
-            row -- per vertex or per texel.
+            row -- per vertex or per texel, and every element has to be in
+            range.
 
         Returns
         -------
         :class:`Color`
             A new color. The color it was called on is left unchanged, so
             the named palette constants stay safe to reuse.
+
+        Raises
+        ------
+        :class:`~algan.errors.AlganConfigurationError`
+            If ``opacity`` is non-finite, or outside ``[0, 1]``.
+
+        See Also
+        --------
+        :meth:`~.Color.mult_opacity` : Scale the existing alpha instead of
+            replacing it.
         """
+        reject_outside_unit_interval("opacity", opacity)
+        return self._set_opacity_unchecked(opacity)
+
+    def _set_opacity_unchecked(self, opacity):
+        """:meth:`set_opacity` without the range check. See `mult_opacity`."""
         out = self.prep_set(opacity)
         out.opacity = opacity
         return out
 
     def mult_opacity(self, opacity):
-        return self.set_opacity(self.opacity * opacity)
+        """Return a copy of this color with its opacity *scaled*.
+
+        Reach for this when you want "half as visible as it already is" and
+        for masking a texture, where the factor varies per texel. Use
+        :meth:`set_opacity` when you know the alpha you want.
+
+        Unlike :meth:`set_opacity` this does **not** range-check, for two
+        reasons. A multiply is a transform rather than a setting, so the same
+        reasoning that keeps ``scale(0)`` and a negative scale legal applies.
+        And this is on the per-batch render path -- ``get_render_primitives``
+        calls it with texture-sized tensors and with replayed opacity values
+        that an overshooting rate function can carry a hair outside ``[0, 1]``
+        -- where an element-wise check would both cost and reject legitimately.
+
+        Parameters
+        ----------
+        opacity
+            Factor to multiply the existing alpha by. A tensor is broadcast
+            against this color, giving one factor per row -- per vertex or per
+            texel -- which is how a mask is applied to a texture.
+
+        Returns
+        -------
+        :class:`Color`
+            A new color. The color it was called on is left unchanged, so the
+            named palette constants stay safe to reuse.
+
+        See Also
+        --------
+        :meth:`~.Color.set_opacity` : Replace the alpha outright, range-checked.
+        """
+        return self._set_opacity_unchecked(self.opacity * opacity)
 
     def set_glow(self, glow):
         out = self.prep_set(glow)
