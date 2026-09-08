@@ -173,6 +173,7 @@ jobs:
           path: algan/.portable-llvm/
           if-no-files-found: error
           compression-level: 0
+          include-hidden-files: true
 
   # ---------------------------------------------------------------------------
   # The two Linux legs are ONE RECIPE built on two runner architectures, and
