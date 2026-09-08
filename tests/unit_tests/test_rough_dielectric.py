@@ -8,6 +8,7 @@ import torch
 
 from algan.rendering.raytracing.path_tracer_taichi import (
     _pt_glass_f_pdf,
+    _pt_glass_terms,
     _pt_sample_glass,
 )
 from algan.rendering.taichi_runtime import init_taichi
@@ -170,3 +171,46 @@ def test_transmission_reciprocity_includes_the_radiance_eta_factor():
     f_forward = forward[:, 0] / directions[:, 2].abs()
     f_reverse = reverse[:, 0] / math.cos(math.radians(angle))
     assert torch.allclose(f_forward, eta**2 * f_reverse, rtol=2e-4, atol=1e-5)
+
+
+@ti.kernel
+def _glass_terms(
+    f0_scale: ti.f32,
+    eta: ti.f32,
+    cosines: ti.types.ndarray(),
+    out: ti.types.ndarray(),
+):
+    one = ti.math.vec3(1.0, 1.0, 1.0)
+    for i in range(cosines.shape[0]):
+        R, trans, _pr = _pt_glass_terms(one * f0_scale, cosines[i], eta, 0.0, one, 1.0)
+        out[i, 0] = R[0]
+        out[i, 1] = trans[0]
+
+
+@pytest.mark.parametrize("eta", [1.5, 1 / 1.5])
+def test_authored_specular_cannot_make_a_facet_return_more_than_it_receives(eta):
+    """Reflection is the Schlick-remapped *authored* F0 while transmission is
+    the exact ``1 - F``, so an authored specular above the interface's own base
+    reflectance pairs a boosted reflection with an unreduced transmission.
+
+    ``MeshPhysicalMaterial`` writes that F0 from ``specular_intensity`` and
+    ``specular_color``, neither of which is clamped to the KHR [0, 1] range.
+    Glass is deliberately excluded from the opaque lobe's Turquin
+    compensation, so nothing downstream bounds the total: a ray reflecting
+    repeatedly inside a nested solid would gain energy at every crossing.
+    """
+    init_taichi()
+    base = ((eta - 1) / (eta + 1)) ** 2
+    cosines = torch.linspace(0.02, 1.0, 25)
+    boosted = torch.zeros((cosines.numel(), 2))
+    _glass_terms(0.5, eta, cosines, boosted)
+    assert base < 0.5, "the probe must actually author above the physical base"
+    assert float((boosted[:, 0] + boosted[:, 1]).max()) <= 1.0 + 1e-5
+
+    # The default authoring is exactly energy-preserving, and stays so: at
+    # ``specular_intensity = 1`` with a white specular colour the reflection is
+    # exact Fresnel and the clamp must not bite.
+    default = torch.zeros((cosines.numel(), 2))
+    _glass_terms(base, eta, cosines, default)
+    total = default[:, 0] + default[:, 1]
+    assert torch.allclose(total, torch.ones_like(total), atol=1e-5)

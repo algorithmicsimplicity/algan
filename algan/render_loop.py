@@ -1430,12 +1430,20 @@ class RenderLoopMixin:
             render_lights = render_state.get("light_objects")
             if render_lights is None:
                 render_lights = self.light_sources
-            for light, (origin, light_color, aux) in zip(
-                render_lights, render_state["lights"]
+            light_active = render_state.get("light_active", [None] * len(render_lights))
+            for light, (origin, light_color, aux), visible in zip(
+                render_lights, render_state["lights"], light_active
             ):
                 light.origin = origin
                 light.light_color = light_color
                 light._render_aux = aux
+                # The per-frame lifespan mask travels with the other snapshot
+                # tensors: build_area_light_quads reads it off whichever object
+                # reaches it, and the tracer's own _merge_scene fallback is
+                # handed these live lights rather than the prepared shims. A
+                # missing attribute there would silently mean "always active"
+                # and would render a despawned panel as opaque black geometry.
+                light._render_active = visible
 
             self.memory.scene = self
             original_pointers = self.memory.get_pointers()
@@ -2091,6 +2099,10 @@ class RenderLoopMixin:
         empty-scene warning can fire before rendering starts rather than
         after it finishes.
         """
+        # Local: algan.rendering.lights reaches Mob, which cannot be imported
+        # while this module is still initializing.
+        from algan.rendering.lights import LIGHT_AREA_SAMPLE
+
         start_time = start_time_ind / self.frames_per_second
         end_time = end_time_ind / self.frames_per_second
         actors = list(self.actors)
@@ -2101,7 +2113,7 @@ class RenderLoopMixin:
             actors.extend(
                 light
                 for light in self.light_sources
-                if getattr(light, "light_type", -1) == 5
+                if getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
             )
         return any(
             (actor.lifespan.start() >= 0)
@@ -2109,7 +2121,7 @@ class RenderLoopMixin:
             and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
             and (
                 hasattr(actor, "get_render_primitives")
-                or getattr(actor, "light_type", -1) == 5
+                or getattr(actor, "light_type", -1) == LIGHT_AREA_SAMPLE
             )
             for actor in actors
         )
@@ -2219,6 +2231,8 @@ class RenderLoopMixin:
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
         """Build the largest renderable primitive batch within the memory budget."""
+        from algan.rendering.lights import LIGHT_AREA_SAMPLE
+
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         # Spawn/despawn timestamps are read several times each below (twice per
@@ -2485,7 +2499,7 @@ class RenderLoopMixin:
             and SETTINGS.raytracing.samples_per_pixel > 1
             and SETTINGS.raytracing.pt_area_light_quads
             and any(
-                getattr(light, "light_type", -1) == 5
+                getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
                 for light in render_state["light_objects"]
             )
         ):
@@ -2863,6 +2877,8 @@ class RenderLoopMixin:
         output does not depend on where batch boundaries happen to fall
         relative to a light's spawn.
         """
+        from algan.rendering.lights import LIGHT_AREA_SAMPLE
+
         camera = self.camera
         # Batch preparation is CPU/source-device work.  Keeping this snapshot
         # beside the materialized animation tensors prevents the prefetch worker
@@ -2897,7 +2913,7 @@ class RenderLoopMixin:
             if (
                 SETTINGS.raytracing.samples_per_pixel > 1
                 and SETTINGS.raytracing.pt_area_light_quads
-                and getattr(light, "light_type", -1) == 5
+                and getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
             ):
                 if frame_times is None:
                     frame_times = torch.arange(start_ind, end_ind, device=device) / fps

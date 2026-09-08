@@ -349,8 +349,11 @@ def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
     uncertain = torch.zeros((1, n_new), dtype=torch.bool, device=device)
     new["tri_alpha_uncertain"] = _collapse_time(_cat("tri_alpha_uncertain", uncertain))
     new["num_triangles"] = (n_old if base_pos is not None else 0) + n_new
-    new["tri_has_visible"] = True
-    new["has_any_visible"] = True
+    # ``tri_has_visible`` / ``has_any_visible`` are deliberately NOT set here:
+    # _merge_scene re-runs _record_visibility over the widened bounds and
+    # recomputes both from the per-prefix flags as soon as this returns, so a
+    # write here would be dead and would read as authoritative to the next
+    # person changing the visibility rule.
 
     new["pt_quad_base"] = n_old if base_pos is not None else 0
     new["pt_quad_falloff"] = torch.tensor(fall_parts, dtype=f32, device=device)

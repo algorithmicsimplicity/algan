@@ -1145,6 +1145,15 @@ def _pt_glass_terms(f0, cos_i, eta, metalness, albedo, T):
     R = ti.math.clamp(conductor + diel_f0
                       + ((1.0 - m) - diel_f0) * tail, 0.0, 1.0)
     trans = albedo * ((1.0 - m) * T * (1.0 - F))
+    # ``R`` is the Schlick-remapped authored reflectance while ``trans`` uses
+    # exact ``1 - F``, so an authored specular above the interface's own base
+    # (``specular_intensity`` > 1, or a specular_color over white) makes
+    # R + trans exceed one. Glass deliberately gets no Turquin compensation,
+    # so nothing downstream bounds that: a ray reflecting repeatedly inside a
+    # nested solid would gain energy at every crossing. Exact at the defaults,
+    # where R == F and trans <= 1 - F already holds.
+    trans = ti.min(trans, ti.math.clamp(ti.math.vec3(1.0, 1.0, 1.0) - R,
+                                        0.0, 1.0))
     wr = ti.max(R[0], ti.max(R[1], R[2]))
     wt = ti.max(trans[0], ti.max(trans[1], trans[2]))
     pr = wr / ti.max(wr + wt, 1e-12)
@@ -1305,8 +1314,14 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
                 * (ratio * ratio * params[tm, prim, 13])
         f0 = diel_f0 * (1.0 - met) + albedo3 * met
         e_spec = _pt_ggx_energy(f0, n_dot_v, rough)
-        _R3, diel_pass = _material_reflectance(
-            rd, shade_n, ti.max(metalness, 0.0), ior, albedo3, T)
+        diel_pass = 0.0
+        if eta <= 0.0:
+            # Only this arm consumes it: the eta > 0 arm below overwrites
+            # ``diel_pass`` outright, and ``_material_reflectance`` is the
+            # exact-Fresnel routine with its own Snell/TIR branch -- the most
+            # expensive call in this innermost per-crossing loop.
+            _R3, diel_pass = _material_reflectance(
+                rd, shade_n, ti.max(metalness, 0.0), ior, albedo3, T)
         if eta > 0.0:
             # The same enclosing medium that bends the ray supplies the
             # Fresnel interface. Importance weights may be approximate, but
@@ -1341,13 +1356,24 @@ def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
     pdf = 0.0
     w_sum = w_pass + w_diff + w_spec + w_trans
     cos_i = shade_n.dot(wi)
-    if (cos_i > 1e-6) and (w_sum > 1e-6):
-        f_cos = e_diff * (_INV_PI * cos_i)
-        pdf = (w_diff / w_sum) * (_INV_PI * cos_i)
     spec_n = shade_n
     if spec_n.dot(rd) > 0.0:
         spec_n = -spec_n
     cos_s = spec_n.dot(wi)
+    # The diffuse lobe REFLECTS, so it needs ``wi`` above the horizon of the
+    # declared side (``cos_i``) AND on the same side as the outgoing direction
+    # (``cos_s``). The two differ only on a one-sided surface hit from behind,
+    # where ``shade_n`` keeps its outward normal -- the shapes_3d solids
+    # default to ``two_sided = False``, so that is the ordinary case, not a
+    # corner. Testing ``cos_i`` alone reported a diffuse response for light
+    # entering the front and leaving the back of an opaque surface; the NEE
+    # shadow gate refuses exactly those directions, so the two ends of the MIS
+    # pair disagreed and their power-heuristic weights stopped summing to one.
+    # Transmitting interfaces are unaffected: the caller sets
+    # ``shade_n = spec_n`` for glass, making the second test an identity.
+    if (cos_i > 1e-6) and (cos_s > 1e-6) and (w_sum > 1e-6):
+        f_cos = e_diff * (_INV_PI * cos_i)
+        pdf = (w_diff / w_sum) * (_INV_PI * cos_i)
     glass = (eta > 0.0) and (ti.abs(eta - 1.0) >= 1e-4)
     if glass and (w_sum > 1e-6):
         fg, pg = _pt_glass_f_pdf(f0, rough, spec_n, rd, wi,
