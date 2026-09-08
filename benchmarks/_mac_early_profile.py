@@ -415,11 +415,17 @@ def child(args):
                 input_tensor = memory.get_tensor(frames.shape, frames.dtype)
                 input_tensor.copy_(frames)
                 before = dict(zc.STATS)
-                result = bloom_module.bloom_filter(input_tensor, memory=memory).cpu()
+                # The production factor is scaled by input height. Explicit
+                # 64 makes this 127-row fixture use a factor of 3 rather than
+                # the identity resize that the default factor would select.
+                result = bloom_module.bloom_filter(input_tensor, memory=memory, scale_factor=64).cpu()
                 answers.append(result)
+                launches = zc.STATS["converted_launches"]-before["converted_launches"]
+                staged = zc.STATS["staged_arguments"]-before["staged_arguments"]
                 emit("bloom_parity_arm", channels=channels, candidate=candidate,
-                     launches=zc.STATS["converted_launches"]-before["converted_launches"],
-                     staged=zc.STATS["staged_arguments"]-before["staged_arguments"])
+                     launches=launches, staged=staged, effective_resize_factor=3)
+                if candidate and args.child == "mps" and (launches != 2 or staged):
+                    raise AssertionError("Parity fixture must launch both Metal resize kernels without staging")
             indices = [0, 1, 2, 4] if channels == 5 else [0, 1, 2]
             first, second = [x[..., indices] for x in answers]
             difference = (first - second).abs()

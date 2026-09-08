@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_early_profile.py --devices mps --bloom-ab --native-graphs --runs 6 --timeout 1700",
+  "command": ".venv/bin/python benchmarks/_mac_early_profile.py --devices mps --bloom-ab --runs 0 --timeout 150",
   "arms": [
     "mac-mps"
   ],
@@ -9,6 +9,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 33,
-  "_request": "75: native graph checkpoint plus alternating MPS bloom fallback/Metal kernels; unprofiled warm kernel/fallback/kernel controls; UHD and direct parity"
+  "timeout_minutes": 8,
+  "_request": "76: nontrivial bloom-resize parity, factor 3 on non-divisible four/five-channel fixture, assert both zero-copy Metal kernels launch"
 }
