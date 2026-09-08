@@ -110,6 +110,13 @@ dependencies = [
     # Pango in front of every Linux install -- so Linux gets it through the
     # `pango` extra instead, deliberately, and falls back to LaTeX until then.
     "manimpango>=0.5.0; sys_platform != 'linux'",
+    # Host-RAM accounting for the render loop. `algan.utils.memory_utils`
+    # imports it at module scope and `algan/__init__.py` imports that, so
+    # `import algan` fails outright without it -- it is a runtime dependency,
+    # not tooling. It used to be declared only under `dev`, which every CI job
+    # but the clean-wheel install happened to have, so the gap only ever
+    # surfaced in the packaging job's `import algan`.
+    "psutil>=6.1.1",
 ]
 
 [project.scripts]
@@ -191,7 +198,6 @@ dev = [
     "types-decorator>=5.1.8.20250121",
     "types-pillow>=10.2.0.20240822",
     "types-pygments>=2.19.0.20250107",
-    "psutil>=6.1.1",
     "requests>=2.32.3",
     # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
     # no extras still has to be able to run the A/B control arm
