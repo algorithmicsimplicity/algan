@@ -1166,7 +1166,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | A | `index_reduce_` is unimplemented on MPS | 10 | 0 | **fixed** — §2.3d |
 | B | the glossy tile loop walks off its frame table | 13 | 0 | **fixed**: 11 by §4.4, the last 2 by §2.3f |
 | C | an unlit/emissive slab renders black | 2 | 0 | **fixed** — §2.3f |
-| D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; §4.2 |
+| D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; the other is Metal's — §4.5 |
 | E | the path-traced and deterministic composites disagree by 107 | 1 | 0 | **fixed** — §2.3f |
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
@@ -1184,9 +1184,10 @@ not by reading code, and neither was predictable from the failure it was chased
 from.
 
 **What is left is two tests and they are unrelated to each other**: one glossy
-prefilter render whose reflection is still empty (§4.2, no longer explained by
-anything above), and the `ti.real_func` compile failure (§4.3), which is a
-compiler defect a layer below Algan and blocks a test rather than a render.
+prefilter render whose reflection is absent (§4.5 — localized to Metal by the
+Linux control arm, which is green), and the `ti.real_func` compile failure
+(§4.3), which is a compiler defect a layer below Algan and blocks a test rather
+than a render.
 
 **Observed on the arm and NOT a failure**, recorded so the next reader does not
 chase it: the first render of a process warns that `torch.compile` refused
@@ -1198,7 +1199,7 @@ the Inductor MPS backend has no entry for. It costs one fused pass and one
 warning per process, it is self-limiting, and one refused graph is not enough
 evidence to declare `torch.compile` unsupported on the device.
 
-### 4.2 B: the glossy tile loop, the one worth doing next
+### 4.2 B: the glossy tile loop — **fixed**, and the guard it still wants
 
 Thirteen tests, one line: `tracer.py`'s
 
@@ -1319,3 +1320,56 @@ comes out of, so a process that had already rendered measured its own cache as
 occupied — and a pytest session is one such process, hundreds of renders deep
 by the time this module's fixture runs. The branch now empties the cache like
 its CUDA twin, and the 1 GB cap beside it says what it is for.
+
+### 4.5 D: the prefiltered reflection is absent, and it is Metal's
+
+One of the two tests left. `test_prefiltered_reflection_is_substantially_wider`
+renders the audit tree's calibration scene twice and asserts that turning the
+glossy route on widens the reflected glow: measured 61.6 px rms against the
+throttled arm's 7.7, a 8.0x ratio, asserted at 3.0x.
+
+**On MPS the assertion reads `nan > 3.0 * 74.9`,** and the `nan` is the finding.
+`_reflection_spread` subtracts the window's own 10th percentile and divides by
+the remainder's sum; a `nan` there means that sum is **zero**. So this is not a
+reflection that came out too narrow, or too dim, or displaced — in the window
+where the emitter's mirror image lands there is no signal above the wall's own
+level at all. Categorical, not a tolerance.
+
+**It is the device, and that is measured on three arms rather than argued:**
+
+| arm | result |
+| --- | --- |
+| macOS CPU (run 34102515789, the same runner and torch build) | passes |
+| Linux, `auto` -> CPU, both Python legs | passes |
+| Linux CPU with `ALGAN_MPS_FRIENDLY=1` — **the control arm** | **passes** (99.7 s off the mode, 84.6 s on it) |
+| macOS MPS | fails |
+
+The third row is the one worth having, and it is §1.2c's discriminator applied
+here: forcing the mode on over a CPU render device exercises every substitution
+this port makes — the float32 accumulators, the int32 reductions, the log-step
+scan that replaces `cummax`, and now `gather_exact` — with no Apple GPU in the
+picture. It is green. So the remainder is Metal or torch's MPS backend, not
+MPS-friendly mode, and not the renderer's own arithmetic.
+
+Two more things that narrow it. The test's sibling
+`test_a_creases_siblings_share_the_pixels_prefiltered_claim` had the same shape
+of failure and **passes** since §2.3f, so the fragment stream feeding the route
+is now correct and this is downstream of it. And the audit scene is committed
+(`benchmarks/renderer_audit/scenes/calib_glossy.json`), so the green arms are
+real renders rather than the skip `_needs_audit_tree` would produce on a tree
+without it — worth stating, because a skip misread as a pass would make the
+whole table above meaningless.
+
+**Not established:** whether this route is correct on CUDA. Every arm above
+resolves to a CPU render device, so they say "not the CPU path" and nothing
+more. Nothing in any run read so far exercises the glossy prefilter on a CUDA
+device.
+
+Where to look next, in order: `_gloss_finish_frame`'s pyramid build
+(`gloss_pyramid_level` bottom-up, then `gloss_composite`'s trilinear fetch) —
+those are the three kernels the route adds over the plain one, they run per
+frame after the tile composite, and a pyramid that comes back empty on Metal
+would produce exactly a flat window. `gl_main`'s blur-radius column is
+initialised **negative** on purpose (`_gloss_clear`), and it is what marks a
+pixel as having a prefiltered branch at all, so a scatter that fails to write
+it leaves every pixel unmarked and the composite with nothing to fetch.

@@ -60,23 +60,21 @@ def _add(reason: str, *nodeids: str) -> None:
         KNOWN_FAILURES[nodeid] = reason
 
 
-# -- D: one glossy render whose reflection is still empty -------------------
+# -- D: the prefiltered reflection is absent, and it is Metal's -------------
 #
-# `nan > 3 * 74.9`: the test divides by a signal that is not there, so the
-# prefiltered reflection has no width to measure.
+# `nan > 3 * 74.9`, and the nan is the finding: `_reflection_spread` divides by
+# the signal's sum, so a nan means the sum is zero -- no reflected glow above
+# the wall's own level anywhere in the window the mirror image lands in. Not a
+# reflection that came out narrow or dim. Absent.
 #
-# It is what is left of a much larger group, and the way the rest went is the
-# reason to be careful with this one. Causes B (thirteen renders raising
-# IndexError in the glossy tile loop), C (a slab rendering black) and H (one
-# stray fragment in the bottom row) are all gone, and so is this test's own
-# sibling `test_a_creases_siblings_share_the_pixels_prefiltered_claim`: eleven
-# of B went with the arena fix (§4.4) and the remaining eight with §2.3f's
-# acceptance-mask gather, which was corrupting the fragment stream itself.
-# With that stream now matching the CPU's exactly -- same fragment count, same
-# pixel range, same depth range -- this test is no longer explained by any of
-# them, and it has not been separately diagnosed since.
+# Localized to the device rather than to this port's own substitutions, which
+# is as far as it has been taken: the same test passes on the macOS CPU arm of
+# the same runner, on both Linux legs, and -- the discriminator that matters --
+# on Linux with `ALGAN_MPS_FRIENDLY=1`, which exercises every substitution
+# `mps_compat` makes with no Apple GPU in the picture. §4.5 has the table and
+# where to look next.
 _add(
-    "MPS: the prefiltered reflection is empty -- DESIGN_mps_support.md §4.1 (cause D)",
+    "MPS: the prefiltered reflection is absent -- DESIGN_mps_support.md §4.5",
     "tests/unit_tests/test_glossy_prefilter.py::test_prefiltered_reflection_is_substantially_wider",
 )
 
