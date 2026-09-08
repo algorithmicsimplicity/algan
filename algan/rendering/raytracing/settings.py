@@ -3851,4 +3851,6 @@ sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
 # The int32 lane owners are dead after gathering float32 depths. Reinterpret
 # their storage in place to avoid a second [sheet, sample] allocation. This is
 # a host-side switch, so alternating warm A/B renders need no runtime reset.
-sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", True)
+# The Mac A/B removes allocator work in the helper, but has not established an
+# end-to-end speedup. Keep the candidate opt-in until that is demonstrated.
+sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)

@@ -8,13 +8,16 @@ the measured A/B/B/A/A/B renders. Coarse timers add no synchronization.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import os
 import platform
 import random
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -22,12 +25,73 @@ from pathlib import Path
 ROOT = Path("algan_outputs/depth_buffer_ab")
 
 
+def run_logged(command, log_path, timeout):
+    """Preserve child output on disk and show it while the child is running."""
+    finished = threading.Event()
+
+    def forward():
+        with log_path.open() as reader:
+            while True:
+                text = reader.read()
+                if text:
+                    print(text, end="", flush=True)
+                elif finished.is_set():
+                    break
+                else:
+                    finished.wait(0.1)
+
+    with log_path.open("w") as stream:
+        process = subprocess.Popen(
+            command,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=os.name == "posix",
+        )
+        forwarding = threading.Thread(target=forward, daemon=True)
+        forwarding.start()
+        try:
+            try:
+                return process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                print(
+                    f"DEPTH_BUFFER_AB timeout: {log_path}, pid={process.pid}",
+                    flush=True,
+                )
+                # Only sample a timed-out process: profiling must not perturb
+                # the measured renders. Keep diagnostics bounded as well.
+                if sys.platform == "darwin":
+                    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                        subprocess.run(
+                            [
+                                "sample",
+                                str(process.pid),
+                                "3",
+                                "-file",
+                                str(log_path.with_suffix(".sample.txt")),
+                            ],
+                            stdout=stream,
+                            stderr=subprocess.STDOUT,
+                            timeout=8,
+                        )
+                if os.name == "posix":
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.wait(timeout=15)
+                return 124
+        finally:
+            stream.flush()
+            finished.set()
+            forwarding.join(timeout=5)
+
+
 def matched(args):
     ROOT.mkdir(parents=True, exist_ok=True)
     outcomes = []
     for tag, device, sequence in (
         ("cpu_before", "cpu", "BB"),
-        ("mps", "mps", "ABABBAAB"),
+        ("mps", "mps", args.sequence),
         ("cpu_after", "cpu", "BB"),
     ):
         command = [
@@ -45,16 +109,12 @@ def matched(args):
             "--arena-mib",
             str(args.arena_mib),
         ]
+        print(f"DEPTH_BUFFER_AB block_start: {tag} ({sequence})", flush=True)
         started = time.perf_counter()
-        with (ROOT / f"{tag}.log").open("w") as stream:
-            process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
-            try:
-                code = process.wait(timeout=1600 if device == "mps" else 500)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=15)
-                code = 124
-        print((ROOT / f"{tag}.log").read_text(), flush=True)
+        code = run_logged(
+            command, ROOT / f"{tag}.log", timeout=1600 if device == "mps" else 500
+        )
+        print(f"DEPTH_BUFFER_AB block_end: {tag}, exit_code={code}", flush=True)
         outcomes.append(
             {"tag": tag, "exit_code": code, "wall": time.perf_counter() - started}
         )
@@ -118,7 +178,13 @@ def render(args):
 
     def emit(event, **values):
         line = json.dumps(
-            {"event": event, "device": args.device, "run": state["run"], **values},
+            {
+                "event": event,
+                "device": args.device,
+                "run": state["run"],
+                "timestamp": time.time(),
+                **values,
+            },
             sort_keys=True,
         )
         with (output / "events.jsonl").open("a") as stream:
@@ -200,7 +266,11 @@ def render(args):
     @functools.wraps(original_wavefront)
     def wavefront(*a, **kw):
         state["chunks"] += 1
-        return original_wavefront(*a, **kw)
+        emit("chunk_start", chunk=state["chunks"])
+        started = time.perf_counter()
+        result = original_wavefront(*a, **kw)
+        emit("chunk_end", chunk=state["chunks"], wall=time.perf_counter() - started)
+        return result
 
     replace_aliases(original_wavefront, wavefront)
     hook(tracer, "raytrace_render_wavefront")
@@ -272,6 +342,12 @@ def render(args):
             converted_launches=dict(zc.STATS),
             output_path=str(result.output_path),
         )
+    emit("renders_complete")
+    # If interpreter/compiler teardown hangs after the final render, retain a
+    # Python stack as well as the parent's native timeout sample.
+    import faulthandler
+
+    faulthandler.dump_traceback_later(30, repeat=True)
     return 0
 
 
