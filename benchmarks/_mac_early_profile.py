@@ -34,6 +34,7 @@ def arguments():
     parser.add_argument("--timeout", type=int, default=850)
     parser.add_argument("--runs", type=int, default=4)
     parser.add_argument("--native-sample", action="store_true")
+    parser.add_argument("--native-graphs", action="store_true")
     return parser.parse_args()
 
 
@@ -126,6 +127,7 @@ def child(args):
     mode = None
     sample_process = None
     state = {"run": 0, "chunks": 0, "batches": 0, "arenas": [], "started": 0.0}
+    native = None
 
     def emit(kind, **values):
         record = {"event": kind, "device": args.child, "run": state["run"], **values}
@@ -142,6 +144,21 @@ def child(args):
                           live=torch.mps.current_allocated_memory(),
                           recommended=torch.mps.recommended_max_memory())
         return result
+
+    if args.native_graphs and args.child == "mps":
+        import ctypes
+        library = output / "graph_timers.dylib"
+        source = Path(__file__).with_name("_mac_graph_timers.mm")
+        subprocess.run(["clang++", "-std=c++17", "-O2", "-dynamiclib", "-framework", "Foundation",
+                        str(source), "-o", str(library)], check=True, timeout=60)
+        native = ctypes.CDLL(str(library.resolve()))
+        native.algan_graph_install.restype = ctypes.c_int
+        native.algan_graph_phase.argtypes = [ctypes.c_int]
+        native.algan_graph_stats.restype = ctypes.c_char_p
+        installed = native.algan_graph_install()
+        emit("native_graph_hooks", installed=installed)
+        if installed != 7:
+            raise RuntimeError(f"Native graph method ABI check failed: {installed}")
 
     def replace_aliases(original, replacement):
         for module_name, module in list(sys.modules.items()):
@@ -255,6 +272,8 @@ def child(args):
             mode.__exit__(None, None, None)
             mode = None
             timer.enabled = False
+        if native is not None:
+            native.algan_graph_phase(2 * chunk - 1 if timer.enabled and chunk <= 2 else -1)
         timer.phase = f"chunk{chunk}"
         emit("chunk_start", chunk=chunk, elapsed=elapsed, pool=pool())
         started = time.perf_counter()
@@ -265,6 +284,8 @@ def child(args):
                  wall=time.perf_counter() - started,
                  converted_launches=dict(zc.STATS))
             timer.phase = f"after_chunk{chunk}"
+            if native is not None:
+                native.algan_graph_phase(2 * chunk if timer.enabled and chunk <= 2 else -1)
 
     tracer.raytrace_render_wavefront = wavefront
     replace_aliases(original_wavefront, wavefront)
@@ -305,6 +326,8 @@ def child(args):
         timer.phase = "prelude"
         if detailed:
             timer.enabled = True
+            if native is not None:
+                native.algan_graph_phase(0)
             mode = OperatorTimes()
             mode.__enter__()
         try:
@@ -315,11 +338,17 @@ def child(args):
                 mode.__exit__(None, None, None)
                 mode = None
             timer.enabled = False
+            if native is not None:
+                native.algan_graph_phase(-1)
         elapsed = time.perf_counter() - state["started"]
         emit("render_end", detailed=detailed, wall=elapsed, chunks=state["chunks"],
              batches=state["batches"], arenas=state["arenas"], pool=pool())
         if detailed:
             (output / "timings.json").write_text(json.dumps(timer.data(), indent=2))
+            if native is not None:
+                stats = json.loads(native.algan_graph_stats())
+                (output / "native_graphs.json").write_text(json.dumps(stats, indent=2))
+                emit("native_graph_stats", rows=stats)
     if sample_process is not None:
         sample_process.wait(timeout=35)
     return 0
@@ -337,6 +366,8 @@ def main():
                    "--runs", str(args.runs)]
         if args.native_sample:
             command.append("--native-sample")
+        if args.native_graphs:
+            command.append("--native-graphs")
         with (output / f"{device}.txt").open("w") as stream:
             process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
             try:

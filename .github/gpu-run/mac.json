@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_early_profile.py",
+  "command": ".venv/bin/python benchmarks/_mac_early_profile.py --devices mps --native-graphs",
   "arms": [
     "mac-mps"
   ],
@@ -9,6 +9,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 35,
-  "_request": "73: fixed reorder, matched 1720 MiB CPU and MPS, early warm profiling bracketed by warm controls, no added queue barriers"
+  "timeout_minutes": 22,
+  "_request": "74: direct native MPSGraph compile and encode host timers, bracketed warm controls, fixed renderer and exact 1720 MiB arena"
 }
