@@ -1096,24 +1096,30 @@ section to update when one changes.
 | run | result |
 | --- | --- |
 | [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
+| [34203241437](https://github.com/algorithmicsimplicity/algan/actions/runs/34203241437) (2026-09-08, the same scope on the Mac harness) | **9 failing**, 3544 passed, 217 skipped, 9 xfailed in 3149 s |
 
-That is the baseline every entry below is measured against. The three
-green arms of the same run (Linux 3.10, Linux 3.13, macOS CPU) say the
-failures are the Apple GPU and not the change that added the arm.
+The first row is the baseline every entry below is measured against, and the
+three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
+the failures are the Apple GPU rather than the change that added the arm. The
+second row is the same scope after the fixes in this document: the twelve
+"failures" it reports are eleven **strict XPASSes** — this list's own entries,
+now passing, which is exactly what strict is for — plus one unrelated
+fast-suite curation guard. Nine tests actually fail, and they are
+`tests/mps_known_failures.py`'s remaining entries.
 
-**32 failures, six causes.** Counting causes rather than tests is what makes
-the list tractable: two of them are more than two thirds of the arm.
+**Counting causes rather than tests** is what makes the remainder tractable:
+32 failures were six causes, and 23 of the 32 were two of them.
 
-| # | cause | tests | state |
-| --- | --- | --- | --- |
-| A | `index_reduce_` is unimplemented on MPS | 10 | **fixed** — §2.3d |
-| B | the glossy tile loop walks off its frame table | 13 | open — §4.2 |
-| C | an unlit/emissive slab renders black | 2 | open |
-| D | the glossy prefilter loses its reflection | 2 | open |
-| E | the path-traced and deterministic composites disagree by 107 | 1 | open |
-| F | a `ti.real_func` early return will not compile | 1 | open — §4.3 |
-| G | the source-key index is poisoned on every kernel | 1 | **fixed** — §2.3e |
-| — | `test_arena_binding_live` cannot size an arena | 3 errors | **fixed** — §4.4 |
+| # | cause | tests then | now | state |
+| --- | --- | --- | --- | --- |
+| A | `index_reduce_` is unimplemented on MPS | 10 | 0 | **fixed** — §2.3d |
+| B | the glossy tile loop walks off its frame table | 13 | 2 | 11 fixed as a side effect of §4.4; §4.2 |
+| C | an unlit/emissive slab renders black | 2 | 2 | open |
+| D | the glossy prefilter loses its reflection | 2 | 2 | open |
+| E | the path-traced and deterministic composites disagree by 107 | 1 | 1 | open |
+| F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
+| G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
+| — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
 **Observed on the arm and NOT a failure**, recorded so the next reader does not
 chase it: the first render of a process warns that `torch.compile` refused
@@ -1154,6 +1160,53 @@ fails with the cube's lit rows at 5..15 **plus a single stray pixel in row 35**,
 the bottom row of a 36-row frame — one fragment composited at a pixel nothing
 should have written. A corrupted covered ordinal explains both that and this,
 and if it does then C and D are candidates for the same cause.
+
+**The eleven that fixed themselves are the reading to be careful with.**
+Emptying the MPS cache before sizing the arena (§4.4) gave the render its full
+budget, the tile sizing that follows changed, and eleven of these thirteen
+stopped tripping the loop. Nothing about the loop was fixed: `gl_frame` can
+still walk off the end at whatever window the arithmetic picks, so this is a
+latent `IndexError` rather than a closed one, and it deserves a guard whichever
+way the covered-ordinal question goes. The two entries left in the list are not
+re-measured since that fix; establishing whether they are still this defect is
+the first step.
+
+**The fragment stream, measured on the same runner, is where the corruption
+is.** `_mps_render_smoke` prints the compaction's input; the LD smoke scene
+gives, on the Apple GPU against the same code on this project's CPU box:
+
+| | CPU | MPS |
+| --- | --- | --- |
+| fragments | 47610 | 47194 |
+| `pix` range x distinct | `[147239..272664]` x 23352 | **`[0..272664]`** x 22811 |
+| `depth` range | `[18.3139..20.6677]` | **`[0.0000..20.6742]`** |
+| fragment 0's low word (`lo0`) | `41a09196` | **`00000000`** |
+| `frag_cov` min | 0.001002 | **0.000000** |
+
+A key of exactly zero is a fragment slot **nothing wrote** — pixel 0, depth 0,
+coverage 0 — and it sorts to the front, which is why `pix` starts at 0 and why
+the 32x32 probe scene finds pixel 0 covered. So the defect is upstream of the
+compaction: fragments are missing from the stream and their slots are being
+read as real.
+
+**And one op is measured wrong in the render itself.** The same run's
+attribution pass (`--verify-torch-ops`) reports
+
+```
+FAIL  Tensor.index_select: 2/144 calls differ
+      63/726 differ, first at 4: cpu -2147221505 vs mps -2147221504 (int32)
+```
+
+with every other op it checks — `unique_consecutive`, `argsort`, `cumsum`,
+`searchsorted`, `unique`, `nonzero`, `scatter_add_`, `amin`/`amax` — agreeing.
+That is §2.3b's ceiling, at int32, on a value with the sign bit set: `0x8003FFFF`
+rounding to `0x80040000` is a **link word** shape (`refit_bvh`'s
+`LINK_LEAF_BIT` plus a primitive index), and a link word off by one sends a
+traversal to the wrong primitive. Two of 144 calls, so it is one or two call
+sites rather than a general problem, and `mps_compat.gather_packed_key`'s
+`v[i]` is the known-exact spelling for them. Finding *which* is what the
+attribution pass now prints a caller for — the previous round said only that
+some `index_select` was wrong, which is not actionable across 144 of them.
 
 ### 4.3 F: `ti.real_func` with an early return, on a SPIR-V backend
 

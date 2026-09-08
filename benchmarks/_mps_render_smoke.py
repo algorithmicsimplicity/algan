@@ -318,13 +318,37 @@ def _same(a, b):
     )
 
 
+def _algan_caller():
+    """Where in Algan the offending call came from, as ``file:line in func``.
+
+    "``index_select`` is wrong somewhere" is not actionable when the render
+    makes 144 of them; "``refit_bvh.py:412 in _pack_blocks``" is. Walks out
+    past this file's own frames and past torch's, and stops at the first frame
+    inside the ``algan`` package -- the wrapper sits on ``torch.Tensor``, so
+    the immediate caller is the call site by construction.
+
+    Only ever called on a disagreement, so the stack walk costs nothing on the
+    hundreds of calls that agree.
+    """
+    import traceback
+
+    here = Path(__file__).resolve()
+    for frame in reversed(traceback.extract_stack()):
+        path = Path(frame.filename)
+        if path.resolve() == here:
+            continue
+        if "algan" in path.parts or path.name.startswith("test_"):
+            return f"{path.name}:{frame.lineno} in {frame.name}"
+    return "unknown caller"
+
+
 def _record(name, detail):
     entry = _OP_STATS.setdefault(name, [0, 0, ""])
     entry[0] += 1
     if detail is not None:
         entry[1] += 1
         if not entry[2]:
-            entry[2] = detail
+            entry[2] = f"{_algan_caller()}: {detail}"
 
 
 def _verified(name, function, inplace_self=False):

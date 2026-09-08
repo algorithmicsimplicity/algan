@@ -3,10 +3,12 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). Eleven of those failures and all three errors are
-fixed; the entries below are what is left, and this file is the record of them.
-``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it — six
-causes, not twenty tests, which is what makes the remainder tractable.
+3311 passes (run 34102515789). **Nine failures are left** (run 34203241437:
+12 failed, 3544 passed, 217 skipped, 9 xfailed — of those 12, eleven were this
+list's own strict XPASSes and are gone from it, and the twelfth was an unrelated
+curation guard). The entries below are what remains, and this file is the record
+of them. ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind
+it — five causes, not nine tests, which is what makes the remainder tractable.
 
 Why a list here rather than a skip in each test file
 ----------------------------------------------------
@@ -49,29 +51,28 @@ def _add(reason: str, *nodeids: str) -> None:
         KNOWN_FAILURES[nodeid] = reason
 
 
-# -- B: the glossy tile loop walks off its frame table (DESIGN §4.2) --------
+# -- B: two renders that still disagree, cause no longer established -------
 #
-# `tracer.py`'s `frame_end = gl_bounds[gl_frame + 1]` raises IndexError. The
-# bounds are a correct `searchsorted` (measured: `probe_frame_bounds`) of a
-# `covered_idx` whose last ordinal is past the end of the window, so the tile
-# loop still has pixels to place after it has finished the last frame. Every
-# test here is an ordinary render that reaches the glossy route, which is the
-# default; it is one defect, not thirteen.
+# This was thirteen entries, all raising `IndexError` at `tracer.py`'s
+# `frame_end = gl_bounds[gl_frame + 1]` -- the glossy tile loop running past
+# the end of its frame table. **Eleven of them now pass** and were removed
+# after run 34203241437, and it is worth being exact about why, because it was
+# not a fix aimed at them: emptying torch's MPS cache before sizing the arena
+# (§4.4) gave the render its full budget back, and the tile sizing that follows
+# from the budget no longer produces the window that tripped the loop.
+#
+# So the loop's guard is still missing -- a `gl_frame` that can walk off the
+# end is a latent IndexError at any window the arithmetic happens to pick --
+# and the two below are what is left of the group. Their cause is NOT
+# re-measured since the arena fix: they may be the same defect at a different
+# window, or something else entirely that the group was hiding. Measuring that
+# is the first thing to do here, and §4.2 has the covered-pixel reading to do
+# it against.
 _add(
-    "MPS: the glossy tile loop's frame table runs short -- DESIGN_mps_support.md §4.2",
-    "tests/unit_tests/test_area_light_soft_shadow.py::test_soft_shadow_fans_compile_and_render_one_frame[sheet]",
-    "tests/unit_tests/test_bezier_group_runs.py::test_run_splitting_leaves_the_rendered_frame_unchanged",
+    "MPS: renders differently, cause not re-measured since the arena fix -- "
+    "DESIGN_mps_support.md §4.2",
     "tests/unit_tests/test_deterministic_shadow_opacity.py::test_deterministic_shadows_accumulate_every_blocker_opacity[raster]",
     "tests/unit_tests/test_display_referred_coverage.py::test_partial_coverage_matches_a_supersampled_render",
-    "tests/unit_tests/test_manim_shader_render.py::test_use_manim_defaults_reaches_bare_solids",
-    "tests/unit_tests/test_path_tracer.py::test_author_order_and_depth_compose_like_the_deterministic_route",
-    "tests/unit_tests/test_path_tracer.py::test_the_deterministic_renderer_reports_no_path_samples",
-    "tests/unit_tests/test_path_tracer.py::test_authored_sampling_is_inert_for_the_deterministic_renderer",
-    "tests/unit_tests/test_render_output_pipeline.py::test_save_frame_runs_a_user_post_process_and_writes_its_output",
-    "tests/unit_tests/test_render_output_pipeline.py::test_save_frame_defaults_to_bloom_and_honours_an_empty_chain",
-    "tests/unit_tests/test_render_output_pipeline.py::test_save_frame_applies_the_post_process_to_every_still_in_a_sequence",
-    "tests/unit_tests/test_render_output_pipeline.py::test_save_frame_writes_a_png_at_the_requested_resolution",
-    "tests/unit_tests/test_viewer_fragments.py::test_two_mobs_are_told_apart",
 )
 
 # -- C: a slab that neither reflects nor is lit comes back black -----------
