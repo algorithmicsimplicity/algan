@@ -381,23 +381,25 @@ def _mark_known_mps_failures(items):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Reduce the run to the ``fast`` marker when ``--fast`` is passed.
+    """Reduce the run to the ``fast`` marker, then xfail what MPS cannot do yet.
 
-    Deselected rather than skipped, deliberately: the fast suite excludes most
-    of the suite by design, and hundreds of ``s`` characters would bury the
-    handful of skips that actually mean something (a missing baseline, an
-    absent optional dependency).
+    ``--fast`` deselects rather than skips, deliberately: the fast suite
+    excludes most of the suite by design, and hundreds of ``s`` characters
+    would bury the handful of skips that actually mean something (a missing
+    baseline, an absent optional dependency).
+
+    The MPS pass runs last and over whatever survived, so the marks land on the
+    items that will actually run and a ``--fast`` run on an Apple GPU gets the
+    same treatment as a full one.
     """
-    if not config.getoption("fast"):
-        _mark_known_mps_failures(items)
-        return
-    selected, deselected = [], []
-    for item in items:
-        target = selected if item.get_closest_marker("fast") else deselected
-        target.append(item)
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
+    if config.getoption("fast"):
+        selected, deselected = [], []
+        for item in items:
+            target = selected if item.get_closest_marker("fast") else deselected
+            target.append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = selected
     _mark_known_mps_failures(items)
 
 

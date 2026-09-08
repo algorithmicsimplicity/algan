@@ -14,6 +14,16 @@ guarded separately by `.github/workflows/test.yaml`, whose required macOS MPS
 arm asserts Algan resolved `mps` before running `tests/unit_tests` and
 `tests/fast` on every gated PR/push.
 
+**The Apple-GPU work that is left is a list, not a search.**
+`tests/mps_known_failures.py` names every test the MPS arm cannot pass yet, one
+entry per test, grouped by the defect it waits on;
+`../algan/rendering/DESIGN_mps_support.md` §4 is the scoreboard behind it and
+says what is measured about each. Start there rather than by running the suite
+and reading what falls out — the entries are strict xfails, so a suite run
+reports them as expected and tells you nothing new. Finishing one means: fix
+it, delete its line (the arm goes **red** on the XPASS until you do), and add
+the measurement to §4.
+
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
 much VRAM" for CUDA — it is the only box that runs the real render path at UHD.
 The Mac answers "does this work at all on Metal, and how does MPS compare to

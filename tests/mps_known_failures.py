@@ -3,8 +3,10 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). Most of those are fixed. The ones below are not,
-and this file is the record of them.
+3311 passes (run 34102515789). Eleven of those failures and all three errors are
+fixed; the entries below are what is left, and this file is the record of them.
+``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it — six
+causes, not twenty tests, which is what makes the remainder tractable.
 
 Why a list here rather than a skip in each test file
 ----------------------------------------------------
