@@ -1,0 +1,111 @@
+name: Fix ARM64 smoke harness once
+
+on:
+  push:
+    branches:
+      - codex/aarch64-glibc34-llvm
+    paths:
+      - .github/workflows/fix_arm64_smoke_once.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/aarch64-glibc34-llvm
+          fetch-depth: 0
+
+      - name: Replace stdin kernel smoke with a real source file
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/quadrants_build.yaml')
+          text = path.read_text(encoding='utf-8')
+          old = '''            "$py" - <<'PYKERNEL'
+          import numpy as np
+          import quadrants as qd
+          from quadrants.lang import impl
+
+          qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
+          cfg = impl.current_cfg()
+          assert cfg.invariant_arg_loads is False
+          assert cfg.readonly_ndarray_ldg is True
+
+          @qd.kernel
+          def add_one(a: qd.types.ndarray()):
+              for i in range(a.shape[0]):
+                  a[i] += 1
+
+          x = np.arange(8, dtype=np.float32)
+          add_one(x)
+          qd.sync()
+          np.testing.assert_array_equal(x, np.arange(8, dtype=np.float32) + 1)
+          print("fresh glibc-2.34 import + qd.init + kernel OK")
+          PYKERNEL
+'''
+          new = '''            kernel_smoke="$RUNNER_TEMP/glibc34-smoke-${tag}.py"
+            cat > "$kernel_smoke" <<'PYKERNEL'
+          import numpy as np
+          import quadrants as qd
+          from quadrants.lang import impl
+
+          qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
+          cfg = impl.current_cfg()
+          assert cfg.invariant_arg_loads is False
+          assert cfg.readonly_ndarray_ldg is True
+
+          @qd.kernel
+          def add_one(a: qd.types.ndarray()):
+              for i in range(a.shape[0]):
+                  a[i] += 1
+
+          x = np.arange(8, dtype=np.float32)
+          add_one(x)
+          qd.sync()
+          np.testing.assert_array_equal(x, np.arange(8, dtype=np.float32) + 1)
+          print("fresh glibc-2.34 import + qd.init + kernel OK")
+          PYKERNEL
+            "$py" "$kernel_smoke"
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one stdin smoke block, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git diff --check
+          grep -F 'kernel_smoke="$RUNNER_TEMP/glibc34-smoke-${tag}.py"' .github/workflows/quadrants_build.yaml
+          grep -F '"$py" "$kernel_smoke"' .github/workflows/quadrants_build.yaml
+
+      - name: Commit the fix and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm .github/workflows/fix_arm64_smoke_once.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Run aarch64 glibc smoke kernel from a source file"
+          git push origin HEAD:codex/aarch64-glibc34-llvm
+
+      - name: Launch corrected ARM64 diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          gh workflow run quadrants_build.yaml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref codex/aarch64-glibc34-llvm \
+            -f platforms=linux_arm64 \
+            -f python_versions=3.11 \
+            -f apply_patches=true \
+            -f publish=false \
+            -f run_tag=source-file-smoke-fix
