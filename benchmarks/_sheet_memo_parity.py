@@ -242,7 +242,7 @@ def main():
     # which the runtime memory model can see -- so hand the sizer far more
     # than the scene needs and cap the window well below the budget.
     SETTINGS.computing.set(
-        max_animation_batch_size=5, max_cpu_memory_used=8 * (1 << 30)
+        max_animation_batch_size=5, cpu_render_memory_budget=8 * (1 << 30)
     )
     # Warm-up render, discarded: the first render of a fresh process populates
     # the Tex glyph cache, whose antialiasing differs from every later run

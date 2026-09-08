@@ -93,7 +93,7 @@ def test_available_memory_override_replaces_the_measured_device_figure():
         # The CPU branch already returns a setting, so it stays put.
         assert (
             get_num_available_bytes(torch.device("cpu"))
-            == SETTINGS.computing.max_cpu_memory_used
+            == SETTINGS.computing.cpu_render_memory_budget
         )
     assert SETTINGS.computing.available_memory_override is None
 
@@ -209,6 +209,11 @@ def test_the_animation_device_answers_with_the_environment_variable_to_set():
 def test_render_on_cpu_points_at_the_field_that_replaced_it():
     with pytest.raises(AlganConfigurationError, match="render_device"):
         SETTINGS.computing.set(render_on_cpu=True)
+
+
+def test_old_cpu_memory_name_points_at_the_renderer_budget_name():
+    with pytest.raises(AlganConfigurationError, match="cpu_render_memory_budget"):
+        SETTINGS.computing.set(max_cpu_memory_used=2 << 30)
 
 
 def test_the_render_device_is_settable_and_normalizes_to_a_torch_device():

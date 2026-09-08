@@ -318,13 +318,13 @@ def _report_cpu_arena_budget():
 
     That default gave every CPU machine a 0.75 GB arena and made a UHD CPU
     render impossible outright -- the same shape of defect as the MPS branch's
-    1 GiB clamp. ``max_cpu_memory_used`` now defaults to a share of the
+    1 GiB clamp. ``cpu_render_memory_budget`` now defaults to a share of the
     machine's RAM, so the CPU arm lands on the same ~1.12 GB arena the Metal one
     does on this runner, and the comparison between them has one variable.
     """
     if render_device().type != "cpu":
         return
-    budget = SETTINGS.computing.max_cpu_memory_used
+    budget = SETTINGS.computing.cpu_render_memory_budget
     print(
         f"cpu arena budget {budget / 2**30:.2f}G "
         f"(arena ~{0.4 * budget / 2**30:.2f}G)",

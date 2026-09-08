@@ -177,7 +177,7 @@ def main():
     # the scene needs and cap the window well below the budget, so the arms'
     # different texture pricing cannot pick different durations.
     SETTINGS.computing.set(
-        max_animation_batch_size=5, max_cpu_memory_used=8 * (1 << 30)
+        max_animation_batch_size=5, cpu_render_memory_budget=8 * (1 << 30)
     )
     # Warm-up render first, discarded: the first render of a fresh process
     # populates glyph caches whose antialiasing differs from every later run

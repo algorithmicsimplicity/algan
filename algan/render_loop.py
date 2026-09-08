@@ -183,13 +183,14 @@ def _render_device_pool_bytes(device):
         # analogue of CUDA's total, and it is already what
         # ``get_num_available_bytes`` measures MPS against.
         return int(torch.mps.recommended_max_memory())
-    # A CPU render has a ceiling too -- ``max_cpu_memory_used``, which is what
-    # the arena itself is a fraction of -- so the merge has the same finite
+    # A CPU render has a renderer working-memory budget too --
+    # ``cpu_render_memory_budget``, which is what the arena itself is a fraction
+    # of -- so the merge has the same finite
     # headroom outside the arena that a card does. Leaving this infinite left
     # the CPU with no window-shrinking lever at all: every budget that bounds a
     # batch before it is built was CUDA-only, so CPU took the largest window
     # the geometry allowed and met the arena's limit mid-render instead.
-    return int(SETTINGS.computing.max_cpu_memory_used)
+    return int(SETTINGS.computing.cpu_render_memory_budget)
 
 
 @contextlib.contextmanager
@@ -2222,7 +2223,7 @@ class RenderLoopMixin:
     def _render_device_prep_budget(self):
         """Render-device bytes a batch's preparation may hold at once.
 
-        The animation-device budget is a setting (``max_cpu_memory_used``) and
+        The animation-device budget is a setting (``cpu_render_memory_budget``) and
         so is this one, in effect: a fixed share of what the device's pool
         (:func:`_render_device_pool_bytes`) holds outside the arena's fraction.
         The merge's and projection's own out-of-arena scratch stays bounded

@@ -212,7 +212,7 @@ def compare(name_a, name_b):
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS.computing.set(
-        max_animation_batch_size=5, max_cpu_memory_used=8 * (1 << 30)
+        max_animation_batch_size=5, cpu_render_memory_budget=8 * (1 << 30)
     )
     # Warm-up render, discarded: the first render of a fresh process populates
     # glyph/adaptive caches an arm must not be the one to pay.

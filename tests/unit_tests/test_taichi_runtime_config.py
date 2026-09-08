@@ -450,3 +450,81 @@ def test_flushing_drops_the_program_so_the_compiler_writes_its_cache():
     taichi_runtime.ensure_taichi_for_render()
     assert program() is not None
     assert taichi_runtime._arch_matches_render_device()
+
+
+def test_quadrants_pressure_reset_clears_runtime_state_when_safe(monkeypatch):
+    from algan.rendering import taichi_runtime
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
+    monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", object())
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True))
+
+    assert taichi_runtime.reset_quadrants_for_memory_pressure() is True
+    assert calls == ["reset"]
+    assert taichi_runtime._ARCH_READY_FOR is None
+    assert taichi_runtime._BUILT_A_SPECIALIZATION is False
+
+
+def test_quadrants_pressure_reset_defers_while_a_render_is_active(monkeypatch):
+    from algan.rendering import taichi_runtime
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
+    monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", False)
+
+    assert taichi_runtime.reset_quadrants_for_memory_pressure() is False
+    assert calls == []
+    assert taichi_runtime._PRESSURE_RESET_PENDING is True
+
+
+def test_deferred_pressure_reset_runs_after_the_outer_render_if_still_pressured(
+    monkeypatch,
+):
+    from algan.rendering import taichi_runtime
+    from algan.utils import memory_utils
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "_RENDER_JOBS_ACTIVE", 0)
+    monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
+    monkeypatch.setattr(memory_utils, "_host_memory_pressure", lambda: True)
+    monkeypatch.setattr(memory_utils, "_malloc_trim", lambda: calls.append("trim"))
+    monkeypatch.setattr(
+        taichi_runtime,
+        "reset_quadrants_for_memory_pressure",
+        lambda: calls.append("reset") or True,
+    )
+
+    with taichi_runtime.render_job_holding_the_arch():
+        assert taichi_runtime.render_is_active()
+
+    assert calls == ["reset", "trim"]
+    assert taichi_runtime._PRESSURE_RESET_PENDING is False
+
+
+def test_deferred_pressure_reset_is_dropped_if_pressure_clears(monkeypatch):
+    from algan.rendering import taichi_runtime
+    from algan.utils import memory_utils
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "_RENDER_JOBS_ACTIVE", 0)
+    monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
+    monkeypatch.setattr(memory_utils, "_host_memory_pressure", lambda: False)
+    monkeypatch.setattr(memory_utils, "_malloc_trim", lambda: calls.append("trim"))
+    monkeypatch.setattr(
+        taichi_runtime,
+        "reset_quadrants_for_memory_pressure",
+        lambda: calls.append("reset") or True,
+    )
+
+    with taichi_runtime.render_job_holding_the_arch():
+        pass
+
+    assert calls == []
+    assert taichi_runtime._PRESSURE_RESET_PENDING is False

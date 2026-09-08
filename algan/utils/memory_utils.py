@@ -19,9 +19,11 @@ high-water mark rather than modelling it.
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 import psutil
 import torch
@@ -226,7 +228,7 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes = min(free_bytes, cap)
         return free_bytes
     else:
-        return SETTINGS.computing.max_cpu_memory_used
+        return SETTINGS.computing.cpu_render_memory_budget
 
 
 def _gpu_memory_pressure(threshold=0.8):
@@ -261,6 +263,129 @@ def _gpu_memory_pressure(threshold=0.8):
         except Exception:
             return True
     return True
+
+
+#: A finite Linux cgroup is a hard OOM boundary rather than advisory system
+#: pressure. Reclaim before it is nearly full: a long-lived host can launch a
+#: renderer subprocess whose cold Quadrants/LLVM working set is >1 GiB, so
+#: waiting for the conventional 80-90% mark is too late in a 4 GiB container.
+_CGROUP_MEMORY_PRESSURE_FRACTION = 0.60
+
+#: Outside a hard cgroup, use the ordinary host's available-memory signal.
+_HOST_AVAILABLE_MEMORY_FRACTION = 0.15
+
+
+def _read_positive_int(path):
+    try:
+        raw = Path(path).read_text(encoding="ascii").strip()
+    except (OSError, ValueError):
+        return None
+    if not raw or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _linux_cgroup_memory_usage():
+    """Return ``(current, limit)`` for this process's finite memory cgroup.
+
+    Supports cgroup v2 and the common v1 memory-controller mount. The direct
+    mount root is tried first because container mount namespaces normally make
+    it the process's own cgroup already; ``/proc/self/cgroup`` supplies the
+    nested path on hosts that expose the hierarchy root instead.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+
+    candidates = []
+    v2_root = Path("/sys/fs/cgroup")
+    candidates.append((v2_root / "memory.current", v2_root / "memory.max"))
+    try:
+        lines = Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        hierarchy, controllers, rel = parts
+        rel = rel.lstrip("/")
+        if hierarchy == "0" and controllers == "":
+            root = v2_root / rel
+            candidates.append((root / "memory.current", root / "memory.max"))
+        elif "memory" in controllers.split(","):
+            root = Path("/sys/fs/cgroup/memory") / rel
+            candidates.append(
+                (root / "memory.usage_in_bytes", root / "memory.limit_in_bytes")
+            )
+
+    seen = set()
+    for current_path, limit_path in candidates:
+        key = (str(current_path), str(limit_path))
+        if key in seen:
+            continue
+        seen.add(key)
+        current = _read_positive_int(current_path)
+        limit = _read_positive_int(limit_path)
+        if current is None or limit is None:
+            continue
+        # v1 often exposes an enormous sentinel when the controller is
+        # effectively unlimited. Do not mistake that for a useful hard cap.
+        if limit >= (1 << 60):
+            continue
+        return current, limit
+    return None
+
+
+def _host_memory_pressure(
+    cgroup_threshold=_CGROUP_MEMORY_PRESSURE_FRACTION,
+    available_threshold=_HOST_AVAILABLE_MEMORY_FRACTION,
+):
+    """Whether host allocations are close enough to a real capacity boundary.
+
+    A finite cgroup wins because that is the boundary the kernel enforces for
+    this process group, even when ``psutil`` can see more RAM on the host. On a
+    normal machine, pressure means less than ``available_threshold`` of total
+    RAM is readily available.
+    """
+    cgroup = _linux_cgroup_memory_usage()
+    if cgroup is not None:
+        current, limit = cgroup
+        if current >= cgroup_threshold * limit:
+            return True
+    try:
+        memory = psutil.virtual_memory()
+        total = int(memory.total)
+        available = int(memory.available)
+    except Exception:
+        return False
+    if total <= 0:
+        return False
+    return available <= available_threshold * total
+
+
+def _malloc_trim():
+    """Ask glibc to return free heap pages to the OS. Linux only, best-effort."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None)
+        trim = libc.malloc_trim
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        return bool(trim(0))
+    except (AttributeError, OSError):
+        return False
+
+
+def _reset_quadrants_runtime_for_memory_pressure():
+    """Release Quadrants' live Program/JIT state when it is safe to do so."""
+    from algan.rendering.taichi_runtime import reset_quadrants_for_memory_pressure
+
+    return reset_quadrants_for_memory_pressure()
 
 
 #: Reclaimable torch cache below which a steady-state ``release_torch_memory`` call is
@@ -301,11 +426,23 @@ def release_torch_memory(force_gc=True):
     self-regulating: a cache left unreclaimed shows up as *driver-level* used
     memory, so it raises the pressure that triggers the next reclaim.
 
+    Host/native reclamation is more destructive and therefore has its own real
+    pressure gate. Under host/cgroup pressure Linux first calls ``malloc_trim(0)``
+    to return glibc-retained free pages without losing JIT state. Pressure is
+    measured again; only if it remains does the default Quadrants backend reset
+    its live runtime, and never while a render is active. A successful reset is
+    followed by one more Linux trim because the freed LLVM/JIT allocations can
+    otherwise remain in glibc's arenas. A reset discards the in-process compiled
+    specializations, which the next render reloads from the offline cache, so
+    this is an OOM-avoidance last resort rather than routine cleanup.
+    ``force_gc`` does *not* force either native step.
+
     Sizing decisions are unaffected either way:
     :func:`get_num_available_bytes` reclaims unconditionally before it
     measures, so every batch and chunk still sees the same free-byte figure.
     """
-    pressured = force_gc or _gpu_memory_pressure()
+    host_pressured = _host_memory_pressure()
+    pressured = force_gc or _gpu_memory_pressure() or host_pressured
     if pressured:
         gc.collect()
     if (
@@ -336,6 +473,26 @@ def release_torch_memory(force_gc=True):
 
         clear_import_cache()
         torch.mps.empty_cache()
+
+    # CPU/native allocations live outside torch's device caches. Only pay the
+    # expensive process-wide reclamation when host capacity is genuinely tight.
+    # On Linux, glibc commonly keeps hundreds of MiB of already-freed LLVM/torch
+    # pages mapped; trim those first because it preserves every compiled kernel.
+    # If the enclosing host/cgroup is *still* pressured afterwards, sacrifice
+    # Quadrants' live JIT Program too. The runtime helper refuses while a render
+    # is active or from a non-main thread, so this can never reset under a kernel
+    # launch; the next launch/render reinitializes and reloads from offline cache.
+    if host_pressured:
+        _malloc_trim()
+        if _host_memory_pressure():
+            # ``ti.reset()`` can hand large LLVM/JIT allocations back to
+            # glibc without immediately unmapping them. If the reset happens
+            # synchronously, trim once more so the memory it just freed is
+            # visible to the enclosing cgroup before this call returns. A
+            # reset deferred until render exit performs the same final trim
+            # from ``render_job_holding_the_arch``.
+            if _reset_quadrants_runtime_for_memory_pressure():
+                _malloc_trim()
 
 
 @contextmanager

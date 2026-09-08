@@ -294,3 +294,94 @@ def test_a_cpu_render_is_sized_against_the_machine_not_a_flat_2gb(monkeypatch):
 
     monkeypatch.setattr(psutil, "virtual_memory", _no_telemetry)
     assert cs._default_cpu_memory() == 2 * cs.GIGABYTES
+
+
+def test_malloc_trim_is_linux_only(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    calls = []
+    monkeypatch.setattr(mu.sys, "platform", "darwin")
+    monkeypatch.setattr(mu.ctypes, "CDLL", lambda *_args, **_kwargs: calls.append(1))
+
+    assert mu._malloc_trim() is False
+    assert calls == [], "malloc_trim must never be looked up off Linux"
+
+
+def test_host_memory_pressure_honors_a_finite_cgroup_before_host_ram(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    # Host RAM looks plentiful, but the process group is over the deliberately
+    # earlier hard-cgroup threshold. This is the shape of the 4 GiB container
+    # OOM that motivated the native cleanup path.
+    monkeypatch.setattr(mu, "_linux_cgroup_memory_usage", lambda: (3 << 30, 4 << 30))
+    monkeypatch.setattr(
+        mu.psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total=64 << 30, available=60 << 30),
+    )
+    assert mu._host_memory_pressure() is True
+
+    monkeypatch.setattr(mu, "_linux_cgroup_memory_usage", lambda: (1 << 30, 4 << 30))
+    assert mu._host_memory_pressure() is False
+
+
+def test_pressure_cleanup_trims_then_resets_only_if_pressure_remains(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    events = []
+    readings = iter((True, True))
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: next(readings))
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: events.append("trim") or True)
+    monkeypatch.setattr(
+        mu,
+        "_reset_quadrants_runtime_for_memory_pressure",
+        lambda: events.append("reset") or True,
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+
+    mu.release_torch_memory(force_gc=False)
+    assert events == ["gc", "trim", "reset", "trim"]
+
+
+def test_pressure_cleanup_keeps_quadrants_if_trim_relaxes_pressure(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    events = []
+    readings = iter((True, False))
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: next(readings))
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: events.append("trim") or True)
+    monkeypatch.setattr(
+        mu,
+        "_reset_quadrants_runtime_for_memory_pressure",
+        lambda: events.append("reset") or True,
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+
+    mu.release_torch_memory(force_gc=False)
+    assert events == ["gc", "trim"]
+
+
+def test_force_gc_does_not_force_native_pressure_cleanup(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    events = []
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: events.append("trim") or True)
+    monkeypatch.setattr(
+        mu,
+        "_reset_quadrants_runtime_for_memory_pressure",
+        lambda: events.append("reset") or True,
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+
+    mu.release_torch_memory(force_gc=True)
+    assert events == ["gc"]

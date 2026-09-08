@@ -138,7 +138,7 @@ is gated off on Metal, not fixed.
 
 ### 3.3 The CPU branch had the same defect as the Metal one
 
-`max_cpu_memory_used` defaulted to a flat **2 GB**, and the arena is
+`cpu_render_memory_budget` (then named `max_cpu_memory_used`) defaulted to a flat **2 GB**, and the arena is
 `rendering_memory_fraction` (0.4) of it, so **every** CPU machine got a 0.75 GB
 arena — too small for one 4K frame. A UHD CPU render therefore died with
 "Insufficient memory to ray trace a single frame" on the 7 GB runner, and would

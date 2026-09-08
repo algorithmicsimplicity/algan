@@ -202,7 +202,7 @@ def install_probes(headroom_mode, pin_pool, leak_cache=False):
         mps_zero_copy.clear_import_cache = lambda: None
 
     # Only the CPU needs this: `available_memory_override` already sizes the
-    # arena on a measured device, but the CPU branch reads `max_cpu_memory_used`
+    # arena on a measured device, but the CPU branch reads `cpu_render_memory_budget`
     # instead and would give the arms a different arena from the Mac's.
     if pin_pool and headroom_mode != "native":
         real_init = memory_utils.ManualMemory.__init__
@@ -210,7 +210,7 @@ def install_probes(headroom_mode, pin_pool, leak_cache=False):
         def init(self, portion, device=None, managed=True, *, num_bytes=None):
             # What `get_num_available_bytes` returns on MPS under the gate's
             # `available_memory_override`: the override itself, rather than the
-            # CPU's `max_cpu_memory_used`. Sizing the arena from one pool on
+            # CPU's `cpu_render_memory_budget`. Sizing the arena from one pool on
             # both arms is what makes their frame windows comparable.
             if managed and num_bytes is None:
                 num_bytes = int(POOL_BYTES * portion)
