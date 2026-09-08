@@ -8,10 +8,8 @@ this out of ``python -`` / stdin smoke snippets for that reason.
 # ruff: noqa: I002 -- Quadrants evaluates kernel annotations at runtime;
 # postponed annotations would turn qd.types.ndarray() into a string.
 import numpy as np
-
 import quadrants as qd
 from quadrants.lang import impl
-
 
 qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
 cfg = impl.current_cfg()
