@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_early_profile.py --devices mps --native-graphs",
+  "command": ".venv/bin/python benchmarks/_mac_early_profile.py --devices mps --bloom-ab --native-graphs --runs 6 --timeout 1700",
   "arms": [
     "mac-mps"
   ],
@@ -9,6 +9,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 22,
-  "_request": "74: direct native MPSGraph compile and encode host timers, bracketed warm controls, fixed renderer and exact 1720 MiB arena"
+  "timeout_minutes": 33,
+  "_request": "75: native graph checkpoint plus alternating MPS bloom fallback/Metal kernels; unprofiled warm kernel/fallback/kernel controls; UHD and direct parity"
 }

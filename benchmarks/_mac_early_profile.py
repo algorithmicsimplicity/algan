@@ -35,6 +35,7 @@ def arguments():
     parser.add_argument("--runs", type=int, default=4)
     parser.add_argument("--native-sample", action="store_true")
     parser.add_argument("--native-graphs", action="store_true")
+    parser.add_argument("--bloom-ab", action="store_true")
     return parser.parse_args()
 
 
@@ -128,6 +129,8 @@ def child(args):
     sample_process = None
     state = {"run": 0, "chunks": 0, "batches": 0, "arenas": [], "started": 0.0}
     native = None
+    bloom_times = defaultdict(lambda: [0, 0.0])
+    candidate = False
 
     def emit(kind, **values):
         record = {"event": kind, "device": args.child, "run": state["run"], **values}
@@ -137,8 +140,12 @@ def child(args):
         print("EARLY_PROFILE " + line, flush=True)
 
     def pool():
-        result = {"rss": psutil.Process().memory_info().rss,
-                  "host_available": psutil.virtual_memory().available}
+        try:
+            rss = psutil.Process().memory_info().rss
+        except psutil.Error:
+            # Some local PID namespaces do not expose this process in /proc.
+            rss = None
+        result = {"rss": rss, "host_available": psutil.virtual_memory().available}
         if torch.backends.mps.is_available():
             result.update(driver=torch.mps.driver_allocated_memory(),
                           live=torch.mps.current_allocated_memory(),
@@ -172,6 +179,33 @@ def child(args):
         replacement = timer.wrap(original, label)
         setattr(module, name, replacement)
         replace_aliases(original, replacement)
+
+    if args.bloom_ab:
+        from algan.rendering.post_processing import bloom as bloom_module
+        from algan.rendering.post_processing import bloom_kernels_taichi as bloom_kernels
+        original_bloom_gate = bloom_kernels.can_use_bloom_taichi
+
+        def bloom_gate(device):
+            device = torch.device(device)
+            if candidate and device.type == "mps":
+                return runtime._live_arch() == ti.metal and zc.zero_copy_available()
+            return original_bloom_gate(device)
+
+        bloom_kernels.can_use_bloom_taichi = bloom_gate
+
+        def time_bloom(function, name):
+            @functools.wraps(function)
+            def call(*a, **kw):
+                started = time.perf_counter()
+                try:
+                    return function(*a, **kw)
+                finally:
+                    bloom_times[name][0] += 1
+                    bloom_times[name][1] += time.perf_counter() - started
+            return call
+
+        for name in ("_downsample_bloom", "_upsample_bloom"):
+            setattr(bloom_module, name, time_bloom(getattr(bloom_module, name), name))
 
     # Hooks are dormant in controls. No extra synchronize(), tensor copies,
     # gc.collect(), empty_cache(), import-cache clearing, or prefetch changes.
@@ -272,6 +306,19 @@ def child(args):
             mode.__exit__(None, None, None)
             mode = None
             timer.enabled = False
+            if native is not None:
+                native.algan_graph_phase(-1)
+            # Preserve the completed window even if a later full render hits
+            # the process budget. This I/O is outside the measured early
+            # window; its separately reported duration remains in full wall.
+            checkpoint = time.perf_counter()
+            (output / "timings.json").write_text(json.dumps(timer.data(), indent=2))
+            if native is not None:
+                stats = json.loads(native.algan_graph_stats())
+                (output / "native_graphs.json").write_text(json.dumps(stats, indent=2))
+                emit("native_graph_stats", rows=stats)
+            emit("profile_checkpoint", early_window=elapsed,
+                 write_seconds=time.perf_counter() - checkpoint)
         if native is not None:
             native.algan_graph_phase(2 * chunk - 1 if timer.enabled and chunk <= 2 else -1)
         timer.phase = f"chunk{chunk}"
@@ -310,14 +357,16 @@ def child(args):
          env={k: v for k, v in os.environ.items() if k.startswith(("ALGAN_", "PYTORCH_MPS_"))})
     for run in range(1, args.runs + 1):
         state.update(run=run, chunks=0, batches=0, arenas=[])
+        candidate = args.bloom_ab and run % 2 == 0
+        bloom_times.clear()
         random.seed(20260908)
         np.random.seed(20260908)
         torch.manual_seed(20260908)
         SceneManager.reset()
         Scene.set_video_settings(preset)
         scene()
-        detailed = run == 3
-        emit("render_start", detailed=detailed, pool=pool())
+        detailed = run == 3 and (not args.bloom_ab or args.native_graphs)
+        emit("render_start", detailed=detailed, bloom_candidate=candidate, pool=pool())
         if detailed and args.native_sample and sys.platform == "darwin":
             sample_process = subprocess.Popen(["/usr/bin/sample", str(os.getpid()), "25", "2",
                                                "-file", str(output / "native_sample.txt")],
@@ -342,13 +391,45 @@ def child(args):
                 native.algan_graph_phase(-1)
         elapsed = time.perf_counter() - state["started"]
         emit("render_end", detailed=detailed, wall=elapsed, chunks=state["chunks"],
-             batches=state["batches"], arenas=state["arenas"], pool=pool())
+             batches=state["batches"], arenas=state["arenas"], pool=pool(),
+             bloom_candidate=candidate, bloom_times=dict(bloom_times))
         if detailed:
             (output / "timings.json").write_text(json.dumps(timer.data(), indent=2))
             if native is not None:
                 stats = json.loads(native.algan_graph_stats())
                 (output / "native_graphs.json").write_text(json.dumps(stats, indent=2))
                 emit("native_graph_stats", rows=stats)
+    if args.bloom_ab:
+        # This is outside all timed renders. Both paths consume the same
+        # allocated input, including a nonzero arena offset. No image encoding
+        # can hide a numerical discrepancy in this float/output-byte check.
+        for channels in (4, 5):
+            torch.manual_seed(1234 + channels)
+            frames = torch.randint(1, 220, (1, 127, 193, channels), dtype=torch.uint8)
+            frames[..., 3] = 100
+            answers = []
+            for use_candidate in (False, True):
+                candidate = use_candidate
+                memory = mu.ManualMemory(0, device=args.child, num_bytes=64 * 2**20)
+                memory.get_tensor((137,), torch.uint8).fill_(91)
+                input_tensor = memory.get_tensor(frames.shape, frames.dtype)
+                input_tensor.copy_(frames)
+                before = dict(zc.STATS)
+                result = bloom_module.bloom_filter(input_tensor, memory=memory).cpu()
+                answers.append(result)
+                emit("bloom_parity_arm", channels=channels, candidate=candidate,
+                     launches=zc.STATS["converted_launches"]-before["converted_launches"],
+                     staged=zc.STATS["staged_arguments"]-before["staged_arguments"])
+            indices = [0, 1, 2, 4] if channels == 5 else [0, 1, 2]
+            first, second = [x[..., indices] for x in answers]
+            difference = (first - second).abs()
+            quantized = [(x * 255).clamp(0, 255).to(torch.int16) for x in (first, second)]
+            byte_difference = (quantized[0] - quantized[1]).abs()
+            emit("bloom_parity", channels=channels, max_float=difference.max().item(),
+                 mean_float=difference.mean().item(), max_byte=byte_difference.max().item(),
+                 changed_bytes=(byte_difference != 0).sum().item(), values=byte_difference.numel())
+            if byte_difference.max().item() > 2 or not torch.isfinite(second).all():
+                raise AssertionError("Bloom candidate exceeded the output tolerance")
     if sample_process is not None:
         sample_process.wait(timeout=35)
     return 0
@@ -368,6 +449,8 @@ def main():
             command.append("--native-sample")
         if args.native_graphs:
             command.append("--native-graphs")
+        if args.bloom_ab:
+            command.append("--bloom-ab")
         with (output / f"{device}.txt").open("w") as stream:
             process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
             try:
