@@ -1,15 +1,20 @@
 # Algan on Apple GPUs (MPS / Metal): measured verdict
 
-Current status: **the port works, the gate is built, and the gate is not green
-yet.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
+Current status: **the port works and the gate is green, with two documented
+exceptions.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
 `render=mps` arm on every gated PR and push: it pins `ALGAN_RENDER_DEVICE=mps`,
 fails before pytest unless Algan's own startup resolver returns `mps`, and runs
 `tests/unit_tests` plus `tests/fast` against the locked published
-`algan-quadrants` — no private wheel anywhere in the path. **§4 is the
-scoreboard**: what that arm reports, which failures have been diagnosed, and
-which are still open. Read it before quoting a support claim from this
-document, because it is the only section written against a run rather than
-against an argument.
+`algan-quadrants` — no private wheel anywhere in the path. Measured on that
+scope: **3563 passed, 217 skipped, 2 xfailed**, down from 32 failures and 3
+errors when the arm was first turned on. The two are named in
+`tests/mps_known_failures.py` and run as strict xfails, so the arm reports them
+on every run and goes red the moment either starts passing.
+
+**§4 is the scoreboard**: what the arm reports, which failures have been
+diagnosed, and which are still open. Read it before quoting a support claim
+from this document, because it is the only section written against a run rather
+than against an argument.
 
 `mps_probe.yaml` remains the diagnostic workflow. It is no longer the only
 place Apple-GPU regressions are exercised, which was the point of building the
@@ -1141,7 +1146,8 @@ section to update when one changes.
 | --- | --- |
 | [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
 | [34203241437](https://github.com/algorithmicsimplicity/algan/actions/runs/34203241437) (2026-09-08, the same scope on the Mac harness) | **9 failing**, 3544 passed, 217 skipped, 9 xfailed in 3149 s |
-| [34210549355](https://github.com/algorithmicsimplicity/algan/actions/runs/34210549355) (2026-09-08, after §2.3f, six of the listed files) | **3 failing** across the whole list — six of the seven entries in those files XPASSed |
+| [34210549355](https://github.com/algorithmicsimplicity/algan/actions/runs/34210549355) (2026-09-08, after §2.3f, six of the listed files) | six of the seven entries in those files XPASSed |
+| [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (2026-09-08, the full scope after §2.3f) | **2 failing**: 1 failed, 3563 passed, 217 skipped, 2 xfailed in 3178 s — and the 1 is the last XPASS |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1161,18 +1167,26 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | B | the glossy tile loop walks off its frame table | 13 | 0 | **fixed**: 11 by §4.4, the last 2 by §2.3f |
 | C | an unlit/emissive slab renders black | 2 | 0 | **fixed** — §2.3f |
 | D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; §4.2 |
-| E | the path-traced and deterministic composites disagree by 107 | 1 | 1 | open, not re-measured since §2.3f |
+| E | the path-traced and deterministic composites disagree by 107 | 1 | 0 | **fixed** — §2.3f |
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
 | H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
 
-**Two fixes took twenty-nine of the thirty-two**, and neither was aimed at most
-of what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
-cache as occupied) and §2.3f's gather (the raster acceptance mask was losing
-its low bits). B, C and H were one defect wearing three faces, which is the
-argument for counting causes — and for keeping the xfail list, since both fixes
-were found by measuring the runs it produced rather than by reading code.
+**Two fixes took thirty of the thirty-two**, and neither was aimed at most of
+what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
+cache as occupied) took eleven, and §2.3f's gather (the raster acceptance mask
+was losing its low bits) took nineteen — every remaining render failure except
+one. B, C, E and H were one corrupted fragment stream wearing four faces, which
+is the argument for counting causes rather than tests. It is also the argument
+for the xfail list: both fixes were found by measuring the runs it produced,
+not by reading code, and neither was predictable from the failure it was chased
+from.
+
+**What is left is two tests and they are unrelated to each other**: one glossy
+prefilter render whose reflection is still empty (§4.2, no longer explained by
+anything above), and the `ti.real_func` compile failure (§4.3), which is a
+compiler defect a layer below Algan and blocks a test rather than a render.
 
 **Observed on the arm and NOT a failure**, recorded so the next reader does not
 chase it: the first render of a process warns that `torch.compile` refused

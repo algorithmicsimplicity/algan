@@ -111,11 +111,12 @@ normal locked dependency graph and published `algan-quadrants` wheel. The
 `algan check` step then prints the resolved device/compiler along with whether
 LaTeX and FFmpeg are on `PATH`.
 
-**The MPS arm carries an xfail list, and it is meant to shrink.** The Apple-GPU
-port is not finished: when the arm was first turned on it reported 32 failures
-against 3311 passes. `tests/mps_known_failures.py` names what is still
-outstanding, one entry per test with the defect it waits on and a pointer to
-the measurement in `../algan/rendering/DESIGN_mps_support.md` §4;
+**The MPS arm carries an xfail list, and it is meant to shrink.** When the arm
+was first turned on it reported 32 failures and 3 errors against 3311 passes;
+it now reports **3563 passed, 217 skipped, 2 xfailed**.
+`tests/mps_known_failures.py` names those two, one entry per test with the
+defect it waits on and a pointer to the measurement in
+`../algan/rendering/DESIGN_mps_support.md` §4;
 `conftest.py` applies it as a **strict** `xfail`, and only when the resolved
 render device is MPS. Three consequences worth knowing before adding or
 removing a line:
