@@ -109,8 +109,8 @@ jobs:
   # Build the aarch64 LLVM once, rather than once per Python wheel. The upstream
   # aarch64 archive is the source of the lone GLIBC_2.35 reference documented
   # in resolve_wheel_matrix.py; this rebuilds the same LLVM 22.1.0 commit with
-  # GCC 11 in a pinned glibc-2.34 userspace, verifies the archive itself, caches
-  # it across runs and uploads it for this run's wheel jobs.
+  # GCC 11 in a pinned glibc-2.34 userspace, verifies the archive itself, and
+  # caches it under the exact key the dependent ARM wheel jobs restore.
   portable_llvm_arm64:
     name: portable LLVM / linux_arm64
     needs: plan
@@ -135,10 +135,10 @@ jobs:
 
       - name: Restore the portable LLVM archive
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: algan/.portable-llvm
-          key: ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}
+          key: ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}-${{ runner.arch }}
 
       - name: Build portable LLVM 22.1.0
         if: steps.cache.outputs.cache-hit != 'true'
@@ -165,15 +165,6 @@ jobs:
           test -s provenance.txt
           grep -F "Measured maximum GLIBC symbol in install tree/archive members:" provenance.txt
           cat provenance.txt >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload portable LLVM for the wheel matrix
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
-          path: algan/.portable-llvm/
-          if-no-files-found: error
-          compression-level: 0
-          include-hidden-files: true
 
   # ---------------------------------------------------------------------------
   # The two Linux legs are ONE RECIPE built on two runner architectures, and
@@ -277,7 +268,7 @@ jobs:
       # 'Linux'`, and what this caches is the ~1 GB prebuilt LLVM that
       # `download_llvm.py` selects by architecture.
       - name: Cache the Quadrants build deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/qd-build-cache
           key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
@@ -285,16 +276,19 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
-      # Quadrants v1.3.0 already skips its LLVM download when its fixed
-      # cache directory is populated. Put Algan's portable tree in that exact
-      # slot on ARM, so the override needs no extra Quadrants patch and cannot
-      # affect x86-64. The artifact is checksummed before it is trusted.
+      # Quadrants v1.3.0 already skips its LLVM download when its fixed cache
+      # directory is populated. On ARM, restore the producer's verified archive
+      # through the same cache key instead of wrapping ~1.35 GB in a second
+      # Actions artifact. The archive is checksummed again before it is trusted.
       - name: Download the portable aarch64 LLVM
         if: runner.arch == 'ARM64'
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v6
         with:
-          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
           path: algan/.portable-llvm
+          key: ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}-${{ runner.arch }}
+          restore-keys: |
+            ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}-${{ runner.arch }}
+          fail-on-cache-miss: true
 
       - name: Put portable LLVM in Quadrants' cache slot
         if: runner.arch == 'ARM64'
@@ -305,6 +299,9 @@ jobs:
           set -euxo pipefail
           archive="$GITHUB_WORKSPACE/algan/.portable-llvm/$PORTABLE_LLVM_ARCHIVE"
           cd "$GITHUB_WORKSPACE/algan/.portable-llvm"
+          test -s "$PORTABLE_LLVM_ARCHIVE"
+          test -s "$PORTABLE_LLVM_ARCHIVE.sha256"
+          test -s provenance.txt
           sha256sum -c "$PORTABLE_LLVM_ARCHIVE.sha256"
           dest="$HOME/.cache/qd-build-cache/$PORTABLE_LLVM_CACHE_DIR"
           rm -rf "$dest"
@@ -501,7 +498,7 @@ jobs:
 
       - name: Upload the wheel
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quadrants-wheel-linux-py${{ matrix.python-version }}
           path: quadrants-src/dist/*.whl
@@ -511,7 +508,7 @@ jobs:
       # upload one artifact name, and the second upload is the one that errors.
       - name: Upload the IR arm reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: invariant-load-arms-linux-py${{ matrix.python-version }}
           path: arm_*.json
@@ -600,7 +597,7 @@ jobs:
       # 'Linux'`, and what this caches is the ~1 GB prebuilt LLVM that
       # `download_llvm.py` selects by architecture.
       - name: Cache the Quadrants build deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/qd-build-cache
           key: qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('quadrants-src/download_llvm.py') }}
@@ -608,16 +605,19 @@ jobs:
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-
             qd-build-${{ env.QUADRANTS_REF }}-${{ runner.os }}-${{ runner.arch }}-
 
-      # Quadrants v1.3.0 already skips its LLVM download when its fixed
-      # cache directory is populated. Put Algan's portable tree in that exact
-      # slot on ARM, so the override needs no extra Quadrants patch and cannot
-      # affect x86-64. The artifact is checksummed before it is trusted.
+      # Quadrants v1.3.0 already skips its LLVM download when its fixed cache
+      # directory is populated. On ARM, restore the producer's verified archive
+      # through the same cache key instead of wrapping ~1.35 GB in a second
+      # Actions artifact. The archive is checksummed again before it is trusted.
       - name: Download the portable aarch64 LLVM
         if: runner.arch == 'ARM64'
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v6
         with:
-          name: ${{ needs.plan.outputs.portable_llvm_artifact }}
           path: algan/.portable-llvm
+          key: ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}-${{ runner.arch }}
+          restore-keys: |
+            ${{ needs.plan.outputs.portable_llvm_cache_key }}-${{ hashFiles('algan/.github/workflows/scripts/resolve_wheel_matrix.py', 'algan/scripts/gate/build_portable_quadrants_llvm.sh') }}-${{ runner.arch }}
+          fail-on-cache-miss: true
 
       - name: Put portable LLVM in Quadrants' cache slot
         if: runner.arch == 'ARM64'
@@ -628,6 +628,9 @@ jobs:
           set -euxo pipefail
           archive="$GITHUB_WORKSPACE/algan/.portable-llvm/$PORTABLE_LLVM_ARCHIVE"
           cd "$GITHUB_WORKSPACE/algan/.portable-llvm"
+          test -s "$PORTABLE_LLVM_ARCHIVE"
+          test -s "$PORTABLE_LLVM_ARCHIVE.sha256"
+          test -s provenance.txt
           sha256sum -c "$PORTABLE_LLVM_ARCHIVE.sha256"
           dest="$HOME/.cache/qd-build-cache/$PORTABLE_LLVM_CACHE_DIR"
           rm -rf "$dest"
@@ -824,7 +827,7 @@ jobs:
 
       - name: Upload the wheel
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quadrants-wheel-linux_arm64-py${{ matrix.python-version }}
           path: quadrants-src/dist/*.whl
@@ -834,7 +837,7 @@ jobs:
       # upload one artifact name, and the second upload is the one that errors.
       - name: Upload the IR arm reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: invariant-load-arms-linux_arm64-py${{ matrix.python-version }}
           path: arm_*.json
@@ -862,7 +865,7 @@ jobs:
           grep -E ' 2\.34$' /tmp/ldd-version
 
       - name: Download the final aarch64 wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: quadrants-wheel-linux_arm64-py*
           path: wheels
@@ -967,7 +970,7 @@ jobs:
 
       - name: Upload the wheel
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quadrants-wheel-macos-py${{ matrix.python-version }}
           path: wheelhouse/*.whl
@@ -975,7 +978,7 @@ jobs:
 
       - name: Upload the build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quadrants-macos-logs-py${{ matrix.python-version }}
           path: gate-logs/**
@@ -1074,7 +1077,7 @@ jobs:
 
       - name: Upload the wheel
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quadrants-wheel-windows-py${{ matrix.python-version }}
           path: quadrants-src/dist/*.whl
@@ -1100,7 +1103,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download all built wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: quadrants-wheel-*
           merge-multiple: true
