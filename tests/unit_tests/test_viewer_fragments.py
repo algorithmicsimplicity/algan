@@ -270,16 +270,16 @@ def test_view_reports_fragments_for_a_clicked_pixel(fresh_scene):
     try:
         session = handle.session
         image_frame = session.total_frames - 1
-        found = None
-        for y in range(0, session.height, 2):
-            for x in range(0, session.width, 2):
-                answer = pixel_when_ready(session, image_frame, x, y)
-                if answer["available"] and answer["fragments"]:
-                    found = answer
-                    break
-            if found:
-                break
-        assert found, "the cube should be inspectable somewhere in frame"
+        # The cube is centered. Each new pixel request performs a complete
+        # capture render, so scanning empty rows first needlessly rendered
+        # hundreds of frames before exercising the same inspector assertions.
+        found = pixel_when_ready(
+            session, image_frame, session.width // 2, session.height // 2
+        )
+        assert found["available"], found
+        assert found["fragments"], (
+            "the centered cube should be inspectable at the image center"
+        )
         assert found["raw_fragments"] >= len(found["fragments"])
         first = found["fragments"][0]
         assert first["mob"] == f"Cube #{cube.id}"
