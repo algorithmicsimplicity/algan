@@ -59,7 +59,9 @@ def child():
             times["import_misses"] += int(len(zc._IMPORTS) > before)
     zc.import_tensor = imported
     original_wavefront = ns["_wavefront"].__globals__["_real_wavefront"]
+    chunk_count = 0
     def traced_chunk(*args, **kwargs):
+        nonlocal chunk_count
         start = time.perf_counter()
         before_t = dict(times)
         before_z = dict(zc.STATS)
@@ -70,6 +72,10 @@ def child():
             "zero_copy": {k: zc.STATS[k] - before_z[k] for k in zc.STATS},
             "cache": zc.cache_stats(),
         }), flush=True)
+        chunk_count += 1
+        if chunk_count >= int(os.environ.get("DIAG_CHUNK_LIMIT", "999")):
+            print("DIAG_CHUNK_LIMIT reached", flush=True)
+            os._exit(0)  # Supervisor cleans up this diagnostic child group.
         return result
     ns["_wavefront"].__globals__["_real_wavefront"] = traced_chunk
     raise SystemExit(ns["main"]())
@@ -97,6 +103,9 @@ def snapshot(proc, arm, number):
     command(["/usr/sbin/sysctl", "vm.swapusage"], Path(str(tag) + "-swap.txt"))
     command(["/bin/ps", "-axo", "pid,ppid,state,%cpu,rss,vsz,comm"],
             Path(str(tag) + "-processes.txt"))
+    for suffix in ["-vm-stat.txt", "-swap.txt"]:
+        print("DIAG_MEMORY", arm, number, suffix,
+              Path(str(tag) + suffix).read_text(), flush=True)
     sample = Path(str(tag) + "-sample.txt")
     if sample.exists():
         # Stream the relevant stack as well as preserving the full artifact.
@@ -108,7 +117,8 @@ def snapshot(proc, arm, number):
 
 def supervise(arm, cap):
     env = dict(os.environ, ALGAN_MPS_HOST_SHARE=cap, ALGAN_TORCH_COMPILE="0",
-               ALGAN_VIDEO_ENCODER="software", PYTHONUNBUFFERED="1")
+               ALGAN_VIDEO_ENCODER="software", PYTHONUNBUFFERED="1",
+               DIAG_CHUNK_LIMIT="4" if arm == "capped" else "999")
     path = OUT / f"{arm}.txt"
     proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--child"],
                             cwd=ROOT, env=env, stdout=subprocess.PIPE,
@@ -168,6 +178,11 @@ def supervise(arm, cap):
             if remainder:
                 print(remainder.decode(errors="replace"), flush=True)
             sel.close()
+    command(["/usr/bin/log", "show", "--last", "15m", "--style", "compact",
+             "--predicate", 'eventMessage CONTAINS[c] "GPU" OR eventMessage CONTAINS[c] "AGX" OR eventMessage CONTAINS[c] "Paravirtual"'],
+            OUT / f"{arm}-system-log.txt", timeout=30)
+    logtext = (OUT / f"{arm}-system-log.txt").read_text(errors="replace")
+    print("DIAG_SYSTEM_LOG", arm, logtext[-40000:], flush=True)
     print("DIAG_ARM " + json.dumps({"arm": arm, "reason": reason,
            "returncode": proc.returncode, "seconds": time.monotonic()-started}), flush=True)
 
@@ -177,7 +192,11 @@ def main():
     command(["/usr/sbin/system_profiler", "SPHardwareDataType", "SPDisplaysDataType"],
             OUT / "hardware.txt", timeout=30)
     print((OUT / "hardware.txt").read_text(), flush=True)
-    for arm, cap in [("uncapped", "0"), ("capped", "0.4")]:
+    command(["/usr/bin/xcrun", "swift", "-e", 'import Metal; for d in MTLCopyAllDevices() { print("METAL_DEVICE", d.name, "unified", d.hasUnifiedMemory, "maxBufferLength", d.maxBufferLength, "recommended", d.recommendedMaxWorkingSetSize, "allocated", d.currentAllocatedSize) }'], OUT / "metal-devices.txt", timeout=60)
+    print((OUT / "metal-devices.txt").read_text(), flush=True)
+    command(["/usr/bin/vm_stat"], OUT / "baseline-vm-stat.txt")
+    print((OUT / "baseline-vm-stat.txt").read_text(), flush=True)
+    for arm, cap in [("capped", "0.4"), ("uncapped", "0")]:
         supervise(arm, cap)
     return 0
 
