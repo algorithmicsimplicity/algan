@@ -17,7 +17,7 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-output_zip=$(realpath -m "$1")
+output_zip=$(realpath -m "$1")n
 provenance_file=$(realpath -m "$2")
 work=${RUNNER_TEMP:-/tmp}/quadrants-portable-llvm
 src=$work/llvm-project
@@ -136,15 +136,23 @@ find "$prefix/lib" -type f \
   -exec "$prefix/bin/llvm-strip" --strip-unneeded {} +
 
 # Linked ELF files carry concrete GLIBC version requirements, so measure those
-# exactly. Static archive members are earlier in the link pipeline: they can
-# contain an unresolved `_dl_find_object` without an @GLIBC_2.35 suffix yet.
-# Reject that raw symbol too; it is the object-level fingerprint of the bug
-# that the old prebuilt LLVM contributed to the final Quadrants extension.
+# exactly. Keep the complete symbol line alongside the candidate path as well
+# as the version-only list: if the gate fires, the log must identify the ELF
+# and import that raised the floor rather than forcing another blind rebuild.
+# Static archive members are earlier in the link pipeline: they can contain an
+# unresolved `_dl_find_object` without an @GLIBC_2.35 suffix yet. Reject that
+# raw symbol too; it is the object-level fingerprint of the bug that the old
+# prebuilt LLVM contributed to the final Quadrants extension.
 versions_file=$work/glibc-versions.txt
+references_file=$work/glibc-references.txt
 : > "$versions_file"
+: > "$references_file"
 while IFS= read -r -d '' candidate; do
   if readelf --wide --dyn-syms "$candidate" >/tmp/algan-readelf.$$ 2>/dev/null; then
     sed -nE 's/.*@GLIBC_([0-9]+\.[0-9]+).*/\1/p' /tmp/algan-readelf.$$ >> "$versions_file"
+    while IFS= read -r reference; do
+      printf '%s\t%s\n' "$candidate" "$reference" >> "$references_file"
+    done < <(grep -E '@GLIBC_[0-9]+\.[0-9]+' /tmp/algan-readelf.$$ || true)
   fi
 done < <(find "$prefix/bin" "$prefix/lib" -type f -print0)
 rm -f /tmp/algan-readelf.$$
@@ -157,6 +165,9 @@ max_glibc=$(sort -Vu "$versions_file" | tail -1)
 newest=$(printf '%s\n' "$max_glibc" 2.34 | sort -V | tail -1)
 [[ "$newest" == "2.34" ]] || {
   echo "portable LLVM requires GLIBC_$max_glibc, above the 2.34 target" >&2
+  echo "Offending GLIBC_$max_glibc references:" >&2
+  grep -F "@GLIBC_$max_glibc" "$references_file" >&2 || true
+  echo "All GLIBC versions found:" >&2
   sort -Vu "$versions_file" >&2
   exit 1
 }
