@@ -23,7 +23,14 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }} / Python ${{ matrix.python_version }} / render=${{ matrix.render_device }}
+    # The device is in the name only where it distinguishes two arms, and that
+    # is not cosmetic: a job's name IS the check name, branch protection pins
+    # required checks BY name, and a renamed check does not report -- it goes
+    # missing, which reads as "still pending" and blocks every PR until someone
+    # edits the protection rule. Three of these arms existed before the MPS one
+    # and keep the names they had; only the new arm carries a suffix, so
+    # nothing that was required stops arriving.
+    name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       # One platform or render device failing must not cancel the others. The
@@ -37,12 +44,23 @@ jobs:
       # accidental Cartesian product when another device or Python is added.
       #
       # 3.10 is the floor because Quadrants publishes cp310-cp313 wheels and no
-      # cp39. It is also the version whose standard library is missing things a
-      # contributor's newer editor can offer (`typing.Self`, `tomllib`, newer
-      # warnings/tarfile APIs), so the floor remains a real compatibility test.
-      # 3.13 is the ceiling below `<3.14`; its `audioop` removal is covered by
-      # the locked `audioop-lts` marker and therefore stays as the Linux ceiling
-      # arm.
+      # cp39 -- it moved there from 3.9 when Quadrants became the kernel
+      # compiler. Testing the floor is not a formality: it is the version whose
+      # standard library is missing things a contributor's editor will happily
+      # offer, and Ruff guards only the annotations (`target-version = "py310"`
+      # plus a mandatory `from __future__ import annotations`). `zip(strict=)`
+      # is 3.10, `typing.Self` and `tomllib` are 3.11,
+      # `warnings.warn(skip_file_prefixes=)` and `tarfile`'s `filter="data"`
+      # are 3.12 -- the last two are declined BY NAME in `algan/errors.py` and
+      # `tests/baseline_store.py`, and nothing but this arm guards that the
+      # package still imports and runs there.
+      #
+      # 3.13 is the ceiling below `<3.14`, and it is not a formality either:
+      # pydub -- reached at import time through manim's scene_file_writer --
+      # imports `audioop`, which was REMOVED from the standard library in 3.13.
+      # What makes that work is `audioop-lts`, which uv.lock carries with a
+      # `python_full_version >= '3.13'` marker. This arm is what keeps a future
+      # lock update from quietly dropping it.
       matrix:
         include:
           - os: ubuntu-latest

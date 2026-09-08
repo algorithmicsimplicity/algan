@@ -1115,6 +1115,16 @@ the list tractable: two of them are more than two thirds of the arm.
 | G | the source-key index is poisoned on every kernel | 1 | **fixed** — §2.3e |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | **fixed** — §4.4 |
 
+**Observed on the arm and NOT a failure**, recorded so the next reader does not
+chase it: the first render of a process warns that `torch.compile` refused
+`raster_pipeline._triangle_projection_fused` with `InductorError: KeyError:
+torch.float64`, and Algan runs that function eagerly for the rest of the
+process. Nothing in it is float64 — MPS-friendly mode narrows every accumulator
+— so the likely candidate is a Python float constant Dynamo traces as a float64
+the Inductor MPS backend has no entry for. It costs one fused pass and one
+warning per process, it is self-limiting, and one refused graph is not enough
+evidence to declare `torch.compile` unsupported on the device.
+
 ### 4.2 B: the glossy tile loop, the one worth doing next
 
 Thirteen tests, one line: `tracer.py`'s
