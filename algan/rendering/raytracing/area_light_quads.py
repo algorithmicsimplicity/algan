@@ -9,34 +9,18 @@ two gaps it could not close while a light was a row rather than geometry: no
 reflected image in a mirror, and no BSDF strategy to MIS against.
 
 This module gives the path tracer its own view of the same light: **two
-emissive triangles** covering the rectangle, appended to a private copy of the
-merged scene for this render call. They then ride the emissive-triangle path
+emissive triangles** covering the rectangle, inserted into the path-traced
+merge before its acceleration structures are built. They ride the emissive-triangle path
 that already exists end to end -- area sampling from the next-event table,
 ``_pt_lit_f_pdf`` at both ends of the MIS pair, power-heuristic weights, and a
 BSDF continuation ray that can find them.
 
-Three things make them behave like the light they replace rather than like an
-ordinary emissive slab:
+The triangles are ordinary opaque, shadow-casting surfaces, visible to camera,
+reflection and refraction rays. Their front side emits; their back side is
+black. They enter scene preparation before its BVH build and arena upload,
+so no second tree or persistent copy of the triangle tables is needed.
 
-* **Invisible to camera-segment rays.** Not a BVH leaf bit: the deterministic
-  renderer never sees these triangles at all (they exist only in the path
-  tracer's copy of the merge), so the cheapest correct place to test it is
-  where ``pt_shade`` drains the crossing -- ``bounces_left >= max_b`` is the
-  camera segment, exactly as the closed-shell ring reads it. A camera ray
-  peels straight through; a ray that has scattered once (a mirror) sees the
-  light. The quads are packed NON-opaque so the k-buffer's opaque prune and
-  ``pt_opaque_closest`` cannot hide the geometry behind them.
-* **No shadow.** They are stamped as non-casters in the rebuilt triangle BVH,
-  the same leaf bit ``Mob.casts_shadows = False`` uses, so a shadow ray walks
-  through them -- matching the deterministic renderer, where an area light is
-  not an occluder.
-* **The row model's falloff.** ``RectAreaLight.decay`` defaults to 0 (no
-  distance falloff at all) while a physical emissive quad has inverse square
-  built into transport, i.e. ``decay = 2``. The difference rides a per-emitter
-  radiance multiplier ``d^(2 - decay) * fade(d)^2`` evaluated at BOTH MIS ends
-  from the same distance, so the weights still sum to one. Its two numbers per
-  quad live in ``pt_quad_falloff`` and an ordinary emissive triangle never
-  reaches them (``prim < pt_quad_base``), so those stay bit-identical.
+The existing light falloff controls remain shared by the two MIS strategies.
 
 ``rt_settings.pt_area_light_quads`` (``ALGAN_PT_AREA_LIGHT_QUADS``) is the kill
 switch: off, nothing here runs and the packed cell rows are the path tracer's
@@ -197,35 +181,19 @@ def _quad_geometry(light, num_frames, device):
     return pos, normal, radiance, 2.0 - decay, rng
 
 
-def build_area_light_quads(merged, light_sources, memory, num_frames):
-    """Append one emissive quad per ``RectAreaLight`` to a copy of ``merged``.
+def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
+    """Return the widened scene and triangle BVH inputs, before tree building.
 
-    Returns a NEW merged dict (the caller's stays untouched, so the persistent
-    device scene the deterministic renderer may render next never carries these
-    triangles), or the original object when there is nothing to add. The copy
-    additionally carries:
-
-    ``pt_quad_base``
-        First primitive index of the synthetic quads. Rides ``nee_meta`` into
-        ``pt_shade``, where it is the camera-invisibility test and the gate on
-        the falloff multiplier.
-    ``pt_quad_falloff``
-        ``[2 * L, 2]`` float32: each quad's ``(2 - decay, distance)``.
-    ``pt_quad_rows``
-        The packed light-row indexes now represented by geometry. The
-        next-event table must NOT enter them (they would be counted twice) and
-        the lit direct-lighting fill must not see them either.
-
-    Bails out (returning ``merged`` unchanged) on any merge shape the append
-    cannot be made exactly consistent with -- constant-property promotion or
-    the memory-trim layout, neither of which a ``samples_per_pixel > 1`` batch
-    produces -- rather than guessing.
+    ``pt_quad_base`` identifies synthetic emitters; ``pt_quad_falloff`` holds
+    their distance law and ``pt_quad_rows`` withdraws their packed rows from
+    physical next-event estimation. Authored materials retain those rows.
+    Existing build inputs are extended directly, without recomputing bounds.
     """
     if not rt_settings.pt_area_light_quads:
-        return merged
+        return merged, bvh_inputs
     sources = area_light_quad_sources(light_sources)
     if not sources:
-        return merged
+        return merged, bvh_inputs
 
     device = merged["tri_pos"].device
     n_old = int(merged.get("num_triangles") or 0)
@@ -236,17 +204,21 @@ def build_area_light_quads(merged, light_sources, memory, num_frames):
         # compacts them behind a remap. Neither is produced for
         # samples_per_pixel > 1, so this is a guard, not a fallback path.
         if merged.get("tri_col_row") is not None:
-            return merged
+            return merged, bvh_inputs
         if int(merged["tri_colors"].shape[1]) < n_old:
-            return merged
+            return merged, bvh_inputs
 
     rows_replaced = []
-    pos_parts, norm_parts, rad_parts, fall_parts = [], [], [], []
+    pos_parts, norm_parts, rad_parts, fall_parts, active_parts = [], [], [], [], []
     for light, row_start, row_count in sources:
         pos, normal, radiance, expo, rng = _quad_geometry(light, num_frames, device)
         pos_parts.append(pos)
         norm_parts.append(normal)
         rad_parts.append(radiance)
+        active = getattr(light, "_render_active", None)
+        if active is None:
+            active = torch.ones(1, dtype=torch.bool, device=device)
+        active_parts.append(active.to(device).reshape(-1, 1).expand(-1, 2))
         fall_parts.append([expo, rng])
         fall_parts.append([expo, rng])
         rows_replaced.extend(range(row_start, row_start + row_count))
@@ -264,7 +236,7 @@ def build_area_light_quads(merged, light_sources, memory, num_frames):
             frames,
             int(num_frames),
         )
-        return merged
+        return merged, bvh_inputs
     quad_pos = torch.cat([_bcast_time(p, frames) for p in pos_parts], 1)
     n_new = int(quad_pos.shape[1])
     # Both triangles of a quad share the light's facing normal, at every corner.
@@ -365,21 +337,23 @@ def build_area_light_quads(merged, light_sources, memory, num_frames):
     quad_uvs = torch.zeros((old_uvs.shape[0], n_new, uv_w), dtype=f32, device=device)
     new["tri_uvs"] = torch.cat((old_uvs, quad_uvs), 1).contiguous()
 
-    # ------------------------------------------------------------------
-    # The triangle BVH, rebuilt over the widened primitive set.
-    # ------------------------------------------------------------------
-    lo, hi, opaque, casts = _tri_bvh_inputs(merged, new, n_old, n_new, device)
-    new["tri_bvh"] = _rebuild_tri_bvh(lo, hi, opaque, casts, num_frames, merged)
-    # The quads pass camera rays through and are packed non-opaque, so the
-    # k-buffer's "prune everything behind a proven-opaque hit" and the
-    # nearest-hit-only traversal must both be off for this batch.
-    new["all_visible_opaque"] = False
+    # Extend the original build inputs; scene_builder builds the only tree.
+    active_frames = max(a.shape[0] for a in active_parts)
+    active = torch.cat([_bcast_time(a, active_frames) for a in active_parts], 1)
+    lo, hi, opaque, casts = _tri_bvh_inputs(
+        bvh_inputs, new, n_old, n_new, device, active
+    )
     new["tri_frame_valid"] = _collapse_time((hi >= lo).all(-1))
     new["tri_frame_opaque"] = _collapse_time(opaque)
     new["tri_frame_casts"] = _collapse_time(casts)
+    uncertain = torch.zeros((1, n_new), dtype=torch.bool, device=device)
+    new["tri_alpha_uncertain"] = _collapse_time(_cat("tri_alpha_uncertain", uncertain))
     new["num_triangles"] = (n_old if base_pos is not None else 0) + n_new
-    new["tri_has_visible"] = True
-    new["has_any_visible"] = True
+    # ``tri_has_visible`` / ``has_any_visible`` are deliberately NOT set here:
+    # _merge_scene re-runs _record_visibility over the widened bounds and
+    # recomputes both from the per-prefix flags as soon as this returns, so a
+    # write here would be dead and would read as authoritative to the next
+    # person changing the visibility rule.
 
     new["pt_quad_base"] = n_old if base_pos is not None else 0
     new["pt_quad_falloff"] = torch.tensor(fall_parts, dtype=f32, device=device)
@@ -392,77 +366,32 @@ def build_area_light_quads(merged, light_sources, memory, num_frames):
         n_new,
         len(rows_replaced),
     )
-    return new
+    return new, (lo, hi, opaque, casts)
 
 
-def _tri_bvh_inputs(merged, new, n_old, n_new, device):
-    """Per-frame bounds / opacity / caster masks for the widened prim set.
-
-    The merge does not retain its own ``lo`` / ``hi`` (they are BVH build
-    inputs, dropped once the tree exists), so the existing triangles' bounds
-    are recomputed from ``tri_pos`` -- which is exactly how the merge derived
-    them (``corners.amin(-2)`` / ``amax(-2)``) -- and re-marked empty wherever
-    ``tri_frame_valid`` says the primitive is invisible on that frame.
-    """
-    have_old = n_old > 0 and merged.get("tri_pos") is not None
+def _tri_bvh_inputs(bvh_inputs, new, n_old, n_new, device, active):
+    """Extend the merge's bounds and flags with opaque, casting emitters."""
     parts_lo, parts_hi, parts_op, parts_cast = [], [], [], []
-    if have_old:
-        pos = merged["tri_pos"]
-        # ``reshape``, not ``view``: an arena-homed table is recreated with its
-        # original stride and need not be contiguous.
-        v = pos.reshape(pos.shape[0], pos.shape[1], 3, 3)
-        g_lo = v.amin(-2)
-        g_hi = v.amax(-2)
-        valid = merged["tri_frame_valid"]
-        t = max(int(g_lo.shape[0]), int(valid.shape[0]))
-        g_lo = _bcast_time(g_lo, t)
-        g_hi = _bcast_time(g_hi, t)
-        valid = _bcast_time(valid, t).unsqueeze(-1)
-        parts_lo.append(torch.where(valid, g_lo, torch.full_like(g_lo, EMPTY_LO)))
-        parts_hi.append(torch.where(valid, g_hi, torch.full_like(g_hi, EMPTY_HI)))
-        parts_op.append(merged["tri_frame_opaque"])
-        parts_cast.append(merged["tri_frame_casts"])
+    if bvh_inputs is not None:
+        lo, hi, opaque, casts = bvh_inputs
+        parts_lo.append(lo)
+        parts_hi.append(hi)
+        parts_op.append(opaque)
+        parts_cast.append(casts)
 
-    q = new["tri_pos"][:, (n_old if have_old else 0) :]
+    q = new["tri_pos"][:, n_old:]
     qv = q.reshape(q.shape[0], n_new, 3, 3)
-    parts_lo.append(qv.amin(-2))
-    parts_hi.append(qv.amax(-2))
-    # Non-opaque: nothing behind a quad may be pruned, and the nearest-hit
-    # traversal must not stop on one. Non-casting: a shadow ray walks through,
-    # which is what the deterministic renderer does with an area light.
-    parts_op.append(torch.zeros((1, n_new), dtype=torch.bool, device=device))
-    parts_cast.append(torch.zeros((1, n_new), dtype=torch.bool, device=device))
+    frames = max(qv.shape[0], active.shape[0])
+    active = _bcast_time(active, frames).unsqueeze(-1)
+    lo = _bcast_time(qv.amin(-2), frames)
+    hi = _bcast_time(qv.amax(-2), frames)
+    parts_lo.append(torch.where(active, lo, torch.full_like(lo, EMPTY_LO)))
+    parts_hi.append(torch.where(active, hi, torch.full_like(hi, EMPTY_HI)))
+    parts_op.append(torch.ones((1, n_new), dtype=torch.bool, device=device))
+    parts_cast.append(torch.ones((1, n_new), dtype=torch.bool, device=device))
 
     def _join(parts):
         t = max(int(p.shape[0]) for p in parts)
         return torch.cat([_bcast_time(p, t) for p in parts], 1).contiguous()
 
-    lo = _join(parts_lo)
-    hi = _join(parts_hi)
-    if lo.shape[0] != hi.shape[0]:  # pragma: no cover - _join gives one T
-        raise ValueError("area-light quad bounds disagree on frame count")
-    return lo, hi, _join(parts_op), _join(parts_cast)
-
-
-def _rebuild_tri_bvh(lo, hi, opaque, casts, num_frames, merged):
-    """Build the widened triangle tree, in the batch's own tree kind.
-
-    The kind is taken from the tree the merge already produced rather than
-    from the live toggle: every launch passes ONE ``refit`` template for all
-    four trees of a batch, so a toggle flipped mid-render must not make this
-    one disagree with the circuit trees beside it.
-    """
-    from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
-    from algan.rendering.raytracing.refit_bvh import RefitBVH
-    from algan.rendering.raytracing.scene_builder import _build_accel
-
-    return _build_accel(
-        lo,
-        hi,
-        num_frames=num_frames,
-        tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-        opaque=opaque,
-        casts=casts,
-        builder="split",
-        refit=isinstance(merged.get("tri_bvh"), RefitBVH),
-    )
+    return _join(parts_lo), _join(parts_hi), _join(parts_op), _join(parts_cast)

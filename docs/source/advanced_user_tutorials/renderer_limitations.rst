@@ -239,7 +239,7 @@ Five further consequences of the split, not covered there:
 * **Lit surfaces are not as bright here, and they answer to one BSDF.** The
   path tracer evaluates every light with the same physically-normalised
   response its own rays sample -- ``albedo / pi`` diffuse, GGX with the exact
-  Smith masking-shadowing term, Fresnel and multiple-scattering compensation
+  Smith masking-shadowing term, Fresnel and opaque-reflection multiple-scattering compensation
   -- where the deterministic renderer uses its stage formulas. So a Lambert
   surface under a light is about ``pi`` times dimmer than its
   ``samples_per_pixel = 1`` render, before whatever indirect light the scene
@@ -268,10 +268,9 @@ Five further consequences of the split, not covered there:
   tracer instead treats it as an emissive rectangle, which is what it
   physically is. Three visible consequences: a mirror or a polished metal
   **shows the light's reflection**, which the deterministic renderer cannot
-  draw at all; the panel itself is still **invisible to the camera**, so
-  putting a light in shot does not put a white rectangle in the frame; and it
-  still **casts no shadow**, so you can place one between the camera and your
-  subject. Its ``decay`` and ``distance`` mean exactly what they do in the
+  draw at all; the panel's emitting front is **visible to the camera** while
+  its back is black; and it **casts shadows and occludes geometry** like an
+  opaque surface. Place the panel outside the shot when you want only its light. Its ``decay`` and ``distance`` mean exactly what they do in the
   other renderer -- ``decay = 0``, the default, really is no falloff, even
   though a physical emitter of that size would fade with distance. A
   ``samples = 16`` area light also costs the sampler two emitters here rather
@@ -718,12 +717,31 @@ Reflection
 Refraction
 ----------
 
+* **The path tracer blurs both reflection and refraction with roughness.**
+  With ``samples_per_pixel > 1``, a transmitting physical material uses one
+  GGX microfacet distribution for both outcomes. Fresnel and total internal
+  reflection are evaluated at the sampled facet using the relative indices
+  of the two media. Direct lighting and continuation rays use matching
+  probabilities, including light arriving through the opposite hemisphere.
+  ``roughness < 0.01`` gives a smooth interface; equal indices give straight
+  transmission at any roughness. The existing material controls select this
+  behavior without another setting.
+
+  Refraction includes the radiance index-squared factor; entry and exit
+  cancel in the same surrounding medium, and roulette accounts for that
+  cancellation. This is a single-scatter microfacet model: very rough glass
+  can lose energy to unmodelled scattering between facets. The opaque-metal
+  compensation is deliberately not applied to glass. Shadow connections
+  through additional glass remain straight, so this does not add caustics.
+  Custom scatter overrides and thin Bezier panes keep their authored delta
+  continuations.
 * **Nested media are modelled, up to four deep.** A ray carries the stack of
   media it is inside, so each interface refracts with the relative index of the
   two media it separates: glass inside glass, a sphere inside a box, a bubble
   in a liquid. Only a ray that enters a **fifth** medium without leaving one
-  loses track. Three limits stand: Fresnel reflectance uses the material's own
-  index rather than the relative one, a scene carrying a custom fragment
+  loses track. The deterministic renderer's Fresnel reflectance uses the
+  material's own index rather than the relative one; the path tracer's
+  physical glass uses the relative index. A scene carrying a custom fragment
   scatter gets no nesting at all (every interface there still assumes air
   outside), and the camera is assumed to start in air.
   ``SETTINGS.raytracing.experimental.set(nested_ior=False)`` returns to the

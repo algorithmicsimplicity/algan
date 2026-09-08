@@ -105,7 +105,7 @@ The sheet compaction now caps a shell's cumulative exact coverage per (pixel, su
 
 Closedness is computed rather than asserted — a partial-sweep `Sphere` is open, `Cone`/`Cylinder` need caps *and* a full sweep, and `Polyhedron` takes it from the closed-orientable-manifold proof `orient_faces_outward` already performs.
 
-**The rule reaches primary visibility only**: a mirror's image of a translucent solid, and any `samples_per_pixel > 1` render, keep the doubled composite, because the wavefront bounce loop carries no surface identity. `benchmarks/_opacity_alpha_check.py` is the acceptance harness and `ALGAN_SOLID_SHELL_ALPHA=0` restores the old behaviour byte-identically.
+**The deterministic rule reaches primary visibility only**: its mirror image still doubles. The path tracer now pairs crossings on every straight segment with its fixed shell ring, clearing it at each actual scatter; reflected opacity therefore composites once, while glass still evaluates each refractive interface. `benchmarks/_opacity_alpha_check.py` is the acceptance harness and `ALGAN_SOLID_SHELL_ALPHA=0` restores the old behaviour byte-identically.
 
 ## The working colour space is linear
 
@@ -129,37 +129,44 @@ Two things worth knowing: the umbra legitimately *lifts* (a `k x k` centre grid 
 
 The flag is read **host-side only** (`ALGAN_AREA_LIGHT_SOFT_SHADOWS` / `SETTINGS.raytracing.experimental.area_light_soft_shadows`): off, `_build_aux` packs zeros and the kernels take their existing path with no recompile and no per-arm process. `benchmarks/_area_light_shadow_check.py` is the acceptance harness; `tests/unit_tests/test_area_light_soft_shadow.py` is the guard, and its render arms exist to **compile both fans** — a host-side test cannot see a Taichi scoping error, which is how one shipped mid-review.
 
-## Under the path tracer an area light is geometry, not rows
+## Under the path tracer an area light is geometry
 
-Everything above is the **deterministic** renderer's model, and it is unchanged. With
-`samples_per_pixel > 1` the path tracer builds its own view of each `RectAreaLight`:
-**two emissive triangles** covering the rectangle, appended by
-`raytracing/area_light_quads.py` to a *private copy* of the merged scene (the persistent
-device scene the deterministic renderer may render from next never carries them), with the
-triangle BVH rebuilt over the widened primitive set. They ride the emissive-triangle path
-end to end — area sampling from the next-event table, `_pt_lit_f_pdf` at both ends,
-power-heuristic MIS, and a BSDF ray that can hit them, which is what gives an area light a
-reflection in a mirror. The `K` cell rows stay in `light_col` (authored-appearance
-materials still light from them) but stop being selectable in `_build_nee_tables`, so
-nothing is counted twice.
+For `samples_per_pixel > 1`, `area_light_quads.py` appends two triangles per
+`RectAreaLight` inside `_merge_scene`, before the single BVH build and arena
+preflight/upload. CPU prewarming and GPU preparation both consume immutable
+batch snapshots. Never reintroduce per-window widening, a second tree build,
+or an unaccounted persistent copy.
 
-Three properties to keep if you touch it. The quads are **invisible to the camera
-segment** — one `prim >= quad_base` compare in `pt_shade`'s drain loop gated on
-`bounces_left >= max_b`, not a BVH leaf bit, because the deterministic renderer never sees
-these triangles at all — and they are packed **non-opaque** so nothing behind one is
-pruned while it is being skipped (that batch turns `all_visible_opaque` off, which also
-disables `pt_opaque_closest`). They are **non-casting** in the rebuilt tree, the same leaf
-bit `casts_shadows = False` uses, matching the deterministic renderer where an area light
-is not an occluder. And the row model's `decay` (default 0 = no falloff) survives as a
-per-emitter radiance multiplier `d^(2 - decay) * fade(d)^2` in `pt_emit_falloff`, applied
-at the EMITTER so both MIS ends evaluate it from the same distance; an ordinary emissive
-triangle is `prim < quad_base` and is bit-identical.
+The panels are opaque shadow casters: the front emits, the back is black, and
+camera and secondary rays see them. There is no camera-visibility flag.
+The existing experimental `pt_area_light_quads=False` keeps the row arm.
+Their cell rows are withdrawn from physical NEE, but remain in authored
+lighting. `prev_pdf=-2` on an authored diffuse continuation suppresses only
+its immediate synthetic-emitter contribution; the panel still absorbs the
+ray. Camera (`-1`), delta (`0`) and positive-density MIS states are distinct.
+Pass-throughs preserve that marker; a new scatter replaces it.
 
-`SETTINGS.raytracing.experimental.pt_area_light_quads` / `ALGAN_PT_AREA_LIGHT_QUADS=0`
-restores the packed-rows arm byte for byte — host-side, no kernel variant. Measured
-2.09x lower MSE at equal spp (`benchmarks/_pt_area_light_quad_variance.py`);
-`tests/unit_tests/test_path_tracer.py`'s `test_area_light_quad_*` are the guards, and
-roadmap §6a-ter is the record.
+`pt_quad_falloff` retains the same `decay`/`distance` law at both MIS ends.
+`decay=2, distance=0` is physical radiance; default `decay=0` retains the
+existing no-falloff control. See roadmap §6a-ter and §10.
+
+## The path tracer uses one rough dielectric interface
+
+Physical transmitting triangles sample one GGX visible facet and then its
+Fresnel reflection/refraction outcome. `_pt_glass_terms`, `_pt_sample_glass`
+and `_pt_glass_f_pdf` must agree on branch probabilities and direction density,
+including the transmission Jacobian. `_pt_lit_f_pdf` supplies the full mixture
+to both NEE and continuation. Smooth interfaces (`roughness < 0.01`) are delta;
+equal indices transmit straight. Only valid crossings update the medium stack.
+
+Here `eta = n_incident / n_transmitted`: radiance multiplies by `eta^2` on
+transmission, while unused path scalar slot 6 accumulates its inverse for
+roulette and minimum-weight decisions. Keep the 12-float state width unchanged.
+Do not apply opaque GGX's Turquin compensation to transmitting interfaces:
+this is a single-scatter dielectric model. Shadow connections through further
+interfaces are still straight (no caustics). `test_rough_dielectric.py` checks
+PDF mass, sampled power, reciprocity and Snell/TIR; `test_path_tracer.py` adds
+rendered blur, lighting and roulette checks. See roadmap section 10.
 
 ## Under the path tracer an authored-appearance material samples its light rows
 

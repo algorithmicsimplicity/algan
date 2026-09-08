@@ -154,7 +154,9 @@ def overlap_scene(monkeypatch):
         for primitive in primitives:
             primitive._rt_projected = True
 
-    def _prepare_merged_host_scene(primitive_batch, *, track_peak=None):
+    def _prepare_merged_host_scene(
+        primitive_batch, *, render_state=None, track_peak=None
+    ):
         scene.builds.append(("merge", track_peak))
         return {"num_triangles": 0}, None
 
@@ -291,7 +293,7 @@ def test_prepare_batch_on_worker_merge_oom_defers_to_render_thread(
         lambda force_gc=False: cache_calls.append(True),
     )
 
-    def failing_merge(primitive_batch, *, track_peak=None):
+    def failing_merge(primitive_batch, *, render_state=None, track_peak=None):
         raise exc
 
     overlap_scene._prepare_merged_host_scene = failing_merge
@@ -317,7 +319,7 @@ def test_prepare_batch_on_worker_reraises_real_merge_errors(overlap_scene, monke
     overlap_scene._project_peak_ratio.observe(10, 20)
     overlap_scene._merge_peak_ratio.observe(10, 20)
 
-    def broken_merge(primitive_batch, *, track_peak=None):
+    def broken_merge(primitive_batch, *, render_state=None, track_peak=None):
         raise ValueError("not a memory failure")
 
     overlap_scene._prepare_merged_host_scene = broken_merge
@@ -381,7 +383,9 @@ def _make_preflight_driver(monkeypatch, overlapped):
         for primitive in primitives:
             primitive._rt_projected = True
 
-    def _prepare_merged_host_scene(primitive_batch, *, track_peak=None):
+    def _prepare_merged_host_scene(
+        primitive_batch, *, render_state=None, track_peak=None
+    ):
         # A measured merge peak rides the dict; whether anybody reads it is
         # what the assertions below decide. The tensor gives the exact arena
         # accounting something nonzero to weigh.
