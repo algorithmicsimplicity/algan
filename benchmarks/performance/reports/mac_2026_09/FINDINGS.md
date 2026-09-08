@@ -1,5 +1,11 @@
 # Metal render on the Mac GPU: everything this round established
 
+> **2026-09-08 correction:** [REORDER_FIX.md](REORDER_FIX.md) identifies an MPS
+> output-offset bug that corrupts the ray queue and arena. The repaired queue
+> reduces traversal from 275 to 4–5 passes per chunk and completes repeated
+> uncapped UHD renders. This historical report's performance and virtualization
+> conclusions must be read with that correction.
+
 One self-contained record of a session spent optimising `nn_scene_UHD.py` on
 Apple silicon. It covers what was fixed, what was measured, the one substantial
 performance finding, and an unresolved failure that the same work introduced.

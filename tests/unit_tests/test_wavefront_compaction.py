@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from algan.rendering.raytracing import settings as rt_settings
@@ -7,8 +8,59 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     ALLOC_WIDTH,
     SCA_WIDTH_NESTED,
     SCA_WIDTH_PLAIN,
+    reorder_ray_slots,
 )
+from algan.rendering.taichi_runtime import init_taichi
+from algan.settings._startup import render_device
+from algan.taichi_compat import ti
 from algan.utils.memory_utils import ManualMemory
+
+
+@pytest.mark.parametrize("count", [0, 7, 257])
+def test_ray_reorder_preserves_other_views_of_the_same_arena(count):
+    """A gather must honor both offsets and leave every other arena byte alone."""
+    init_taichi()
+    device = render_device()
+    memory = ManualMemory(0, device=device, num_bytes=4096)
+    memory.data.zero_()
+    memory.get_tensor((3,), torch.uint8)
+    compactor = tracer._ArenaRayCompactor(memory, count + 5)
+    compactor.current.copy_(
+        torch.arange(count + 5, dtype=torch.int32, device=device) + 17
+    )
+    active = compactor.current[:count]
+    permutation = torch.arange(count - 1, -1, -1, device=device)
+    expected = active.cpu()[permutation.cpu()]
+    before = memory.data.cpu().clone()
+    offset = compactor.spare.storage_offset() * compactor.spare.element_size()
+    before[offset : offset + count * 4].copy_(expected.view(torch.uint8))
+
+    reorder_ray_slots(active, permutation, compactor.spare, count)
+    ti.sync()
+
+    assert torch.equal(memory.data.cpu(), before)
+
+
+def test_compactor_reorder_keeps_the_permutation_across_buffer_swaps():
+    """Exercise the MPS dispatch too when this test runs on the Mac GPU arm."""
+    init_taichi()
+    device = render_device()
+    memory = ManualMemory(0, device=device, num_bytes=4096)
+    memory.data.zero_()
+    memory.get_tensor((13,), torch.uint8)
+    compactor = tracer._ArenaRayCompactor(memory, 11)
+    active = compactor.initial(7)
+    active.add_(23)
+    expected = active.cpu().clone()
+    for indexes in ([4, 1, 6, 0, 5, 2, 3], [6, 5, 4, 3, 2, 1, 0]):
+        permutation = torch.tensor(indexes, device=device)
+        expected = expected[indexes]
+        active = compactor.reorder(active, permutation)
+        assert (
+            active.untyped_storage().data_ptr()
+            == memory.data.untyped_storage().data_ptr()
+        )
+        assert torch.equal(active.cpu(), expected)
 
 
 def _fake_compact(
