@@ -353,8 +353,10 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     loudly if the answer changes. The fast path is only safe with that guard in
     place; do not drop one without the other.
 
-    Off the mode, and for any dtype that is not int64, this is exactly
-    ``index_select``.
+    Off the mode, and for any dtype narrower than int32, this is exactly
+    ``index_select``. The mechanism is not specific to the key, so it is
+    :func:`gather_exact` that implements it and this function names the call
+    site the ceiling was first caught at.
 
     **Not the only gather at risk, only the confirmed one.** ``sheets._lexsort``
     gathers ``pix``, which is ``frame_rel * width * height + pixel``: 282179 for
@@ -363,7 +365,38 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     stays scoped to the key the hardware actually caught -- it is a real
     exposure and it is written down rather than guessed at.
     """
-    if not mps_friendly() or tensor.dtype is not torch.int64:
+    return gather_exact(tensor, index)
+
+
+def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+    """``tensor.index_select(0, index)`` for an integer whose low bits matter.
+
+    :func:`gather_packed_key` is this function applied to the fragment key, and
+    the ceiling it documents is a property of the **gather**, not of that key:
+    ``_MPS_EXACT_INT_BITS`` is 24 for int32 and for int64 alike, measured at
+    both widths by ``probe_gather_isolated``. So any integer array whose value
+    can pass 2**24 and whose low bits carry meaning wants this spelling, and
+    that is more than one array.
+
+    The one that was **measured wrong in a real render** is the raster count
+    pass's per-pair acceptance mask (``raster_pipeline``): 32 bits, one per
+    chunk pixel, replayed by the write pass instead of recomputing the
+    acceptance chain. A mask is the worst possible thing to round -- there is
+    no "close" -- and rounding it clears the low bits, so pixels the count pass
+    accepted are never written and their fragment slots stay at whatever the
+    arena held. That reads downstream as a key of exactly zero: pixel 0, depth
+    0, coverage 0, sorting to the front of the stream, which is what the Apple
+    GPU produced (``DESIGN_mps_support.md`` §4.2 has the table).
+
+    ``2 of 144`` gathers in one smoke render disagreed with the CPU, first
+    value ``-2147221505`` against ``-2147221504`` -- ``0x8003FFFF`` rounded to
+    ``0x80040000``, the sign bit intact and eighteen bits of mask gone.
+
+    Restricted to int32 and int64 because those are the widths measured. A
+    narrower integer cannot reach the ceiling and takes ``index_select``, which
+    is one op rather than a dispatch this module has to keep vouching for.
+    """
+    if not mps_friendly() or tensor.dtype not in (torch.int32, torch.int64):
         return tensor.index_select(0, index)
     return tensor[index]
 

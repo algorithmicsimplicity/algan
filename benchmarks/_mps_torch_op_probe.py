@@ -400,6 +400,44 @@ def probe_gather_isolated(device):
         reference = want if label != "v.repeat_interleave(2)[::2]" else values_c
         _report(f"int64 2**40 via {label}", bool(torch.equal(reference, got)))
 
+    # The same question at **int32 with the sign bit set**, which is the shape
+    # the render actually caught: `raster_pipeline`'s per-pair acceptance mask
+    # is 32 bits of flags, and the Apple GPU returned 0x80040000 for the
+    # 0x8003FFFF the CPU has. `gather_exact` routes it to `v[i]`, so `v[i]`
+    # being exact HERE -- not only at int64 2**40 -- is what that fix rests on.
+    # The mask is built rather than randomised: every bit pattern below is one
+    # a count pass can really produce, including all-ones and sign-bit-only.
+    masks_c = torch.tensor(
+        [
+            -2147221505,  # 0x8003FFFF, the value measured wrong on the hardware
+            -1,  # every pixel accepted
+            -2147483648,  # 0x80000000, only the top pixel
+            0x7FFFFFFF,
+            0x01000001,  # just past the ceiling, low bit meaningful
+            0x00FFFFFF,  # exactly at it
+        ],
+        dtype=torch.int32,
+    ).repeat(n // 6 + 1)[:n]
+    masks_m = masks_c.to(device)
+    if not torch.equal(masks_c, masks_m.cpu()):
+        _report("int32 mask: round trip", False, "the values changed on the way")
+    else:
+        want_masks = masks_c.index_select(0, index_c)
+        for label, run in (
+            ("index_select", lambda v, i: v.index_select(0, i)),
+            ("advanced indexing v[i]", lambda v, i: v[i]),
+        ):
+            got = run(masks_m, index_m).cpu()
+            bad = int((want_masks != got).sum())
+            detail = ""
+            if bad:
+                where = int((want_masks != got).nonzero()[0][0])
+                detail = (
+                    f"{bad}/{n} differ, first cpu {int(want_masks[where])} "
+                    f"vs mps {int(got[where])}"
+                )
+            _report(f"int32 sign-bit mask via {label}", bad == 0, detail)
+
 
 def probe_lookup(device):
     """``searchsorted`` and the gathers -- the CSR the resolve indexes with."""

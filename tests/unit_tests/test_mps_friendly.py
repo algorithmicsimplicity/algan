@@ -349,6 +349,61 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
 
 
 @pytest.mark.fast
+def test_advanced_indexing_is_exact_for_a_thirty_two_bit_mask(computing_settings):
+    """The same dispatch bet, at the width and shape the render caught it at.
+
+    The test above establishes ``v[i]`` at int64 and around 2**50, which is the
+    fragment key. The raster count pass's per-pair **acceptance mask** is a
+    different exposure and a worse one: 32 bits of flags, one per chunk pixel,
+    and rounding it does not shift a value slightly -- it clears the low bits,
+    so the write pass skips pixels the count pass accepted and leaves their
+    fragment slots holding whatever the arena had. Measured on the hardware:
+    ``0x8003FFFF`` came back as ``0x80040000``, eighteen bits of mask gone.
+
+    So ``gather_exact`` routes int32 through ``v[i]`` as well, and this is what
+    says it may. The values are real mask patterns rather than random integers
+    -- all-ones, sign-bit-only, one either side of the ceiling -- because what
+    matters is the *bits*, and a random draw would not include the corners a
+    count pass actually produces.
+
+    Like its sibling it selects the device from ``torch.backends.mps``, so a
+    green run off an Apple machine does not clear it.
+    """
+    computing_settings.set(mps_friendly=True)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+    masks = torch.tensor(
+        [
+            -2147221505,  # 0x8003FFFF, the pattern measured wrong on MPS
+            -1,  # every chunk pixel accepted
+            -2147483648,  # 0x80000000, only the last one
+            0x7FFFFFFF,
+            0x01000001,  # just past the ceiling, low bit meaningful
+            0x00FFFFFF,  # exactly at it
+            0,
+            1,
+        ],
+        dtype=torch.int32,
+    ).repeat(64)
+    index = torch.randperm(masks.numel(), generator=torch.Generator().manual_seed(5))
+    want = masks.index_select(0, index)
+
+    on_device = masks.to(device)
+    moved = index.to(device)
+    assert torch.equal(masks, on_device.cpu()), (
+        "the masks changed on the way to the device, so nothing below is "
+        "attributable to the gather"
+    )
+    assert torch.equal(on_device[moved].cpu(), want), (
+        f"advanced indexing v[i] is no longer exact on {device} for a 32-bit "
+        "mask. mps_compat.gather_exact depends on it, and the raster write "
+        "pass replays these masks -- switch to a 16-bit lane split and report "
+        "the regression upstream"
+    )
+    assert torch.equal(mps_compat.gather_exact(on_device, moved).cpu(), want)
+
+
+@pytest.mark.fast
 def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight(computing_settings):
     """The divide guard in ``_sibling_weights``, on whatever device is here.
 

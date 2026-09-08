@@ -886,6 +886,50 @@ min=1e-12)` in `primitives.py`, spelled differently from the other twenty-two �
 which is the argument for having written it. `*_taichi.py` is exempt and must
 be: those bodies reach MSL through Taichi and never touch torch's MPS dispatch.
 
+### 2.3f The ceiling again, on a bitmask, in the raster write pass
+
+§2.3b established the 2**24 gather ceiling and fixed the fragment key. This is
+the same defect at a **different width and a worse shape**, found by the
+in-situ attribution pass rather than by a synthetic probe, which is the point
+of having both.
+
+`raster_pipeline.prepare_sparse_raster_coverage` compacts the write pass to the
+pairs whose count pass accepted a pixel, and carries the acceptance forward:
+
+```python
+live = accepts.nonzero(as_tuple=True)[0]
+accepts_w = accepts.index_select(0, live)      # 32 bits, one per chunk pixel
+```
+
+`accepts` is a **bitmask**, not a number. Rounding a value that carries
+magnitude is a rounding error; rounding a mask is nonsense — `0x8003FFFF` came
+back `0x80040000`, the sign bit intact and eighteen bits of acceptance gone.
+The write pass replays that mask instead of recomputing the acceptance chain,
+so every cleared bit is a pixel the count pass accepted and the write pass then
+skipped. Its fragment slot keeps whatever the arena held.
+
+**That is where §4.2's zero keys come from.** A never-written slot reads as
+`pixel 0, depth 0, coverage 0`, which sorts to the front of the fragment
+stream — the Apple GPU's `pix[0..272664]`, `depth[0.0000..]`, `lo0=00000000`
+and `frag_cov min 0.000000` against a CPU that starts at 147239, 18.3139 and
+0.001002. It is also the stray lit pixel in the bottom row of
+`test_pixel_rows_are_not_flipped`, at image row 35 = kernel row 0 = pixel 0.
+
+The fix is §2.3b's, generalised: `mps_compat.gather_exact` is the ceiling-safe
+gather for **any** integer whose low bits carry meaning, `gather_packed_key`
+is now that function applied to the key, and the three gathers at this site
+take it. `offsets` is included because it is a fragment-stream position and
+passes 2**24 on a large frame rather than on this one, and `pairs` because it
+carries a per-chunk offset column that grows with a primitive's bbox — neither
+is measured wrong, and this says so rather than implying they were.
+
+What the fix rests on is that advanced indexing `v[i]` is exact at int32 with
+the sign bit set, which §2.3b measured only at int64. `probe_gather_isolated`
+now sweeps real mask patterns at int32 — all-ones, sign-bit-only, either side
+of the ceiling — and
+`test_mps_friendly.py::test_advanced_indexing_is_exact_for_a_thirty_two_bit_mask`
+is the standing guard, beside the int64 one it copies.
+
 ### 2.3d `index_reduce_` is not implemented at all
 
 The loud one, and the only defect in this family that announces itself:
@@ -1189,24 +1233,22 @@ the 32x32 probe scene finds pixel 0 covered. So the defect is upstream of the
 compaction: fragments are missing from the stream and their slots are being
 read as real.
 
-**And one op is measured wrong in the render itself.** The same run's
-attribution pass (`--verify-torch-ops`) reports
+**And the op that makes those zero keys is found — §2.3f.** The same run's
+attribution pass caught one gather disagreeing with the CPU; the next round,
+with the pass printing its caller, named it:
 
 ```
-FAIL  Tensor.index_select: 2/144 calls differ
-      63/726 differ, first at 4: cpu -2147221505 vs mps -2147221504 (int32)
+FAIL  Tensor.index_select: 2/144 calls differ --
+  raster_pipeline.py:1903 in prepare_sparse_raster_coverage:
+  63/726 differ, first at 4: cpu -2147221505 vs mps -2147221504 (int32)
 ```
 
-with every other op it checks — `unique_consecutive`, `argsort`, `cumsum`,
-`searchsorted`, `unique`, `nonzero`, `scatter_add_`, `amin`/`amax` — agreeing.
-That is §2.3b's ceiling, at int32, on a value with the sign bit set: `0x8003FFFF`
-rounding to `0x80040000` is a **link word** shape (`refit_bvh`'s
-`LINK_LEAF_BIT` plus a primitive index), and a link word off by one sends a
-traversal to the wrong primitive. Two of 144 calls, so it is one or two call
-sites rather than a general problem, and `mps_compat.gather_packed_key`'s
-`v[i]` is the known-exact spelling for them. Finding *which* is what the
-attribution pass now prints a caller for — the previous round said only that
-some `index_select` was wrong, which is not actionable across 144 of them.
+Every other op it checks — `unique_consecutive`, `argsort`, `cumsum`,
+`searchsorted`, `unique`, `nonzero`, `scatter_add_`, `amin`/`amax` — agrees.
+§2.3f has the mechanism and the fix; in short, that line gathers the raster
+count pass's **32-bit acceptance mask**, MPS rounds it through 24 bits of
+mantissa, and the write pass then skips pixels the count pass accepted —
+leaving their fragment slots at zero, which is the whole table above.
 
 ### 4.3 F: `ti.real_func` with an early return, on a SPIR-V backend
 

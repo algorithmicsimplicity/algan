@@ -25,6 +25,7 @@ from algan.environment import env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
+    gather_exact,
     gather_packed_key,
     kernel_index,
     reduction_index_dtype,
@@ -1898,9 +1899,24 @@ def prepare_sparse_raster_coverage(
             if rt_settings.raster_write_compact and npairs:
                 live = accepts.nonzero(as_tuple=True)[0]
                 if live.numel() < npairs:
-                    pairs_w = pairs.index_select(0, live)
-                    offsets_w = offsets.index_select(0, live)
-                    accepts_w = accepts.index_select(0, live)
+                    # ``gather_exact``, not ``index_select``, and ``accepts`` is
+                    # why: it is a 32-bit mask, one bit per chunk pixel, and MPS
+                    # gathers an integer through 24 bits of float32 mantissa
+                    # (``mps_compat._MPS_EXACT_INT_BITS``). Rounding a mask
+                    # clears its low bits, so pixels the count pass accepted are
+                    # never written and their fragment slots keep whatever the
+                    # arena held -- a key of exactly zero, which sorts to the
+                    # front of the stream and reads as pixel 0 at depth 0.
+                    # Measured on the hardware: 0x8003FFFF came back 0x80040000.
+                    # ``offsets`` takes it for the same reason a frame later --
+                    # it is a fragment-stream position, so it passes 2**24 on a
+                    # large frame rather than on this one -- and ``pairs``
+                    # carries a per-chunk offset column that grows with a
+                    # primitive's bbox. Off the mode all three are
+                    # ``index_select``, unchanged.
+                    pairs_w = gather_exact(pairs, live)
+                    offsets_w = gather_exact(offsets, live)
+                    accepts_w = gather_exact(accepts, live)
                     npairs_w = int(live.numel())
             if kind == "bez":
                 raster_bez_write(
