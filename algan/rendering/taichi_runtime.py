@@ -898,12 +898,11 @@ def render_job_holding_the_arch():
                     _malloc_trim,
                 )
 
-                if _host_memory_pressure():
-                    if reset_quadrants_for_memory_pressure():
-                        # ``ti.reset`` releases the Program, but glibc may keep
-                        # its freed LLVM/JIT pages mapped. This is still Linux-
-                        # only because ``_malloc_trim`` is itself platform-gated.
-                        _malloc_trim()
+                if _host_memory_pressure() and reset_quadrants_for_memory_pressure():
+                    # ``ti.reset`` releases the Program, but glibc may keep
+                    # its freed LLVM/JIT pages mapped. This is still Linux-
+                    # only because ``_malloc_trim`` is itself platform-gated.
+                    _malloc_trim()
 
 
 def render_is_active():

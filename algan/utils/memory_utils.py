@@ -484,15 +484,14 @@ def release_torch_memory(force_gc=True):
     # launch; the next launch/render reinitializes and reloads from offline cache.
     if host_pressured:
         _malloc_trim()
-        if _host_memory_pressure():
+        if _host_memory_pressure() and _reset_quadrants_runtime_for_memory_pressure():
             # ``ti.reset()`` can hand large LLVM/JIT allocations back to
             # glibc without immediately unmapping them. If the reset happens
             # synchronously, trim once more so the memory it just freed is
             # visible to the enclosing cgroup before this call returns. A
             # reset deferred until render exit performs the same final trim
             # from ``render_job_holding_the_arch``.
-            if _reset_quadrants_runtime_for_memory_pressure():
-                _malloc_trim()
+            _malloc_trim()
 
 
 @contextmanager

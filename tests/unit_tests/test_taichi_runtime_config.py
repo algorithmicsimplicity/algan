@@ -461,7 +461,7 @@ def test_quadrants_pressure_reset_clears_runtime_state_when_safe(monkeypatch):
     monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
     monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
     monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", object())
-    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True))
+    monkeypatch.setattr(taichi_runtime, "_BUILT_A_SPECIALIZATION", True)
 
     assert taichi_runtime.reset_quadrants_for_memory_pressure() is True
     assert calls == ["reset"]
