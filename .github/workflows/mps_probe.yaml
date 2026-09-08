@@ -1,24 +1,20 @@
 name: MPS capability probe
 
-# Answers, on a real Apple GPU, the questions that decide whether Algan can
-# render on MPS. The macOS test job is pinned to `ALGAN_RENDER_DEVICE=cpu`
-# because it cannot; what nobody could establish from a Linux box is whether the
-# port is worth starting, because the deciding facts are properties of the Metal
-# backend and of Taichi's torch interop.
+# Diagnostic/measurement companion to the ordinary MPS regression gate in
+# `test.yaml`. The required test matrix now sets `ALGAN_RENDER_DEVICE=mps` on
+# the Apple-silicon hosted runner, asserts that Algan actually resolves `mps`,
+# and runs the portable unit/fast scope with the normal locked published
+# `algan-quadrants` dependency. A regression no longer needs this workflow to
+# make an ordinary PR or release check red.
 #
-# This is deliberately NOT part of the ordinary test matrix, because nothing
-# here guards a regression -- it takes a measurement. So it runs only when the
-# probe itself changes, or when someone dispatches it by hand (which needs the
-# file on the default branch first; before then, pushing to a pull request is
-# what triggers it).
+# This workflow remains deliberately separate because its capability, timing,
+# control-arm and custom-wheel sections answer diagnostic questions rather than
+# release-gate questions. Dispatch it when those measurements are useful; do
+# not read its optional/experimental arms as the supported dependency path.
 #
-# The reason is NOT cost. This repository is public, and GitHub's docs are
-# explicit that "use of the standard GitHub-hosted runners is free and unlimited
-# on public repositories" -- the 10x macOS minute multiplier this file used to
-# cite applies to private repositories, and never applied here. What is finite
-# is concurrency: 5 concurrent macOS jobs on the Free plan, shared across every
-# workflow in the account, which is the real reason not to leave a two-arm macOS
-# matrix on every push.
+# The repository is public, so runner minutes are not the reason to keep these
+# diagnostics separate. macOS concurrency is finite, and the ordinary test
+# matrix already spends the Apple-GPU slot needed for regression coverage.
 #
 # WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized Apple-silicon
 # instance -- `hw.model VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, 7 GB --

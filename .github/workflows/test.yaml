@@ -23,79 +23,58 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: ${{ matrix.os }} / Python ${{ matrix.python_version }} / render=${{ matrix.render_device }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # One platform failing must not cancel the other. The point of a
-      # two-platform matrix is to learn whether a change is portable, and that
-      # answer only exists when both halves have reported.
+      # One platform or render device failing must not cancel the others. The
+      # matrix is the portability/release gate, so every arm should report.
       fail-fast: false
-      # Two axes with different jobs. `os` is the portability question and
-      # needs a real second platform, so it runs on both. `python-version` is
-      # the "do the classifiers in pyproject.toml tell the truth" question,
-      # and that is answered by the ends of the supported range rather than by
-      # every point in it -- so the ceiling is added on Linux only, where
-      # runner minutes are free and unlimited for public repositories.
+      # Keep the supported Python floor on both operating systems and the
+      # ceiling on Linux. macOS deliberately has two independent 3.10 arms:
+      # CPU preserves the portability check that existed before MPS support;
+      # MPS is the required Apple-GPU regression gate. Keeping the entries
+      # explicit makes the device visible in the PR check name and avoids an
+      # accidental Cartesian product when another device or Python is added.
       #
-      # The floor is 3.10 and is the base of the matrix, so it already runs on
-      # both platforms; there is no `include` for it. It used to be 3.9, with
-      # its own Linux leg, and the floor moved when Quadrants became the kernel
-      # compiler -- it publishes cp310-cp313 wheels and no cp39. The reason to
-      # keep testing the floor at all is unchanged and is not a formality: it
-      # is the version whose standard library is missing things a contributor's
-      # editor will happily offer (`zip(strict=)` is 3.10, `typing.Self` and
-      # `tomllib` are 3.11, `warnings.warn(skip_file_prefixes=)` and
-      # `tarfile`'s `filter="data"` are 3.12 -- the last two are declined by
-      # name in `algan/errors.py` and `tests/baseline_store.py`). Ruff guards
-      # the annotations (`target-version = "py310"` plus a mandatory
-      # `from __future__ import annotations`); nothing but this guards that the
-      # package actually imports and runs there.
-      #
-      # 3.13 is the ceiling below `<3.14`, and it is not a formality either:
-      # pydub -- reached at import time through manim's scene_file_writer --
-      # imports `audioop`, which was REMOVED from the standard library in 3.13.
-      # What makes that work is `audioop-lts`, which uv.lock carries with a
-      # `python_full_version >= '3.13'` marker. A job here is what keeps a
-      # future lock update from quietly dropping it.
+      # 3.10 is the floor because Quadrants publishes cp310-cp313 wheels and no
+      # cp39. It is also the version whose standard library is missing things a
+      # contributor's newer editor can offer (`typing.Self`, `tomllib`, newer
+      # warnings/tarfile APIs), so the floor remains a real compatibility test.
+      # 3.13 is the ceiling below `<3.14`; its `audioop` removal is covered by
+      # the locked `audioop-lts` marker and therefore stays as the Linux ceiling
+      # arm.
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10"]
         include:
           - os: ubuntu-latest
-            python-version: "3.13"
+            python_version: "3.10"
+            render_device: auto
+          - os: ubuntu-latest
+            python_version: "3.13"
+            render_device: auto
+          - os: macos-latest
+            python_version: "3.10"
+            render_device: cpu
+          - os: macos-latest
+            python_version: "3.10"
+            render_device: mps
 
-    # Linux takes the ordinary automatic probe, which finds no accelerator and
-    # resolves to the CPU on its own.
-    #
-    # macos-latest is pinned, and the reason is measured rather than assumed:
-    # left on `auto` it resolves to MPS -- the runner really does offer one --
-    # and Algan did not run there. 88 tests failed on the first macOS run, in
-    # two families that are both the same fact. Torch: the raster pipeline
-    # allocates in float64 (raster_pipeline.py, `_one_mesh_pixel_caps`), and
-    # "the MPS framework doesn't support float64". Taichi: `ti.gpu` on a Mac
-    # resolves to Metal, whose SPIR-V builder answers "Type f64 not supported"
-    # to the same kernels.
-    #
-    # Both of those are now addressed -- kernel arguments are packed into arena
-    # views (DESIGN_mps_support.md §1.1) and MPS-friendly mode narrows every
-    # f64 accumulator and int64 reduction the renderer has (§1.2) -- but
-    # addressed is not verified: the Metal failures are SIGABRTs inside Taichi
-    # rather than exceptions, so only an Apple GPU can say. The `render` job in
-    # mps_probe.yaml is what asks, on the same runner and the same suites. This
-    # pin comes off when that job has been green for a while, and not before: a
-    # standing red job in the required matrix teaches nobody anything. Until
-    # then the Mac job tests the CPU path, which is what makes it a portability
-    # check rather than a standing failure.
+    # The two macOS arms are intentionally explicit. The CPU arm keeps macOS
+    # portability coverage. The MPS arm is an ordinary required test arm: the
+    # hosted macOS runner is Apple Silicon and exposes a real Metal device, and
+    # the sanity step below fails before pytest if Algan does not actually
+    # resolve this request to MPS. Both use the normal locked dependency graph,
+    # including the published patched `algan-quadrants` wheel; no private
+    # compiler artifact is installed here.
     env:
-      ALGAN_RENDER_DEVICE: ${{ startsWith(matrix.os, 'macos') && 'cpu' || 'auto' }}
+      ALGAN_RENDER_DEVICE: ${{ matrix.render_device }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python_version }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python_version }}
 
       - name: Install system dependencies for manimpango (Linux)
         if: runner.os == 'Linux'
@@ -172,20 +151,45 @@ jobs:
 
       # `--all-extras` matters here beyond LaTeX/Pango: `taichi` is an extra now
       # that Quadrants is the default kernel compiler, and this is what puts the
-      # A/B control arm (`ALGAN_TAICHI_BACKEND=taichi`) on the runner. The
-      # default backend itself needs nothing special -- `quadrants` is a plain
-      # runtime dependency, so a bare `uv sync` already installs what the suite
-      # compiles its kernels with.
+      # A/B control backend on the runner. The default backend itself needs
+      # nothing special -- `algan-quadrants` is a normal locked runtime
+      # dependency and uv selects its published platform wheel.
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
-      # Cheap, and it answers in the log the two questions a cross-platform
-      # matrix raises: which accelerator the runner offers (the render device
-      # is `auto`, so CUDA, then MPS, then CPU -- and which one it lands on
-      # decides which baseline directory the render suites compare against),
-      # and whether the LaTeX and FFmpeg this job installed are actually on
-      # PATH. Without it, a Mac that quietly has no `latex` looks like a
-      # rendering bug several minutes later.
+      # A required MPS check must not be able to go green after silently running
+      # on CPU. Ask Algan's startup resolver -- the same source the renderer
+      # uses -- and separately verify that torch sees an MPS device. Printing
+      # the distribution version also leaves evidence that this ordinary gate
+      # used the locked published `algan-quadrants`, not a private wheel.
+      - name: Require the MPS render device
+        if: matrix.render_device == 'mps'
+        run: |
+          uv run python - <<'PY'
+          from importlib import metadata
+
+          import torch
+
+          from algan.settings import _startup
+          from algan.taichi_compat import BACKEND
+
+          actual = _startup.render_device().type
+          available = torch.backends.mps.is_available()
+          print("algan-quadrants:", metadata.version("algan-quadrants"))
+          print("Algan kernel compiler:", BACKEND)
+          print("torch.backends.mps.is_available():", available)
+          print("Algan render device:", actual)
+          assert BACKEND == "quadrants", (
+              f"required MPS gate selected {BACKEND!r}, expected 'quadrants'"
+          )
+          assert available, "required MPS gate has no available MPS device"
+          assert actual == "mps", (
+              f"required MPS gate resolved {actual!r}, expected 'mps'"
+          )
+          PY
+
+      # Cheap environment report for all arms: accelerator choice, compiler,
+      # LaTeX and FFmpeg become explicit in the log before a later test failure.
       - name: Report the environment Algan resolved
         run: uv run algan check
 
@@ -224,16 +228,14 @@ jobs:
       # `output_errors/` exists only after a failed comparison, so
       # `if-no-files-found: ignore` keeps a passing run quiet.
       #
-      # The name carries the platform AND the Python version, because artifact
-      # names have to be unique within a run and upload-artifact@v4 fails the
-      # job on a collision rather than merging. The platform alone was unique
-      # while the matrix held one Python; adding the 3.13 leg made two Linux
-      # jobs that would both have claimed `fast-render-ubuntu-latest`.
+      # The name carries platform, Python version AND render device because the
+      # CPU and MPS macOS arms otherwise collide; upload-artifact@v4 rejects
+      # duplicate artifact names within one workflow run.
       - name: Upload the fast render and any difference video
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fast-render-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: fast-render-${{ matrix.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}
           path: |
             tests/fast/algan_outputs/
             tests/fast/output_errors/
@@ -249,7 +251,7 @@ jobs:
       # matrix held one Python, and became two the moment the 3.13 leg was
       # added.
       - name: Upload coverage to Codecov
-        if: runner.os == 'Linux' && matrix.python-version == '3.10'
+        if: runner.os == 'Linux' && matrix.python_version == '3.10'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

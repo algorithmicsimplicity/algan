@@ -19,20 +19,18 @@ name: Run on the Mac GPU runner
 # ran at 6.0 / 3.2 GB/s over unified memory -- a virtualization tax on
 # submission and mapping that no physical Mac pays.
 #
-# THE MPS ARM NEEDS A PATCHED WHEEL. On a stock compiler, `auto` refuses the
-# Apple GPU and Algan renders on the CPU, so an MPS arm without a wheel
-# silently duplicates the CPU arm. Two ways to supply one: the default run id
-# below is a `taichi_build.yaml` run that produced a patched *Taichi* wheel
-# (`taichi_wheel_run_id: none` opts out deliberately, which is a legitimate
-# thing to measure -- it is what an unpatched Mac user gets); and
-# `quadrants_wheel` names a patched *Quadrants* wheel, as a
-# `quadrants_build.yaml` run id or a release-asset URL, which then selects the
-# Quadrants backend for the run. When both are given the Quadrants one wins.
+# ORDINARY MPS SUPPORT DOES NOT NEED A WHEEL OVERRIDE. The required MPS arm in
+# `test.yaml` uses Algan's normal locked `algan-quadrants` dependency. The wheel
+# inputs below exist only so this measurement harness can A/B an experimental
+# compiler build: the default Taichi run id selects the historical patched
+# Taichi control, while `quadrants_wheel` can install a one-off Quadrants build.
+# When both are given the Quadrants override wins. Any MPS measurement still
+# has to verify Algan resolved `mps`; a silent CPU fallback is not an MPS result.
 #
 # COST. This repository is public, so GitHub-hosted runner minutes are free and
-# unlimited. What is finite is CONCURRENCY: 5 concurrent macOS jobs on the Free
-# plan, shared across every workflow in the account. That, not money, is why
-# this never runs on the ordinary push matrix and why arms are opt-in.
+# unlimited. What is finite is macOS concurrency. Ordinary MPS regression
+# coverage therefore lives in `test.yaml`; this arbitrary-command harness stays
+# opt-in so experiments do not consume an extra Apple runner on every push.
 on:
   workflow_dispatch:
     inputs:
