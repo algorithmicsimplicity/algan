@@ -1,15 +1,15 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_dispatch_diagnose.py",
+  "command": ".venv/bin/python benchmarks/_mac_compaction_diagnose.py",
   "arms": [
     "mac-mps"
   ],
   "env": {
     "ALGAN_VIDEO_ENCODER": "software",
     "ALGAN_TORCH_COMPILE": "0",
-    "DIAG_DISPATCH_LIMIT": "65536"
+    "DIAG_DISPATCH_LIMIT": "0"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 30,
-  "_request": "59: uncapped arena with 65536-ray traversal dispatches and per-dispatch timing"
+  "timeout_minutes": 20,
+  "_request": "63: compare Metal ray compaction with CPU status filtering for first five iterations"
 }
