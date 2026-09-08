@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_postfix_matched.py",
+  "command": ".venv/bin/python benchmarks/_mac_postfix_matched.py --coarse",
   "arms": [
     "mac-mps"
   ],
@@ -9,6 +9,6 @@
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
-  "timeout_minutes": 40,
-  "_request": "79: post-fix matched CPU-before/MPS/CPU-after UHD; warm controls then full GPU host+Metal profile"
+  "timeout_minutes": 30,
+  "_request": "80: validate sparse coverage hotspot with low-overhead CPU/MPS scopes and warm GPU control/device-profile/control"
 }

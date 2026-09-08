@@ -31,6 +31,7 @@ def arguments():
     parser.add_argument("--tag", default="matched")
     parser.add_argument("--profile-run", type=int, default=0)
     parser.add_argument("--full-profile", action="store_true")
+    parser.add_argument("--coarse", action="store_true", help="Time function scopes in warm runs without ATen dispatch or cProfile")
     parser.add_argument("--child", choices=("cpu", "mps"))
     parser.add_argument("--quality", default="UHD")
     parser.add_argument("--arena-mib", type=int, default=1720)
@@ -188,6 +189,10 @@ def child(args):
         replace_aliases(original, replacement)
 
 
+    from algan.rendering.raytracing import sheets, raster_pipeline
+    for name in ("compact_sheets", "_lane_first_owners", "_sibling_weights"):
+        hook(sheets, name, "coverage." + name)
+    hook(raster_pipeline, "prepare_sparse_raster_coverage", "coverage.prepare_sparse_raster_coverage")
     from algan.rendering.post_processing import bloom as bloom_module
     for name in ("bloom_filter", "_downsample_bloom", "_upsample_bloom", "fft_conv1d"):
         hook(bloom_module, name, "post." + name)
@@ -305,7 +310,7 @@ def child(args):
             emit("profile_checkpoint", early_window=elapsed,
                  write_seconds=time.perf_counter() - checkpoint)
         if native is not None:
-            native.algan_graph_phase((2 * chunk - 1 if chunk <= 2 else 5) if timer.enabled else -1)
+            native.algan_graph_phase((2 * chunk - 1 if chunk <= 2 else 5) if timer.enabled and state.get("native_active") else -1)
         timer.phase = f"chunk{chunk}"
         emit("chunk_start", chunk=chunk, elapsed=elapsed, pool=pool())
         started = time.perf_counter()
@@ -317,7 +322,7 @@ def child(args):
                  converted_launches=dict(zc.STATS))
             timer.phase = f"after_chunk{chunk}"
             if native is not None:
-                native.algan_graph_phase((2 * chunk if chunk <= 2 else 6) if timer.enabled else -1)
+                native.algan_graph_phase((2 * chunk if chunk <= 2 else 6) if timer.enabled and state.get("native_active") else -1)
 
     tracer.raytrace_render_wavefront = wavefront
     replace_aliases(original_wavefront, wavefront)
@@ -341,7 +346,9 @@ def child(args):
          cpu_count=os.cpu_count(), pool=pool(), seed=20260908,
          env={k: v for k, v in os.environ.items() if k.startswith(("ALGAN_", "PYTORCH_MPS_"))})
     for run in range(1, args.runs + 1):
-        state.update(run=run, chunks=0, batches=0, arenas=[])
+        state.update(run=run, chunks=0, batches=0, arenas=[], native_active=run == args.profile_run)
+        timer.rows.clear()
+        timer.slow.clear()
         random.seed(20260908)
         np.random.seed(20260908)
         torch.manual_seed(20260908)
@@ -351,7 +358,8 @@ def child(args):
         detailed = run == args.profile_run
         if detailed and args.native_graphs and args.child == "mps":
             install_native()
-        cpu_profile = cProfile.Profile() if detailed else None
+        timed = detailed or (args.coarse and run > 1)
+        cpu_profile = cProfile.Profile() if detailed and not args.coarse else None
         usage_before = resource.getrusage(resource.RUSAGE_SELF)
         emit("render_start", detailed=detailed, pool=pool())
         if detailed and args.native_sample and sys.platform == "darwin":
@@ -360,13 +368,15 @@ def child(args):
                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         timer.origin = state["started"] = time.perf_counter()
         timer.phase = "prelude"
-        if detailed:
-            cpu_profile.enable()
+        if timed:
+            if cpu_profile is not None:
+                cpu_profile.enable()
             timer.enabled = True
             if native is not None:
-                native.algan_graph_phase(0)
-            mode = OperatorTimes()
-            mode.__enter__()
+                native.algan_graph_phase(0 if detailed else -1)
+            if not args.coarse:
+                mode = OperatorTimes()
+                mode.__enter__()
         try:
             Scene.save_video(str(output / f"run{run}.mp4"), video_settings=preset, reset=True,
                              ffmpeg_params=["-crf", "17", "-preset", "ultrafast"])
@@ -387,11 +397,14 @@ def child(args):
              cpu_system=usage_after.ru_stime-usage_before.ru_stime,
              minor_faults=usage_after.ru_minflt-usage_before.ru_minflt,
              major_faults=usage_after.ru_majflt-usage_before.ru_majflt)
-        if detailed:
+        if timed:
+            (output / f"timings_run{run}.json").write_text(json.dumps(timer.data(), indent=2))
+        if cpu_profile is not None:
             cpu_profile.dump_stats(str(output / "host_profile.pstats"))
             with (output / "host_profile.txt").open("w") as stream:
                 pstats.Stats(cpu_profile, stream=stream).sort_stats("tottime").print_stats(70)
                 pstats.Stats(cpu_profile, stream=stream).sort_stats("cumulative").print_stats(70)
+        if detailed:
             if native is not None:
                 # Flush after the recorded wall interval solely to retrieve completed
                 # device timestamp callbacks; never fence individual operations.

@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quality", default="UHD")
     parser.add_argument("--cpu-only", action="store_true")
+    parser.add_argument("--coarse", action="store_true")
     args = parser.parse_args()
     output = Path("algan_outputs/postfix_matched")
     output.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,8 @@ def main():
 
     blocks = [("cpu_before", "cpu", 2, 450), ("mps", "mps", 4, 1150),
               ("cpu_after", "cpu", 2, 450)]
+    if args.coarse:
+        blocks = [("cpu_before", "cpu", 2, 450), ("mps", "mps", 4, 1150)]
     if args.cpu_only:
         blocks = [("cpu_smoke", "cpu", 3, 600)]
     outcomes = []
@@ -50,8 +53,12 @@ def main():
         snapshot(tag + "_before")
         command = [sys.executable, "-u", str(child), "--child", device, "--tag", tag,
                    "--quality", args.quality, "--arena-mib", "1720", "--runs", str(runs)]
+        if args.coarse:
+            command += ["--coarse", "--full-profile"]
         if device == "mps":
-            command += ["--profile-run", "4", "--full-profile", "--native-graphs", "--native-sample"]
+            command += ["--profile-run", "3" if args.coarse else "4", "--full-profile", "--native-graphs"]
+            if not args.coarse:
+                command += ["--native-sample"]
         elif args.cpu_only:
             command += ["--profile-run", "3", "--full-profile"]
         print("MATCHED_START " + json.dumps({"tag": tag, "command": command}), flush=True)
