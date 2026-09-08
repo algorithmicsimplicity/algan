@@ -582,6 +582,12 @@ def set_wf_deferred_shadows(enabled):
 # ``wf_ray_sort_min`` rays skip the sort: the key kernel + argsort cost
 # ~1-2 ms, which a small launch cannot recover. ALGAN_WF_RAY_SORT=0 disables.
 wf_ray_sort = env_flag("ALGAN_WF_RAY_SORT", True)
+# Coarser origin bins allow a 32-bit sort key for tiles spanning <=16 frames.
+# This changes only scheduling, never ray state or intersection arithmetic.
+# CUDA UHD A/B: key generation + sorting 37-45% cheaper on captured queues;
+# whole-render warm means improved 1.7% and 2.6%. Other devices and wider
+# frame windows retain the original 64-bit keys. Disable for A/B parity.
+wf_ray_sort_compact = env_flag("ALGAN_WF_RAY_SORT_COMPACT", True)
 wf_ray_sort_min = env_int("ALGAN_WF_RAY_SORT_MIN", 8192)
 
 
@@ -1362,6 +1368,15 @@ shadow_identity_reject = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
 # it had a quarter step, on a set of pixels too sparse to see.
 # ALGAN_SHADOW_ADAPTIVE_TAPS=0 restores the full fan.
 shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
+# Deferred bounce events expose only sample zero and have zero footprints.
+# Hard point lights can use the existing one-sample trace kernel and avoid
+# the full-sized zero offset buffer. Extended lights retain the masked fan.
+# Off: the warm UHD A/B improved this stage but not whole-render time.
+shadow_deferred_single_sample = env_flag("ALGAN_SHADOW_DEFERRED_SINGLE_SAMPLE", False)
+
+# Group primary shadow events by source primitive before their existing gathers.
+# The sheet event-ID map carries the permutation back to visibility lookups.
+shadow_primary_sort = env_flag("ALGAN_SHADOW_PRIMARY_SORT", True)
 
 
 def set_shadow_adaptive_taps(enabled):

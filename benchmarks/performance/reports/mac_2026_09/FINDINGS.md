@@ -1,3 +1,7 @@
+> Current integration: [INTEGRATION.md](INTEGRATION.md) consolidates the later
+> fixes, measured outcomes, disabled experiments and master merge. This file
+> retains the earlier investigation chronology.
+
 > Further measurement: [BLOOM_FIX.md](BLOOM_FIX.md) documents the MPS bloom dispatch bottleneck, the 23–30% measured render improvement, and a separate border-write bug in the old fallback.
 
 # Metal render on the Mac GPU: everything this round established

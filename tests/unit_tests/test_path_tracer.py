@@ -858,6 +858,9 @@ def test_area_light_matches_the_reference_integral(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
+        scene.get_camera().move_to(RIGHT * 10.0 + OUT * 7.0)
+        scene.get_camera().look_at(ORIGIN)
+        scene.get_camera().set_fov(10)
         RectAreaLight(
             location=OUT * plane_z,
             width=width,
@@ -1052,6 +1055,10 @@ def _lit_floor(light_builder, material=None):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
+        # Observe the receiver obliquely, clear of the now-visible panel.
+        scene.get_camera().move_to(RIGHT * 10.0 + OUT * 7.0)
+        scene.get_camera().look_at(ORIGIN)
+        scene.get_camera().set_fov(20)
         floor = Prism(width=8.0, height=8.0, depth=0.2)
         floor.set_material((material or (lambda: MeshLambertMaterial(color=WHITE)))())
         floor.spawn(animate=False)
@@ -1081,7 +1088,7 @@ def test_area_light_quad_and_row_arms_agree(tmp_path):
             height=size,
             samples=16,
             color=WHITE,
-            intensity=4.0,
+            intensity=1.0,
             target=ORIGIN,
         ).spawn(animate=False)
 
@@ -1131,7 +1138,7 @@ def test_area_light_quad_falloff_follows_the_row_model(tmp_path):
                 height=2.0,
                 samples=16,
                 color=WHITE,
-                intensity=4.0 * (3.0 ** params["decay"]),
+                intensity=1.0 * (3.0 ** params["decay"]),
                 target=ORIGIN,
                 **params,
             ).spawn(animate=False)
@@ -1152,26 +1159,24 @@ def test_area_light_quad_falloff_follows_the_row_model(tmp_path):
         )
 
 
-def test_area_light_quad_is_invisible_to_the_camera(tmp_path):
-    """A camera ray passes straight through the quad.
-
-    The deterministic renderer draws no light, and a user who places a
-    ``RectAreaLight`` in shot does not expect a white panel to appear when
-    they raise ``samples_per_pixel``. The control -- the same rectangle
-    authored as an emissive mob -- must be blazing in exactly those pixels,
-    so this cannot pass by pointing the camera at nothing.
-    """
+@pytest.mark.parametrize("ordinary_geometry", [False, True])
+def test_area_light_quad_is_visible_to_the_camera(tmp_path, ordinary_geometry):
+    """A front-facing emitter matches an independently authored emissive panel."""
 
     def with_light(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
+        # Keep ordinary geometry in the batch as well as the light.
+        if ordinary_geometry:
+            Square(size=6, color=BLACK).move(-OUT).spawn(animate=False)
         RectAreaLight(
             location=ORIGIN,
             width=2.5,
             height=2.5,
             samples=4,
             color=WHITE,
-            intensity=8.0,
+            intensity=2.0,
+            decay=2.0,
             target=OUT * 5.0,
         ).spawn(animate=False)
 
@@ -1181,7 +1186,7 @@ def test_area_light_quad_is_invisible_to_the_camera(tmp_path):
         panel = Prism(width=2.5, height=2.5, depth=0.02)
         panel.set_material(
             MeshLambertMaterial(
-                color=BLACK, emissive=WHITE, emissive_intensity=8.0 / 6.25
+                color=BLACK, emissive=WHITE, emissive_intensity=2.0 / 6.25
             )
         )
         panel.spawn(animate=False)
@@ -1191,9 +1196,9 @@ def test_area_light_quad_is_invisible_to_the_camera(tmp_path):
     assert _center_patch_mean(control, half=4) > 50.0, (
         "the control emissive panel is not in shot; the framing proves nothing"
     )
-    assert float(seen[..., :3].max()) == 0.0, (
-        f"a camera ray hit the area light's quad (brightest channel "
-        f"{float(seen[..., :3].max()):.1f}/255) -- it must pass through"
+    assert (
+        abs(_center_patch_mean(seen, half=4) - _center_patch_mean(control, half=4))
+        <= 2.0
     )
 
 
@@ -1243,14 +1248,8 @@ def test_area_light_quad_shows_up_in_a_mirror(tmp_path):
     )
 
 
-def test_area_light_quad_occludes_nothing(tmp_path):
-    """The quad is not a shadow caster, matching the deterministic renderer.
-
-    A dark ``RectAreaLight`` panel is interposed between a point light and
-    the floor. If its triangles blocked shadow rays the floor would go black;
-    they are stamped non-casting in the rebuilt tree, the same leaf bit
-    ``Mob.casts_shadows = False`` uses, so nothing changes.
-    """
+def test_area_light_quad_casts_a_shadow(tmp_path):
+    """An opaque dark panel blocks light; the camera still sees the receiver."""
 
     def point_only(scene):
         PointLight(location=OUT * 6.0, color=WHITE, intensity=1.0).spawn(animate=False)
@@ -1278,9 +1277,12 @@ def test_area_light_quad_occludes_nothing(tmp_path):
     a = _center_patch_mean(clear, half=4)
     b = _center_patch_mean(blocked, half=4)
     assert a > 10.0, f"the unobstructed floor is barely lit ({a:.1f}/255)"
-    assert abs(a - b) <= max(2.0, 0.05 * a), (
-        f"the area light's quad occluded a point light: {a:.1f} -> {b:.1f}"
+    unshadowed = _quad_arm(
+        tmp_path, "occl_unshadowed.png", _lit_floor(with_panel), 32, True, shadows=False
     )
+    c = _center_patch_mean(unshadowed, half=4)
+    assert abs(a - c) <= max(2.0, 0.05 * a), "panel hides the receiver from the camera"
+    assert b < 0.1 * a, f"the panel did not occlude the point light: {a:.1f} -> {b:.1f}"
 
 
 def test_area_light_quad_is_mis_covered_by_both_strategies(tmp_path):
@@ -1326,22 +1328,22 @@ def test_area_light_quad_follows_a_moving_light(tmp_path):
     A tree, a table or a triangle built once from frame 0 would leave the
     light behind the moment it moves -- and Algan is an animation engine.
     """
-    from algan.rendering.raytracing import tracer as tracer_mod
+    from algan.rendering.raytracing import area_light_quads as quad_mod
 
     captured = []
-    original = tracer_mod._attach_area_light_quads
+    original = quad_mod.build_area_light_quads
 
-    def capture(merged, lights, memory, num_frames):
-        out = original(merged, lights, memory, num_frames)
+    def capture(merged, lights, num_frames, inputs):
+        out, widened_inputs = original(merged, lights, num_frames, inputs)
         base = out.get("pt_quad_base")
         if base is not None:
             captured.append(out["tri_pos"][:, int(base) :].detach().cpu().clone())
-        return out
+        return out, widened_inputs
 
     settings = SMOKE_TEST.set(resolution=(32, 32), frames_per_second=2)
     snapshot = SETTINGS.snapshot()
     SceneManager.reset()
-    tracer_mod._attach_area_light_quads = capture
+    quad_mod.build_area_light_quads = capture
     try:
         SETTINGS.raytracing.set(samples_per_pixel=2, denoise=False)
         with Scene(video_settings=settings) as scene:
@@ -1368,7 +1370,7 @@ def test_area_light_quad_follows_a_moving_light(tmp_path):
                 overwrite=True,
             )
     finally:
-        tracer_mod._attach_area_light_quads = original
+        quad_mod.build_area_light_quads = original
         SceneManager.reset()
         SETTINGS.restore(snapshot)
 
@@ -1380,6 +1382,57 @@ def test_area_light_quad_follows_a_moving_light(tmp_path):
         f"the quad sits in the same place on both frames (max vertex "
         f"difference {spread:.3f}) -- it does not follow the light"
     )
+
+
+def test_area_light_lifespan_survives_batch_preparation_and_retry(monkeypatch):
+    """A dark panel exists only during its lifespan, including sliced retries."""
+    from algan.render_loop import _slice_render_state
+    from algan.rendering.raytracing import scene_builder
+
+    snapshot = SETTINGS.snapshot()
+    SceneManager.reset()
+    builds = []
+    finalize = scene_builder._finalize_bvhs
+
+    def capture(scene, tri_inputs, bez_inputs, num_frames, device):
+        builds.append(scene["pt_quad_base"])
+        return finalize(scene, tri_inputs, bez_inputs, num_frames, device)
+
+    monkeypatch.setattr(scene_builder, "_finalize_bvhs", capture)
+    try:
+        SETTINGS.raytracing.set(samples_per_pixel=2, denoise=False)
+        with Scene(video_settings=SMOKE_TEST.set(frames_per_second=4)) as scene:
+            Scene.clear_lights()
+            light = RectAreaLight(intensity=0).spawn(animate=False)
+            scene.wait(1)
+            light.despawn(animate=False)
+            scene.wait(1)
+            batch, end, state = scene._get_batch_of_primitives(
+                0, 8, scene.actors, 10**9
+            )
+            assert end == 8
+            active = state["light_active"][0]
+            assert active.tolist() == [True] * 5 + [False] * 3
+            retry = _slice_render_state(state, 4, 8, 8)
+            assert retry["light_active"][0].tolist() == [True, False, False, False]
+            assert (
+                retry["light_active"][0].untyped_storage().data_ptr()
+                == active.untyped_storage().data_ptr()
+            )
+            scene._prewarm_render_batch(batch, state)
+            merged, _ = scene._prepare_merged_host_scene(batch, render_state=state)
+            base = merged["pt_quad_base"]
+            assert merged["tri_frame_valid"][:, base:].tolist() == [
+                [v, v] for v in active.tolist()
+            ]
+            assert bool(merged["tri_frame_opaque"][:, base:].all())
+            assert bool(merged["tri_frame_casts"][:, base:].all())
+            assert len(builds) == 1, (
+                "preflight must reuse the tree containing the emitters"
+            )
+    finally:
+        SceneManager.reset()
+        SETTINGS.restore(snapshot)
 
 
 def test_area_light_quad_collapses_the_next_event_table(tmp_path):
@@ -3196,6 +3249,9 @@ def test_authored_sampling_lights_an_area_light_the_same(tmp_path):
     def build(scene):
         scene.set_background(BLACK)
         Scene.clear_lights()
+        scene.get_camera().move_to(RIGHT * 10.0 + OUT * 7.0)
+        scene.get_camera().look_at(ORIGIN)
+        scene.get_camera().set_fov(20)
         RectAreaLight(
             location=OUT * 4.0,
             width=3.0,
@@ -3318,3 +3374,276 @@ def test_authored_sampling_rejects_an_unknown_mode():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("sampling", ["off", "always"])
+def test_authored_area_light_is_not_counted_twice(tmp_path, sampling):
+    """A continuation finding the panel cannot add its row lighting again."""
+
+    def light(scene):
+        RectAreaLight(
+            location=OUT * 3,
+            width=3,
+            height=3,
+            samples=16,
+            color=WHITE,
+            intensity=0.25,
+            target=ORIGIN,
+        ).spawn(animate=False)
+
+    build = _lit_floor(light, lambda: MeshToonMaterial(color=WHITE * 0.5))
+    opts = {
+        "pt_authored_light_sampling": sampling,
+        "pt_error_target": 0,
+        "pt_firefly_clamp": 0,
+    }
+    direct = _quad_arm(
+        tmp_path, "auth_direct.png", build, 256, True, max_bounces=0, experimental=opts
+    )
+    continued = _quad_arm(
+        tmp_path,
+        "auth_continued.png",
+        build,
+        256,
+        True,
+        max_bounces=3,
+        experimental=opts,
+    )
+    a = _center_patch_mean(direct, half=4)
+    b = _center_patch_mean(continued, half=4)
+    assert 3 < a < 220, "receiver must be lit and unsaturated"
+    assert abs(a - b) < max(1.0, 0.03 * a), (a, b)
+
+
+def test_mirror_preserves_closed_shell_opacity(tmp_path):
+    """A reflected transparent box composites once against its backdrop."""
+    from algan.rendering.shaders.fragment_shaders import forced_mirror_scatter
+    from algan.rendering.shaders.materials import MeshBasicMaterial
+
+    def build_at(opacity):
+        def build(scene):
+            scene.set_background(BLACK)
+            Scene.clear_lights()
+            mirror = Prism(width=3, height=3, depth=0.2, color=BLACK)
+            mirror.set_material(MeshBasicMaterial(color=BLACK))
+            mirror.set_fragment_shader(forced_mirror_scatter)
+            mirror.rotate(45, UP).spawn(animate=False)
+            for side in (RIGHT, -RIGHT):
+                shell = Prism(width=0.4, height=8, depth=6, opacity=opacity)
+                shell.set_material(
+                    MeshBasicMaterial(color=(0.5, 0.0, 0.0), opacity=opacity)
+                )
+                shell.move(side * 5).spawn(animate=False)
+
+        return build
+
+    opts = {
+        "linear_color_space": False,
+        "tonemapping": False,
+        "experimental": {"post_process_tonemap": False, "pt_error_target": 0},
+        "max_bounces": 3,
+    }
+    opaque = _render_scene_exp(tmp_path, "shell_opaque.png", build_at(1.0), 16, **opts)
+    half = _render_scene_exp(tmp_path, "shell_half.png", build_at(0.5), 16, **opts)
+    a = float(_mirror_patch(opaque)[..., 2].float().mean())
+    b = float(_mirror_patch(half)[..., 2].float().mean())
+    assert a > 30, "the mirror must reflect the box"
+    assert b == pytest.approx(0.5 * a, abs=1.5), (a, b)
+
+
+def test_internal_glass_reflection_keeps_furnace_energy(tmp_path):
+    """The central ray TIR-reflects at z=5, then exits through x=5."""
+
+    def build(scene):
+        Scene.clear_lights()
+        scene.set_environment_map(torch.full((4, 8, 3), 0.25))
+        glass = Prism(width=10, height=10, depth=10)
+        glass.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1, roughness=0.001, ior=1.5)
+        )
+        glass.spawn(animate=False)
+        camera = scene.get_camera()
+        camera.move_to(OUT * 4)
+        camera.look_at(RIGHT * 4 + OUT * 7)
+        camera.set_fov(5)
+
+    image = _render_scene_exp(
+        tmp_path,
+        "glass_furnace.png",
+        build,
+        64,
+        max_bounces=12,
+        linear_color_space=False,
+        tonemapping=False,
+        shadows=True,
+        experimental={
+            "post_process_tonemap": False,
+            "pt_firefly_clamp": 0,
+            "pt_error_target": 0,
+            "pt_rr_start_bounce": 16,
+        },
+    )
+    # The camera is in glass: radiance at its eventual glass-to-air exit
+    # scales by (n_incident/n_transmitted)^2. TIR itself must lose no power.
+    assert _center_patch_mean(image, half=4) == pytest.approx(
+        255 * 0.25 * 1.5**2, abs=4
+    )
+
+
+def test_rough_glass_blurs_transmission_but_index_matched_glass_does_not(tmp_path):
+    """A striped environment resolves through smooth glass and blurs through rough glass."""
+
+    def build_at(rough, ior):
+        def build(scene):
+            Scene.clear_lights()
+            stripes = (torch.arange(256) // 4 % 2).float() * 0.6 + 0.1
+            scene.set_environment_map(stripes[None, :, None].expand(64, 256, 3).clone())
+            glass = Prism(width=5, height=5, depth=0.5)
+            glass.set_material(
+                MeshPhysicalMaterial(
+                    color=WHITE, transmission=1, roughness=rough, ior=ior
+                )
+            )
+            glass.spawn(animate=False)
+            camera = scene.get_camera()
+            camera.move_to(OUT * 7)
+            camera.look_at(ORIGIN)
+            camera.set_fov(25)
+
+        return build
+
+    images = []
+    for name, rough, ior in (
+        ("smooth", 0.001, 1.5),
+        ("rough", 0.65, 1.5),
+        ("matched", 0.65, 1.0),
+    ):
+        images.append(
+            _render_scene_exp(
+                tmp_path,
+                f"glass_stripes_{name}.png",
+                build_at(rough, ior),
+                128,
+                max_bounces=12,
+                linear_color_space=False,
+                tonemapping=False,
+                experimental={
+                    "post_process_tonemap": False,
+                    "pt_firefly_clamp": 0,
+                    "pt_error_target": 0,
+                    "pt_rr_start_bounce": 16,
+                },
+            )[16:48, 16:48, :3].float()
+        )
+    smooth, rough, matched = images
+    assert float(smooth.std()) > 40
+    assert float(matched.std()) > 40
+    assert float(rough.std()) < 0.5 * float(smooth.std())
+    assert float(rough.mean()) > 20
+
+
+@pytest.mark.parametrize("transmission", [1.0, 0.4])
+def test_rough_glass_transmission_nee_and_mis_agree_and_obey_shadows(
+    tmp_path, transmission
+):
+    """An emitter behind one interface exercises the opposite-hemisphere NEE path."""
+    from algan import TriangleMesh
+
+    def quad(size):
+        h = size / 2
+        return TriangleMesh(
+            vertices=[[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0]],
+            faces=[[0, 1, 2], [0, 2, 3]],
+        )
+
+    def build_at(blocked):
+        def build(scene):
+            Scene.clear_lights()
+            scene.set_background(BLACK)
+            glass = quad(6)
+            glass.set_material(
+                MeshPhysicalMaterial(
+                    color=WHITE, transmission=transmission, roughness=0.65, ior=1.5
+                )
+            )
+            glass.move(OUT * 2.5).spawn(animate=False)
+            panel = quad(4)
+            panel.set_material(
+                MeshLambertMaterial(color=BLACK, emissive=WHITE, emissive_intensity=0.5)
+            )
+            panel.spawn(animate=False)
+            if blocked:
+                blocker = quad(5)
+                blocker.set_material(MeshLambertMaterial(color=BLACK))
+                blocker.move(OUT).spawn(animate=False)
+            camera = scene.get_camera()
+            camera.move_to(OUT * 7)
+            camera.look_at(ORIGIN)
+            camera.set_fov(5)
+
+        return build
+
+    means = []
+    for name, bounces, blocked in (
+        ("nee", 0, False),
+        ("mis", 2, False),
+        ("blocked", 2, True),
+    ):
+        image = _render_scene_exp(
+            tmp_path,
+            f"glass_emitter_{name}.png",
+            build_at(blocked),
+            512,
+            video=SMOKE_TEST.set(resolution=(24, 24)),
+            max_bounces=bounces,
+            linear_color_space=False,
+            tonemapping=False,
+            shadows=True,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+                "pt_rr_start_bounce": 16,
+            },
+        )
+        means.append(_center_patch_mean(image, half=6))
+    nee, mis, blocked = means
+    assert 20 * transmission < nee < 60 * transmission, means
+    assert mis == pytest.approx(nee, rel=0.06, abs=1), means
+    assert blocked < 1, means
+
+
+def test_glass_entry_exit_eta_factors_cancel_with_early_roulette(tmp_path):
+    """Roulette must not mistake the refractive radiance factor for absorption."""
+
+    def build(scene):
+        Scene.clear_lights()
+        scene.set_environment_map(torch.full((4, 8, 3), 0.25))
+        glass = Prism(width=10, height=10, depth=1)
+        glass.set_material(
+            MeshPhysicalMaterial(color=WHITE, transmission=1, roughness=0.001, ior=1.5)
+        )
+        glass.spawn(animate=False)
+        camera = scene.get_camera()
+        camera.move_to(OUT * 7)
+        camera.look_at(ORIGIN)
+        camera.set_fov(5)
+
+    for rr_start in (0, 16):
+        image = _render_scene_exp(
+            tmp_path,
+            f"glass_roulette_{rr_start}.png",
+            build,
+            32,
+            max_bounces=12,
+            linear_color_space=False,
+            tonemapping=False,
+            experimental={
+                "post_process_tonemap": False,
+                "pt_firefly_clamp": 0,
+                "pt_error_target": 0,
+                "pt_rr_start_bounce": rr_start,
+            },
+        )
+        assert _center_patch_mean(image, half=8) == pytest.approx(255 * 0.25, abs=1)
+        assert float(image[24:40, 24:40, :3].float().std()) < 1

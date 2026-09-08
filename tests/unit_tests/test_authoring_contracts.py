@@ -15,11 +15,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import torch
 
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
+from algan.constants.color import BLUE
 from algan.errors import AlganConfigurationError, HierarchyError
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
+from algan.mobs.surfaces.surface import Surface
 from algan.mobs.text import Text
 from algan.scene import Scene
 from algan.scene_manager import SceneManager
@@ -57,6 +60,133 @@ def test_a_mob_is_truthy_however_many_batch_members_it_has():
     assert bool(text) is True
     assert len(square) == 0
     assert (square or "fallback") is square
+
+
+# --------------------------------------------------------------------------
+# Release-audit authoring diagnostics stay on Algan's public error contract
+# --------------------------------------------------------------------------
+
+
+def test_constructor_location_rejects_a_two_dimensional_vector_early():
+    with pytest.raises(AlganConfigurationError, match=r"location.*3-D vector"):
+        Square(location=(1, 2))
+
+
+def test_bad_updater_id_and_become_target_name_the_authoring_error():
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"No updater with id 9999"):
+        square.remove_updater(9999)
+    with pytest.raises(AlganConfigurationError, match=r"become\(\) takes the Mob"):
+        square.become(None)
+
+
+@pytest.mark.parametrize("opacity", [-0.01, 1.01, 5.0])
+def test_opacity_must_stay_in_the_documented_unit_interval(opacity):
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        Square(opacity=opacity)
+
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        square.opacity = opacity
+
+
+def test_opacity_unit_interval_endpoints_remain_valid():
+    assert Square(opacity=0).opacity.item() == 0
+    assert Square(opacity=1).opacity.item() == 1
+
+
+def test_opacity_mapping_cannot_create_an_out_of_range_target():
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        square.map_animated_attribute("opacity", lambda opacity: opacity * 2)
+
+
+@pytest.mark.parametrize("render_tolerance_pixels", [0, -1, float("nan")])
+def test_surface_tolerance_errors_are_algan_configuration_errors(
+    render_tolerance_pixels,
+):
+    with pytest.raises(
+        AlganConfigurationError, match=r"render_tolerance_pixels"
+    ) as raised:
+        Surface(render_tolerance_pixels=render_tolerance_pixels)
+    # AlganConfigurationError intentionally preserves ValueError compatibility.
+    assert isinstance(raised.value, ValueError)
+
+
+def test_zero_and_negative_scale_remain_legal_transforms():
+    Square().scale(0)
+    Square().scale(-1)
+
+
+# --------------------------------------------------------------------------
+# The opacity contract holds for the colour spelling too
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("opacity", [-0.01, 1.01, 5.0])
+def test_color_set_opacity_rejects_values_outside_the_unit_interval(opacity):
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        BLUE.set_opacity(opacity)
+
+
+def test_color_set_opacity_rejects_an_out_of_range_row():
+    """One bad row in a per-vertex opacity tensor is enough."""
+    per_row = torch.tensor([[0.5], [1.5], [0.25]])
+    with pytest.raises(AlganConfigurationError, match=r"between 0 and 1"):
+        BLUE.set_opacity(per_row)
+
+
+def test_color_set_opacity_rejects_non_finite_values():
+    with pytest.raises(AlganConfigurationError):
+        BLUE.set_opacity(float("nan"))
+
+
+def test_color_set_opacity_endpoints_and_tensors_remain_valid():
+    assert float(BLUE.set_opacity(0).opacity) == 0
+    assert float(BLUE.set_opacity(1).opacity) == 1
+    rows = BLUE.set_opacity(torch.tensor([[0.0], [1.0]])).opacity
+    assert [float(v) for v in rows.flatten()] == [0.0, 1.0]
+
+
+def test_color_set_opacity_leaves_the_palette_constant_untouched():
+    before = float(BLUE.opacity)
+    BLUE.set_opacity(0.25)
+    assert float(BLUE.opacity) == before
+
+
+def test_color_mult_opacity_is_a_transform_and_stays_unchecked():
+    """``mult_opacity`` scales rather than sets, like ``scale`` on a Mob.
+
+    It also runs per render batch inside ``get_render_primitives``, on
+    texture-sized tensors and on replayed values an overshooting rate function
+    can carry a hair outside ``[0, 1]``, so it must not range-check.
+    """
+    assert float(BLUE.set_opacity(1.0).mult_opacity(2.0).opacity) == 2.0
+
+
+# --------------------------------------------------------------------------
+# map_animated_attribute runs the same checks as the assignment funnel
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+@pytest.mark.parametrize("attr", ["location", "glow"])
+def test_mapping_a_non_finite_target_names_the_authoring_line(attr, bad):
+    """``map_animated_attribute`` bypasses ``set_animated_attribute``.
+
+    So it has to reject a non-finite target itself, or the NaN reaches replay
+    and renders as a blank or missing shape with nothing pointing at the line
+    that wrote it.
+    """
+    square = Square()
+    with pytest.raises(AlganConfigurationError, match=r"must be finite"):
+        square.map_animated_attribute(attr, lambda value: value * bad)
+
+
+def test_mapping_a_finite_target_is_unaffected():
+    square = Square()
+    assert square.map_animated_attribute("location", lambda p: p * 0.5) is square
+    assert square.map_animated_attribute("opacity", lambda o: o * 0.5) is square
 
 
 # --------------------------------------------------------------------------

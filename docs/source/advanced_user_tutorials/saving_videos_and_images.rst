@@ -152,6 +152,104 @@ The automatic choice only applies when you have not passed an explicit
     # Keep encoding on the CPU even when an NVENC encoder is available.
     ALGAN_VIDEO_ENCODER=software python my_scene.py
 
+Exporting additive glow and coverage together
+==============================================
+
+Enable :meth:`~.Scene.set_premultiplied_over` to put opaque geometry,
+translucent geometry and additive glow in one transparent clip:
+
+.. code-block:: python
+
+    from algan import *
+
+    Scene.set_background(TRANSPARENT)
+    Scene.set_premultiplied_over()
+    Circle(color=YELLOW, glow=1.0).spawn()
+    Scene.save_video("glow.mov")
+
+The equivalent constructor keyword is ``Scene(premultiplied_over=True)``.
+The setting defaults to False, belongs to one Scene, survives ``reset()``, and
+is ignored for opaque backgrounds. It also applies to ``save_frame`` and
+``get_frames``. Ordinary image/video viewers generally do not display this
+export correctly; use it as a compositing intermediate.
+
+Bloom adds to RGB and leaves coverage alpha untouched. A halo can therefore
+contain RGB even where alpha is zero. After decoding RGB from sRGB to linear
+light, combine the clip with a linear-light backdrop using:
+
+.. math::
+
+    C_{out} = C_{clip} + (1 - \alpha_{clip}) C_{backdrop}.
+
+For transparent backdrops, the output alpha is
+``alpha_clip + (1 - alpha_clip) * alpha_backdrop``. Opaque geometry replaces
+the backdrop; a zero-alpha halo adds light without obscuring it.
+
+This mode requires ``SETTINGS.raytracing.linear_color_space=True``,
+``tonemapping=False``, and
+``SETTINGS.raytracing.experimental.post_process_tonemap=True`` (all defaults).
+Incompatible settings raise an error before rendering. Exposure scales the
+clip's light only; apply a shared exposure or a nonlinear tone curve after
+compositing if it should affect the backdrop too.
+
+The standard bloom pass honors the mode whether it is the default, explicitly
+passed as ``post_processes=(bloom_filter,)``, or tuned with
+``functools.partial``. Custom passes must preserve coverage alpha and linear
+premultiplied RGB themselves. Render with ``TRANSPARENT`` for foreground-only
+bloom; any authored partially transparent background is part of the exported
+layer and can contribute to its bloom.
+
+Precision and parity
+--------------------
+
+``.mov`` defaults to ProRes 4444 in this mode, and to lossless PNG otherwise.
+``.mkv`` and ``.avi`` retain PNG; ``.webm`` retains VP9 with alpha. An explicit
+``codec=`` wins. The built-in ProRes profile and pixel format remain in place
+when adding custom ``ffmpeg_params``; later caller options can override them.
+
+RGB and alpha are still quantized to **8 bits before encoding**. ProRes is an
+editor-compatible container codec here, not an increase in source precision.
+RGB above linear 1 is clipped, and lossy codecs can introduce additional error.
+PNG output preserves the samples, including RGB at zero alpha, but these
+samples require the same custom interpretation as the video.
+
+The export contains bloom from its own layer. It does not reproduce every
+opaque Algan render over arbitrary footage: the normal opaque bloom pass also
+blurs backdrop light visible through translucent geometry and antialiased
+edges. Nonlinear tonemapping and content-dependent antialiasing likewise do
+not commute with compositing. The guarantee is the linear over equation for
+the exported layer, not universal parity with backdrop-dependent rendering.
+Colored transmission/refraction of an external plate also cannot be represented
+by a single coverage alpha.
+
+Resolve / Fusion processing contract
+------------------------------------
+
+The stored RGB is ``sRGB(linear premultiplied RGB)``. It is **not**
+``alpha * sRGB(straight RGB)``. Merely choosing an alpha-mode label is not
+sufficient to guarantee the correct color processing. The required order is:
+
+1. Load the RGB and alpha without discarding RGB at zero alpha or multiplying
+   RGB by alpha.
+2. Decode the clip's RGB directly from sRGB to linear Rec.709, leaving alpha
+   untouched. Do not surround this decoding step with alpha divide/multiply
+   operations (including a color node's Pre-Divide/Post-Multiply option).
+3. Convert the backdrop to the same linear working space using its own input
+   color interpretation.
+4. Apply premultiplied over. In Fusion this is a Normal/Over Merge with its
+   Additive/Subtractive control at Additive. Do not use an Add blend mode:
+   that would lose the geometry's occlusion of the backdrop.
+5. Apply the desired display transform to the combined result.
+
+Resolve's import and color-management behavior varies with the project setup.
+This processing contract is tested numerically and through FFmpeg, but the
+Resolve UI chain has not been validated interactively. Before production use,
+test a clip containing an opaque patch, a partial-alpha edge and a nonzero-RGB,
+zero-alpha patch over a mid-grey and a bright colored plate. The opaque patch
+must replace the plate, and the zero-alpha patch must add its decoded light.
+Check the partial-alpha edge numerically too: preserving the halo alone does
+not prove the input color transform is correct.
+
 Working with projects
 =====================
 

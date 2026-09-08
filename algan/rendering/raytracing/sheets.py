@@ -170,6 +170,27 @@ sheet_sample_depth_cede = min(
 #: the band's own exact area whatever the split.
 sheet_rank_pool = env_flag("ALGAN_SHEET_RANK_POOL", True)
 
+# Reuse ordered pixel and band runs instead of globally sorting their keys
+# again. Opt-in: lower sort time and scratch memory have not yet translated
+# into a repeatable whole-render speedup. Unsupported backends use torch.
+sheet_pixel_sort = env_flag("ALGAN_SHEET_PIXEL_SORT", False)
+
+# Exact mixed-radix pixel/group/depth keys when their measured ranges fit i64.
+# Captured UHD sorts use 37-53% less time; conservative queue-size thresholds
+# avoid packing overhead on small inputs. No depth bits are discarded.
+sheet_packed_sort = env_flag("ALGAN_SHEET_PACKED_SORT", True)
+
+# Direct group diagnostics and CSR construction; independent of sheet sorting.
+sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
+
+# Reuse established group IDs where another grouping cannot subdivide them.
+sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
+
+# Assign dense conflict-rank groups from per-band counts instead of sorting.
+# Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
+# Whole-render warm mean improved 1.7%; other devices retain the original path.
+sheet_rank_groups = env_flag("ALGAN_SHEET_RANK_GROUPS", True)
+
 #: Most exact area a FULL-union band may hold and still count, for
 #: :data:`sheet_rank_pool`, as one layer the fill rule split over a seam.
 #:
@@ -378,6 +399,226 @@ def _lexsort(*keys):
         o = torch.argsort(k, stable=True)
         order = o if order is None else order.index_select(0, o)
     return order
+
+
+def _local_sheet_sort(tensor):
+    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+    return (
+        sheet_pixel_sort
+        and tensor.numel() > 0
+        and _live_arch() is not None
+        and taichi_launch_is_local(tensor.device)
+    )
+
+
+def _packed_depth_order(keys, depth):
+    # Nonnegative finite float32 depths have the same order as their IEEE bits.
+    # Retain every bit, and subtract minima only to save unused key space.
+    # Negative zero, negative/nonfinite depths and oversized key ranges keep
+    # the reference stable sort, including its tie and NaN semantics.
+    if (
+        depth.device.type != "cuda"
+        or depth.numel() < (32768 if len(keys) > 1 else 262144)
+        or any(k.dtype != torch.int64 for k in keys)
+        or depth.dtype != torch.float32
+        or not depth.is_contiguous()
+    ):
+        return None
+    bits = depth.view(torch.int32)
+    bounds = torch.stack([v for k in (*keys, bits) for v in torch.aminmax(k)]).tolist()
+    spans = [hi - lo + 1 for lo, hi in zip(bounds[::2], bounds[1::2])]
+    capacity = 1
+    for span in spans:
+        capacity *= span
+    if bounds[-2] < 0 or bounds[-1] >= 0x7F800000 or capacity > (1 << 63) - 1:
+        return None
+    key = keys[0] - bounds[0]
+    for i, column in enumerate(keys[1:], 1):
+        key.mul_(spans[i]).add_(column - bounds[2 * i])
+    key.mul_(spans[-1]).add_(bits - bounds[-2])
+    return torch.argsort(key, stable=True)
+
+
+def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None):
+    """Order an already pixel-grouped stream, retaining the global-sort fallback."""
+    if offsets is not None and _local_sheet_sort(pix):
+        from algan.rendering.raytracing.sheet_sort_taichi import pixel_group_order
+
+        order = torch.empty_like(pix)
+        pixel_group_order(offsets, group, depth, order, offsets.numel() - 1)
+        return order
+    if sheet_packed_sort:
+        order = _packed_depth_order((pix, group), depth)
+        if order is not None:
+            return order
+    # Preserve the packed CUDA and local-kernel routes above, which require
+    # the original int64 IDs. Narrow only the reference sort's copies when
+    # the caller knows safe bounds without another device reduction.
+    if key_bounds is not None:
+        pix = _narrow_sort_key(pix, key_bounds[0])
+        group = _narrow_sort_key(group, key_bounds[1])
+    return _lexsort(pix, group, depth)
+
+
+def _key_depth_order(key, depth):
+    """Stable key/depth order, with packed and per-run sorting alternatives."""
+    if _local_sheet_sort(key):
+        from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
+
+        order = torch.argsort(key, stable=True)
+        run_key = key.index_select(0, order)
+        key_run_order(run_key, key, depth, order, key.numel(), False, True)
+        return order
+    if sheet_packed_sort:
+        order = _packed_depth_order((key,), depth)
+        if order is not None:
+            return order
+    return _lexsort(key, depth)
+
+
+def _sheet_walk_order(pix, position):
+    """Restore fragment walk order within an already pixel-grouped sheet table."""
+    if _local_sheet_sort(pix):
+        from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
+
+        order = torch.empty_like(pix)
+        # The depth argument is inert in this specialization: positions alone
+        # determine the walk, with original sheet index preserving stable ties.
+        key_run_order(pix, position, position, order, pix.numel(), True, False)
+        return order
+    return torch.argsort(position, stable=True)
+
+
+def _unique_sorted_ids(keys):
+    """Group nondecreasing integer IDs without sorting them a second time."""
+    # The validated Metal path also receives sorted IDs here. Keep its
+    # consecutive grouping while retaining the CPU/CUDA optimization gates.
+    if keys.device.type == "mps" or (
+        (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda")
+    ):
+        return torch.unique_consecutive(keys, return_inverse=True)
+    return torch.unique(keys, sorted=True, return_inverse=True)
+
+
+def _sheet_rank_groups(parent, rank):
+    """Group ordered dense parent IDs and their clamped conflict ranks.
+
+    Conflict ranks contain every value from zero to their maximum in each
+    parent: each fragment increases a claimed lane's count by one, so the
+    running maximum cannot jump over a rank. Ranks may decrease within a
+    parent; consecutive unique would therefore be incorrect here.
+    """
+    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+    n = parent.numel()
+    if (
+        sheet_rank_groups
+        and parent.device.type == "cuda"
+        and 0 < n < 2**31
+        and _live_arch() is not None
+        and taichi_launch_is_local(parent.device)
+    ):
+        from algan.rendering.raytracing.sheet_rank_groups_taichi import rank_groups
+
+        parents = int(parent[-1]) + 1
+        counts = torch.zeros(parents, dtype=torch.int32, device=parent.device)
+        counts.scatter_reduce_(0, parent, rank, reduce="amax", include_self=True)
+        counts.add_(1)
+        ends = torch.cumsum(counts, 0, dtype=torch.int32)
+        del counts
+        nb = int(ends[-1])
+        groups = torch.empty_like(parent)
+        cid_band = torch.empty(nb, dtype=torch.int64, device=parent.device)
+        rank_of_cid = torch.empty_like(cid_band)
+        rank_groups(parent, rank, ends, groups, cid_band, rank_of_cid, n, parents)
+        return groups, cid_band, rank_of_cid
+    keys, groups = torch.unique(parent * 16 + rank, sorted=True, return_inverse=True)
+    cid_band = keys // 16
+    return groups, cid_band, keys - cid_band * 16
+
+
+def _sheet_class_groups(band_id, cls_eff, new_group, nb):
+    """Reuse dense sub-band IDs when each original group has a uniform class."""
+    if sheet_group_reuse and cls_eff.device.type in ("cpu", "cuda"):
+        # Rank/depth sub-bands never cross an original (pixel, surface, facing)
+        # group. Uniform classes in that larger group therefore cannot split
+        # any sub-band. This sufficient check permits false negatives only:
+        # mixed classes retain the full grouping algorithm below.
+        mixed = (cls_eff[1:] != cls_eff[:-1]) & ~new_group[1:]
+        if not bool(mixed.any()):
+            return (
+                nb,
+                band_id,
+                torch.arange(nb, dtype=torch.int64, device=band_id.device),
+            )
+    return band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+
+
+def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
+    """Count triangle groups and groups containing multiple sheets on device."""
+    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+    n = new_group.numel()
+    if (
+        sheet_metadata_kernel
+        and band_id is not None
+        and n
+        and _live_arch() is not None
+        and taichi_launch_is_local(new_group.device)
+    ):
+        from algan.rendering.raytracing.sheet_metadata_taichi import group_counts
+
+        # Separate counters per 256 input positions avoid contending on two
+        # global scalars. A partition holds at most 256 group starts.
+        partial = torch.zeros(
+            ((n + 255) // 256, 2), dtype=torch.int32, device=new_group.device
+        )
+        group_counts(
+            new_group.contiguous().view(torch.uint8),
+            band_id,
+            order,
+            is_tri.contiguous().view(torch.uint8),
+            partial,
+            n,
+        )
+        totals = partial.sum(dim=0, dtype=torch.int64)
+        return totals[0], totals[1]
+
+    group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
+    bands_per_group = torch.zeros(
+        max(nb, 1), dtype=torch.int64, device=new_group.device
+    )
+    sheet_group = group_id.index_select(0, first_sorted)
+    del group_id
+    bands_per_group.scatter_add_(0, sheet_group, torch.ones_like(sheet_group))
+    tri_group = is_tri.index_select(0, order).index_select(0, first_sorted)
+    tri_groups_mask = torch.zeros(max(nb, 1), dtype=torch.bool, device=new_group.device)
+    tri_groups_mask.scatter_(0, sheet_group, tri_group)
+    return tri_groups_mask.sum(), ((bands_per_group > 1) & tri_groups_mask).sum()
+
+
+def _sheet_offsets(covered_idx, sheet_pix):
+    """Build CSR for sorted sheets over the same ordered set of covered pixels."""
+    covered = covered_idx.to(torch.int64)
+    if sheet_metadata_kernel:
+        # Every covered pixel has sheets, so its lower bound is its CSR start.
+        # Searching once per pixel replaces a search per sheet plus a scatter
+        # and prefix sum, and needs only the output allocation.
+        offsets = torch.empty(
+            covered.numel() + 1, dtype=torch.int64, device=sheet_pix.device
+        )
+        torch.searchsorted(sheet_pix, covered, out=offsets[:-1])
+        offsets[-1] = sheet_pix.numel()
+    else:
+        counts = torch.zeros_like(covered)
+        seg = torch.searchsorted(covered, sheet_pix)
+        counts.scatter_add_(0, seg, torch.ones_like(seg))
+        offsets = torch.zeros(
+            covered.numel() + 1, dtype=torch.int64, device=sheet_pix.device
+        )
+        offsets[1:] = torch.cumsum(counts, 0)
+    return offsets
 
 
 def _rows(arr, frame_rel, time_start):
@@ -850,15 +1091,9 @@ def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
     """
     # ``cid_band`` is the pre-rank band of each sub-band, in the ORIGINAL band
     # numbering; compact it so it can index a reduction output.
-    #
-    # ``unique_consecutive``, not ``unique``: ``cid_band`` is
-    # ``uniq_cid // 16`` of an ALREADY SORTED ``uniq_cid`` (the caller's
-    # ``torch.unique(cid)``), so it is non-decreasing -- and on non-decreasing
-    # input the two agree exactly, values and inverse alike, because equal
-    # values cannot be non-adjacent. What that saves is the sort: ``unique``
-    # is a clone, an index array, a full sort and a scatter over ``[nb]``,
-    # which at 4K is millions of entries, where this is one linear scan.
-    uniq_pre, pool_of_cid = torch.unique_consecutive(cid_band, return_inverse=True)
+    # cid_band comes from sorted unique (band * 16 + rank) keys, so integer
+    # division preserves its order, including repeated bands and missing IDs.
+    uniq_pre, pool_of_cid = _unique_sorted_ids(cid_band)
     n_pool = int(uniq_pre.numel())
     del uniq_pre
     if n_pool == nb:
@@ -888,12 +1123,9 @@ def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
         fuse.index_select(0, pool_of_cid), torch.zeros_like(rank_of_cid), rank_of_cid
     )
     del fuse, pool_of_cid
-    # Non-decreasing again, and for the reason the comment above the key says:
-    # ``pool_of_cid`` ascends with the sub-band ordinal, and within one pool
-    # the ranks either ascend (``uniq_cid`` was sorted by ``(band, rank)``) or
-    # are all zeroed by the fuse. So ``unique_consecutive`` is the same answer
-    # without the sort.
-    uniq_key, group_of_cid = torch.unique_consecutive(key, return_inverse=True)
+    # Pooling zeros every rank of a selected band together; it cannot reorder
+    # bands or the remaining ranks within a band.
+    uniq_key, group_of_cid = _unique_sorted_ids(key)
     n_group = int(uniq_key.numel())
     del uniq_key, key
     if n_group == nb:
@@ -1435,17 +1667,12 @@ def compact_sheets(
         )
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
-    # The sort keys are narrowed to int32 where the values provably fit. A
-    # stable argsort of an int32 copy of an int64 key returns the SAME
-    # permutation -- the value sequence is identical and ties still break by
-    # index -- while torch's radix sort does four passes over a 4-byte key
-    # instead of eight over an 8-byte one, and each pass reads and writes the
-    # whole [n] array. At 4K this stream is millions of fragments and the
-    # lexsort is one of the compaction's largest items.
-    order = _lexsort(
-        _narrow_sort_key(pix, num_frames * ppf),
-        _narrow_sort_key(gkey, gkey_bound),
+    order = _pixel_group_order(
+        pix,
+        gkey,
         t,
+        coverage.get("run_offsets"),
+        key_bounds=(num_frames * ppf, gkey_bound),
     )
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
@@ -1568,8 +1795,8 @@ def compact_sheets(
     # between them instead of once each -- the region renders too light, which
     # is exactly the defect the conflict rank exists to prevent. Instrumented
     # rather than raised (RENDERER_WORK_QUEUE.md item 1): the amax is a scalar
-    # reduction over a tensor the ``unique`` two statements down already
-    # synchronises on, and the [n] comparison that counts the fragments is only
+    # reduction before grouping (which also needs a host-visible count), and
+    # the [n] comparison that counts the fragments is only
     # materialised in the case that is about to be reported.
     if n:
         deepest = int(rank.amax())
@@ -1580,20 +1807,14 @@ def compact_sheets(
                 cap=SHEET_RANK_LIMIT + 1,
             )
     rank.clamp_(max=SHEET_RANK_LIMIT)
-    cid = band_id * 16 + rank
+    band_id, cid_band, rank_of_cid = _sheet_rank_groups(band_id, rank)
     del rank
-    uniq_cid, band_id = torch.unique(cid, sorted=True, return_inverse=True)
-    del cid
-    nb = int(uniq_cid.numel())
+    nb = int(cid_band.numel())
     # Band identity for sheet_sample_depth's multi-sheet-band exemption: a
-    # conflict-rank split makes several sheets of ONE band, and ``cid``'s low
-    # four bits are the rank. Under ``shade_split`` the same rule is recovered
+    # conflict-rank split makes several sheets of ONE parent band. cid_band
+    # maps each dense group back to that parent; rank_of_cid retains its rank
+    # for _rank_pool_groups. Under shade_split, parent identity is recovered
     # from the class key further down.
-    cid_band = uniq_cid // 16
-    # ...and the rank itself, which ``_rank_pool_groups`` needs to rebuild the
-    # key it pools with.
-    rank_of_cid = uniq_cid - cid_band * 16
-    del uniq_cid
     if nb == 0:
         return None
 
@@ -1634,7 +1855,7 @@ def compact_sheets(
         # the sample-depth block below keeps live anyway -- so this used to
         # rebuild it: the same mask-shift-view over [n] plus the same gather,
         # for a bit-identical copy of a tensor already in hand.
-        o2 = _lexsort(key, t_o)
+        o2 = _key_depth_order(key, t_o)
         # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
         # prefix comes out of a cub scan, and a serial register walk cannot
         # reproduce its reassociation bitwise (measured on the real nn-scene
@@ -1763,7 +1984,7 @@ def compact_sheets(
         del cls_o, band_split, band_of_frag
         # Keyed by the SUB-BAND, not by the compositing group: pooling must not
         # merge two sub-bands into one sheet, only make them claim as one band.
-        nb, band_id, sheet_cid = band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+        nb, band_id, sheet_cid = _sheet_class_groups(band_id, cls_eff, new_group, nb)
         del cls_eff
         sheet_band = (
             sheet_cid
@@ -1964,30 +2185,19 @@ def compact_sheets(
 
         nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
         nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
-    del band_id
-
     # Split-group accounting (diagnostic): groups are triangle-only. Kept
     # device-side end to end -- the group tables are over-allocated to ``nb``
     # (group ids are < the true group count <= nb) and the two counters stay
     # 0-d tensors, evaluated only when something reads them -- because this
     # block used to cost three device syncs per compaction for numbers
     # nothing on the render path consumes.
-    group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
-    del new_group
-    bands_per_group = torch.zeros(max(nb, 1), dtype=torch.int64, device=device)
-    sheet_group = group_id.index_select(0, first_sorted)
-    del group_id
-    bands_per_group.scatter_add_(
-        0,
-        sheet_group,
-        torch.ones(nb, dtype=torch.int64, device=device),
+    metadata_ids = band_id if sheet_metadata_kernel else None
+    del band_id
+    num_tri_groups, num_split_groups = _sheet_group_counts(
+        new_group, metadata_ids, order, is_tri, first_sorted, nb
     )
-    tri_group = is_tri.index_select(0, order).index_select(0, first_sorted)
-    tri_groups_mask = torch.zeros(max(nb, 1), dtype=torch.bool, device=device)
-    tri_groups_mask.scatter_(0, sheet_group, tri_group)
-    num_split_groups = ((bands_per_group > 1) & tri_groups_mask).sum()
-    num_tri_groups = tri_groups_mask.sum()
-    del bands_per_group, tri_groups_mask, sheet_group, tri_group
+    del metadata_ids
+    del new_group
     # Last read of the sorted stream: from here the function works only in
     # per-sheet arrays, so the per-fragment ones go now rather than at the
     # return (they are 28 MB apiece on a 4K frame).
@@ -2011,7 +2221,9 @@ def compact_sheets(
     del union, flags
 
     # ---- Final order: (pixel, classic order of nearest fragment) -----------
-    final = torch.argsort(min_pos, stable=True)
+    # Band IDs (and their class/rank subdivisions) retain pixel order. Only
+    # the sheets within a pixel need restoring to nearest-fragment order.
+    final = _sheet_walk_order(sheet_pix, min_pos)
 
     # §4.4's additive sibling compositing, expressed in the weights the walk
     # consumes (see ``_sibling_weights``). Where a band holds one sheet --
@@ -2136,10 +2348,7 @@ def compact_sheets(
 
     # CSR aligned with covered_idx: every covered pixel holds at least one
     # fragment, hence at least one sheet, so the two pixel sets coincide.
-    counts = torch.zeros(num_covered, dtype=torch.int64, device=device)
-    seg = torch.searchsorted(coverage["covered_idx"].to(torch.int64), sheet_pix)
-    counts.scatter_add_(0, seg, torch.ones_like(seg))
-    offsets = torch.zeros(num_covered + 1, dtype=torch.int64, device=device)
-    offsets[1:] = torch.cumsum(counts, 0)
-    out["sheet_offsets"] = offsets
+    out["sheet_offsets"] = _sheet_offsets(
+        coverage["covered_idx"][:num_covered], sheet_pix
+    )
     return out

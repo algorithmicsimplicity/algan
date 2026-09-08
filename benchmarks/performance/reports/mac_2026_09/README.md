@@ -1,5 +1,9 @@
 # Mac GPU round, 2026-09: what the Metal render actually costs
 
+> **Current integration:** [INTEGRATION.md](INTEGRATION.md) records the master
+> merge, retained fixes and disabled experiments, and branch cleanup. The
+> measurements and hypotheses below are the original working chronology.
+
 > **The single self-contained record of this round is
 > [`FINDINGS.md`](FINDINGS.md)** -- what landed, what was measured, the
 > hypotheses that were refuted and by what, and the failure that is still

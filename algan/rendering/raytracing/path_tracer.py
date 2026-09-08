@@ -1011,8 +1011,8 @@ def _build_nee_tables(
         meta[_NM_AMBIENT_COUNT] = float(num_ambient)
         meta[_NM_ANIM_SEED] = 1.0 if rt_settings.pt_animated_seed else 0.0
         # Where the synthetic area-light quads start. One compare in the
-        # drain loop turns into both the camera-invisibility test and the
-        # gate on the falloff multiplier; ``NO_QUAD_BASE`` is past any
+        # drain loop gates one-sided emission, authored direct-light
+        # exclusion and falloff; ``NO_QUAD_BASE`` is past any
         # primitive index a batch can hold, so a render with no area light
         # takes neither branch and is bit-identical.
         meta[_NM_QUAD_BASE] = float(
@@ -1104,7 +1104,7 @@ def _build_nee_tables(
 
 
 def _build_shell_table(memory, merged):
-    """Per-triangle closed-shell ids for the camera-segment opacity ring.
+    """Per-triangle closed-shell ids for each straight segment's opacity ring.
 
     ``tri_shell[f % rows, n]`` is the triangle's ``tri_obj`` surface id where
     it belongs to a declared closed shell whose coverage may be ceilinged
@@ -1324,13 +1324,13 @@ def path_trace_render(
     tile_pixels, wave_samples = _pt_tile_shape(memory, n, samples)
     # Per-slot init rows (see path_tracer_taichi's state notes): rs_sca =
     # [t_alpha=1, t_prev=0, layer_prev=1e30, seam_t=-1e30, base_dist=0,
-    # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), 0] plus the zeroed
+    # prev_pdf=-1 (camera segment; _SCA_PREV_PDF), eta_scale=1] plus the zeroed
     # nested-IOR stack columns (air outside); rs_int =
     # [bounces_left=max_bounces, processed=0, _ACTIVE, no hits,
     # max_bounces (the bounce ordinal's reference)] plus the empty (-1)
     # closed-shell ring.
     sca_init = torch.tensor(
-        [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 0.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
+        [1.0, 0.0, 1e30, -1e30, 0.0, -1.0, 1.0] + [0.0] * (SCA_WIDTH_NESTED - 7),
         dtype=f32,
         device=device,
     )

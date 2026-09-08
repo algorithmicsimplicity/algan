@@ -171,26 +171,28 @@ def wavefront_ray_sort_keys(
         rs_pix: ti.types.ndarray(), pixels_per_frame: int,
         lo_x: ti.f32, lo_y: ti.f32, lo_z: ti.f32,
         inv_x: ti.f32, inv_y: ti.f32, inv_z: ti.f32,
-        keys: ti.types.ndarray()):
+        keys: ti.types.ndarray(), origin_shift: ti.template()):
     """Spatial sort key per active ray (rt_settings.wf_ray_sort).
 
     ``keys[i]`` for the ray in ``active[i]``: its frame in the high bits, then
-    the octant of its direction, then a 30-bit Morton code of its origin over
+    the octant of its direction, then a Morton code of its origin over
     the batch's scene box (``lo`` / ``inv`` = 1023 / extent, host-side). The
     host argsorts these and permutes the active list, so the threads of a
     warp start neighbouring rays heading the same way -- the traversal then
     walks neighbouring tree paths and its node loads hit the caches. Every
     per-ray kernel indexes its state through ``active``, so the order changes
     nothing but cache behaviour (and the pixel accumulator's atomic order,
-    which was never fixed).
+    which was never fixed). ``origin_shift == 0`` keeps all 30 origin bits;
+    ``2`` keeps the top 24 and allows a signed i32 key for at most 16 frames.
     """
     for i in range(num_active):
         r = active[i]
         qx = ti.cast(ti.math.clamp((rs_ro[r, 0] - lo_x) * inv_x, 0.0, 1023.0), ti.i32)
         qy = ti.cast(ti.math.clamp((rs_ro[r, 1] - lo_y) * inv_y, 0.0, 1023.0), ti.i32)
         qz = ti.cast(ti.math.clamp((rs_ro[r, 2] - lo_z) * inv_z, 0.0, 1023.0), ti.i32)
-        code = _spread_bits_10(qx) | (_spread_bits_10(qy) << 1) \
-            | (_spread_bits_10(qz) << 2)
+        code = _spread_bits_10(qx >> origin_shift) \
+            | (_spread_bits_10(qy >> origin_shift) << 1) \
+            | (_spread_bits_10(qz >> origin_shift) << 2)
         octant = 0
         if rs_rd[r, 0] > 0.0:
             octant |= 1
@@ -199,8 +201,12 @@ def wavefront_ray_sort_keys(
         if rs_rd[r, 2] > 0.0:
             octant |= 4
         frame = rs_pix[r] // pixels_per_frame
-        keys[i] = (ti.cast(frame, ti.i64) << 33) \
-            | (ti.cast(octant, ti.i64) << 30) | ti.cast(code, ti.i64)
+        origin_bits = ti.static(3 * (10 - origin_shift))
+        if ti.static(origin_shift == 2):
+            keys[i] = (frame << 27) | (octant << 24) | code
+        else:
+            keys[i] = (ti.cast(frame, ti.i64) << (origin_bits + 3)) \
+                | (ti.cast(octant, ti.i64) << origin_bits) | ti.cast(code, ti.i64)
 
 
 # Light type ids of the extended packed light rows (see

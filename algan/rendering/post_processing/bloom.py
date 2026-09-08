@@ -7,6 +7,7 @@ import torch.fft
 import torch.nn.functional as F
 
 from algan.environment import env_flag
+from algan.utils.memory_utils import ManualMemory
 
 # Round the bloom blur's transform length up to a length cuFFT has a native
 # factorization for, instead of transforming at exactly ``L + K - 1``. That
@@ -581,59 +582,6 @@ def bloom_filter_old(
     # return (x[...,:-1] + xb*strength).clamp_(max=255).to(xdtype)
 
 
-def bloom_filter_premultiply(
-    x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8, memory=None
-):
-    if _should_bypass_bloom():
-        return x
-    if x.shape[-1] < 5:
-        raise ValueError(
-            "bloom_filter_premultiply only works for scenes with transparent backgrounds, please set"
-            "background=TRANSPARENT when rendering."
-        )
-    scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
-
-    xdtype = x.dtype
-
-    x = x.to(torch.float) / 255
-    color = x[..., :3]
-    glow = x[..., 3:4]
-
-    color = color * glow * strength
-
-    d = 3
-    kernel_filter = torch.exp(
-        -1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2)
-    )
-    kernel_filter /= kernel_filter.sum()
-    filter_horizontal = kernel_filter.view(1, 1, 1, kernel_size).expand(
-        color.shape[-1], -1, -1, -1
-    )
-    filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
-
-    p = (kernel_size - 1) // 2
-
-    color = color.permute(-1, 0, 1)
-    orig_shape = color.shape[-2:]
-    color = F.interpolate(
-        color.unsqueeze(0), scale_factor=1 / scale_factor, mode="bilinear"
-    ).squeeze(0)
-
-    for _i in range(num_iterations):
-        color = F.conv2d(
-            color, filter_horizontal, padding=(0, p), groups=color.shape[0]
-        )
-        color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
-
-    color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode="bilinear").squeeze(
-        0
-    )
-    color = color.permute(1, 2, 0)
-
-    out = torch.cat((x[..., :3] * x[..., 4:5] + color, x[..., 4:5]), -1)
-    return (out * 255).clamp_(min=0, max=255).to(xdtype)
-
-
 def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
     if _should_bypass_bloom():
         return x
@@ -717,17 +665,19 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
 
 
 def bloom_filter(
-    x,
-    num_iterations=1,
-    kernel_size=256,
-    strength=30,
-    scale_factor=8,
-    glow_spread=0.10,
-    rim_frac=0.004,
-    tail_weight=0.6,
-    memory=None,
-):
-    """FFT-based bloom filter producing a soft, natural glow.
+    x: torch.Tensor,
+    num_iterations: int = 1,
+    kernel_size: int = 256,
+    strength: float = 30,
+    scale_factor: float = 8,
+    glow_spread: float = 0.10,
+    rim_frac: float = 0.004,
+    tail_weight: float = 0.6,
+    memory: ManualMemory | None = None,
+    *,
+    premultiplied_over: bool = False,
+) -> torch.Tensor:
+    """Add a soft halo around glowing parts of the rendered Scene.
 
     A single Gaussian (``exp(-r^2)`` tail) plummets and leaves a hard,
     shell-like halo border. Instead the glow source is blurred at two scales
@@ -742,19 +692,68 @@ def bloom_filter(
     sudden drop to a much fainter level, then a long gradual falloff -- rather
     than a uniform blurred disk with a hard edge.
 
-    Args:
-        x: Input image tensor (..., H, W, C); channel 3 is the glow intensity.
-        strength: Glow intensity multiplier (also sets how far the bright rim
-            saturates beyond the source outline).
-        scale_factor: Downsampling factor for efficiency (scaled by resolution).
-        glow_spread: Sigma of the wide tail blur as a fraction of the
-            (downsampled) frame height. Larger -> the faint glow reaches further.
-        rim_frac: Sigma of the tight rim blur as a fraction of frame height.
-        tail_weight: Weight of the wide tail relative to the rim (small -> the
-            tail is much fainter than the rim, giving the sharp drop-off).
+    Animation
+    ---------
+    Applied at render time to finished frames, not recorded as an animation.
+    Pass a tuned version through ``Scene.save_video(post_processes=...)``;
+    mobs must be spawned to contribute to the image.
 
-    Returns:
-        Bloomed image tensor with same shape as input.
+    Parameters
+    ----------
+    x
+        Frame batch, shape ``(N, H, W, C)``: RGB, glow, and optional alpha.
+        Float input carries linear RGB/glow in 0-1 with HDR headroom, and alpha
+        in 0-255. Byte input carries all channels in 0-255.
+    num_iterations
+        Blur iterations at each scale. Defaults to 1.
+    kernel_size
+        Retained parameter; the Gaussian sizes are computed from the frame
+        height and spread settings. Defaults to 256 and has no effect.
+    strength
+        Dimensionless multiplier for bloom brightness. Defaults to 30.
+    scale_factor
+        Downsampling factor at a frame height of 2160 pixels, scaled with
+        resolution and clamped to at least 1. Defaults to 8.
+    glow_spread
+        Wide Gaussian sigma as a fraction of downsampled frame height.
+        Defaults to 0.10.
+    rim_frac
+        Tight Gaussian sigma as a fraction of downsampled frame height.
+        Defaults to 0.004; sigma is at least one downsampled pixel.
+    tail_weight
+        Wide halo brightness relative to the tight rim. Defaults to 0.6.
+    memory
+        Working storage supplied by the renderer when this is a post-process.
+        Defaults to None; direct calls must supply a ManualMemory arena.
+    premultiplied_over
+        Whether bloom adds only to RGB, keeping coverage alpha unchanged.
+        Defaults to False. The Scene export mode supplies True automatically
+        for this pass and tuned partials of it.
+
+    Returns
+    -------
+    torch.Tensor
+        Bloomed frames with the input shape. Byte input is converted to
+        normalized float32; float input retains its dtype and channel scales.
+        If bloom is bypassed or there is no glow, returns the input directly.
+
+    Raises
+    ------
+    ValueError
+        If working storage is not supplied and bloom is not bypassed.
+
+    Examples
+    --------
+    Reduce the halo brightness:
+
+    .. algan:: Example1BloomFilter
+
+        from algan import *
+        from functools import partial
+        from algan.rendering.post_processing.bloom import bloom_filter
+
+        Circle(glow=0.6).spawn()
+        Scene.save_video(post_processes=(partial(bloom_filter, strength=12),))
     """
     if _should_bypass_bloom():
         return x
@@ -785,16 +784,23 @@ def bloom_filter(
         else:
             x_work = x
 
-        channels = 4 if x.shape[-1] == 5 else 3
-        if x.shape[-1] == 5:
+        alpha_bloom = x.shape[-1] == 5 and not premultiplied_over
+        channels = 4 if alpha_bloom else 3
+        if alpha_bloom:
             color_hwc = memory.get_tensor((*x.shape[:-1], channels), work_dtype)
             color_hwc[..., 0].copy_(x_work[..., 0])
             color_hwc[..., 1].copy_(x_work[..., 1])
             color_hwc[..., 2].copy_(x_work[..., 2])
             color_hwc[..., 3].copy_(x_work[..., 4])
+        elif premultiplied_over:
+            color_hwc = memory.clone(x_work[..., :3])
         else:
             color_hwc = x_work[..., :3]
-        glow = x_work[..., 3:4]
+        # Preserve the input in the new mode; leave the legacy allocation and
+        # arithmetic unchanged when off so existing render batches stay put.
+        glow = (
+            memory.clone(x_work[..., 3:4]) if premultiplied_over else x_work[..., 3:4]
+        )
         glow.pow_(3)
         color_hwc.mul_(glow).mul_(strength)
 
@@ -850,7 +856,7 @@ def bloom_filter(
         _upsample_bloom(acc, upsampled, memory)
         upsampled = upsampled.permute(0, 2, 3, 1)
 
-        if x.shape[-1] == 5:
+        if alpha_bloom:
             out[..., 0].add_(upsampled[..., 0])
             out[..., 1].add_(upsampled[..., 1])
             out[..., 2].add_(upsampled[..., 2])

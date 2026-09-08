@@ -1,0 +1,36 @@
+name: Clean up merged Mac investigation branches
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "benchmarks/performance/reports/mac_2026_09/INTEGRATION_BRANCHES.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Keep all ancestry without downloading historical video blobs.
+          filter: blob:none
+      - name: Remove only unchanged branches preserved by the merged PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/cleanup_mac_branches.py --apply
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-branch-cleanup
+          path: mac-branch-cleanup.json
+          if-no-files-found: ignore

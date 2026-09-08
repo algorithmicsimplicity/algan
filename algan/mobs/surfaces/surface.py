@@ -1090,9 +1090,15 @@ class Surface(Mob):
         # topology changes are deliberately disabled by the logical PN system.
         self._auto_resolution_enabled = False
         self._geometry_tolerance = float(geometry_tolerance)
-        self._render_tolerance_pixels = normalize_pixel_tolerance(
-            render_tolerance_pixels
-        )
+        try:
+            self._render_tolerance_pixels = normalize_pixel_tolerance(
+                render_tolerance_pixels
+            )
+        except ValueError as exc:
+            # This is a public constructor setting. Keep the low-level PN helper
+            # free to use ValueError internally, but surface authoring mistakes
+            # through Algan's user-facing configuration contract.
+            raise AlganConfigurationError(str(exc)) from None
         self._resolution_tolerance = self._geometry_tolerance
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)

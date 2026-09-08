@@ -39,7 +39,46 @@ For performance changes:
 - record render route and relevant live settings;
 - validate output parity before accepting a speedup.
 
+The CUDA bounce drain uses 32-bit spatial sort keys for render windows of at
+most 16 frames (`wf_ray_sort_compact`). It retains frame and direction-octant
+priority and drops the bottom six Morton position bits. This only reorders
+rays; their state and intersection arithmetic stay the same. Wider windows
+and other devices retain the original 64-bit keys. The bound is the full
+rendered frame window, **not** the sparse ray pool's slot count. Set
+`SETTINGS.raytracing.experimental.wf_ray_sort_compact = False` for A/B checks.
+
 Use focused parity/benchmark scripts under `../benchmarks` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
+
+Primary shadow queues with at least 8,192 events are sorted by source primitive
+on CUDA (`shadow_primary_sort`). This happens before the existing payload
+gathers; the sheet event-ID scatter uses the same permutation, preserving the
+visibility lookup. Source refs, including -1 for Beziers, are reused for
+identity rejection. Small queues and other devices retain their original order.
+The shadowed UHD benchmark improved 7.6% in warm instrumented A/B means, with
+all 30 raw frames byte-identical and essentially unchanged peak GPU allocation.
+Set `SETTINGS.raytracing.experimental.shadow_primary_sort = False` for A/B checks.
+
+CUDA sheet compaction assigns conflict-rank groups with prefix counts
+(`sheet_rank_groups`) instead of globally sorting `(parent * 16 + rank)`.
+This relies on dense, ordered parents and ranks containing every integer from
+zero to the parent's maximum: a fragment increments each claimed sample lane
+by one. Ranks can decrease, so consecutive unique is not valid here. Outputs
+retain exactly the original dense IDs. The captured UHD operation used 41.45
+instead of 120.15 MiB temporary GPU memory and ran 79% faster; whole-render
+warm A/B means improved a modest 1.7%, with unchanged overall peak allocation.
+Other devices keep the original path. Set
+`SETTINGS.raytracing.experimental.sheet_rank_groups = False` for A/B checks.
+
+CUDA sheet sorting uses exact packed keys (`sheet_packed_sort`) when the
+observed pixel/group/depth ranges fit signed int64. Float32 depth bits are
+retained exactly; no quantization is used. Negative/nonfinite depths, negative
+zero, oversized combined ranges and other devices retain the stable reference
+sort. Packing starts at 32,768 rows for pixel/group/depth and 262,144 for shell
+key/depth, based on crossover measurements. Captured UHD sorts took 37-53%
+less time. Whole-render A/B sets disagreed (-4.5% then +10.9% improvement),
+while both reduced compaction time; pooled total time improved 1.7%, with
+substantial variability. Set
+`SETTINGS.raytracing.experimental.sheet_packed_sort = False` for A/B checks.
 
 ### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
 

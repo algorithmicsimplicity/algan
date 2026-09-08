@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from algan_cli import main as cli_main
 from algan.constants import easings
 from algan.constants.color import Color
 from algan.errors import (
@@ -16,6 +15,7 @@ from algan.errors import (
     ModifiedProtectedAttributeError,
 )
 from algan.utils.algan_utils import RenderResult
+from algan_cli import main as cli_main
 
 # ---------------------------------------------------------------------------
 # Rate Functions Tests

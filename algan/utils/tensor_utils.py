@@ -140,6 +140,64 @@ def reject_non_finite(name, value, given=None):
     return value
 
 
+def reject_outside_unit_interval(name, value, given=None):
+    """Raise if ``value`` falls outside the closed unit interval ``[0, 1]``.
+
+    For the attributes documented as fractions -- opacity above all -- where a
+    value outside the interval has no meaning the renderer could honour. It is
+    not clamped silently: ``opacity=1.5`` and ``opacity=-0.2`` are authoring
+    mistakes, and the frame they produce looks like a bug in Algan rather than
+    a bug in the script.
+
+    Only for values that are *set*. A value that is *scaled* stays unchecked on
+    purpose, on the same reasoning that leaves ``scale(0)`` and a negative
+    scale legal: a multiply is a transform, and the interval is a property of
+    what the attribute means, not of every arithmetic step towards it.
+
+    Non-finite values are rejected first, by :func:`reject_non_finite`, so a
+    NaN reports as a NaN rather than as an out-of-range value.
+
+    Parameters
+    ----------
+    name
+        The user-facing parameter or attribute name, used in the message.
+    value
+        The value to check. A tensor is checked element-wise; a Python number
+        is checked directly, so the plain ``set_opacity(1.5)`` spelling is
+        caught as well as the tensor one. Anything else passes through.
+    given
+        What the user actually wrote, when it reads better than the tensor.
+
+    Returns
+    -------
+    The value, unchanged, so this can wrap a cast.
+
+    Raises
+    ------
+    AlganConfigurationError
+        If any element is NaN, infinite, below 0 or above 1.
+    """
+    reject_non_finite(name, value, given=given)
+    if torch.is_tensor(value):
+        outside = bool(((value < 0) | (value > 1)).any())
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Python numbers never reach reject_non_finite's tensor guard, so a
+        # bare NaN lands here; `not (0 <= nan <= 1)` is True, which is the
+        # answer we want anyway.
+        outside = not 0.0 <= float(value) <= 1.0
+    else:
+        outside = False
+    if outside:
+        shown = value if given is None else given
+        raise AlganConfigurationError(
+            f"{name} must be between 0 and 1 inclusive; got {shown!r}. It is a "
+            f"fraction, so a value outside that range has no rendered meaning; "
+            f"it is rejected at the line that wrote it rather than clamped "
+            f"silently at materialization."
+        )
+    return value
+
+
 def cast_to_direction(name, x):
     """Cast a user-supplied 3-D vector argument to a ``[1, N, 3]`` tensor.
 
