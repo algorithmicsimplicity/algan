@@ -1,17 +1,44 @@
 # Algan on Apple GPUs (MPS / Metal): measured verdict
 
-Status: **NO-GO on the port as such.** Measured on GitHub's `macos-latest` runner
+Current status: **the port works and the gate is green, with two documented
+exceptions.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
+`render=mps` arm on every gated PR and push: it pins `ALGAN_RENDER_DEVICE=mps`,
+fails before pytest unless Algan's own startup resolver returns `mps`, and runs
+`tests/unit_tests` plus `tests/fast` against the locked published
+`algan-quadrants` — no private wheel anywhere in the path. Measured on that
+scope: **3564 passed, 217 skipped, 2 xfailed**, down from 32 failures and 3
+errors when the arm was first turned on. The two are named in
+`tests/mps_known_failures.py` and run as strict xfails, so the arm reports them
+on every run and goes red the moment either starts passing.
+
+**§4 is the scoreboard**: what the arm reports, which failures have been
+diagnosed, and which are still open. Read it before quoting a support claim
+from this document, because it is the only section written against a run rather
+than against an argument.
+
+`mps_probe.yaml` remains the diagnostic workflow. It is no longer the only
+place Apple-GPU regressions are exercised, which was the point of building the
+arm.
+
+The rest of this document is the measurement history that got the port here.
+Its early NO-GO language is a superseded verdict, kept because the reasoning
+is what the next capability question will be answered with.
+
+Historical starting status (superseded): **NO-GO on the port as such.**
+Measured on GitHub's `macos-latest` runner
 (Apple Silicon, macOS 26.5.2 arm64, torch 2.7.1, taichi 1.7.4) by
 `benchmarks/_mps_capability_probe.py`, run from `../../.github/workflows/mps_probe.yaml`.
 
-The macOS CI job is pinned to `ALGAN_RENDER_DEVICE=cpu` because MPS renders fail.
+Historically, the macOS CI job was pinned to `ALGAN_RENDER_DEVICE=cpu` because
+MPS renders failed.
 The workflow comment attributes that to `float64` and says supporting MPS "means
 taking float64 out of the raster pipeline and the kernels". **That is true and it
 is the least of it.** Three independent Metal limits block the port, f64 is the
 smallest, and the one that decides the question is the kernel argument limit,
 which nobody had looked at.
 
-Read §1 for the verdict, §2 for the numbers behind it, §3 for what to do instead.
+Read §1 for the original blocker analysis, §2 for the measurements behind it,
+and the later status notes for how those blockers were cleared.
 
 **Status, added later.** All three blockers are cleared and *measured cleared on
 the hardware*: §1.1 by packing kernel arguments into arena offsets, §1.2 by
@@ -31,8 +58,9 @@ Algan's two wide int64s are composite keys — the packed fragment key at 2**50
 and the shading-class key at 2**40 — so both lost the low bits that carry their
 meaning. The verdict below is no longer NO-GO on any of the three counts.
 
-**What is not yet clear** — §1.2c below. The macOS suite is at **1 failed, 2425
-passed, 167 skipped**; the Linux control arm, running the same suite with
+**Historical intermediate status.** At that point §1.2c remained and the macOS
+suite was at **1 failed, 2425 passed, 167 skipped**; the Linux control arm,
+running the same suite with
 MPS-friendly mode forced on over a CPU render device, is **fully green**, which
 is what says the mode itself is sound and the remainder is Metal.
 
@@ -290,8 +318,20 @@ permutations, the band ids, the sorted order.
 > launch site, and `vkCreateComputePipelines failed` where Metal gives a nil
 > pipeline. Extracting the module from Taichi's offline cache and running
 > `spirv-val` on it is what produced the error above; after the fix `spirv-val`
-> reports nothing. **That is the loop to use for the next codegen question**,
-> not a 30-minute round trip through the Apple runner.
+> reports nothing. **That was the loop to use for the next codegen question**,
+> and it saved a 30-minute round trip through the Apple runner.
+>
+> **It does not work on the published Quadrants wheel**, which is worth knowing
+> before planning a round against it. Measured 2026-09-08 on the Linux
+> `algan-quadrants==1.3.0.post2` wheel with `mesa-vulkan-drivers` installed and
+> `vulkaninfo` reporting an llvmpipe device: `qd.init(qd.vulkan)` answers
+> `Arch=[Arch.vulkan] is not supported, falling back to CPU`, and
+> `quadrants._lib.core.with_vulkan()` is **False** — the distribution is built
+> without the Vulkan backend, so it carries no SPIR-V codegen to reproduce
+> against. Taichi's wheel had one, which is what made the loop above possible.
+> Restoring it means a Vulkan-enabled Quadrants build; until there is one, a
+> codegen question costs an Apple runner. The check is one line and needs no
+> probe: `python -c "from quadrants._lib import core; print(core.with_vulkan())"`.
 
 What follows is how the section read while it was open. Kept, because the two
 readings it got wrong are the ones anyone re-treading this path will get wrong
@@ -851,6 +891,105 @@ min=1e-12)` in `primitives.py`, spelled differently from the other twenty-two �
 which is the argument for having written it. `*_taichi.py` is exempt and must
 be: those bodies reach MSL through Taichi and never touch torch's MPS dispatch.
 
+### 2.3f The ceiling again, on a bitmask, in the raster write pass
+
+§2.3b established the 2**24 gather ceiling and fixed the fragment key. This is
+the same defect at a **different width and a worse shape**, found by the
+in-situ attribution pass rather than by a synthetic probe, which is the point
+of having both.
+
+`raster_pipeline.prepare_sparse_raster_coverage` compacts the write pass to the
+pairs whose count pass accepted a pixel, and carries the acceptance forward:
+
+```python
+live = accepts.nonzero(as_tuple=True)[0]
+accepts_w = accepts.index_select(0, live)      # 32 bits, one per chunk pixel
+```
+
+`accepts` is a **bitmask**, not a number. Rounding a value that carries
+magnitude is a rounding error; rounding a mask is nonsense — `0x8003FFFF` came
+back `0x80040000`, the sign bit intact and eighteen bits of acceptance gone.
+The write pass replays that mask instead of recomputing the acceptance chain,
+so every cleared bit is a pixel the count pass accepted and the write pass then
+skipped. Its fragment slot keeps whatever the arena held.
+
+**That is where §4.2's zero keys come from.** A never-written slot reads as
+`pixel 0, depth 0, coverage 0`, which sorts to the front of the fragment
+stream — the Apple GPU's `pix[0..272664]`, `depth[0.0000..]`, `lo0=00000000`
+and `frag_cov min 0.000000` against a CPU that starts at 147239, 18.3139 and
+0.001002. It is also the stray lit pixel in the bottom row of
+`test_pixel_rows_are_not_flipped`, at image row 35 = kernel row 0 = pixel 0.
+
+The fix is §2.3b's, generalised: `mps_compat.gather_exact` is the ceiling-safe
+gather for **any** integer whose low bits carry meaning, `gather_packed_key`
+is now that function applied to the key, and the three gathers at this site
+take it. `offsets` is included because it is a fragment-stream position and
+passes 2**24 on a large frame rather than on this one, and `pairs` because it
+carries a per-chunk offset column that grows with a primitive's bbox — neither
+is measured wrong, and this says so rather than implying they were.
+
+What the fix rests on is that advanced indexing `v[i]` is exact at int32 with
+the sign bit set, which §2.3b measured only at int64. `probe_gather_isolated`
+now sweeps real mask patterns at int32 — all-ones, sign-bit-only, either side
+of the ceiling — and
+`test_mps_friendly.py::test_advanced_indexing_is_exact_for_a_thirty_two_bit_mask`
+is the standing guard, beside the int64 one it copies.
+
+### 2.3d `index_reduce_` is not implemented at all
+
+The loud one, and the only defect in this family that announces itself:
+
+```
+NotImplementedError: The operator 'aten::index_reduce.out' is not currently
+implemented for the MPS device.
+```
+
+`refit_bvh._binary_split` reduces per-range centroid extents and per-bin box
+unions with `Tensor.index_reduce_(0, seg, src, 'amin'/'amax')`, and that is the
+BVH *build* rather than the refit — so it takes down every scene whose topology
+is rebuilt, which on the gate's first run was ten path-tracer tests. The
+suggested `PYTORCH_ENABLE_MPS_FALLBACK=1` is not the fix: it would move a
+whole-BVH reduction to the host on every build, silently, for a gap that has a
+device-side spelling.
+
+**`scatter_reduce_` is that spelling**, and it is implemented on MPS at this
+dtype and shape. It is the same reduction with the index broadcast to the
+source's shape instead of addressing whole rows, so the substitution is a
+spelling change and not a numerical one: `amin` and `amax` are exact under any
+reduction order — unlike the float sums §6.6.4 widened — so nothing the backend
+does to the order can move a value. `probe_index_reduce` measures both against
+the CPU's `index_reduce_` over the same input; `mps_compat.index_reduce_` is
+the one call site, gated on the mode like everything else here, and
+`test_mps_friendly` pins the two arms against each other at both call-site
+shapes.
+
+### 2.3e The source-key index was poisoned on every renderer kernel
+
+Not a wrong answer and not a missing op — an optimization silently off, on the
+device that needs it most.
+
+`taichi_source_key` skips the compiler frontend when it can describe a launch's
+arguments by their type features, and it refuses (`Poison`) rather than guess
+at a type it has no rule for. On an Apple GPU **every** converted argument
+arrives as `ExternalMetalNdarray`, the patched build's imported-`MTLBuffer`
+ndarray (`mps_zero_copy`), which had no rule — so every renderer kernel paid a
+full frontend pass on a machine whose frontend passes are the slowest of the
+three platforms, and `test_taichi_source_key` failed with **0 keyed**. The
+symptom in a log is a wall of
+
+```
+RuntimeWarning: taichi_source_key: <kernel> cannot be source-keyed and pays the
+full frontend: ndarray argument of type
+quadrants.lang._ndarray.ExternalMetalNdarray has no key rule
+```
+
+It is an `Ndarray` subclass and reads the same four features as the three
+allocated forms (`element_type`, rank, `grad`, `_qd_layout`). What it
+deliberately does **not** contribute to the key is the buffer it adopted: a
+compiled kernel depends on an argument's element type and rank, never on which
+allocation it was bound to, and putting the pointer in the key would turn every
+launch into a miss rather than a hit.
+
 ### 2.4 How non-deterministic MPS actually is
 
 400k fragments reduced into 5k segments, six runs:
@@ -870,18 +1009,29 @@ threshold.
 
 ## 3. What to do
 
-### 3.1 Do now, regardless: stop offering a device that cannot render
+### 3.1 Do now, regardless: stop offering a device that cannot render — **DONE**
 
 Independent of everything above, and worth doing whether or not MPS is ever
-supported. `auto` currently selects a device that fails 88 tests.
+supported. `auto` selected a device that failed 88 tests.
 
-* `_startup._auto_render_device()` should not return MPS.
-* An explicit `mps` should raise `AlganConfigurationError` from `coerce_device`
-  naming the reason, instead of failing deep inside the renderer.
-* `cli.py:45-46` prints "Apple Silicon MPS acceleration available", which is not
-  true.
-* Then the `test.yaml` macOS pin is redundant — the runner resolves to CPU on its
-  own — and that 15-line comment becomes a pointer here.
+All four are in, and what shipped is finer than what this section asked for:
+the answer is not "never MPS" but "MPS exactly when it can render", which is a
+property of the *installed compiler* rather than of the platform.
+
+* `_startup._mps_is_usable()` gates both paths on
+  `mps_zero_copy.zero_copy_available()` — the patched build's imported-MTLBuffer
+  ndarray. `_auto_render_device()` returns MPS only when that answers True, and
+  falls back to the CPU otherwise; a stock build is what §1.3b measured drawing
+  a black frame, so this is the difference between a render and a wrong picture.
+* An explicit `mps` raises `AlganConfigurationError` from `coerce_device`,
+  quoting `mps_zero_copy.unavailable_reason()`, which names the compiler this
+  process actually bound rather than saying "Taichi" at a Quadrants user.
+* `algan_cli._cmd_check` prints the device Algan **resolved**
+  (`SETTINGS.computing.render_device`) beside the accelerators that exist, and
+  says so when MPS-friendly mode is on. The two are different questions and the
+  old line answered only the second.
+* The `test.yaml` macOS pin is gone; the matrix has an explicit `render=mps`
+  arm instead. §3.3 has where that arm stands.
 
 ### 3.2 Two engine bugs this turned up — **fixed**
 
@@ -953,9 +1103,9 @@ same staging producing a *wrong answer*, and the frame is black until it is
 addressed. Its option 1 -- packing each kernel's arena arguments into a
 per-dtype staging buffer -- is the small end of step 1 and is where to start.
 
-`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` stays until the render job
-is green, which it is not: it gets through kernel compilation and dies on the
-smoke frame's blackness check.
+`test.yaml`'s macOS pin to `ALGAN_RENDER_DEVICE=cpu` is gone, replaced by an
+explicit `render=mps` arm beside the `render=cpu` one. §4 is where that arm
+stands and what it still fails.
 
 The payoff even then is compute-bound scenes only: 52x on the path tracer,
 53x *worse* on the bandwidth-bound raster stages unless step 1 lands first.
@@ -966,7 +1116,260 @@ to the Python frontend (the backend primitive already exists — see
 one), or Metal's argument limit ceasing to bind through argument buffers.
 Re-running the probe answers both in about three minutes.
 
-### 3.4 What Mac users should be told meanwhile
+### 3.4 What Mac users are told
 
-The CPU path is the Mac path. It is the same arch CI exercises, so effort spent
-making it faster pays twice.
+**The Apple GPU is the Mac path**, and it needs nothing installed for it:
+`pip install algan` resolves the published patched `algan-quadrants`, whose
+macOS arm64 wheels carry `quadrants_patches/0001`, so `auto` finds an Apple GPU
+that can actually render and takes it. `algan check` prints the device that
+came out, which is the question a user has (`docs/source/installation.rst`
+walks through it).
+
+The CPU path is still there and still supported — it is what `auto` falls back
+to when the compiler cannot bind an `MTLBuffer` — so effort spent making it
+faster is not wasted. It is no longer the *recommended* Mac path.
+
+---
+
+## 4. The gate's scoreboard
+
+Everything above is a capability question answered on a probe. This section is
+the other kind: what the **required** `render=mps` arm of
+`.github/workflows/test.yaml` reports when it runs the ordinary portable scope
+(`tests/unit_tests tests/fast`) on `macos-latest` against the locked published
+`algan-quadrants`. It is written from runs, not from arguments, and it is the
+section to update when one changes.
+
+### 4.1 Where it stands
+
+| run | result |
+| --- | --- |
+| [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
+| [34203241437](https://github.com/algorithmicsimplicity/algan/actions/runs/34203241437) (2026-09-08, the same scope on the Mac harness) | **9 failing**, 3544 passed, 217 skipped, 9 xfailed in 3149 s |
+| [34210549355](https://github.com/algorithmicsimplicity/algan/actions/runs/34210549355) (2026-09-08, after §2.3f, six of the listed files) | six of the seven entries in those files XPASSed |
+| [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (2026-09-08, the full scope after §2.3f) | **2 failing**: 1 failed, 3563 passed, 217 skipped, 2 xfailed in 3178 s — and the 1 is the last XPASS |
+
+The first row is the baseline every entry below is measured against, and the
+three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
+the failures are the Apple GPU rather than the change that added the arm. The
+second row is the same scope after the fixes in this document: the twelve
+"failures" it reports are eleven **strict XPASSes** — this list's own entries,
+now passing, which is exactly what strict is for — plus one unrelated
+fast-suite curation guard. Nine tests actually fail, and they are
+`tests/mps_known_failures.py`'s remaining entries.
+
+**Counting causes rather than tests** is what makes the remainder tractable:
+32 failures were six causes, and 23 of the 32 were two of them.
+
+| # | cause | tests then | now | state |
+| --- | --- | --- | --- | --- |
+| A | `index_reduce_` is unimplemented on MPS | 10 | 0 | **fixed** — §2.3d |
+| B | the glossy tile loop walks off its frame table | 13 | 0 | **fixed**: 11 by §4.4, the last 2 by §2.3f |
+| C | an unlit/emissive slab renders black | 2 | 0 | **fixed** — §2.3f |
+| D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; the other is Metal's — §4.5 |
+| E | the path-traced and deterministic composites disagree by 107 | 1 | 0 | **fixed** — §2.3f |
+| F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
+| G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
+| H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
+| — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
+
+**Two fixes took thirty of the thirty-two**, and neither was aimed at most of
+what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
+cache as occupied) took eleven, and §2.3f's gather (the raster acceptance mask
+was losing its low bits) took nineteen — every remaining render failure except
+one. B, C, E and H were one corrupted fragment stream wearing four faces, which
+is the argument for counting causes rather than tests. It is also the argument
+for the xfail list: both fixes were found by measuring the runs it produced,
+not by reading code, and neither was predictable from the failure it was chased
+from.
+
+**What is left is two tests and they are unrelated to each other**: one glossy
+prefilter render whose reflection is absent (§4.5 — localized to Metal by the
+Linux control arm, which is green), and the `ti.real_func` compile failure
+(§4.3), which is a compiler defect a layer below Algan and blocks a test rather
+than a render.
+
+**Observed on the arm and NOT a failure**, recorded so the next reader does not
+chase it: the first render of a process warns that `torch.compile` refused
+`raster_pipeline._triangle_projection_fused` with `InductorError: KeyError:
+torch.float64`, and Algan runs that function eagerly for the rest of the
+process. Nothing in it is float64 — MPS-friendly mode narrows every accumulator
+— so the likely candidate is a Python float constant Dynamo traces as a float64
+the Inductor MPS backend has no entry for. It costs one fused pass and one
+warning per process, it is self-limiting, and one refused graph is not enough
+evidence to declare `torch.compile` unsupported on the device.
+
+### 4.2 B: the glossy tile loop — **fixed**, and the guard it still wants
+
+Thirteen tests, one line: `tracer.py`'s
+
+```
+frame_end = gl_bounds[gl_frame + 1]
+IndexError: list index out of range
+```
+
+`_gloss_frame_bounds` returns one ordinal per frame boundary and the tile loop
+walks them in order, so running past the end means a boundary came back
+**smaller than the number of covered pixels** — the loop still had pixels to
+place after it had finished the last frame.
+
+**It is not `searchsorted`**, which was the first hypothesis and the cheap one
+to rule out: `probe_frame_bounds` in `benchmarks/_mps_torch_op_probe.py`
+searches the int32 ordinals the call site actually uses (the int64 sequence
+`probe_lookup` searches is a different call site, and the width was the only
+difference between them) and MPS agrees with the CPU at 1, 8 and 179 frames.
+So the bounds are a correct search of a wrong `covered_idx`, and
+`benchmarks/_mps_gloss_bounds_probe.py` is what says which — it renders the
+smallest scene that reaches the glossy route and prints the device's ordinals,
+their range, whether they ascend, and both bounds.
+
+Worth reading beside it: `test_viewer_fragments.py::test_pixel_rows_are_not_flipped`
+fails with the cube's lit rows at 5..15 **plus a single stray pixel in row 35**,
+the bottom row of a 36-row frame — one fragment composited at a pixel nothing
+should have written. A corrupted covered ordinal explains both that and this,
+and if it does then C and D are candidates for the same cause.
+
+**Resolved by §2.3f, and here is the confirmation rather than the inference.**
+On the same runner with the acceptance-mask gather fixed, the 32x32 probe scene
+reads
+
+```
+covered_idx: dtype=torch.int32 n=400 min=198 max=825 ascending=True
+device     : [0, 400]      host       : [0, 400]
+```
+
+— exactly this project's CPU box, pixel 0 gone and 400 covered pixels where
+there were 320. The compaction's input matches too: `n=47610
+pix[147239..272664]x23352 depth[18.3139..20.6677]`, `frag_cov min 0.001002`,
+against the CPU's identical counts and ranges. Both remaining B entries, both
+C entries, H and one of D XPASSed in the same run.
+
+**The eleven that fixed themselves first are still the reading to be careful
+with.**
+Emptying the MPS cache before sizing the arena (§4.4) gave the render its full
+budget, the tile sizing that follows changed, and eleven of these thirteen
+stopped tripping the loop. Nothing about the loop was fixed: `gl_frame` can
+still walk off the end at whatever window the arithmetic picks, so this is a
+latent `IndexError` rather than a closed one, and it deserves a guard whichever
+way the covered-ordinal question goes. The two entries left in the list are not
+re-measured since that fix; establishing whether they are still this defect is
+the first step.
+
+**The fragment stream, measured on the same runner, is where the corruption
+is.** `_mps_render_smoke` prints the compaction's input; the LD smoke scene
+gives, on the Apple GPU against the same code on this project's CPU box:
+
+| | CPU | MPS |
+| --- | --- | --- |
+| fragments | 47610 | 47194 |
+| `pix` range x distinct | `[147239..272664]` x 23352 | **`[0..272664]`** x 22811 |
+| `depth` range | `[18.3139..20.6677]` | **`[0.0000..20.6742]`** |
+| fragment 0's low word (`lo0`) | `41a09196` | **`00000000`** |
+| `frag_cov` min | 0.001002 | **0.000000** |
+
+A key of exactly zero is a fragment slot **nothing wrote** — pixel 0, depth 0,
+coverage 0 — and it sorts to the front, which is why `pix` starts at 0 and why
+the 32x32 probe scene finds pixel 0 covered. So the defect is upstream of the
+compaction: fragments are missing from the stream and their slots are being
+read as real.
+
+**And the op that makes those zero keys is found — §2.3f.** The same run's
+attribution pass caught one gather disagreeing with the CPU; the next round,
+with the pass printing its caller, named it:
+
+```
+FAIL  Tensor.index_select: 2/144 calls differ --
+  raster_pipeline.py:1903 in prepare_sparse_raster_coverage:
+  63/726 differ, first at 4: cpu -2147221505 vs mps -2147221504 (int32)
+```
+
+Every other op it checks — `unique_consecutive`, `argsort`, `cumsum`,
+`searchsorted`, `unique`, `nonzero`, `scatter_add_`, `amin`/`amax` — agrees.
+§2.3f has the mechanism and the fix; in short, that line gathers the raster
+count pass's **32-bit acceptance mask**, MPS rounds it through 24 bits of
+mantissa, and the write pass then skips pixels the count pass accepted —
+leaving their fragment slots at zero, which is the whole table above.
+
+### 4.3 F: `ti.real_func` with an early return, on a SPIR-V backend
+
+```
+RuntimeError: [spirv_ir_builder.cpp:query_value@1062] Value "tmp6" does not yet exist.
+```
+
+`test_taichi_early_return.py::test_a_real_function_is_not_rewritten` declares a
+real function with an early `return` and launches it. The *claim* is about
+Algan's rewrite pass keeping its hands off (`_outcome(early) is None`); the
+launch is only how the test proves the function still works. It is the launch
+that fails, in Quadrants' SPIR-V builder, and it has the shape of §1.2c's
+defect — a block left un-reopened — one layer down in the compiler rather than
+in an Algan kernel.
+
+No renderer kernel uses `ti.real_func`, so this blocks a test rather than a
+render. It is also the failure the Vulkan loop of §1.2c would have localized
+for free, and that loop no longer exists on the published wheel (same section).
+
+### 4.4 The three errors: an arena the render device would not size
+
+`test_arena_binding_live` raised `OutOfRenderMemory` for a single **LD** frame
+of a square and a cube on a 7 GB machine, which is not a plausible budget.
+`get_num_available_bytes`'s MPS branch subtracted `driver_allocated_memory()`
+from `recommended_max_memory()` **without emptying torch's cache first**, where
+the CUDA branch beside it has always called `empty_cache()` before
+`mem_get_info`. Cached-but-unused blocks are exactly the bytes the next arena
+comes out of, so a process that had already rendered measured its own cache as
+occupied — and a pytest session is one such process, hundreds of renders deep
+by the time this module's fixture runs. The branch now empties the cache like
+its CUDA twin, and the 1 GB cap beside it says what it is for.
+
+### 4.5 D: the prefiltered reflection is absent, and it is Metal's
+
+One of the two tests left. `test_prefiltered_reflection_is_substantially_wider`
+renders the audit tree's calibration scene twice and asserts that turning the
+glossy route on widens the reflected glow: measured 61.6 px rms against the
+throttled arm's 7.7, a 8.0x ratio, asserted at 3.0x.
+
+**On MPS the assertion reads `nan > 3.0 * 74.9`,** and the `nan` is the finding.
+`_reflection_spread` subtracts the window's own 10th percentile and divides by
+the remainder's sum; a `nan` there means that sum is **zero**. So this is not a
+reflection that came out too narrow, or too dim, or displaced — in the window
+where the emitter's mirror image lands there is no signal above the wall's own
+level at all. Categorical, not a tolerance.
+
+**It is the device, and that is measured on three arms rather than argued:**
+
+| arm | result |
+| --- | --- |
+| macOS CPU (run 34102515789, the same runner and torch build) | passes |
+| Linux, `auto` -> CPU, both Python legs | passes |
+| Linux CPU with `ALGAN_MPS_FRIENDLY=1` — **the control arm** | **passes** (99.7 s off the mode, 84.6 s on it) |
+| macOS MPS | fails |
+
+The third row is the one worth having, and it is §1.2c's discriminator applied
+here: forcing the mode on over a CPU render device exercises every substitution
+this port makes — the float32 accumulators, the int32 reductions, the log-step
+scan that replaces `cummax`, and now `gather_exact` — with no Apple GPU in the
+picture. It is green. So the remainder is Metal or torch's MPS backend, not
+MPS-friendly mode, and not the renderer's own arithmetic.
+
+Two more things that narrow it. The test's sibling
+`test_a_creases_siblings_share_the_pixels_prefiltered_claim` had the same shape
+of failure and **passes** since §2.3f, so the fragment stream feeding the route
+is now correct and this is downstream of it. And the audit scene is committed
+(`benchmarks/renderer_audit/scenes/calib_glossy.json`), so the green arms are
+real renders rather than the skip `_needs_audit_tree` would produce on a tree
+without it — worth stating, because a skip misread as a pass would make the
+whole table above meaningless.
+
+**Not established:** whether this route is correct on CUDA. Every arm above
+resolves to a CPU render device, so they say "not the CPU path" and nothing
+more. Nothing in any run read so far exercises the glossy prefilter on a CUDA
+device.
+
+Where to look next, in order: `_gloss_finish_frame`'s pyramid build
+(`gloss_pyramid_level` bottom-up, then `gloss_composite`'s trilinear fetch) —
+those are the three kernels the route adds over the plain one, they run per
+frame after the tile composite, and a pyramid that comes back empty on Metal
+would produce exactly a flat window. `gl_main`'s blur-radius column is
+initialised **negative** on purpose (`_gloss_clear`), and it is what marks a
+pixel as having a prefiltered branch at all, so a scatter that fails to write
+it leaves every pixel unmarked and the composite with nothing to fetch.

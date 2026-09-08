@@ -400,6 +400,44 @@ def probe_gather_isolated(device):
         reference = want if label != "v.repeat_interleave(2)[::2]" else values_c
         _report(f"int64 2**40 via {label}", bool(torch.equal(reference, got)))
 
+    # The same question at **int32 with the sign bit set**, which is the shape
+    # the render actually caught: `raster_pipeline`'s per-pair acceptance mask
+    # is 32 bits of flags, and the Apple GPU returned 0x80040000 for the
+    # 0x8003FFFF the CPU has. `gather_exact` routes it to `v[i]`, so `v[i]`
+    # being exact HERE -- not only at int64 2**40 -- is what that fix rests on.
+    # The mask is built rather than randomised: every bit pattern below is one
+    # a count pass can really produce, including all-ones and sign-bit-only.
+    masks_c = torch.tensor(
+        [
+            -2147221505,  # 0x8003FFFF, the value measured wrong on the hardware
+            -1,  # every pixel accepted
+            -2147483648,  # 0x80000000, only the top pixel
+            0x7FFFFFFF,
+            0x01000001,  # just past the ceiling, low bit meaningful
+            0x00FFFFFF,  # exactly at it
+        ],
+        dtype=torch.int32,
+    ).repeat(n // 6 + 1)[:n]
+    masks_m = masks_c.to(device)
+    if not torch.equal(masks_c, masks_m.cpu()):
+        _report("int32 mask: round trip", False, "the values changed on the way")
+    else:
+        want_masks = masks_c.index_select(0, index_c)
+        for label, run in (
+            ("index_select", lambda v, i: v.index_select(0, i)),
+            ("advanced indexing v[i]", lambda v, i: v[i]),
+        ):
+            got = run(masks_m, index_m).cpu()
+            bad = int((want_masks != got).sum())
+            detail = ""
+            if bad:
+                where = int((want_masks != got).nonzero()[0][0])
+                detail = (
+                    f"{bad}/{n} differ, first cpu {int(want_masks[where])} "
+                    f"vs mps {int(got[where])}"
+                )
+            _report(f"int32 sign-bit mask via {label}", bad == 0, detail)
+
 
 def probe_lookup(device):
     """``searchsorted`` and the gathers -- the CSR the resolve indexes with."""
@@ -498,6 +536,98 @@ def probe_lookup(device):
         key_c,
         ((key_m >> 32) << 32) | (key_m & 0xFFFFFFFF),
     )
+
+
+def probe_frame_bounds(device):
+    """``searchsorted`` over the INT32 covered-pixel ordinals.
+
+    ``probe_lookup`` above searches an int64 sequence, which is what the sheet
+    CSR is. ``tracer._gloss_frame_bounds`` searches a different one: the arena's
+    ``covered_idx`` is **int32** (``raster_pipeline.py``, the compact result),
+    and the edges it looks for are built with ``dtype=covered_idx.dtype``. That
+    width is the only difference between the two call sites, and the glossy
+    route's tile loop indexes ``gl_bounds[gl_frame + 1]`` directly -- so a
+    bound that comes back short walks the frame cursor off the end of the list
+    rather than drawing something wrong.
+    """
+    print("\nsearchsorted over int32 ordinals (tracer._gloss_frame_bounds)")
+    g = torch.Generator().manual_seed(11)
+    for frames, ppf in ((1, 32 * 32), (8, 854 * 480), (179, 854 * 480)):
+        total = frames * ppf
+        # Ascending global pixel indices, ~40% of the window covered, which is
+        # the shape `covered_idx` has: one strictly increasing int32 run.
+        covered_c = torch.unique(
+            torch.randint(0, total, (max(1, total // 3),), generator=g)
+        ).to(torch.int32)
+        edges_c = torch.arange(frames + 1, dtype=torch.int32) * ppf
+        covered_m, edges_m = covered_c.to(device), edges_c.to(device)
+        _check(
+            f"searchsorted(int32, {frames} frame(s) of {ppf} px)",
+            torch.searchsorted(covered_c, edges_c),
+            torch.searchsorted(covered_m, edges_m),
+        )
+        # The int64 spelling of the same question, so a failure above says
+        # "the width" rather than "searchsorted".
+        _check(
+            f"searchsorted(int64, {frames} frame(s) of {ppf} px)",
+            torch.searchsorted(covered_c.to(torch.int64), edges_c.to(torch.int64)),
+            torch.searchsorted(covered_m.to(torch.int64), edges_m.to(torch.int64)),
+        )
+
+
+def probe_index_reduce(device):
+    """``index_reduce_`` -- the BVH build's binned-SAH centroid and box bounds.
+
+    ``refit_bvh._binary_split`` reduces per-range centroid extents and per-bin
+    box unions with ``Tensor.index_reduce_(..., 'amin'/'amax')``, which torch
+    has not implemented for MPS at all (``aten::index_reduce.out``). Unlike the
+    defects the rest of this file measures it is loud, and it takes down every
+    scene whose BVH is rebuilt rather than refitted.
+
+    ``scatter_reduce_`` is the candidate replacement and is probed beside it:
+    both are exact under any reduction order, so a substitution is a spelling
+    change rather than a numerical one -- provided MPS implements it at this
+    dtype, which is the question.
+    """
+    print("\nindex_reduce_ vs scatter_reduce_ (refit_bvh._binary_split)")
+    g = torch.Generator().manual_seed(12)
+    n, segments = N, N // 7
+    seg_c = torch.randint(0, segments, (n,), generator=g, dtype=torch.int64).sort()[0]
+    val_c = torch.rand((n, 3), generator=g, dtype=torch.float32) * 20 - 10
+    seg_m, val_m = seg_c.to(device), val_c.to(device)
+
+    for reduce_op, fill in (("amin", float("inf")), ("amax", float("-inf"))):
+
+        def by_index(seg, val, dev, reduce_op=reduce_op, fill=fill):
+            out = torch.full((segments, 3), fill, dtype=torch.float32, device=dev)
+            out.index_reduce_(0, seg, val, reduce_op, include_self=True)
+            return out
+
+        def by_scatter(seg, val, dev, reduce_op=reduce_op, fill=fill):
+            out = torch.full((segments, 3), fill, dtype=torch.float32, device=dev)
+            out.scatter_reduce_(
+                0, seg.unsqueeze(1).expand_as(val), val, reduce_op, include_self=True
+            )
+            return out
+
+        reference = by_index(seg_c, val_c, "cpu")
+        try:
+            _check(
+                f"index_reduce_(float32 [n, 3], {reduce_op})",
+                reference,
+                by_index(seg_m, val_m, device),
+            )
+        except NotImplementedError as exc:
+            _report(
+                f"index_reduce_(float32 [n, 3], {reduce_op})",
+                False,
+                f"NotImplementedError: {str(exc).splitlines()[0]}",
+            )
+        _check(
+            f"scatter_reduce_(float32 [n, 3], {reduce_op})  <- the candidate",
+            reference,
+            by_scatter(seg_m, val_m, device),
+        )
 
 
 def probe_int64_arithmetic(device):
@@ -729,6 +859,8 @@ def main() -> int:
         probe_scans,
         probe_segmented,
         probe_lookup,
+        probe_frame_bounds,
+        probe_index_reduce,
         probe_gather_isolated,
         probe_epsilon_clamp,
     ):

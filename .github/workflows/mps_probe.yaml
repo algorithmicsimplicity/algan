@@ -1,24 +1,20 @@
 name: MPS capability probe
 
-# Answers, on a real Apple GPU, the questions that decide whether Algan can
-# render on MPS. The macOS test job is pinned to `ALGAN_RENDER_DEVICE=cpu`
-# because it cannot; what nobody could establish from a Linux box is whether the
-# port is worth starting, because the deciding facts are properties of the Metal
-# backend and of Taichi's torch interop.
+# Diagnostic/measurement companion to the ordinary MPS regression gate in
+# `test.yaml`. The required test matrix now sets `ALGAN_RENDER_DEVICE=mps` on
+# the Apple-silicon hosted runner, asserts that Algan actually resolves `mps`,
+# and runs the portable unit/fast scope with the normal locked published
+# `algan-quadrants` dependency. A regression no longer needs this workflow to
+# make an ordinary PR or release check red.
 #
-# This is deliberately NOT part of the ordinary test matrix, because nothing
-# here guards a regression -- it takes a measurement. So it runs only when the
-# probe itself changes, or when someone dispatches it by hand (which needs the
-# file on the default branch first; before then, pushing to a pull request is
-# what triggers it).
+# This workflow remains deliberately separate because its capability, timing,
+# control-arm and custom-wheel sections answer diagnostic questions rather than
+# release-gate questions. Dispatch it when those measurements are useful; do
+# not read its optional/experimental arms as the supported dependency path.
 #
-# The reason is NOT cost. This repository is public, and GitHub's docs are
-# explicit that "use of the standard GitHub-hosted runners is free and unlimited
-# on public repositories" -- the 10x macOS minute multiplier this file used to
-# cite applies to private repositories, and never applied here. What is finite
-# is concurrency: 5 concurrent macOS jobs on the Free plan, shared across every
-# workflow in the account, which is the real reason not to leave a two-arm macOS
-# matrix on every push.
+# The repository is public, so runner minutes are not the reason to keep these
+# diagnostics separate. macOS concurrency is finite, and the ordinary test
+# matrix already spends the Apple-GPU slot needed for regression coverage.
 #
 # WHAT THIS RUNNER CAN AND CANNOT ANSWER. It is a virtualized Apple-silicon
 # instance -- `hw.model VirtualMac2,1`, `Apple M1 (Virtual)`, 3 CPUs, 7 GB --
@@ -306,22 +302,22 @@ jobs:
   # replaces cummax -- with no Apple GPU in the picture. If both arms fail the
   # mode is broken; if only the macOS arm fails, what is left is Metal.
   #
-  # Deliberately NOT part of the ordinary test matrix yet: test.yaml pins its
-  # macOS job to ALGAN_RENDER_DEVICE=cpu, and that pin comes off when this job
-  # has been green for a while, not before. A standing red job in a required
-  # matrix teaches nobody anything.
+  # NOT the release gate any more, and the difference is worth being exact
+  # about. test.yaml carries a required `render=mps` arm on `macos-latest`
+  # which runs `tests/unit_tests tests/fast` with the ordinary locked
+  # dependency graph; that is what makes an Apple-GPU regression turn an
+  # ordinary PR red. This job installs a wheel of its own and answers the
+  # DIAGNOSTIC half -- which kernels compile, what the zero-copy conversion is
+  # actually doing, and how a candidate compiler build compares -- none of
+  # which the gate can say from a pass/fail.
   #
-  # WHAT IT SAYS TODAY, so a red run is read for what it is. The macOS arm gets
-  # through kernel compilation -- every kernel in the renderer, the 49-argument
-  # sheet_resolve_shade included -- and renders a frame in about a minute, and
-  # the frame is BLACK. DESIGN_mps_support.md 1.3b is the diagnosis and the
-  # probe step below is where it is measured: Taichi stages every ndarray
-  # argument through the host on Metal, the arena calling convention hands a
-  # converted kernel two dtype views of one allocation, and the second
-  # copy-back reverts what the kernel wrote through the first. So expect this
-  # arm to fail at "Render one frame" until the arena arguments are packed into
-  # per-dtype staging buffers. The Linux arm is expected GREEN throughout: it
-  # runs the same substitutions with no staging in the path.
+  # The Linux control arm is what keeps a two-arm failure readable, and it
+  # applies to the gate as well as to this job: it runs the same suites with
+  # MPS-friendly mode forced on over a CPU render device, so a failure on both
+  # arms is the mode and a failure on the macOS arm alone is Metal. Reach for
+  # it before spending a round on the Apple runner -- it is the cheaper half of
+  # every diagnosis in DESIGN_mps_support.md that turned out to be Algan's
+  # rather than Apple's (§1.2c is the worked example).
   render:
     name: mps render -- ${{ matrix.os }}
     if: ${{ inputs.sections == 'all' || inputs.sections == 'render' }}

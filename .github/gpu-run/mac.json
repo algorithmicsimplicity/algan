@@ -1,19 +1,9 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md.",
-  "command": ".venv/bin/python -m pytest -q tests/unit_tests/test_mps_friendly.py tests/unit_tests/test_wavefront_compaction.py tests/unit_tests/test_bloom_device_parity.py tests/unit_tests/test_sheet_packed_sort.py tests/unit_tests/test_sheet_depth.py tests/unit_tests/test_sheet_sibling_weights.py && .venv/bin/python -c \"import sys; from pathlib import Path; from benchmarks._mac_depth_buffer_ab import run_logged; p=Path('algan_outputs/integration'); p.mkdir(parents=True,exist_ok=True); sys.exit(run_logged([sys.executable,'-u','benchmarks/_mac_depth_buffer_ab.py','--device','mps','--target','sibling','--sequence','AA','--tag','integration_default'],p/'mps.log',timeout=900))\"",
-  "arms": [
-    "mac-mps"
-  ],
-  "env": {
-    "ALGAN_VIDEO_ENCODER": "software",
-    "ALGAN_TORCH_COMPILE": "0",
-    "ALGAN_MPS_HOST_SHARE": "0",
-    "ALGAN_ANIMATION_DEVICE": "cpu",
-    "ALGAN_USE_DAEMON": "0"
-  },
-  "latex": false,
-  "quadrants_wheel": "33850787142",
-  "timeout_minutes": 35,
-  "_request": "86: validate PR 115 integrated with current master; Metal parity and two UHD renders, both experimental candidates disabled",
-  "taichi_wheel_run_id": "none"
+  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
+  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "arms": ["mac-mps"],
+  "env": {},
+  "latex": true,
+  "taichi_wheel_run_id": "none",
+  "timeout_minutes": 120
 }

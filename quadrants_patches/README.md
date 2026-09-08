@@ -9,8 +9,11 @@ applied **in numeric order** onto a pristine checkout of that tag:
     git apply --verbose ../quadrants_patches/[0-9]*.patch
 
 They are the Quadrants-side successors to `taichi_patches/`, which remains the
-source of truth for the Taichi 1.7.4 fork Algan's Apple GPU path uses today.
-Which compiler a process runs is `ALGAN_TAICHI_BACKEND` (`algan/taichi_compat.py`),
+historical source of truth for the Taichi 1.7.4 fork that established Algan's
+Apple GPU path. Normal Algan installs now use the published patched
+`algan-quadrants` distribution; the ordinary MPS CI gate uses that locked path,
+not a private build artifact. Which compiler a process runs is
+`ALGAN_TAICHI_BACKEND` (`algan/taichi_compat.py`),
 and why Quadrants is the base is `taichi_patches/PLAN.md` §6.1 — measured, not
 argued: byte-identical pixels, a clean macOS build where Taichi 1.7.4 no longer
 builds at all, and one upstream Metal miscompile that Quadrants does not have.

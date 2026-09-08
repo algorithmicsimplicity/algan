@@ -75,6 +75,7 @@ render:
 | `test_taichi_source_key.py` (one test, not the module) | Only `test_the_index_installs_on_this_compiler`, for the same reason as the warm-start row above: the source-keyed cache index (`algan/utils/taichi_source_key.py`) rests on Quadrants internals — `Kernel._try_load_fastcache`, `src_hasher`, `Program.load_fast_cache` — so a compiler bump turns it off from elsewhere, and an index that silently stands down is a warm frontend that quietly went from ~1 s back to ~12 s. The value rules, the closure walk, the hook control flow and the subprocess renders beside it are feature tests and stay out. No Taichi init, no render: it reads the version gate. |
 | `test_taichi_early_return.py` (one test, not the module) | Only `test_the_rewrite_is_live_on_this_compiler`, for the same reason as the two rows above: the early-`return` rewrite for inlined `@ti.func` bodies (`algan/utils/taichi_early_return.py`) wraps one compile-path function per compiler — `FuncBase.get_tree_and_ctx` on Quadrants, `kernel_impl._get_tree_and_ctx` on taichi — and is version-gated to them, so a compiler bump in `pyproject.toml`, a new backend in `taichi_compat`, or an env-var rename turns it off from elsewhere. A silent no-op looks like nothing at all until a shader stage that used to compile fails with the compiler's own "Return inside non-static if/for" message. It reads the gate and compiles one early-return func on the live compiler: about a second, no render. The forty-odd feature tests beside it hold the rewrite against real compilation and stay out. |
 | `test_transparent_output.py` (per test, not the whole module) | That a transparent render's background arrives **premultiplied** by its own alpha. Nothing in one place enforces it: `_prefill_background` writes the value, `wf_composite` adds it as `weight * bg` beside geometry that already carries its own coverage, and the tonemap divides alpha back out before encoding — three modules, no Python connecting them. So the contract breaks from the kernel side (a change to the unpremultiply, to the 5-channel layout, or to the composite arithmetic) and the failure is silent: a half-opaque background stored `encode(color / a) * a` and was simply too bright, wrong by more the more transparent it was, which no error and no opaque baseline can see. Only the premultiply tests are marked, including the one asserting opaque output does not move; the container/codec tests beside them fail only when their own map changes. Tensor assertions, no Taichi, no render: under half a second. |
+| `test_mps_known_failures.py` (one test, not the module) | Only `test_every_entry_names_a_test_that_exists`, and it is in for the same reason the AST walks above are: it trips on a change made **elsewhere**. `mps_known_failures.py` xfails by nodeid across eight other files, and an `xfail` on a nodeid nothing collects is a silent no-op — so renaming or deleting any of those tests takes its entry out of service, and the required MPS arm quietly starts claiming less than it looks like it claims. Reads the list and walks each named file's AST: no Taichi, no render, under a second. The reason-format check beside it moves only when the list itself does and stays out. |
 | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
 
 ### What is not in it, and where that is covered instead
@@ -100,17 +101,38 @@ and runs everything under them, `fast`-marked or not (see the comment in
 `.github/workflows/test.yaml`). The fast suite is a development loop; CI can
 afford twelve minutes and should keep spending them.
 
-It runs those paths twice, on `ubuntu-latest` and on `macos-latest`. Linux
-takes the ordinary `auto` probe and lands on the CPU. **macOS is pinned to
-`ALGAN_RENDER_DEVICE=cpu`**, because `auto` there resolves to MPS — the runner
-does offer one — and Algan does not run on MPS: the raster pipeline allocates
-in `float64`, which MPS refuses, and `ti.gpu` on a Mac resolves through Vulkan,
-whose SPIR-V builder refuses `f64` in the same kernels. 88 tests failed that
-way on the first macOS CI run. Supporting MPS means taking `float64` out of the
-raster pipeline and the kernels; until that happens the Mac job tests the CPU
-path, which is what makes it a portability check rather than a standing
-failure. The `algan check` step ahead of the tests prints the device that came
-out, along with whether LaTeX and FFmpeg are on `PATH`.
+It runs those paths in four ordinary matrix arms: Linux 3.10/3.13 with the
+`auto` render device, plus macOS 3.10 once on CPU and once on MPS. The macOS
+CPU arm preserves the portability check. The MPS arm pins
+`ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
+MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
+fallback therefore makes the required check fail. Both macOS arms use the
+normal locked dependency graph and published `algan-quadrants` wheel. The
+`algan check` step then prints the resolved device/compiler along with whether
+LaTeX and FFmpeg are on `PATH`.
+
+**The MPS arm carries an xfail list, and it is meant to shrink.** When the arm
+was first turned on it reported 32 failures and 3 errors against 3311 passes;
+it now reports **3564 passed, 217 skipped, 2 xfailed** (run 34213125405
+measured 3563 passed and 1 failed, and that 1 was this list's own last stale
+entry XPASSing; removing it moves that test into the passed column).
+`tests/mps_known_failures.py` names those two, one entry per test with the
+defect it waits on and a pointer to the measurement in
+`../algan/rendering/DESIGN_mps_support.md` §4;
+`conftest.py` applies it as a **strict** `xfail`, and only when the resolved
+render device is MPS. Three consequences worth knowing before adding or
+removing a line:
+
+* the listed tests still **run**, and the summary counts them, so the arm's
+  output says how much of the port is left on every run;
+* `strict` means a fix turns the arm **red** with `XPASS`, naming the test.
+  Deleting the entry is the last step of the fix, not an optional tidy-up;
+* nothing applies off MPS. On Linux, on CUDA and on the macOS CPU arm these are
+  ordinary tests and a failure in one is an ordinary failure.
+
+`test_mps_known_failures.py` keeps the list from rotting the other way: an
+entry whose test has been renamed or deleted is an `xfail` that silently marks
+nothing, so it fails collection-time rather than passing quietly.
 
 ## The full suite
 

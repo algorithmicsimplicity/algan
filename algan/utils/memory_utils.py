@@ -122,78 +122,12 @@ def get_num_available_bytes(device=torch.device("cuda")):
             free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
     elif device.type == "mps":
-        # Metal's ``recommendedMaxWorkingSetSize`` minus what the MPS driver
-        # already holds for this process -- the direct analogue of the CUDA
-        # branch above, and the same figure ``_render_device_pool_bytes``
-        # already sizes the out-of-arena budgets from.
-        #
-        # This used to be clamped to 1 GiB unconditionally, which is not a
-        # safety margin but a ceiling: the render arena is
-        # ``rendering_memory_fraction`` (0.4) of what this returns, so *every*
-        # Metal render, on any Mac, sized its arena at 410 MB. That makes a 4K
-        # frame impossible outright ("Insufficient memory to ray trace a single
-        # frame" on a machine with gigabytes free) and, below that, forces
-        # frame windows small enough that the per-batch projection, merge and
-        # BVH build are paid several times over. The clamp is available again
-        # as ``ALGAN_MPS_MEMORY_CAP`` (bytes) for A/B, and
-        # ``available_memory_override`` remains the way to pin the figure.
-        #
-        # ``empty_cache`` FIRST, exactly as the CUDA branch does, and for the
-        # same reason: ``driver_allocated_memory`` counts the whole MPS pool,
-        # cached-but-free blocks included, so without the drain this reports
-        # what the process has ever grown to rather than what it is using. The
-        # second render in a process then sees a fraction of the first one's
-        # headroom -- measured on the Mac runner as a warm pass that took over
-        # three times the cold pass's ten minutes and had to be killed, where
-        # the only thing warm should remove is the kernel compile. The old
-        # 1 GiB clamp hid this: the figure was below the clamp either way.
-        # The import cache is cleared with it, because an entry there is a
-        # storage ``empty_cache`` cannot reclaim -- the same order
-        # ``release_torch_memory`` uses. This is a sizing point (once per batch
-        # or chunk), not a launch, so it is the one place that cost belongs.
+
         from algan.rendering.mps_zero_copy import clear_import_cache
 
         clear_import_cache()
         torch.mps.empty_cache()
-        # Measure LIVE bytes, not the driver's figure. `driver_allocated_memory`
-        # behaves as a high-water mark on Metal: it does not come back down
-        # after the drain above, so the second render in a process is charged
-        # for the first one's peak. Measured on the Mac runner across five UHD
-        # jobs, one render per pass:
-        #
-        #   * within a pass it climbs monotonically 2.91 -> 4.49 G while live
-        #     bytes hold flat at 1.91 G, through seven pressured drains a chunk
-        #     in the last third that never move it;
-        #   * so the second pass sized a 1226 MB arena against the first's
-        #     1898 MB, reproducibly (1212/1226/1226 MB over three jobs);
-        #   * and that arena drove the render's launch count, 12388 zero-copy
-        #     imports a chunk against 48766, which is the whole of the warm
-        #     slowdown at this box's 0.66 ms a dispatch.
-        #
-        # Holding the second render to the first's figure took the warm pass
-        # from 968-1523 s to 568.5 s, put its import count back to 12388 exactly,
-        # and left it FASTER than the cold pass, which is the direction a warm
-        # render belongs. `driver_allocated` reached 4.76 G doing it -- past
-        # `recommendedMaxWorkingSetSize`, with no failure -- so on unified
-        # memory that figure is advisory and the blocks behind it are reusable.
-        #
-        # `current_allocated_memory` therefore, after the drain: what torch is
-        # actually holding. What Taichi holds outside torch is not in it, which
-        # is the known gap; the arena preflight already binary-searches the
-        # window down when a batch does not fit, and `ALGAN_MPS_MEMORY_CAP`
-        # remains the way to impose a ceiling by hand.
-        #
-        # A reserve is held back because live bytes alone leave NO margin. The
-        # first job to size this way rendered its cold pass in 649.8 s -- the
-        # fastest measured -- and its warm pass ran at 28.4 s a chunk with the
-        # arena and the import count both healthy, and then the process was
-        # killed outright at warm chunk 14: no traceback, no Python exception,
-        # exit 1, with `driver_allocated` pinned at 4.68 G against a 4.67 G
-        # recommended max. The pinned-arena A/B had survived 18 chunks at
-        # 4.76 G, so at this arena size it is a coin flip -- the render is
-        # running with zero headroom and the OS decides. What Taichi holds
-        # outside torch is invisible to `current_allocated_memory`, and this
-        # reserve is what stands in for it.
+
         allocated_bytes = torch.mps.current_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         total_bytes = max(0, total_bytes - int(total_bytes * _MPS_HEADROOM))

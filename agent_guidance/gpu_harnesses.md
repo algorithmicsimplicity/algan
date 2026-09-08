@@ -75,15 +75,27 @@ between "Metal refused" and "the harness is broken".
 
 Things worth setting deliberately:
 
+The ordinary MPS regression gate needs **neither** wheel input: it uses the
+locked published `algan-quadrants` distribution. The wheel controls below are
+only for experiments that intentionally replace that supported dependency.
+
 * **`latex: true`** if the scene uses `Tex`/`MathTex`. Off by default because
   BasicTeX plus the packages is ~4 minutes and most measurement scripts never
   touch it. A scene that needs it and did not ask fails minutes later, inside
   the render.
 * **`taichi_wheel_run_id`**. The MPS arm installs a patched Taichi wheel from a
-  `taichi_build.yaml` run (default `33342025517`). **On stock Taichi the Apple
-  GPU is refused and Algan renders on the CPU**, so an MPS arm without a wheel
-  silently duplicates the CPU arm. `"none"` opts out on purpose — which is a
-  real thing to measure, since it is what an unpatched Mac user gets.
+  `taichi_build.yaml` run (default `33342025517`). **Set it to `"none"` to
+  reproduce what the ordinary gate runs**, which is what a plain `uv sync
+  --locked` puts on the machine: the published patched `algan-quadrants`,
+  which carries `quadrants_patches/0001` and therefore renders on the Apple
+  GPU with no override at all. The default is the historical *Taichi* control
+  arm and it also flips `ALGAN_TAICHI_BACKEND=taichi`, so leaving it alone
+  measures a different compiler from the one CI and users have.
+  (The bullet used to say `"none"` meant a silent CPU fallback. That was true
+  while the only patched build was a private wheel; since the patched
+  Quadrants distribution is the normal dependency it is the other way round,
+  and `_startup._mps_is_usable` is the thing that decides — it asks the
+  installed compiler, not the platform.)
 * **`quadrants_wheel`**. The Quadrants counterpart: a `quadrants_build.yaml`
   run id (its `quadrants-wheel-macos-py3.11` artifact) or a release-asset URL.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
@@ -99,44 +111,51 @@ Things worth setting deliberately:
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
 
-> ### The push entry point only fires when `mac.json` actually changes
->
-> `run_on_mac.yaml`'s push trigger is filtered on `paths: .github/gpu-run/mac.json`,
-> so a commit that edits only source or tests launches **nothing** — and a
-> commit that rewrites `mac.json` with values identical to the ones already
-> there changes no bytes, so it launches nothing either. That second case is
-> silent and easy to miss: the commit succeeds, the push succeeds, and there is
-> simply no new run. It cost two rounds in one session, both times while
-> announcing that a run had started.
->
-> Keep a `_request` field in the file and give it a new value every time — a
-> run number and what the run is for. It guarantees the diff and doubles as a
-> label for what you were asking. Then **verify the run exists** before saying
-> it is running: list the workflow's runs and check the head SHA matches the
-> commit you just pushed.
->
-> ### Size the command for ~40 minutes, and make it report as it goes
->
-> **A macOS job here gets reclaimed well before `timeout_minutes`.** Three in
-> one session, all killed with `conclusion: cancelled`: run 26 at 72 min
-> against a 120-min timeout, run 32 at 57 min against 100. (Run 31 did hit its
-> own 45-min timeout, so the setting still binds when it is the smaller of the
-> two.) So `timeout_minutes` buys nothing above about an hour — the command has
-> to fit, not the timeout.
->
-> **And a reclaimed job yields NOTHING.** The kill leaves "Run the command"
-> stuck at `in_progress` with the publish and upload steps `pending`, so the
-> `if: always()` that would have saved the partial output never runs; the
-> artifact is a few hundred bytes and `get_job_logs` shows only the setup. Four
-> jobs in a row cost an hour each and produced no reading this way, every one of
-> them running `profile_scene`, which prints its table only at the very end.
->
-> The lesson is about the *script*, not the harness: **print a result line after
-> every unit of work.** `benchmarks/_mps_warm_regression.py` is the shape —
-> one line per render with the wall time and the numbers that would explain it —
-> so a job that dies half way still leaves the comparison behind. Reach for
-> `profile_scene` when the attribution is the point and the render is known to
-> fit; reach for something that streams when it is not.
+**Chain several commands with `|| true`.** The run step is
+`bash --noprofile --norc -e -o pipefail`, so a `;`-separated chain stops at the
+first non-zero exit — and a probe that *reports* a disagreement by exiting 1 is
+exactly such an exit. A round that meant to run a probe and then a test suite
+came back with the probe's answer and nothing else, having spent the whole
+Apple slot on it.
+
+### The push entry point only fires when `mac.json` actually changes
+
+`run_on_mac.yaml`'s push trigger is filtered on `paths: .github/gpu-run/mac.json`,
+so a commit that edits only source or tests launches **nothing** — and a
+commit that rewrites `mac.json` with values identical to the ones already
+there changes no bytes, so it launches nothing either. That second case is
+silent and easy to miss: the commit succeeds, the push succeeds, and there is
+simply no new run. It cost two rounds in one session, both times while
+announcing that a run had started.
+
+Keep a `_request` field in the file and give it a new value every time — a
+run number and what the run is for. It guarantees the diff and doubles as a
+label for what you were asking. Then **verify the run exists** before saying
+it is running: list the workflow's runs and check the head SHA matches the
+commit you just pushed.
+
+### Size the command for ~40 minutes, and make it report as it goes
+
+**A macOS job here gets reclaimed well before `timeout_minutes`.** Three in
+one session, all killed with `conclusion: cancelled`: run 26 at 72 min
+against a 120-min timeout, run 32 at 57 min against 100. (Run 31 did hit its
+own 45-min timeout, so the setting still binds when it is the smaller of the
+two.) So `timeout_minutes` buys nothing above about an hour — the command has
+to fit, not the timeout.
+
+**And a reclaimed job yields NOTHING.** The kill leaves "Run the command"
+stuck at `in_progress` with the publish and upload steps `pending`, so the
+`if: always()` that would have saved the partial output never runs; the
+artifact is a few hundred bytes and `get_job_logs` shows only the setup. Four
+jobs in a row cost an hour each and produced no reading this way, every one of
+them running `profile_scene`, which prints its table only at the very end.
+
+The lesson is about the *script*, not the harness: **print a result line after
+every unit of work.** `benchmarks/_mps_warm_regression.py` is the shape —
+one line per render with the wall time and the numbers that would explain it —
+so a job that dies half way still leaves the comparison behind. Reach for
+`profile_scene` when the attribution is the point and the render is known to
+fit; reach for something that streams when it is not.
 
 ### Wait
 
@@ -153,20 +172,20 @@ mcp__github__actions_get   method=get_workflow_run resource_id=<run id>
 the `pipefail`/`tee` in the run step is what makes that true; without it a
 pipeline reports only its last command and a crashed script goes green.
 
-> ### Status is stale; the log is not
->
-> **Both** of these APIs served `in_progress` for an hour after the run had
-> finished, with per-step timestamps frozen mid-job. The first run of this
-> harness looked like a 60-minute hang in the render; it had actually finished
-> in 100 seconds. Kaggle does the same thing — `get_notebook_session_status`
-> answered `RUNNING` long after its notebook had exited 0.
->
-> So do not diagnose from a status field. **Try to read the output**: on
-> GitHub, `get_job_logs` 404s while a job genuinely runs and returns the whole
-> transcript the moment it does not; on Kaggle,
-> `list_notebook_session_output` returns the log of a finished run. A
-> `cancel_workflow_run` answering *"Cannot cancel a workflow run that is
-> completed"* is the same tell.
+### Status is stale; the log is not
+
+**Both** of these APIs served `in_progress` for an hour after the run had
+finished, with per-step timestamps frozen mid-job. The first run of this
+harness looked like a 60-minute hang in the render; it had actually finished
+in 100 seconds. Kaggle does the same thing — `get_notebook_session_status`
+answered `RUNNING` long after its notebook had exited 0.
+
+So do not diagnose from a status field. **Try to read the output**: on
+GitHub, `get_job_logs` 404s while a job genuinely runs and returns the whole
+transcript the moment it does not; on Kaggle,
+`list_notebook_session_output` returns the log of a finished run. A
+`cancel_workflow_run` answering *"Cannot cancel a workflow run that is
+completed"* is the same tell.
 
 ### Read
 

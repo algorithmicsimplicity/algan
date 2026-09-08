@@ -318,13 +318,37 @@ def _same(a, b):
     )
 
 
+def _algan_caller():
+    """Where in Algan the offending call came from, as ``file:line in func``.
+
+    "``index_select`` is wrong somewhere" is not actionable when the render
+    makes 144 of them; "``refit_bvh.py:412 in _pack_blocks``" is. Walks out
+    past this file's own frames and past torch's, and stops at the first frame
+    inside the ``algan`` package -- the wrapper sits on ``torch.Tensor``, so
+    the immediate caller is the call site by construction.
+
+    Only ever called on a disagreement, so the stack walk costs nothing on the
+    hundreds of calls that agree.
+    """
+    import traceback
+
+    here = Path(__file__).resolve()
+    for frame in reversed(traceback.extract_stack()):
+        path = Path(frame.filename)
+        if path.resolve() == here:
+            continue
+        if "algan" in path.parts or path.name.startswith("test_"):
+            return f"{path.name}:{frame.lineno} in {frame.name}"
+    return "unknown caller"
+
+
 def _record(name, detail):
     entry = _OP_STATS.setdefault(name, [0, 0, ""])
     entry[0] += 1
     if detail is not None:
         entry[1] += 1
         if not entry[2]:
-            entry[2] = detail
+            entry[2] = f"{_algan_caller()}: {detail}"
 
 
 def _verified(name, function, inplace_self=False):
@@ -369,7 +393,26 @@ def _install_torch_op_verifier():
     because there are 67 gathers and 9 segmented reductions in ``sheets.py``
     alone and the interesting one is whichever nobody suspected.
     """
-    for name in ("cumsum", "unique", "argsort", "sort", "searchsorted", "cumprod"):
+    # ``unique_consecutive`` is the one that decides which pixels the frame has
+    # at all: ``raster_pipeline`` runs it over the sorted ``pixel`` field to
+    # produce ``covered`` and ``counts``, and everything downstream -- the CSR,
+    # the sheet compaction, the glossy tile loop's frame table -- indexes what
+    # it returns. It was not in this list, and the first render measured on the
+    # Apple GPU came back with 320 covered pixels where the CPU has 400, one of
+    # them pixel 0 (``DESIGN_mps_support.md`` §4.2). ``nonzero`` and
+    # ``repeat_interleave`` are beside it because they are the other two ops
+    # that turn a mask or a count into positions, which is the shape of answer
+    # a wrong covered set has.
+    for name in (
+        "cumsum",
+        "unique",
+        "unique_consecutive",
+        "argsort",
+        "sort",
+        "searchsorted",
+        "cumprod",
+        "repeat_interleave",
+    ):
         setattr(torch, name, _verified(f"torch.{name}", getattr(torch, name)))
     for name in ("scatter_add_", "scatter_reduce_"):
         setattr(
@@ -377,7 +420,10 @@ def _install_torch_op_verifier():
             name,
             _verified(f"Tensor.{name}", getattr(torch.Tensor, name), inplace_self=True),
         )
-    for name in ("index_select", "amin", "amax", "cummax", "cummin"):
+    # ``nonzero`` is on the METHOD list rather than beside ``repeat_interleave``
+    # above because every call site spells it ``mask.nonzero(as_tuple=True)``;
+    # wrapping ``torch.nonzero`` would have checked nothing at all.
+    for name in ("index_select", "amin", "amax", "cummax", "cummin", "nonzero"):
         setattr(
             torch.Tensor, name, _verified(f"Tensor.{name}", getattr(torch.Tensor, name))
         )

@@ -378,6 +378,61 @@ def test_advanced_indexing_is_exact_above_the_mps_ceiling(computing_settings):
 
 
 @pytest.mark.fast
+def test_advanced_indexing_is_exact_for_a_thirty_two_bit_mask(computing_settings):
+    """The same dispatch bet, at the width and shape the render caught it at.
+
+    The test above establishes ``v[i]`` at int64 and around 2**50, which is the
+    fragment key. The raster count pass's per-pair **acceptance mask** is a
+    different exposure and a worse one: 32 bits of flags, one per chunk pixel,
+    and rounding it does not shift a value slightly -- it clears the low bits,
+    so the write pass skips pixels the count pass accepted and leaves their
+    fragment slots holding whatever the arena had. Measured on the hardware:
+    ``0x8003FFFF`` came back as ``0x80040000``, eighteen bits of mask gone.
+
+    So ``gather_exact`` routes int32 through ``v[i]`` as well, and this is what
+    says it may. The values are real mask patterns rather than random integers
+    -- all-ones, sign-bit-only, one either side of the ceiling -- because what
+    matters is the *bits*, and a random draw would not include the corners a
+    count pass actually produces.
+
+    Like its sibling it selects the device from ``torch.backends.mps``, so a
+    green run off an Apple machine does not clear it.
+    """
+    computing_settings.set(mps_friendly=True)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+    masks = torch.tensor(
+        [
+            -2147221505,  # 0x8003FFFF, the pattern measured wrong on MPS
+            -1,  # every chunk pixel accepted
+            -2147483648,  # 0x80000000, only the last one
+            0x7FFFFFFF,
+            0x01000001,  # just past the ceiling, low bit meaningful
+            0x00FFFFFF,  # exactly at it
+            0,
+            1,
+        ],
+        dtype=torch.int32,
+    ).repeat(64)
+    index = torch.randperm(masks.numel(), generator=torch.Generator().manual_seed(5))
+    want = masks.index_select(0, index)
+
+    on_device = masks.to(device)
+    moved = index.to(device)
+    assert torch.equal(masks, on_device.cpu()), (
+        "the masks changed on the way to the device, so nothing below is "
+        "attributable to the gather"
+    )
+    assert torch.equal(on_device[moved].cpu(), want), (
+        f"advanced indexing v[i] is no longer exact on {device} for a 32-bit "
+        "mask. mps_compat.gather_exact depends on it, and the raster write "
+        "pass replays these masks -- switch to a 16-bit lane split and report "
+        "the regression upstream"
+    )
+    assert torch.equal(mps_compat.gather_exact(on_device, moved).cpu(), want)
+
+
+@pytest.mark.fast
 def test_a_band_of_zero_area_hands_its_siblings_a_finite_weight(computing_settings):
     """The divide guard in ``_sibling_weights``, on whatever device is here.
 
@@ -484,6 +539,70 @@ def test_a_clamped_grid_reproduces_border_padding(h, w):
     zeros = torch.ops.aten.grid_sampler_2d(image, clamped, 0, 0, False)
 
     assert torch.allclose(border, zeros, rtol=0.0, atol=1e-12)
+
+
+# ------------------------------------------------- the BVH build's reduction
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("reduce_op", ["amin", "amax"])
+@pytest.mark.parametrize("width", [1, 3])
+def test_the_segment_reduction_matches_index_reduce(
+    computing_settings, reduce_op, width
+):
+    """The narrow spelling answers exactly what ``index_reduce_`` answers.
+
+    ``refit_bvh._binary_split`` reduces per-range centroid extents and per-bin
+    box unions this way, and MPS has no ``aten::index_reduce.out`` at all -- so
+    what the mode substitutes is the whole operation rather than a dtype.
+    ``amin``/``amax`` are exact under any order, so this is checked for
+    **equality**, not tolerance: a substitution that needed a tolerance would
+    be the wrong substitution.
+
+    Both widths are covered because the two call sites differ in shape -- one
+    reduces ``[S, 3]`` centroids, the other a flattened ``[S * 3, 3]`` box
+    stream -- and the broadcast that replaces the row addressing is where a
+    shape mistake would land.
+    """
+    g = torch.Generator().manual_seed(7)
+    segments = 40
+    index = torch.randint(0, segments, (500,), generator=g, dtype=torch.int64)
+    source = torch.rand((500, width), generator=g, dtype=torch.float32) * 20 - 10
+    fill = float("inf") if reduce_op == "amin" else float("-inf")
+
+    def run(friendly):
+        computing_settings.set(mps_friendly=friendly)
+        out = torch.full((segments, width), fill, dtype=torch.float32)
+        mps_compat.index_reduce_(out, index, source, reduce_op)
+        return out
+
+    wide, narrow = run(False), run(True)
+    # Not vacuous: every segment must actually have been reduced into, or two
+    # untouched sentinel tables would compare equal and prove nothing.
+    assert torch.isfinite(wide).all()
+    assert torch.equal(wide, narrow)
+
+
+@pytest.mark.fast
+def test_the_segment_reduction_leaves_untouched_rows_at_their_fill(computing_settings):
+    """A segment nothing reduces into keeps the sentinel, on both arms.
+
+    ``_binary_split`` allocates one row per (range, axis, bin) and most bins
+    are empty, so the empty-row behaviour is not an edge case there -- it is
+    most of the table, and the sweeps that follow read it.
+    """
+    index = torch.tensor([0, 0, 3], dtype=torch.int64)
+    source = torch.tensor([[1.0], [-2.0], [5.0]], dtype=torch.float32)
+
+    def run(friendly):
+        computing_settings.set(mps_friendly=friendly)
+        out = torch.full((4, 1), float("inf"), dtype=torch.float32)
+        mps_compat.index_reduce_(out, index, source, "amin")
+        return out.reshape(-1)
+
+    want = torch.tensor([-2.0, float("inf"), float("inf"), 5.0])
+    assert torch.equal(run(False), want)
+    assert torch.equal(run(True), want)
 
 
 # ------------------------------------------------- the band/class grouping
@@ -708,11 +827,15 @@ _BANNED_ATTRIBUTES = {
     "torch.double": "float64 does not exist on Metal; use accumulate_dtype()",
     "ti.f64": "Taichi's SPIR-V codegen refuses f64; take it as a template arg",
 }
-#: Method spellings of the same thing, plus the two scans MPS lacks.
+#: Method spellings of the same thing, plus the scans and the reduction MPS
+#: lacks. ``index_reduce_`` is here for the same reason ``cummax`` is: torch
+#: has no ``aten::index_reduce.out`` for the MPS device, so a new call site
+#: raises on an Apple GPU and on nothing else.
 _BANNED_METHODS = {
     "double": "float64 does not exist on Metal; use accumulate_dtype()",
     "cummax": "unimplemented on MPS; use mps_compat.cummax_values",
     "cummin": "unimplemented on MPS; use mps_compat.cummin_values",
+    "index_reduce_": "unimplemented on MPS; use mps_compat.index_reduce_",
 }
 
 #: Renderer modules that may still say float64, and why each is not a
