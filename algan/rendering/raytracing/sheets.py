@@ -1056,6 +1056,13 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
             first_lane,
         )
         if rt_settings.sheet_depth_reduce_kernel:
+            if rt_settings.sheet_depth_buffer_reuse:
+                from algan.rendering.raytracing.sheet_depth_taichi import (
+                    sheet_lane_depths_inplace,
+                )
+
+                sheet_lane_depths_inplace(first_lane, t_o, n)
+                return first_lane.view(torch.float32).view(nb, AA_NUM_SAMPLES)
             from algan.rendering.raytracing.sheet_depth_taichi import sheet_lane_depths
 
             out = torch.empty((nb, AA_NUM_SAMPLES), dtype=torch.float32, device=device)

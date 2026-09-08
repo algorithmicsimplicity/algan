@@ -13,13 +13,15 @@ is a test: nothing here guards a regression, so nothing here runs on the
 ordinary push matrix.
 
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
-much VRAM" for CUDA — it is the only box that runs the real render path at UHD.
-The Mac answers "does this work at all on Metal, and how does MPS compare to
-its own CPU". The Mac is a *virtualized* instance: its compute numbers are
-sound, its **per-launch and per-copy numbers are not** (a synchronized dispatch
-measured 432 µs there against 2.0 µs on its CPU — a virtualization tax on
-submission that no physical Mac pays). Never rank a many-small-kernel stage
-from Mac timings.
+much VRAM" for CUDA. The Mac answers "does this work on Metal, and how does
+MPS compare to its own CPU". The Mac is a *virtualized* instance with
+hardware-backed Metal acceleration. Its timings describe that runner,
+including framework, allocation and queue costs; they do not isolate
+virtualization overhead. The earlier 432 µs versus 2.0 µs comparison was MPS
+versus the runner's **CPU**, not a physical-Mac control. Use matched
+in-process runs to rank work on this runner, and a matched physical Mac to
+quantify virtualization's contribution. The repaired MPS path also completes
+UHD renders; see `benchmarks/performance/reports/mac_2026_09/`.
 
 **Neither box baselines pixels.** `expected_outputs_cuda/` was baselined on the
 user's Pascal card, so `tests/fast`'s pixel comparison fails on the T4 and on

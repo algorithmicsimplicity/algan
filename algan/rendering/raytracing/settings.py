@@ -3847,3 +3847,8 @@ def _scene_has_user_pipeline(merged):
 # (pixel, lane) arrays. The old tensor path remains an exact A/B reference.
 # Also fuses the lane-owner gather to avoid full-size masking temporaries.
 sheet_depth_reduce_kernel = env_flag("ALGAN_SHEET_DEPTH_REDUCE_KERNEL", True)
+
+# The int32 lane owners are dead after gathering float32 depths. Reinterpret
+# their storage in place to avoid a second [sheet, sample] allocation. This is
+# a host-side switch, so alternating warm A/B renders need no runtime reset.
+sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", True)
