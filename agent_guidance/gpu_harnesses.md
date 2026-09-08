@@ -13,13 +13,15 @@ is a test: nothing here guards a regression, so nothing here runs on the
 ordinary push matrix.
 
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
-much VRAM" for CUDA — it is the only box that runs the real render path at UHD.
-The Mac answers "does this work at all on Metal, and how does MPS compare to
-its own CPU". The Mac is a *virtualized* instance: its compute numbers are
-sound, its **per-launch and per-copy numbers are not** (a synchronized dispatch
-measured 432 µs there against 2.0 µs on its CPU — a virtualization tax on
-submission that no physical Mac pays). Never rank a many-small-kernel stage
-from Mac timings.
+much VRAM" for CUDA. The Mac answers "does this work on Metal, and how does
+MPS compare to its own CPU". The Mac is a *virtualized* instance with
+hardware-backed Metal acceleration. Its timings describe that runner,
+including framework, allocation and queue costs; they do not isolate
+virtualization overhead. The earlier 432 µs versus 2.0 µs comparison was MPS
+versus the runner's **CPU**, not a physical-Mac control. Use matched
+in-process runs to rank work on this runner, and a matched physical Mac to
+quantify virtualization's contribution. The repaired MPS path also completes
+UHD renders; see `benchmarks/performance/reports/mac_2026_09/`.
 
 **Neither box baselines pixels.** `expected_outputs_cuda/` was baselined on the
 user's Pascal card, so `tests/fast`'s pixel comparison fails on the T4 and on
@@ -96,6 +98,45 @@ Things worth setting deliberately:
   the run id.
 * **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
   account. Two mac arms is two slots.
+
+> ### The push entry point only fires when `mac.json` actually changes
+>
+> `run_on_mac.yaml`'s push trigger is filtered on `paths: .github/gpu-run/mac.json`,
+> so a commit that edits only source or tests launches **nothing** — and a
+> commit that rewrites `mac.json` with values identical to the ones already
+> there changes no bytes, so it launches nothing either. That second case is
+> silent and easy to miss: the commit succeeds, the push succeeds, and there is
+> simply no new run. It cost two rounds in one session, both times while
+> announcing that a run had started.
+>
+> Keep a `_request` field in the file and give it a new value every time — a
+> run number and what the run is for. It guarantees the diff and doubles as a
+> label for what you were asking. Then **verify the run exists** before saying
+> it is running: list the workflow's runs and check the head SHA matches the
+> commit you just pushed.
+>
+> ### Size the command for ~40 minutes, and make it report as it goes
+>
+> **A macOS job here gets reclaimed well before `timeout_minutes`.** Three in
+> one session, all killed with `conclusion: cancelled`: run 26 at 72 min
+> against a 120-min timeout, run 32 at 57 min against 100. (Run 31 did hit its
+> own 45-min timeout, so the setting still binds when it is the smaller of the
+> two.) So `timeout_minutes` buys nothing above about an hour — the command has
+> to fit, not the timeout.
+>
+> **And a reclaimed job yields NOTHING.** The kill leaves "Run the command"
+> stuck at `in_progress` with the publish and upload steps `pending`, so the
+> `if: always()` that would have saved the partial output never runs; the
+> artifact is a few hundred bytes and `get_job_logs` shows only the setup. Four
+> jobs in a row cost an hour each and produced no reading this way, every one of
+> them running `profile_scene`, which prints its table only at the very end.
+>
+> The lesson is about the *script*, not the harness: **print a result line after
+> every unit of work.** `benchmarks/_mps_warm_regression.py` is the shape —
+> one line per render with the wall time and the numbers that would explain it —
+> so a job that dies half way still leaves the comparison behind. Reach for
+> `profile_scene` when the attribution is the point and the render is known to
+> fit; reach for something that streams when it is not.
 
 ### Wait
 

@@ -41,7 +41,7 @@ import torch
 
 from algan.environment import env_float
 from algan.rendering import fragment_capture
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -124,6 +124,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     ALLOC_WIDTH,
     SCA_WIDTH_PLAIN,
     compact_ray_slots,
+    reorder_ray_slots,
     sca_width,
     wavefront_generate_rays,
     wavefront_ray_sort_keys,
@@ -828,7 +829,10 @@ class _ArenaRayCompactor:
         that the current list. Returns the new view, as ``select`` does.
         """
         n = int(active.numel())
-        torch.index_select(active, 0, perm, out=self.spare[:n])
+        if active.device.type == "mps":
+            reorder_ray_slots(active, perm, self.spare, n)
+        else:
+            torch.index_select(active, 0, perm, out=self.spare[:n])
         self.current, self.spare = self.spare, self.current
         self.size = n
         return self.current[:n]
@@ -2855,7 +2859,7 @@ def raytrace_render_wavefront(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
         )
         filled[:, : 3 * int(num_lights)] = shadow_vis.view(num_events, -1)
-        vis_tab.index_copy_(0, acc_idx, filled)
+        index_copy_rows(vis_tab, acc_idx, filled)
         return vis_tab
 
     def _drain_sparse_secondary(

@@ -1,0 +1,74 @@
+{
+  "repository": "algorithmicsimplicity/algan",
+  "pull_request": 115,
+  "branches": [
+    {
+      "branch": "codex/mac-bloom-measure",
+      "sha": "95b6387e43cc14a1ad21f6d678531c184e73a35c"
+    },
+    {
+      "branch": "codex/mac-bloom-parity",
+      "sha": "cfc6d60056668f21cac6a1d05304d4c2315383ac"
+    },
+    {
+      "branch": "codex/mac-bloom-stage-probe",
+      "sha": "7d91e3057809e5862ea23ae8c1c44af97def859e"
+    },
+    {
+      "branch": "codex/mac-bloom-validation",
+      "sha": "c7b77ae24d6edd2122e80d87fb75a5cb99c747ed"
+    },
+    {
+      "branch": "codex/mac-depth-buffer-ab",
+      "sha": "33e302233ff103b22fb780dc0a8ea268399cbf20"
+    },
+    {
+      "branch": "codex/mac-depth-buffer-reuse",
+      "sha": "cd3e9251bdccadf7ea615c02028a54b986e948b7"
+    },
+    {
+      "branch": "codex/mac-dispatch-diagnosis",
+      "sha": "42889644c0505af51d41621de4fcde094f13187b"
+    },
+    {
+      "branch": "codex/mac-early-profile",
+      "sha": "9729477041f466267f768af1fa937e4b10381e4d"
+    },
+    {
+      "branch": "codex/mac-graph-profile",
+      "sha": "5567db586879f889f23d74bf7c2e84d501dfd9ad"
+    },
+    {
+      "branch": "codex/mac-metal-fix-validation",
+      "sha": "2925b8d77b327d1fc4241143667f2131ecb5aa91"
+    },
+    {
+      "branch": "codex/mac-metal-validation",
+      "sha": "b453bf67cb62999d1c79a38a63615d03c58c003e"
+    },
+    {
+      "branch": "codex/mac-native-diagnosis",
+      "sha": "e6e4178d6084c2bd7152a26c6c9ff8b3963f9b4b"
+    },
+    {
+      "branch": "codex/mac-postfix-light-profile",
+      "sha": "00bb3ae208f1c142cf844a99cccb8378f0ac0707"
+    },
+    {
+      "branch": "codex/mac-postfix-matched",
+      "sha": "6440fc64bc3e24e300eeadd24fe0379354ab73d6"
+    },
+    {
+      "branch": "codex/mac-render-parity",
+      "sha": "76e73157aa04d4a1c2d565a405bae9f207c9ca66"
+    },
+    {
+      "branch": "codex/mac-sibling-weights-ab",
+      "sha": "57cb6d34a03c8777e2c95045044c50432485b1cd"
+    },
+    {
+      "branch": "claude/eager-cori-h61xc8",
+      "sha": "272d6965880927141d92d7794a1b7239415b6669"
+    }
+  ]
+}

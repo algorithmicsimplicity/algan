@@ -21,7 +21,7 @@ import math
 
 import torch
 
-from algan.environment import env_str
+from algan.environment import env_flag, env_str
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     clamp_floor,
@@ -1485,6 +1485,88 @@ def _one_mesh_pixel_caps(
     return msk_s, cap_s
 
 
+def _check_write_compaction(live, accepts, counts):
+    """Is the write pass launched over every pair that emits a fragment? (opt-in)
+
+    ``raster_write_compact`` launches the write kernel only at the pairs whose
+    accept mask is non-zero. That is exact **provided** two things hold, and a
+    Metal render violates one of them: the emitted keys come back with
+    scattered slots the write pass never visited, which the A/B in
+    ``reports/mac_2026_09`` pins to this compaction.
+
+    The two invariants, separated so the answer says which one broke:
+
+    * the count kernel's two outputs agree -- it does ``cnt += 1`` and
+      ``bits |= 1 << j`` together, so ``counts > 0`` and ``accepts != 0`` are
+      the same set of pairs;
+    * ``nonzero`` returns all of them.
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set.
+    """
+    if not env_flag("ALGAN_RASTER_KEY_CHECK", False):
+        return
+    n_live = int(live.numel())
+    n_accept = int((accepts != 0).sum())
+    n_count = int((counts > 0).sum())
+    if n_live == n_accept == n_count:
+        return
+    print(
+        f"[raster-compaction-check] pairs with counts>0: {n_count}; with "
+        f"accepts!=0: {n_accept}; returned by nonzero: {n_live}. "
+        + (
+            "The COUNT KERNEL's two outputs disagree."
+            if n_accept != n_count
+            else "NONZERO dropped pairs the accept mask holds."
+        )
+    )
+
+
+def _check_emitted_keys(frag_key_u, tile_pixels, num_frags):
+    """Assert the emission filled every fragment slot it counted (opt-in).
+
+    ``frag_key_u`` is deliberately UNINITIALIZED arena memory: the count pass
+    says how many fragments each pair will emit, and the write pass fills
+    exactly that many. So a slot the write pass skipped holds whatever the
+    arena held before, and the first thing downstream does with a key is
+    ``pix = key >> 32``, which for arena garbage is an arbitrary 32-bit value.
+
+    The emission kernel guards ``0 <= lp < tile_pixels``
+    (``raster_taichi._pair_pixel``), so a key outside that range CANNOT have
+    been written by it. This reports how many are outside, and -- the part that
+    names the mechanism -- whether they form a contiguous tail (the write pass
+    emitted fewer than the count pass promised) or are scattered (a gather or
+    an ordering problem upstream of them).
+
+    Off unless ``ALGAN_RASTER_KEY_CHECK`` is set: it is two reductions and a
+    host readback over the whole fragment stream.
+    """
+    if not env_flag("ALGAN_RASTER_KEY_CHECK", False) or num_frags <= 0:
+        return
+    pix = frag_key_u[:num_frags] >> 32
+    bad = (pix < 0) | (pix >= tile_pixels)
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        print(
+            f"[raster-key-check] ok: {num_frags} keys, all pixel ordinals in "
+            f"[0, {tile_pixels})"
+        )
+        return
+    idx = bad.nonzero(as_tuple=True)[0]
+    first, last = int(idx[0]), int(idx[-1])
+    tail = (last == num_frags - 1) and (n_bad == num_frags - first)
+    shape = (
+        "CONTIGUOUS TAIL -- the write pass emitted fewer than the count pass promised"
+        if tail
+        else "SCATTERED -- not a short write"
+    )
+    print(
+        f"[raster-key-check] {n_bad} of {num_frags} keys have a pixel ordinal "
+        f"outside [0, {tile_pixels}): first at {first}, last at {last}, "
+        f"{shape}. "
+        f"Ordinals run {int(pix.amin())}..{int(pix.amax())}."
+    )
+
+
 def _tri_obj_row(pix, ppf, time_start, rows):
     """The ``tri_obj`` row the KERNELS read for a fragment at compact pixel
     ``pix``, which is the row the host has to read to ask the same question.
@@ -1895,8 +1977,9 @@ def prepare_sparse_raster_coverage(
             # a pixel (raster_write_compact): launch over those alone. Exact
             # -- every fragment lands at its pair's own prefix offset.
             pairs_w, npairs_w, offsets_w, accepts_w = pairs, npairs, offsets, accepts
-            if rt_settings.raster_write_compact and npairs:
+            if rt_settings.raster_write_compact_active() and npairs:
                 live = accepts.nonzero(as_tuple=True)[0]
+                _check_write_compaction(live, accepts, _counts)
                 if live.numel() < npairs:
                     pairs_w = pairs.index_select(0, live)
                     offsets_w = offsets.index_select(0, live)
@@ -1947,6 +2030,8 @@ def prepare_sparse_raster_coverage(
             if opaque and n_spec:
                 opaque_u[frag_cursor : frag_cursor + n_spec].fill_(True)
             pair_cursor += npairs
+
+        _check_emitted_keys(frag_key_u, int(g1), num_frags)
 
         order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(

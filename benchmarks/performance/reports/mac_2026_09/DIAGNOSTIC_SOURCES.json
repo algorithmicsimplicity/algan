@@ -1,0 +1,18 @@
+{
+  "benchmarks/_mac_native_diagnose.py": "e6e4178d6084c2bd7152a26c6c9ff8b3963f9b4b",
+  "benchmarks/_mac_dispatch_diagnose.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_compaction_diagnose.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_globals_probe.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_reorder_diagnose.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_reorder_parity.py": "76e73157aa04d4a1c2d565a405bae9f207c9ca66",
+  "benchmarks/_mac_shade_diagnose.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mps_reorder_probe.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_reorder_speed.py": "42889644c0505af51d41621de4fcde094f13187b",
+  "benchmarks/_mac_early_profile.py": "c7b77ae24d6edd2122e80d87fb75a5cb99c747ed",
+  "benchmarks/_mac_graph_timers.mm": "c7b77ae24d6edd2122e80d87fb75a5cb99c747ed",
+  "benchmarks/_mac_bloom_stage_probe.py": "c7b77ae24d6edd2122e80d87fb75a5cb99c747ed",
+  "benchmarks/_mac_bloom_validate.py": "c7b77ae24d6edd2122e80d87fb75a5cb99c747ed",
+  "benchmarks/_mac_postfix_graph_timers.mm": "00bb3ae208f1c142cf844a99cccb8378f0ac0707",
+  "benchmarks/_mac_postfix_matched.py": "00bb3ae208f1c142cf844a99cccb8378f0ac0707",
+  "benchmarks/_mac_postfix_profile.py": "00bb3ae208f1c142cf844a99cccb8378f0ac0707"
+}

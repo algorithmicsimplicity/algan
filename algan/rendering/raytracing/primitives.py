@@ -24,7 +24,11 @@ from algan.rendering.logical_pn import (
     normalize_pixel_tolerance,
     snap_boundary_values,
 )
-from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
+from algan.rendering.mps_compat import (
+    accumulate_dtype,
+    clamp_floor,
+    index_copy_rows,
+)
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
     batch_arange,
@@ -177,7 +181,7 @@ def _scatter_diced_rows(output, values, targets):
     -- so the copy needs no accumulation and its order does not matter.
     """
     trailing = output.shape[2:]
-    output.view(-1, *trailing).index_copy_(0, targets, values.reshape(-1, *trailing))
+    index_copy_rows(output.view(-1, *trailing), targets, values.reshape(-1, *trailing))
 
 
 def _criterion_tensors_are_local(tensors, device_only=()):

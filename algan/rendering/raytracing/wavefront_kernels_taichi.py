@@ -104,6 +104,20 @@ def sca_width(nested_ior):
 
 
 @ti.kernel
+def reorder_ray_slots(
+        source: ti.types.ndarray(), permutation: ti.types.ndarray(),
+        output: ti.types.ndarray(), count: int):
+    """Gather a ray permutation into a disjoint view of the same arena.
+
+    PyTorch 2.7.1 MPS index_select(out=...) ignores the output view's storage
+    offset and writes at the arena base. Imported ndarray offsets keep this
+    gather inside the destination view, preserving the ray queue and arena.
+    """
+    for i in range(count):
+        output[i] = source[permutation[i]]
+
+
+@ti.kernel
 def compact_ray_slots(
         source: ti.types.ndarray(), num_source: int,
         scan_pool: ti.template(), desired_status: int,

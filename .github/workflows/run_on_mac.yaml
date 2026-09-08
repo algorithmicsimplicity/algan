@@ -14,10 +14,10 @@ name: Run on the Mac GPU runner
 # "Apple M1 (Virtual)", 3 CPUs, 7 GB) whose GPU is REAL hardware: ~1.3 TFLOP/s
 # f32 sustained on MPS against ~450 GFLOP/s on its CPU (mps_probe.yaml runs
 # 33178820377 / 33179777864). So compute-bound timings taken here mean
-# something. Anything with a per-launch cost in it does not: one synchronized
-# dispatch measured 432 us against 2.0 us on the CPU, and host<->device copies
-# ran at 6.0 / 3.2 GB/s over unified memory -- a virtualization tax on
-# submission and mapping that no physical Mac pays.
+# something about this runner. A synchronized MPS dispatch measured 432 us
+# against 2.0 us on its CPU; that was not a physical-Mac control. Submission,
+# mapping and allocator costs include the frameworks and driver as well as
+# virtualization. Their virtualization contribution has not been isolated.
 #
 # THE MPS ARM NEEDS A PATCHED WHEEL. On a stock compiler, `auto` refuses the
 # Apple GPU and Algan renders on the CPU, so an MPS arm without a wheel

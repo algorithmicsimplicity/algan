@@ -330,6 +330,12 @@ def _upsample_bloom(input_tensor, output, memory):
             )
             x0 = int(math.floor(source_x))
             x1 = min(x0 + 1, input_tensor.shape[-1] - 1)
+            # Torch 2.7.1 MPS lerp(weight=0, out=...) mistakes distinct
+            # views of one arena for an in-place no-op. Border samples must
+            # be copied explicitly or retain unrelated scratch contents.
+            if input_tensor.device.type == "mps" and source_x == x0:
+                horizontal[..., x].copy_(input_tensor[..., x0])
+                continue
             torch.lerp(
                 input_tensor[..., x0],
                 input_tensor[..., x1],
@@ -343,6 +349,9 @@ def _upsample_bloom(input_tensor, output, memory):
             )
             y0 = int(math.floor(source_y))
             y1 = min(y0 + 1, input_tensor.shape[-2] - 1)
+            if input_tensor.device.type == "mps" and source_y == y0:
+                output[..., y, :].copy_(horizontal[..., y0, :])
+                continue
             torch.lerp(
                 horizontal[..., y0, :],
                 horizontal[..., y1, :],

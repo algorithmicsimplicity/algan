@@ -60,15 +60,19 @@ contributed twice has provably fused at least two sheets.
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 
 from algan.environment import env_flag, env_float
+from algan.errors import AlganWarning
 from algan.rendering.mps_compat import (
     accumulate_dtype,
     band_class_groups,
     clamp_floor,
     cummax_values,
     gather_packed_key,
+    index_copy_rows,
     kernel_index,
     reduction_index_dtype,
     taichi_accumulate_dtype,
@@ -361,6 +365,29 @@ def resolve_pixel_reference(
     return claims, T
 
 
+#: Largest magnitude an int32 sort key can carry.
+_INT32_MAX = 2**31 - 1
+
+
+def _narrow_sort_key(key, magnitude_bound):
+    """``key`` as int32 when every value provably fits, else ``key`` itself.
+
+    Only ever used for a key handed to :func:`_lexsort`. Narrowing is safe
+    there in the strongest sense: a stable argsort depends on the *order* of
+    the values and on the input index, and an exact int32 copy of an int64
+    key has the same order and the same indices -- so the permutation is
+    identical, bit for bit. What changes is the radix sort's pass count, which
+    is one per key byte.
+
+    ``magnitude_bound`` must bound ``abs(key)``, and it is the caller's job to
+    know it without asking the device: the point of this is to remove work
+    from the stream, not to add a reduction and a sync to it.
+    """
+    if key.dtype is torch.int64 and magnitude_bound <= _INT32_MAX:
+        return key.to(torch.int32)
+    return key
+
+
 def _lexsort(*keys):
     """Stable argsort by ``keys`` in priority order (first key most
     significant). Composes least-significant-first, the classic LSD trick the
@@ -413,7 +440,7 @@ def _packed_depth_order(keys, depth):
     return torch.argsort(key, stable=True)
 
 
-def _pixel_group_order(pix, group, depth, offsets):
+def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None):
     """Order an already pixel-grouped stream, retaining the global-sort fallback."""
     if offsets is not None and _local_sheet_sort(pix):
         from algan.rendering.raytracing.sheet_sort_taichi import pixel_group_order
@@ -425,6 +452,12 @@ def _pixel_group_order(pix, group, depth, offsets):
         order = _packed_depth_order((pix, group), depth)
         if order is not None:
             return order
+    # Preserve the packed CUDA and local-kernel routes above, which require
+    # the original int64 IDs. Narrow only the reference sort's copies when
+    # the caller knows safe bounds without another device reduction.
+    if key_bounds is not None:
+        pix = _narrow_sort_key(pix, key_bounds[0])
+        group = _narrow_sort_key(group, key_bounds[1])
     return _lexsort(pix, group, depth)
 
 
@@ -459,7 +492,11 @@ def _sheet_walk_order(pix, position):
 
 def _unique_sorted_ids(keys):
     """Group nondecreasing integer IDs without sorting them a second time."""
-    if (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda"):
+    # The validated Metal path also receives sorted IDs here. Keep its
+    # consecutive grouping while retaining the CPU/CUDA optimization gates.
+    if keys.device.type == "mps" or (
+        (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda")
+    ):
         return torch.unique_consecutive(keys, return_inverse=True)
     return torch.unique(keys, sorted=True, return_inverse=True)
 
@@ -591,6 +628,55 @@ def _rows(arr, frame_rel, time_start):
     return (frame_rel + int(time_start)) % arr.shape[0]
 
 
+#: (frame, triangle) pairs one block of a per-(frame, triangle) table may carry.
+#: Their intermediates are ``[block, N, 9]`` float32 -- 36 bytes a pair, half a
+#: dozen live at once -- so this is roughly a 220 MB ceiling on the transient,
+#: whatever the chunk's frame count is. Read by :func:`_shade_class` and
+#: :func:`_prim_split_after`, the two functions that build such a table.
+_FRAME_TABLE_BUDGET = 1 << 20
+
+#: Above this many (frame, triangle) pairs the table is not merely large, it is
+#: evidence that ``frame_rel`` is wrong: a chunk holds tens of frames and a
+#: scene holds a few hundred thousand triangles, so a plausible product is
+#: single-digit millions. Blocking means the render survives it either way; the
+#: warning is what stops it being silent.
+_FRAME_TABLE_IMPLAUSIBLE = 64 << 20
+_IMPLAUSIBLE_REPORTED = set()
+
+
+def _check_frame_table(where, num_frames, num_tri, n, frame_rel=None):
+    """Warn once per site when a per-(frame, triangle) table is implausible.
+
+    The table's height is ``frame_rel.amax() + 1``, so an implausible height is
+    an implausible fragment key, and the fragment key is packed inside a Taichi
+    kernel. Naming the numbers here is what turns "a single 6.45 GB allocation
+    failed" into a diagnosis.
+
+    The extra reductions on ``frame_rel`` run only on the warning path, so the
+    ordinary render pays one integer comparison for this.
+    """
+    if num_frames * num_tri < _FRAME_TABLE_IMPLAUSIBLE:
+        return
+    if where in _IMPLAUSIBLE_REPORTED:
+        return
+    _IMPLAUSIBLE_REPORTED.add(where)
+    span = ""
+    if frame_rel is not None and frame_rel.numel():
+        span = (
+            f" Frame ordinals run {int(frame_rel.amin())}..{int(frame_rel.amax())}"
+            f" ({frame_rel.dtype})."
+        )
+    warnings.warn(
+        f"{where}: the per-(frame, triangle) table is {num_frames} frames by "
+        f"{num_tri} triangles for {n} fragments, which is not a frame count a "
+        f"render chunk can have.{span} The fragment stream's pixel ordinals are "
+        "suspect; the table is built in blocks so this does not exhaust "
+        "memory, but the classes it feeds may be wrong.",
+        AlganWarning,
+        stacklevel=3,
+    )
+
+
 def _shade_class(
     merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
 ):
@@ -626,37 +712,50 @@ def _shade_class(
         return torch.zeros(n, dtype=torch.int64, device=device)
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if n else 1
-    frames = torch.arange(num_frames, device=device) + int(time_start)
-    nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
-        num_frames, -1, 3, 3
-    )
-    mag = nrm.norm(dim=3)
-    unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
-    spread = torch.maximum(
-        (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
-        (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
-    )
-    declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
-    # All-degenerate vertex normals: the kernel falls back to the geometric
-    # normal, so the class does too (the Polyhedron family authors none).
-    geometric_flat = mag.amax(dim=2) < 1e-6
-    vertex_n = unit[:, :, 0]
-    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
-    p0 = pos[..., 0:3]
-    e1 = pos[..., 3:6] - p0
-    e2 = pos[..., 6:9] - p0
-    gn = torch.cross(e1, e2, dim=-1)
-    gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
-    face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
-    q = (
-        torch.round(face_n * float(SHADE_CLASS_QUANT))
-        .to(torch.int64)
-        .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
-        + SHADE_CLASS_QUANT
-    )
-    packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
+    num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
+    _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
     zero = torch.zeros((), dtype=torch.int64, device=device)
-    table = torch.where(declared_flat | geometric_flat, packed + 1, zero)  # [F, N]
+    table = torch.empty((num_frames, num_tri), dtype=torch.int64, device=device)
+    # The table itself is one int64 per (frame, triangle) and is small; its
+    # INTERMEDIATES are [block, N, 3, 3] floats and there are half a dozen of
+    # them live at once, so the frame axis is walked in blocks. A one-frame
+    # chunk -- what a 4K render takes today -- is one block and the arithmetic
+    # is exactly what it was. A wide chunk used to size those intermediates by
+    # its whole frame count, which is how a Metal render at PREVIEW came to ask
+    # for a single 6.45 GB buffer here.
+    block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
+    for f0 in range(0, num_frames, block):
+        f1 = min(num_frames, f0 + block)
+        frames = torch.arange(f0, f1, device=device) + int(time_start)
+        nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
+            f1 - f0, -1, 3, 3
+        )
+        mag = nrm.norm(dim=3)
+        unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
+        spread = torch.maximum(
+            (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
+            (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
+        )
+        declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
+        # All-degenerate vertex normals: the kernel falls back to the geometric
+        # normal, so the class does too (the Polyhedron family authors none).
+        geometric_flat = mag.amax(dim=2) < 1e-6
+        vertex_n = unit[:, :, 0]
+        pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
+        p0 = pos[..., 0:3]
+        e1 = pos[..., 3:6] - p0
+        e2 = pos[..., 6:9] - p0
+        gn = torch.cross(e1, e2, dim=-1)
+        gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
+        face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
+        q = (
+            torch.round(face_n * float(SHADE_CLASS_QUANT))
+            .to(torch.int64)
+            .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
+            + SHADE_CLASS_QUANT
+        )
+        packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
+        table[f0:f1] = torch.where(declared_flat | geometric_flat, packed + 1, zero)
     cls = table[frame_rel, safe_ref]
     return torch.where(is_tri, cls, zero)
 
@@ -872,34 +971,51 @@ def _prim_split_after(
     device = safe_ref.device
     if num_frames is None:
         num_frames = int(frame_rel.amax()) + 1 if safe_ref.numel() else 1
-    frames = torch.arange(num_frames, device=device) + int(time_start)
-    pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [F, N, 9]
-    ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(num_frames, 1, 3)
-    dmin = dmax = None
-    for k in range(3):
-        dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
-        dmin = dk if dmin is None else torch.minimum(dmin, dk)
-        dmax = dk if dmax is None else torch.maximum(dmax, dk)
-    del ro, dk, pos
-    ext = dmax - dmin
-    del dmin, dmax
-    # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
-    # differ by about one pixel's worth of the surface's depth gradient,
-    # not by the triangle's whole extent. Where the projection table is
-    # valid, divide by the projected size in pixels; a camera-plane
-    # straddler keeps the conservative raw extent.
-    slope = ext
-    if tri_screen is not None and tri_screen.shape[2] >= 10:
-        scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
-        sx = scr[..., 0:3]
-        span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
-        sy = scr[..., 3:6]
-        span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
-        proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-        valid = scr[..., 9] > 0.5
-        slope = torch.where(valid, ext / proj, ext)
-        del scr, sx, sy, span_x, span_y, proj, valid
-    del ext
+    num_tri = tri_pos.numel() // (tri_pos.shape[0] * 9)
+    _check_frame_table(
+        "sheets._prim_split_after", num_frames, num_tri, t.numel(), frame_rel
+    )
+    # Blocked over the frame axis for the reason ``_shade_class`` gives: the
+    # table is one float per (frame, triangle), but the world positions and
+    # screen bounds it is derived from are ``[block, N, 9]`` with several live
+    # at once, and sizing those by the chunk's whole frame count is what asked
+    # a Metal render for a single 6.45 GB buffer on the line below.
+    slope = torch.empty((num_frames, num_tri), dtype=tri_pos.dtype, device=device)
+    block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
+    for f0 in range(0, num_frames, block):
+        f1 = min(num_frames, f0 + block)
+        frames = torch.arange(f0, f1, device=device) + int(time_start)
+        pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [B, N, 9]
+        ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(
+            f1 - f0, 1, 3
+        )
+        dmin = dmax = None
+        for k in range(3):
+            dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
+            dmin = dk if dmin is None else torch.minimum(dmin, dk)
+            dmax = dk if dmax is None else torch.maximum(dmax, dk)
+        del ro, dk, pos
+        ext = dmax - dmin
+        del dmin, dmax
+        # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
+        # differ by about one pixel's worth of the surface's depth gradient,
+        # not by the triangle's whole extent. Where the projection table is
+        # valid, divide by the projected size in pixels; a camera-plane
+        # straddler keeps the conservative raw extent.
+        block_slope = ext
+        if tri_screen is not None and tri_screen.shape[2] >= 10:
+            scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
+            sx = scr[..., 0:3]
+            span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
+            sy = scr[..., 3:6]
+            span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
+            proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
+            valid = scr[..., 9] > 0.5
+            block_slope = torch.where(valid, ext / proj, ext)
+            del scr, sx, sy, span_x, span_y, proj, valid
+        del ext
+        slope[f0:f1] = block_slope
+        del block_slope
     slope_f = slope[frame_rel, safe_ref]
     del slope
     pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
@@ -1060,6 +1176,34 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
     """
     nb = sheet_band.numel()
     device = cov.device
+    if rt_settings.sheet_sibling_weights_kernel:
+        if nb < 2:
+            return cov, msk
+        from algan.rendering.raytracing.sheet_sibling_taichi import (
+            sibling_band_counts,
+            sibling_coverage_weights,
+        )
+
+        counts = torch.zeros((band_area.numel(), 2), dtype=torch.int32, device=device)
+        weights = torch.empty_like(cov)
+        masks = torch.empty_like(msk)
+        band = sheet_band.contiguous()
+        sibling_band_counts(band, nb, counts)
+        sibling_coverage_weights(
+            band,
+            cov.contiguous(),
+            msk.contiguous(),
+            band_area.contiguous(),
+            band_union.contiguous(),
+            band_corr.contiguous(),
+            counts,
+            nb,
+            weights,
+            masks,
+            taichi_accumulate_dtype(),
+        )
+        return weights, masks
+
     members = torch.zeros_like(band_area, dtype=torch.int64)
     members.scatter_add_(
         0, sheet_band, torch.ones(nb, dtype=torch.int64, device=device)
@@ -1172,6 +1316,13 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
             first_lane,
         )
         if rt_settings.sheet_depth_reduce_kernel:
+            if rt_settings.sheet_depth_buffer_reuse:
+                from algan.rendering.raytracing.sheet_depth_taichi import (
+                    sheet_lane_depths_inplace,
+                )
+
+                sheet_lane_depths_inplace(first_lane, t_o, n)
+                return first_lane.view(torch.float32).view(nb, AA_NUM_SAMPLES)
             from algan.rendering.raytracing.sheet_depth_taichi import sheet_lane_depths
 
             out = torch.empty((nb, AA_NUM_SAMPLES), dtype=torch.float32, device=device)
@@ -1474,10 +1625,40 @@ def compact_sheets(
     # ``is_tri`` is deleted further down to free the [n] flags early and a
     # closure would hold it past that -- and the first consumer, the shading
     # class, is on by default, so the reduction is not new work.
-    tri_present = bool(is_tri.any())
-    # Frames this chunk's fragments span: the per-(frame, triangle) tables
-    # below are built for exactly these rows.
-    num_frames = int(frame_rel.amax()) + 1 if n else 1
+    # Three host-side answers, one readback. Each of these used to be its own
+    # ``bool()``/``int()`` -- three full pipeline drains where the values are
+    # available at the same moment, which on Metal is three command-buffer
+    # commits and waits rather than three cheap stream syncs.
+    #
+    # ``reduction_index_dtype()`` on the frame reduction, and the SURFACE ids
+    # rather than the group key for the second: both narrow what is reduced to
+    # the width the renderer's other integer reductions already narrow to, and
+    # the surface reduction runs over the small ``[frames, triangles]`` table
+    # instead of the fragment stream.
+    if n:
+        surface_max = (
+            tri_obj.amax().to(torch.int64)
+            if tri_obj.numel()
+            else torch.zeros((), dtype=torch.int64, device=device)
+        )
+        probe = torch.stack(
+            [
+                is_tri.any().to(torch.int64),
+                frame_rel.to(reduction_index_dtype()).amax().to(torch.int64),
+                surface_max,
+            ]
+        ).tolist()
+        tri_present = bool(probe[0])
+        # Frames this chunk's fragments span: the per-(frame, triangle) tables
+        # below are built for exactly these rows.
+        num_frames = int(probe[1]) + 1
+        # ``gkey`` is ``sid * 2 + facing`` for a triangle and ``-(position + 2)``
+        # for a bezier fragment, so this bounds both of its ends.
+        gkey_bound = max(2 * int(probe[2]) + 2, n + 2)
+    else:
+        tri_present = False
+        num_frames = 1
+        gkey_bound = 1
 
     cls = None
     if shade_split:
@@ -1486,7 +1667,13 @@ def compact_sheets(
         )
 
     # ---- P1: (pixel, group, depth) order + band starts ---------------------
-    order = _pixel_group_order(pix, gkey, t, coverage.get("run_offsets"))
+    order = _pixel_group_order(
+        pix,
+        gkey,
+        t,
+        coverage.get("run_offsets"),
+        key_bounds=(num_frames * ppf, gkey_bound),
+    )
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
     t_o = t.index_select(0, order)
@@ -1755,7 +1942,7 @@ def compact_sheets(
             # A fragment clamped to zero carries no area into any band aggregate:
             # its sheet falls out at the resolve's ``eff <= min_alpha`` branch,
             # claiming nothing and occluding nothing.
-            cov_o.index_copy_(0, o2, (c2 * scale).to(torch.float32))
+            index_copy_rows(cov_o, o2, (c2 * scale).to(torch.float32))
             del scale, c2, o2
         closed_s = None
     # ``band_id`` is now the SUB-BAND -- the sheet this compaction would build

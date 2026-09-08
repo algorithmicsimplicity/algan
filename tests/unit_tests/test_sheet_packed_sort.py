@@ -120,3 +120,51 @@ def test_packing_starts_at_the_measured_queue_threshold(columns, offset):
     assert (result is not None) == (offset == 0)
     if result is not None:
         assert torch.equal(result, _lexsort(*keys, depth))
+
+
+@pytest.mark.parametrize("bound", [31, 2**31, 2**40])
+def test_bounded_fallback_preserves_stable_order_and_inputs(bound):
+    from algan.settings._startup import render_device
+
+    device = render_device()
+    pix = torch.tensor([3, 1, 1, 3, 1, 3], dtype=torch.int64, device=device)
+    group = torch.tensor([0, 7, 7, 0, -2, 0], dtype=torch.int64, device=device)
+    depth = torch.tensor([1.0, 2.0, 2.0, 0.5, 4.0, 1.0], device=device)
+    original = [v.clone() for v in (pix, group, depth)]
+    with SETTINGS.raytracing.experimental.override(sheet_pixel_sort=False):
+        actual = _pixel_group_order(pix, group, depth, None, key_bounds=(bound, bound))
+    assert actual.cpu().tolist() == [4, 1, 2, 3, 0, 5]
+    for before, after in zip(original, (pix, group, depth)):
+        assert torch.equal(before, after)
+
+
+def test_bounds_do_not_disable_the_existing_packed_sort(monkeypatch):
+    from algan.rendering.raytracing import sheets
+
+    pix = torch.tensor([0, 0, 1], dtype=torch.int64)
+    group = torch.tensor([1, 0, 0], dtype=torch.int64)
+    depth = torch.ones(3)
+    expected = torch.tensor([1, 0, 2])
+
+    def packed(keys, values):
+        assert keys[0] is pix
+        assert keys[1] is group
+        assert values is depth
+        return expected
+
+    monkeypatch.setattr(sheets, "_packed_depth_order", packed)
+    with SETTINGS.raytracing.experimental.override(
+        sheet_pixel_sort=False, sheet_packed_sort=True
+    ):
+        actual = _pixel_group_order(pix, group, depth, None, key_bounds=(2, 2))
+    assert actual is expected
+
+
+def test_sorted_grouping_preserves_missing_and_repeated_ids_on_render_device():
+    from algan.rendering.raytracing.sheets import _unique_sorted_ids
+    from algan.settings._startup import render_device
+
+    ids = torch.tensor([0, 0, 3, 3, 3, 8], dtype=torch.int64, device=render_device())
+    unique, inverse = _unique_sorted_ids(ids)
+    assert unique.cpu().tolist() == [0, 3, 8]
+    assert inverse.cpu().tolist() == [0, 0, 1, 1, 1, 2]

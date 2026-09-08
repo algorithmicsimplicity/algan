@@ -5,6 +5,23 @@ from algan.taichi_compat import ti
 
 
 @ti.kernel
+def sheet_lane_depths_inplace(
+    first: ti.types.ndarray(),
+    depth: ti.types.ndarray(),
+    n: ti.i32,
+):
+    # The owner reduction has finished. Each thread now consumes only its own
+    # slot, so that int32 storage can become the float32 depth table without
+    # another allocation. Keep one read/write argument (no aliased ndarrays).
+    for slot in first:
+        index = first[slot]
+        value = float("inf")
+        if index < n:
+            value = depth[index]
+        first[slot] = ti.bit_cast(value, ti.i32)
+
+
+@ti.kernel
 def sheet_lane_depths(
     first: ti.types.ndarray(),
     depth: ti.types.ndarray(),
