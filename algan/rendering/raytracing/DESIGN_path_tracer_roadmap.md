@@ -88,8 +88,9 @@ there is nothing to double-count — and it no longer costs anything visible.
 The two consequences this paragraph used to name are both gone: a light row's
 highlight is the same `_pt_lit_f_pdf` a BSDF ray would evaluate (§5), and an
 area light **does** cast a reflected image in a mirror, because it is
-geometry (§6a-ter). It is still invisible to camera rays and still not an
-occluder, which is what the deterministic renderer does with it too.
+geometry (§6a-ter). Its front face is visible to camera and secondary rays,
+its back face is black, and it is an opaque shadow caster. The deterministic
+renderer retains its packed-row model.
 
 What follows is the throughput baseline and the cheap wins the fallback role
 puts first (§0), then everything the original plan named beyond the staged
@@ -119,9 +120,10 @@ be as fast as it can be, is:
    T4 A/B under `benchmarks/performance/reports/t4_2026_09/`. §5's single
    BSDF landed before them with §7's stratified lobe select, §0.2's
    sampler hoists and the self-intersection offset as one re-baseline.
-   What this item leaves open: the area-light quads' leaf-bit end state
-   (§6a-ter, 8% of device time on an area-light scene) and the authored
-   surface's double count of an area light through its continuation.
+   **2026-09-07 follow-up:** quads enter scene preparation before its single
+   BVH build and arena upload. They are visible opaque emitters, with no
+   camera-visibility flag. Authored diffuse continuations no longer count
+   their already-evaluated area-light rows a second time.
 6. §3 tier 2 and §8's pools — only behind a profile. §7's blue noise is
    built and measured (+2..4%, inside the noise), and ships off; what would
    make it pay is a per-dimension tile, which that section scopes.
@@ -1042,162 +1044,68 @@ well-chosen sample is likely the faster route to equal perceived quality.
 Do not build it first; build it if the §0.1 baseline on a two-light scene
 asks for it.
 
-### 6a-ter. A `RectAreaLight` is one emissive quad, not `K` rows — LANDED
+### 6a-ter. A `RectAreaLight` is one emissive quad — LANDED
 
-**What shipped.** `algan/rendering/raytracing/area_light_quads.py` builds two
-emissive triangles per `RectAreaLight` — centre from the light's own packed
-sample rows, axes from its facing normal, radiance `colour * intensity / area`
-(the matching §5's acceptance test does by hand) — and
-`tracer._attach_area_light_quads` appends them to a **private copy** of the
-merged scene, rebuilding the triangle BVH over the widened primitive set and
-re-homing the widened tables into the arena. Private because the merge is the
-persistent device scene the deterministic renderer may render from next: it
-never sees these triangles at all, which is also why the camera-invisibility
-test is not a leaf bit. The geometry is per frame, indexed like `light_pos`, so
-a light that moves takes its quad with it. The `K` cell rows stay in
-`light_col` (the authored-appearance branch still lights from them) but stop
-being selectable in `_build_nee_tables`, so nothing is counted twice.
+**Current implementation (2026-09-07).** `area_light_quads.py` appends two
+emissive triangles to the path-traced scene during `_merge_scene`, before
+`_finalize_bvhs`. It extends the original bounds, opacity and caster masks;
+there is no private arena copy, second triangle-tree build, or per-window
+widening cache. The normal arena preflight sees every widened table. Both
+CPU prewarming and GPU preparation use the batch's light snapshot, never a
+live light's animated position. The deterministic merge keeps its row model.
+Area-light-only batches enter this same merge. A per-frame lifespan mask
+removes unspawned/despawned panels from the BVH, independently of emission:
+an active zero-intensity panel remains opaque. Retry snapshots slice this
+mask along with the light tensors.
 
-`pt_area_light_quads` (`ALGAN_PT_AREA_LIGHT_QUADS`, default on) is the switch,
-host-side with no kernel variant; off is the packed-rows arm, byte for byte.
+**Visibility is physical geometry.** The front face emits, the back face is
+black, and both are opaque and cast shadows. Camera, reflection and refraction
+rays see the same panel. This supersedes the earlier camera-invisible leaf-bit
+proposal: the user chose visible emitting surfaces, with no visibility toggle.
+An otherwise opaque scene retains closest-hit traversal and opaque shadow
+queries. `pt_area_light_quads=False` remains the existing experimental row arm.
 
-**What it costs on the host.** The widened copy rebuilds the *whole*
-triangle tree (the merge does not keep its build inputs, and the traversal
-takes one triangle tree per batch), so it is built **once per batch** and
-cached on the batch-lived merge under `_pt_quad_widened`, with its arena
-range retained through the per-window rewind the way the raster tables are
-— `render_batch_raytraced` runs once per render *window*, which at 720p and
-16 spp is one frame, and the first version rebuilt per window: measured
-120 ms per frame on 3,200 triangles on the CPU box, i.e. a fifth of that
-frame's wall. Per batch it is one extra split-BVH build, on the order of
-the merge's own, plus a second copy of the triangle tables in the arena's
-persistent end that the memory model does not plan for (a batch that only
-just fit will retry smaller). The right end state is the quads entering
-the merge itself with a camera-invisible leaf bit the deterministic
-traversal tests and never sets; that touches the deterministic kernels and
-is not done here.
+**One direct contribution on authored materials.** Manim, toon, matcap and
+custom fragment pipelines retain their packed-row lighting formulas. A diffuse
+continuation from such a crossing records `prev_pdf=-2`; emission from the next
+synthetic area-light hit is then zero because the rows already supplied it.
+The panel still absorbs that ray: suppression never reveals geometry behind
+it. Camera rays (`-1`), delta continuations (`0`), physical BSDF continuations
+(positive pdf), and ordinary emissive meshes retain their own semantics.
+Pass-through crossings preserve this marker, while another scatter replaces it.
+This uses an existing scalar and adds no per-path allocation or sampler dimension.
 
-**The falloff multiplier.** A row's emitter model is `d^-decay` times a range
-fade and `RectAreaLight` defaults to `decay = 0` — no falloff at all — while a
-physical emissive quad has inverse square built into transport. The difference
-is a per-emitter radiance multiplier `d^(2 - decay) * fade(d)^2` applied
-**at the emitter**, so both MIS ends evaluate it from the same distance (the
-next-event end knows `ldist`, the BSDF-hit end knows `t_hit`) and the
-power-heuristic weights still sum to one. Its two numbers per quad ride
-`pt_emit_falloff`, one new arena entry on `pt_shade` rather than a new kernel
-argument, indexed by `prim - quad_base` with `quad_base` on `nee_meta`
-(`_NM_QUAD_BASE`). An ordinary emissive triangle is `prim < quad_base` and
-takes neither branch, so emissive meshes are bit-identical. The light tree's
-importance exponent reads the NET falloff for a quad rather than the
-triangle's usual 2, because on a `decay = 0` light a hard-coded inverse square
-aims the sampler at the near emitter for nothing (§6a measured that at 1.34x
-worse).
+**Radiometry remains the authored light model.** Radiance starts at
+`colour * intensity / area`. The existing `decay` and `distance` controls are
+still evaluated at both MIS ends through `pt_quad_falloff`:
+`d^(2-decay) * fade(d)^2`. `decay=2, distance=0` is a physical emitter;
+the default `decay=0` deliberately has no inverse-square attenuation. Making
+emission independent of the receiver's distance is a separate public radiometry
+change, not an unadvertised side effect of removing the BVH copy (see §10).
 
-**Camera-invisible, and not an occluder.** The one compare `prim >= quad_base`
-in `pt_shade`'s drain loop, gated on `bounces_left >= max_b` — the camera
-segment, the same reading the closed-shell ring takes — passes a primary ray
-straight through while a ray that has bounced sees the light, which is what
-puts it in a mirror. The quads are packed **non-opaque** so the k-buffer's
-prune-behind-an-opaque-hit and `pt_opaque_closest` cannot hide the geometry
-behind one while it is being skipped (that batch turns `all_visible_opaque`
-off), and **non-casting** in the rebuilt tree — the `casts_shadows` leaf bit —
-so a shadow ray walks through, matching the deterministic renderer where an
-area light is not an occluder.
+The quads replace their `K` cell rows in the physical next-event table and light
+tree, so `samples=16` still produces two selectable triangles. Authored lighting
+continues to use the cell rows; the new continuation marker prevents double counting.
+Emission is one-sided at both MIS endpoints.
 
-**Tests**, all in `tests/unit_tests/test_path_tracer.py` and none marked
-`fast`: `test_area_light_quad_and_row_arms_agree` (Lambert and GGX floors, the
-two arms within 6% at 96 spp),
-`test_area_light_quad_falloff_follows_the_row_model` (`decay` 0 / 1 / 2 and a
-non-zero `distance`, each arm against the
-other), `test_area_light_quad_is_invisible_to_the_camera` (the light's own
-pixels are pure background, with an emissive mob of the same size as the
-control that proves the framing), `test_area_light_quad_shows_up_in_a_mirror`
-(a smooth metal sphere: 16 pixels over 100/255 with quads, 0 without),
-`test_area_light_quad_occludes_nothing` (a point light through a zero-intensity
-panel), `test_area_light_quad_is_mis_covered_by_both_strategies`
-(`max_bounces = 0`, where next-event carries the whole emitter at weight 1,
-against `max_bounces = 3`, where the two strategies split it),
-`test_area_light_quad_follows_a_moving_light` and
-`test_area_light_quad_collapses_the_next_event_table` (a `samples = 16` light:
-16 selectable entries becomes 2). The two pre-existing area-light tests —
-`test_area_light_matches_the_reference_integral`, which pins the `decay = 0`
-radiometry against a torch quadrature of the continuous area integral, and
-§5's `test_area_light_row_and_emissive_quad_agree` — now run **through** the
-quad path and still pass, which is the strongest statement available that the
-new estimator is the same estimator.
+**Regression coverage:** `test_path_tracer.py` exercises direct camera visibility
+against an emissive-mesh control, reflected visibility, shadow casting with an
+unshadowed receiver control, moving lights, the two-entry table, the numerical
+area integral, row-versus-quad irradiance on Lambert/GGX receivers, and NEE-only
+versus combined MIS. The irradiance fixtures view the floor away from the panel,
+so the test measures illumination rather than an occluded receiver.
+`test_authored_area_light_is_not_counted_twice` compares direct-only and continued
+paths under both summed and sampled authored lighting.
 
-**Variance**, `benchmarks/_pt_area_light_quad_variance.py` (CPU, 64x64, one
-`samples = 16` area light over a Lambert floor with a smooth metal sphere,
-adaptive sampling off, MSE against a 1024-spp reference, 4 seeds per arm):
-**320.3 for the rows arm against 153.2 for the quads — 2.09x better at equal
-spp**. The two 1024-spp references differ by 0.807 counts of 255 mean
-absolute, which is the bias bound: they are two estimators of one emitter,
-they agree to well under a channel count, and the 2.09x is therefore variance.
-Most of it is the metal sphere, where a BSDF ray finds the emitter and a
-next-event sample aimed at a near-delta lobe almost never does — the strategy
-the rows arm does not have.
+**Earlier measurements, before visible/casting quads.** The initial private-copy
+implementation reduced variance by 2.09x on the CPU fixture and 1.83x on the T4.
+Its T4 end-to-end gains were 5% at 720p and 2% at 1080p, despite device time rising
+8% when non-opaque quads disabled closest-hit/any-hit traversal. Those numbers
+are historical evidence for the representation, not measurements of this change.
+The copy and redundant build are now removed; a fresh GPU profile is needed to
+quantify the gain. The earlier report is
+`benchmarks/performance/reports/t4_2026_09/pt_arealight_1.md`.
 
-`tests/path_traced/` did not move at all — none of its three scenes carries a
-`RectAreaLight` — so 6a-ter cost no re-baseline, which is why it is not in
-§5's batch after all.
-
-**On the T4** (`benchmarks/performance/reports/t4_2026_09/pt_arealight_1.md`,
-the `lit` solids under four 16-sample area lights, 64 rows against 8
-triangles): the quads arm is **5% faster end to end at 720p and 2% at
-1080p**, with device time up 8% — the traverse half of that is the batch
-losing `pt_opaque_closest` and the any-hit shadow query because the quads
-are packed non-opaque, the shade half is the two-strategy MIS at emitter
-hits — and host time down 165–190 ms from the next-event setup over 8
-entries instead of 64. Variance at equal spp is 1.83x lower on the T4
-(2.09x on the CPU box). The traverse cost is the argument for the leaf-bit
-end state above.
-
-**Known, and deliberately left — and §6a-bis did not close it.** An
-authored-appearance material (manim, toon, matcap, a custom fragment pipeline)
-lights from the packed rows, because that is the model those materials have,
-while the quad is additionally geometry its continuation can find: such a
-surface sees an area light slightly twice. §6a-bis changed *which* rows that
-first term sums over — it may now sample them rather than sum them all — and
-that is the whole of the change: the direct term still comes from the rows and
-the continuation is still an ordinary Lambert bounce that can hit the quad, so
-the double count is identical in both of its arms — the same surface, the same
-two contributions, only the first one estimated rather than summed. (It exists
-only where the quads do: with `pt_area_light_quads` off there is no geometry
-for a continuation to find.) Closing it needs the continuation to know it left
-an authored surface — path state, not an estimator — or the quads to carry an
-"invisible to a path that came off an authored crossing" rule, and neither is
-built. Physically-integrated materials — everything that goes through the
-next-event table — are unaffected: for them the rows are withdrawn and only
-the quad remains.
-
-What §6a-bis *did* have to get right here is the other direction: its estimator
-draws from a table of the LIGHT ROWS, not from the next-event entries, so a
-`RectAreaLight` whose cell rows this section withdrew still reaches an authored
-surface. Drawing from the next-event entries would have made an authored floor
-under an area light go black.
-`test_authored_sampling_lights_an_area_light_the_same` is the guard.
-
-The rest of this section is the original plan, kept.
-
-`RectAreaLight` expands to `K = k*k` cell rows carrying `1/K` of the power
-each. That packing exists for the deterministic renderer's shadow fans; the
-path tracer inherited it, and it costs the path tracer three things: `K`
-table entries per light (one 4x4 area light is already 16 entries, so
-"tiny" is reached long before the light count suggests), a per-cell jitter
-special case in `_pt_light_sample_point`, and the two gaps the top of this
-document admits — no mirror image, and a highlight from the stage formula
-rather than transport.
-
-The fix is to give the path tracer its own view of the light: **two emissive
-triangles**, flagged invisible to camera rays. They then ride the
-emissive-triangle path that already exists end to end — area sampling from
-the table, `_pt_lit_f_pdf` on both ends, power-heuristic MIS, and a BSDF
-ray that can find them, which is what puts the light in a mirror. The
-camera-invisible flag is the only new piece: a bit on the triangle, in the
-family of the `casts_shadows` leaf bit, tested where a camera-segment ray
-would accept the hit. The deterministic renderer keeps its rows untouched.
-This is a §5 re-baseline item (it moves every sample that touched an area
-light) and belongs in that batch.
 
 ### 6a-quater. Build the tree per frame — LANDED
 
@@ -2023,14 +1931,15 @@ Tracked here so they are one search away, in rough order of effort:
   still need re-recording** (`ALGAN_UPDATE_PATH_TRACED_BASELINES=1`, then
   `scripts/package_baselines.py`).
 
-  Residual, out of scope here and worth its own bullet if it ever shows:
-  the reflected TIR branch's tint is Schlick evaluated on the *inside*
-  angle rather than KHR's air-side angle (which `_material_reflectance`
-  already implements for the transmission gate), so a reflection just past
-  the critical angle keeps ~4% instead of 100%. That is an energy
-  *understatement* on a path that used to be killed outright, so it is
-  strictly an improvement; correcting it means giving the specular lobe the
-  same side-aware reflectance the transmission lobe already gets.
+  **The remaining TIR energy loss is also fixed (2026-09-07).** Reflection
+  sampling and BSDF evaluation share `_pt_fresnel`, using Snell's thin-side
+  angle and unit dielectric reflectance past the critical angle. The
+  nested-media stack supplies the incident/transmitted index ratio, just as
+  it does for refraction. The reflection evaluator and its MIS density use
+  the same ray-facing hemisphere as the VNDF sampler. Tests compare the
+  Fresnel term to the exact dielectric equations, distinguish glass-to-air
+  from glass-to-water, and render an unsaturated uniform environment through
+  an interior TIR followed by an exit.
 * **Frame-animated emitters — now tested.** The NEE table samples frame-0
   emission power (dark-at-frame-0 emitters stay unbiased through the BSDF
   path, weight 1), and the MIS pdf evaluates per-frame area. Pinned by
@@ -2045,11 +1954,14 @@ Tracked here so they are one search away, in rough order of effort:
   matches the control at frame 0 bit for bit, and reads exactly 0.00 at frame
   1 — no frame-0 power leaks through the table into a frame whose emitter is
   off.
-* **A mirror's image of a translucent closed shell still doubles.** The
-  opacity ring covers the camera segment only, deliberately matching the
-  deterministic route's identical bounce-loop gap (see the comment block at
-  `solid_shell_alpha` in `settings.py`). Closing both means carrying surface
-  identity through arbitrary bounce trees.
+* **A mirror's image of a translucent closed shell — FIXED in the path tracer.**
+  The existing four-entry ring now pairs shell crossings on each straight
+  segment. Pass-throughs retain it; each real scatter, custom scatters
+  included, clears it. A reflected unlit translucent box therefore applies
+  opacity once, while refraction still evaluates both interfaces. Memory
+  stays fixed and overflow keeps its existing counter. The deterministic
+  bounce-loop gap remains separate. `test_mirror_preserves_closed_shell_opacity`
+  checks a half-opacity reflected box against its opaque control.
 * **CUDA baselines for `tests/path_traced/` — RECORDED.** On the Kaggle T4
   (`pt-cudabase-1`): all four scenes, byte-identical on a re-render in the
   same session and again in a second session. `environment_and_refraction`
@@ -2078,3 +1990,25 @@ Tracked here so they are one search away, in rough order of effort:
   re-baseline batch. Porting it to `wavefront_kernels_taichi` /
   `sheet_resolve_taichi` would re-baseline every committed frame in the
   repository on both devices, which is a change to make on its own.
+
+
+## 10. Design improvements identified during the correctness follow-up
+
+* **Unify the full dielectric BSDF next.** Reflection now shares side-aware
+  Fresnel and a matching pdf, but transmission is still a delta direction
+  while reflection can be rough. A rough dielectric BTDF sampled from the
+  same microfacet distribution would make rough glass internally consistent.
+  Include the radiance-transport eta-squared factor and eta-aware roulette
+  together; changing one without the other can move energy or variance for
+  the wrong reason. PBRT's [dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF)
+  gives a reference formulation. This should precede caustic estimators.
+* **Make area-light radiance independent of the receiver.** The retained
+  `d^(2-decay)` multiplier preserves the current controls but is not physical
+  emission for `decay != 2`. A deliberate API/default change to physical area
+  emitters would simplify camera appearance, indirect paths and light-tree
+  importance bounds at once. The present geometry change does not silently
+  reinterpret existing light intensities or falloff controls.
+* **Measure before adding another queue.** Removing duplicated scene storage
+  and BVH construction is justified structurally. Shadow queues, temporal
+  history, per-dimension blue-noise tables and splitting still need their
+  roadmap profile/quality gates. None was enabled speculatively by this work.

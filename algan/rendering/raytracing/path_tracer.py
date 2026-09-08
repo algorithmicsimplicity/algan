@@ -1011,8 +1011,8 @@ def _build_nee_tables(
         meta[_NM_AMBIENT_COUNT] = float(num_ambient)
         meta[_NM_ANIM_SEED] = 1.0 if rt_settings.pt_animated_seed else 0.0
         # Where the synthetic area-light quads start. One compare in the
-        # drain loop turns into both the camera-invisibility test and the
-        # gate on the falloff multiplier; ``NO_QUAD_BASE`` is past any
+        # drain loop gates one-sided emission, authored direct-light
+        # exclusion and falloff; ``NO_QUAD_BASE`` is past any
         # primitive index a batch can hold, so a render with no area light
         # takes neither branch and is bit-identical.
         meta[_NM_QUAD_BASE] = float(
@@ -1104,7 +1104,7 @@ def _build_nee_tables(
 
 
 def _build_shell_table(memory, merged):
-    """Per-triangle closed-shell ids for the camera-segment opacity ring.
+    """Per-triangle closed-shell ids for each straight segment's opacity ring.
 
     ``tri_shell[f % rows, n]`` is the triangle's ``tri_obj`` surface id where
     it belongs to a declared closed shell whose coverage may be ceilinged

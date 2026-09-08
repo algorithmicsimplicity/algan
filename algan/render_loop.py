@@ -25,6 +25,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
+from types import SimpleNamespace
 
 import torch
 from tqdm import tqdm
@@ -383,6 +384,12 @@ def _slice_render_state(render_state, start, end, total_frames):
         # rows -- zero rows are inert everywhere, so the prefix renders the
         # same as a fresh fetch of it would.
         "light_objects": render_state.get("light_objects"),
+        "light_active": [
+            sliced(active)
+            for active in render_state.get(
+                "light_active", [None] * len(render_state["lights"])
+            )
+        ],
     }
 
 
@@ -590,7 +597,9 @@ class RenderLoopMixin:
         candidates = order[lo:hi]
         return candidates[despawns[candidates] >= start_time].sort().values
 
-    def _prepare_merged_host_scene(self, primitive_batch, *, track_peak=None):
+    def _prepare_merged_host_scene(
+        self, primitive_batch, *, render_state=None, track_peak=None
+    ):
         """Return the cached source-device scene used for upload/preflight."""
         first = primitive_batch[0]
         cached = getattr(first, "_rt_prepared_host_scene", None)
@@ -599,7 +608,31 @@ class RenderLoopMixin:
 
         from algan.rendering.raytracing.scene_builder import _merge_scene
 
-        merged_host = _merge_scene(primitive_batch, track_peak=track_peak)
+        # Read the batch's immutable tensors, never the live light's animation
+        # state: this method also runs on the prefetch worker.
+        lights = []
+        if render_state is not None:
+            objects = render_state.get("light_objects")
+            if objects is None:
+                objects = getattr(self, "light_sources", ())
+            active = render_state.get("light_active", [None] * len(objects))
+            for light, (origin, color, aux), visible in zip(
+                objects, render_state["lights"], active
+            ):
+                lights.append(
+                    SimpleNamespace(
+                        origin=origin,
+                        light_color=color,
+                        _render_aux=aux,
+                        _render_active=visible,
+                        light_type=getattr(light, "light_type", -1),
+                        width=getattr(light, "width", None),
+                        height=getattr(light, "height", None),
+                    )
+                )
+        merged_host = _merge_scene(
+            primitive_batch, light_sources=lights, track_peak=track_peak
+        )
         env_map = getattr(self, "environment_map", None)
         first._rt_env_meta = None
         if env_map is not None:
@@ -1130,7 +1163,9 @@ class RenderLoopMixin:
                 )
                 return False
         try:
-            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(
+                primitive_batch, render_state=render_state
+            )
         except (InsufficientMemoryException, RuntimeError) as exc:
             # The device build overran the pool headroom. Drop any partial
             # merge state and report the batch as not fitting so the caller
@@ -1478,7 +1513,9 @@ class RenderLoopMixin:
                 copy_merged_scene_to_arena,
             )
 
-            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(
+                primitive_batch, render_state=render_state
+            )
             device_scene = copy_merged_scene_to_arena(
                 merged_host, self.memory, persist=True
             )
@@ -2056,12 +2093,25 @@ class RenderLoopMixin:
         """
         start_time = start_time_ind / self.frames_per_second
         end_time = end_time_ind / self.frames_per_second
+        actors = list(self.actors)
+        if (
+            SETTINGS.raytracing.samples_per_pixel > 1
+            and SETTINGS.raytracing.pt_area_light_quads
+        ):
+            actors.extend(
+                light
+                for light in self.light_sources
+                if getattr(light, "light_type", -1) == 5
+            )
         return any(
             (actor.lifespan.start() >= 0)
             and (actor.lifespan.start() <= end_time)
             and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
-            and hasattr(actor, "get_render_primitives")
-            for actor in self.actors
+            and (
+                hasattr(actor, "get_render_primitives")
+                or getattr(actor, "light_type", -1) == 5
+            )
+            for actor in actors
         )
 
     def _warn_vertex_baked_lighting(self):
@@ -2430,6 +2480,31 @@ class RenderLoopMixin:
         render_state = self._materialize_render_state(
             start_time_ind, start_time_ind + duration
         )
+        if (
+            not primitive_collections
+            and SETTINGS.raytracing.samples_per_pixel > 1
+            and SETTINGS.raytracing.pt_area_light_quads
+            and any(
+                getattr(light, "light_type", -1) == 5
+                for light in render_state["light_objects"]
+            )
+        ):
+            # The render loop dispatches empty batches straight to the
+            # background writer. Supply a non-rendering collection so a
+            # light-only scene reaches the ordinary merge, which adds the
+            # emitter geometry before building its BVH. No actor is authored.
+            from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
+            from algan.rendering.shaders.pbr_shaders import null_shader
+
+            padding = RayTracedTrianglePrimitive(
+                corners=torch.zeros((duration, 3, 3)),
+                colors=torch.zeros((1, 3, 5)),
+                shader=null_shader,
+            )
+            collection = RayTracedTrianglePrimitive(triangle_collection=[padding])
+            collection.memory = self.memory
+            collection.scene = self
+            primitive_collections.append(collection)
         # The batch's primitives are built: the texture windows that fed them
         # (a whole image per frame, on the render device) have no reader left
         # and would otherwise sit beside the next batch's until this one has
@@ -2530,7 +2605,6 @@ class RenderLoopMixin:
                 RayTracedTrianglePrimitive,
             )
             from algan.rendering.raytracing.scene_builder import (
-                prewarm_merge_cache,
                 upload_primitive_source,
             )
         except Exception:
@@ -2609,7 +2683,7 @@ class RenderLoopMixin:
         # conditions hold, in which case _prepare_batch_on_worker below has
         # already run them here.
         if not rt_settings.merge_on_gpu_active():
-            prewarm_merge_cache(primitives)
+            self._prepare_merged_host_scene(primitives, render_state=render_state)
 
     def _overlap_headroom_fraction(self):
         """Share of the pool headroom an overlapped build must fit inside.
@@ -2750,7 +2824,9 @@ class RenderLoopMixin:
             # process peak counter under that render. The value would be
             # discarded anyway (the preflight skips it for overlapped
             # batches), so the build simply does not measure.
-            self._prepare_merged_host_scene(primitive_batch, track_peak=False)
+            self._prepare_merged_host_scene(
+                primitive_batch, render_state=render_state, track_peak=False
+            )
         except (InsufficientMemoryException, RuntimeError) as exc:
             # The overlapped build overran even the derated headroom. Drop
             # any partial merge state; whatever projected cleanly stays
@@ -2799,6 +2875,8 @@ class RenderLoopMixin:
         window_end_time = end_ind / fps
         lights = []
         light_objects = []
+        light_active = []
+        frame_times = None
         for light in self.light_sources:
             # Same lifespan-overlap test as the render loop's actor filter:
             # start < 0 means never spawned, end < 0 means never despawned.
@@ -2813,6 +2891,20 @@ class RenderLoopMixin:
             if 0 <= despawn_time < window_start_time:
                 continue
             light_objects.append(light)
+            # Geometry has a lifespan independently of emission: an active
+            # zero-intensity panel is opaque, a despawned panel is absent.
+            active = None
+            if (
+                SETTINGS.raytracing.samples_per_pixel > 1
+                and SETTINGS.raytracing.pt_area_light_quads
+                and getattr(light, "light_type", -1) == 5
+            ):
+                if frame_times is None:
+                    frame_times = torch.arange(start_ind, end_ind, device=device) / fps
+                active = frame_times >= max(0.0, spawn_time)
+                if despawn_time >= 0:
+                    active = active & (frame_times <= despawn_time)
+            light_active.append(active)
             loc = light.location
             # The one ingest point for light color, and the decode has to
             # happen here rather than at the pack: alpha and opacity below are
@@ -2890,6 +2982,7 @@ class RenderLoopMixin:
             "screen_basis": camera._get_render_screen_basis().to(device),
             "lights": lights,
             "light_objects": light_objects,
+            "light_active": light_active,
         }
 
     def get_frames(

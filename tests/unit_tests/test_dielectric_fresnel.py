@@ -28,6 +28,12 @@ import math
 import pytest
 import torch
 
+from algan.rendering.raytracing.path_tracer_taichi import (
+    _pt_fresnel,
+    _pt_lit_f_pdf,
+    _pt_lit_lobes,
+)
+from algan.rendering.raytracing.shading_taichi import _MID_PHYSICAL
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _material_reflectance,
 )
@@ -96,6 +102,92 @@ def exact_fresnel(angle_deg, *, inside):
 # 0.019 low around 60 degrees and 0.022 high at 80. Everything the renderer
 # does with it inherits that, on both sides of the interface.
 SCHLICK_TOLERANCE = 0.03
+
+
+@ti.kernel
+def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
+    one = ti.math.vec3(1.0, 1.0, 1.0)
+    f0 = one * 0.04
+    f = _pt_fresnel(f0, cos_i, eta, 0.0, one)
+    for k in ti.static(range(3)):
+        out[0, k] = f[k]
+    # An interior reflection must have support in the evaluator as well as
+    # the VNDF sampler. The outward normal faces away from the incident ray.
+    rd = ti.math.vec3(ti.sqrt(1.0 - cos_i * cos_i), 0.0, cos_i)
+    wi = ti.math.vec3(rd[0], 0.0, -rd[2])
+    fc, pdf = _pt_lit_f_pdf(
+        one * 0.0,
+        one,
+        f0,
+        0.2,
+        ti.math.vec3(0.0, 0.0, 1.0),
+        rd,
+        wi,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        eta,
+        0.0,
+        one,
+    )
+    out[1, 0] = fc[0]
+    out[1, 1] = pdf
+
+
+@pytest.mark.parametrize("angle", [0.0, 20.0, 40.0, 42.0, 60.0, 80.0])
+def test_path_tracer_internal_fresnel_and_pdf(angle):
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    out = torch.zeros((2, 3))
+    _pt_probe(math.cos(math.radians(angle)), IOR, out)
+    assert float(out[0, 0]) == pytest.approx(
+        exact_fresnel(angle, inside=True), abs=SCHLICK_TOLERANCE
+    )
+    assert out[1, 0] > 0, "NEE discarded the interior reflection hemisphere"
+    assert out[1, 1] > 0, "MIS assigned zero density to a sampled reflection"
+    if angle > CRITICAL_ANGLE:
+        assert torch.equal(out[0], torch.ones(3)), "TIR must conserve all RGB energy"
+
+
+def test_path_tracer_nested_interface_changes_the_critical_angle():
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    out = torch.zeros((2, 3))
+    # At 50 degrees glass -> air is TIR, glass -> water is not.
+    cos_i = math.cos(math.radians(50))
+    _pt_probe(cos_i, IOR, out)
+    assert out[0, 0] == 1
+    _pt_probe(cos_i, IOR / 1.33, out)
+    assert 0 < out[0, 0] < 0.2
+
+
+@ti.kernel
+def _pt_lobe_probe(params: ti.types.ndarray(), eta: ti.f32, out: ti.types.ndarray()):
+    one = ti.math.vec3(1.0, 1.0, 1.0)
+    n = ti.math.vec3(0.0, 0.0, 1.0)
+    _diff, _spec, trans, f0, _rough = _pt_lit_lobes(
+        _MID_PHYSICAL, params, 0, 0, one, 0.0, 0.001, 1.5, 1.0, n, n, eta
+    )
+    out[0] = f0[0]
+    out[1] = trans[0]
+
+
+@pytest.mark.parametrize("eta", [1.0, 1.5, 1.5 / 1.33])
+def test_path_tracer_lobes_use_the_enclosing_medium_at_normal_incidence(eta):
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    params = torch.zeros((1, 1, 17))
+    params[0, 0, 12] = 1.5
+    params[0, 0, 13:17] = 1.0
+    out = torch.zeros(2)
+    _pt_lobe_probe(params, eta, out)
+    expected = ((eta - 1) / (eta + 1)) ** 2
+    assert float(out[0]) == pytest.approx(expected, abs=1e-6)
+    assert float(out[1]) == pytest.approx(1 - expected, abs=1e-6)
 
 
 @pytest.mark.parametrize("angle", [0.0, 20.0, 40.0, 60.0, 80.0])

@@ -268,10 +268,9 @@ Five further consequences of the split, not covered there:
   tracer instead treats it as an emissive rectangle, which is what it
   physically is. Three visible consequences: a mirror or a polished metal
   **shows the light's reflection**, which the deterministic renderer cannot
-  draw at all; the panel itself is still **invisible to the camera**, so
-  putting a light in shot does not put a white rectangle in the frame; and it
-  still **casts no shadow**, so you can place one between the camera and your
-  subject. Its ``decay`` and ``distance`` mean exactly what they do in the
+  draw at all; the panel's emitting front is **visible to the camera** while
+  its back is black; and it **casts shadows and occludes geometry** like an
+  opaque surface. Place the panel outside the shot when you want only its light. Its ``decay`` and ``distance`` mean exactly what they do in the
   other renderer -- ``decay = 0``, the default, really is no falloff, even
   though a physical emitter of that size would fade with distance. A
   ``samples = 16`` area light also costs the sampler two emitters here rather

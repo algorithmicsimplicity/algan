@@ -28,7 +28,7 @@ from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
 )
-from algan.rendering.raytracing.shading_taichi import MAT_W
+from algan.rendering.raytracing.shading_taichi import _MID_LAMBERT, MAT_W
 from algan.rendering.raytracing.sliver_split import sliver_leaf_columns
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import (
@@ -1349,7 +1349,7 @@ def _densify_frag_pipeline_ids(scene):
     scene["tri_material_ids"] = present
 
 
-def _merge_scene(primitives, *, track_peak=None):
+def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
     over all frames -- cached for the batch.
@@ -2307,6 +2307,24 @@ def _merge_scene(primitives, *, track_peak=None):
     scene["has_user_pipeline"] = any(
         material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
+    # Area-light radiance is already linear in the light snapshot. Decode the
+    # authored geometry first, then insert emitters before the ONE BVH build
+    # and arena preflight/upload. The deterministic merge keeps its row model.
+    _decode_merged_colors(scene)
+    if int(_rts.samples_per_pixel) > 1 and _rts.pt_area_light_quads:
+        from algan.rendering.raytracing.area_light_quads import build_area_light_quads
+
+        scene, tri_bvh_inputs = build_area_light_quads(
+            scene, light_sources, num_frames, tri_bvh_inputs
+        )
+        if scene.get("pt_quad_base") is not None:
+            lo, hi, opaque, _casts = tri_bvh_inputs
+            _record_visibility(
+                "tri", lo, hi, opaque, scene.get("has_uncertain_texture_alpha", False)
+            )
+            scene["tri_material_ids"] = tuple(
+                sorted(set(scene["tri_material_ids"]) | {_MID_LAMBERT})
+            )
     scene["has_any_visible"] = any(
         scene[f"{prefix}_has_visible"] for prefix in ("tri", "bez")
     )
@@ -2351,7 +2369,6 @@ def _merge_scene(primitives, *, track_peak=None):
         scene["_gpu_merge_peak_bytes"] = int(end_cuda_peak(peak_token))
     else:
         scene["_gpu_merge_peak_bytes"] = -1
-    _decode_merged_colors(scene)
     first._rt_merged_scene = scene
     return scene
 
