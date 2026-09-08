@@ -20,7 +20,7 @@ jobs:
           ref: codex/aarch64-glibc34-llvm
           fetch-depth: 0
 
-      - name: Replace stdin kernel smoke with a real source file
+      - name: Replace stdin kernel smoke with the source-file helper
         shell: bash
         run: |
           set -euxo pipefail
@@ -28,61 +28,25 @@ jobs:
           from pathlib import Path
 
           path = Path('.github/workflows/quadrants_build.yaml')
-          text = path.read_text(encoding='utf-8')
-          old = '''            "$py" - <<'PYKERNEL'
-          import numpy as np
-          import quadrants as qd
-          from quadrants.lang import impl
-
-          qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
-          cfg = impl.current_cfg()
-          assert cfg.invariant_arg_loads is False
-          assert cfg.readonly_ndarray_ldg is True
-
-          @qd.kernel
-          def add_one(a: qd.types.ndarray()):
-              for i in range(a.shape[0]):
-                  a[i] += 1
-
-          x = np.arange(8, dtype=np.float32)
-          add_one(x)
-          qd.sync()
-          np.testing.assert_array_equal(x, np.arange(8, dtype=np.float32) + 1)
-          print("fresh glibc-2.34 import + qd.init + kernel OK")
-          PYKERNEL
-'''
-          new = '''            kernel_smoke="$RUNNER_TEMP/glibc34-smoke-${tag}.py"
-            cat > "$kernel_smoke" <<'PYKERNEL'
-          import numpy as np
-          import quadrants as qd
-          from quadrants.lang import impl
-
-          qd.init(arch=qd.cpu, invariant_arg_loads=False, readonly_ndarray_ldg=True)
-          cfg = impl.current_cfg()
-          assert cfg.invariant_arg_loads is False
-          assert cfg.readonly_ndarray_ldg is True
-
-          @qd.kernel
-          def add_one(a: qd.types.ndarray()):
-              for i in range(a.shape[0]):
-                  a[i] += 1
-
-          x = np.arange(8, dtype=np.float32)
-          add_one(x)
-          qd.sync()
-          np.testing.assert_array_equal(x, np.arange(8, dtype=np.float32) + 1)
-          print("fresh glibc-2.34 import + qd.init + kernel OK")
-          PYKERNEL
-            "$py" "$kernel_smoke"
-'''
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected exactly one stdin smoke block, found {count}')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+          marker = '"$py" - <<\'PYKERNEL\''
+          starts = [i for i, line in enumerate(lines) if marker in line]
+          if len(starts) != 1:
+              raise SystemExit(f'expected one stdin kernel smoke, found {len(starts)}')
+          start = starts[0]
+          end = next(
+              (i for i in range(start + 1, len(lines)) if lines[i].strip() == 'PYKERNEL'),
+              None,
+          )
+          if end is None:
+              raise SystemExit('stdin kernel smoke has no PYKERNEL terminator')
+          indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+          replacement = indent + '"$py" "$GITHUB_WORKSPACE/algan/scripts/gate/quadrants_glibc34_smoke.py"\n'
+          path.write_text(''.join(lines[:start]) + replacement + ''.join(lines[end + 1:]), encoding='utf-8')
           PY
           git diff --check
-          grep -F 'kernel_smoke="$RUNNER_TEMP/glibc34-smoke-${tag}.py"' .github/workflows/quadrants_build.yaml
-          grep -F '"$py" "$kernel_smoke"' .github/workflows/quadrants_build.yaml
+          grep -F '"$py" "$GITHUB_WORKSPACE/algan/scripts/gate/quadrants_glibc34_smoke.py"' .github/workflows/quadrants_build.yaml
+          ! grep -F '"$py" - <<' .github/workflows/quadrants_build.yaml
 
       - name: Commit the fix and remove this one-shot workflow
         shell: bash
