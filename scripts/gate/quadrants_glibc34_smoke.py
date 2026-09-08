@@ -5,9 +5,10 @@ Quadrants kernels must live in a real source file because its frontend uses
 this out of ``python -`` / stdin smoke snippets for that reason.
 """
 
-from __future__ import annotations
-
+# ruff: noqa: I002 -- Quadrants evaluates kernel annotations at runtime;
+# postponed annotations would turn qd.types.ndarray() into a string.
 import numpy as np
+
 import quadrants as qd
 from quadrants.lang import impl
 
