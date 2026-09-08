@@ -473,7 +473,7 @@ def _row_tree_geometry(lc_f, lp_f, ltype):
 
 
 def _light_tree_geometry(
-    merged, light_pos, light_col, row_ids, row_types, tri_ids, frames, quad_decay=None
+    merged, light_pos, light_col, row_ids, row_types, tri_ids, frames
 ):
     """Per-frame bounds and cones of every finite next-event entry.
 
@@ -544,17 +544,6 @@ def _light_tree_geometry(
         # Inverse square, always: this is the area-measure pdf's Jacobian,
         # not something the author chose.
         dk = np.full((rows, one_sided.shape[0]), 2.0)
-        if quad_decay is not None:
-            # ...except on a RectAreaLight's synthetic quad, whose emitted
-            # radiance carries a ``d^(2 - decay)`` multiplier that cancels
-            # that Jacobian back to the row model's authored falloff. The
-            # importance must read the NET exponent or it aims the sampler
-            # at the near light in a scene where every light contributes
-            # equally -- measured 1.34x worse than the flat CDF (section 6a).
-            tri_np = tri_ids.detach().cpu().numpy()
-            dk = np.array(
-                [float(quad_decay.get(int(p), 2.0)) for p in tri_np], dtype=np.float64
-            )[None, :].repeat(rows, axis=0)
         blocks.append((bn, bx, ax, to, te, dk))
     return tuple(np.concatenate([b[k] for b in blocks], axis=1) for k in range(6))
 
@@ -572,7 +561,6 @@ def _build_light_tree_tables(
     time_start,
     num_frames,
     enabled,
-    quad_decay=None,
 ):
     """Pack this render call's light trees for the kernel.
 
@@ -623,7 +611,6 @@ def _build_light_tree_tables(
             row_types[fin_rows],
             ref[fin_tris],
             range(int(time_start), int(time_start) + int(num_frames)),
-            quad_decay,
         )
         # geo[5] is the falloff exponent, which is authored rather than
         # animated, so the tree takes frame 0's row for every frame.
@@ -724,7 +711,7 @@ def _build_nee_tables(
     tri_emit_prob [N], env_cdf [H, W + 1], tri_emit_entry
     [N], lt_node_f [rows, nodes, 14], lt_node_i [rows, nodes, 3],
     lt_entry_leaf [rows, E_finite], lt_frame [frames], nee_inf_cdf [E_inf],
-    nee_inf_ref [E_inf], pt_emit_falloff [Q, 2])`` plus the two host-side
+    nee_inf_ref [E_inf], pt_glass_energy [37026, 2])`` plus the two host-side
     numbers the launch needs, ``(auth_mode, authored_slots)`` -- every
     selection probability the kernels divide by or MIS against comes from
     these, so both ends of each MIS pair see identical numbers. The ``A``
@@ -745,13 +732,10 @@ def _build_nee_tables(
     reject emissive triangles and the environment, which do not light an
     authored surface at all.
 
-    ``pt_emit_falloff`` and ``_NM_QUAD_BASE`` are the area-light quads'
-    (``area_light_quads``): the ``Q`` synthetic emissive triangles a
-    ``RectAreaLight`` was turned into carry ``(2 - decay, distance)`` each, so
-    the kernel can reproduce the row model's falloff at both MIS ends, and the
-    cell rows those quads replace are withdrawn from the table here so nothing
-    is counted twice. A render with no area light gets a ``[1, 2]``
-    placeholder and a base past every primitive index.
+    ``pt_glass_energy`` is the immutable coupled dielectric compensation
+    lookup, copied into the arena once per render. ``_NM_QUAD_BASE`` identifies
+    the camera-visible physical area-light panels; their cell rows are
+    withdrawn from the physical NEE table so they are not counted twice.
     """
     from algan.rendering.raytracing.tracer import _arena_copy
 
@@ -773,10 +757,8 @@ def _build_nee_tables(
     auth_idx = None
     auth_power = None
     # The area-light quads this render call added, if any (area_light_quads):
-    # the first synthetic primitive index, each quad's ``(2 - decay, range)``
-    # falloff pair, and the packed rows they replace.
+    # the first synthetic primitive index and the packed rows they replace.
     quad_base = merged.get("pt_quad_base")
-    quad_falloff = merged.get("pt_quad_falloff")
     quad_rows = merged.get("pt_quad_rows")
     if num_lights > 0:
         row_power = light_col[..., :3].amax(0).amax(-1).to(acc)
@@ -996,7 +978,7 @@ def _build_nee_tables(
         meta[_NM_ENV_OFF] = float(env_off)
         meta[_NM_ENV_W] = float(env_w)
         meta[_NM_ENV_H] = float(env_h)
-        meta[_NM_ENV_INTENSITY] = env_intensity
+        meta[_NM_ENV_INTENSITY] = float(env_intensity)
         meta[_NM_ENV_CDF_H] = float(cdf_h)
         meta[_NM_ENV_CDF_W] = float(cdf_w)
         # The far plane rides the meta vector rather than a new kernel
@@ -1012,7 +994,7 @@ def _build_nee_tables(
         meta[_NM_ANIM_SEED] = 1.0 if rt_settings.pt_animated_seed else 0.0
         # Where the synthetic area-light quads start. One compare in the
         # drain loop gates one-sided emission, authored direct-light
-        # exclusion and falloff; ``NO_QUAD_BASE`` is past any
+        # exclusion; ``NO_QUAD_BASE`` is past any
         # primitive index a batch can hold, so a render with no area light
         # takes neither branch and is bit-identical.
         meta[_NM_QUAD_BASE] = float(
@@ -1025,15 +1007,10 @@ def _build_nee_tables(
         meta[_NM_AUTHORED_SAMPLES] = float(auth_samples)
         meta[_NM_AUTHORED_COUNT] = float(num_authored)
 
-    with memory.scope(
-        "pt_quad_falloff",
-        quads=1 if quad_falloff is None else int(quad_falloff.shape[0]),
-    ):
-        if quad_falloff is None:
-            emit_falloff = memory.get_tensor((1, 2), torch.float32)
-            emit_falloff.zero_()
-        else:
-            emit_falloff = _arena_copy(memory, quad_falloff.float().contiguous())
+    from algan.rendering.raytracing.glass_energy import glass_energy_table
+
+    with memory.scope("pt_glass_energy"):
+        glass_energy = _arena_copy(memory, torch.from_numpy(glass_energy_table()))
 
     # The light tree over the SAMPLED entries only: the ambient rows on
     # nee_ref's tail are the deterministic fill and were never selected.
@@ -1061,12 +1038,6 @@ def _build_nee_tables(
         time_start,
         num_frames,
         tree_on,
-        None
-        if quad_base is None or quad_falloff is None
-        else {
-            int(quad_base) + j: 2.0 - float(quad_falloff[j, 0].item())
-            for j in range(int(quad_falloff.shape[0]))
-        },
     )
     with memory.scope("pt_nee_meta"):
         meta[_NM_TREE_ON] = 1.0 if tree_on else 0.0
@@ -1097,7 +1068,7 @@ def _build_nee_tables(
         lt_frame,
         nee_inf_cdf,
         nee_inf_ref,
-        emit_falloff,
+        glass_energy,
         auth_mode,
         authored_slots,
     )
@@ -1292,7 +1263,7 @@ def path_trace_render(
         lt_frame,
         nee_inf_cdf,
         nee_inf_ref,
-        pt_emit_falloff,
+        pt_glass_energy,
         auth_sampled,
         authored_slots,
     ) = _build_nee_tables(
@@ -1575,7 +1546,7 @@ def path_trace_render(
                             lt_frame,
                             nee_inf_cdf,
                             nee_inf_ref,
-                            pt_emit_falloff,
+                            pt_glass_energy,
                         )
                     active = compactor.select(rs_int, 0, source=active)
                     it += 1

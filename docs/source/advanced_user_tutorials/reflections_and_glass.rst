@@ -142,6 +142,17 @@ in and out is a change to ``opacity``; making it more or less glassy is a change
 A transmissive material's color tints the light passing through it, so
 ``MeshPhysicalMaterial(color=GREEN, transmission=1.0)`` gives green glass.
 
+With path tracing (``samples_per_pixel > 1``), roughness blurs both reflected
+and refracted light. Rough glass also compensates for the light that the
+single-scatter microfacet model would lose between facets. Reflection and
+transmission share that recovered power, while the relative refractive indices
+and the existing absorption controls still apply. Neutral white glass therefore
+retains energy at high roughness instead of becoming artificially dark.
+The added broad lobe is an approximation, not a microscopic random walk;
+compensation of strongly tinted glass is deliberately conservative. Smooth
+interfaces and equal-index straight transmission retain their delta behavior.
+This does not fix darkness caused by too few scene bounces.
+
 Controlling Bounce Depth
 ========================
 
@@ -266,8 +277,10 @@ Performance
 Reflection and refraction are the most expensive features in the renderer, because
 each bounce is another full ray traversal:
 
-* A **refractive** object splits each ray into a reflected *and* a refracted ray, so
-  glass costs more than metal.
+* In the **deterministic renderer**, a refractive object splits each ray into
+  reflected and refracted rays, so glass costs more than metal. The path tracer
+  samples one continuation per event, including rough-glass compensation; it
+  does not split paths or grow their state with roughness.
 * Refraction is implemented by both renderers. Raising ``samples_per_pixel``
   selects the path tracer, which refracts through the same nested-media stack
   and importance-samples the environment map instead of prefiltering it -- see

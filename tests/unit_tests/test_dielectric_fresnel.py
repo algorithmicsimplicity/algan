@@ -28,6 +28,7 @@ import math
 import pytest
 import torch
 
+from algan.rendering.raytracing.glass_energy import glass_energy_table
 from algan.rendering.raytracing.path_tracer_taichi import (
     _pt_fresnel,
     _pt_lit_f_pdf,
@@ -105,7 +106,9 @@ SCHLICK_TOLERANCE = 0.03
 
 
 @ti.kernel
-def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
+def _pt_probe(
+    glass_energy: ti.types.ndarray(), cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()
+):
     one = ti.math.vec3(1.0, 1.0, 1.0)
     f0 = one * 0.04
     f = _pt_fresnel(f0, cos_i, eta, 0.0, one)
@@ -116,6 +119,7 @@ def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
     rd = ti.math.vec3(ti.sqrt(1.0 - cos_i * cos_i), 0.0, cos_i)
     wi = ti.math.vec3(rd[0], 0.0, -rd[2])
     fc, pdf = _pt_lit_f_pdf(
+        glass_energy,
         one * 0.0,
         one,
         f0,
@@ -142,7 +146,9 @@ def test_path_tracer_internal_fresnel_and_pdf(angle):
 
     init_taichi()
     out = torch.zeros((2, 3))
-    _pt_probe(math.cos(math.radians(angle)), IOR, out)
+    _pt_probe(
+        torch.from_numpy(glass_energy_table()), math.cos(math.radians(angle)), IOR, out
+    )
     assert float(out[0, 0]) == pytest.approx(
         exact_fresnel(angle, inside=True), abs=SCHLICK_TOLERANCE
     )
@@ -159,9 +165,9 @@ def test_path_tracer_nested_interface_changes_the_critical_angle():
     out = torch.zeros((2, 3))
     # At 50 degrees glass -> air is TIR, glass -> water is not.
     cos_i = math.cos(math.radians(50))
-    _pt_probe(cos_i, IOR, out)
+    _pt_probe(torch.from_numpy(glass_energy_table()), cos_i, IOR, out)
     assert out[0, 0] == 1
-    _pt_probe(cos_i, IOR / 1.33, out)
+    _pt_probe(torch.from_numpy(glass_energy_table()), cos_i, IOR / 1.33, out)
     assert 0 < out[0, 0] < 0.2
 
 

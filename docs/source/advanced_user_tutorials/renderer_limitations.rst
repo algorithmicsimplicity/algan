@@ -270,9 +270,10 @@ Five further consequences of the split, not covered there:
   **shows the light's reflection**, which the deterministic renderer cannot
   draw at all; the panel's emitting front is **visible to the camera** while
   its back is black; and it **casts shadows and occludes geometry** like an
-  opaque surface. Place the panel outside the shot when you want only its light. Its ``decay`` and ``distance`` mean exactly what they do in the
-  other renderer -- ``decay = 0``, the default, really is no falloff, even
-  though a physical emitter of that size would fade with distance. A
+  opaque surface. Place the panel outside the shot when you want only its
+  light. Emitted radiance is distance-independent on every path, and the API
+  only accepts ``decay=2, distance=0``. Both renderers now use physical
+  geometric falloff; the existing intensity normalization is unchanged. A
   ``samples = 16`` area light also costs the sampler two emitters here rather
   than sixteen, so raising ``samples`` for the deterministic renderer's sake
   no longer makes path-traced renders slower.
@@ -729,10 +730,16 @@ Refraction
 
   Refraction includes the radiance index-squared factor; entry and exit
   cancel in the same surrounding medium, and roulette accounts for that
-  cancellation. This is a single-scatter microfacet model: very rough glass
-  can lose energy to unmodelled scattering between facets. The opaque-metal
-  compensation is deliberately not applied to glass. Shadow connections
-  through additional glass remain straight, so this does not add caustics.
+  cancellation. A coupled reflection/refraction compensation lobe now
+  restores missing single-scatter power for neutral rough glass. It shares
+  one energy budget across both sides, rather than applying the opaque-metal
+  correction separately to each. It conservatively compensates the neutral
+  fraction of tinted or partly transmitting materials without normalising
+  away intentional absorption. This is an approximate broad redistribution
+  of multiple-scattered light, not an exact microscopic random walk; strong
+  coloured multi-scattering remains approximate. Finite lookup interpolation
+  also introduces a small energy error. Shadow connections through additional
+  glass remain straight, so this does not add caustics.
   Custom scatter overrides and thin Bezier panes keep their authored delta
   continuations.
 * **Nested media are modelled, up to four deep.** A ray carries the stack of

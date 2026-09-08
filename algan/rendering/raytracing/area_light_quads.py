@@ -10,8 +10,8 @@ reflected image in a mirror, and no BSDF strategy to MIS against.
 
 This module gives the path tracer its own view of the same light: **two
 emissive triangles** covering the rectangle, inserted into the path-traced
-merge before its acceleration structures are built. They ride the emissive-triangle path
-that already exists end to end -- area sampling from the next-event table,
+merge before its acceleration structures are built. They ride the
+emissive-triangle path that already exists end to end -- area sampling from the next-event table,
 ``_pt_lit_f_pdf`` at both ends of the MIS pair, power-heuristic weights, and a
 BSDF continuation ray that can find them.
 
@@ -20,7 +20,8 @@ reflection and refraction rays. Their front side emits; their back side is
 black. They enter scene preparation before its BVH build and arena upload,
 so no second tree or persistent copy of the triangle tables is needed.
 
-The existing light falloff controls remain shared by the two MIS strategies.
+Emission is distance-independent radiance. Inverse-square irradiance follows
+from geometry, not a multiplier on the emitter or a finite-range fade.
 
 ``rt_settings.pt_area_light_quads`` (``ALGAN_PT_AREA_LIGHT_QUADS``) is the kill
 switch: off, nothing here runs and the packed cell rows are the path tracer's
@@ -50,8 +51,6 @@ NO_QUAD_BASE = 1 << 30
 
 #: Aux columns of a packed light row (``lights.Light._build_aux``'s layout,
 #: which is the packed row's own columns shifted by the three RGB ones).
-_AUX_DECAY = 1
-_AUX_DISTANCE = 2
 _AUX_NORMAL = slice(3, 6)
 
 
@@ -134,10 +133,10 @@ def area_light_quad_sources(light_sources):
 
 
 def _quad_geometry(light, num_frames, device):
-    """Per-frame vertices, normal, radiance and falloff of one light's quad.
+    """Per-frame vertices, normal and radiance of one light's quad.
 
-    Returns ``(pos [T, 2, 9], normal [T, 3], radiance [T, 3], exponent,
-    range)``: two triangles per frame wound so their geometric normal
+    Returns ``(pos [T, 2, 9], normal [T, 3], radiance [T, 3])``: two triangles
+    per frame wound so their geometric normal
     ``(v1-v0) x (v2-v0)`` is the light's own facing direction, which is the
     side ``_light_eval``'s one-sided cosine emits toward.
     """
@@ -176,17 +175,15 @@ def _quad_geometry(light, num_frames, device):
     # the whole light's power spread over its area, which is the matching the
     # section-5 acceptance test does by hand.
     radiance = col[:, 0, :] * (float(k) / max(area, 1e-12))
-    decay = float(aux[0, 0, _AUX_DECAY].item())
-    rng = float(aux[0, 0, _AUX_DISTANCE].item())
-    return pos, normal, radiance, 2.0 - decay, rng
+    return pos, normal, radiance
 
 
 def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
     """Return the widened scene and triangle BVH inputs, before tree building.
 
-    ``pt_quad_base`` identifies synthetic emitters; ``pt_quad_falloff`` holds
-    their distance law and ``pt_quad_rows`` withdraws their packed rows from
-    physical next-event estimation. Authored materials retain those rows.
+    ``pt_quad_base`` identifies synthetic emitters, and ``pt_quad_rows``
+    withdraws their packed rows from physical next-event estimation.
+    Authored materials retain those rows.
     Existing build inputs are extended directly, without recomputing bounds.
     """
     if not rt_settings.pt_area_light_quads:
@@ -209,9 +206,9 @@ def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
             return merged, bvh_inputs
 
     rows_replaced = []
-    pos_parts, norm_parts, rad_parts, fall_parts, active_parts = [], [], [], [], []
+    pos_parts, norm_parts, rad_parts, active_parts = [], [], [], []
     for light, row_start, row_count in sources:
-        pos, normal, radiance, expo, rng = _quad_geometry(light, num_frames, device)
+        pos, normal, radiance = _quad_geometry(light, num_frames, device)
         pos_parts.append(pos)
         norm_parts.append(normal)
         rad_parts.append(radiance)
@@ -219,8 +216,6 @@ def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
         if active is None:
             active = torch.ones(1, dtype=torch.bool, device=device)
         active_parts.append(active.to(device).reshape(-1, 1).expand(-1, 2))
-        fall_parts.append([expo, rng])
-        fall_parts.append([expo, rng])
         rows_replaced.extend(range(row_start, row_start + row_count))
 
     frames = max(p.shape[0] for p in pos_parts)
@@ -356,7 +351,6 @@ def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
     # person changing the visibility rule.
 
     new["pt_quad_base"] = n_old if base_pos is not None else 0
-    new["pt_quad_falloff"] = torch.tensor(fall_parts, dtype=f32, device=device)
     new["pt_quad_rows"] = sorted(rows_replaced)
     logger.log(
         PERF,

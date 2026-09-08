@@ -3,7 +3,8 @@
 Mirrors the Three.js light catalogue: :class:`PointLight`,
 :class:`DirectionalLight`, :class:`AmbientLight`, :class:`HemisphereLight`,
 :class:`SpotLight` and :class:`RectAreaLight`, each with an ``intensity``
-multiplier and (where physical) ``decay``/``distance`` falloff parameters.
+multiplier. Point and spot lights expose artistic ``decay``/``distance``
+falloff controls; rectangular area lights always use physical emission.
 
 Lights are renderable Mobs: their ``location``, ``color``, ``opacity``
 and ``intensity`` are animatable like any other mob attribute. The remaining
@@ -600,46 +601,51 @@ class SpotLight(_TargetedLight):
 
 
 class RectAreaLight(_TargetedLight):
-    """Rectangular area light, sampled deterministically.
+    """Emit light from a one-sided rectangular surface.
 
-    The rectangle is centered on the light's location, faces
-    ``normalize(target - location)``, and is expanded at render time into a
-    fixed grid of ``samples`` point emitters (each carrying ``1/samples`` of
-    the power, with one-sided cosine emission).
+    The rectangle is centred on ``location`` and faces ``target``. Emitted
+    radiance is constant with distance; illumination falls off through
+    geometry and has no artificial range cutoff. The path tracer shows the
+    opaque panel to camera, reflection and refraction rays: its front emits
+    and its back is black. The single-sample renderer integrates a fixed grid
+    of emitting cells but does not display the panel itself.
 
-    With ray-traced shadows enabled, each emitter row stands for one cell of
-    the grid and its shadow fan integrates visibility over that whole cell --
-    placing its samples inside the cell, in the light's own plane -- instead
-    of testing only the cell's centre point. The penumbra is therefore
-    continuous rather than a stack of hard shadows. This costs
-    ``SOFT_SHADOW_SAMPLES`` shadow rays per row instead of one, i.e.
-    :meth:`_num_samples` ``* SOFT_SHADOW_SAMPLES`` (default 8) per shaded
-    fragment while an area light is in the scene; ``samples`` stays the dial
-    for both quality and cost. The integration can be turned off, restoring
-    one hard ray per row, with
-    ``SETTINGS.raytracing.experimental.area_light_soft_shadows``.
+    ``intensity`` keeps its existing area-light normalization: for area ``A``,
+    the emitted linear-RGB radiance is ``color * intensity / A`` (including
+    the usual opacity/glow multipliers). Thus increasing the area at fixed
+    intensity spreads the same total power over a larger, dimmer panel.
+    The one-sided Lambertian flux is ``pi * color * intensity``. This is a
+    scene-linear convention, not a calibrated photometric watt or lumen.
 
-    Under the path tracer (``samples_per_pixel > 1``) the rectangle is real
-    emissive geometry instead: two triangles the renderer samples over, still
-    invisible to the camera and still not an occluder, but hittable by
-    bounced rays -- so a mirror shows the light's reflection, and ``samples``
-    no longer affects the cost. ``decay`` and ``distance`` mean the same thing
-    in both renderers.
+    Animation
+    ---------
+    Location, color, opacity and intensity follow their normal Mob animation
+    rules. Target, width, height and sample count are immediate setup
+    parameters; set them before rendering. Construction does not spawn the
+    light: call :meth:`~.Light.spawn` to add it to the scene.
 
     Parameters
     ----------
     width / height
-        Size of the rectangle in world units. Defaults to 2 for each.
+        Positive rectangle dimensions in world units. Each defaults to 2.
     target
         World point the rectangle faces. Defaults to the origin.
     samples
-        Number of emitter samples, rounded up to a square k x k grid: a k x k
-        grid of at least this many cells is laid out over the rectangle.
-        Defaults to 4. More samples = finer cells and smoother lighting and
-        shadows, linearly more shadow-ray cost.
+        Positive emitter sample count, rounded up to a square grid. Defaults
+        to 4. More samples improve the single-sample renderer's integration
+        and shadows at linear cost. The path tracer samples the panel directly
+        and its cost does not depend on this count.
     decay / distance
-        As on :class:`PointLight` (set ``decay=2`` for physical falloff).
-        Defaults to no falloff and unlimited range.
+        Compatibility keywords fixed to 2 and 0 respectively, including on
+        later assignment. Other values raise instead of silently changing
+        emission to a distance-dependent, nonphysical model. Omit both in new
+        code. Point and spot lights retain their artistic falloff controls.
+
+    Raises
+    ------
+    :class:`.AlganConfigurationError`
+        If dimensions or sample count are invalid, or a nonphysical decay or
+        finite distance cutoff is requested.
     """
 
     light_type = LIGHT_AREA_SAMPLE
@@ -651,7 +657,7 @@ class RectAreaLight(_TargetedLight):
         height=2.0,
         target=ORIGIN,
         samples=4,
-        decay=0.0,
+        decay=2.0,
         distance=0.0,
         **kwargs,
     ):
@@ -662,9 +668,35 @@ class RectAreaLight(_TargetedLight):
             "height", height, minimum=0.0, minimum_inclusive=False
         )
         self.samples = _positive_sample_count(samples)
-        self.decay = _finite_number("decay", decay, minimum=0.0)
-        self.distance = _finite_number("distance", distance, minimum=0.0)
+        self.decay = decay
+        self.distance = distance
         super().__init__(*args, target=target, **kwargs)
+
+    @property
+    def decay(self) -> float:
+        """The fixed inverse-square exponent, 2; this is not an animation."""
+        return 2.0
+
+    @decay.setter
+    def decay(self, value: float) -> None:
+        if _finite_number("decay", value) != 2.0:
+            raise AlganConfigurationError(
+                "RectAreaLight has physical emission: decay must be 2. "
+                "Use intensity to change its brightness."
+            )
+
+    @property
+    def distance(self) -> float:
+        """The fixed unlimited-range sentinel, 0; this is not an animation."""
+        return 0.0
+
+    @distance.setter
+    def distance(self, value: float) -> None:
+        if _finite_number("distance", value) != 0.0:
+            raise AlganConfigurationError(
+                "RectAreaLight has physical emission: distance must be 0 "
+                "(unlimited). Use geometry to block the light."
+            )
 
     def _grid_side(self):
         """Internal: side ``k`` of the square emitter grid."""

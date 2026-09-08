@@ -1,4 +1,8 @@
-# Physical `RectAreaLight` geometry — future work
+# Physical `RectAreaLight` geometry and emission
+
+Status: geometry integration landed 2026-09-07; receiver-independent emission
+and the physical API contract landed 2026-09-08. The prototype discussion below
+records the old design being replaced, not the current implementation.
 
 ## Decision
 
@@ -35,7 +39,7 @@ Integrate area-light geometry **before the path tracer's normal triangle acceler
 3. Mark the triangles one-sided and opaque. Do not add a camera-invisible flag and do not force `all_visible_opaque = False` merely because area lights exist.
 4. Build the triangle BVH once over the complete primitive set, including area-light triangles. Remove the path-tracer-only post-merge BVH rebuild.
 5. Keep the emitter metadata required by NEE/light-tree sampling, but make it refer to the same triangle primitives used by BSDF hits. Remove the packed analytic area-light rows from the path tracer's direct-light table so the light is not counted twice.
-6. Preserve the existing `RectAreaLight` intensity/color/size/orientation and distance-falloff semantics when deriving emitted radiance. Direct-hit emission and NEE must evaluate the same radiometric model.
+6. Preserve intensity/color/size/orientation normalization, but emit distance-independent radiance: `Le = linear_colour * intensity / (width * height)`, including existing glow/opacity scaling. Direct-hit emission and NEE read this same value. `RectAreaLight` defaults to and only accepts `decay=2, distance=0`; other values raise on construction and later assignment/`set`, rather than enabling a nonphysical distance law. Remove the per-quad falloff table, its two emission multipliers and its light-tree exponent override. Packed cells obey the same physical law.
 7. Treat the rectangle as ordinary opaque geometry for visibility rays. NEE visibility should use a segment whose endpoint is the sampled light point (with the existing robust ray-offset/tmax rules), so the target emitter does not self-occlude while still allowing the panel to occlude unrelated paths.
 8. Delete the camera-segment special case, fake non-opacity, private scene widening and secondary triangle-BVH rebuild once the integrated path is complete.
 
@@ -57,3 +61,23 @@ The implementation is complete when all of the following hold:
 ## Non-goals
 
 This work does not add a visibility toggle, a camera-invisible leaf bit, a separate `AreaEmitter` public API, or a requirement to change the deterministic renderer's current light-object visibility semantics.
+
+## Radiometry and migration
+
+`intensity` retains the physical normalization already used with `decay=2,
+distance=0`: one-sided integrated flux is `pi * linear_colour * intensity`.
+At fixed intensity a larger panel has lower radiance, not larger total power.
+These are scene-linear units, not calibrated watts or lumens. `samples` changes
+the row quadrature, not power or the panel's radiance.
+
+New code should omit the two falloff keywords. Previously physical scenes keep
+their light normalization. Scenes relying on the old default `decay=0` need their
+intensity retuned; no single conversion can preserve the old distance law at
+all receivers. Arbitrary decay/range still belongs to point/spot lights, not
+emitting surfaces. No camera-visibility switch was added.
+
+`test_physical_area_emission.py` guards canonical packing, normalization,
+distance-independent geometry, cloning and invalid writes. Existing panel-hit,
+mirror, occlusion, row/quad and NEE/MIS render regressions remain the end-to-end
+guards. The distance-dependent row/quad fixture was replaced with physical
+comparisons at two light distances; fixtures now use useful physical intensity.

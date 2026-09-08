@@ -1075,13 +1075,16 @@ it. Camera rays (`-1`), delta continuations (`0`), physical BSDF continuations
 Pass-through crossings preserve this marker, while another scatter replaces it.
 This uses an existing scalar and adds no per-path allocation or sampler dimension.
 
-**Radiometry remains the authored light model.** Radiance starts at
-`colour * intensity / area`. The existing `decay` and `distance` controls are
-still evaluated at both MIS ends through `pt_quad_falloff`:
-`d^(2-decay) * fade(d)^2`. `decay=2, distance=0` is a physical emitter;
-the default `decay=0` deliberately has no inverse-square attenuation. Making
-emission independent of the receiver's distance is a separate public radiometry
-change, not an unadvertised side effect of removing the BVH copy (see §10).
+**Physical radiometry across the API — implemented 2026-09-08.** Radiance is
+`linear_colour * intensity / area`, independent of receiver or camera distance.
+The former `d^(2-decay) * fade(d)^2` multiplier and `pt_quad_falloff` storage are
+removed from both MIS endpoints. `RectAreaLight` now defaults to `decay=2` and
+only accepts `decay=2, distance=0`, including later property and `set` writes.
+Packed cells, authored materials, the light tree and the panel consequently
+agree on physical geometric falloff. This intentionally changes the old
+no-falloff default, but does not redefine intensity: previously physical scenes
+retain their normalization. Point/spot artistic controls are unaffected.
+See `DESIGN_physical_area_lights.md` for migration and scope.
 
 The quads replace their `K` cell rows in the physical next-event table and light
 tree, so `samples=16` still produces two selectable triangles. Authored lighting
@@ -2015,11 +2018,18 @@ Tracked here so they are one search away, in rough order of effort:
 
   `roughness^2 < 1e-4` gives an exact delta interface. Equal indices give
   straight transmission regardless of roughness. Pure conductors retain
-  their existing reflection compensation. Transmitting interfaces use the
-  **single-scatter** dielectric model: applying reflection-only Turquin
-  compensation here would create power, so very rough glass can still lose
-  energy to omitted microfacet multiple scattering. A coupled dielectric
-  multiple-scattering model is a future improvement. Custom scatter and
+  their existing reflection compensation. Transmitting interfaces now add
+  a **reciprocal coupled multiple-scattering compensation lobe** to the
+  single-scatter model. A fixed lookup supplies directional missing POWER
+  and its cosine averages on both sides. One squared-index-weighted budget
+  restores neutral glass's missing energy across reflection and refraction;
+  conservative neutral-component extraction preserves tint and absorption.
+  A VNDF/cosine mixture has the same evaluated PDF at both MIS ends and uses
+  the existing remapped branch scalar. No path splits, extra random dimensions,
+  kernel arguments or scene-dependent variants are added. The fixed 296,208-byte
+  f32 lookup reuses the old area-falloff arena slot. This is an approximate
+  broad compensation model, not an exact microscopic random walk; the full
+  derivation and validation are in `DESIGN_rough_glass_energy.md`. Custom scatter and
   thin Bezier panes retain their authored delta behavior. Transparent shadow
   rays still travel straight through additional interfaces; this is not a
   caustic estimator.
@@ -2032,12 +2042,13 @@ Tracked here so they are one search away, in rough order of effort:
   PBRT's [rough dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Rough_Dielectric_BSDF)
   supplies the reference formulation. This completes the interface model
   needed before the caustic work in section 4.
-* **Make area-light radiance independent of the receiver.** The retained
-  `d^(2-decay)` multiplier preserves the current controls but is not physical
-  emission for `decay != 2`. A deliberate API/default change to physical area
-  emitters would simplify camera appearance, indirect paths and light-tree
-  importance bounds at once. The present geometry change does not silently
-  reinterpret existing light intensities or falloff controls.
+* **Receiver-independent area-light radiance — implemented (2026-09-08).**
+  Both emission endpoints now use the same distance-independent radiance.
+  `RectAreaLight` accepts only the physical falloff keywords `decay=2,
+  distance=0`, also on later writes. The old nonphysical default intentionally
+  changes; intensity keeps its previous physical normalization, not new units.
+  Area-light tree leaves use inverse-square importance without a per-quad
+  exponent override. Physical defaults apply to packed rows as well as quads.
 * **Measure before adding another queue.** Removing duplicated scene storage
   and BVH construction is justified structurally. Shadow queues, temporal
   history, per-dimension blue-noise tables and splitting still need their

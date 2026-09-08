@@ -29,6 +29,7 @@ them stops the kernel compiling.
 import pytest
 import torch
 
+from algan.rendering.raytracing.glass_energy import glass_energy_table
 from algan.rendering.raytracing.path_tracer_taichi import _pt_lit_f_pdf
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import ti
@@ -36,6 +37,7 @@ from algan.taichi_compat import ti
 
 @ti.kernel
 def _diffuse_probe(
+    glass_energy: ti.types.ndarray(),
     rays: ti.types.ndarray(),
     lights: ti.types.ndarray(),
     out: ti.types.ndarray(),
@@ -47,6 +49,7 @@ def _diffuse_probe(
         rd = ti.math.vec3(rays[i, 0], rays[i, 1], rays[i, 2]).normalized()
         wi = ti.math.vec3(lights[i, 0], lights[i, 1], lights[i, 2]).normalized()
         f_cos, pdf = _pt_lit_f_pdf(
+            glass_energy,
             one * 0.8,  # e_diff
             one * 0.0,  # e_spec: isolate the diffuse lobe
             one * 0.04,  # f0
@@ -80,7 +83,7 @@ def _probe(cases):
     rays = torch.tensor([c[0] for c in cases], dtype=torch.float32)
     lights = torch.tensor([c[1] for c in cases], dtype=torch.float32)
     out = torch.zeros((len(cases), 2), dtype=torch.float32)
-    _diffuse_probe(rays, lights, out)
+    _diffuse_probe(torch.from_numpy(glass_energy_table()), rays, lights, out)
     return out
 
 
