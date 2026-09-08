@@ -70,6 +70,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _tri_shadow_normals,
     _tri_surface_point,
 )
+from algan.rendering.raytracing.ray_origin_taichi import _offset_ray_origin
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -81,7 +82,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shade_tri_hit,
     max_surfaces_per_ray,
     min_alpha,
-    min_hit_distance,
     min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -907,7 +907,7 @@ def sheet_resolve_shade_arena(
                                             rdj, nj, rough, jtap, sec_n,
                                             g_roff, g_aoff)
                                 jtap += 1
-                                org = hpj + nj * (10.0 * min_hit_distance)
+                                org = _offset_ray_origin(hpj, nj)
                                 if placed:
                                     if ti.static(mode != 1):
                                         _spawn_pool_ray(
@@ -922,7 +922,7 @@ def sheet_resolve_shade_arena(
                                     placed = True
                     else:
                         rd = refl_rd
-                        ro = hit_point + nref * (10.0 * min_hit_distance)
+                        ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
                     base_dist += t_hit
                     bounces_left -= 1
@@ -974,7 +974,7 @@ def sheet_resolve_shade_arena(
                                         _spawn_pool_ray(
                                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                             rs_pix, rs_alloc,
-                                            hpj + nj * (10.0 * min_hit_distance),
+                                            _offset_ray_origin(hpj, nj),
                                             rdr, rwsub, base_dist + t_hit,
                                             bounces_left - 1, processed, pixel, r, r,
                                             1, ior_stack, 0, 0.0, 0)
@@ -983,7 +983,7 @@ def sheet_resolve_shade_arena(
                                 _spawn_pool_ray(
                                     rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                     rs_alloc,
-                                    rhp + nref * (10.0 * min_hit_distance),
+                                    _offset_ray_origin(rhp, nref),
                                     refl_rd, rwt, base_dist + t_hit,
                                     bounces_left - 1, processed, pixel, r, r, 1,
                                     ior_stack, 0, 0.0, 0)
@@ -1046,7 +1046,7 @@ def sheet_resolve_shade_arena(
                         elif _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
-                                surf_pos + nref * (10.0 * min_hit_distance),
+                                _offset_ray_origin(surf_pos, nref),
                                 refl_rd, one3, base_dist + t_hit,
                                 bounces_left - 1, processed, pixel, r, gl_row,
                                 1, ior_stack, 0, 0.0, 0):
@@ -1094,7 +1094,7 @@ def sheet_resolve_shade_arena(
                                     _spawn_pool_ray(
                                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                         rs_pix, rs_alloc,
-                                        hpj + nj * (10.0 * min_hit_distance),
+                                        _offset_ray_origin(hpj, nj),
                                         rdr,
                                         wsub, base_dist + t_hit, bounces_left - 1,
                                         processed, pixel, r, r, 1,
@@ -1104,7 +1104,7 @@ def sheet_resolve_shade_arena(
                             _spawn_pool_ray(
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                                 rs_alloc,
-                                hp + nref * (10.0 * min_hit_distance),
+                                _offset_ray_origin(hp, nref),
                                 refl_rd,
                                 wt, base_dist + t_hit, bounces_left - 1,
                                 processed, pixel, r, r, 1,
@@ -1147,7 +1147,7 @@ def sheet_resolve_shade_arena(
                                         rdj, nj, rough, jtap, sec_n,
                                         g_roff, g_aoff)
                             jtap += 1
-                            org = hpj + nj * (10.0 * min_hit_distance)
+                            org = _offset_ray_origin(hpj, nj)
                             if placed:
                                 if ti.static(mode != 1):
                                     _spawn_pool_ray(
@@ -1162,7 +1162,7 @@ def sheet_resolve_shade_arena(
                                 placed = True
                 else:
                     rd = refl_rd
-                    ro = hit_point + nref * (10.0 * min_hit_distance)
+                    ro = _offset_ray_origin(hit_point, nref)
                     weight *= refl_energy
                 base_dist += t_hit
                 bounces_left -= 1

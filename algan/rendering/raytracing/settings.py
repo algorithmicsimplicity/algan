@@ -1334,14 +1334,12 @@ def set_rgb_shadow_tint(enabled):
     rgb_shadow_tint = bool(enabled)
 
 
-# Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
-# shadow ray currently rejects its own surface with min_hit_distance plus a
-# normal offset of 10 * min_hit_distance -- absolute world-space constants
-# applied to EVERY hit, so a small object resting on a plane loses its contact
-# shadow within 1e-3 of the contact and grazing light on small geometry
-# produces acne. On the sheet route's shadow queue the event's source surface
-# id is available (packed into ``event_msk`` above the material pipeline id),
-# so the acceptance test becomes
+# Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). This
+# setting controls the ACCEPTANCE floor for a shadow hit; secondary-ray origin
+# placement is a separate mechanism and now uses the scale-aware
+# ``ray_origin_taichi._offset_ray_origin`` helper. On the sheet route's shadow
+# queue the event's source surface id is available (packed into ``event_msk``
+# above the material pipeline id), so the acceptance test becomes
 #
 #     accept = (t < max_t) and (hit_mesh != src_mesh ? t > 0 : t > min_hit_distance)
 #
@@ -1441,8 +1439,8 @@ def set_shadow_identity_reject(enabled):
 # Shadow-terminator offset for diced / smooth-shaded surfaces (Hanika, "A
 # Microfacet-Based Shadow Terminator", Ray Tracing Gems II ch. 4). A PN patch
 # or any smooth-shaded mesh reaches the renderer as FLAT triangles carrying a
-# smooth per-vertex normal field, and every shadow ray starts from the FACE
-# normal's fixed lift (``10 * min_hit_distance`` in ``raster_shadow_trace``).
+# smooth per-vertex normal field, and every shadow ray starts from a FACE-
+# normal origin offset (now scale-aware in ``raster_shadow_trace``).
 # The facet is a chord BELOW the smooth surface it approximates, so
 # neighbouring facets rise above the plane the origin was lifted from: near
 # the terminator the shadow ray leaves almost tangentially and strikes a

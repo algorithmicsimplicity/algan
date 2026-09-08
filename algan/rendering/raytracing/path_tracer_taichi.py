@@ -183,6 +183,7 @@ from algan.rendering.raytracing.light_tree import (
     LT_RIGHT,
     LT_SIN_THETA_O,
 )
+from algan.rendering.raytracing.ray_origin_taichi import _offset_ray_origin
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_REFLECTIVITY,
@@ -197,6 +198,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     kbuf,
     max_surfaces_per_ray,
+    min_hit_distance,
     min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -226,7 +228,6 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _PI,
     _env_brdf_approx,
     _material_reflectance,
-    _offset_transmitted_origin,
     _refract_ray,
     _relative_ior,
     _sample_env_map,
@@ -626,45 +627,34 @@ def _pt_rng_seeded(path_seed: ti.u32, sample_index: ti.i32,
     return ti.cast(h >> 8, ti.f32) * (1.0 / 16777216.0)
 
 
-# Self-intersection offsetting (Wachter & Binder, "A Fast and Robust Method
-# for Avoiding Self-Intersection", Ray Tracing Gems 2019 ch. 6). The constants
-# are theirs: below ``_OFS_ORIGIN`` in magnitude a coordinate is offset by an
-# absolute ``_OFS_FLOAT`` (float spacing near zero is finer than any useful
-# world epsilon), above it by ``_OFS_INT`` ULPs, which scales with the point's
-# own magnitude exactly as the representable spacing does.
-_OFS_ORIGIN = 1.0 / 32.0
-_OFS_FLOAT = 1.0 / 65536.0
-_OFS_INT = 256.0
+# Keep the path-tracer spelling as a wrapper: the implementation is shared with
+# deterministic reflection/refraction/shadow spawning in ``ray_origin_taichi``.
+@ti.func
+def _pt_offset_ray_origin(p, n):
+    """Path-tracer wrapper for the shared scale-aware origin offset."""
+    return _offset_ray_origin(p, n)
 
 
 @ti.func
-def _pt_offset_ray_origin(p, n):
-    """Move hit point ``p`` off the surface along ``n`` by a SCALE-AWARE
-    epsilon, and return the spawn origin.
+def _pt_offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
+    """Preserve the path tracer's pre-existing solid-refraction spawn.
 
-    The fixed ``10 * min_hit_distance`` (1e-3 world units) this replaces was
-    wrong in both directions: acne on a scene authored at large coordinates,
-    where 1e-3 is below the float spacing of the hit point, and light leaking
-    through thin geometry on one authored at small coordinates, where 1e-3 is
-    a visible distance. Offsetting in INTEGER float space instead ties the
-    step to the representable spacing at ``p``, so it is the smallest step
-    that provably changes the coordinate whatever the scene's scale.
-
-    ``n`` points to the side the ray leaves from; each call site keeps its own
-    convention (the geometric normal flipped toward the outgoing direction,
-    or the ray direction itself for a zero-thickness pane).
+    The deterministic renderer is moving its transmitted origins to the shared
+    scale-aware helper in this change.  Path-traced baselines are intentionally
+    outside that scope, and this two-component fixed lift was already part of
+    their output before the shared-helper refactor.  Keep it exact here so the
+    deterministic fix cannot silently rebaseline ``samples_per_pixel > 1``.
+    A path-tracer-specific conversion can be made and validated separately.
     """
-    out = ti.math.vec3(0.0, 0.0, 0.0)
-    for k in ti.static(range(3)):
-        off_i = ti.cast(_OFS_INT * n[k], ti.i32)
-        if p[k] < 0.0:
-            off_i = -off_i
-        p_i = ti.bit_cast(ti.bit_cast(p[k], ti.i32) + off_i, ti.f32)
-        if ti.abs(p[k]) < _OFS_ORIGIN:
-            out[k] = p[k] + _OFS_FLOAT * n[k]
-        else:
-            out[k] = p_i
-    return out
+    n = face_n
+    if n.dot(n) <= 1e-18:
+        n = shade_n
+    if n.dot(n) <= 1e-18:
+        n = out_dir
+    n = n.normalized()
+    if n.dot(out_dir) < 0.0:
+        n = -n
+    return hit_point + (n + out_dir) * (10.0 * min_hit_distance)
 
 
 @ti.func
@@ -3125,7 +3115,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             new_rd = _refract_ray(rd, shade_n, rel)
                             _write_ior_stack(rs_sca, r, r, ior, entering,
                                              1, 1)
-                            new_ro = _offset_transmitted_origin(
+                            new_ro = _pt_offset_transmitted_origin(
                                 hit_p, new_rd, fnrm, shade_n)
                         else:
                             # Zero-thickness pane: unbent, tinted.

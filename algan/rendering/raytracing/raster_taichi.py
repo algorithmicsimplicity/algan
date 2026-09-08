@@ -43,6 +43,7 @@ from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
 )
+from algan.rendering.raytracing.ray_origin_taichi import _offset_ray_origin
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_BASIS_U,
     _M_BASIS_V,
@@ -2676,11 +2677,11 @@ def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
     that lies on neither the triangle nor, in general, the surface: it is the
     centre ray advanced to a distance measured along a different ray. On a
     closed mesh that lands it up to a facet-depth INSIDE the geometry, past the
-    shared edge and below the neighbouring facet, and the fixed
-    ``10 * min_hit_distance`` normal offset applied to every secondary origin is
-    far too small to escape. The continuation then re-hits the surface it just
-    left, at grazing incidence where Fresnel goes to one, and the pixel gets a
-    bright desaturated spike -- speckle scattered over every smooth-shaded mesh
+    shared edge and below the neighbouring facet. Even a robust secondary-ray
+    offset starts from that wrong point, so the continuation can re-hit the
+    surface it just left, at grazing incidence where Fresnel goes to one, and
+    the pixel gets a bright desaturated spike -- speckle scattered over every
+    smooth-shaded mesh
     with a reflective material.
 
     ``w0/a/b`` are the barycentrics ``_ss_pixel`` already projected onto the
@@ -2914,7 +2915,7 @@ def raster_shadow_trace_arena(
         # normal field), and is what licenses the horizon-cull relaxation in
         # the sample loop below. shadow_term == 2 lifts nothing -- that
         # diagnostic arm exists to show what relaxing alone does.
-        sorigin = spos + fnrm * (10.0 * min_hit_distance)
+        sorigin = _offset_ray_origin(spos, fnrm)
         lifted = 0
         if ti.static(shadow_term != 0):
             if ti.static(shadow_term == 1):

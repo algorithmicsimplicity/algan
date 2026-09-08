@@ -2072,9 +2072,15 @@ Tracked here so they are one search away, in rough order of effort:
   `test_offset_ray_origin_scales_with_the_hit_point` probes it at 1e-3, 1 and
   1e3.
 
-  **The deterministic renderer's own offsets are NOT changed** and none of
-  its baselines move: this landed inside the path tracer only, and the
-  frames it does move are `tests/path_traced/`'s, in the section 5
-  re-baseline batch. Porting it to `wavefront_kernels_taichi` /
-  `sheet_resolve_taichi` would re-baseline every committed frame in the
-  repository on both devices, which is a change to make on its own.
+  **Follow-on (2026-09-07): the deterministic renderer now shares this
+  offset.** The Wächter/Binder implementation moved to
+  `ray_origin_taichi._offset_ray_origin`; `_pt_offset_ray_origin` remains a
+  thin wrapper so the path tracer keeps the same contract and algorithm. The
+  deterministic wavefront, sheet-resolve, raster-shadow, and custom-scatter
+  spawn paths call the shared helper instead of fixed
+  `10 * min_hit_distance` / `1e-3` world offsets. Deterministic solid
+  refraction keeps its extra forward move by applying the same scale-aware
+  helper once toward the outgoing side normal and once along the outgoing ray.
+  The path tracer's pre-existing solid-refraction spawn is deliberately kept
+  byte-compatible here; changing its separate baseline is outside this
+  deterministic task. Shadow hit-acceptance epsilons remain separate.

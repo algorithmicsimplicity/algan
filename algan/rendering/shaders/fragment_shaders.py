@@ -23,6 +23,7 @@ as fragment shaders and compose with custom ones, e.g.
 with a cosine wave and then lights the result with Blinn-Phong.
 """
 
+from algan.rendering.raytracing.ray_origin_taichi import _offset_ray_origin
 from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _stage_lambert,
@@ -415,7 +416,7 @@ def _scatter_forced_mirror(
     if n.dot(rd) > 0.0:
         n = -n
     refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
-    refl_orig = hit_point + n * 1e-3  # 10 * min_hit_distance
+    refl_orig = _offset_ray_origin(hit_point, n)
     contrib = (alpha * 0.15) * shaded
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
     rw = 0.85 * alpha
