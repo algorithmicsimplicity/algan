@@ -1,0 +1,22 @@
+name: Show smoke import order once
+
+on:
+  push:
+    branches:
+      - codex/aarch64-glibc34-llvm
+    paths:
+      - .github/workflows/ruff_smoke_import_order_once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install ruff==0.12.4
+      - run: ruff check --select I --fix --diff scripts/gate/quadrants_glibc34_smoke.py
