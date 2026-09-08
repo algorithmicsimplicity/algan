@@ -10,5 +10,5 @@
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 10,
-  "_request": "71: run the committed arena-reorder regression tests on MPS"
+  "_request": "72: verify zero-iteration gather with a backed empty Metal view"
 }
