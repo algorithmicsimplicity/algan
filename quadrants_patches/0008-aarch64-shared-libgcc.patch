@@ -1,7 +1,7 @@
 diff --git a/cmake/QuadrantsCore.cmake b/cmake/QuadrantsCore.cmake
 --- a/cmake/QuadrantsCore.cmake
 +++ b/cmake/QuadrantsCore.cmake
-@@ -330,7 +330,14 @@ if(QD_WITH_PYTHON)
+@@ -344,6 +344,14 @@ if(QD_WITH_PYTHON)
      # Remove symbols from static libs: https://stackoverflow.com/a/14863432/12003165
      if (LINUX)
          target_link_options(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC -Wl,--exclude-libs=ALL)
