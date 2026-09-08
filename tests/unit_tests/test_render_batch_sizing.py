@@ -81,7 +81,7 @@ def test_a_pinned_pool_pins_the_measured_devices(device, monkeypatch):
 
 def test_cpu_pool_is_its_own_ceiling(monkeypatch):
     monkeypatch.setattr(SETTINGS.computing, "available_memory_override", 1536 << 20)
-    monkeypatch.setattr(SETTINGS.computing, "max_cpu_memory_used", 3 << 30)
+    monkeypatch.setattr(SETTINGS.computing, "cpu_render_memory_budget", 3 << 30)
 
     # The override is for the *measured* devices only: the CPU branch already
     # returns a setting, so routing it through the override too would retune

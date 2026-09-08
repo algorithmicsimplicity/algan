@@ -845,6 +845,11 @@ _ARCH_READY_FOR = None
 #: early.
 _RENDER_JOBS_ACTIVE = 0
 
+#: A host-pressure reclaim asked to reset Quadrants while a render still held
+#: the live Program. The request is completed when the outermost render job
+#: releases the arch, but only if host/cgroup pressure is still present then.
+_PRESSURE_RESET_PENDING = False
+
 
 @contextlib.contextmanager
 def render_job_holding_the_arch():
@@ -857,7 +862,7 @@ def render_job_holding_the_arch():
     the render thread is inside one. ``SETTINGS.computing.set(render_device=...)``
     consults :func:`render_is_active` and refuses instead.
     """
-    global _RENDER_JOBS_ACTIVE
+    global _PRESSURE_RESET_PENDING, _RENDER_JOBS_ACTIVE
     _RENDER_JOBS_ACTIVE += 1
     try:
         yield
@@ -879,6 +884,25 @@ def render_job_holding_the_arch():
             from algan.utils.taichi_source_key import report_if_logging
 
             report_if_logging()
+
+            # ``release_torch_memory`` can discover host pressure while this
+            # job is still in a kernel-safe scope. Resetting there would race
+            # the batch-prep worker, so it records a request instead. The
+            # outermost job is now clear of every kernel launch; re-check the
+            # pressure before paying the cold-start cost, because a concurrent
+            # process may have exited in the meantime.
+            if _PRESSURE_RESET_PENDING:
+                _PRESSURE_RESET_PENDING = False
+                from algan.utils.memory_utils import (
+                    _host_memory_pressure,
+                    _malloc_trim,
+                )
+
+                if _host_memory_pressure() and reset_quadrants_for_memory_pressure():
+                    # ``ti.reset`` releases the Program, but glibc may keep
+                    # its freed LLVM/JIT pages mapped. This is still Linux-
+                    # only because ``_malloc_trim`` is itself platform-gated.
+                    _malloc_trim()
 
 
 def render_is_active():
@@ -907,6 +931,48 @@ def _register_kernel_cache_flush():
     # the order the destructor path used to get for free.
     atexit.register(flush_kernel_cache)
     _FLUSH_REGISTERED = True
+
+
+def reset_quadrants_for_memory_pressure():
+    """Drop the live Quadrants Program/JIT state as a host-memory last resort.
+
+    Called only after :func:`algan.utils.memory_utils.release_torch_memory` has
+    observed real host/cgroup pressure and, on Linux, already tried
+    ``malloc_trim(0)``. Resetting is deliberately more conservative than a cache
+    flush: it is Quadrants-only and main-thread-only. If a render still holds
+    the arch, the request is deferred until the outermost job exits and pressure
+    is measured again; resetting immediately could race a worker-side launch.
+    The next guarded kernel launch or render starts a fresh Program and reloads
+    compiled kernels from the offline cache.
+
+    Returns whether the runtime was reset synchronously. A ``False`` result can
+    therefore mean either "not applicable" or "safely deferred".
+    """
+    global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    if BACKEND != "quadrants":
+        return False
+    if not _already_initialized():
+        return False
+    if render_is_active():
+        _PRESSURE_RESET_PENDING = True
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    started = time.perf_counter()
+    try:
+        ti.reset()
+    except Exception as exc:
+        get_logger().log(PERF, "Quadrants pressure reset failed: %r", exc)
+        return False
+    _BUILT_A_SPECIALIZATION = False
+    _ARCH_READY_FOR = None
+    _PRESSURE_RESET_PENDING = False
+    get_logger().log(
+        PERF,
+        "Reset the Quadrants runtime under host-memory pressure in %.2f s.",
+        time.perf_counter() - started,
+    )
+    return True
 
 
 def flush_kernel_cache(*, force=False):

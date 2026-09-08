@@ -38,6 +38,7 @@ _INITIALIZATION_ONLY = {
 #: Names that used to exist here, and the field that replaced them.
 _RENAMED = {
     "render_on_cpu": "render_device",
+    "max_cpu_memory_used": "cpu_render_memory_budget",
 }
 
 
@@ -248,7 +249,12 @@ class ComputingSettings(Settings):
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
-    #: What a CPU render may size its arena against, in bytes.
+    #: Budget a CPU render may size its renderer-owned working memory against, in bytes.
+    #:
+    #: This is deliberately a *renderer budget*, not a process RSS limit: Python,
+    #: PyTorch/LLVM allocator retention, the Quadrants runtime/JIT, encoders and child
+    #: processes all live outside it. Host-pressure cleanup in ``release_torch_memory``
+    #: is what deals with those allocations when the enclosing machine/cgroup gets tight.
     #:
     #: This is the CPU analogue of the device queries the CUDA and MPS branches
     #: of ``get_num_available_bytes`` make, and it used to be a flat 2 GB. The
@@ -263,7 +269,7 @@ class ComputingSettings(Settings):
     #: is capped against, and stays an explicit setting for anyone who wants to
     #: pin it. ``psutil`` is already a dependency; the fallback keeps the old
     #: constant for a platform that cannot report its memory.
-    max_cpu_memory_used: int = field(default_factory=_default_cpu_memory)
+    cpu_render_memory_budget: int = field(default_factory=_default_cpu_memory)
     available_memory_override: int | None = None
     use_torch_scatter: bool = True
     #: Let the batch-prep worker run the render-device projection and scene
@@ -307,12 +313,12 @@ class ComputingSettings(Settings):
                 "max_animation_batch_size must be a positive integer"
             )
         if (
-            not isinstance(self.max_cpu_memory_used, int)
-            or isinstance(self.max_cpu_memory_used, bool)
-            or self.max_cpu_memory_used <= 0
+            not isinstance(self.cpu_render_memory_budget, int)
+            or isinstance(self.cpu_render_memory_budget, bool)
+            or self.cpu_render_memory_budget <= 0
         ):
             raise AlganConfigurationError(
-                "max_cpu_memory_used must be a positive integer"
+                "cpu_render_memory_budget must be a positive integer"
             )
         if self.available_memory_override is not None and (
             not isinstance(self.available_memory_override, int)
