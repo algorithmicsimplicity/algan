@@ -153,7 +153,7 @@ The automatic choice only applies when you have not passed an explicit
     ALGAN_VIDEO_ENCODER=software python my_scene.py
 
 Exporting additive glow and coverage together
-============================================
+==============================================
 
 Enable :meth:`~.Scene.set_premultiplied_over` to put opaque geometry,
 translucent geometry and additive glow in one transparent clip:
