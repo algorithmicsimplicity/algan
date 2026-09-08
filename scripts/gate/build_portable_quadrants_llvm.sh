@@ -17,7 +17,7 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-output_zip=$(realpath -m "$1")n
+output_zip=$(realpath -m "$1")
 provenance_file=$(realpath -m "$2")
 work=${RUNNER_TEMP:-/tmp}/quadrants-portable-llvm
 src=$work/llvm-project
