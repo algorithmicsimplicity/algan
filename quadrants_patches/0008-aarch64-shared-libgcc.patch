@@ -1,0 +1,19 @@
+diff --git a/cmake/QuadrantsCore.cmake b/cmake/QuadrantsCore.cmake
+--- a/cmake/QuadrantsCore.cmake
++++ b/cmake/QuadrantsCore.cmake
+@@ -330,7 +330,14 @@ if(QD_WITH_PYTHON)
+     # Remove symbols from static libs: https://stackoverflow.com/a/14863432/12003165
+     if (LINUX)
+         target_link_options(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC -Wl,--exclude-libs=ALL)
+-        target_link_options(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC -static-libgcc -static-libstdc++)
++        if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
++            # AlmaLinux 9's static libgcc uses the glibc backport of
++            # _dl_find_object, whose symbol version is GLIBC_2.35. Keep
++            # libstdc++ static, but use manylinux's shared libgcc runtime so
++            # an aarch64 wheel built on glibc 2.34 can keep that ABI floor.
++            target_link_options(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC -shared-libgcc -static-libstdc++)
++        else()
++            target_link_options(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC -static-libgcc -static-libstdc++)
++        endif()
+         target_link_libraries(${CORE_WITH_PYBIND_LIBRARY_NAME} PUBLIC stdc++fs)
+     endif()
