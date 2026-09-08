@@ -27,7 +27,8 @@ from algan.taichi_compat import ti
 @ti.kernel
 def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                   method: ti.template(), exposure: ti.f32,
-                  transparent: ti.template(), linear_color: ti.template()):
+                  transparent: ti.template(), linear_color: ti.template(),
+                  premultiplied_over: ti.template()):
     """Tonemap a linear-HDR frame (channels 0-2 in [0, 1+HDR]) to uint8.
 
     ``frame`` is ``[N, H, W, C]`` float (C = 4 opaque [R,G,B,glow] or 5
@@ -54,7 +55,7 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
         if ti.static(linear_color):
             # The OETF, last, after exposure and after any curve -- the order
             # three.js uses (`tonemapping_fragment` then `colorspace_fragment`).
-            if ti.static(transparent):
+            if ti.static(transparent and not premultiplied_over):
                 # RGB arrives premultiplied by coverage while alpha is carried
                 # separately in channel 4, and the transfer function is not
                 # linear, so encoding the premultiplied value is wrong: a
@@ -70,6 +71,9 @@ def tonemap_to_u8(frame: ti.types.ndarray(), out: ti.types.ndarray(),
                     # multiply brought it back.
                     c = ti.math.vec3(0.0, 0.0, 0.0)
             else:
+                # In over-export mode RGB is encoded linear premultiplied
+                # light, including emission at zero alpha. The consumer must
+                # decode RGB directly BEFORE applying linear premultiplied over.
                 c = linear_to_srgb_v3(c)
         for ci in ti.static(range(3)):
             out[f, y, x, ci] = ti.cast(

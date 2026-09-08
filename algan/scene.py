@@ -191,6 +191,10 @@ class Scene(RenderLoopMixin):
     scene_initializer
         Callable run on (re)creation; the default spawns the camera and a
         point light.
+    premultiplied_over
+        Export transparent frames for linear-light over compositing, keeping
+        glow additive. Defaults to False. See :meth:`~.Scene.set_premultiplied_over`
+        for the required color settings and consumer interpretation.
     """
 
     def __init__(
@@ -199,7 +203,10 @@ class Scene(RenderLoopMixin):
         background: Color | str | torch.Tensor | Callable | None = None,
         memory=None,
         scene_initializer=None,
+        *,
+        premultiplied_over: bool = False,
     ):
+        self.set_premultiplied_over(premultiplied_over)
         chose_video_settings = video_settings is not None
         if video_settings is None:
             video_settings = SETTINGS.video
@@ -1100,6 +1107,62 @@ class Scene(RenderLoopMixin):
             return self.video_settings
         return SETTINGS.video
 
+    @active_scene_method
+    def set_premultiplied_over(self, enabled: bool = True) -> Scene:
+        """Export coverage and additive glow together for linear compositing.
+
+        Transparent output keeps bloom out of coverage alpha and stores the
+        sRGB encoding of linear premultiplied light, including color at zero
+        alpha. Decode RGB directly to linear light before applying
+        ``src + dst * (1 - alpha)``; do not divide by alpha during that decode.
+        MOV defaults to ProRes 4444, with 8-bit source precision. Ordinary
+        viewers generally do not interpret these samples correctly.
+
+        Requires linear color, post-process tonemapping, and no nonlinear tone
+        curve. Incompatible settings raise an error when rendering transparent
+        output. The setting is ignored for opaque backgrounds. Bloom comes
+        from the exported layer only; it does not reproduce backdrop-dependent
+        bloom from every opaque render.
+
+        Animation
+        ---------
+        Takes effect immediately for the whole Scene and is not animated.
+        Can be changed before or after spawning mobs, and survives reset().
+
+        Parameters
+        ----------
+        enabled
+            Whether to enable this export interpretation. Defaults to True;
+            new Scenes default to False.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If enabled is not a boolean.
+
+        Examples
+        --------
+        Export one clip for a linear-light compositor:
+
+        .. code-block:: python
+
+            from algan import *
+
+            Scene.set_background(TRANSPARENT)
+            Scene.set_premultiplied_over()
+            Circle(color=YELLOW, glow=1.0).spawn()
+            Scene.save_video("glow.mov")
+        """
+        if not isinstance(enabled, bool):
+            raise AlganConfigurationError("premultiplied_over must be a boolean.")
+        self.premultiplied_over = enabled
+        return self
+
     def background_is_transparent(self) -> bool:
         """Whether the Scene's background has any transparency.
 
@@ -1658,6 +1721,11 @@ class Scene(RenderLoopMixin):
             ``h264_nvenc`` encoder; set the ``ALGAN_VIDEO_ENCODER``
             environment variable to ``software`` or ``nvenc`` to pin that
             choice (see :doc:`/advanced_user_tutorials/saving_videos_and_images`).
+            A transparent background picks from the container instead:
+            lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
+            ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
+            plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
+            at all and is refused before the render.
 
         Returns
         -------

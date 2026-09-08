@@ -2017,6 +2017,7 @@ def render_batch_raytraced(
                 anti_alias_level=post_aa,
                 post_processes=list(post_processes),
                 apply_fxaa=scene.video_settings.fxaa,
+                premultiplied_over=scene.premultiplied_over,
             )
             rewind_to(entry_pointers)
             launched_frames.append(end - start)

@@ -2,6 +2,11 @@
 Transparent Backgrounds
 =======================
 
+For a single clip containing both ordinary coverage and additive glow, see
+:doc:`saving_videos_and_images` and :meth:`~.Scene.set_premultiplied_over`.
+That opt-in mode requires a linear-light compositor and a specific input color
+interpretation; the default transparent output described below is unchanged.
+
 Algan can write video with an alpha channel, so a render can be composited over
 something else -- a slide, a screen recording, a video editor timeline. It needs two
 things: a background whose opacity is below one, and an output container that
