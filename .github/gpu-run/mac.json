@@ -6,10 +6,13 @@
   "env": {
     "ALGAN_VIDEO_ENCODER": "software",
     "ALGAN_TORCH_COMPILE": "0",
-    "DIAG_DISPATCH_LIMIT": "65536"
+    "DIAG_DISPATCH_LIMIT": "0",
+    "MTL_DEBUG_LAYER": "1",
+    "MTL_SHADER_VALIDATION": "1",
+    "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1"
   },
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 30,
-  "_request": "59: uncapped arena with 65536-ray traversal dispatches and per-dispatch timing"
+  "_request": "60: uncapped arena, Metal API and shader validation on fresh VM"
 }
