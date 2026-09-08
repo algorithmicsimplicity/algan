@@ -1,5 +1,5 @@
 {
-  "command": ".venv/bin/python benchmarks/_mac_compaction_diagnose.py",
+  "command": ".venv/bin/python benchmarks/_mac_shade_diagnose.py",
   "arms": [
     "mac-mps"
   ],
@@ -11,5 +11,5 @@
   "latex": false,
   "quadrants_wheel": "33850787142",
   "timeout_minutes": 20,
-  "_request": "63: compare Metal ray compaction with CPU status filtering for first five iterations"
+  "_request": "64: capture first GPU shade inputs, state changes, and generated Metal shaders"
 }
