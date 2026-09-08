@@ -1141,6 +1141,7 @@ section to update when one changes.
 | --- | --- |
 | [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
 | [34203241437](https://github.com/algorithmicsimplicity/algan/actions/runs/34203241437) (2026-09-08, the same scope on the Mac harness) | **9 failing**, 3544 passed, 217 skipped, 9 xfailed in 3149 s |
+| [34210549355](https://github.com/algorithmicsimplicity/algan/actions/runs/34210549355) (2026-09-08, after §2.3f, six of the listed files) | **3 failing** across the whole list — six of the seven entries in those files XPASSed |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1157,13 +1158,21 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | # | cause | tests then | now | state |
 | --- | --- | --- | --- | --- |
 | A | `index_reduce_` is unimplemented on MPS | 10 | 0 | **fixed** — §2.3d |
-| B | the glossy tile loop walks off its frame table | 13 | 2 | 11 fixed as a side effect of §4.4; §4.2 |
-| C | an unlit/emissive slab renders black | 2 | 2 | open |
-| D | the glossy prefilter loses its reflection | 2 | 2 | open |
-| E | the path-traced and deterministic composites disagree by 107 | 1 | 1 | open |
+| B | the glossy tile loop walks off its frame table | 13 | 0 | **fixed**: 11 by §4.4, the last 2 by §2.3f |
+| C | an unlit/emissive slab renders black | 2 | 0 | **fixed** — §2.3f |
+| D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; §4.2 |
+| E | the path-traced and deterministic composites disagree by 107 | 1 | 1 | open, not re-measured since §2.3f |
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
+| H | one fragment lands in the wrong pixel | 1 | 0 | **fixed** — §2.3f |
 | — | `test_arena_binding_live` cannot size an arena | 3 errors | 0 | **fixed** — §4.4 |
+
+**Two fixes took twenty-nine of the thirty-two**, and neither was aimed at most
+of what it cleared: §4.4's `empty_cache` (the arena was measuring torch's own
+cache as occupied) and §2.3f's gather (the raster acceptance mask was losing
+its low bits). B, C and H were one defect wearing three faces, which is the
+argument for counting causes — and for keeping the xfail list, since both fixes
+were found by measuring the runs it produced rather than by reading code.
 
 **Observed on the arm and NOT a failure**, recorded so the next reader does not
 chase it: the first render of a process warns that `torch.compile` refused
@@ -1205,7 +1214,23 @@ the bottom row of a 36-row frame — one fragment composited at a pixel nothing
 should have written. A corrupted covered ordinal explains both that and this,
 and if it does then C and D are candidates for the same cause.
 
-**The eleven that fixed themselves are the reading to be careful with.**
+**Resolved by §2.3f, and here is the confirmation rather than the inference.**
+On the same runner with the acceptance-mask gather fixed, the 32x32 probe scene
+reads
+
+```
+covered_idx: dtype=torch.int32 n=400 min=198 max=825 ascending=True
+device     : [0, 400]      host       : [0, 400]
+```
+
+— exactly this project's CPU box, pixel 0 gone and 400 covered pixels where
+there were 320. The compaction's input matches too: `n=47610
+pix[147239..272664]x23352 depth[18.3139..20.6677]`, `frag_cov min 0.001002`,
+against the CPU's identical counts and ranges. Both remaining B entries, both
+C entries, H and one of D XPASSed in the same run.
+
+**The eleven that fixed themselves first are still the reading to be careful
+with.**
 Emptying the MPS cache before sizing the arena (§4.4) gave the render its full
 budget, the tile sizing that follows changed, and eleven of these thirteen
 stopped tripping the loop. Nothing about the loop was fixed: `gl_frame` can

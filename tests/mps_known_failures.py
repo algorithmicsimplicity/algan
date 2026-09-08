@@ -3,12 +3,18 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). **Nine failures are left** (run 34203241437:
-12 failed, 3544 passed, 217 skipped, 9 xfailed — of those 12, eleven were this
-list's own strict XPASSes and are gone from it, and the twelfth was an unrelated
-curation guard). The entries below are what remains, and this file is the record
-of them. ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind
-it — five causes, not nine tests, which is what makes the remainder tractable.
+3311 passes (run 34102515789). **Three are left**, and this file is the record
+of them; ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind
+it. Counting causes rather than tests is what got it there — six causes, and
+two fixes took twenty-nine of the thirty-two:
+
+* the arena measuring its own torch cache as occupied (§4.4) took eleven,
+* and the raster acceptance mask losing its low bits to the 2**24 gather
+  ceiling (§2.3f) took eight more, plus everything else that turned out to be
+  the same corrupted fragment stream.
+
+Both were found by measuring the runs this list produced, which is the argument
+for keeping the list at all rather than deselecting what fails.
 
 Why a list here rather than a skip in each test file
 ----------------------------------------------------
@@ -51,51 +57,24 @@ def _add(reason: str, *nodeids: str) -> None:
         KNOWN_FAILURES[nodeid] = reason
 
 
-# -- B: two renders that still disagree, cause no longer established -------
+# -- D: one glossy render whose reflection is still empty -------------------
 #
-# This was thirteen entries, all raising `IndexError` at `tracer.py`'s
-# `frame_end = gl_bounds[gl_frame + 1]` -- the glossy tile loop running past
-# the end of its frame table. **Eleven of them now pass** and were removed
-# after run 34203241437, and it is worth being exact about why, because it was
-# not a fix aimed at them: emptying torch's MPS cache before sizing the arena
-# (§4.4) gave the render its full budget back, and the tile sizing that follows
-# from the budget no longer produces the window that tripped the loop.
+# `nan > 3 * 74.9`: the test divides by a signal that is not there, so the
+# prefiltered reflection has no width to measure.
 #
-# So the loop's guard is still missing -- a `gl_frame` that can walk off the
-# end is a latent IndexError at any window the arithmetic happens to pick --
-# and the two below are what is left of the group. Their cause is NOT
-# re-measured since the arena fix: they may be the same defect at a different
-# window, or something else entirely that the group was hiding. Measuring that
-# is the first thing to do here, and §4.2 has the covered-pixel reading to do
-# it against.
+# It is what is left of a much larger group, and the way the rest went is the
+# reason to be careful with this one. Causes B (thirteen renders raising
+# IndexError in the glossy tile loop), C (a slab rendering black) and H (one
+# stray fragment in the bottom row) are all gone, and so is this test's own
+# sibling `test_a_creases_siblings_share_the_pixels_prefiltered_claim`: eleven
+# of B went with the arena fix (§4.4) and the remaining eight with §2.3f's
+# acceptance-mask gather, which was corrupting the fragment stream itself.
+# With that stream now matching the CPU's exactly -- same fragment count, same
+# pixel range, same depth range -- this test is no longer explained by any of
+# them, and it has not been separately diagnosed since.
 _add(
-    "MPS: renders differently, cause not re-measured since the arena fix -- "
-    "DESIGN_mps_support.md §4.2",
-    "tests/unit_tests/test_deterministic_shadow_opacity.py::test_deterministic_shadows_accumulate_every_blocker_opacity[raster]",
-    "tests/unit_tests/test_display_referred_coverage.py::test_partial_coverage_matches_a_supersampled_render",
-)
-
-# -- C: a slab that neither reflects nor is lit comes back black -----------
-#
-# The centre pixel of a 48x48 frame filled by the slab reads (0, 0, 0) where the
-# authored colour should survive the round trip. Not a decode error -- nothing
-# is drawn at all -- and a candidate for the same corrupted covered ordinal as
-# B, which is why it is not being chased separately yet.
-_add(
-    "MPS: the slab renders black -- DESIGN_mps_support.md §4.1 (cause C)",
-    "tests/unit_tests/test_color_decode_boundary.py::test_an_unlit_authored_colour_renders_as_itself",
-    "tests/unit_tests/test_color_decode_boundary.py::test_an_emissive_colour_renders_as_itself",
-)
-
-# -- D: the glossy prefilter loses its reflection ---------------------------
-#
-# One arm divides by a zero signal (`nan > 3 * 74.9`), the other finds four
-# interior local maxima where the prefilter should have left at most two. Both
-# are the reflection buffer coming back empty or unfiltered.
-_add(
-    "MPS: the glossy prefilter's reflection is empty -- DESIGN_mps_support.md §4.1 (cause D)",
+    "MPS: the prefiltered reflection is empty -- DESIGN_mps_support.md §4.1 (cause D)",
     "tests/unit_tests/test_glossy_prefilter.py::test_prefiltered_reflection_is_substantially_wider",
-    "tests/unit_tests/test_glossy_prefilter.py::test_a_creases_siblings_share_the_pixels_prefiltered_claim",
 )
 
 # -- E: the two composites disagree by 107 ----------------------------------
@@ -113,15 +92,4 @@ _add(
     "MPS: ti.real_func early return breaks the SPIR-V builder -- "
     "DESIGN_mps_support.md §4.3",
     "tests/unit_tests/test_taichi_early_return.py::test_a_real_function_is_not_rewritten",
-)
-
-# -- H: one stray fragment in the bottom row --------------------------------
-#
-# The cube's lit rows are 5..15, correct, plus a single lit pixel in row 35 of
-# 36. One fragment composited at a pixel nothing should have written, which is
-# the same shape as B and is the reading that suggests B's ordinal is the cause
-# of more than B.
-_add(
-    "MPS: one fragment lands in the wrong pixel -- DESIGN_mps_support.md §4.2",
-    "tests/unit_tests/test_viewer_fragments.py::test_pixel_rows_are_not_flipped",
 )
