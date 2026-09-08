@@ -1,3 +1,5 @@
+> Further measurement: [BLOOM_FIX.md](BLOOM_FIX.md) documents the MPS bloom dispatch bottleneck, the 23–30% measured render improvement, and a separate border-write bug in the old fallback.
+
 # Metal render on the Mac GPU: everything this round established
 
 > **2026-09-08 correction:** [REORDER_FIX.md](REORDER_FIX.md) identifies an MPS
