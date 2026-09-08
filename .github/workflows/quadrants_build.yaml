@@ -310,6 +310,8 @@ jobs:
           rm -rf "$dest"
           mkdir -p "$dest"
           python -m zipfile -e "$archive" "$dest"
+          # Python's zipfile extractor does not restore Unix executable mode bits.
+          chmod +x "$dest"/bin/*
           test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
           "$dest/bin/clang" --version | sed -n '1,4p'
 
@@ -631,6 +633,8 @@ jobs:
           rm -rf "$dest"
           mkdir -p "$dest"
           python -m zipfile -e "$archive" "$dest"
+          # Python's zipfile extractor does not restore Unix executable mode bits.
+          chmod +x "$dest"/bin/*
           test "$("$dest/bin/llvm-config" --version)" = "${{ needs.plan.outputs.portable_llvm_version }}"
           "$dest/bin/clang" --version | sed -n '1,4p'
 
