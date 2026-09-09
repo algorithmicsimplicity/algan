@@ -343,16 +343,38 @@ Two things that are easy to get wrong here:
 
 ### Step 4 — Full dry run
 
-Dispatch **Release** from `master` with `version: 0.0.0`, `dry_run: true`.
+Dispatch **Release** from `master` with:
 
-Runs `gate`, `build` and `docs`, publishes nothing. This is where §1–§3 get
-caught if you have missed one. The wheel, the sdist and the built HTML land as
-downloadable artifacts — pull the wheel and install it into a clean venv on a
-machine that is not this one.
+| Input | Value |
+| --- | --- |
+| version | `0.0.0` — a text field, not a checkbox, and the gate hard-fails if it is blank |
+| dry_run | **checked** (this is the default) |
+| docs_only | unchecked |
+| skip_docs_examples | **checked** — see below |
+
+Runs `gate`, `build` and `docs`, publishes nothing. This is where anything
+missed gets caught. The wheel, the sdist and the built HTML land as downloadable
+artifacts — pull the wheel and install it into a clean venv on a machine that is
+not this one.
+
+**Check `skip_docs_examples` for this run.** The example renders are the whole
+cost of the docs job (27 minutes of a 27-minute build), the deploy was already
+proven end to end by Step 3, and a dry run publishes nothing — so rendering them
+again validates nothing new. Skipping turns a ~30-minute rehearsal into a few
+minutes, and what you actually want from it is the gate and the artifacts:
+
+- `verify_baseline_pointer.py`, which has never run in CI,
+- `twine check` and the vendored-license gate on the real distributions,
+- the version/tag/green-run checks against the actual release commit.
+
+Leave it unchecked only if the docs source changed since Step 3.
 
 ### Step 5 — Release
 
-Dispatch **Release** from `master` with `version: 0.0.0`, `dry_run: false`.
+Dispatch **Release** from `master` with `version: 0.0.0` and **all three
+checkboxes unchecked**. Note that `dry_run` defaults to *checked*, so this is
+the one that has to be actively cleared; `skip_docs_examples` must go back to
+unchecked too, or you publish a videoless site.
 
 The jobs run in order of how hard each is to undo:
 
