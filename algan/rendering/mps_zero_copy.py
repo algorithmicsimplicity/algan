@@ -35,13 +35,29 @@ imports as soon as their tensor dies. :func:`clear_import_cache` remains the
 explicit pressure/teardown lever, but ordinary temporaries no longer wait for a
 chunk-wide memory release before their cache entry disappears.
 
-**Ordering.** Torch and Taichi hold separate Metal command queues and torch's
-heaps are ``MTLHazardTrackingModeUntracked``, so nothing orders a torch write
-against a Taichi read of the same buffer. Both syncs are taken per launch here.
-That is heavier than necessary -- ``DESIGN_mps_zero_copy.md`` §3.3 wants them
-once per frame batch -- and it is where to look first for the next speedup, but
-a per-batch fence needs the render loop to declare its batches and a wrong
-answer here is invisible.
+**Ordering.** Torch's heaps are ``MTLHazardTrackingModeUntracked``, so nothing
+inside Metal orders a torch write against a kernel's read of the same buffer;
+the ordering has to come from the command queue. Two regimes, chosen per
+launch by :func:`~algan.rendering.taichi_runtime.shared_torch_queue`:
+
+* **Separate queues** (the Taichi backend, or ``ALGAN_MPS_SHARED_QUEUE=0``):
+  nothing orders the two queues, so both host fences are taken around every
+  launch -- ``torch.mps.synchronize()`` before it and ``ti.sync()`` after --
+  which serializes the CPU against the GPU twice per kernel.
+* **Torch's queue shared** (the default on Quadrants, see
+  :func:`~algan.rendering.taichi_runtime._torch_mps_command_queue`): Metal
+  executes command buffers on one queue in commit order, so what remains is
+  making sure everything is *committed* in the order it was issued. Torch
+  batches encoded work in an open command buffer and commits lazily; a
+  ``torch.mps.Event.record()`` commits that buffer (``MPSHooks::recordEvent``
+  passes ``syncEvent=true``, which is ``MPSStream::synchronize(COMMIT)``,
+  which is ``commitAndContinue``) **without waiting on the CPU**, and that is
+  the pre-launch fence. Quadrants for its part submits its command list at the
+  end of every launch when the queue is external
+  (``runtime/gfx/runtime.cpp``, ``submit_current_cmdlist_if_timeout``'s
+  ``force_flush``), so torch's next command buffer is queued behind the
+  kernel with no post-launch fence at all. A torch readback still waits, as it
+  always did, and FIFO order makes that wait cover the kernel.
 
 **Program device.** An MPS tensor does not prove the compiler program is Metal.
 The portable macOS CI job deliberately renders on the CPU while hardware tests
@@ -162,7 +178,66 @@ STATS = {
     "arguments": 0,
     "staged_arguments": 0,
     "host_arguments": 0,
+    # Converted launches that took the shared-queue fence (a torch commit, no
+    # host wait) rather than the two blocking syncs. Counted for the same
+    # reason as the rest: a fence regime nobody can see is one nobody can
+    # prove engaged, and the two render identical frames.
+    "shared_queue_launches": 0,
 }
+
+#: The one ``torch.mps.Event`` :func:`_commit_torch_queue` records on. Created
+#: on first use because constructing it initialises MPS.
+_TORCH_COMMIT_EVENT = None
+
+
+def _commit_torch_queue():
+    """Commit torch's open MPS command buffer to its queue without waiting.
+
+    The pre-launch fence of the shared-queue regime (module docstring,
+    *Ordering*). ``Event.record()`` reaches ``MPSStream::synchronize(COMMIT)``,
+    which is a ``commitAndContinue`` of the stream's current command buffer:
+    every torch op encoded so far is now queued ahead of whatever is committed
+    next on the same queue, and the CPU does not wait for any of it.
+    """
+    global _TORCH_COMMIT_EVENT
+    import torch
+
+    if _TORCH_COMMIT_EVENT is None:
+        _TORCH_COMMIT_EVENT = torch.mps.Event()
+    _TORCH_COMMIT_EVENT.record()
+
+
+def _wait_torch_queue():
+    """The separate-queue pre-launch fence: drain torch's queue on the CPU."""
+    import torch
+
+    torch.mps.synchronize()
+
+
+def _wait_taichi_queue():
+    """The separate-queue post-launch fence: drain the compiler's queue."""
+    from algan.taichi_compat import ti
+
+    ti.sync()
+
+
+def launch_with_fences(launch, shared_queue):
+    """Run ``launch()`` between the fences its queue regime needs.
+
+    ``shared_queue`` is :func:`~algan.rendering.taichi_runtime.shared_torch_queue`'s
+    answer for the live program. Split out of the launch wrapper so the choice
+    of fences can be tested on a machine with no Apple GPU.
+    """
+    if shared_queue:
+        STATS["shared_queue_launches"] += 1
+        _commit_torch_queue()
+        return launch()
+    _wait_torch_queue()
+    try:
+        return launch()
+    finally:
+        _wait_taichi_queue()
+
 
 #: ``(kernel, position, why)`` for every argument counted in
 #: ``staged_arguments`` or ``host_arguments``, so the count can be acted on. A
@@ -510,7 +585,8 @@ def report():
         f"available={zero_copy_available()} installed={installed()}",
         f"converted={STATS['converted_launches']} launches "
         f"({STATS['arguments']} args), "
-        f"passthrough={STATS['passthrough_launches']}",
+        f"passthrough={STATS['passthrough_launches']}, "
+        f"shared-queue fences={STATS['shared_queue_launches']}",
         f"still crossing the bus: {STATS['staged_arguments']} staged MPS "
         f"args, {STATS['host_arguments']} host args",
     ]
@@ -540,10 +616,8 @@ def install_zero_copy_launch():
     global _INSTALLED
     if _INSTALLED or not zero_copy_available():
         return
-    import torch
-
     from algan.rendering import taichi_runtime
-    from algan.taichi_compat import submodule, ti
+    from algan.taichi_compat import submodule
 
     Kernel = submodule("lang.kernel_impl").Kernel
 
@@ -575,16 +649,13 @@ def install_zero_copy_launch():
             return previous_call(self, *args, **kwargs)
         STATS["converted_launches"] += 1
         STATS["arguments"] += count
-        # Both fences, per launch. Torch's queue has to have drained before a
-        # kernel reads what it wrote, and the kernel has to have finished
-        # before torch reads back -- separate command queues over untracked
-        # heaps order nothing on their own. See the module docstring for why
-        # this is not yet per batch.
-        torch.mps.synchronize()
-        try:
-            return previous_call(self, *tuple(converted), **kwargs)
-        finally:
-            ti.sync()
+        # The fences depend on whether the compiler dispatches on torch's own
+        # queue -- see the module docstring, *Ordering*.
+        converted = tuple(converted)
+        return launch_with_fences(
+            lambda: previous_call(self, *converted, **kwargs),
+            taichi_runtime.shared_torch_queue(),
+        )
 
     Kernel.__call__ = zero_copy_call
     _INSTALLED = True

@@ -206,3 +206,62 @@ def test_clear_import_cache_is_safe_with_later_owner_finalizers():
 
     assert cache_stats() == (0, 0, 0)
     assert not mps_zero_copy._IMPORTS
+
+
+def test_a_shared_queue_launch_commits_torch_and_waits_on_nothing(monkeypatch):
+    """The two fence regimes, by which fences they take.
+
+    Separate queues: a blocking torch drain before the launch and a blocking
+    compiler drain after it. Torch's queue shared: one non-blocking torch
+    commit before, nothing after -- Quadrants submits its command list at the
+    end of every launch on an external queue, and Metal's in-order execution
+    on one queue does the rest. The fences are faked; on this box there is no
+    Apple GPU to take them against.
+    """
+    calls = []
+    monkeypatch.setattr(
+        mps_zero_copy, "_commit_torch_queue", lambda: calls.append("commit")
+    )
+    monkeypatch.setattr(
+        mps_zero_copy, "_wait_torch_queue", lambda: calls.append("wait torch")
+    )
+    monkeypatch.setattr(
+        mps_zero_copy, "_wait_taichi_queue", lambda: calls.append("wait taichi")
+    )
+    before = mps_zero_copy.STATS["shared_queue_launches"]
+
+    assert (
+        mps_zero_copy.launch_with_fences(lambda: calls.append("launch") or 7, True) == 7
+    )
+    assert calls == ["commit", "launch"]
+    assert mps_zero_copy.STATS["shared_queue_launches"] == before + 1
+
+    calls.clear()
+    assert (
+        mps_zero_copy.launch_with_fences(lambda: calls.append("launch") or 8, False)
+        == 8
+    )
+    assert calls == ["wait torch", "launch", "wait taichi"]
+    assert mps_zero_copy.STATS["shared_queue_launches"] == before + 1
+
+
+def test_the_separate_queue_launch_still_drains_after_a_failed_launch(monkeypatch):
+    """A kernel that raises must not leave the compiler's queue undrained."""
+    calls = []
+    monkeypatch.setattr(
+        mps_zero_copy, "_wait_torch_queue", lambda: calls.append("wait torch")
+    )
+    monkeypatch.setattr(
+        mps_zero_copy, "_wait_taichi_queue", lambda: calls.append("wait taichi")
+    )
+
+    def boom():
+        raise RuntimeError("kernel failed")
+
+    try:
+        mps_zero_copy.launch_with_fences(boom, False)
+    except RuntimeError:
+        pass
+    else:  # pragma: no cover - the launch must raise
+        raise AssertionError("expected the launch to raise")
+    assert calls == ["wait torch", "wait taichi"]
