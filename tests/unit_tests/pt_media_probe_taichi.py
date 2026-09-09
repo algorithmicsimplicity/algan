@@ -44,11 +44,16 @@ def flight_probe(
 def stack_probe(
     shell: ti.types.ndarray(), events: ti.types.ndarray(), out: ti.types.ndarray()
 ):
-    stack = ti.Vector([-1, -1, -1, -1])
-    for i in range(events.shape[0]):
-        stack, overflow = _pt_medium_cross(
-            stack, shell, 0, events[i, 0], shell.shape[1] // 2, events[i, 1] != 0
-        )
-        for k in ti.static(range(4)):
-            out[i, k] = stack[k]
-        out[i, 4] = overflow
+    # One event stream threads a single stack, so the walk must be serial: the
+    # OUTERMOST range-for is the parallel one on every backend, and sharing the
+    # stack across its threads races (on a GPU it does, visibly). A one-trip
+    # outer loop parks the walk in an inner loop, which is always serial.
+    for _ in range(1):
+        stack = ti.Vector([-1, -1, -1, -1])
+        for i in range(events.shape[0]):
+            stack, overflow = _pt_medium_cross(
+                stack, shell, 0, events[i, 0], shell.shape[1] // 2, events[i, 1] != 0
+            )
+            for k in ti.static(range(4)):
+                out[i, k] = stack[k]
+            out[i, 4] = overflow
