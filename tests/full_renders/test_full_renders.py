@@ -44,11 +44,13 @@ ERRORS_DIR = HERE / "output_errors"
 # skips the comparisons.
 DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
-# The committed CPU corpus predates the eager baseline contract and was rendered
-# on Linux with torch.compile working. Never compare eager pixels against it:
-# use a new key so CPU renders skip until that canonical machine produces the
-# one-time eager rebaseline. The committed CUDA corpus was generated on Windows,
-# where this path was already eager, so its existing key remains valid.
+# The legacy ``cpu`` corpus predates the eager baseline contract and was
+# rendered on Linux with torch.compile working. Never compare eager pixels
+# against it: CPU renders read ``cpu_eager`` instead, published since
+# baselines-2026-09-09.1. The ``cpu`` archive is kept in the release only so
+# the pre-eager corpus stays retrievable; nothing resolves it. The CUDA corpus
+# was generated on Windows, where this path was already eager, so its existing
+# key remains valid.
 if BASELINE_KEY == "cpu":
     BASELINE_KEY = "cpu_eager"
 # Where a rebaseline *writes*: always the tree, never the cache. The author of
@@ -63,7 +65,12 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 # See tests/baseline_store.py for the full resolution order.
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
-from baseline_store import resolve_baseline_dir  # noqa: E402, I001
+from baseline_store import (  # noqa: E402, I001
+    MACOS_OPT_OUT_ENV,
+    BaselinesUnavailableError,
+    macos_opt_out_permits,
+    require_baseline_dir,
+)
 
 
 # Frames are compared by the ``assert_video_matches_baseline`` fixture in
@@ -219,11 +226,18 @@ def test_full_render_scene(
         shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
 
-    expected_dir = resolve_baseline_dir(
-        "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
-    )
-    if expected_dir is None:
-        pytest.skip(f"no {BASELINE_KEY} full-render baselines are available")
+    # Raises rather than skipping: this suite spent the whole life of the
+    # cpu_eager key skipping all six scenes, which looked exactly like a clean
+    # run. See tests/baseline_store.py. The macOS keys can opt back out, since
+    # nothing is published for them and a Mac cannot fix that by fetching.
+    try:
+        expected_dir = require_baseline_dir(
+            "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
+        )
+    except BaselinesUnavailableError as unavailable:
+        if unavailable.unbaselined and macos_opt_out_permits(BASELINE_KEY):
+            pytest.skip(f"{MACOS_OPT_OUT_ENV}=1: {unavailable}")
+        raise
 
     expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (

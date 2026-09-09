@@ -266,8 +266,9 @@ set is the same procedure on that device: run
 `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
 tests/path_traced -q` twice, check the second run's outputs against the first
 (they must be byte-identical), look at the videos, and commit the directory.
-A device without a committed set renders the scenes and skips the
-comparisons.
+A device without a committed set renders the scenes and then fails the
+comparisons, rather than skipping them (`ALGAN_ALLOW_UNBASELINED_MACOS=1`
+excuses the macOS keys).
 
 ## The fast suite's render
 
@@ -304,10 +305,11 @@ size. `tests/full_renders` and the CUDA path-traced set are still pending.
 
 Each render suite keeps one baseline directory per device —
 `expected_outputs_cuda/` and `expected_outputs_cpu/` — and the harness picks
-between them with `torch.cuda.is_available()`. A machine with no baseline
-directory for its device renders the scene and then skips the comparison, so
-**a suite that reports itself green on a new device may not have compared
-anything**; check for skips before believing it.
+between them with `torch.cuda.is_available()`. A machine with no baselines for its
+device renders the scene and then **fails**, naming why nothing could be
+resolved. A suite that cannot compare must never report itself green on a new
+device, which is what it used to do. macOS has an opt-out
+(`ALGAN_ALLOW_UNBASELINED_MACOS=1`); nothing else does.
 
 The device is the one the render will actually run on —
 `SETTINGS.computing.render_device`, so `ALGAN_RENDER_DEVICE=cpu` on a CUDA
@@ -316,7 +318,10 @@ automatic probe resolves to MPS) does not silently compare a Metal render
 against a CPU one.
 
 **macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
-committed under that name, so a Mac renders and skips the comparison. That is
+committed under that name, so a Mac renders and then fails this test until one
+is committed (`ALGAN_UPDATE_FAST_BASELINE=1`, review, commit) — or until
+`ALGAN_ALLOW_UNBASELINED_MACOS=1` is set, which skips the comparison for the
+macOS keys only. That is
 measured, not assumed: the x86-64 CPU baseline was copied in and run on an
 Apple Silicon CI runner, and it missed by **up to 45 channel values** (worst at
 frame 36) against a tolerance of 2. This is the scene that matched *exactly*
@@ -475,15 +480,44 @@ and its module docstring is the contract:
 
 1. `ALGAN_BASELINE_DIR` — a directory of `<suite>/<key>/` trees, for a machine
    that keeps its own or has no network. **Final**: if it holds nothing for
-   this suite, the comparison is skipped rather than downloaded.
+   this suite, the comparison fails rather than falling through to a download.
 2. the in-repo `expected_outputs_<key>/`, when it exists and has files;
 3. the verified cache under `~/.algan/cache/baselines/<tag>/`;
 4. a one-time download of the release asset pinned in `tests/baselines.json`.
 
-Any failure warns once and returns "no baselines", which every suite turns into
-a skip. That is the same state as an unbaselined device — so the standing
-warning applies with more force than before: **a render suite that skipped
-compared nothing.** Check for skips before believing a green run.
+Any failure warns once and returns "no baselines" — and **every render suite
+turns that into a failure, not a skip**. `require_baseline_dir` raises
+`BaselinesUnavailableError` carrying the reason the resolver recorded (an
+unpublished device key, a download that never arrived, a digest that did not
+match), so the run says which of those happened rather than reading as green.
+
+That is a deliberate change of posture. A skip is close enough to green to
+hide a suite that compared nothing, and it did: `tests/full_renders` skipped
+all six scenes for the whole life of its `cpu_eager` key, because the archive
+that key names was never published. A device with no baselines now fails until
+it has some — render them with the suite's `ALGAN_UPDATE_*` variable (which
+writes the tree and never reaches the comparison), look at them, and publish
+them.
+
+#### The one opt-out: `ALGAN_ALLOW_UNBASELINED_MACOS=1`
+
+macOS is the one platform where nothing is published and a machine cannot fix
+that by fetching — `macos_cpu` and `macos_mps` (and the `_mpsfriendly` variant
+of each) have no baselines anywhere. Setting `ALGAN_ALLOW_UNBASELINED_MACOS=1`
+on a Mac restores the old behaviour **for those four keys only**: all three
+render suites still render, so kernel compilation, tessellation, LaTeX, the
+fonts and the encoder are all still covered, and only the pixel comparison
+skips.
+
+Two limits keep it from becoming the hole it replaces. It covers no other
+device key, so the CPU and CUDA suites cannot go quiet through it; and it
+applies only when the cause is *"this device has no baselines"* — a Mac whose
+download failed, or whose cached archive missed its digest, still fails.
+
+The better answer on a Mac is still to baseline it: render with the suite's
+`ALGAN_UPDATE_*` variable, look at the videos, and publish them. The keys
+exist because the pixels genuinely differ across instruction sets (measured:
+up to 45 channel values on the fast scene), not because Macs are unsupported.
 
 `ALGAN_NO_BASELINE_DOWNLOAD=1` forbids step 4 (offline, or a machine that must
 not fetch).

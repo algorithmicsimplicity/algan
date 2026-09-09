@@ -12,8 +12,18 @@
     "publishing a new tag, so one machine need not possess every device baseline."
   ],
   "base_url": "https://github.com/algorithmicsimplicity/algan/releases/download",
-  "tag": "baselines-2026-09-09",
+  "tag": "baselines-2026-09-09.1",
   "archives": {
+    "full_renders/cpu_eager": {
+      "file": "full_renders-cpu_eager.tar.gz",
+      "sha256": "cf0516e9d04b3cce8cdc8ad235d6dbbde3d66f7413196518a0062b48bc9f4578",
+      "size": 10383095
+    },
+    "path_traced/cpu": {
+      "file": "path_traced-cpu.tar.gz",
+      "sha256": "7b3282b992617fea3b35f8d6b33dfd2e87c3f8f1c683e9b8db2b8804591a4127",
+      "size": 21523
+    },
     "full_renders/cuda": {
       "file": "full_renders-cuda.tar.gz",
       "sha256": "3103f3a8caa53c314385872fe753fb6d84b6767558ef521a44ec51b26ac0feb2",
@@ -23,11 +33,6 @@
       "file": "full_renders-cpu.tar.gz",
       "sha256": "63426f880425141c5520b0e9bf47ad1d960694ab895aac0f9406de133555f07c",
       "size": 10392035
-    },
-    "path_traced/cpu": {
-      "file": "path_traced-cpu.tar.gz",
-      "sha256": "adcb281889290a16859ec02dad755155a3c11bac0302331a0a3952a8a3a35a2e",
-      "size": 21577
     },
     "path_traced/cuda": {
       "file": "path_traced-cuda.tar.gz",

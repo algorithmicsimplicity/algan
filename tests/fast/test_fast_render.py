@@ -38,6 +38,13 @@ from algan.rendering.mps_compat import mps_friendly
 from algan.scene_manager import SceneManager
 
 HERE = Path(__file__).resolve().parent
+# The macOS opt-out lives with the other two suites' baseline resolution, so
+# all three spell the knob the same way. This suite's own baseline is in git
+# and needs nothing else from that module.
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
+from baseline_store import MACOS_OPT_OUT_ENV, macos_opt_out_permits  # noqa: E402
+
 SCENE_FILE = HERE / "scene.py"
 OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
@@ -56,11 +63,11 @@ DEVICE = SETTINGS.computing.render_device.type
 # x86-64 machines -- fp32 arithmetic through a path tracer does not agree
 # across two libm implementations that closely.
 #
-# Nothing is committed under that name, so a Mac renders the scene and skips
-# the comparison below. That still covers kernel compilation, tessellation,
-# LaTeX, the fonts and the encoder -- just not the pixels. To gate pixels on a
-# Mac, render with ALGAN_UPDATE_FAST_BASELINE=1 there, look at the result, and
-# commit it; the comparison turns itself back on, for machines like that one.
+# Nothing is committed under that name, so this test *fails* on a Mac until
+# one is: an absent baseline used to skip, and a skipped comparison reads as
+# green while comparing nothing. Render with ALGAN_UPDATE_FAST_BASELINE=1
+# there, look at the result, and commit it; the comparison then runs for
+# machines like that one.
 #
 # MPS-friendly mode is keyed apart for a different and simpler reason: it is
 # documented as NOT bit-identical (DESIGN_mps_support.md §1.2), because the
@@ -158,13 +165,20 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
         EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
-    if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {BASELINE_KEY} fast-suite baseline is available")
-
-    assert expected_path.exists(), (
-        "Missing the fast-suite baseline. Re-run with "
-        "ALGAN_UPDATE_FAST_BASELINE=1 after reviewing the render."
-    )
+    # A missing baseline fails rather than skipping: a skip here means this
+    # suite's one pixel comparison did not run, and nothing else in the fast
+    # suite can see a renderer regression. The macOS keys can opt back out --
+    # nothing is committed for them, so a Mac has no way to satisfy this
+    # without baselining itself first.
+    if not expected_path.exists():
+        detail = (
+            f"No {BASELINE_KEY} fast-suite baseline at {expected_path}. This "
+            f"device has never been baselined: re-run with "
+            f"ALGAN_UPDATE_FAST_BASELINE=1, review the render, and commit it."
+        )
+        if macos_opt_out_permits(BASELINE_KEY):
+            pytest.skip(f"{MACOS_OPT_OUT_ENV}=1: {detail}")
+        pytest.fail(detail)
     assert_video_matches_baseline(
         output_path,
         expected_path,
