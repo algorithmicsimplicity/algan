@@ -59,9 +59,10 @@ no test hardcodes a version. The gate compares the declared version against the
 workflow's `version` input exactly — dispatch with `0.0.0`, and note that
 `v0.0.0` is free (the only legacy tag is `BETA_v0.0.63`).
 
-You do not need to tag `stable` by hand. The `promote` job fast-forwards
-`stable` to the released commit and tags `v0.0.0` on it, in that order, in the
-same run.
+You do not need to tag anything by hand — `promote` tags `v0.0.0` on the
+released commit, and no ruleset covers tags. Advancing `stable` is the part that
+needs you: see §1b, where the simplest route is to fast-forward it yourself
+before dispatching, which turns `promote`'s blocked push into a no-op.
 
 ---
 
@@ -147,8 +148,7 @@ Worth noticing that `ubuntu-latest / Python 3.13` and
 in particular is the one that was red all morning.
 
 **So green checks alone will not unblock it.** Even with all five passing, the
-`update` and `pull_request` rules reject a direct push from Actions. The fix is
-to add the **GitHub Actions app as a bypass actor** on "Stable Rules".
+`update` and `pull_request` rules reject a direct push from Actions.
 
 **Only the branch push is blocked.** Both rulesets are `target: branch`, and
 `Stable Rules` matches `refs/heads/stable` alone — so `promote`'s *other* push,
