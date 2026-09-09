@@ -1064,7 +1064,7 @@ is built rather than while a frame is composited.
 
 
 Homogeneous volumes and subsurface scattering
-============================================
+=============================================
 
 The path tracer supports homogeneous participating media and random-walk
 subsurface scattering through :class:`~.MeshPhysicalMaterial`:
