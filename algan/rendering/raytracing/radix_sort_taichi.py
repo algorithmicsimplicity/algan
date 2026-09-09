@@ -115,10 +115,21 @@ def argsort_pairs(
             #
             # A depth is a distance along a ray and can be neither, so this
             # buys agreement on inputs the renderer does not produce; it costs
-            # two compares in a loop that is already reading every element.
-            if value == 0.0:
-                value = ti.cast(0.0, ti.f32)
-            if value != value:
+            # two integer compares in a loop already reading every element.
+            #
+            # Both tests read the BITS, and the NaN one has to: ``value !=
+            # value`` is the obvious spelling and a fast-math backend folds it
+            # to false, which is how the first version of this shipped a
+            # canonicalization that did nothing. ``sheet_sort_taichi._after``
+            # inspects the bits for the same reason. Measured on Metal by
+            # ``_device_sort_probe.py``'s "signed zeros and NaN" arm, which
+            # disagreed with torch on every one of 2.9M positions until this
+            # was bits rather than comparisons -- a whole NaN group moving from
+            # the end of the order to the front shifts everything after it.
+            bits = ti.bit_cast(value, ti.u32)
+            if bits == ti.u32(0x80000000):
+                value = ti.bit_cast(ti.u32(0), ti.f32)
+            elif (bits & ti.u32(0x7FFFFFFF)) > ti.u32(0x7F800000):
                 value = ti.bit_cast(ti.u32(0x7FC00000), ti.f32)
         keys[i] = value
         values[i] = j
