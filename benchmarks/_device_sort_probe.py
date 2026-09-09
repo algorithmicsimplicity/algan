@@ -120,10 +120,21 @@ def _reference_lexsort(*keys):
     return order
 
 
+#: Arms that produced no kernel answer at all, by label. A decline is not a
+#: failure -- on a CPU box every arm declines and that is correct -- but it is
+#: not a pass either, and a run whose arms all quietly declined must not read
+#: as a green one. Counted separately and reported at the end.
+DECLINED: list = []
+
+
 def _agrees(label, got, expected):
+    """Whether the kernel's permutation is torch's. Returns False only on a real
+    disagreement; a decline is recorded in :data:`DECLINED` instead.
+    """
     if got is None:
         print(f"  {label:<44s} DECLINED (no kernel arm)", flush=True)
-        return False
+        DECLINED.append(label)
+        return True
     same = torch.equal(got.to("cpu").to(torch.int64), expected)
     print(f"  {label:<44s} {'MATCHES torch' if same else 'DISAGREES'}", flush=True)
     if not same:
@@ -160,6 +171,7 @@ def main():
         print(f"radix sort enabled: {device_sort.radix_sort_enabled()}", flush=True)
         failures = _run(args, device)
         print(f"zero copy stats: {mps_zero_copy.STATS}", flush=True)
+    print(f"declined arms: {len(DECLINED)} {sorted(set(DECLINED))}", flush=True)
     if failures:
         raise SystemExit(f"{failures} arm(s) disagreed with torch")
 
@@ -205,6 +217,35 @@ def _measure(n, device, runs):
             lambda k=key: torch.argsort(k, stable=True),
             runs,
         )
+
+    # -- the float values a bit order and a comparison sort disagree about --
+    # Signed zeros compare equal and have different bit patterns; NaN compares
+    # greater than everything under torch whatever its sign. The seed loop
+    # canonicalizes both, so this must reproduce the CPU's permutation --
+    # which is NOT what MPS's own torch sort produces for -0.0.
+    weird = torch.tensor(
+        (
+            [
+                float("nan"),
+                float("inf"),
+                -0.0,
+                0.0,
+                -float("inf"),
+                1.0,
+                -1.0,
+                -float("nan"),
+            ]
+            * n
+        )[:n],
+        dtype=torch.float32,
+    )
+    got = device_sort.stable_argsort(weird.to(device))
+    failures += not _agrees(
+        "argsort float32: signed zeros and NaN",
+        got,
+        torch.argsort(weird, stable=True),
+    )
+    del weird
 
     # -- the compaction's own three-key order ----------------------------
     expected = _reference_lexsort(host["pixel"], host["group"], host["depth"])

@@ -1262,13 +1262,15 @@ def _exact_fragment_order_on_device(frag_key, layer):
     exact there because of which aten kernel advanced indexing routes to) and
     the ``index_select`` that composed the two permutations.
     """
+    if not device_sort.radix_sort_available(frag_key):
+        return None
     layer_order = device_sort.stable_argsort(torch.bitwise_not(layer))
     if layer_order is None:
         return None
     primary_key = _primary_depth_key(frag_key)
     order = device_sort.stable_argsort(primary_key, perm=layer_order)
     del primary_key, layer_order
-    return order.to(torch.int64)
+    return None if order is None else order.to(torch.int64)
 
 
 def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
