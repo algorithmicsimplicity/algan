@@ -150,9 +150,19 @@ in particular is the one that was red all morning.
 `update` and `pull_request` rules reject a direct push from Actions. The fix is
 to add the **GitHub Actions app as a bypass actor** on "Stable Rules".
 
-In the UI: Settings → Rules → Rulesets → **Stable Rules** → Bypass list → *Add
-bypass* → **GitHub Actions** → mode **Always** → Save. Or equivalently, from a
-machine with `gh` authenticated as the repository owner:
+**Only the branch push is blocked.** Both rulesets are `target: branch`, and
+`Stable Rules` matches `refs/heads/stable` alone — so `promote`'s *other* push,
+the `v0.0.0` tag, is unaffected. The problem is exactly one line of the job.
+
+**The clean fix is not available on this repository.** Adding the GitHub Actions
+app as a bypass actor is the right answer in principle, but the bypass list on a
+user-owned repository offers only *Deploy keys*, *Maintain* and *Write* — no
+apps. Repository-role bypass does not help: `GITHUB_TOKEN` acts as the GitHub
+Actions app, not as a collaborator holding a role, so a Write/Maintain entry
+never matches it.
+
+It costs one command to find out whether the API accepts what the UI does not
+offer:
 
 ```bash
 gh api -X PUT repos/algorithmicsimplicity/algan/rulesets/20899556 \
@@ -161,22 +171,53 @@ gh api -X PUT repos/algorithmicsimplicity/algan/rulesets/20899556 \
 JSON
 ```
 
-`15368` is the GitHub Actions app, the same integration that reports all five
-required checks above. `bypass_mode` has to be `always`: the alternative,
-`pull_request`, only applies inside a PR, and `promote` pushes directly.
+`15368` is the GitHub Actions app — the integration that reports all five
+required checks. `bypass_mode` must be `always`; `pull_request` mode only
+applies inside a PR. If it returns 422 the UI was telling the truth, and
+nothing is changed by a failed call.
 
-**Know what this grants.** A bypass actor bypasses the *whole* ruleset, not just
-the rule that is in the way — so this lets the Actions app push to `stable`
-past the status checks, the PR requirement and the force-push block alike, and
-it applies to every workflow in the repository that runs with
-`contents: write`, not only `release.yaml`. On a solo repository that is a
-reasonable trade for an automated release; it is worth knowing rather than
-discovering.
+If it *does* work, know what it grants: a bypass actor bypasses the **whole**
+ruleset, not just the rule in the way, for **every** workflow running with
+`contents: write` — not only `release.yaml`.
 
-This cannot be done from a Claude Code session: the agent proxy refuses writes
-to the GitHub API (`403 Write access to this GitHub API path is not permitted
-through this proxy`), and no MCP tool covers rulesets. Reads work, which is how
-the table above was produced rather than guessed.
+### The workaround that needs no settings change
+
+Advance `stable` yourself, as the owner, *before* dispatching the release. Then
+`promote`'s push has nothing to do:
+
+```bash
+git push origin master:stable      # after the merge, before dispatching
+```
+
+`promote` runs
+
+```bash
+git merge-base --is-ancestor origin/stable ${{ github.sha }}   # true: equal
+git push origin ${{ github.sha }}:refs/heads/stable            # no-op
+```
+
+A commit is its own ancestor, so the guard passes, and a push that updates
+nothing reports `Everything up-to-date` and exits 0 **without a ref update, so
+no rule is evaluated**. That is not a guess: the second `git push` during the
+2026-09-09 reset did exactly this — `Everything up-to-date`, `rc=0`, and none of
+the protected-ref output the first one produced.
+
+The cost is that `stable` moves a few minutes before the release rather than
+during it. If the release then fails, `stable` is ahead of the last published
+version until the next one — an inconsistency to be aware of, not a hazard.
+
+### The durable fix, when there is time
+
+Give `promote` a **deploy key** with write access and add *Deploy keys* to the
+bypass list — that option *is* offered on this repository. It needs an SSH key
+in secrets and a push over SSH rather than `GITHUB_TOKEN`, so it is a workflow
+change, not a settings change; not one to make on release day, but it is the
+version of this that keeps the release a single unattended run.
+
+None of this can be done from a Claude Code session: the agent proxy refuses
+writes to the GitHub API (`403 Write access to this GitHub API path is not
+permitted through this proxy`) and no MCP tool covers rulesets. Reads work,
+which is how the rules above were established rather than guessed.
 
 The alternative is to stop having `promote` push at all and advance `stable`
 through the `master → stable` PR that `development.rst` describes — but that is
@@ -331,10 +372,10 @@ its own workflow file, so they do not collide.
 Done: `stable` reset (§1) · `baselines-2026-09-09.2` published and verified by
 content (§2) · PyPI pending publisher created (Step 0).
 
-Left: allow `github-actions[bot]` to bypass the ruleset on `stable`, or
-otherwise satisfy its required checks (§1b — the dry run cannot catch this) ·
-confirm the `Test` run on the release commit is green (§3). Pages (§4) needs
-nothing but the rehearsal in Step 3.
+Left: get `promote`'s push to `stable` through the ruleset (§1b — simplest is
+`git push origin master:stable` yourself after the merge, which makes that push
+a no-op; the dry run cannot catch this) · confirm the `Test` run on the release
+commit is green (§3). Pages (§4) needs nothing but the rehearsal in Step 3.
 
 ### Step 2 — Write the release notes
 
