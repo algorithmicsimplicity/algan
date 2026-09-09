@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without a leading v (e.g. 0.2.2). Must match pyproject. Ignored by docs_only."
+        description: "Version to release, without a leading v (e.g. 0.0.0). Must match pyproject. Ignored by docs_only."
         type: string
         # Not `required`, because docs_only has no version to speak of. The gate
         # job demands it for a real release; Actions cannot express that here.
