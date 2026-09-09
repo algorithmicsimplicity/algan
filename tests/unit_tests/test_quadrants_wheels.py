@@ -711,8 +711,18 @@ class TestWorkflowMatchesTheResolver:
         assert "quadrants-wheel-linux_arm64-py*" in text
         assert "verify_wheel_tag.py" in text
         assert "_dl_find_object@GLIBC_2.35" in text
-        assert "@qd.kernel" in text
-        assert "fresh glibc-2.34 import + qd.init + kernel OK" in text
+
+        # The smoke itself lives in a file, not in a `python -` snippet: the
+        # Quadrants frontend recovers a kernel body with `inspect`, so a kernel
+        # fed through stdin cannot compile. The job must still run *that* file,
+        # and that file must still compile and execute a kernel -- either half
+        # alone leaves the fresh-userspace check proving nothing.
+        assert "scripts/gate/quadrants_glibc34_smoke.py" in text
+        smoke = (
+            REPO_ROOT / "scripts" / "gate" / "quadrants_glibc34_smoke.py"
+        ).read_text(encoding="utf-8")
+        assert "@qd.kernel" in smoke
+        assert "fresh glibc-2.34 import + qd.init + kernel OK" in smoke
 
         publish = workflow["jobs"]["publish"]
         assert "linux_arm64_glibc34_smoke" in publish["needs"]
