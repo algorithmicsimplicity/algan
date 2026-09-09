@@ -141,6 +141,7 @@ def _store_import(key, tensor, array, storage):
         _track_owner_locked(key, entry, tensor)
         return entry.array
 
+
 #: Engagement telemetry, read by ``benchmarks/_mps_render_smoke.py`` and by
 #: anything else asking whether the fork is actually in the path. This module's
 #: whole job is a silent substitution, so a silently DISENGAGED one -- the
