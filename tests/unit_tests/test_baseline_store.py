@@ -278,6 +278,50 @@ def test_a_download_failure_reaches_the_raised_reason(tmp_path, monkeypatch):
                 "full_renders", "cuda", tmp_path / "absent", pointer_path=pointer
             )
     assert "Could not download" in str(excinfo.value)
+    # Baselines exist for this device; the fetch failed. Not the state the
+    # macOS opt-out is allowed to excuse.
+    assert not excinfo.value.unbaselined
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["macos_cpu", "macos_mps", "macos_cpu_mpsfriendly", "macos_mps_mpsfriendly"],
+)
+def test_the_macos_opt_out_covers_both_mac_devices_and_their_modes(key, monkeypatch):
+    monkeypatch.setenv(baseline_store.MACOS_OPT_OUT_ENV, "1")
+    assert baseline_store.macos_opt_out_permits(key)
+
+
+@pytest.mark.parametrize("key", ["cpu", "cpu_eager", "cuda", "mps"])
+def test_the_macos_opt_out_covers_nothing_else(key, monkeypatch):
+    """It is an opt-out for one platform, not for missing baselines at large.
+
+    A blanket switch would let the CPU and CUDA suites go quiet again, which
+    is the failure that made these comparisons fail rather than skip.
+    """
+    monkeypatch.setenv(baseline_store.MACOS_OPT_OUT_ENV, "1")
+    assert not baseline_store.macos_opt_out_permits(key)
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "true", "yes"])
+def test_the_macos_opt_out_is_off_unless_it_is_exactly_one(value, monkeypatch):
+    if value is None:
+        monkeypatch.delenv(baseline_store.MACOS_OPT_OUT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(baseline_store.MACOS_OPT_OUT_ENV, value)
+    assert not baseline_store.macos_opt_out_permits("macos_cpu")
+
+
+def test_an_unbaselined_macos_key_names_the_opt_out(tmp_path):
+    """The failure has to say the knob exists, or nobody finds it."""
+    pointer = _pointer(tmp_path, {})
+
+    with pytest.raises(baseline_store.BaselinesUnavailableError) as excinfo:
+        baseline_store.require_baseline_dir(
+            "full_renders", "macos_mps", tmp_path / "absent", pointer_path=pointer
+        )
+    assert excinfo.value.unbaselined
+    assert baseline_store.MACOS_OPT_OUT_ENV in str(excinfo.value)
 
 
 def test_a_missing_asset_warns_only_once(tmp_path, monkeypatch):

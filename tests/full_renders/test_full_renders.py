@@ -65,7 +65,12 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 # See tests/baseline_store.py for the full resolution order.
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
-from baseline_store import require_baseline_dir  # noqa: E402, I001
+from baseline_store import (  # noqa: E402, I001
+    MACOS_OPT_OUT_ENV,
+    BaselinesUnavailableError,
+    macos_opt_out_permits,
+    require_baseline_dir,
+)
 
 
 # Frames are compared by the ``assert_video_matches_baseline`` fixture in
@@ -223,10 +228,16 @@ def test_full_render_scene(
 
     # Raises rather than skipping: this suite spent the whole life of the
     # cpu_eager key skipping all six scenes, which looked exactly like a clean
-    # run. See tests/baseline_store.py.
-    expected_dir = require_baseline_dir(
-        "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
-    )
+    # run. See tests/baseline_store.py. The macOS keys can opt back out, since
+    # nothing is published for them and a Mac cannot fix that by fetching.
+    try:
+        expected_dir = require_baseline_dir(
+            "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
+        )
+    except BaselinesUnavailableError as unavailable:
+        if unavailable.unbaselined and macos_opt_out_permits(BASELINE_KEY):
+            pytest.skip(f"{MACOS_OPT_OUT_ENV}=1: {unavailable}")
+        raise
 
     expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (

@@ -39,6 +39,11 @@ baseline is a test failure. Rendering a first baseline for a new device is
 still possible: the ``ALGAN_UPDATE_*_BASELINES`` paths write the tree and
 never reach the comparison.
 
+macOS is the one exception, because it is the one platform where nothing is
+published and no machine can fix that by fetching:
+``ALGAN_ALLOW_UNBASELINED_MACOS=1`` lets the four ``macos_*`` keys skip.
+:func:`macos_opt_out_permits` is where that is decided, and how narrowly.
+
 The committed ``tests/baselines.json`` carries a published release tag. A null
 tag remains a supported bootstrap/test state: steps 3 and 4 are skipped and
 the resolver behaves like an unbaselined offline machine, silently.
@@ -55,16 +60,60 @@ import tempfile
 import urllib.request
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 TESTS_ROOT = Path(__file__).resolve().parent
 POINTER_PATH = TESTS_ROOT / "baselines.json"
 
 _DOWNLOAD_TIMEOUT_SECONDS = 60
 #: Per-process memo, keyed by ``(suite, key, local_dir)``: an entry maps to
-#: ``(directory, reason)`` -- exactly one of which is ``None``. Without it six
-#: scenes in one suite pay six timeouts on an offline machine, and warn six
+#: ``(directory, unavailable)`` -- exactly one of which is ``None``. Without it
+#: six scenes in one suite pay six timeouts on an offline machine, and warn six
 #: times about it.
 _resolved: dict = {}
+
+#: Set to ``1`` to let the macOS device keys below *skip* their comparison
+#: instead of failing it. See :func:`macos_opt_out_permits`.
+MACOS_OPT_OUT_ENV = "ALGAN_ALLOW_UNBASELINED_MACOS"
+
+#: The keys that opt-out covers: a Mac renders on the CPU or on MPS, and
+#: nothing is committed or published for either. The ``_mpsfriendly`` variants
+#: of both are covered too -- that mode is documented as not bit-identical, so
+#: it is keyed apart and equally unbaselined.
+MACOS_OPT_OUT_KEYS = frozenset({"macos_cpu", "macos_mps"})
+
+
+class BaselineUnavailable(NamedTuple):
+    """Why nothing resolved, and whether the device is merely unbaselined.
+
+    The distinction is the whole value of the type. "This device has no
+    baselines" is a state a machine can legitimately be in and opt out of;
+    "the download failed" and "the digest did not match" are not, and must
+    keep failing however the opt-out is set, or the knob would re-hide the
+    class of problem that motivated failing in the first place.
+    """
+
+    reason: str
+    unbaselined: bool = False
+
+
+def macos_opt_out_permits(key: str) -> bool:
+    """True when ``key`` is a macOS key excused by the opt-out variable.
+
+    Set ``ALGAN_ALLOW_UNBASELINED_MACOS=1`` on a Mac to get the pre-failure
+    behaviour back for that machine: the scene still renders -- which is most
+    of what these suites exercise, kernel compilation, tessellation, LaTeX,
+    fonts and the encoder -- and only the pixel comparison is skipped.
+
+    It is deliberately not a general "allow missing baselines" switch. Every
+    other device either has published baselines or is one somebody should
+    publish, and a blanket knob would let the CPU and CUDA suites go quiet
+    again. It also only ever applies to :attr:`BaselineUnavailable.unbaselined`
+    -- a Mac with a failed download or a bad digest still fails.
+    """
+    if os.getenv(MACOS_OPT_OUT_ENV) != "1":
+        return False
+    return key.partition("_mpsfriendly")[0] in MACOS_OPT_OUT_KEYS
 
 
 class BaselinesUnavailableError(RuntimeError):
@@ -75,7 +124,15 @@ class BaselinesUnavailableError(RuntimeError):
     unpublished device key, a download that did not come back, a digest that
     did not match -- because "no baselines" on its own sends the reader
     looking for a rendering bug that is not there.
+
+    ``unbaselined`` says the cause was simply that this device has no
+    baselines, which is the only cause :func:`macos_opt_out_permits` may
+    excuse.
     """
+
+    def __init__(self, unavailable: BaselineUnavailable) -> None:
+        super().__init__(unavailable.reason)
+        self.unbaselined = unavailable.unbaselined
 
 
 class BaselinePointerError(RuntimeError):
@@ -281,15 +338,15 @@ def require_baseline_dir(
     failed test, not a skipped one: a skipped render suite compared nothing,
     and reads as green while it does it.
     """
-    resolved, reason = _resolve(suite, key, local_dir, pointer_path, use_cache)
+    resolved, unavailable = _resolve(suite, key, local_dir, pointer_path, use_cache)
     if resolved is None:
-        raise BaselinesUnavailableError(reason)
+        raise BaselinesUnavailableError(unavailable)
     return resolved
 
 
 def _resolve(
     suite: str, key: str, local_dir: Path, pointer_path: Path, use_cache: bool
-) -> tuple[Path | None, str | None]:
+) -> tuple[Path | None, BaselineUnavailable | None]:
     memo_key = (suite, key, str(local_dir))
     if use_cache and memo_key in _resolved:
         return _resolved[memo_key]
@@ -302,7 +359,7 @@ def _resolve(
 
 def _resolve_uncached(
     suite: str, key: str, local_dir: Path, pointer_path: Path
-) -> tuple[Path | None, str | None]:
+) -> tuple[Path | None, BaselineUnavailable | None]:
     """``(directory, None)``, or ``(None, why not)``.
 
     The reason is what the caller shows when it fails, so each one names the
@@ -321,7 +378,9 @@ def _resolve_uncached(
             f"to the published archive."
         )
         warnings.warn(reason, stacklevel=3)
-        return None, reason
+        # Unbaselined: the machine said where its baselines live and has none
+        # for this device, which is the same state as an unpublished key.
+        return None, BaselineUnavailable(reason, unbaselined=True)
 
     if _has_files(local_dir):
         return local_dir, None
@@ -333,7 +392,7 @@ def _resolve_uncached(
         # Nothing published for this device (or nothing published at all).
         # Not warned: the caller raises this reason, and a warning beside the
         # failure that quotes it says the same thing twice.
-        return None, (
+        return None, BaselineUnavailable(
             f"No baselines are published for {suite}/{key}"
             + (f" under tag {tag}" if tag else " (the pointer names no tag)")
             + f", and {local_dir} does not exist. Either this device has "
@@ -341,6 +400,17 @@ def _resolve_uncached(
             f"ALGAN_UPDATE_* variable, review it, and publish it with "
             f"scripts/package_baselines.py -- or the pointer names a device "
             f"key nothing produces."
+            + (
+                f" On a Mac, {MACOS_OPT_OUT_ENV}=1 skips this comparison "
+                f"instead of failing it."
+                # Not when it is already set: the caller is about to quote
+                # this as its skip reason, where advice to set it reads as a
+                # suggestion that it did not work.
+                if key.partition("_mpsfriendly")[0] in MACOS_OPT_OUT_KEYS
+                and not macos_opt_out_permits(key)
+                else ""
+            ),
+            unbaselined=True,
         )
 
     target = _cache_root() / str(tag) / suite / key
@@ -355,13 +425,15 @@ def _resolve_uncached(
             f"a local copy."
         )
         warnings.warn(reason, stacklevel=3)
-        return None, reason
+        # Not "unbaselined": baselines exist for this device, the machine just
+        # refused to fetch them. The macOS opt-out must not cover that.
+        return None, BaselineUnavailable(reason)
 
     base = str(pointer.get("base_url") or "").rstrip("/")
     url = f"{base}/{tag}/{entry['file']}"
     failure = _download(url, target, digest)
     if failure is not None:
-        return None, failure
+        return None, BaselineUnavailable(failure)
     return target, None
 
 

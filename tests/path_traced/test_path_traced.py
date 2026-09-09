@@ -66,7 +66,12 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_PATH_TRACED_BASELINES") == "1"
 
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
-from baseline_store import require_baseline_dir  # noqa: E402, I001
+from baseline_store import (  # noqa: E402, I001
+    MACOS_OPT_OUT_ENV,
+    BaselinesUnavailableError,
+    macos_opt_out_permits,
+    require_baseline_dir,
+)
 
 LOG_FILE = HERE / "pytest.log"
 
@@ -262,8 +267,16 @@ def test_path_traced_scene(
         shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
 
-    # Raises rather than skipping; see tests/baseline_store.py.
-    expected_dir = require_baseline_dir("path_traced", BASELINE_KEY, LOCAL_EXPECTED_DIR)
+    # Raises rather than skipping, except on the unbaselined macOS keys; see
+    # tests/baseline_store.py.
+    try:
+        expected_dir = require_baseline_dir(
+            "path_traced", BASELINE_KEY, LOCAL_EXPECTED_DIR
+        )
+    except BaselinesUnavailableError as unavailable:
+        if unavailable.unbaselined and macos_opt_out_permits(BASELINE_KEY):
+            pytest.skip(f"{MACOS_OPT_OUT_ENV}=1: {unavailable}")
+        raise
 
     expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (
