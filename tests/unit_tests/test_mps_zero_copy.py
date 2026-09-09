@@ -8,11 +8,13 @@ vector-element ndarray -- which is exactly the BVH node array that every
 ray-tracing kernel takes, so the widest arrays in the renderer stayed on
 Taichi's host-staging path with nothing saying so.
 
-That is the shape of defect this file exists to catch: a *silent* fallback.
+That is one shape of defect this file exists to catch: a *silent* fallback.
 A staged argument costs four copies and an MPS stream sync per launch and
 renders an identical frame, so a Mac cannot tell you it regressed and a green
-suite there would not either. Reading the annotations is pure Python, so it
-can be checked on any machine, which is why it is checked here.
+suite there would not either. The other pure-Python contract is lifetime:
+temporary imported slices must leave the lookup cache when their last source
+tensor dies, while an ndarray already in flight must keep its storage alive.
+Both contracts can be checked without an Apple GPU.
 
 No ``from __future__ import annotations`` here, deliberately and for the same
 reason ``*_taichi.py`` files carry ``I002`` off: it turns a kernel's runtime
@@ -20,9 +22,20 @@ annotations into strings, and Taichi reads them raw
 (``Invalid type annotation (argument 0) of Taichi kernel: ti.i32``).
 """
 
+import gc
+import weakref
+
 import torch
 
-from algan.rendering.mps_zero_copy import _ndarray_positions, import_tensor
+from algan.rendering import mps_zero_copy
+from algan.rendering.mps_zero_copy import (
+    _cached_import,
+    _ndarray_positions,
+    _store_import,
+    cache_stats,
+    clear_import_cache,
+    import_tensor,
+)
 from algan.taichi_compat import kernel_arguments, ti
 
 
@@ -108,3 +121,88 @@ def test_a_host_tensor_is_never_imported():
     assert import_tensor(torch.zeros(4, 4)) is None
     assert import_tensor(torch.zeros(4, 4, 4), (4,)) is None
     assert import_tensor("not a tensor") is None
+
+
+class _FakeStorage:
+    def __init__(self, handle, size):
+        self.handle = handle
+        self.size = size
+
+    def data_ptr(self):
+        return self.handle
+
+    def nbytes(self):
+        return self.size
+
+
+class _FakeArray:
+    pass
+
+
+def test_cached_import_is_reused_while_its_source_tensor_survives():
+    clear_import_cache()
+    owner = torch.zeros(1)
+    storage = _FakeStorage(123, 4096)
+    array = _FakeArray()
+    key = (123, "dtype", (8,), (), 0)
+
+    assert _store_import(key, owner, array, storage) is array
+    assert _cached_import(key, owner) is array
+    assert cache_stats() == (1, 1, 4096)
+    assert array._algan_storage is storage
+
+    clear_import_cache()
+
+
+def test_import_cache_evicts_when_the_last_source_tensor_dies():
+    clear_import_cache()
+    owner = torch.zeros(1)
+    owner_ref = weakref.ref(owner)
+    storage = _FakeStorage(456, 8192)
+    array = _FakeArray()
+    key = (456, "dtype", (16,), (), 0)
+    _store_import(key, owner, array, storage)
+
+    del owner
+    gc.collect()
+
+    assert owner_ref() is None
+    assert cache_stats() == (0, 0, 0)
+    # A direct/in-flight user of the ndarray still owns the torch storage after
+    # its lookup entry disappears.
+    assert array._algan_storage is storage
+
+
+def test_import_cache_waits_for_all_tensor_objects_sharing_one_slice():
+    clear_import_cache()
+    first = torch.zeros(1)
+    second = first.view_as(first)
+    storage = _FakeStorage(789, 2048)
+    array = _FakeArray()
+    key = (789, "dtype", (4,), (), 0)
+
+    _store_import(key, first, array, storage)
+    assert _cached_import(key, second) is array
+    del first
+    gc.collect()
+    assert cache_stats() == (1, 1, 2048)
+
+    del second
+    gc.collect()
+    assert cache_stats() == (0, 0, 0)
+
+
+def test_clear_import_cache_is_safe_with_later_owner_finalizers():
+    clear_import_cache()
+    owner = torch.zeros(1)
+    storage = _FakeStorage(999, 1024)
+    array = _FakeArray()
+    key = (999, "dtype", (2,), (), 0)
+    _store_import(key, owner, array, storage)
+
+    clear_import_cache()
+    del owner
+    gc.collect()
+
+    assert cache_stats() == (0, 0, 0)
+    assert not mps_zero_copy._IMPORTS

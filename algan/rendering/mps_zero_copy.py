@@ -28,10 +28,12 @@ error, and all handled here rather than left to call sites:
 
 **Lifetime.** Taichi marks an imported allocation ``dont_destroy`` and holds no
 reference to whatever owns the buffer. Torch's caching allocator will recycle a
-buffer whose last tensor died, so the cache keeps the *storage* alive for as
-long as it keeps the ndarray, and :func:`clear_import_cache` is what releases
-both -- the render loop drops a chunk's arena deliberately, and an import cache
-that outlived it would pin the largest allocation in the process.
+buffer whose last tensor died, so every imported ndarray keeps the *storage*
+alive itself. The lookup cache, however, lives only while at least one source
+tensor view for that exact slice is alive; a weakref callback evicts temporary
+imports as soon as their tensor dies. :func:`clear_import_cache` remains the
+explicit pressure/teardown lever, but ordinary temporaries no longer wait for a
+chunk-wide memory release before their cache entry disappears.
 
 **Ordering.** Torch and Taichi hold separate Metal command queues and torch's
 heaps are ``MTLHazardTrackingModeUntracked``, so nothing orders a torch write
@@ -66,14 +68,78 @@ Taichi an object pointer with an integer added to it.
 from __future__ import annotations
 
 import threading
+import weakref
 
 _LOCK = threading.Lock()
 #: (buffer handle, dtype, outer shape, element shape, byte offset)
-#: -> (ndarray, storage).
-#: The storage is held so torch cannot recycle the buffer underneath a kernel.
+#: -> ``_ImportEntry``. The entry is strongly cached only while at least one
+#: source tensor object for that slice survives. The ndarray itself also keeps
+#: the torch storage alive, so an in-flight/direct caller remains safe after a
+#: weakref callback evicts the lookup entry.
 _IMPORTS: dict = {}
 _AVAILABLE = None
 _INSTALLED = False
+
+
+class _ImportEntry:
+    """One cached Metal import and the source tensor objects keeping it reusable."""
+
+    __slots__ = ("array", "storage", "owners")
+
+    def __init__(self, array, storage):
+        self.array = array
+        self.storage = storage
+        # id(tensor) -> weakref.ref(tensor). Using ids deliberately avoids
+        # weakref equality on torch.Tensor, whose ``==`` returns a tensor.
+        self.owners = {}
+
+
+def _owner_gone(owner_ref, key, owner_id):
+    """Evict ``key`` once its last tensor view has died."""
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None or entry.owners.get(owner_id) is not owner_ref:
+            return
+        del entry.owners[owner_id]
+        if not entry.owners:
+            _IMPORTS.pop(key, None)
+
+
+def _track_owner_locked(key, entry, tensor):
+    """Record ``tensor`` as a weak owner of ``entry`` while ``_LOCK`` is held."""
+    owner_id = id(tensor)
+    current = entry.owners.get(owner_id)
+    if current is not None and current() is tensor:
+        return
+    entry.owners[owner_id] = weakref.ref(
+        tensor,
+        lambda ref, key=key, owner_id=owner_id: _owner_gone(ref, key, owner_id),
+    )
+
+
+def _cached_import(key, tensor):
+    """Return and retain an existing import for ``tensor``, or None."""
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None:
+            return None
+        _track_owner_locked(key, entry, tensor)
+        return entry.array
+
+
+def _store_import(key, tensor, array, storage):
+    """Publish ``array`` atomically and tie its cache lifetime to ``tensor``."""
+    # ExternalMetalNdarray is a Python object on both patched backends. Keeping
+    # storage on the ndarray itself makes direct/in-flight users safe even if
+    # the weak source owner disappears and the lookup entry is evicted.
+    array._algan_storage = storage
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None:
+            entry = _ImportEntry(array, storage)
+            _IMPORTS[key] = entry
+        _track_owner_locked(key, entry, tensor)
+        return entry.array
 
 #: Engagement telemetry, read by ``benchmarks/_mps_render_smoke.py`` and by
 #: anything else asking whether the fork is actually in the path. This module's
@@ -246,10 +312,9 @@ def import_tensor(tensor, element_shape=()):
         if offset % element_bytes:
             return None
     key = (handle, tensor.dtype, outer_shape, element_shape, offset)
-    with _LOCK:
-        hit = _IMPORTS.get(key)
-        if hit is not None:
-            return hit[0]
+    hit = _cached_import(key, tensor)
+    if hit is not None:
+        return hit
 
     from algan.taichi_compat import submodule
 
@@ -258,32 +323,27 @@ def import_tensor(tensor, element_shape=()):
     array = ExternalMetalNdarray(
         dtype, list(outer_shape), handle, offset, element_shape=element_shape
     )
-    with _LOCK:
-        # Another thread may have imported the same buffer while this one was
-        # building it. Keep whichever landed first so the cache stays one
-        # ndarray per buffer, which is what makes the aliasing pair bind the
-        # same allocation twice rather than two of them.
-        hit = _IMPORTS.setdefault(key, (array, storage))
-    return hit[0]
+    # Another thread may have imported the same buffer while this one was
+    # building it. _store_import keeps whichever landed first, preserving the
+    # stable ndarray identity Quadrants uses in its specialization key.
+    return _store_import(key, tensor, array, storage)
 
 
 def clear_import_cache():
-    """Drop every imported ndarray and the storages they were holding.
+    """Drop every cached imported ndarray immediately.
 
-    Call this whenever the render gives device memory back --
-    :func:`~algan.utils.memory_utils.release_torch_memory` does, immediately
-    before ``torch.mps.empty_cache()``, because an entry here is exactly what
-    stops that call reclaiming anything.
+    Ordinary temporary imports now evict themselves when their last source
+    tensor view dies. This explicit operation is still the pressure/teardown
+    lever: :func:`~algan.utils.memory_utils.release_torch_memory` calls it
+    immediately before ``torch.mps.empty_cache()`` so even long-lived arena or
+    scene views stop pinning allocations through the lookup cache. An ndarray
+    already held by a caller keeps its own storage alive until that caller is
+    finished, so clearing the lookup cannot invalidate an in-flight launch.
 
-    It used to be called once, at the end of a render job, on the reasoning
-    that an entry outliving the job would pin the arena. True, and far too
-    narrow: the arena is *one* storage that the job reuses, while every other
-    kernel argument -- the uploaded scene arrays, the BVH nodes, the wavefront
-    queues -- is a fresh allocation on every batch, and each one was pinned
-    here until the job ended. Measured on the Mac runner, that walked torch's
-    live MPS bytes from 0.64 GB to 6.74 GB over fifteen batches of eight
-    frames, on a machine with 7 GB and no swap (``DESIGN_mps_support.md``
-    §1.4).
+    Before the per-owner eviction, every fresh batch allocation handed to a
+    kernel remained pinned until one of these coarse clears. On the constrained
+    Mac runner that pressure was enough to make framework/compaction work
+    dominate a UHD render despite fast Metal traversal.
     """
     with _LOCK:
         _IMPORTS.clear()
@@ -300,7 +360,8 @@ def cache_stats():
     """
     with _LOCK:
         storages = {}
-        for _array, storage in _IMPORTS.values():
+        for entry in _IMPORTS.values():
+            storage = entry.storage
             storages[storage.data_ptr()] = storage.nbytes()
         return len(_IMPORTS), len(storages), sum(storages.values())
 
