@@ -207,7 +207,14 @@ sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
 
 # Assign dense conflict-rank groups from per-band counts instead of sorting.
 # Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
-# Whole-render warm mean improved 1.7%; other devices retain the original path.
+# Whole-render warm mean improved 1.7%.
+#
+# The kernel used to be reached only on CUDA, by name. It is now asked for
+# wherever a launch stages nothing, which the Metal adoption made true on an
+# Apple GPU as well -- and which turns out to include the arch the exclusion
+# was protecting: over 2.9M fragments on the CPU arch the two arms agree
+# exactly at **9.2 ms against 52.0 ms**. A launch that WOULD stage still takes
+# the torch path.
 sheet_rank_groups = env_flag("ALGAN_SHEET_RANK_GROUPS", True)
 
 #: Most exact area a FULL-union band may hold and still count, for
