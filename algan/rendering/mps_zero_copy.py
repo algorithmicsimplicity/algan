@@ -28,18 +28,36 @@ error, and all handled here rather than left to call sites:
 
 **Lifetime.** Taichi marks an imported allocation ``dont_destroy`` and holds no
 reference to whatever owns the buffer. Torch's caching allocator will recycle a
-buffer whose last tensor died, so the cache keeps the *storage* alive for as
-long as it keeps the ndarray, and :func:`clear_import_cache` is what releases
-both -- the render loop drops a chunk's arena deliberately, and an import cache
-that outlived it would pin the largest allocation in the process.
+buffer whose last tensor died, so every imported ndarray keeps the *storage*
+alive itself. The lookup cache, however, lives only while at least one source
+tensor view for that exact slice is alive; a weakref callback evicts temporary
+imports as soon as their tensor dies. :func:`clear_import_cache` remains the
+explicit pressure/teardown lever, but ordinary temporaries no longer wait for a
+chunk-wide memory release before their cache entry disappears.
 
-**Ordering.** Torch and Taichi hold separate Metal command queues and torch's
-heaps are ``MTLHazardTrackingModeUntracked``, so nothing orders a torch write
-against a Taichi read of the same buffer. Both syncs are taken per launch here.
-That is heavier than necessary -- ``DESIGN_mps_zero_copy.md`` §3.3 wants them
-once per frame batch -- and it is where to look first for the next speedup, but
-a per-batch fence needs the render loop to declare its batches and a wrong
-answer here is invisible.
+**Ordering.** Torch's heaps are ``MTLHazardTrackingModeUntracked``, so nothing
+inside Metal orders a torch write against a kernel's read of the same buffer;
+the ordering has to come from the command queue. Two regimes, chosen per
+launch by :func:`~algan.rendering.taichi_runtime.shared_torch_queue`:
+
+* **Separate queues** (the Taichi backend, or ``ALGAN_MPS_SHARED_QUEUE=0``):
+  nothing orders the two queues, so both host fences are taken around every
+  launch -- ``torch.mps.synchronize()`` before it and ``ti.sync()`` after --
+  which serializes the CPU against the GPU twice per kernel.
+* **Torch's queue shared** (the default on Quadrants, see
+  :func:`~algan.rendering.taichi_runtime._torch_mps_command_queue`): Metal
+  executes command buffers on one queue in commit order, so what remains is
+  making sure everything is *committed* in the order it was issued. Torch
+  batches encoded work in an open command buffer and commits lazily; a
+  ``torch.mps.Event.record()`` commits that buffer (``MPSHooks::recordEvent``
+  passes ``syncEvent=true``, which is ``MPSStream::synchronize(COMMIT)``,
+  which is ``commitAndContinue``) **without waiting on the CPU**, and that is
+  the pre-launch fence. Quadrants for its part submits its command list at the
+  end of every launch when the queue is external
+  (``runtime/gfx/runtime.cpp``, ``submit_current_cmdlist_if_timeout``'s
+  ``force_flush``), so torch's next command buffer is queued behind the
+  kernel with no post-launch fence at all. A torch readback still waits, as it
+  always did, and FIFO order makes that wait cover the kernel.
 
 **Program device.** An MPS tensor does not prove the compiler program is Metal.
 The portable macOS CI job deliberately renders on the CPU while hardware tests
@@ -66,14 +84,79 @@ Taichi an object pointer with an integer added to it.
 from __future__ import annotations
 
 import threading
+import weakref
 
 _LOCK = threading.Lock()
 #: (buffer handle, dtype, outer shape, element shape, byte offset)
-#: -> (ndarray, storage).
-#: The storage is held so torch cannot recycle the buffer underneath a kernel.
+#: -> ``_ImportEntry``. The entry is strongly cached only while at least one
+#: source tensor object for that slice survives. The ndarray itself also keeps
+#: the torch storage alive, so an in-flight/direct caller remains safe after a
+#: weakref callback evicts the lookup entry.
 _IMPORTS: dict = {}
 _AVAILABLE = None
 _INSTALLED = False
+
+
+class _ImportEntry:
+    """One cached Metal import and the source tensor objects keeping it reusable."""
+
+    __slots__ = ("array", "storage", "owners")
+
+    def __init__(self, array, storage):
+        self.array = array
+        self.storage = storage
+        # id(tensor) -> weakref.ref(tensor). Using ids deliberately avoids
+        # weakref equality on torch.Tensor, whose ``==`` returns a tensor.
+        self.owners = {}
+
+
+def _owner_gone(owner_ref, key, owner_id):
+    """Evict ``key`` once its last tensor view has died."""
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None or entry.owners.get(owner_id) is not owner_ref:
+            return
+        del entry.owners[owner_id]
+        if not entry.owners:
+            _IMPORTS.pop(key, None)
+
+
+def _track_owner_locked(key, entry, tensor):
+    """Record ``tensor`` as a weak owner of ``entry`` while ``_LOCK`` is held."""
+    owner_id = id(tensor)
+    current = entry.owners.get(owner_id)
+    if current is not None and current() is tensor:
+        return
+    entry.owners[owner_id] = weakref.ref(
+        tensor,
+        lambda ref, key=key, owner_id=owner_id: _owner_gone(ref, key, owner_id),
+    )
+
+
+def _cached_import(key, tensor):
+    """Return and retain an existing import for ``tensor``, or None."""
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None:
+            return None
+        _track_owner_locked(key, entry, tensor)
+        return entry.array
+
+
+def _store_import(key, tensor, array, storage):
+    """Publish ``array`` atomically and tie its cache lifetime to ``tensor``."""
+    # ExternalMetalNdarray is a Python object on both patched backends. Keeping
+    # storage on the ndarray itself makes direct/in-flight users safe even if
+    # the weak source owner disappears and the lookup entry is evicted.
+    array._algan_storage = storage
+    with _LOCK:
+        entry = _IMPORTS.get(key)
+        if entry is None:
+            entry = _ImportEntry(array, storage)
+            _IMPORTS[key] = entry
+        _track_owner_locked(key, entry, tensor)
+        return entry.array
+
 
 #: Engagement telemetry, read by ``benchmarks/_mps_render_smoke.py`` and by
 #: anything else asking whether the fork is actually in the path. This module's
@@ -95,7 +178,66 @@ STATS = {
     "arguments": 0,
     "staged_arguments": 0,
     "host_arguments": 0,
+    # Converted launches that took the shared-queue fence (a torch commit, no
+    # host wait) rather than the two blocking syncs. Counted for the same
+    # reason as the rest: a fence regime nobody can see is one nobody can
+    # prove engaged, and the two render identical frames.
+    "shared_queue_launches": 0,
 }
+
+#: The one ``torch.mps.Event`` :func:`_commit_torch_queue` records on. Created
+#: on first use because constructing it initialises MPS.
+_TORCH_COMMIT_EVENT = None
+
+
+def _commit_torch_queue():
+    """Commit torch's open MPS command buffer to its queue without waiting.
+
+    The pre-launch fence of the shared-queue regime (module docstring,
+    *Ordering*). ``Event.record()`` reaches ``MPSStream::synchronize(COMMIT)``,
+    which is a ``commitAndContinue`` of the stream's current command buffer:
+    every torch op encoded so far is now queued ahead of whatever is committed
+    next on the same queue, and the CPU does not wait for any of it.
+    """
+    global _TORCH_COMMIT_EVENT
+    import torch
+
+    if _TORCH_COMMIT_EVENT is None:
+        _TORCH_COMMIT_EVENT = torch.mps.Event()
+    _TORCH_COMMIT_EVENT.record()
+
+
+def _wait_torch_queue():
+    """The separate-queue pre-launch fence: drain torch's queue on the CPU."""
+    import torch
+
+    torch.mps.synchronize()
+
+
+def _wait_taichi_queue():
+    """The separate-queue post-launch fence: drain the compiler's queue."""
+    from algan.taichi_compat import ti
+
+    ti.sync()
+
+
+def launch_with_fences(launch, shared_queue):
+    """Run ``launch()`` between the fences its queue regime needs.
+
+    ``shared_queue`` is :func:`~algan.rendering.taichi_runtime.shared_torch_queue`'s
+    answer for the live program. Split out of the launch wrapper so the choice
+    of fences can be tested on a machine with no Apple GPU.
+    """
+    if shared_queue:
+        STATS["shared_queue_launches"] += 1
+        _commit_torch_queue()
+        return launch()
+    _wait_torch_queue()
+    try:
+        return launch()
+    finally:
+        _wait_taichi_queue()
+
 
 #: ``(kernel, position, why)`` for every argument counted in
 #: ``staged_arguments`` or ``host_arguments``, so the count can be acted on. A
@@ -246,10 +388,9 @@ def import_tensor(tensor, element_shape=()):
         if offset % element_bytes:
             return None
     key = (handle, tensor.dtype, outer_shape, element_shape, offset)
-    with _LOCK:
-        hit = _IMPORTS.get(key)
-        if hit is not None:
-            return hit[0]
+    hit = _cached_import(key, tensor)
+    if hit is not None:
+        return hit
 
     from algan.taichi_compat import submodule
 
@@ -258,32 +399,27 @@ def import_tensor(tensor, element_shape=()):
     array = ExternalMetalNdarray(
         dtype, list(outer_shape), handle, offset, element_shape=element_shape
     )
-    with _LOCK:
-        # Another thread may have imported the same buffer while this one was
-        # building it. Keep whichever landed first so the cache stays one
-        # ndarray per buffer, which is what makes the aliasing pair bind the
-        # same allocation twice rather than two of them.
-        hit = _IMPORTS.setdefault(key, (array, storage))
-    return hit[0]
+    # Another thread may have imported the same buffer while this one was
+    # building it. _store_import keeps whichever landed first, preserving the
+    # stable ndarray identity Quadrants uses in its specialization key.
+    return _store_import(key, tensor, array, storage)
 
 
 def clear_import_cache():
-    """Drop every imported ndarray and the storages they were holding.
+    """Drop every cached imported ndarray immediately.
 
-    Call this whenever the render gives device memory back --
-    :func:`~algan.utils.memory_utils.release_torch_memory` does, immediately
-    before ``torch.mps.empty_cache()``, because an entry here is exactly what
-    stops that call reclaiming anything.
+    Ordinary temporary imports now evict themselves when their last source
+    tensor view dies. This explicit operation is still the pressure/teardown
+    lever: :func:`~algan.utils.memory_utils.release_torch_memory` calls it
+    immediately before ``torch.mps.empty_cache()`` so even long-lived arena or
+    scene views stop pinning allocations through the lookup cache. An ndarray
+    already held by a caller keeps its own storage alive until that caller is
+    finished, so clearing the lookup cannot invalidate an in-flight launch.
 
-    It used to be called once, at the end of a render job, on the reasoning
-    that an entry outliving the job would pin the arena. True, and far too
-    narrow: the arena is *one* storage that the job reuses, while every other
-    kernel argument -- the uploaded scene arrays, the BVH nodes, the wavefront
-    queues -- is a fresh allocation on every batch, and each one was pinned
-    here until the job ended. Measured on the Mac runner, that walked torch's
-    live MPS bytes from 0.64 GB to 6.74 GB over fifteen batches of eight
-    frames, on a machine with 7 GB and no swap (``DESIGN_mps_support.md``
-    §1.4).
+    Before the per-owner eviction, every fresh batch allocation handed to a
+    kernel remained pinned until one of these coarse clears. On the constrained
+    Mac runner that pressure was enough to make framework/compaction work
+    dominate a UHD render despite fast Metal traversal.
     """
     with _LOCK:
         _IMPORTS.clear()
@@ -300,7 +436,8 @@ def cache_stats():
     """
     with _LOCK:
         storages = {}
-        for _array, storage in _IMPORTS.values():
+        for entry in _IMPORTS.values():
+            storage = entry.storage
             storages[storage.data_ptr()] = storage.nbytes()
         return len(_IMPORTS), len(storages), sum(storages.values())
 
@@ -448,7 +585,8 @@ def report():
         f"available={zero_copy_available()} installed={installed()}",
         f"converted={STATS['converted_launches']} launches "
         f"({STATS['arguments']} args), "
-        f"passthrough={STATS['passthrough_launches']}",
+        f"passthrough={STATS['passthrough_launches']}, "
+        f"shared-queue fences={STATS['shared_queue_launches']}",
         f"still crossing the bus: {STATS['staged_arguments']} staged MPS "
         f"args, {STATS['host_arguments']} host args",
     ]
@@ -478,10 +616,8 @@ def install_zero_copy_launch():
     global _INSTALLED
     if _INSTALLED or not zero_copy_available():
         return
-    import torch
-
     from algan.rendering import taichi_runtime
-    from algan.taichi_compat import submodule, ti
+    from algan.taichi_compat import submodule
 
     Kernel = submodule("lang.kernel_impl").Kernel
 
@@ -513,16 +649,13 @@ def install_zero_copy_launch():
             return previous_call(self, *args, **kwargs)
         STATS["converted_launches"] += 1
         STATS["arguments"] += count
-        # Both fences, per launch. Torch's queue has to have drained before a
-        # kernel reads what it wrote, and the kernel has to have finished
-        # before torch reads back -- separate command queues over untracked
-        # heaps order nothing on their own. See the module docstring for why
-        # this is not yet per batch.
-        torch.mps.synchronize()
-        try:
-            return previous_call(self, *tuple(converted), **kwargs)
-        finally:
-            ti.sync()
+        # The fences depend on whether the compiler dispatches on torch's own
+        # queue -- see the module docstring, *Ordering*.
+        converted = tuple(converted)
+        return launch_with_fences(
+            lambda: previous_call(self, *converted, **kwargs),
+            taichi_runtime.shared_torch_queue(),
+        )
 
     Kernel.__call__ = zero_copy_call
     _INSTALLED = True

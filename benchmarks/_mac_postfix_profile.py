@@ -192,6 +192,63 @@ def child(args):
             stream.write(line + "\n")
         print("POSTFIX_PROFILE " + line, flush=True)
 
+    def print_summary(run, wall):
+        """Print the timer table into the log, not only into the artifact.
+
+        The artifact is the complete record, but a job's log is what can be
+        read from anywhere -- the artifact host is not reachable from every
+        box that reads these runs. Two views: totals per timer family (self
+        time, so the nested hooks do not double count), and the top rows by
+        self time with their counts, split into the first chunk against the
+        steady state, since the first chunk of a render pays costs the rest
+        do not.
+        """
+        rows = timer.data()["rows"]
+        if not rows:
+            return
+
+        def family(name):
+            return name.split(".", 1)[0] if "." in name else name
+
+        def chunk_group(phase):
+            if phase in ("prelude", "chunk1", "after_chunk1"):
+                return "first"
+            return "steady"
+
+        families = defaultdict(lambda: [0, 0.0])
+        for row in rows:
+            entry = families[(chunk_group(row["phase"]), family(row["name"]))]
+            entry[0] += row["count"]
+            entry[1] += row["self_seconds"]
+        print(f"POSTFIX_SUMMARY {args.child} run {run} wall {wall:.1f} s", flush=True)
+        print("  self seconds by family (first chunk+prelude | steady state):")
+        names = sorted({key[1] for key in families})
+        for name in names:
+            first = families.get(("first", name), [0, 0.0])
+            steady = families.get(("steady", name), [0, 0.0])
+            print(
+                f"    {name:<10} first {first[1]:7.2f} s ({first[0]:6d} calls) | "
+                f"steady {steady[1]:7.2f} s ({steady[0]:7d} calls)",
+                flush=True,
+            )
+        merged = defaultdict(lambda: [0, 0.0, 0.0])
+        for row in rows:
+            entry = merged[(chunk_group(row["phase"]), row["name"])]
+            entry[0] += row["count"]
+            entry[1] += row["self_seconds"]
+            entry[2] = max(entry[2], row["maximum"])
+        for group in ("first", "steady"):
+            top = sorted(
+                ((k[1], v) for k, v in merged.items() if k[0] == group),
+                key=lambda item: -item[1][1],
+            )[:45]
+            print(f"  top self-time rows, {group}:")
+            for name, (count, self_seconds, maximum) in top:
+                print(
+                    f"    {self_seconds:7.2f} s {count:7d}x max {maximum:6.3f}  {name[:110]}",
+                    flush=True,
+                )
+
     def pool():
         try:
             rss = psutil.Process().memory_info().rss
@@ -558,6 +615,7 @@ def child(args):
             (output / f"timings_run{run}.json").write_text(
                 json.dumps(timer.data(), indent=2)
             )
+            print_summary(run, elapsed)
         if cpu_profile is not None:
             cpu_profile.dump_stats(str(output / "host_profile.pstats"))
             with (output / "host_profile.txt").open("w") as stream:

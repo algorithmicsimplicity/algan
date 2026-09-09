@@ -699,7 +699,99 @@ def taichi_init_kwargs():
     opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
+    if kwargs["arch"] == ti.metal:
+        queue = _torch_mps_command_queue()
+        if queue:
+            kwargs["external_metal_command_queue"] = queue
+            kwargs["external_metal_command_queue_is_torch_queue"] = True
     return kwargs
+
+
+def _torch_mps_command_queue():
+    """Torch's MPS ``MTLCommandQueue`` as an integer, or 0 to keep separate queues.
+
+    Quadrants can dispatch on a command queue it did not create
+    (``external_metal_command_queue``), and when that queue is torch's own
+    (``external_metal_command_queue_is_torch_queue``) Metal's in-order
+    execution of command buffers on one queue orders the two frameworks' GPU
+    work by itself. That is what lets :mod:`algan.rendering.mps_zero_copy` drop
+    the two host-side fences it otherwise takes around **every** kernel launch
+    -- ``torch.mps.synchronize()`` before and ``ti.sync()`` after -- which on
+    an Apple GPU serialize the CPU against the GPU a hundred-odd times per
+    render chunk. ``quadrants.interop.get_mps_command_queue`` reads the queue
+    off torch's default MPS stream (initialising MPS if it has not been), and
+    answers 0 anywhere it cannot: off macOS, without MPS, or on a torch build
+    whose symbols it does not know.
+
+    Quadrants only: the Taichi backend has no such option. The pointer is
+    process-local and the source-key fingerprint already leaves it out
+    (``taichi_source_key._CONFIG_EXCLUDE_NAMES``), as does the compiler's own
+    cache key, so sharing the queue costs no kernel recompiles.
+
+    ``ALGAN_MPS_SHARED_QUEUE=0`` keeps the separate queues and the fences: the
+    A/B arm, and the escape hatch should the shared queue misbehave on some
+    torch build. Read here, at ``init`` time, rather than per launch.
+    """
+    if BACKEND != "quadrants":
+        return 0
+    if not env_flag("ALGAN_MPS_SHARED_QUEUE", True):
+        return 0
+    try:
+        from algan.taichi_compat import submodule
+
+        get_queue = submodule("interop").get_mps_command_queue
+    except Exception:
+        return 0
+    try:
+        return int(get_queue() or 0)
+    except Exception as exc:
+        get_logger().log(
+            PERF, "Not sharing torch's Metal command queue with Quadrants: %r", exc
+        )
+        return 0
+
+
+#: ``(program, answer)`` memo for :func:`shared_torch_queue`. Keyed on the
+#: live program's identity because a re-``init`` builds a new program from a
+#: fresh :func:`taichi_init_kwargs`, and that is the only way the answer moves.
+_SHARED_QUEUE_MEMO = (None, False)
+
+
+def shared_torch_queue():
+    """Whether the live compiler program dispatches on torch's MPS queue.
+
+    Read off the program's own config rather than off what
+    :func:`taichi_init_kwargs` asked for, because ``init`` is what decides: a
+    ``QD_ARCH`` override, a backend that refused the queue, or a program
+    started by something other than :func:`_start_program` would all leave the
+    kwargs and the truth apart. ``False`` when no program is up, on the Taichi
+    backend, and whenever the config cannot be read -- the separate-queue
+    fences are the safe answer, so a doubt resolves to them.
+
+    Called in front of every converted kernel launch, hence the memo.
+    """
+    global _SHARED_QUEUE_MEMO
+    from algan.taichi_compat import program
+
+    try:
+        prog = program()
+    except Exception:
+        return False
+    if prog is None:
+        return False
+    memo_prog, answer = _SHARED_QUEUE_MEMO
+    if memo_prog is prog:
+        return answer
+    answer = False
+    try:
+        cfg = prog.config()
+        answer = bool(getattr(cfg, "external_metal_command_queue", 0)) and bool(
+            getattr(cfg, "external_metal_command_queue_is_torch_queue", False)
+        )
+    except Exception:
+        answer = False
+    _SHARED_QUEUE_MEMO = (prog, answer)
+    return answer
 
 
 #: The offline cache's metadata lock files, by compiler: ``ticache.lock``
@@ -945,13 +1037,29 @@ def reset_quadrants_for_memory_pressure():
     The next guarded kernel launch or render starts a fresh Program and reloads
     compiled kernels from the offline cache.
 
+    **Never on the Metal arch.** On a unified-memory Mac the host figure this
+    reacts to is depressed by the GPU pool the render itself holds -- torch's
+    MPS allocator and the Metal driver -- and resetting the compiler frees none
+    of that: the Metal backend has no LLVM JIT, and its Program is small.
+    What the reset does cost there is a fresh ``init`` and every kernel's
+    Metal pipeline rebuilt from the offline cache on the next render. Measured
+    on the 7 GB Mac runner (``benchmarks/_mac_postfix_profile.py``, run
+    34299911993): with host memory at 0.8-1.2 GB free, **every** warm UHD
+    render started with ``[Quadrants] Starting on arch=metal`` and paid ~6 s
+    of first-launch pipeline creation in its first chunk -- a tenth of the
+    render -- while the CPU arm of the same job initialised once. So on Metal
+    the request is declined outright rather than deferred.
+
     Returns whether the runtime was reset synchronously. A ``False`` result can
-    therefore mean either "not applicable" or "safely deferred".
+    therefore mean "not applicable", "declined" or "safely deferred".
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
     if BACKEND != "quadrants":
         return False
     if not _already_initialized():
+        return False
+    if _live_arch() == ti.metal:
+        _PRESSURE_RESET_PENDING = False
         return False
     if render_is_active():
         _PRESSURE_RESET_PENDING = True

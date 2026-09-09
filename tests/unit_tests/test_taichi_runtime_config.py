@@ -219,6 +219,86 @@ def test_full_traceback_is_passed_only_when_asked_for(monkeypatch):
     assert taichi_runtime.taichi_init_kwargs()["print_full_traceback"] is True
 
 
+def test_torchs_metal_queue_is_shared_only_on_the_metal_arch(monkeypatch):
+    """The shared-queue kwargs ride along exactly when the arch is Metal.
+
+    Sharing torch's MPS command queue with Quadrants is what lets the zero-copy
+    launch wrapper drop its two host fences, so the kwargs have to be there on
+    an Apple GPU -- and must not be there anywhere else, where the pointer is
+    meaningless. The queue getter is faked so this runs on any box.
+    """
+    from algan.rendering import taichi_runtime
+
+    monkeypatch.setattr(taichi_runtime, "_torch_mps_command_queue", lambda: 0xC0FFEE)
+    monkeypatch.setattr(taichi_runtime, "render_device", lambda: torch.device("mps"))
+    kwargs = taichi_runtime.taichi_init_kwargs()
+    assert kwargs["arch"] == ti.metal
+    assert kwargs["external_metal_command_queue"] == 0xC0FFEE
+    assert kwargs["external_metal_command_queue_is_torch_queue"] is True
+
+    monkeypatch.setattr(taichi_runtime, "_torch_mps_command_queue", lambda: 0)
+    kwargs = taichi_runtime.taichi_init_kwargs()
+    assert "external_metal_command_queue" not in kwargs
+    assert "external_metal_command_queue_is_torch_queue" not in kwargs
+
+    monkeypatch.setattr(taichi_runtime, "_torch_mps_command_queue", lambda: 0xC0FFEE)
+    monkeypatch.setattr(taichi_runtime, "render_device", lambda: torch.device("cpu"))
+    kwargs = taichi_runtime.taichi_init_kwargs()
+    assert "external_metal_command_queue" not in kwargs
+
+
+def test_the_shared_queue_has_a_kill_switch(monkeypatch):
+    """``ALGAN_MPS_SHARED_QUEUE=0`` keeps separate queues, whatever torch offers."""
+    from algan.rendering import taichi_runtime
+
+    monkeypatch.setenv("ALGAN_MPS_SHARED_QUEUE", "0")
+    assert taichi_runtime._torch_mps_command_queue() == 0
+    monkeypatch.delenv("ALGAN_MPS_SHARED_QUEUE")
+    if BACKEND != "quadrants":
+        assert taichi_runtime._torch_mps_command_queue() == 0
+    else:
+        # Off macOS the getter itself answers 0; on a Mac this is the real
+        # pointer. Either way it is an int and never raises.
+        assert isinstance(taichi_runtime._torch_mps_command_queue(), int)
+
+
+def test_shared_torch_queue_reads_the_live_programs_config(monkeypatch):
+    """The per-launch predicate follows the program, not the kwargs.
+
+    It is memoized on program identity, so the memo is cleared first; on this
+    box's program the queue is not shared, and a faked config that says it is
+    must flip the answer.
+    """
+    from algan.rendering import taichi_runtime
+
+    taichi_runtime.init_taichi()
+    monkeypatch.setattr(taichi_runtime, "_SHARED_QUEUE_MEMO", (None, False))
+    assert taichi_runtime.shared_torch_queue() is False
+
+    class _Config:
+        external_metal_command_queue = 0xC0FFEE
+        external_metal_command_queue_is_torch_queue = True
+
+    class _Program:
+        def config(self):
+            return _Config()
+
+    prog = _Program()
+    monkeypatch.setattr(
+        "algan.rendering.taichi_runtime._SHARED_QUEUE_MEMO", (None, False)
+    )
+    import algan.taichi_compat as compat
+
+    monkeypatch.setattr(compat, "program", lambda: prog)
+    assert taichi_runtime.shared_torch_queue() is True
+    # A program with the queue but not flagged as torch's keeps the fences.
+    _Config.external_metal_command_queue_is_torch_queue = False
+    monkeypatch.setattr(
+        "algan.rendering.taichi_runtime._SHARED_QUEUE_MEMO", (None, False)
+    )
+    assert taichi_runtime.shared_torch_queue() is False
+
+
 def _touch(path, age_seconds, now):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("")
@@ -526,5 +606,28 @@ def test_deferred_pressure_reset_is_dropped_if_pressure_clears(monkeypatch):
     with taichi_runtime.render_job_holding_the_arch():
         pass
 
+    assert calls == []
+    assert taichi_runtime._PRESSURE_RESET_PENDING is False
+
+
+def test_quadrants_pressure_reset_is_declined_on_the_metal_arch(monkeypatch):
+    """On Metal the reset frees nothing that the host figure is measuring.
+
+    The figure is depressed by the GPU pool the render itself holds, and a
+    reset there costs the next render a fresh ``init`` and every kernel's
+    pipeline -- measured at ~6 s per warm UHD render on the Mac runner, where
+    every render re-initialised. So it is declined, and not merely deferred.
+    """
+    from algan.rendering import taichi_runtime
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
+    monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.metal)
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
+
+    assert taichi_runtime.reset_quadrants_for_memory_pressure() is False
     assert calls == []
     assert taichi_runtime._PRESSURE_RESET_PENDING is False
