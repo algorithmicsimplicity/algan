@@ -11,8 +11,16 @@ is what makes the MPS and multi-GPU rows testable on a CPU-only box.
 
 Measured evidence for the MPS rows is in ``DESIGN_mps_support.md``: the same
 kernel over the same 32 MB runs in 1.09 ms on the CPU arch and 58.01 ms on Metal
-with MPS tensors, because Taichi copies each argument to the host and back
-around the launch. ``taichi_launch_is_local`` used to call that free.
+with MPS tensors, because *stock* Taichi copies each argument to the host and
+back around the launch. ``taichi_launch_is_local`` used to call that free.
+
+The MPS rows have since split in two rather than flipped. The build Algan
+installs carries ``MetalDevice::import_mtl_buffer`` and
+:mod:`algan.rendering.mps_zero_copy` reaches it in front of every launch, so
+that pairing is now local -- but only where the conversion is actually
+installed, and a build without it must still answer False or the renderer will
+choose kernels whose arguments round-trip through the host. So every MPS case
+below is parametrized on the install rather than on the platform.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan.rendering import taichi_runtime
+from algan.rendering import mps_zero_copy, taichi_runtime
 from algan.taichi_compat import ti
 
 # Deliberately not marked ``fast``. These assertions fail when
@@ -39,11 +47,12 @@ def arch(monkeypatch):
     device instead.
     """
 
-    def set_pairing(live, device):
+    def set_pairing(live, device, zero_copy=True):
         monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: live)
         monkeypatch.setattr(
             taichi_runtime, "render_device", lambda: torch.device(device)
         )
+        monkeypatch.setattr(mps_zero_copy, "installed", lambda: zero_copy)
 
     return set_pairing
 
@@ -56,8 +65,8 @@ def arch(monkeypatch):
 @pytest.mark.parametrize(
     ("live", "render", "tensor", "expected"),
     [
-        # The two pairings Taichi can bind without copying: its core implements
-        # Device::import_memory for CpuDevice and CudaDevice, and nothing else.
+        # The two pairings the compiler's core binds without copying: it
+        # implements Device::import_memory for CpuDevice and CudaDevice.
         (ti.cpu, "cpu", "cpu", True),
         (ti.cuda, "cuda", "cuda", True),
         # A host tensor on a GPU arch stages -- true of CUDA, and the reason
@@ -67,21 +76,36 @@ def arch(monkeypatch):
         # A device tensor on the CPU arch stages the other way.
         (ti.cpu, "cpu", "cuda", False),
         (ti.cpu, "cpu", "mps", False),
-        # THE REGRESSION. Both halves name the same Apple GPU and Taichi still
-        # copies through the host, because its Metal backend cannot import a
-        # pointer torch allocated. A device-equality test answered True here.
-        (ti.metal, "mps", "mps", False),
+        # The third local pairing, and the youngest: the Metal RHI's own
+        # import_mtl_buffer, reached by mps_zero_copy in front of every launch.
+        (ti.metal, "mps", "mps", True),
+        # Vulkan serves the same Apple GPU and has no adoption of its own, so
+        # the arch is what decides here too.
         (ti.vulkan, "mps", "mps", False),
-        # ... and it is the arch that decides, not the render device: an MPS
-        # tensor is no more bindable when the program happens to be on CUDA.
+        # ... and an MPS tensor is no more bindable when the program is CUDA.
         (ti.cuda, "cuda", "mps", False),
     ],
 )
-def test_only_cpu_on_cpu_and_cuda_on_cuda_avoid_staging(
-    arch, live, render, tensor, expected
-):
+def test_which_pairings_avoid_staging(arch, live, render, tensor, expected):
     arch(live, render)
     assert taichi_runtime.taichi_launch_is_local(torch.device(tensor)) is expected
+
+
+@pytest.mark.parametrize("live", [ti.metal, None])
+def test_mps_is_local_only_where_the_conversion_is_installed(arch, live):
+    """THE REGRESSION, in its current form.
+
+    Both halves name the same Apple GPU, and whether the launch copies through
+    the host depends on something neither of them says: whether the build
+    carries ``import_mtl_buffer`` and Algan installed the wrapper that calls
+    it. Answering from the device pairing alone was what once called a 53x
+    staging cost free; answering it from the *platform* now would call it free
+    on any Mac, including one running a compiler without the adoption.
+    """
+    arch(live, "mps", zero_copy=True)
+    assert taichi_runtime.taichi_launch_is_local(torch.device("mps")) is True
+    arch(live, "mps", zero_copy=False)
+    assert taichi_runtime.taichi_launch_is_local(torch.device("mps")) is False
 
 
 def test_launch_locality_answers_before_taichi_is_up(arch):
@@ -100,7 +124,8 @@ def test_launch_locality_answers_before_taichi_is_up(arch):
     assert taichi_runtime.taichi_launch_is_local(torch.device("cpu")) is False
 
     arch(None, "mps")
-    assert taichi_runtime.taichi_launch_is_local(torch.device("mps")) is False
+    assert taichi_runtime.taichi_launch_is_local(torch.device("mps")) is True
+    assert taichi_runtime.taichi_launch_is_local(torch.device("cpu")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -158,16 +183,23 @@ def test_unrecognised_device_is_served_by_the_cpu_arch(arch):
     assert taichi_runtime._arch_matches_render_device() is True
 
 
-def test_cpu_and_cuda_arch_predicates_agree_with_the_live_program(arch):
-    """The two predicates the pairing rule is built from, read directly."""
+def test_arch_predicates_agree_with_the_live_program(arch):
+    """The three predicates the pairing rule is built from, read directly."""
     arch(ti.cpu, "cpu")
     assert taichi_runtime.taichi_arch_is_cpu() is True
     assert taichi_runtime.taichi_arch_is_cuda() is False
+    assert taichi_runtime.taichi_arch_is_metal() is False
 
     arch(ti.cuda, "cuda")
     assert taichi_runtime.taichi_arch_is_cpu() is False
     assert taichi_runtime.taichi_arch_is_cuda() is True
+    assert taichi_runtime.taichi_arch_is_metal() is False
 
     arch(ti.metal, "mps")
     assert taichi_runtime.taichi_arch_is_cpu() is False
     assert taichi_runtime.taichi_arch_is_cuda() is False
+    assert taichi_runtime.taichi_arch_is_metal() is True
+
+    # The Vulkan override serves the same Apple GPU and is not Metal.
+    arch(ti.vulkan, "mps")
+    assert taichi_runtime.taichi_arch_is_metal() is False
