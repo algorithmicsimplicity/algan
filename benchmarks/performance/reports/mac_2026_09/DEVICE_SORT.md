@@ -1,5 +1,4 @@
-# The compaction's sorts, off torch: a radix sort that is Metal-only, and a
-# run sort that is not
+# The compaction's sorts, off torch: a radix sort that is Metal-only, and a run sort that is not
 
 `SHARED_QUEUE.md` §4 left the Apple GPU's remaining cost as one sentence: the
 raster and compaction stages are torch-op bound, and MPSGraph's sort and unique
@@ -32,13 +31,23 @@ It stopped being right when `mps_zero_copy` landed. The Metal RHI carries its
 own non-virtual `MetalDevice::import_mtl_buffer`, the wrapper reaches it in
 front of every launch, and on the build Algan installs an MPS argument is
 *bound* rather than copied (`DESIGN_mps_zero_copy.md` §1). Nothing updated the
-predicate, so the whole set of kernels gated on it stayed unreachable on an
-Apple GPU: the sheet run sorts, the group metadata, the PN level searches.
+predicate, so every kernel gated on it stayed unreachable on an Apple GPU.
 
 It now asks whether the conversion is installed rather than naming CUDA. A
 build without the adoption still answers False -- that is the condition, not
 the platform, and getting it from the platform would call a 53x staging cost
 free on any Mac running an unpatched compiler.
+
+**What that actually switched on is small, and deliberately so.** Most call
+sites have a second gate of their own and it is still closed: `refit_bvh`'s
+pack kernel is behind `ALGAN_REFIT_PACK_KERNEL` (off), the run sorts behind
+`ALGAN_SHEET_PIXEL_SORT` (off), the group metadata behind
+`ALGAN_SHEET_METADATA_KERNEL` (off), and the **PN level searches do not become
+reachable at all** -- `pn_criterion_kernel_active()` asks whether projection
+ran on CUDA or the arch is the CPU, and neither is true on Metal, so
+README.md's Tier-1 item 4 is untouched by this. The one path the predicate
+opens on its own is `_sheet_rank_groups`, whose CUDA-by-name gate is widened to
+match (§5), and it is what makes the run sort *available* to be measured.
 
 ## 2. The two candidates, timed
 

@@ -598,6 +598,12 @@ def taichi_launch_is_local(device):
     physical device -- a Vulkan program serving that same Apple GPU has no
     adoption of its own and takes the copy.
 
+    Widening this opens few paths on its own: most call sites carry a second
+    gate that is still closed on Metal (``ALGAN_REFIT_PACK_KERNEL``,
+    ``ALGAN_SHEET_PIXEL_SORT``, ``ALGAN_SHEET_METADATA_KERNEL``), and the PN
+    level searches are decided by ``pn_criterion_kernel_active`` instead, which
+    asks a different question and still answers no there.
+
     Phrased as a property of the pairing rather than as ``device.type ==
     "cuda"``, because those are not the same question either. A host tensor on
     a CUDA arch stages, and must take the torch path; a host tensor on a **CPU**
