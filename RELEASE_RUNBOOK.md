@@ -21,7 +21,7 @@ State as of 2026-09-09, verified against the live repository and PyPI.
 | `pyproject.toml` / `uv.lock` | Already consume `algan-quadrants==1.3.0.post2`, with real PyPI hashes |
 | `pypi` GitHub environment | Exists and has published before (`algan-quadrants` post2, run 34064942236) |
 | Release workflow | `.github/workflows/release.yaml`, with `dry_run` and `docs_only` rehearsal modes |
-| Build + metadata | `uv build`, `twine check` and `scripts/gate/verify_license_notices.py` all pass locally on `0.2.2` |
+| Build + metadata | `uv build`, `twine check` and `scripts/gate/verify_license_notices.py` all pass locally |
 | Audit §15 hygiene | `recipe/` deleted, README badges real, `LICENSE` year `2025-2026` |
 
 ## Do the quadrants wheels need rebuilding?
@@ -40,11 +40,35 @@ consumer-side dance from `quadrants_patches/PYPI.md` — publish, then bump
 is not on the critical path for a first release. Ship post2, and let post3 land
 in 0.2.3.
 
+## The version is `0.0.0`
+
+`pyproject.toml` declares `0.0.0`, and the release tags `v0.0.0`. The internal
+`0.2.x` numbering was never published, so the public history starts at zero.
+
+Two consequences worth knowing rather than discovering:
+
+- **`0.0.0` is the permanent floor.** PyPI versions cannot be deleted or reused,
+  and nothing can ever be published below it. Every future release is an
+  upgrade, which is what you want here, but there is no room underneath.
+- **`>=` ranges behave.** `0.0.0` is a valid PEP 440 version and sorts below
+  everything, so a user pinning `algan>=0.1` simply will not match this release.
+
+Nothing else needs editing. `algan.__version__` and `algan --version` both read
+package metadata lazily, so `pyproject.toml` is the single source of truth, and
+no test hardcodes a version. The gate compares the declared version against the
+workflow's `version` input exactly — dispatch with `0.0.0`, and note that
+`v0.0.0` is free (the only legacy tag is `BETA_v0.0.63`).
+
+You do not need to tag `stable` by hand. The `promote` job fast-forwards
+`stable` to the released commit and tags `v0.0.0` on it, in that order, in the
+same run.
+
 ---
 
 ## Blockers
 
-Four things will fail, in the order the release hits them.
+Three things will fail, in the order the release hits them, plus one step that
+is configured but has never run.
 
 ### 1. `stable` and `master` have no common ancestor
 
@@ -100,14 +124,45 @@ gate passes; `tests/baseline_store.py` then rejects it on the sha256 and the
 suite **skips**. That is exactly the silent-stop-testing failure the pointer
 mechanism exists to prevent.
 
-**Fix.** Cut a clean `baselines-2026-09-09.2` with all five correctly named,
-and update `tests/baselines.json`. Re-uploading into the existing tag also works
-but means deleting the wrong-content `path_traced-cpu.tar.gz` from a published
-release, which is more fiddly than making a new one.
+The archive occupying the expected `path_traced-cpu.tar.gz` name is not junk —
+it is the *superseded* baseline. `7cbd375` ("Rebaseline the CPU render suites
+and pin baselines-2026-09-09.1") rewrote that entry from `adcb2818…` to
+`7b3282b9…`, so `adcb2818…` is what the pointer used to expect under tag
+`baselines-2026-09-09`. Both ended up on the `.1` release, and the newer one is
+the one wearing the mangled name.
 
-**Also worth doing:** the gate only issues a HEAD request, which is what let the
-wrong-content case through. Downloading and verifying the sha256 costs about
-20 MB and a few seconds in a job that is already the cheapest in the release.
+**Fix — five assets under `baselines-2026-09-09.2`.** `tests/baselines.json` is
+already updated to that tag on this branch. Three files carry over unchanged;
+two need renaming:
+
+| Upload as | sha256 | Take from `.1`'s asset |
+| --- | --- | --- |
+| `full_renders-cpu.tar.gz` | `63426f88…` | `full_renders-cpu.tar.gz` — unchanged |
+| `full_renders-cuda.tar.gz` | `3103f3a8…` | `full_renders-cuda.tar.gz` — unchanged |
+| `path_traced-cuda.tar.gz` | `ef80f96c…` | `path_traced-cuda.tar.gz` — unchanged |
+| `full_renders-cpu_eager.tar.gz` | `cf0516e9…` | **`full_renderscpu_eager.tar.gz`** — rename |
+| `path_traced-cpu.tar.gz` | `7b3282b9…` | **`path_tracedcpu.tar.gz`** — rename |
+
+Do **not** carry `adcb2818…` forward under any name; it is the superseded
+`path_traced/cpu` and nothing references it any more.
+
+**Verify after uploading**, because a HEAD check would not have caught the
+wrong-content case that created this mess:
+
+```bash
+python - <<'PY'
+import json, hashlib, pathlib, urllib.request
+p = json.loads(pathlib.Path("tests/baselines.json").read_text())
+for key, e in p["archives"].items():
+    url = f"{p['base_url']}/{p['tag']}/{e['file']}"
+    got = hashlib.sha256(urllib.request.urlopen(url, timeout=120).read()).hexdigest()
+    print(("ok  " if got == e["sha256"] else "BAD "), key, e["file"], got[:12])
+PY
+```
+
+**Also worth doing:** the gate job only issues a HEAD request, which is exactly
+what let the wrong-content asset through. Folding the check above into it costs
+about 20 MB and a few seconds in the cheapest job of the release.
 
 ### 3. Green CI on the exact release commit
 
@@ -129,21 +184,25 @@ Run [34317795058](https://github.com/algorithmicsimplicity/algan/actions/runs/34
 is in flight on `1be534d` and carries that fix. **Confirm it goes green before
 releasing.** If it does, `1be534d` is a releasable commit.
 
-### 4. GitHub Pages is still deploying from a branch
+### 4. The docs deploy has never actually run — *not a blocker, but unproven*
 
-`https://algorithmicsimplicity.github.io/algan/` currently serves
-`<title>Algan v0.1.0</title>` with zero example videos — a stale hand-published
-build, not anything this repository's workflows produce. That URL is in
-`pyproject.toml`, the README badges, and `conf.py`'s `ogp_site_url`, and PyPI
-metadata is permanent.
+**Settings → Pages → Source is already set to "GitHub Actions"** (confirmed
+2026-09-09), so `publish_docs` will not fail on the setting. This is no longer a
+blocker; it is the one remaining step in the release that has never executed.
 
-`publish_docs` fails loudly until **Settings → Pages → Build and deployment →
-Source** is set to **GitHub Actions** (it is deliberately loud — a silent no-op
-would leave the stale site up while the release reported success).
+What is still true is that the live site is stale:
+`https://algorithmicsimplicity.github.io/algan/` serves
+`<title>Algan v0.1.0</title>` with zero example videos. Changing the source does
+not retract the previous deployment — Pages keeps serving the last thing that
+was deployed until something new replaces it. So the stale content is expected,
+and the first successful Actions deploy is what clears it.
 
-Flip it, then rehearse with `docs_only` before the real release, exactly as the
-workflow's own comment recommends. The `github-pages` environment is created by
-`actions/deploy-pages` on first run; there is nothing to set up by hand.
+That URL is in `pyproject.toml`, the README badges and `conf.py`'s
+`ogp_site_url`, and PyPI metadata is permanent, so the site wants to be correct
+*before* the upload rather than after. Rehearse with `docs_only` (Step 3) rather
+than letting the first-ever deploy happen during the real release. The
+`github-pages` environment is created by `actions/deploy-pages` on first run;
+there is nothing to set up by hand.
 
 ---
 
@@ -172,11 +231,12 @@ No API token is involved. This is a second, independent publisher from the one
 `algan-quadrants` uses; they share the `pypi` GitHub environment but each names
 its own workflow file, so they do not collide.
 
-### Step 1 — Clear the four blockers
+### Step 1 — Clear the blockers
 
-Reset `stable` (§1, needs your go-ahead) · republish the baselines and update
-the pointer (§2) · confirm run 34317795058 is green (§3) · flip Pages to GitHub
-Actions (§4).
+Reset `stable` (§1, needs your go-ahead) · publish `baselines-2026-09-09.2` with
+the five correctly named assets (§2 — the pointer is already updated) · confirm
+run 34317795058 is green (§3). Pages (§4) needs nothing but the rehearsal in
+Step 3.
 
 ### Step 2 — Write the release notes
 
@@ -186,7 +246,7 @@ computed against the most recent previous release, which is
 *first public release* that produces notes covering a few hours of commits, not
 the project.
 
-Write `v0.2.2`'s notes by hand, or add a `CHANGELOG.md` (still absent, and
+Write `v0.0.0`'s notes by hand, or add a `CHANGELOG.md` (still absent, and
 `RELEASE_AUDIT.md` §15 wants one) and point at it. This is the release most
 likely to be read by someone who has never seen Algan; it is the wrong one to
 let a tag-diff heuristic write.
@@ -197,7 +257,7 @@ Dispatch **Release** with `docs_only: true`, `dry_run: false`.
 
 Publishes the docs and nothing else — no version gate, no wheel, no tag, no
 PyPI. This is what proves the Pages setting from §4 actually took, in the one
-place where discovering otherwise is cheap. Confirm the site serves `0.2.2` and
+place where discovering otherwise is cheap. Confirm the site serves `0.0.0` and
 that example videos are present (`find docs/build/html -name '*.mp4' | wc -l` is
 reported in the run summary; the current live site has none).
 
@@ -206,7 +266,7 @@ example on CPU.
 
 ### Step 4 — Full dry run
 
-Dispatch **Release** with `version: 0.2.2`, `dry_run: true`.
+Dispatch **Release** with `version: 0.0.0`, `dry_run: true`.
 
 Runs `gate`, `build` and `docs`, publishes nothing. This is where §1–§3 get
 caught if you have missed one. The wheel, the sdist and the built HTML land as
@@ -215,12 +275,12 @@ machine that is not this one.
 
 ### Step 5 — Release
 
-Dispatch **Release** with `version: 0.2.2`, `dry_run: false`.
+Dispatch **Release** with `version: 0.0.0`, `dry_run: false`.
 
 The jobs run in order of how hard each is to undo:
 
 ```
-gate → build → docs → promote (ff stable, push v0.2.2)
+gate → build → docs → promote (ff stable, push v0.0.0)
                     → publish_docs
                     → github_release
                     → pypi
