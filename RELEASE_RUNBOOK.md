@@ -59,16 +59,17 @@ no test hardcodes a version. The gate compares the declared version against the
 workflow's `version` input exactly — dispatch with `0.0.0`, and note that
 `v0.0.0` is free (the only legacy tag is `BETA_v0.0.63`).
 
-You do not need to tag anything by hand — `promote` tags `v0.0.0` on the
-released commit, and no ruleset covers tags. Advancing `stable` is the part that
-needs you: see §1b, where the simplest route is to fast-forward it yourself
-before dispatching, which turns `promote`'s blocked push into a no-op.
+You do not need to touch `stable` or the tag by hand. `promote` fast-forwards
+`stable` to the released commit and tags `v0.0.0` on it, in that order, in the
+same run — no ruleset covers tags, and `stable`'s blocking rules are currently
+switched off (§1b).
 
 ---
 
 ## Blockers
 
-Two are cleared; two remain. In the order the release hits them, plus one step
+All cleared for this release — though §1b is cleared by switching protection
+off rather than by fixing it. In the order the release hits them, plus one step
 that is configured but has never run.
 
 ### 1. `stable` and `master` had no common ancestor — *resolved*
@@ -99,10 +100,21 @@ git push --force-with-lease origin origin/master:refs/heads/stable
 job's fast-forward holds normally from here on. The `BETA_v0.0.63` tag keeps the
 old history reachable, so nothing is lost.
 
-### 1b. `stable` is protected, and the release bot is not you
+### 1b. `stable` is protected, and the release bot is not you — *unblocked, temporarily*
 
-**This is the next thing that will break, and it breaks late.** The reset above
-printed, and still went through:
+> **Current state (2026-09-09): the blocking rules are switched off.** Only
+> `deletion` (from "Default Dev Ruleset") still applies to `stable`, so
+> `promote`'s push will go through as designed. This was done to get the first
+> release out on a single-maintainer repository.
+>
+> **It is meant to be restored.** Until it is, `stable` has no required checks,
+> no PR requirement and no force-push protection — the branch that is supposed
+> to mean "the latest released version" is the least protected in the
+> repository. The rest of this section is the record of what was there and how
+> to bring it back without re-blocking the release; the deploy-key route below
+> is the version that lets both hold at once.
+
+The reset earlier printed this, and still went through:
 
 ```
 remote: - Required status check "ubuntu-latest / Python 3.10" is in progress.
@@ -372,10 +384,9 @@ its own workflow file, so they do not collide.
 Done: `stable` reset (§1) · `baselines-2026-09-09.2` published and verified by
 content (§2) · PyPI pending publisher created (Step 0).
 
-Left: get `promote`'s push to `stable` through the ruleset (§1b — simplest is
-`git push origin master:stable` yourself after the merge, which makes that push
-a no-op; the dry run cannot catch this) · confirm the `Test` run on the release
-commit is green (§3). Pages (§4) needs nothing but the rehearsal in Step 3.
+Left: confirm the `Test` run on the release commit is green (§3). Pages (§4)
+needs nothing but the rehearsal in Step 3, and `stable`'s blocking rules are
+switched off for the release (§1b) — which is a loan, not a fix.
 
 ### Step 2 — Write the release notes
 
