@@ -247,6 +247,22 @@ No fork involvement, roughly 100 lines:
   libraries hold separate command queues and torch's heaps are
   `MTLHazardTrackingModeUntracked`, so ordering has to be explicit. Once per
   frame batch, not per launch;
+
+  > **Amended.** What shipped first was per launch (a per-batch fence needs
+  > the render loop to declare its batches, and the compaction interleaves
+  > torch ops between kernels anyway), and the Mac runner's UHD profile put
+  > 9.5 s of a 59 s warm render inside those two fences. What replaced them is
+  > not a coarser fence but no fence: Quadrants 1.3 can dispatch on torch's
+  > own `MTLCommandQueue` (`external_metal_command_queue`,
+  > `external_metal_command_queue_is_torch_queue`), and Metal executes the
+  > command buffers of one queue in commit order. `taichi_init_kwargs` hands
+  > it the queue on the Metal arch; the pre-launch fence is a
+  > `torch.mps.Event.record()`, which commits torch's open command buffer
+  > without a CPU wait, and there is no post-launch fence because Quadrants
+  > submits its command list at the end of every launch on an external queue.
+  > `mps_zero_copy`'s module docstring (*Ordering*) has the mechanism,
+  > `benchmarks/performance/reports/mac_2026_09/SHARED_QUEUE.md` the
+  > measurement, and `ALGAN_MPS_SHARED_QUEUE=0` restores the fences;
 * align arena slices to 16 bytes;
 * fall back to the stock copying path whenever the patched build is absent, so a
   stock wheel keeps working.
