@@ -85,6 +85,21 @@ jobs:
     # compiler artifact is installed here.
     env:
       ALGAN_RENDER_DEVICE: ${{ matrix.render_device }}
+      # Nothing is committed or published for the `macos_cpu` / `macos_mps`
+      # baseline keys, and no Mac can fix that by fetching -- the x86-64
+      # baseline does not transfer (measured: off by up to 45 channel values
+      # against a tolerance of 2), and MPS-friendly mode is documented as not
+      # bit-identical in the first place. An absent baseline is a *failure*
+      # everywhere else on purpose (a skipped comparison reads as green while
+      # comparing nothing), so this is the one narrow opt-out that turns it
+      # back into a skip; `macos_opt_out_permits` in tests/baseline_store.py
+      # is where its narrowness is enforced -- it covers only those keys, and
+      # only the "this device is unbaselined" reason, so a failed download or
+      # a bad digest still fails on a Mac too. Both macOS arms therefore prove
+      # the pipeline works there -- kernel compilation, tessellation, LaTeX,
+      # the fonts, the encoder -- and the render they produce is uploaded as
+      # an artifact below so the frames can be eyeballed.
+      ALGAN_ALLOW_UNBASELINED_MACOS: ${{ startsWith(matrix.os, 'macos') && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -229,7 +244,9 @@ jobs:
       # missed by up to 45 channel values against a tolerance of 2. So what the
       # Mac job proves about the renderer is that the pipeline works there --
       # kernel compilation, tessellation, LaTeX, the fonts, the encoder -- not
-      # that the frames are right. See tests/fast/test_fast_render.py.
+      # that the frames are right. That skip is what ALGAN_ALLOW_UNBASELINED_MACOS
+      # buys, in the job `env:` above; without it both macOS arms go red on the
+      # missing baseline. See tests/fast/test_fast_render.py.
       #
       # The MPS arm additionally xfails what the port has not finished:
       # tests/mps_known_failures.py is the list, one entry per test with the

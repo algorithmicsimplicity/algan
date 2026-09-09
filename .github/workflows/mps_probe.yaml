@@ -346,6 +346,15 @@ jobs:
       # the render device". An arm that forced it would prove the substitutions
       # work and say nothing about whether a Mac user gets them.
       ALGAN_MPS_FRIENDLY: ${{ matrix.friendly }}
+      # Same reason as test.yaml's macOS arms: the `macos_*` baseline keys have
+      # no baseline anywhere, and an absent one is a failure by default. This
+      # job's question is which kernels compile and what the frames look like,
+      # not whether they match a baseline that does not exist -- and the render
+      # is uploaded below either way. It covers only those keys -- the control
+      # arm's own key is `cpu_mpsfriendly`, which the opt-out deliberately does
+      # not reach, so if that arm ever needs the same treatment it needs a
+      # baseline instead.
+      ALGAN_ALLOW_UNBASELINED_MACOS: ${{ startsWith(matrix.os, 'macos') && '1' || '0' }}
       # Pinned to the compiler whose wheel this run installs, and it has to be
       # pinned since Quadrants became the default compiler. By default this job
       # is about *Taichi's* Metal path: the wheel it installs below is a

@@ -514,6 +514,13 @@ device key, so the CPU and CUDA suites cannot go quiet through it; and it
 applies only when the cause is *"this device has no baselines"* — a Mac whose
 download failed, or whose cached archive missed its digest, still fails.
 
+**CI's two macOS arms set it** (`.github/workflows/test.yaml`, the job `env:`),
+which is the only reason they are not red on `tests/fast`: they have no
+baseline and no way to get one. What they still prove is that the pipeline
+runs on Apple Silicon, and the render each one produces is uploaded as the
+`fast-render-macos-latest-py3.10-<device>` artifact so the frames can be
+looked at.
+
 The better answer on a Mac is still to baseline it: render with the suite's
 `ALGAN_UPDATE_*` variable, look at the videos, and publish them. The keys
 exist because the pixels genuinely differ across instruction sets (measured:
