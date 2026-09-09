@@ -172,6 +172,13 @@ def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
     if not radix_sort_available(keys):
         return None
     n = int(keys.numel())
+    if perm is not None and int(perm.numel()) != n:
+        # The kernel subscripts one array by the other with no bound of its
+        # own, so a mismatch is an out-of-range read rather than an error.
+        raise ValueError(
+            f"perm has {int(perm.numel())} entries for {n} keys; a composed "
+            "sort permutes the same stream it orders"
+        )
     if perm is None:
         mode = 0
     elif keys_are_permuted:
@@ -180,10 +187,9 @@ def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
         mode = 2
     device = keys.device
     values = torch.empty(n, dtype=torch.int32, device=device)
-    if perm is None:
-        perm = values
-    elif perm.dtype is not torch.int32:
-        perm = perm.to(torch.int32)
+    # With nothing to compose, the argument the kernel never reads aliases the
+    # output rather than costing an allocation and a specialization of its own.
+    perm = values if perm is None else perm.to(torch.int32).contiguous()
 
     from algan.rendering.raytracing.radix_sort_taichi import argsort_pairs
     from algan.taichi_compat import ti

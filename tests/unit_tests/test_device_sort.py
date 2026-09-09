@@ -261,3 +261,12 @@ def test_gathering_the_depth_key_after_the_layer_sort_equals_gathering_before():
         _primary_depth_key(frag_key.index_select(0, order)),
         _primary_depth_key(frag_key).index_select(0, order),
     )
+
+
+def test_a_permutation_of_the_wrong_length_is_refused(recorded):
+    """The kernel subscripts one array by the other and bounds neither."""
+    keys = torch.arange(1 << 17, dtype=torch.int32)
+    perm = torch.arange(17, dtype=torch.int32)
+    with pytest.raises(ValueError, match="permutes the same stream"):
+        device_sort.stable_argsort(keys, perm=perm)
+    assert not recorded
