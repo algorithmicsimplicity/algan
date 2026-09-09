@@ -475,9 +475,21 @@ def band_class_groups(band_of_frag, cls_eff, base):
     group_sorted = torch.cumsum(starts.to(torch.int64), 0) - 1
     inverse = torch.empty_like(group_sorted)
     inverse.scatter_(0, order, group_sorted)
-    del group_sorted, order
-    band_of_group = bands[starts]
-    return int(band_of_group.numel()), inverse, band_of_group
+    del order
+    # Each group's band, written by a scatter rather than gathered through
+    # ``bands[starts]``. The two agree exactly -- every fragment of a group
+    # carries the group's band, so the duplicates a scatter resolves in
+    # whatever order all write one value -- and the difference is what the
+    # boolean index costs on MPS: it is a ``nonzero`` (a count readback and a
+    # compaction pass) followed by a gather, where this is one scatter beside a
+    # scalar readback the caller needs anyway. Measured on the Mac runner's UHD
+    # profile as 17 gathers over 2.5M fragments at 0.15 s each, the largest
+    # single torch op left in the compaction after the fences moved.
+    num_groups = int(group_sorted[-1].item()) + 1
+    band_of_group = bands.new_empty(num_groups)
+    band_of_group.scatter_(0, group_sorted, bands)
+    del group_sorted
+    return num_groups, inverse, band_of_group
 
 
 def taichi_accumulate_dtype():
