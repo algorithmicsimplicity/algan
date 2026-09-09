@@ -1,4 +1,4 @@
-# The compaction's sorts, off torch: a radix sort that is Metal-only, and a run sort that is not
+# The compaction's sorts, off torch: a run sort that ships, and a radix sort that does not
 
 `SHARED_QUEUE.md` §4 left the Apple GPU's remaining cost as one sentence: the
 raster and compaction stages are torch-op bound, and MPSGraph's sort and unique
@@ -8,13 +8,19 @@ kernels" -- and did not start either.
 
 This is both of them, measured. The short version:
 
-* **The radix sort is worth 1.3-2.1x on Metal and is a 3.5-4.5x LOSS on CUDA**,
-  because torch's CUDA sort is already CUB's radix sort and Quadrants' is not
-  as good. So it ships gated to MPS-friendly mode.
-* **Fusing the sort into a per-pixel-run kernel is worth 21-53x on every
-  backend measured**, because a fragment stream that is already grouped by
-  pixel does not need a global sort at all. That kernel was already in the
-  tree; what kept it off Metal was a stale predicate.
+* **Fusing the sort into a per-pixel-run kernel is worth 21-53x on the sort and
+  5-24% of a whole warm render, on both GPUs**, because a fragment stream that
+  is already grouped by pixel does not need a global sort at all. That kernel
+  was already in the tree; what kept it off Metal was a stale predicate, and
+  what kept it off by default was an inconclusive earlier measurement. It is
+  now the default everywhere.
+* **The radix sort is worth 1.3-2.1x on Metal in isolation, is a 3.5-4.5x LOSS
+  on CUDA, and is a whole-render loss even on Metal once the run sort has taken
+  the big sort away.** It ships **off**, behind `ALGAN_DEVICE_RADIX_SORT`, with
+  the numbers below.
+
+Both halves of `SHARED_QUEUE.md`'s question therefore have an answer, and they
+are not the same answer.
 
 ## 1. Why a global sort was reachable at all
 
@@ -85,6 +91,55 @@ Read the two tables together and the answer is not "GPU sorts are faster than
 torch sorts". It is that **torch's sort is excellent on CUDA and poor on MPS**,
 and that **neither of them should be running at all** here.
 
+## 2b. And then the whole render, ABBA on one box
+
+An isolated stage is not a render. Both candidates were re-measured end to end,
+in the order shown, on one machine per column, warm runs only (each arm is a
+fresh process, so its first render is cold and is not counted).
+
+**Metal** -- `_mac_postfix_profile.py --child mps --coarse --runs 3`, run
+[34304926999](https://github.com/algorithmicsimplicity/algan/actions/runs/34304926999),
+`nn_scene_UHD` (18 frames at 3840x2160, shadows off, a 1720 MiB arena, 18
+chunks in 2 batches). Times are whole-render wall; the three columns after it
+are steady-state **self** seconds over the 17 steady chunks:
+
+| order | arm | wall (warm) | `compact_sheets` | `prepare_sparse_raster_coverage` | `kernel.argsort_pairs` |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | base | 58.0, 55.0 | 13.3, 13.5 | 9.6, 8.8 | -- |
+| 2 | **run sort** | **42.8, 44.7** | 9.1, 9.6 | 6.5, 7.3 | -- |
+| 3 | run sort + radix | 48.4, 46.7 | 9.9, 9.4 | 7.0, 7.6 | 0.19 s / 68 calls |
+| 4 | base | 57.0, 58.6 | 15.7, 14.8 | 9.2, 10.5 | -- |
+
+* **The run sort is 57.2 s -> 43.7 s, 23.5%** of a warm UHD render. The
+  bracketing base arms differ by 1.3 s, so the drift this VM contributes is
+  about a tenth of the effect. `compact_sheets` gives up 4.9 s and
+  `prepare_sparse_raster_coverage` 2.6 s of that directly; the rest is
+  downstream, because on Metal a stage's self time includes waiting out the
+  GPU work queued ahead of its readbacks.
+* **The radix sort on top costs 3.8 s, +8.7%**, and every run of the run-sort
+  arm was faster than every run of this one. The sorts themselves are not what
+  it costs -- `kernel.argsort_pairs` is 0.19 s over 68 calls, 2.8 ms each --
+  so what it costs is the torch work around them: two extra whole-stream
+  allocations per call at the discovery peak, and a key built over the whole
+  stream where the torch arm builds it over a gathered one.
+
+**CUDA** -- Kaggle T4, notebook `algan-t4-runsort`,
+`nn_warm_experiment.py --runs 3`, same scene, same ABBA:
+
+| order | arm | wall (warm) |
+| --- | --- | ---: |
+| 1 | base | 8.4, 8.5 |
+| 2 | **run sort** | **8.0, 7.8** |
+| 3 | **run sort** | **7.9, 7.8** |
+| 4 | base | 8.2, 8.1 |
+
+**8.30 s -> 7.88 s, 5.1%**, and again with no overlap: every "on" run (7.8-8.0)
+beat every "off" run (8.1-8.5). Smaller than Metal's share, exactly as the
+isolated numbers predict -- torch's CUDA sort was only 15.8 ms of an 8.3 s
+render to begin with -- but repeatable, and in the same direction. That is what
+the earlier "has not yet translated into a repeatable whole-render speedup"
+note was waiting for.
+
 ## 3. Why the run sort wins by two orders of magnitude
 
 `compact_sheets`'s P1 order is `(pixel, group, depth)` over a stream the raster
@@ -104,7 +159,10 @@ sorted one.
 That is the "fusing the compaction's torch stages into kernels" half of
 `SHARED_QUEUE.md`'s question, and it turns out to have been written already
 (`ALGAN_SHEET_PIXEL_SORT`, added and left off by default because its earlier
-measurement "had not translated into a repeatable whole-render speedup").
+measurement "had not translated into a repeatable whole-render speedup"). §2b
+is that translation, on two GPUs, so it is on by default now. Nothing about the
+output moves: the comparator's last key is the original index, so the
+permutation is the stable one the global sort produced, bit for bit.
 
 ## 4. Where the radix sort is still the answer
 
@@ -125,10 +183,20 @@ in the kernel form the `index_select`s do not exist. In
 rather than after, which is the same value elementwise and is what lets the
 second sort gather through that permutation itself.
 
-It is on by default only in MPS-friendly mode -- the mode whose whole premise
-is that this backend's torch ops are the slow ones, and the only place the
-measurement supports it. `ALGAN_DEVICE_RADIX_SORT` forces either arm on any
-device, which is how the CUDA column above was taken.
+Those sites are what the §2b radix arm was measuring, and it lost. So the
+module ships **off** behind `ALGAN_DEVICE_RADIX_SORT`, which is also how both
+columns above were taken. It is kept rather than deleted for three reasons, in
+order of weight:
+
+1. **The verdict is about these call sites, not the primitive.** The sorts are
+   2.8 ms each; the loss is the torch work the wrapper still does around them.
+   A site that hands the kernel a key it already has, and takes an int32 order
+   back without widening it, has not been priced.
+2. **It is the only exact wide-key sort on MPS.** §5's gather ceiling makes
+   torch's own `_lexsort` inexact past 2**24 there; this one gathers inside a
+   kernel.
+3. It is the measurement instrument for the next candidate. Deleting it means
+   rebuilding it to ask the next question.
 
 ## 5. Two things the round found that were not about speed
 

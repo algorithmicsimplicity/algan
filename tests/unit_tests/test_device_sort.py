@@ -61,17 +61,14 @@ def test_the_cpu_arch_never_takes_the_kernel(monkeypatch):
     assert device_sort.stable_argsort(keys) is None
 
 
-def test_the_mode_follows_mps_friendly_and_the_variable_overrides_it(monkeypatch):
-    """The default is the mode whose premise is "torch's ops are the slow ones"."""
-    monkeypatch.setattr(device_sort, "mps_friendly", lambda: True)
-    assert device_sort.radix_sort_enabled() is True
-    monkeypatch.setattr(device_sort, "mps_friendly", lambda: False)
+def test_the_mode_is_off_until_asked_for(monkeypatch):
+    """Off everywhere by default -- the module docstring has the A/B that decided
+    it -- and one variable turns it on, on any device.
+    """
     assert device_sort.radix_sort_enabled() is False
-
     monkeypatch.setenv("ALGAN_DEVICE_RADIX_SORT", "1")
     assert device_sort.radix_sort_enabled() is True
     monkeypatch.setenv("ALGAN_DEVICE_RADIX_SORT", "0")
-    monkeypatch.setattr(device_sort, "mps_friendly", lambda: True)
     assert device_sort.radix_sort_enabled() is False
 
 

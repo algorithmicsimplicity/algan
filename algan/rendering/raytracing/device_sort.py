@@ -19,13 +19,20 @@ replaces is not only the sort: an LSD multi-key order in torch is one
 ``argsort`` and one ``index_select`` per key, and the kernel form does the
 gather inside the seed loop, so the ``index_select`` chain disappears with it.
 
-**Where it is on.** The default follows MPS-friendly mode
-(:func:`~algan.rendering.mps_compat.mps_friendly`), because that is the mode
-whose whole premise is "this backend's torch ops are the slow ones" and the
-measurement above is the only one that has found a win.
-``ALGAN_DEVICE_RADIX_SORT`` forces it either way -- on a CUDA box to re-run the
-A/B against CUB, off on a Mac to get the torch arm back -- and it is read per
-call, never bound at import, for the same reason ``mps_friendly`` is.
+**It is OFF by default, and the measurement is why.** Isolated, it is worth
+1.3-2.1x on Metal (and a 3.5-4.5x *loss* on CUDA, where torch dispatches to
+CUB). But the sort it would have replaced in the compaction's hot path is gone:
+``sheet_pixel_sort`` orders each pixel's run in place instead, at 4.1 ms
+against torch's 215 ms, and what is left for a global sort does not recoup this
+one's cost. Measured ABBA on the Mac runner
+(``reports/mac_2026_09/DEVICE_SORT.md``): warm ``nn_scene_UHD`` at **43.7 s
+with the run sort alone and 47.5 s with this on top**, +8.7%, with the
+kernel's own time only +0.19 s over 17 chunks -- so what it costs is the torch
+work around it, not the sorting.
+
+``ALGAN_DEVICE_RADIX_SORT=1`` turns it on, which is how both columns above were
+taken and how the next candidate site gets priced. It is read per call, never
+bound at import, so a render can be A/B'd without a fresh process.
 
 **Small inputs stay on torch.** The emitted sort is a fixed chain of ~30 (32-bit
 keys) or ~60 (64-bit keys) offloaded launches whatever ``n`` is, so under a few
@@ -45,7 +52,6 @@ from __future__ import annotations
 import torch
 
 from algan.environment import env_flag, env_int
-from algan.rendering.mps_compat import mps_friendly
 
 #: Bits the sort must cover per key dtype -- and, with them, the pass count,
 #: which is one per byte. Only these three dtypes reach it: an integer key the
@@ -63,11 +69,11 @@ _END_BITS = {torch.int32: 32, torch.int64: 64, torch.float32: 32}
 def radix_sort_enabled() -> bool:
     """Whether device sorting is wanted here, before asking whether it is possible.
 
-    Read per call. ``mps_friendly`` follows the render device, which is
-    settable between renders, so binding this at import would pin the first
-    render's answer onto every later one.
+    Off unless asked for; the module docstring has the measurement that decided
+    that. Read per call rather than bound at import, so an A/B can flip it
+    between renders in one process.
     """
-    return env_flag("ALGAN_DEVICE_RADIX_SORT", mps_friendly())
+    return env_flag("ALGAN_DEVICE_RADIX_SORT", False)
 
 
 def _minimum_elements() -> int:

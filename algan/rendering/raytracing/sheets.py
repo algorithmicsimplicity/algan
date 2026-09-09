@@ -172,9 +172,27 @@ sheet_sample_depth_cede = min(
 sheet_rank_pool = env_flag("ALGAN_SHEET_RANK_POOL", True)
 
 # Reuse ordered pixel and band runs instead of globally sorting their keys
-# again. Opt-in: lower sort time and scratch memory have not yet translated
-# into a repeatable whole-render speedup. Unsupported backends use torch.
-sheet_pixel_sort = env_flag("ALGAN_SHEET_PIXEL_SORT", False)
+# again. Unsupported backends (a launch that would stage its arguments) use
+# torch.
+#
+# **On by default since it was measured on two GPUs at once**, which is what
+# the earlier note ("lower sort time and scratch memory have not yet
+# translated into a repeatable whole-render speedup") was missing. The
+# emission hands the compaction a stream already grouped by pixel and a CSR
+# beside it, so a global lexicographic sort re-derives an order it was given:
+# three stable argsorts and two ``index_select``s over the whole stream, where
+# one thread per pixel run orders its own handful of fragments in place. The
+# permutation is identical -- the comparator carries the original index as its
+# last key -- so no output moves.
+#
+# Isolated, at the 2.9M fragments a warm UHD chunk carries
+# (``benchmarks/_device_sort_probe.py``): **4.1 ms against torch's 215 ms on
+# Metal, 0.75 ms against 15.8 ms on a T4**. Whole warm renders of
+# ``nn_scene_UHD``, ABBA on one box each
+# (``reports/mac_2026_09/DEVICE_SORT.md``): **57.2 s -> 43.7 s on the Mac
+# runner (-23.5%)** and **8.30 s -> 7.88 s on the T4 (-5.1%)**, with every
+# "on" run faster than every "off" run in both.
+sheet_pixel_sort = env_flag("ALGAN_SHEET_PIXEL_SORT", True)
 
 # Exact mixed-radix pixel/group/depth keys when their measured ranges fit i64.
 # Captured UHD sorts use 37-53% less time; conservative queue-size thresholds
