@@ -3,10 +3,12 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). **Two are left** — run 34213125405 is
-``1 failed, 3563 passed, 217 skipped, 2 xfailed``, and that one "failure" is
-this list's own last strict XPASS, now removed. This file is the record of the
-two; ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it.
+3311 passes (run 34102515789). **One is left.** The other went the way this
+mechanism is meant to end: run 34302218686 reported the prefiltered-reflection
+entry as a strict XPASS, so the render it described had started passing on the
+Apple GPU and its line came out (``DESIGN_mps_support.md`` §4.5 has what is and
+is not established about why). This file is the record of the one that remains;
+``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it.
 
 Counting causes rather than tests is what got it there. Thirty of the
 thirty-two came off with two fixes, neither aimed at most of what it cleared:
@@ -25,8 +27,8 @@ Why a list here rather than a skip in each test file
   about the **render device**: the same test passes on Linux, on CUDA and on the
   macOS CPU arm, and each is on this list because of a defect in torch's MPS
   backend, in the Metal codegen, or in Algan's own handling of one. Putting that
-  in ``test_glossy_prefilter.py`` spreads Apple-GPU knowledge across eight files
-  that have nothing else to do with it.
+  in ``test_taichi_early_return.py`` spreads Apple-GPU knowledge across the
+  eight files that have carried an entry and have nothing else to do with it.
 * One list is reviewable. Twenty scattered skips are not, and neither is their
   total: the number in this file is how much of the port is left, and it should
   be readable in one place without grep.
@@ -59,24 +61,6 @@ def _add(reason: str, *nodeids: str) -> None:
     for nodeid in nodeids:
         KNOWN_FAILURES[nodeid] = reason
 
-
-# -- D: the prefiltered reflection is absent, and it is Metal's -------------
-#
-# `nan > 3 * 74.9`, and the nan is the finding: `_reflection_spread` divides by
-# the signal's sum, so a nan means the sum is zero -- no reflected glow above
-# the wall's own level anywhere in the window the mirror image lands in. Not a
-# reflection that came out narrow or dim. Absent.
-#
-# Localized to the device rather than to this port's own substitutions, which
-# is as far as it has been taken: the same test passes on the macOS CPU arm of
-# the same runner, on both Linux legs, and -- the discriminator that matters --
-# on Linux with `ALGAN_MPS_FRIENDLY=1`, which exercises every substitution
-# `mps_compat` makes with no Apple GPU in the picture. §4.5 has the table and
-# where to look next.
-_add(
-    "MPS: the prefiltered reflection is absent -- DESIGN_mps_support.md §4.5",
-    "tests/unit_tests/test_glossy_prefilter.py::test_prefiltered_reflection_is_substantially_wider",
-)
 
 # -- F: a real function's early return will not compile to SPIR-V -----------
 #
