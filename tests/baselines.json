@@ -12,7 +12,7 @@
     "publishing a new tag, so one machine need not possess every device baseline."
   ],
   "base_url": "https://github.com/algorithmicsimplicity/algan/releases/download",
-  "tag": "baselines-2026-09-09.1",
+  "tag": "baselines-2026-09-09.2",
   "archives": {
     "full_renders/cpu_eager": {
       "file": "full_renders-cpu_eager.tar.gz",

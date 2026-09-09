@@ -75,6 +75,12 @@ on:
   # and runs the branch's own code. Once this file has reached master, prefer
   # the dispatch -- it leaves no commit behind.
   push:
+    # See the note in torch_compile_ab.yaml: `stable` only ever carries commits
+    # master already ran, so a run triggered here is a duplicate that costs one
+    # of the account's five macOS slots. Feature branches keep the trigger --
+    # committing `mac.json` is how a run is requested, and requesting one from
+    # the branch under test is the normal case.
+    branches-ignore: [stable]
     paths:
       - ".github/gpu-run/mac.json"
 

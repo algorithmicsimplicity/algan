@@ -35,6 +35,16 @@ on:
         type: string
         default: "PREVIEW"
   push:
+    # `stable` carries commits that were already on master, so a measurement
+    # taken here would re-measure what master already measured -- on the
+    # account's finite macOS concurrency. Excluded rather than narrowed to
+    # master: a harness change on a feature branch is exactly when you want
+    # the reading, and that is the trigger's whole point.
+    #
+    # It is not a hypothetical saving. The one-time `stable` reset of
+    # 2026-09-09 replaced a disjoint history wholesale, so *every* path filter
+    # in the repository matched at once and this ran for nothing.
+    branches-ignore: [stable]
     paths:
       - ".github/workflows/torch_compile_ab.yaml"
       - "benchmarks/_torch_compile_ab.py"

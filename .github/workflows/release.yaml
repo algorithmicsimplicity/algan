@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without a leading v (e.g. 0.2.2). Must match pyproject. Ignored by docs_only."
+        description: "Version to release, without a leading v (e.g. 0.0.0). Must match pyproject. Ignored by docs_only."
         type: string
         # Not `required`, because docs_only has no version to speak of. The gate
         # job demands it for a real release; Actions cannot express that here.
@@ -139,31 +139,15 @@ jobs:
       # resolve its baselines *skips*, so a dangling pointer does not fail --
       # it just quietly stops testing six dense scenes and the path tracer.
       # Cheap to check here, invisible everywhere else.
-      - name: The baseline pointer still resolves
+      #
+      # This downloads and checks each sha256 rather than issuing a HEAD, because
+      # HEAD is what let `baselines-2026-09-09.1` through: one asset was absent,
+      # but a second *existed* under the expected name holding the superseded
+      # archive from the previous tag. 200 OK, wrong file, silent skip. The
+      # script's header carries the full account.
+      - name: The baseline pointer resolves to the right files
         if: ${{ !inputs.docs_only }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, pathlib, sys, urllib.request
-
-          pointer = json.loads(pathlib.Path("tests/baselines.json").read_text())
-          base, tag = pointer["base_url"], pointer["tag"]
-          missing = []
-          for key, entry in pointer["archives"].items():
-              url = f"{base}/{tag}/{entry['file']}"
-              request = urllib.request.Request(url, method="HEAD")
-              try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      print(f"  ok   {key}: {response.status} {url}")
-              except Exception as exc:
-                  print(f"  MISS {key}: {exc} {url}")
-                  missing.append(key)
-          if missing:
-              print(f"::error::baseline archives unreachable: {missing}. Publish "
-                    f"them under tag {tag!r} (scripts/package_baselines.py) before releasing.")
-              sys.exit(1)
-          print(f"all {len(pointer['archives'])} baseline archives resolve at {tag}")
-          PY
+        run: python scripts/gate/verify_baseline_pointer.py
 
   # --------------------------------------------------------------------------
   # 2. Build the distributions.

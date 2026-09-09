@@ -268,15 +268,18 @@ Cutting a release
    not ``--fast``) on a machine with a GPU if the release touches the renderer
    -- no CI leg has one.
 #. Open the ``master`` -> ``stable`` pull request and let both workflows finish.
-#. After merge, tag the released commit ``v<version>`` -- ``v0.2.2``, not
-   ``BETA_v0.0.63``, which is the one legacy tag and is not the pattern to
-   follow -- and create a GitHub release from that tag.
-#. Build and check the artifacts before uploading::
+#. Dispatch the **Release** workflow with ``dry_run`` on. It re-checks the
+   version, the tag, that green run and the baseline pointer, then builds the
+   distributions and the docs without publishing anything.
+#. Dispatch it again with ``dry_run`` off. It fast-forwards ``stable``, tags
+   the released commit ``v<version>`` -- ``v0.0.0``, not ``BETA_v0.0.63``,
+   which is the one legacy tag and is not the pattern to follow -- publishes
+   the docs, creates the GitHub release and uploads to PyPI, in that order.
 
-      uv build
-      uv run twine check dist/*
-
-   Publishing to PyPI is manual today; there is no release workflow.
+The steps are ordered by how hard each is to undo, and PyPI is last because it
+is the only one that cannot be taken back. Nothing in the release edits the tree
+it releases, so the version bump has to land in the pull request above.
+``RELEASE_RUNBOOK.md`` covers the one-time account setup behind it.
 
 A version that has been uploaded to PyPI cannot be edited, only yanked, so the
 metadata in ``pyproject.toml`` -- URLs, classifiers, license files, dependency
