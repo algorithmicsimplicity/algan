@@ -44,11 +44,13 @@ ERRORS_DIR = HERE / "output_errors"
 # skips the comparisons.
 DEVICE = SETTINGS.computing.render_device.type
 BASELINE_KEY = f"macos_{DEVICE}" if sys.platform == "darwin" else DEVICE
-# The committed CPU corpus predates the eager baseline contract and was rendered
-# on Linux with torch.compile working. Never compare eager pixels against it:
-# use a new key so CPU renders skip until that canonical machine produces the
-# one-time eager rebaseline. The committed CUDA corpus was generated on Windows,
-# where this path was already eager, so its existing key remains valid.
+# The legacy ``cpu`` corpus predates the eager baseline contract and was
+# rendered on Linux with torch.compile working. Never compare eager pixels
+# against it: CPU renders read ``cpu_eager`` instead, published since
+# baselines-2026-09-09.1. The ``cpu`` archive is kept in the release only so
+# the pre-eager corpus stays retrievable; nothing resolves it. The CUDA corpus
+# was generated on Windows, where this path was already eager, so its existing
+# key remains valid.
 if BASELINE_KEY == "cpu":
     BASELINE_KEY = "cpu_eager"
 # Where a rebaseline *writes*: always the tree, never the cache. The author of
