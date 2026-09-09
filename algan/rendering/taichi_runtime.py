@@ -1037,13 +1037,29 @@ def reset_quadrants_for_memory_pressure():
     The next guarded kernel launch or render starts a fresh Program and reloads
     compiled kernels from the offline cache.
 
+    **Never on the Metal arch.** On a unified-memory Mac the host figure this
+    reacts to is depressed by the GPU pool the render itself holds -- torch's
+    MPS allocator and the Metal driver -- and resetting the compiler frees none
+    of that: the Metal backend has no LLVM JIT, and its Program is small.
+    What the reset does cost there is a fresh ``init`` and every kernel's
+    Metal pipeline rebuilt from the offline cache on the next render. Measured
+    on the 7 GB Mac runner (``benchmarks/_mac_postfix_profile.py``, run
+    34299911993): with host memory at 0.8-1.2 GB free, **every** warm UHD
+    render started with ``[Quadrants] Starting on arch=metal`` and paid ~6 s
+    of first-launch pipeline creation in its first chunk -- a tenth of the
+    render -- while the CPU arm of the same job initialised once. So on Metal
+    the request is declined outright rather than deferred.
+
     Returns whether the runtime was reset synchronously. A ``False`` result can
-    therefore mean either "not applicable" or "safely deferred".
+    therefore mean "not applicable", "declined" or "safely deferred".
     """
     global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
     if BACKEND != "quadrants":
         return False
     if not _already_initialized():
+        return False
+    if _live_arch() == ti.metal:
+        _PRESSURE_RESET_PENDING = False
         return False
     if render_is_active():
         _PRESSURE_RESET_PENDING = True

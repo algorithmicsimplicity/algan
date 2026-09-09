@@ -608,3 +608,26 @@ def test_deferred_pressure_reset_is_dropped_if_pressure_clears(monkeypatch):
 
     assert calls == []
     assert taichi_runtime._PRESSURE_RESET_PENDING is False
+
+
+def test_quadrants_pressure_reset_is_declined_on_the_metal_arch(monkeypatch):
+    """On Metal the reset frees nothing that the host figure is measuring.
+
+    The figure is depressed by the GPU pool the render itself holds, and a
+    reset there costs the next render a fresh ``init`` and every kernel's
+    pipeline -- measured at ~6 s per warm UHD render on the Mac runner, where
+    every render re-initialised. So it is declined, and not merely deferred.
+    """
+    from algan.rendering import taichi_runtime
+
+    calls = []
+    monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
+    monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.metal)
+    monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
+    monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
+
+    assert taichi_runtime.reset_quadrants_for_memory_pressure() is False
+    assert calls == []
+    assert taichi_runtime._PRESSURE_RESET_PENDING is False
