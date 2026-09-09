@@ -506,6 +506,50 @@ PyPI is last on purpose. A tag can be moved, a docs deploy re-run, a GitHub
 release edited; a version on PyPI can be yanked but never replaced. If anything
 is going to fail, it fails before that.
 
+### If the release fails partway
+
+It did, on the first `v0.0.0` attempt (2026-09-09). `github_release` ran
+`gh release create` in a job that deliberately has no `actions/checkout`, so
+`gh` had no git remote to infer the repository from and exited with
+`failed to run git: fatal: not a git repository`. Fixed by giving that step
+`GH_REPO: ${{ github.repository }}`.
+
+The ordering did its job. What had already happened:
+
+| | |
+| --- | --- |
+| `promote` | ✅ `stable` fast-forwarded, tag `v0.0.0` pushed |
+| `publish_docs` | ✅ live docs serving the new version |
+| `github_release` | ❌ failed |
+| `pypi` | ⏭️ skipped — it `needs: github_release` |
+| PyPI | **nothing uploaded** |
+
+So the one step that cannot be undone was never reached, and everything that
+*had* happened was reversible. That is the whole reason for the job order.
+
+**The workflow has no resume mode**, and two things make a naive re-run fail:
+
+- **`gh release create` is not idempotent.** A second run against an existing
+  release errors.
+- **The gate's "tag is free" check now fails**, because `promote` pushed the
+  tag before the failure. Worse, once the fix is merged the tag points at the
+  *previous* commit, so it is not even the same commit being re-released.
+
+The clean recovery is to **delete the tag and re-run from the top**:
+
+```bash
+git push --delete origin v0.0.0     # only while nothing consumes it
+```
+
+That is safe exactly as long as the tag is young and unreferenced — no GitHub
+release points at it, nothing is on PyPI, and no one has fetched it. Check all
+three before deleting; past that point the tag is a promise and the recovery is
+a new version number instead.
+
+`promote` is otherwise re-run-safe: a `stable` push that changes nothing reports
+`Everything up-to-date`, and a fresh tag on the new commit is a normal tagging.
+`publish_docs` simply redeploys.
+
 ### Step 6 — Verify
 
 ```bash
