@@ -53,9 +53,16 @@ def _forget_memo():
 
 @pytest.fixture(autouse=True)
 def _no_ambient_override(monkeypatch):
-    """A developer's own ALGAN_BASELINE_DIR must not steer these tests."""
+    """A developer's own ALGAN_BASELINE_DIR must not steer these tests.
+
+    The macOS opt-out is cleared for the same reason, and it is not
+    hypothetical: CI sets ``ALGAN_ALLOW_UNBASELINED_MACOS=1`` for the whole
+    macOS job, which changes what the resolver's unbaselined message says.
+    Every test that cares about the opt-out sets it itself.
+    """
     monkeypatch.delenv("ALGAN_BASELINE_DIR", raising=False)
     monkeypatch.delenv("ALGAN_NO_BASELINE_DOWNLOAD", raising=False)
+    monkeypatch.delenv(baseline_store.MACOS_OPT_OUT_ENV, raising=False)
 
 
 def _make_archive(directory: Path, destination: Path) -> str:
@@ -322,6 +329,25 @@ def test_an_unbaselined_macos_key_names_the_opt_out(tmp_path):
         )
     assert excinfo.value.unbaselined
     assert baseline_store.MACOS_OPT_OUT_ENV in str(excinfo.value)
+
+
+def test_the_opt_out_advice_is_dropped_once_the_opt_out_is_set(tmp_path, monkeypatch):
+    """The caller quotes this reason as its *skip* reason when the knob is on.
+
+    Advice to set a variable that is already set reads as a report that it did
+    not work, so the sentence is left out. Pinned because the macOS CI job runs
+    the whole unit suite with the knob on, and the test above would silently
+    invert there without this one holding the other side.
+    """
+    monkeypatch.setenv(baseline_store.MACOS_OPT_OUT_ENV, "1")
+    pointer = _pointer(tmp_path, {})
+
+    with pytest.raises(baseline_store.BaselinesUnavailableError) as excinfo:
+        baseline_store.require_baseline_dir(
+            "full_renders", "macos_mps", tmp_path / "absent", pointer_path=pointer
+        )
+    assert excinfo.value.unbaselined
+    assert baseline_store.MACOS_OPT_OUT_ENV not in str(excinfo.value)
 
 
 def test_a_missing_asset_warns_only_once(tmp_path, monkeypatch):
