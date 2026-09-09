@@ -286,7 +286,7 @@ let a tag-diff heuristic write.
 
 ### Step 3 — Rehearse the docs deploy
 
-Dispatch **Release** with `docs_only: true`, `dry_run: false`.
+Dispatch **Release** from `master` with `docs_only: true`, `dry_run: false`.
 
 Publishes the docs and nothing else — no version gate, no wheel, no tag, no
 PyPI. This is what proves the Pages setting from §4 actually took, in the one
@@ -297,9 +297,53 @@ reported in the run summary; the current live site has none).
 Budget up to three hours — the release docs build renders every `.. algan::`
 example on CPU.
 
+### Which ref do I dispatch from?
+
+**`master`, and the release commit has to be on it first.** Releasing directly
+from a feature branch does not work here, for three independent reasons — the
+first is not a judgement call but a measured fact about this repository:
+
+1. **The `pypi` environment refuses it.** `quadrants_patches/PYPI.md` records
+   it from experience: publishing `algan-quadrants` post2 succeeded from
+   `master`, while "an earlier attempt from a feature branch was rejected at
+   the `pypi` environment gate in two seconds with zero steps and uploaded
+   nothing". `release.yaml`'s `pypi` job uses that same environment, so a
+   branch dispatch would run gate, build, docs, promote, publish_docs and the
+   GitHub release — tagging and deploying for real — and then fail at the one
+   job the whole ordering exists to protect.
+2. **It would immediately recreate blocker §1.** `promote` pushes the released
+   commit to `stable`. From a feature branch that leaves `stable` at a commit
+   `master` does not contain, so the next release's
+   `merge-base --is-ancestor origin/stable master` fails again — the exact
+   state the reset just undid.
+3. **The released version would not be on `master`.** "`stable` carries the
+   latest released version" stops being true, and the next release PR diffs
+   against a fiction.
+
+So the order is: **merge, wait for green, then release.**
+
+```
+merge claude/admiring-brown-dy0qk3 -> master
+      ↓  (this is the commit that gets released)
+wait for Test on the new master HEAD to go green
+      ↓  (the gate demands this commit's own green run, not a later one)
+dispatch Release from master
+```
+
+The merge keeps the fast-forward invariant: `stable` is at `1be534d`, and any
+merge of this branch descends from it, so `promote` still fast-forwards.
+
+Two things that are easy to get wrong here:
+
+- **The green run must be on the merge commit itself**, not on the branch tip
+  before it and not on an earlier master commit. That is §17's whole lesson,
+  and the gate enforces it.
+- **Nothing in the release edits the tree it releases.** The `0.0.0` bump and
+  everything else must already be merged; the workflow will not do it for you.
+
 ### Step 4 — Full dry run
 
-Dispatch **Release** with `version: 0.0.0`, `dry_run: true`.
+Dispatch **Release** from `master` with `version: 0.0.0`, `dry_run: true`.
 
 Runs `gate`, `build` and `docs`, publishes nothing. This is where §1–§3 get
 caught if you have missed one. The wheel, the sdist and the built HTML land as
@@ -308,7 +352,7 @@ machine that is not this one.
 
 ### Step 5 — Release
 
-Dispatch **Release** with `version: 0.0.0`, `dry_run: false`.
+Dispatch **Release** from `master` with `version: 0.0.0`, `dry_run: false`.
 
 The jobs run in order of how hard each is to undo:
 
