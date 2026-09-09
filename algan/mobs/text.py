@@ -636,10 +636,22 @@ _PANGO_NAMES: dict[str, tuple[str, ...]] = {}
 
 
 def _pango_names(kind: str) -> tuple[str, ...]:
-    """Every name Pango accepts for ``slant`` or ``weight``."""
-    if kind not in _PANGO_NAMES:
-        import manimpango
+    """Every name Pango accepts for ``slant`` or ``weight``.
 
+    Empty when manimpango is not installed -- the caller then has no list to
+    validate against and must let the value through.
+    """
+    if kind not in _PANGO_NAMES:
+        try:
+            import manimpango
+        except ImportError:
+            # Not an error: without Pango, Text typesets through LaTeX text
+            # mode, where slant and weight are retained as metadata and
+            # cannot reach a renderer at all. Raising here instead made the
+            # documented fallback unreachable -- ``slant``/``weight`` have
+            # string defaults, so every `Text(...)` normalized them and died
+            # on the import before it could fall back to anything.
+            return ()
         source = manimpango.Style if kind == "slant" else manimpango.Weight
         _PANGO_NAMES[kind] = tuple(
             sorted(n for n in dir(source) if not n.startswith("_"))
@@ -654,11 +666,16 @@ def _pango_style(kind: str, value):
     silently falls back to the default, so ``Text("hi", weight="BOLDER")``
     renders in the regular face and nothing anywhere says why. Case is the
     caller's to write however they like; the name has to be real.
+
+    With no Pango installed there is no authority on which names are real, and
+    nothing the value could affect; it is upper-cased and accepted.
     """
     if not isinstance(value, str):
         return value
     upper = value.upper()
     names = _pango_names(kind)
+    if not names:
+        return upper
     if upper not in names:
         import difflib
 

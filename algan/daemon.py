@@ -133,9 +133,11 @@ import os
 import queue
 import runpy
 import secrets
+import site
 import socketserver
 import struct
 import sys
+import sysconfig
 import threading
 import time
 import traceback
@@ -722,6 +724,41 @@ def _print_script_traceback(exc):
     traceback.print_exception(type(exc), exc, strip_plumbing_frames(exc.__traceback__))
 
 
+def _library_roots():
+    """Directories that hold installed packages or the standard library.
+
+    Nothing under one of these is the user's code, however the script tree is
+    laid out around it. That distinction is load-bearing rather than tidy: the
+    installation tutorial has users build the virtual environment *inside*
+    their project folder (``mkdir alganimations && cd alganimations && python
+    -m venv .venv``), which puts every installed package -- torch included --
+    under the script directory. Evicting those from ``sys.modules`` is fatal,
+    not merely wasteful: torch cannot be imported twice in one process, and
+    the re-import dies with ``ValueError: module functions cannot set
+    METH_CLASS or METH_STATIC`` from inside whatever first touched it.
+    """
+    roots = {
+        sys.prefix,
+        sys.base_prefix,
+        sys.exec_prefix,
+        sys.base_exec_prefix,
+    }
+    paths = sysconfig.get_paths()
+    roots.update(
+        paths.get(key) for key in ("purelib", "platlib", "stdlib", "platstdlib")
+    )
+    # Both raise when site ran with imports disabled (-S), which is not a
+    # reason to fail: the prefixes above already cover the usual layouts.
+    with contextlib.suppress(Exception):
+        roots.update(site.getsitepackages())
+    with contextlib.suppress(Exception):
+        roots.add(site.getusersitepackages())
+    return tuple(sorted({r for r in roots if isinstance(r, str) and r}))
+
+
+_LIBRARY_ROOTS = _library_roots()
+
+
 def _user_modules(script_dir):
     """Names of loaded modules whose source lives under the script's tree."""
     names = []
@@ -735,6 +772,7 @@ def _user_modules(script_dir):
             and os.path.isabs(file)
             and _is_under(file, script_dir)
             and not _is_under(file, _ALGAN_DIR)
+            and not any(_is_under(file, root) for root in _LIBRARY_ROOTS)
         ):
             names.append(name)
     return names
@@ -1289,7 +1327,28 @@ def main(argv=None):
                 code = execute(job.script, job.argv, job.cwd, "client")
         except BaseException:
             code = 1
+            # The client's streams are already unhooked -- _run_context
+            # restored them on the way out of the `with` -- so printing here
+            # reaches the daemon's log and nobody else. Left at that, a
+            # failure in the daemon's own plumbing gave the user an exit code
+            # of 1 and not one byte of output. Hand them the traceback over
+            # the socket while it is still open.
+            report = traceback.format_exc()
             traceback.print_exc()
+            job.send(
+                _dc.FRAME_STDERR,
+                (
+                    "algan: the render daemon failed outside your script "
+                    f"(log: {_dc.log_path()}). It is shutting down; run the "
+                    "script again and a fresh one will serve it.\n"
+                    f"{report}"
+                ).encode(errors="replace"),
+            )
+            # Whatever broke, the daemon's state is no longer trustworthy:
+            # reset_state() is exactly what runs here, so a daemon that
+            # cannot reset would fail this way for every later run too.
+            # Standing down makes that self-healing instead of permanent.
+            events.put(("quit", "the daemon failed outside a script"))
         finally:
             busy.clear()
             # Release the client first: the tidy-up below is the daemon's own
