@@ -356,9 +356,20 @@ jobs:
       # *after* the released commit was tagged. Publishing baselines is a
       # separate, deliberate act that happens before a release; the gate job
       # only checks that the pointer still resolves.
+      # GH_REPO, because this job deliberately does not check the repository out
+      # -- it only needs the built distributions. Without a checkout there is no
+      # `.git`, and `gh` infers the repository from the git remote, so it exits
+      # with `failed to run git: fatal: not a git repository`. That is what
+      # happened on the first v0.0.0 release attempt: promote had already
+      # fast-forwarded stable and pushed the tag, and the docs had already
+      # deployed, so the run died between the reversible steps and PyPI.
+      # `--generate-notes` is resolved server-side, so naming the repository is
+      # all `gh` was missing; checking out the tree here would be a slower fix
+      # for the same thing.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euxo pipefail
           gh release create "v${{ inputs.version }}" \
