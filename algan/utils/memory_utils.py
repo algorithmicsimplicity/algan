@@ -165,29 +165,26 @@ def get_num_available_bytes(device=torch.device("cuda")):
 
 
 def _gpu_memory_pressure(threshold=0.8):
-    """True when the render device is using more than ``threshold`` of its
-    memory (driver-level, so it accounts for Taichi + torch + everything).
+    """True when the active render GPU exceeds ``threshold`` of its memory.
 
-    **MPS answers for itself.** This used to return ``True`` for every device
-    that was not CUDA, which reads as a conservative default and is not one:
-    :func:`release_torch_memory` is called from twenty sites, nineteen of them
-    with ``force_gc=False`` precisely so that a steady-state call is cheap, and
-    an unconditional ``True`` made every one of them pay a full
-    ``gc.collect()`` on a Metal render. Metal reports the same two numbers CUDA
-    does -- what the driver holds for this process, and what it recommends the
-    process hold -- so the same ratio decides.
+    CUDA and MPS answer from driver-level telemetry, so the figure accounts for
+    Taichi, torch and everything else in the process's GPU allocation. If the
+    active GPU's telemetry fails, answer conservatively ``True``.
 
-    A device with no telemetry at all still answers ``True``, which is where
-    that default belongs: it is the fallback for "cannot tell", not the answer
-    for "not CUDA".
+    A CPU render answers ``False`` even on a machine that also has a GPU.
+    Host/cgroup capacity is a separate signal (:func:`_host_memory_pressure`)
+    and :func:`release_torch_memory` combines the two. Treating "no active GPU"
+    as GPU pressure used to make every steady-state CPU reclaim pay a full
+    process-wide ``gc.collect()`` even when host memory was plentiful.
     """
-    if torch.cuda.is_available():
+    device = render_device()
+    if device.type == "cuda":
         try:
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
             return (total_bytes - free_bytes) > threshold * total_bytes
         except Exception:
             return True
-    if torch.mps.is_available():
+    if device.type == "mps":
         try:
             total_bytes = torch.mps.recommended_max_memory()
             return total_bytes <= 0 or (
@@ -195,7 +192,7 @@ def _gpu_memory_pressure(threshold=0.8):
             )
         except Exception:
             return True
-    return True
+    return False
 
 
 #: A finite Linux cgroup is a hard OOM boundary rather than advisory system
@@ -343,10 +340,11 @@ def release_torch_memory(force_gc=True):
     call (~0.2s each on a large scene; it was costing ~40% of a small render
     when called several times per frame batch). It is only needed to break
     *reference cycles* -- reference counting already frees the (explicitly
-    nulled) geometry tensors immediately -- so it is skipped unless the GPU is
-    actually under memory pressure (where reclaiming cyclic garbage matters for
-    avoiding OOM) or ``force_gc`` is set. A render additionally freezes the
-    authored scene out of collection entirely (:func:`scene_excluded_from_gc`),
+    nulled) geometry tensors immediately -- so it is skipped unless the GPU or
+    host is actually under memory pressure (where reclaiming cyclic garbage
+    matters for avoiding OOM) or ``force_gc`` is set. A render additionally
+    freezes the authored scene out of collection entirely
+    (:func:`scene_excluded_from_gc`),
     which is what makes the surviving collections cheap.
 
     ``torch.cuda.empty_cache()`` is *not* cheap: it drains the device and hands

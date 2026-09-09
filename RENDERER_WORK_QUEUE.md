@@ -47,7 +47,7 @@ behaviour or for wall-clock rankings; where that matters it says so.
 | 10 | [`AttributeTimeline.get` — the prep pole](#10-attributetimelineget--the-prep-pole) | Performance | 20.3% of the reference render, never targeted.                                                                                                |
 | 11 | [T5 — the sparse-discovery host chain](#11-t5--the-sparse-discovery-host-chain) | Performance | Largest render-thread item in the plan; the host loops are shipped, the sorts stay. |
 | 12 | [P9 / P10 — the batched geometry builds](#12-p9--p10--the-batched-geometry-builds) | Performance | **P9 shipped; P10 re-split and one piece shipped.** The re-split moved the ranking — what this item named as P10's remainder is mostly not where the time is. |
-| 13 | [`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render) | Performance | One-line gate; unconditional cost on the CPU path.                                                                                            |
+| 13 | ~~[`empty_cache` always collects on a CPU render](#13-empty_cache-always-collects-on-a-cpu-render)~~ | Performance | **Done.** CPU-only steady-state reclaim now follows host/cgroup pressure instead of treating missing GPU telemetry as pressure. |
 | 14 | [Delete the dead render paths](#14-delete-the-dead-render-paths) | Maintenance | ~1,600 lines, two references to modules that do not exist.                                                                                    |
 | 15 | [Stale docstrings that describe a renderer that no longer exists](#15-stale-docstrings-that-describe-a-renderer-that-no-longer-exists) | Docs | Each has already misled someone reading the code.                                                                                             |
 | 16 | [Nine experimental toggles are unreachable from `SETTINGS`](#16-nine-experimental-toggles-are-unreachable-from-settings) | API | Includes a route precondition that cannot be flipped from Python.                                                                             |
@@ -603,29 +603,38 @@ detail is in that document under P9, P10b and P11b.
 
 ## 13. `empty_cache` always collects on a CPU render
 
-**Status: new. One-line change; measure before and after.**
+**Status: BUILT 2026-09-09.** The reclaim helper is now
+`release_torch_memory`; the bug survived there after the MPS half of this item
+was fixed independently.
 
-`_gpu_memory_pressure()` (`utils/memory_utils.py:90`) returns **True** when CUDA
-is unavailable — "No CUDA telemetry; keep the original (always-gc) behavior."
-`empty_cache()` gates its `gc.collect()` on that, so on a CPU (or MPS) render
-**every call runs a full collection**, several times per frame batch, on the
-scene's whole object graph.
+`_gpu_memory_pressure()` now follows the active render device and returns
+`False` for a CPU render, even when the machine also has CUDA/MPS available.
+That is not a telemetry failure: there is no active render GPU whose pressure
+needs to be inferred. `release_torch_memory` already ORs that signal with
+`_host_memory_pressure()`, which checks a finite Linux cgroup first and then
+ordinary host available memory. CPU renders therefore still collect under real
+host pressure, and every explicit `force_gc=True` failure/retry path is
+unchanged. A present CUDA/MPS device whose telemetry call fails also keeps the
+old conservative `True` result.
 
-The docstring for `empty_cache` puts `gc.collect()` at ~0.2 s on a large scene
-and records it costing ~40% of a small render before it was gated. That gating
-is exactly what a CPU render does not get. `scene_excluded_from_gc` softens it,
-but the collection still walks everything else.
+The regression test pins the CPU-only, host-unpressured case and verifies a
+steady-state call does not enter `gc.collect()`. The existing host-pressure
+tests continue to verify that a CPU process does collect, trim and (if pressure
+remains) release the Quadrants runtime when capacity is genuinely tight.
 
-The CPU path is not the reference workload, but it is what CI runs, what a
-cloud session runs, and what a laptop without CUDA runs. A cheap host-side
-pressure proxy (or simply "no telemetry → do not force") is worth measuring.
+Controlled CPU measurement in the OpenAI Linux container, with 150,000 live
+tracked dict/list objects held throughout the run and host pressure confirmed
+false, 20 consecutive `release_torch_memory(force_gc=False)` calls:
 
-Related, and to be kept honest about: on the reference CUDA machine the same
-gate is open *always* for the opposite reason — a 4 GB card sits above the 80%
-threshold for the whole render, 510 calls at ~74 ms
-(`DESIGN_optimization_targets.md`, "`memory reclaim` doubled in share"). Both
-ends of the gate are wrong for their machine. That document's advice stands:
-measure on a card with headroom before spending anything on the CUDA end.
+| | total | per call |
+| --- | ---: | ---: |
+| before | 4.642 s | 232.090 ms |
+| after | 0.00348 s | 0.174 ms |
+
+That is the isolated reclaim-call cost, not a whole-render speedup claim. It
+matches the module's existing ~0.2 s-per-collection observation and removes the
+cost entirely from ordinary CPU steady state while retaining the real memory
+pressure backstop.
 
 ---
 

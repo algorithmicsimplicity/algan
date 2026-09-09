@@ -106,21 +106,11 @@ def test_cuda_available_bytes_clears_the_requested_device(monkeypatch):
     ]
 
 
-def test_memory_pressure_answers_per_device(monkeypatch):
-    """A device without CUDA is not automatically "under pressure".
-
-    ``release_torch_memory`` is called from twenty sites, nineteen with
-    ``force_gc=False`` so a steady-state call is cheap. Answering ``True`` for
-    every non-CUDA device made every one of those pay a full ``gc.collect()``
-    on a Metal render -- and, before the gate below, an import-cache drop and a
-    device drain with it. Metal reports the same two numbers CUDA does, so the
-    same ratio decides; only a device with no telemetry keeps the conservative
-    default.
-    """
+def test_memory_pressure_answers_for_the_render_device(monkeypatch):
+    """GPU pressure follows the configured render device, not installed GPUs."""
     from algan.utils import memory_utils as mu
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(mu, "render_device", lambda: torch.device("mps"))
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: 8 << 30)
 
     monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 1 << 30)
@@ -129,9 +119,29 @@ def test_memory_pressure_answers_per_device(monkeypatch):
     monkeypatch.setattr(torch.mps, "driver_allocated_memory", lambda: 7 << 30)
     assert mu._gpu_memory_pressure() is True
 
-    # No telemetry at all keeps the conservative answer.
-    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
-    assert mu._gpu_memory_pressure() is True
+    # A CPU render has no GPU pressure even if CUDA is installed. Host pressure
+    # is checked separately by release_torch_memory.
+    monkeypatch.setattr(mu, "render_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("queried unused CUDA")),
+    )
+    assert mu._gpu_memory_pressure() is False
+
+
+def test_an_unpressured_cpu_reclaim_skips_gc(monkeypatch):
+    """Steady-state CPU cleanup does not collect without host pressure."""
+    from algan.utils import memory_utils as mu
+
+    events = []
+    monkeypatch.setattr(mu, "render_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+
+    mu.release_torch_memory(force_gc=False)
+    assert events == []
 
 
 def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
