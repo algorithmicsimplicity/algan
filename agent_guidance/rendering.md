@@ -152,9 +152,10 @@ existing no-falloff control. See roadmap §6a-ter and §10.
 
 ## The path tracer uses one rough dielectric interface
 
-Physical transmitting triangles sample one GGX visible facet and then its
-Fresnel reflection/refraction outcome. `_pt_glass_terms`, `_pt_sample_glass`
-and `_pt_glass_f_pdf` must agree on branch probabilities and direction density,
+Physical transmitting triangles mix single-scatter GGX visible-facet/Fresnel
+sampling with a reciprocal two-sided energy-closure lobe. `_pt_glass_terms`
+supplies the single-facet outcomes; `_pt_sample_glass` and `_pt_glass_f_pdf`
+must agree on the complete mixture probabilities and direction density,
 including the transmission Jacobian. `_pt_lit_f_pdf` supplies the full mixture
 to both NEE and continuation. Smooth interfaces (`roughness < 0.01`) are delta;
 equal indices transmit straight. Only valid crossings update the medium stack.
@@ -162,8 +163,12 @@ equal indices transmit straight. Only valid crossings update the medium stack.
 Here `eta = n_incident / n_transmitted`: radiance multiplies by `eta^2` on
 transmission, while unused path scalar slot 6 accumulates its inverse for
 roulette and minimum-weight decisions. Keep the 12-float state width unchanged.
-Do not apply opaque GGX's Turquin compensation to transmitting interfaces:
-this is a single-scatter dielectric model. Shadow connections through further
+Do not apply opaque GGX's Turquin compensation to transmitting interfaces.
+The coupled glass correction restores power but approximates higher-order
+angular transport. Keep the VNDF/cosine mixture PDF and VNDF null events
+consistent at both ends of MIS. Its loss table follows the optional blue-noise
+tile in `nee_meta`; header word 22 records the offset. See the roadmap's
+"Coupled rough-glass compensation" record before changing its normalization. Shadow connections through further
 interfaces are still straight (no caustics). `test_rough_dielectric.py` checks
 PDF mass, sampled power, reciprocity and Snell/TIR; `test_path_tracer.py` adds
 rendered blur, lighting and roulette checks. See roadmap section 10.

@@ -134,6 +134,7 @@ jobs:
           required = [
               "rendering/post_processing/anti_aliasing/AreaTex.png",
               "rendering/post_processing/anti_aliasing/SearchTex.png",
+              "rendering/raytracing/data/glass_energy.npy",
               "external_libraries/manim/_config/default.cfg",
           ]
           missing = [r for r in required if not (root / r).is_file()]

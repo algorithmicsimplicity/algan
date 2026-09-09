@@ -63,6 +63,7 @@ from algan.rendering.mps_compat import accumulate_dtype
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.area_light_quads import NO_QUAD_BASE
 from algan.rendering.raytracing.blue_noise import blue_noise_tile
+from algan.rendering.raytracing.glass_energy import glass_energy_table
 from algan.rendering.raytracing.light_tree import (
     LT_F_WIDTH,
     LT_I_WIDTH,
@@ -92,6 +93,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_ENV_SHARE,
     _NM_ENV_W,
     _NM_FAR_CLIP,
+    _NM_GLASS_LUT,
     _NM_INF_COUNT,
     _NM_LIGHT_SAMPLES,
     _NM_MEDIA,
@@ -1078,18 +1080,20 @@ def _build_nee_tables(
         meta[_NM_TREE_ON] = 1.0 if tree_on else 0.0
         meta[_NM_TREE_MIX] = float(tree_mix)
         meta[_NM_INF_COUNT] = float(n_inf)
-        # The blue-noise tile rides this vector's tail rather than a kernel
-        # argument or an arena entry of its own (roadmap section 7): it is
-        # per-render constant data, which is what this vector is for, and both
-        # ends of the sampler already receive it. Off -- or with no tile file
-        # to load -- the vector keeps its header length and the kernels take
-        # the hashed key exactly as they did.
+        # Layout: header, optional sampler tile, then the glass loss table.
+        # Both are immutable per-render constants in an existing arena vector;
+        # no persistent device field or extra shade-kernel argument is needed.
         tile = blue_noise_tile() if rt_settings.pt_blue_noise else None
         meta[_NM_BLUE_NOISE] = 0.0 if tile is None else 1.0
+        meta[_NM_GLASS_LUT] = NEE_META_WIDTH + (0 if tile is None else tile.numel())
         head = torch.tensor(meta, dtype=torch.float32, device="cpu")
-        nee_meta = _arena_copy(
-            memory, head if tile is None else torch.cat((head, tile))
+        parts = (
+            (head, glass_energy_table())
+            if tile is None
+            else (head, tile, glass_energy_table())
         )
+        nee_meta = _arena_copy(memory, torch.cat(parts))
+
     return (
         nee_cdf,
         nee_ref,

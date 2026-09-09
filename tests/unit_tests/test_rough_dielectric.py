@@ -6,13 +6,22 @@ import numpy as np
 import pytest
 import torch
 
+from algan.rendering.raytracing.glass_energy import glass_energy_table
 from algan.rendering.raytracing.path_tracer_taichi import (
+    _NM_GLASS_LUT,
+    NEE_META_WIDTH,
     _pt_glass_f_pdf,
     _pt_glass_terms,
     _pt_sample_glass,
 )
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import ti
+
+
+def _glass_meta():
+    meta = torch.cat((torch.zeros(NEE_META_WIDTH), glass_energy_table()))
+    meta[_NM_GLASS_LUT] = NEE_META_WIDTH
+    return meta
 
 
 @ti.kernel
@@ -22,6 +31,7 @@ def _sample(
     angle: ti.f32,
     u: ti.types.ndarray(),
     out: ti.types.ndarray(),
+    nee_meta: ti.types.ndarray(),
 ):
     for i in range(u.shape[0]):
         n = ti.math.vec3(0.0, 0.0, 1.0)
@@ -40,9 +50,12 @@ def _sample(
             1.0,
             ti.math.vec2(u[i, 0], u[i, 1]),
             u[i, 2],
+            nee_meta,
         )
         if delta == 0:
-            fc, pdf = _pt_glass_f_pdf(f0, rough, n, rd, wi, eta, 0.0, one, 1.0)
+            fc, pdf = _pt_glass_f_pdf(
+                f0, rough, n, rd, wi, eta, 0.0, one, 1.0, nee_meta
+            )
             wt = fc / ti.max(pdf, 1e-20)
         for k in ti.static(range(3)):
             out[i, k] = wi[k]
@@ -59,6 +72,7 @@ def _evaluate(
     directions: ti.types.ndarray(),
     out: ti.types.ndarray(),
     reverse: ti.i32,
+    nee_meta: ti.types.ndarray(),
 ):
     for i in range(directions.shape[0]):
         n = ti.math.vec3(0.0, 0.0, 1.0)
@@ -74,7 +88,7 @@ def _evaluate(
         one = ti.math.vec3(1.0, 1.0, 1.0)
         ratio = (eta_i - 1.0) / (eta_i + 1.0)
         fc, pdf = _pt_glass_f_pdf(
-            one * ratio * ratio, rough, n, rd, wi, eta_i, 0.0, one, 1.0
+            one * ratio * ratio, rough, n, rd, wi, eta_i, 0.0, one, 1.0, nee_meta
         )
         out[i, 0] = fc[0]
         out[i, 1] = pdf
@@ -84,7 +98,7 @@ def _draw(rough, eta=1 / 1.5, angle=30, count=32768):
     init_taichi()
     u = torch.rand((count, 3), generator=torch.Generator().manual_seed(9187))
     out = torch.zeros((count, 6))
-    _sample(rough, eta, math.radians(angle), u, out)
+    _sample(rough, eta, math.radians(angle), u, out, _glass_meta())
     return out
 
 
@@ -104,7 +118,13 @@ def test_glass_pdf_mass_matches_sampled_outcomes(eta, angle):
     ).reshape(-1, 3)
     out = torch.zeros((len(dirs), 2))
     _evaluate(
-        rough, eta, math.radians(angle), torch.tensor(dirs, dtype=torch.float32), out, 0
+        rough,
+        eta,
+        math.radians(angle),
+        torch.tensor(dirs, dtype=torch.float32),
+        out,
+        0,
+        _glass_meta(),
     )
     density = out[:, 1].reshape(192, 256).numpy()
     for transmitted in (False, True):
@@ -114,17 +134,33 @@ def test_glass_pdf_mass_matches_sampled_outcomes(eta, angle):
             ((sampled[:, 3] == transmitted) & (sampled[:, 4] == 1)).float().mean()
         )
         assert integrated == pytest.approx(float(observed), abs=0.015)
+        for near_horizon in (False, True):
+            for positive_x in (False, True):
+                z_mask = half & ((np.abs(z) < 0.5) == near_horizon)
+                phi_mask = (np.cos(phi) > 0) == positive_x
+                expected = (
+                    density[z_mask][:, phi_mask] * weights[z_mask, None]
+                ).sum() * (2 * math.pi / 256)
+                in_bin = (
+                    (sampled[:, 3] == transmitted)
+                    & (sampled[:, 4] == 1)
+                    & ((sampled[:, 2].abs() < 0.5) == near_horizon)
+                    & ((sampled[:, 0] > 0) == positive_x)
+                )
+                assert expected == pytest.approx(
+                    float(in_bin.float().mean()), abs=0.012
+                )
 
 
 @pytest.mark.parametrize("eta", [1 / 1.5, 1.5, 1.5 / 1.33])
 def test_glass_sample_weights_obey_the_furnace_energy_bound(eta):
     sampled = _draw(0.6, eta, 35)
     # Refraction changes radiance by eta^2, not radiant power. Removing that
-    # factor leaves Fresnel selection and masking, which cannot create power.
+    # factor gives the power furnace. A mixture sample can individually weigh
+    # more than one; conservation constrains the integral, not each f/pdf.
     weights = sampled[:, 5] / torch.where(sampled[:, 3] > 0, eta**2, 1.0)
     assert bool(torch.isfinite(weights).all())
-    assert float(weights.max()) <= 1.0002
-    assert 0.5 < float(weights.mean()) <= 1.0
+    assert float(weights.mean()) == pytest.approx(1.0, abs=0.015)
 
 
 def test_roughness_broadens_transmitted_directions():
@@ -166,8 +202,8 @@ def test_transmission_reciprocity_includes_the_radiance_eta_factor():
     directions = sampled[(sampled[:, 3] == 1) & (sampled[:, 4] == 1), :3].contiguous()
     forward = torch.zeros((len(directions), 2))
     reverse = torch.zeros_like(forward)
-    _evaluate(rough, eta, math.radians(angle), directions, forward, 0)
-    _evaluate(rough, eta, math.radians(angle), directions, reverse, 1)
+    _evaluate(rough, eta, math.radians(angle), directions, forward, 0, _glass_meta())
+    _evaluate(rough, eta, math.radians(angle), directions, reverse, 1, _glass_meta())
     f_forward = forward[:, 0] / directions[:, 2].abs()
     f_reverse = reverse[:, 0] / math.cos(math.radians(angle))
     assert torch.allclose(f_forward, eta**2 * f_reverse, rtol=2e-4, atol=1e-5)
@@ -195,9 +231,9 @@ def test_authored_specular_cannot_make_a_facet_return_more_than_it_receives(eta)
 
     ``MeshPhysicalMaterial`` writes that F0 from ``specular_intensity`` and
     ``specular_color``, neither of which is clamped to the KHR [0, 1] range.
-    Glass is deliberately excluded from the opaque lobe's Turquin
-    compensation, so nothing downstream bounds the total: a ray reflecting
-    repeatedly inside a nested solid would gain energy at every crossing.
+    The single-scatter cap remains necessary before the coupled compensation
+    splits off its common ideal dielectric fraction. Compensation must not
+    excuse an already active authored facet.
     """
     init_taichi()
     base = ((eta - 1) / (eta + 1)) ** 2

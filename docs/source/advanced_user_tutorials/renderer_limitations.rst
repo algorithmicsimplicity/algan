@@ -729,9 +729,15 @@ Refraction
 
   Refraction includes the radiance index-squared factor; entry and exit
   cancel in the same surrounding medium, and roulette accounts for that
-  cancellation. This is a single-scatter microfacet model: very rough glass
-  can lose energy to unmodelled scattering between facets. The opaque-metal
-  compensation is deliberately not applied to glass. Shadow connections
+  cancellation. A coupled reflection/transmission correction recovers the
+  single-scatter energy loss of very rough glass. It conserves ideal white
+  power to lookup-table accuracy, but uses a separable approximation rather
+  than tracing repeated interactions between microscopic facets. The recovered
+  angular distribution and reflection/transmission split are approximate;
+  near-matched rough interfaces can over-blur that recovered component.
+  Tinted and partially transmitting glass use a conservative correction that
+  does not turn absorption into white light. The opaque-metal correction is
+  not applied to glass. Shadow connections
   through additional glass remain straight, so this does not add caustics.
   Custom scatter overrides and thin Bezier panes keep their authored delta
   continuations.

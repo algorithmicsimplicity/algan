@@ -28,7 +28,10 @@ import math
 import pytest
 import torch
 
+from algan.rendering.raytracing.glass_energy import glass_energy_table
 from algan.rendering.raytracing.path_tracer_taichi import (
+    _NM_GLASS_LUT,
+    NEE_META_WIDTH,
     _pt_fresnel,
     _pt_lit_f_pdf,
     _pt_lit_lobes,
@@ -38,6 +41,13 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _material_reflectance,
 )
 from algan.taichi_compat import ti
+
+
+def _glass_meta():
+    meta = torch.cat((torch.zeros(NEE_META_WIDTH), glass_energy_table()))
+    meta[_NM_GLASS_LUT] = NEE_META_WIDTH
+    return meta
+
 
 IOR = 1.5
 CRITICAL_ANGLE = math.degrees(math.asin(1.0 / IOR))  # 41.81 degrees
@@ -105,7 +115,9 @@ SCHLICK_TOLERANCE = 0.03
 
 
 @ti.kernel
-def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
+def _pt_probe(
+    cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray(), nee_meta: ti.types.ndarray()
+):
     one = ti.math.vec3(1.0, 1.0, 1.0)
     f0 = one * 0.04
     f = _pt_fresnel(f0, cos_i, eta, 0.0, one)
@@ -131,6 +143,7 @@ def _pt_probe(cos_i: ti.f32, eta: ti.f32, out: ti.types.ndarray()):
         0.0,
         one,
         1.0,
+        nee_meta,
     )
     out[1, 0] = fc[0]
     out[1, 1] = pdf
@@ -142,7 +155,7 @@ def test_path_tracer_internal_fresnel_and_pdf(angle):
 
     init_taichi()
     out = torch.zeros((2, 3))
-    _pt_probe(math.cos(math.radians(angle)), IOR, out)
+    _pt_probe(math.cos(math.radians(angle)), IOR, out, _glass_meta())
     assert float(out[0, 0]) == pytest.approx(
         exact_fresnel(angle, inside=True), abs=SCHLICK_TOLERANCE
     )
@@ -159,9 +172,9 @@ def test_path_tracer_nested_interface_changes_the_critical_angle():
     out = torch.zeros((2, 3))
     # At 50 degrees glass -> air is TIR, glass -> water is not.
     cos_i = math.cos(math.radians(50))
-    _pt_probe(cos_i, IOR, out)
+    _pt_probe(cos_i, IOR, out, _glass_meta())
     assert out[0, 0] == 1
-    _pt_probe(cos_i, IOR / 1.33, out)
+    _pt_probe(cos_i, IOR / 1.33, out, _glass_meta())
     assert 0 < out[0, 0] < 0.2
 
 

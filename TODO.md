@@ -33,22 +33,18 @@ stable under minification, grazing views, camera motion and reflections on both
 renderers. Include odd texture sizes, wrap seams and animated texture windows;
 measure build cost, extra memory and warm render cost on representative hardware.
 
-## 2. Compensate very rough dielectric energy loss
+## 2. Rough dielectric energy loss — compensated (2026-09-09)
 
-**Current gap.** `_pt_glass_f_pdf` and `_pt_sample_glass` in
-[`path_tracer_taichi.py`](algan/rendering/raytracing/path_tracer_taichi.py) implement
-a unified single-scatter rough dielectric. Opaque GGX has multiple-scattering
-compensation, but rough glass still omits repeated microfacet scattering.
-
-**Work.** Couple reflection and transmission compensation rather than applying
-the opaque reflection-only correction to both. Preserve matching evaluation,
-sampling and PDFs, total internal reflection, nested relative IORs and the
-radiance eta-squared convention. See the glass implementation record in
+Implemented a coupled, reciprocal reflection/transmission loss closure with
+matching evaluation/sampling/PDFs, unchanged smooth glass and nested-IOR
+bookkeeping. The unclamped 112-case furnace sweep and regression coverage are
+recorded under "Coupled rough-glass compensation" in
 [`DESIGN_path_tracer_roadmap.md`](algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md).
 
-**Done when.** White-furnace and roughness/IOR sweeps demonstrate the intended
-energy behavior, with reciprocal-interface and TIR cases and no smooth-glass
-regression. Document any approximation rather than calling it exact transport.
+The closure is an approximation to higher-order angular transport, not an
+exact microfacet random walk. A more faithful higher-order angular model and
+GPU performance measurements remain possible refinements, not missing parts
+of this energy-compensation task.
 
 ## 3. Finish physical area-emission semantics across the API
 

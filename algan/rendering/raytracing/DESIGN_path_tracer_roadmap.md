@@ -2050,7 +2050,7 @@ Tracked here so they are one search away, in rough order of effort:
 ## 10. Design improvements identified during the correctness follow-up
 
 * **Unified rough dielectric BSDF — implemented (2026-09-08).** A physical
-  triangle's transmitting interface now draws one GGX visible microfacet,
+  triangle's single-scatter interface draws one GGX visible microfacet,
   then chooses reflection or refraction using that facet's Fresnel weights.
   `_pt_sample_glass`, `_pt_glass_terms` and `_pt_glass_f_pdf` share the exact
   dielectric Fresnel term, Snell direction, correlated Smith masking and
@@ -2071,10 +2071,9 @@ Tracked here so they are one search away, in rough order of effort:
   `roughness^2 < 1e-4` gives an exact delta interface. Equal indices give
   straight transmission regardless of roughness. Pure conductors retain
   their existing reflection compensation. Transmitting interfaces use the
-  **single-scatter** dielectric model: applying reflection-only Turquin
-  compensation here would create power, so very rough glass can still lose
-  energy to omitted microfacet multiple scattering. A coupled dielectric
-  multiple-scattering model is a future improvement. Custom scatter and
+  single-scatter dielectric **plus the coupled energy closure below**:
+  reflection-only Turquin compensation is not applied to glass. The closure
+  recovers missing power but approximates the higher-order angular distribution. Custom scatter and
   thin Bezier panes retain their authored delta behavior. Transparent shadow
   rays still travel straight through additional interfaces; this is not a
   caustic estimator.
@@ -2097,3 +2096,176 @@ Tracked here so they are one search away, in rough order of effort:
   and BVH construction is justified structurally. Shadow queues, temporal
   history, per-dimension blue-noise tables and splitting still need their
   roadmap profile/quality gates. None was enabled speculatively by this work.
+
+
+### Coupled rough-glass compensation (2026-09-09)
+
+**Implemented, with an explicit approximation.** `_pt_glass_ss_f_pdf` and
+`_pt_sample_glass_ss` retain the unified single-scatter model. The renderer entry
+helpers `_pt_glass_f_pdf` and `_pt_sample_glass` add a reciprocal,
+separable **two-sided loss closure**. This is not an exact multiple-bounce
+microfacet random walk, nor a reflection-only gain copied onto transmission.
+
+#### Power budget and reciprocity
+
+Let `i` be the incident/view medium and `j` the opposite medium, with
+`eta = n_i / n_j`. For ideal white, fully transmitting glass define
+
+```
+E_i(mu) = integral_i(f_ss * |cos|) + integral_j(f_ss * |cos| / eta^2)
+d_i(mu) = 1 - E_i(mu)
+D_i = 2 * integral_0^1(mu * d_i(mu)) dmu
+Z = eta^2 * D_i + D_j
+```
+
+`f_ss` is in **radiance** convention. Removing `eta^2` from its transmission
+integral is essential: a constant unit-radiance environment on both sides of a
+single unequal-index interface is not the unit-power furnace. The power test
+is equivalently illumination at equilibrium `L/n^2` on the two sides.
+
+For the outgoing direction on side `k` (`i` for reflection, `j` for
+transmission), the added radiance BSDF is
+
+```
+f_ms(v, l) = eta^2 * d_i(|n.v|) * d_k(|n.l|) / (pi * Z).
+```
+
+The recovered reflected power is `d_i * eta^2 * D_i / Z`; recovered transmitted
+power is `d_i * D_j / Z`. Their sum is **one shared missing-power budget** `d_i`,
+not two independent boosts. Thus ideal glass integrates to one, up to table
+quadrature/interpolation error. Reflection is symmetric in its directions.
+On swapping media and directions, `f_ms(i -> j) = eta^2 * f_ms(j -> i)`, the
+same radiance reciprocity convention as single-scatter transmission.
+
+This phase-space-weighted partition and separable angular shape are modeling
+choices, not a measured or exact higher-order reflection/transmission split.
+The closure deliberately loses the correlations between successive facets.
+In particular it can over-broaden the recovered component at very small index
+contrast. Exactly matched indices retain their existing straight-through
+special case; the table is not consulted there.
+
+#### Authored materials are not whitened
+
+Only a common ideal dielectric fraction present in **both** authored facet
+outcomes is compensated. Per channel, with dielectric fraction `d = 1-m`,
+physical normal-incidence reflectance `b`, authored dielectric `r0 = f0-m*albedo`,
+and transmission control `T`, that fraction is
+
+```
+c = max(0, min(d, r0/b, (d-r0)/(1-b), d*T*albedo)).
+```
+
+Small-denominator guards handle the limiting cases. Channels with albedo
+outside `[0,1]` receive no compensation. These bounds leave nonnegative
+remainders after subtracting `c*F` from reflection and `c*(1-F)` from
+transmission, with a remaining total facet budget at most `1-c`. Compensating
+this ideal portion therefore does not reinterpret actual tint/absorption as
+missing geometric energy. It is conservative for colored, partially
+transmitting, metallic mixtures and altered specular controls; it does not
+reproduce all successive color-filtering events. Pure conductors and `T=0`
+receive no glass correction. The existing authored `R+T <= 1` facet cap stays
+in place. This budget concerns the interface, not an exact layered model of
+all other material lobes.
+
+#### One sampler and one evaluation path
+
+The conditional glass sampler mixes the original VNDF/Fresnel sampler with
+cosine-hemisphere sampling of the closure. It chooses the latter with
+`p_ms = min(0.95, max_channel(c) * d_i(mu_v))`, then reflection with
+`p_R = eta^2 * D_i / Z`, otherwise transmission. The evaluated PDF is
+
+```
+p = (1-p_ms)*p_ss + p_ms*p_side*|cos|/pi.
+```
+
+Both NEE and continuation use the complete `f_ss + c*f_ms` and this same PDF.
+The original rejected-facet/null probability remains in the VNDF component;
+it is not resampled away or silently renormalized. Individual `f/pdf` weights
+can exceed one: conservation constrains their integral, not every importance
+sample. Clamping those weights would bias the closure.
+
+Remapping the existing branch uniform supplies both choices. No random
+dimension, split, ray-state word, queue, or kernel argument is added. Valid
+transmitted samples still use the existing geometric support check, medium
+stack update, ray offset and reciprocal eta-squared roulette bookkeeping.
+Smooth glass (`roughness < 0.01`) takes the old sampler exactly, including TIR.
+Rough single-facet TIR is also unchanged. Multiple scattering can escape the
+opposite side even above the macro-normal critical angle; applying a hard
+macro-normal TIR cutoff to that aggregate would be incorrect.
+
+#### Table, cost, and reproducibility
+
+`data/glass_energy.npy` contains `65 x 33 x 2 x 66` float32 values: index
+contrast `abs(eta-1)/(eta+1)`, roughness, interface side, and 65 directional
+cosines plus their average. Reciprocal indices share the same contrast
+coordinate and exchange sides. The contrast endpoint one is the perfectly
+reflecting limit, rather than a finite-IOR clamp. The equal-index endpoint
+stores the limiting single-scatter loss; the exact equal-index renderer path
+bypasses both it and rough scattering.
+
+`scripts/generate_glass_energy_table.py` integrates the two exact Fresnel
+outcomes with 8,192 deterministic midpoint Hammersley VNDF samples per node,
+including rejected directions and correlated Smith `G2/G1`. It does not
+sample a sharp BTDF on a uniform angular grid. The stored averages integrate
+the **piecewise-linear cosine lookup exactly**, so trilinear interpolation
+preserves the normalization relationship. The generator uses bounded
+NumPy temporaries and a host-memory cap.
+
+The cached CPU table is copied into the existing per-render `nee_meta` vector
+after its header and optional blue-noise tile. Header word 22 records its
+base; the header is now 23 words and the optional tile begins there. The table
+adds **1,132,560 bytes (1.080 MiB)** of per-render constant data. Device fields
+are not retained across backend resets. There is no runtime quadrature or
+random walk; evaluation performs bounded interpolated lookups. GPU wall-time
+has not been measured for this change.
+
+#### Validation record
+
+The independent scrambled-Sobol furnace harness is
+`benchmarks/rough_glass_furnace.py`. The retained CSV is
+`benchmarks/results/rough_glass_furnace_2026-09-09.csv` (relative to the repo
+root), produced on the CPU with 131,072 samples per case. Its sample-standard-
+deviation/sqrt(N) column is an **IID error proxy**, not a confidence interval
+for correlated Sobol samples.
+
+The 112-case sweep covers roughness `0.08, 0.35, 0.65, 1`; relative IORs
+`1/2.4, 1/1.5, 1/1.1, 1.1, 1.5/1.33, 1.5, 2.4`; and incidence
+`0, 35, 60, 85` degrees. Single-scatter power falls as low as **0.30900**.
+Compensated estimates range from **0.99909 to 1.00252**; restricting to the
+84 rough cases (`roughness >= 0.35`) gives **0.99909 to 1.00047**.
+Examples at roughness one and normal incidence:
+
+| Relative IOR | Single-scatter power | Compensated power |
+| --- | ---: | ---: |
+| air -> glass (`1/1.5`) | 0.89330 | 0.99999 |
+| nested interface (`1.5/1.33`) | 0.75911 | 0.99964 |
+| glass -> air (`1.5`) | 0.41710 | 0.99968 |
+| high-index exit (`2.4`) | 0.30900 | 0.99995 |
+
+`test_glass_energy_compensation.py` covers the rough furnace sweep,
+reflection/transmission reciprocity (including directions with only
+higher-order support), exact lookup averages, reciprocal side selection,
+metadata offsets with and without the blue-noise tail, passive authored
+remainders, and bit-exact old/new smooth-sampler parity over 15 roughness/IOR
+combinations. The existing glass tests independently integrate hemisphere
+PDFs and check sampled frequencies, Snell/TIR, broadening and reciprocity.
+Existing render tests cover index matching, transmission NEE/MIS, occlusion,
+internal TIR and entry/exit roulette. No display clamp or firefly clamp is
+used to establish the numerical furnace result.
+
+`test_rough_glass_furnace_render.py` additionally renders a closed glass slab
+at roughness `0.35, 0.65, 1.0` in an unsaturated constant environment, with
+actual refracted continuations (environment NEE disabled), early roulette,
+32 bounces and 512 samples/pixel. All three recover the environment level
+within one 8-bit channel value; saturation is explicitly rejected.
+
+Local validation also checked the built wheel contains the byte-identical
+loss table, and a fresh table generation reproduced SHA-256
+`801084f7de2b0b7d9c7e8490ace2d44df8004b3cc8907256a5c6f3cde7e7490b`.
+Ruff 0.12.4 lint and format checks passed (kernel modules were not formatted).
+The fast suite had 561 passes and the known `fast.mp4` text-baseline mismatch
+(maximum difference 221). The full-suite attempt stopped at the MathTex
+segment-grouping example (`text_and_math.rst:115`): 1,038 passed, 9 skipped.
+That exact failure was reproduced on untouched master `c2075083`; the
+container's `dvisvgm` compatibility wrapper drops the required SVG groups.
+These environment failures are not recorded as a green full suite.

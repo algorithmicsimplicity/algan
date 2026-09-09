@@ -29,9 +29,20 @@ them stops the kernel compiling.
 import pytest
 import torch
 
-from algan.rendering.raytracing.path_tracer_taichi import _pt_lit_f_pdf
+from algan.rendering.raytracing.glass_energy import glass_energy_table
+from algan.rendering.raytracing.path_tracer_taichi import (
+    _NM_GLASS_LUT,
+    NEE_META_WIDTH,
+    _pt_lit_f_pdf,
+)
 from algan.rendering.taichi_runtime import init_taichi
 from algan.taichi_compat import ti
+
+
+def _glass_meta():
+    meta = torch.cat((torch.zeros(NEE_META_WIDTH), glass_energy_table()))
+    meta[_NM_GLASS_LUT] = NEE_META_WIDTH
+    return meta
 
 
 @ti.kernel
@@ -39,6 +50,7 @@ def _diffuse_probe(
     rays: ti.types.ndarray(),
     lights: ti.types.ndarray(),
     out: ti.types.ndarray(),
+    nee_meta: ti.types.ndarray(),
 ):
     one = ti.math.vec3(1.0, 1.0, 1.0)
     for i in range(rays.shape[0]):
@@ -62,6 +74,7 @@ def _diffuse_probe(
             0.0,  # metalness
             one,  # albedo
             0.0,  # transmission
+            nee_meta,
         )
         out[i, 0] = f_cos[0]
         out[i, 1] = pdf
@@ -80,7 +93,7 @@ def _probe(cases):
     rays = torch.tensor([c[0] for c in cases], dtype=torch.float32)
     lights = torch.tensor([c[1] for c in cases], dtype=torch.float32)
     out = torch.zeros((len(cases), 2), dtype=torch.float32)
-    _diffuse_probe(rays, lights, out)
+    _diffuse_probe(rays, lights, out, _glass_meta())
     return out
 
 
