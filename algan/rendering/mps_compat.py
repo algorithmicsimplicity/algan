@@ -485,8 +485,21 @@ def band_class_groups(band_of_frag, cls_eff, base):
     # scalar readback the caller needs anyway. Measured on the Mac runner's UHD
     # profile as 17 gathers over 2.5M fragments at 0.15 s each, the largest
     # single torch op left in the compaction after the fences moved.
+    #
+    # ``torch.empty``, never ``bands.new_empty``: the fragment stream reaches
+    # here as a :class:`~algan.constants.color.Color`-subclassed tensor (torch
+    # propagates a Tensor subclass through every op that touched one, and the
+    # band ids descend from one that did), and ``Color`` overrides
+    # ``new_empty`` to return an opaque black ``[R, G, B, glow, opacity]``
+    # row -- five float32 values, whatever size was asked for -- so the
+    # destination was neither the right dtype nor the right length. The dtype
+    # is what the scatter complained about (``scatter(): Expected self.dtype
+    # to be equal to src.dtype``, which is how it took down the MPS arm); the
+    # length would have been next. So the allocation names its dtype and
+    # device rather than inheriting them through a method a subclass may have
+    # redefined.
     num_groups = int(group_sorted[-1].item()) + 1
-    band_of_group = bands.new_empty(num_groups)
+    band_of_group = torch.empty(num_groups, dtype=bands.dtype, device=bands.device)
     band_of_group.scatter_(0, group_sorted, bands)
     del group_sorted
     return num_groups, inverse, band_of_group

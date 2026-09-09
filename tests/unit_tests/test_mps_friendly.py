@@ -37,6 +37,7 @@ import pytest
 import torch
 
 from algan import LD, OUTWARD, RIGHT, UP, Off, Scene, Sphere, Square
+from algan.constants.color import Color
 from algan.errors import AlganConfigurationError
 from algan.rendering import mps_compat
 from algan.rendering.mps_compat import (
@@ -662,6 +663,38 @@ def test_the_pair_grouping_handles_an_empty_stream(computing_settings):
     assert count == 0
     assert inverse.numel() == 0
     assert band.numel() == 0
+
+
+@pytest.mark.fast
+def test_the_pair_grouping_accepts_the_streams_own_tensor_subclass(
+    computing_settings,
+):
+    """The band ids arrive as a ``Color``, because torch propagates a subclass.
+
+    Nothing in the renderer asks for that: a subclass rides along through every
+    op that touched one, and the fragment stream's band ids descend from a
+    ``Color``. It matters because ``Color`` redefines ``new_empty`` to hand back
+    an opaque black ``[R, G, B, glow, opacity]`` row -- five float32 values,
+    whatever size is asked for -- so allocating this function's per-group table
+    from the stream took the MPS arm down with ``scatter(): Expected self.dtype
+    to be equal to src.dtype``, and would have been a silently five-long table
+    had the dtypes agreed. Every other test here passes plain tensors, which is
+    exactly why none of them saw it.
+    """
+    base = 1 << 25
+    band = torch.tensor([0, 0, 1, 1, 1, 2], dtype=torch.int64)
+    cls = torch.tensor([0, 3, 3, 3, 1, 1], dtype=torch.int64)
+    want_n, want_inverse, want_band = _wide_key_reference(band, cls, base)
+
+    computing_settings.set(mps_friendly=True)
+    got_n, got_inverse, got_band = band_class_groups(
+        band.as_subclass(Color), cls.as_subclass(Color), base
+    )
+
+    assert got_n == want_n
+    assert torch.equal(got_inverse, want_inverse)
+    assert torch.equal(got_band, want_band)
+    assert got_band.dtype == band.dtype
 
 
 @pytest.mark.fast
