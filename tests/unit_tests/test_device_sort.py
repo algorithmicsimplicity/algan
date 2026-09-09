@@ -214,3 +214,50 @@ def test_the_cpu_arch_declines_even_with_a_live_program(monkeypatch):
     keys = torch.arange(1 << 17, dtype=torch.int32)
     assert taichi_runtime.taichi_launch_is_local(keys.device) is True
     assert device_sort.radix_sort_available(keys) is False
+
+
+# ---------------------------------------------------------------------------
+# the identities the call sites are rewritten around
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_a_stable_descending_sort_is_an_ascending_sort_of_the_complement(seed):
+    """``raster_pipeline._exact_fragment_order``'s layer pass, both ways.
+
+    The radix sort only sorts ascending, and the layer order it replaces is
+    ``argsort(layer, descending=True, stable=True)``. ``~x`` is ``-x - 1``:
+    strictly decreasing, so it reverses the order, and free of the overflow a
+    negation would hit at ``INT32_MIN``. Equal layers stay equal under it, so
+    both sorts leave them in input order and the permutations are identical --
+    which is the whole claim, since a merely *sorted* answer would reorder
+    fragments that tie.
+    """
+    gen = torch.Generator().manual_seed(seed)
+    layer = torch.randint(-8, 9, (4096,), generator=gen, dtype=torch.int32)
+    layer[:4] = torch.tensor([-(2**31), 2**31 - 1, 0, -1], dtype=torch.int32)
+    assert torch.equal(
+        torch.argsort(torch.bitwise_not(layer), stable=True),
+        torch.argsort(layer, descending=True, stable=True),
+    )
+
+
+def test_gathering_the_depth_key_after_the_layer_sort_equals_gathering_before():
+    """The same call site's other rewrite: the key is elementwise in its input.
+
+    The torch arm gathers the packed fragment key by the layer permutation and
+    then derives the depth key; the device arm derives it first and lets the
+    sort kernel gather. That is only the same answer because the derivation is
+    per element -- so this pins it, on the real function.
+    """
+    from algan.rendering.raytracing.raster_pipeline import _primary_depth_key
+
+    gen = torch.Generator().manual_seed(7)
+    pixel = torch.randint(0, 1 << 22, (4096,), generator=gen, dtype=torch.int64)
+    bits = (torch.rand(4096, generator=gen) * 40.0 + 0.5).view(torch.int32)
+    frag_key = (pixel << 32) | bits.to(torch.int64)
+    order = torch.randperm(4096, generator=gen)
+    assert torch.equal(
+        _primary_depth_key(frag_key.index_select(0, order)),
+        _primary_depth_key(frag_key).index_select(0, order),
+    )
