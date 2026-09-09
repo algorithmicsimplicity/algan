@@ -3,11 +3,15 @@
 ``.github/workflows/test.yaml`` runs ``tests/unit_tests tests/fast`` on
 ``macos-latest`` with ``ALGAN_RENDER_DEVICE=mps``, and that arm is a **required**
 check. When it was first turned on it reported 32 failures and 3 errors against
-3311 passes (run 34102515789). **One is left.** The other went the way this
-mechanism is meant to end: run 34302218686 reported the prefiltered-reflection
-entry as a strict XPASS, so the render it described had started passing on the
-Apple GPU and its line came out (``DESIGN_mps_support.md`` §4.5 has what is and
-is not established about why). This file is the record of the one that remains;
+3311 passes (run 34102515789). **One is left**, and how the other came off is
+the caution this file needs most. Run 34302218686 reported the
+prefiltered-reflection entry as a strict XPASS -- the self-cleaning rule below
+firing -- and reading back through the arm's runs, that render had **never**
+failed on master: it was measured on the branch the entry was written on, and
+master's own arm was already green by the time that branch merged
+(``DESIGN_mps_support.md`` §4.5 has the run table). So an entry copied from a
+branch run is a claim about that branch until a master run repeats it. This
+file is the record of the one that remains;
 ``algan/rendering/DESIGN_mps_support.md`` §4 is the scoreboard behind it.
 
 Counting causes rather than tests is what got it there. Thirty of the

@@ -1147,7 +1147,9 @@ section to update when one changes.
 | [34102515789](https://github.com/algorithmicsimplicity/algan/actions/runs/34102515789) (2026-09-07, the arm's first) | **32 failed, 3311 passed, 168 skipped, 3 errors** in 2530 s |
 | [34203241437](https://github.com/algorithmicsimplicity/algan/actions/runs/34203241437) (2026-09-08, the same scope on the Mac harness) | **9 failing**, 3544 passed, 217 skipped, 9 xfailed in 3149 s |
 | [34210549355](https://github.com/algorithmicsimplicity/algan/actions/runs/34210549355) (2026-09-08, after §2.3f, six of the listed files) | six of the seven entries in those files XPASSed |
-| [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (2026-09-08, the full scope after §2.3f) | **2 failing**: 1 failed, 3563 passed, 217 skipped, 2 xfailed in 3178 s — and the 1 is the last XPASS |
+| [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (2026-09-08, the full scope after §2.3f, **on a branch**) | **2 failing**: 1 failed, 3563 passed, 217 skipped, 2 xfailed in 3178 s — and the 1 is the last XPASS |
+| [34302218686](https://github.com/algorithmicsimplicity/algan/actions/runs/34302218686) (2026-09-09, master at 2455d08) | **6 failed**, 3655 passed, 226 skipped, 1 xfailed in 2931 s — one stale strict XPASS (§4.5) and five regressions from that day's own Metal work, none of them a device defect (§4.6) |
+| [34306711211](https://github.com/algorithmicsimplicity/algan/actions/runs/34306711211) (2026-09-09, the five repaired files and `tests/fast`, on the fix branch) | 92 passed, 4 skipped in 82 s |
 
 The first row is the baseline every entry below is measured against, and the
 three green arms of that run (Linux 3.10, Linux 3.13, macOS CPU) are what says
@@ -1166,7 +1168,7 @@ fast-suite curation guard. Nine tests actually fail, and they are
 | A | `index_reduce_` is unimplemented on MPS | 10 | 0 | **fixed** — §2.3d |
 | B | the glossy tile loop walks off its frame table | 13 | 0 | **fixed**: 11 by §4.4, the last 2 by §2.3f |
 | C | an unlit/emissive slab renders black | 2 | 0 | **fixed** — §2.3f |
-| D | the glossy prefilter loses its reflection | 2 | 1 | one fixed by §2.3f; the other is Metal's — §4.5 |
+| D | the glossy prefilter loses its reflection | 2 | 0 | one fixed by §2.3f; the other **never reproduced on master** — §4.5 |
 | E | the path-traced and deterministic composites disagree by 107 | 1 | 0 | **fixed** — §2.3f |
 | F | a `ti.real_func` early return will not compile | 1 | 1 | open — §4.3 |
 | G | the source-key index is poisoned on every kernel | 1 | 0 | **fixed** — §2.3e |
@@ -1183,11 +1185,13 @@ for the xfail list: both fixes were found by measuring the runs it produced,
 not by reading code, and neither was predictable from the failure it was chased
 from.
 
-**What is left is two tests and they are unrelated to each other**: one glossy
-prefilter render whose reflection is absent (§4.5 — localized to Metal by the
-Linux control arm, which is green), and the `ti.real_func` compile failure
-(§4.3), which is a compiler defect a layer below Algan and blocks a test rather
-than a render.
+**What is left is one test**: the `ti.real_func` compile failure (§4.3), a
+compiler defect a layer below Algan that blocks a test rather than a render.
+The other entry — the glossy prefilter render whose reflection was absent — is
+gone from the list without a fix to point at, because it never reproduced on
+master at all (§4.5 has the run table). That is the one way this list can
+mislead: an entry measured on a branch is a claim about that branch until a
+master run repeats it, and this one never did.
 
 **Observed on the arm and NOT a failure**, recorded so the next reader does not
 chase it: the first render of a process warns that `torch.compile` refused
@@ -1321,51 +1325,87 @@ occupied — and a pytest session is one such process, hundreds of renders deep
 by the time this module's fixture runs. The branch now empties the cache like
 its CUDA twin, and the 1 GB cap beside it says what it is for.
 
-### 4.5 D: the prefiltered reflection is absent, and it is Metal's
+### 4.5 D: the prefiltered reflection — **it never reproduced on master**
 
-One of the two tests left. `test_prefiltered_reflection_is_substantially_wider`
-renders the audit tree's calibration scene twice and asserts that turning the
-glossy route on widens the reflected glow: measured 61.6 px rms against the
-throttled arm's 7.7, a 8.0x ratio, asserted at 3.0x.
+`test_prefiltered_reflection_is_substantially_wider` renders the audit tree's
+calibration scene twice and asserts that turning the glossy route on widens the
+reflected glow: measured 61.6 px rms against the throttled arm's 7.7, a 8.0x
+ratio, asserted at 3.0x.
 
-**On MPS the assertion reads `nan > 3.0 * 74.9`,** and the `nan` is the finding.
+**On the branch this entry was written from, the assertion read
+`nan > 3.0 * 74.9`,** and the `nan` is the finding.
 `_reflection_spread` subtracts the window's own 10th percentile and divides by
 the remainder's sum; a `nan` there means that sum is **zero**. So this is not a
 reflection that came out too narrow, or too dim, or displaced — in the window
 where the emitter's mirror image lands there is no signal above the wall's own
 level at all. Categorical, not a tolerance.
 
-**It is the device, and that is measured on three arms rather than argued:**
+**It looked like the device, and that was measured on three arms rather than
+argued:**
 
 | arm | result |
 | --- | --- |
 | macOS CPU (run 34102515789, the same runner and torch build) | passes |
 | Linux, `auto` -> CPU, both Python legs | passes |
 | Linux CPU with `ALGAN_MPS_FRIENDLY=1` — **the control arm** | **passes** (99.7 s off the mode, 84.6 s on it) |
-| macOS MPS | fails |
+| macOS MPS, branch `claude/awesome-fermi-lrapoq` @ 9583b4a | fails |
 
 The third row is the one worth having, and it is §1.2c's discriminator applied
 here: forcing the mode on over a CPU render device exercises every substitution
 this port makes — the float32 accumulators, the int32 reductions, the log-step
 scan that replaces `cummax`, and now `gather_exact` — with no Apple GPU in the
-picture. It is green. So the remainder is Metal or torch's MPS backend, not
+picture. It is green. So the remainder was Metal or torch's MPS backend, not
 MPS-friendly mode, and not the renderer's own arithmetic.
 
-Two more things that narrow it. The test's sibling
+**Except that the last row is the only run that ever saw it, and it is not
+master.** The entry was measured on the branch, and by the time that branch
+merged, master's own Apple-GPU arm was already rendering the reflection. Every
+run since:
+
+| run | ref | this test |
+| --- | --- | --- |
+| [34213125405](https://github.com/algorithmicsimplicity/algan/actions/runs/34213125405) (09-08 10:00) | branch `claude/awesome-fermi-lrapoq` @ 9583b4a | **fails** — the run the entry was written from |
+| [34216675254](https://github.com/algorithmicsimplicity/algan/actions/runs/34216675254) (09-08 10:40) | master @ 0eacd92 (PR #115) | **passes** as an ordinary test — the xfail list was not on master yet and the arm was green |
+| [34228608308](https://github.com/algorithmicsimplicity/algan/actions/runs/34228608308) (09-08 12:55) | master @ 0d73cab | XPASS(strict) |
+| [34288448182](https://github.com/algorithmicsimplicity/algan/actions/runs/34288448182) (09-08 23:02) | master @ b392d60 | XPASS(strict) |
+| [34302218686](https://github.com/algorithmicsimplicity/algan/actions/runs/34302218686) (09-09 02:13) | master @ 2455d08 | XPASS(strict) |
+| [34306714389](https://github.com/algorithmicsimplicity/algan/actions/runs/34306714389) (09-09 03:21) | the whole file, on its own | XPASS(strict), and again with `ALGAN_MPS_SHARED_QUEUE=0` |
+| [34307091566](https://github.com/algorithmicsimplicity/algan/actions/runs/34307091566) (09-09 03:27) | `ALGAN_MPS_SHARED_QUEUE=0` | XPASS(strict) |
+
+The second row is the load-bearing one: the list did not exist at 0eacd92, so
+that arm's green is the test passing on its own terms rather than an xfail
+absorbing it. Six runs since, every one of them passing, against a single
+failure on a branch. So the entry was **stale when it landed** — the branch it
+came from (9583b4a) did not yet carry master's PR #115, and it merged (26ea787)
+into a master whose arm was already green.
+
+**It is not the shared Metal command queue.** The last two rows are the A/B:
+`ALGAN_MPS_SHARED_QUEUE=0` restores the separate queues and the two per-launch
+host fences (§3.3, `mps_zero_copy`), and the reflection is there either way. So
+whatever put it back is not the ordering change PR #120 made, which is worth
+saying because the timing invites that reading.
+
+**Not established:** which change put the reflection back, and therefore
+whether anything can take it away again. The bracket is one merge wide — PR
+#115's Mac GPU integration is what master had and the branch did not — and
+nothing in it was aimed at this test.
+
+One thing worth keeping from the diagnosis, because it is what makes both
+tables mean anything: the audit scene is committed
+(`benchmarks/renderer_audit/scenes/calib_glossy.json`), so every green cell
+above is a real render rather than the skip `_needs_audit_tree` would produce
+on a tree without it. A skip misread as a pass would make all of this
+meaningless. The test's sibling
 `test_a_creases_siblings_share_the_pixels_prefiltered_claim` had the same shape
-of failure and **passes** since §2.3f, so the fragment stream feeding the route
-is now correct and this is downstream of it. And the audit scene is committed
-(`benchmarks/renderer_audit/scenes/calib_glossy.json`), so the green arms are
-real renders rather than the skip `_needs_audit_tree` would produce on a tree
-without it — worth stating, because a skip misread as a pass would make the
-whole table above meaningless.
+of failure, passes since §2.3f, and passes in every run above.
 
-**Not established:** whether this route is correct on CUDA. Every arm above
-resolves to a CPU render device, so they say "not the CPU path" and nothing
-more. Nothing in any run read so far exercises the glossy prefilter on a CUDA
-device.
+**Also not established:** whether this route is correct on CUDA. Every arm in
+the first table resolves to a CPU render device, so they say "not the CPU path"
+and nothing more. Nothing in any run read so far exercises the glossy prefilter
+on a CUDA device.
 
-Where to look next, in order: `_gloss_finish_frame`'s pyramid build
+If it ever comes back, where to look, in order: `_gloss_finish_frame`'s
+pyramid build
 (`gloss_pyramid_level` bottom-up, then `gloss_composite`'s trilinear fetch) —
 those are the three kernels the route adds over the plain one, they run per
 frame after the tile composite, and a pyramid that comes back empty on Metal
@@ -1373,3 +1413,45 @@ would produce exactly a flat window. `gl_main`'s blur-radius column is
 initialised **negative** on purpose (`_gloss_clear`), and it is what marks a
 pixel as having a prefiltered branch at all, so a scatter that fails to write
 it leaves every pixel unmarked and the composite with nothing to fetch.
+
+### 4.6 The 2026-09-09 six: five regressions and one stale entry
+
+Run 34302218686 is the first red MPS arm since the list was written with
+nothing in it about the device. Five of its six failures were made that day by
+the Metal work in PR #120; the sixth is §4.5's entry outliving its defect,
+which is what `strict` is for.
+
+**The render.** `tests/fast` died in `mps_compat.band_class_groups` with
+`scatter(): Expected self.dtype to be equal to src.dtype`. The function had
+just traded a boolean gather for a scatter and allocated the destination with
+`bands.new_empty(num_groups)` — and the fragment stream's band ids are a
+`Color`-subclassed tensor, because torch propagates a Tensor subclass through
+every op that touched one. `Color.new_empty` is not `torch.Tensor.new_empty`:
+it returns an opaque black `[R, G, B, glow, opacity]` row, five float32 values,
+whatever size is asked for. So the destination was neither the right dtype nor
+the right length. The fix names both (`torch.empty(n, dtype=..., device=...)`),
+and the lesson generalises past this call: **inside the renderer a tensor may
+be a `Color`**, so a `new_*` method on one is not the plain constructor it
+looks like. It is MPS-only because `band_class_groups` is, but there is nothing
+Metal about it — `ALGAN_MPS_FRIENDLY=1` reproduces it on a CPU box in one
+render.
+
+**The four tests** all have one shape: each fakes *most* of what a decision
+reads and lets the rest come from the machine, which is invisible until the
+machine disagrees. On this arm the live arch is `metal`, the render device is
+`mps`, and the compiler program really does dispatch on torch's command queue —
+three facts they were quietly assuming away.
+
+* `test_quadrants_pressure_reset_clears_runtime_state_when_safe` and
+  `..._defers_while_a_render_is_active` fake `BACKEND`,
+  `_already_initialized` and `render_is_active`, but not `_live_arch` — and
+  Metal is the one arch that declines the reset outright, so both got the
+  decline's answer instead of the one they assert.
+* `test_shared_torch_queue_reads_the_live_programs_config` asserted that the
+  live program does *not* dispatch on torch's queue before faking one that
+  does. True on any other box; false on the arm the predicate exists for.
+* `test_torch_compile.py::test_auto_follows_platform_support` reads only half
+  of what `'auto'` resolves against: platform support, not the render device,
+  which declines on Metal by design (§7.5 of the mac_2026_09 findings).
+
+Each is now faked outright, which is what the tests around them already did.
