@@ -266,8 +266,8 @@ set is the same procedure on that device: run
 `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
 tests/path_traced -q` twice, check the second run's outputs against the first
 (they must be byte-identical), look at the videos, and commit the directory.
-A device without a committed set renders the scenes and skips the
-comparisons.
+A device without a committed set renders the scenes and then fails the
+comparisons, rather than skipping them.
 
 ## The fast suite's render
 
@@ -304,10 +304,10 @@ size. `tests/full_renders` and the CUDA path-traced set are still pending.
 
 Each render suite keeps one baseline directory per device —
 `expected_outputs_cuda/` and `expected_outputs_cpu/` — and the harness picks
-between them with `torch.cuda.is_available()`. A machine with no baseline
-directory for its device renders the scene and then skips the comparison, so
-**a suite that reports itself green on a new device may not have compared
-anything**; check for skips before believing it.
+between them with `torch.cuda.is_available()`. A machine with no baselines for its
+device renders the scene and then **fails**, naming why nothing could be
+resolved. A suite that cannot compare must never report itself green on a new
+device, which is what it used to do.
 
 The device is the one the render will actually run on —
 `SETTINGS.computing.render_device`, so `ALGAN_RENDER_DEVICE=cpu` on a CUDA
@@ -316,7 +316,8 @@ automatic probe resolves to MPS) does not silently compare a Metal render
 against a CPU one.
 
 **macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
-committed under that name, so a Mac renders and skips the comparison. That is
+committed under that name, so a Mac renders and then fails this test until one
+is committed (`ALGAN_UPDATE_FAST_BASELINE=1`, review, commit). That is
 measured, not assumed: the x86-64 CPU baseline was copied in and run on an
 Apple Silicon CI runner, and it missed by **up to 45 channel values** (worst at
 frame 36) against a tolerance of 2. This is the scene that matched *exactly*
@@ -475,15 +476,24 @@ and its module docstring is the contract:
 
 1. `ALGAN_BASELINE_DIR` — a directory of `<suite>/<key>/` trees, for a machine
    that keeps its own or has no network. **Final**: if it holds nothing for
-   this suite, the comparison is skipped rather than downloaded.
+   this suite, the comparison fails rather than falling through to a download.
 2. the in-repo `expected_outputs_<key>/`, when it exists and has files;
 3. the verified cache under `~/.algan/cache/baselines/<tag>/`;
 4. a one-time download of the release asset pinned in `tests/baselines.json`.
 
-Any failure warns once and returns "no baselines", which every suite turns into
-a skip. That is the same state as an unbaselined device — so the standing
-warning applies with more force than before: **a render suite that skipped
-compared nothing.** Check for skips before believing a green run.
+Any failure warns once and returns "no baselines" — and **every render suite
+turns that into a failure, not a skip**. `require_baseline_dir` raises
+`BaselinesUnavailableError` carrying the reason the resolver recorded (an
+unpublished device key, a download that never arrived, a digest that did not
+match), so the run says which of those happened rather than reading as green.
+
+That is a deliberate change of posture. A skip is close enough to green to
+hide a suite that compared nothing, and it did: `tests/full_renders` skipped
+all six scenes for the whole life of its `cpu_eager` key, because the archive
+that key names was never published. A device with no baselines now fails until
+it has some — render them with the suite's `ALGAN_UPDATE_*` variable (which
+writes the tree and never reaches the comparison), look at them, and publish
+them.
 
 `ALGAN_NO_BASELINE_DOWNLOAD=1` forbids step 4 (offline, or a machine that must
 not fetch).

@@ -65,7 +65,7 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 # See tests/baseline_store.py for the full resolution order.
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
-from baseline_store import resolve_baseline_dir  # noqa: E402, I001
+from baseline_store import require_baseline_dir  # noqa: E402, I001
 
 
 # Frames are compared by the ``assert_video_matches_baseline`` fixture in
@@ -221,11 +221,12 @@ def test_full_render_scene(
         shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
 
-    expected_dir = resolve_baseline_dir(
+    # Raises rather than skipping: this suite spent the whole life of the
+    # cpu_eager key skipping all six scenes, which looked exactly like a clean
+    # run. See tests/baseline_store.py.
+    expected_dir = require_baseline_dir(
         "full_renders", BASELINE_KEY, LOCAL_EXPECTED_DIR
     )
-    if expected_dir is None:
-        pytest.skip(f"no {BASELINE_KEY} full-render baselines are available")
 
     expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (

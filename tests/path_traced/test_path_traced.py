@@ -66,7 +66,7 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_PATH_TRACED_BASELINES") == "1"
 
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
-from baseline_store import resolve_baseline_dir  # noqa: E402, I001
+from baseline_store import require_baseline_dir  # noqa: E402, I001
 
 LOG_FILE = HERE / "pytest.log"
 
@@ -262,9 +262,8 @@ def test_path_traced_scene(
         shutil.copy2(output_path, LOCAL_EXPECTED_DIR / output_path.name)
         pytest.skip(f"re-baselined {output_path.name}")
 
-    expected_dir = resolve_baseline_dir("path_traced", BASELINE_KEY, LOCAL_EXPECTED_DIR)
-    if expected_dir is None:
-        pytest.skip(f"no {BASELINE_KEY} path-traced baselines are available")
+    # Raises rather than skipping; see tests/baseline_store.py.
+    expected_dir = require_baseline_dir("path_traced", BASELINE_KEY, LOCAL_EXPECTED_DIR)
 
     expected_path = expected_dir / output_path.name
     assert expected_path.exists(), (

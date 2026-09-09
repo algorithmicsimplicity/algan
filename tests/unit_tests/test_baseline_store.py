@@ -1,11 +1,16 @@
 """The baseline resolver: precedence, verification, and how it fails.
 
 The whole point of this module is that a machine without the hosted baselines
-*skips*, and a machine with a wrong copy *never compares against it*. Both of
-those are silent-failure shapes -- a suite that skips everything looks green,
-and a suite that compares against the wrong bytes fails for the wrong reason --
-so each path is pinned here rather than left to the render suites, which only
-run on a machine with baselines for its device.
+*fails*, and a machine with a wrong copy *never compares against it*. Both are
+silent-failure shapes -- a suite that resolves nothing compared nothing, and a
+suite that compares against the wrong bytes fails for the wrong reason -- so
+each path is pinned here rather than left to the render suites, which only run
+on a machine with baselines for its device.
+
+The failure used to be a skip, which is how ``tests/full_renders`` came to
+skip all six scenes for the whole life of its ``cpu_eager`` key while reading
+as green. :func:`~baseline_store.require_baseline_dir` raises instead, and the
+reason travels with it.
 
 The download path is exercised for real over ``file://``: urllib treats it
 like any other URL, so the fetch, the sha256 check and the extraction all run
@@ -219,7 +224,63 @@ def test_a_digest_mismatch_is_refused_rather_than_compared_against(
     assert any("sha256" in str(w.message) for w in caught)
 
 
-def test_a_missing_asset_warns_once_and_skips(tmp_path, monkeypatch):
+def test_a_resolvable_baseline_is_required_without_complaint(tmp_path):
+    local = tmp_path / "expected_outputs_cuda"
+    local.mkdir()
+    (local / "scene.mp4").write_bytes(b"not really an mp4")
+    pointer = _pointer(tmp_path, {})
+
+    assert (
+        baseline_store.require_baseline_dir(
+            "full_renders", "cuda", local, pointer_path=pointer
+        )
+        == local
+    )
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        (None, "the pointer names no tag"),
+        ("baselines-test", "baselines-test"),
+    ],
+)
+def test_an_unresolvable_baseline_raises_rather_than_skipping(tmp_path, tag, expected):
+    """The whole point of the change: a comparison that cannot run is a failure.
+
+    ``tests/full_renders`` skipped all six of its scenes for the whole life of
+    the ``cpu_eager`` key -- a suite comparing nothing, reading as a clean run
+    -- because the resolver's ``None`` became a skip. The reason has to reach
+    the failure, too: "no baselines" alone sends the reader hunting a
+    rendering bug that is not there.
+    """
+    pointer = _pointer(tmp_path, {}, tag=tag)
+
+    with pytest.raises(baseline_store.BaselinesUnavailableError) as excinfo:
+        baseline_store.require_baseline_dir(
+            "full_renders", "cuda", tmp_path / "absent", pointer_path=pointer
+        )
+    message = str(excinfo.value)
+    assert "full_renders/cuda" in message
+    assert expected in message
+
+
+def test_a_download_failure_reaches_the_raised_reason(tmp_path, monkeypatch):
+    """A failed fetch must not be mistaken for a rendering regression."""
+    pointer, asset, _ = _published(tmp_path)
+    monkeypatch.setattr(baseline_store, "_cache_root", lambda: tmp_path / "cache")
+    asset.unlink()
+
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        with pytest.raises(baseline_store.BaselinesUnavailableError) as excinfo:
+            baseline_store.require_baseline_dir(
+                "full_renders", "cuda", tmp_path / "absent", pointer_path=pointer
+            )
+    assert "Could not download" in str(excinfo.value)
+
+
+def test_a_missing_asset_warns_only_once(tmp_path, monkeypatch):
     pointer, asset, _ = _published(tmp_path)
     monkeypatch.setattr(baseline_store, "_cache_root", lambda: tmp_path / "cache")
     asset.unlink()

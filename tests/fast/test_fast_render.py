@@ -56,11 +56,11 @@ DEVICE = SETTINGS.computing.render_device.type
 # x86-64 machines -- fp32 arithmetic through a path tracer does not agree
 # across two libm implementations that closely.
 #
-# Nothing is committed under that name, so a Mac renders the scene and skips
-# the comparison below. That still covers kernel compilation, tessellation,
-# LaTeX, the fonts and the encoder -- just not the pixels. To gate pixels on a
-# Mac, render with ALGAN_UPDATE_FAST_BASELINE=1 there, look at the result, and
-# commit it; the comparison turns itself back on, for machines like that one.
+# Nothing is committed under that name, so this test *fails* on a Mac until
+# one is: an absent baseline used to skip, and a skipped comparison reads as
+# green while comparing nothing. Render with ALGAN_UPDATE_FAST_BASELINE=1
+# there, look at the result, and commit it; the comparison then runs for
+# machines like that one.
 #
 # MPS-friendly mode is keyed apart for a different and simpler reason: it is
 # documented as NOT bit-identical (DESIGN_mps_support.md §1.2), because the
@@ -158,12 +158,13 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
         EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output_path, expected_path)
         pytest.skip(f"re-baselined {output_path.name}")
-    if not EXPECTED_DIR.exists():
-        pytest.skip(f"no {BASELINE_KEY} fast-suite baseline is available")
-
+    # A missing baseline fails rather than skipping: a skip here means this
+    # suite's one pixel comparison did not run, and nothing else in the fast
+    # suite can see a renderer regression.
     assert expected_path.exists(), (
-        "Missing the fast-suite baseline. Re-run with "
-        "ALGAN_UPDATE_FAST_BASELINE=1 after reviewing the render."
+        f"No {BASELINE_KEY} fast-suite baseline at {expected_path}. This "
+        f"device has never been baselined: re-run with "
+        f"ALGAN_UPDATE_FAST_BASELINE=1, review the render, and commit it."
     )
     assert_video_matches_baseline(
         output_path,
