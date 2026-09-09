@@ -114,11 +114,50 @@ cannot — and it runs after `gate`, `build` and `docs`, so a real release would
 spend up to three hours before hitting it, with the tag unpushed and the PyPI
 upload never reached.
 
-Before the real release, either allow the `github-actions[bot]` app to bypass
-the ruleset on `stable`, or confirm the required checks will be green on the
-release commit at the moment `promote` runs. The dry run **cannot** catch this:
-`promote` is skipped under `dry_run`, so the first time that push is attempted
-for real is the real release.
+**What is actually configured.** Ruleset **"Stable Rules"** (id `20899556`),
+`enforcement: active`, targeting `refs/heads/stable`, created 2026-08-16 and
+last updated 2026-08-28 — so it was in force during the reset above, which went
+through only because that push carried the repository owner's credentials.
+Its **`bypass_actors` list is empty**.
+
+Six rules apply, and the status checks are the *least* of them:
+
+| Rule | Effect on `promote`'s `git push origin <sha>:refs/heads/stable` |
+| --- | --- |
+| `update` | Restricts updates to bypass actors only — there are none |
+| `pull_request` | Requires changes to arrive via a PR; this is a direct push |
+| `required_status_checks` | The five contexts below must be green |
+| `non_fast_forward` | Blocks force pushes only — `promote` fast-forwards, so this is fine |
+| `deletion`, `creation` | Not relevant to a fast-forward |
+
+The five required contexts (all from the GitHub Actions app, integration
+`15368`):
+
+```
+Sphinx Build                    (docs.yaml)
+Ruff Format                     (code_quality.yaml)
+lock_file                       (code_quality.yaml)
+macos-latest / Python 3.10      (test.yaml)
+ubuntu-latest / Python 3.10     (test.yaml)
+```
+
+Worth noticing that `ubuntu-latest / Python 3.13` and
+`macos-latest / Python 3.10 / render=mps` are **not** required — the gate on
+`stable` is narrower than the matrix `test.yaml` actually runs, and the MPS leg
+in particular is the one that was red all morning.
+
+**So green checks alone will not unblock it.** Even with all five passing, the
+`update` and `pull_request` rules reject a direct push from Actions. The fix is
+to add the **GitHub Actions app as a bypass actor** on "Stable Rules"
+(Settings → Rules → Rulesets → Stable Rules → Bypass list). That is the minimal
+change that lets the workflow do what it was designed to do.
+
+The alternative is to stop having `promote` push at all and advance `stable`
+through the `master → stable` PR that `development.rst` describes — but that is
+a workflow change, not a settings change, and not one to make on release day.
+
+The dry run **cannot** catch any of this: `promote` is skipped under `dry_run`,
+so the first time that push is attempted for real is the real release.
 
 Worth deciding at the same time whether the `master → stable` PR flow
 `test.yaml` assumes is something you still want. The reset makes that flow
