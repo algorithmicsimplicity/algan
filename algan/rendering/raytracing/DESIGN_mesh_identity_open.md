@@ -1,33 +1,31 @@
 # Algan — Mesh Identity: the work that is left
 
-**This file is a queue, not a history.** Everything in it is unstarted,
-half-finished, or blocked. What was built, measured and settled lives in
-`DESIGN_mesh_identity.md`, which is the record and the place to look up *why* a
-number is what it is; this file cites it by section rather than repeating it.
+**Archived working queue.** Its run-scan work was superseded by the sheet
+resolve; §H (nested-IOR refraction), §I (identity-aware self-shadow rejection),
+and the shadow-terminator offset are implemented. The original experiments and
+closed-item rationale below are retained as history, not a current task list.
 
-It is written to be startable cold. §A is what you need to run anything, §B is
-the debt that gates other work, §C onward is the queue in priority order, §Y is
-the handful of rules this subsystem keeps re-learning, and §Z is the list of
-things that are CLOSED so nobody rebuilds them.
+Use [TODO.md](../../../TODO.md) and [RENDERER_WORK_QUEUE.md](../../../RENDERER_WORK_QUEUE.md)
+for remaining work. In particular, closed-solid opacity on deterministic
+continuation paths is distinct from the completed primary-sheet and path-tracer
+shell handling. [DESIGN_mesh_identity.md](DESIGN_mesh_identity.md) contains the
+underlying measurements, and [DESIGN_sheet_resolve.md](DESIGN_sheet_resolve.md)
+describes their architectural successor.
 
-**If you read nothing else:** §H (nested-IOR refraction) and §I (self-shadow
-rejection by identity) are both **built and on by default** — that sentence
-used to say neither had been started. So is the shadow-terminator offset that
-§I's acne claim turned out to need (`RENDERER_WORK_QUEUE.md` item 20).
-Everything else in the previous revision of this queue is measured, decided, or
-shipped, and the entries below say which.
-
+Current setup, linting and test commands are in [AGENTS.md](../../../AGENTS.md).
+Some probes and setting names below were retired with the old resolve; recover
+an old command from its recorded commit only when reproducing that experiment.
 
 ================================================================================
 A. RUNNING ANYTHING
 ================================================================================
 
-`CLAUDE.md` is the repo-wide contract and still governs. This is the part
+`AGENTS.md` is the repo-wide contract. The following setup records the old investigation. This is the part
 specific to this subsystem.
 
 **The venv.** `<venv-python>` is `.venv\Scripts\python.exe` on Windows,
-`.venv/bin/python` elsewhere, or `uv run python`. The system Python has no
-taichi.
+`.venv/bin/python` elsewhere, or the active environment's Python in a managed container. Do not use bare
+`uv run` over a locally patched compiler; see `AGENTS.md`.
 
     <venv-python> -m pytest -q tests/unit_tests tests/fast   # ~9 min, CI's paths
     <venv-python> -m pytest -q tests/full_renders            # ~6 min, 6 dense scenes
@@ -37,9 +35,9 @@ taichi.
 Green at the tip of this work: **1058 passed, 89 skipped** and **7 passed**. If
 either is red before you change anything, find out why first.
 
-**Never name a `*_taichi.py` file on a ruff command line.** They are excluded in
-the config; naming one explicitly overrides the exclusion, and the
-auto-inserted `from __future__ import annotations` breaks kernel compilation.
+**Kernel modules are linted, but not formatted.** Their suffix selects special
+Ruff rules that protect runtime annotations and Taichi control flow. Follow
+`AGENTS.md`; do not infer an exclusion from these older probe instructions.
 
 **Never edit a `*_taichi.py` file while a render or the suite is running.** The
 JIT reads sources at first launch and will compile half an edit. Done here by

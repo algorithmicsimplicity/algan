@@ -1,16 +1,18 @@
 # Running a script on a GPU that is not this machine
 
-This box has no GPU. Two harnesses exist so that measuring something on real
-GPU hardware costs one launch rather than a new piece of infrastructure:
+For development environments without a suitable local GPU, two repository
+harnesses provide remote execution. The hardware below records previously
+measured hosts; check each run's metadata rather than assuming allocations or
+account quotas stay fixed:
 
 | Harness | Hardware | Entry point |
 | --- | --- | --- |
 | **Mac runner** | GitHub's Apple-silicon runner: virtualized M1, **real** Metal GPU, 3 CPUs, 7 GB | `.github/workflows/run_on_mac.yaml` |
-| **Kaggle T4** | Kaggle notebook: Tesla T4 (Turing, 16 GB), 4 vCPUs, ~30 GB weekly quota | `scripts/kaggle/` + the Kaggle MCP |
+| **Kaggle T4** | Kaggle notebook: Measured Tesla T4 (Turing, 16 GB), 4 vCPUs; availability and quota depend on the account | `scripts/kaggle/` + the Kaggle MCP |
 
-Both run **any command in this repository** and hand back its output. Neither
-is a test: nothing here guards a regression, so nothing here runs on the
-ordinary push matrix.
+Both execute repository commands and return their output. They are opt-in
+measurement harnesses, not substitutes for the ordinary test matrix, which now
+also includes an MPS regression arm.
 
 **Pick by question, not by convenience.** The T4 answers "how fast, and how
 much VRAM" for CUDA. The Mac answers "does this work on Metal, and how does
@@ -23,10 +25,11 @@ in-process runs to rank work on this runner, and a matched physical Mac to
 quantify virtualization's contribution. The repaired MPS path also completes
 UHD renders; see `benchmarks/performance/reports/mac_2026_09/`.
 
-**Neither box baselines pixels.** `expected_outputs_cuda/` was baselined on the
-user's Pascal card, so `tests/fast`'s pixel comparison fails on the T4 and on
-the Mac *on master*. That failure is not your change. Compare arms against each
-other, on one box, instead.
+**Use a matching pixel reference.** The fast CUDA baseline was made on a
+Pascal card; it is not a universal T4 reference. The path-traced suite has its
+own recorded T4 baselines, and macOS has a separate unbaselined opt-out. Read
+`tests/README.md` and the current manifest. Reproduce a failure on the base
+commit before calling it environmental, and compare A/B arms on the same host.
 
 ---
 
@@ -39,18 +42,14 @@ file is on the **default branch** — a GitHub rule, not a choice.
 
 **Dispatch** (preferred, leaves no commit):
 
-```
-mcp__github__actions_run_trigger  method=run_workflow
-    owner=algorithmicsimplicity repo=algan
-    workflow_id=run_on_mac.yaml
-    ref=<your branch>          # the workflow file AND the code come from here
-    inputs={
-      "command": "uv run python benchmarks/_mps_vs_cpu_torch_speed.py",
-      "arms": "mac-mps,mac-cpu",
-      "env": "ALGAN_VIDEO_ENCODER=software",
-      "latex": false,
-      "timeout_minutes": "60"
-    }
+```bash
+gh workflow run run_on_mac.yaml --repo algorithmicsimplicity/algan \
+  --ref YOUR_BRANCH \
+  -f command=".venv/bin/python benchmarks/_mps_vs_cpu_torch_speed.py" \
+  -f arms="mac-mps,mac-cpu" \
+  -f env="ALGAN_VIDEO_ENCODER=software" \
+  -f taichi_wheel_run_id="none" \
+  -f latex=false -f timeout_minutes=60
 ```
 
 **Request file** (works from a branch whose `run_on_mac.yaml` has not reached
@@ -59,7 +58,8 @@ push itself triggers the run.
 
 ```json
 {
-  "command": "uv run python benchmarks/_foo.py --runs 3",
+  "command": ".venv/bin/python benchmarks/_mps_vs_cpu_torch_speed.py",
+  "taichi_wheel_run_id": "none",
   "arms": ["mac-mps", "linux-cpu"],
   "env": {"ALGAN_VIDEO_ENCODER": "software"},
   "latex": false,
@@ -100,23 +100,24 @@ only for experiments that intentionally replace that supported dependency.
   run id (its `quadrants-wheel-macos-py3.11` artifact) or a release-asset URL.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
   run; it wins over the Taichi wheel when both are given. It also sets
-  `UV_NO_SYNC=1` for the rest of the job, because the patched wheel's
-  `1.3.1.dev0+g…` version does not satisfy the lockfile's `quadrants==1.3.0`
-  and the sync `uv run` does first would put the stock wheel back (the Taichi
-  wheel survives only because its version matches the lock). A script that
+  `UV_NO_SYNC=1` for the rest of the job, because a local replacement wheel can differ from the locked
+  `algan-quadrants==1.3.0.post2` distribution. A dependency sync can replace the
+  experimental compiler, so verify both installed metadata and import location. A script that
   installs its own wheel must use `.venv/bin/python`, as the gate scripts do.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets
   built: `scripts/build_quadrants_wheels.py` dispatches the build and prints
   the run id.
-* **`arms`**. Free minutes, but 5 concurrent macOS jobs across the whole
-  account. Two mac arms is two slots.
+* **`arms`**. Each Mac arm consumes a runner slot. Check the account's current
+  concurrency and billing limits before fanning out experiments.
 
-**Chain several commands with `|| true`.** The run step is
+**Preserve diagnostic output without hiding acceptance failures.** The run step is
 `bash --noprofile --norc -e -o pipefail`, so a `;`-separated chain stops at the
 first non-zero exit — and a probe that *reports* a disagreement by exiting 1 is
 exactly such an exit. A round that meant to run a probe and then a test suite
 came back with the probe's answer and nothing else, having spent the whole
-Apple slot on it.
+Apple slot on it. For exploratory probes, capture each exit status and continue
+deliberately; use `|| true` only when the failure is itself expected evidence.
+An acceptance job must still fail when its required checks fail.
 
 ### The push entry point only fires when `mac.json` actually changes
 
@@ -376,7 +377,7 @@ Then grep `/tmp/run.log` for whatever the run was about.
 the wrong one for comparing against an x264-encoded baseline, so pin
 `ALGAN_VIDEO_ENCODER=software` whenever the output bytes are the measurement.
 
-### Both harnesses, verified
+### Historical reference runs (not a current performance target)
 
 Each harness's first run rendered `scripts/gpu_smoke.py --runs 2` on the branch
 that added it. Use these as the "the plumbing works" reference, not as

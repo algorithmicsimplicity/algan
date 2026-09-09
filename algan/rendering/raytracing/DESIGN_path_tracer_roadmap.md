@@ -5,15 +5,18 @@ This is the engineering companion to the user-facing list in
 *what* the renderer does not do; this one says *why not yet* and sketches what
 each feature costs to land in this codebase specifically. It is the plan of
 record for the path tracer's remaining scope — update it when one of these
-lands, the way `DESIGN_optimization_targets.md` is updated for optimization
-work.
+lands. The repository-level `TODO.md` prioritizes remaining work across the
+engine; this document retains the detailed path-tracer rationale and acceptance
+criteria. Status was checked against `master` at `f10cc230a108863d02980fc27079254473ae7de3`
+on 2026-09-09; historical measurements below remain tied to their named runs.
 
 
 ## What the path tracer is for
 
-**It is the fallback that always works.** Not a second way to render what the
-deterministic renderer already renders, and not an attempt to reproduce its
-look. It exists for the scenes the deterministic renderer *cannot* do:
+**It is the explicitly selected transport renderer** (`samples_per_pixel > 1`),
+not an automatic fallback and not a promise to fit every scene in memory. It
+serves effects and workloads that the deterministic renderer cannot reproduce
+or may handle less efficiently:
 
 * **Global illumination**, and anything else that needs real transport —
   colour bleed, physically correct soft shadows, rough reflections that see
@@ -21,15 +24,17 @@ look. It exists for the scenes the deterministic renderer *cannot* do:
 * **Scenes that exhaust memory in the deterministic renderer.** Its
   reflection/refraction branches split into a shared pool, so a scene with
   enough interacting transparent and reflective surfaces OOMs a single frame.
-  The path tracer's per-path state is a fixed size and paths never split, so
-  its memory is `slots x _PT_BYTES_PER_SLOT` and nothing else — it renders
-  what the other one cannot fit.
+  The path tracer's per-path state is bounded and paths do not split. This
+  avoids growth of a shared split pool, but `_PT_BYTES_PER_SLOT` is only one
+  part of the budget: geometry/BVHs, hit events, light tables, accumulators,
+  AOVs and scratch also need storage. Some scenes still cannot fit.
 * **Scenes with too many lights.** The deterministic renderer's cost is
   linear in light count and its shadows are capped at
   `ALGAN_MAX_SHADOW_LIGHTS` (16, with each `RectAreaLight` emitter sample
-  eating a slot). A hundred-light scene is not slow there, it is impossible.
-  The path tracer samples lights instead of summing them, so its cost per
-  vertex is independent of how many there are.
+  eating a slot). Additional rows remain lit but are not shadowed by that
+  capped deterministic fan. The path tracer samples lights; tree selection
+  is `O(log E)` for `E` emitters, while shadow-sample count is bounded per
+  vertex. Scene preparation and emitter-table storage still depend on `E`.
 
 Three consequences, and they are the reason several sections below reach a
 different conclusion than they first did:
@@ -41,28 +46,28 @@ different conclusion than they first did:
    (no ambient fill, no glossy prefilter, jittered rather than analytic AA).
    Partial parity that no one can rely on is worth less than correctness.
    See §5.
-2. **Cost must not be linear in light count, anywhere.** That is one of the
-   three reasons the fallback exists, so any `for li in range(num_lights)`
-   in the hot path is a defect against the renderer's purpose, not a missing
-   optimization. See §6.
-3. **Bounded memory is a feature, not an accident.** "Renders what the
-   deterministic renderer OOMs on" is a promise that fixed per-path state
-   makes and that splitting takes away. Every continuation-pool proposal in
-   §8 spends exactly the property that makes this renderer the fallback, and
-   must be judged on that basis.
+2. **Avoid summing every finite emitter at every physical surface hit.** That is one of the
+   scalability goals. Table construction, ambient rows and small authored
+   light sets have different costs from physical next-event sampling; do not
+   describe the whole renderer as independent of light count. See §6.
+3. **Bounded per-path memory is a design constraint.** Non-splitting paths
+   bound one source of transient storage, not total scene memory. Any splitting
+   proposal in §8 needs an explicit budget, overflow policy and peak-memory
+   measurement rather than an assumption that a fixed state size is sufficient.
 
 What it does *not* have to be: deterministic (the byte-reproducibility
 guarantee was withdrawn — see contract 1), or a match for the deterministic
 renderer's brightness, shading rate or edge treatment.
 
-What it *must* be: **complete**. A fallback that refuses a feature leaves the
-user with nowhere to go, and a fallback that silently drops one is worse. §9
-is the audit of where it is not yet complete.
+The completeness goal is to support the authored scene features listed in §9
+without silently dropping them. The historical phrase "the fallback never
+refuses" describes that compatibility goal and its regression test, not an
+automatic renderer switch or a guarantee against invalid input, unsupported
+backend operations or exhausted memory.
 
-Status: the redesign's staged landing table (stages 1–6) is complete on this
-branch — the wavefront skeleton and deterministic 2-D compositing, BSDF
-sampling (cosine diffuse, spherical-cap VNDF GGX with Turquin compensation,
-nested-media refraction), the power-weighted NEE table over delta/area light
+Status: the redesign's staged landing table (stages 1–6) has landed — the wavefront skeleton and deterministic 2-D compositing, BSDF
+sampling (cosine diffuse, spherical-cap VNDF GGX, Turquin compensation for
+opaque reflection, and single-scatter rough dielectric/nested-media refraction), the power-weighted NEE table over delta/area light
 rows, emissive triangles and the environment map's 2-D luminance CDF, the
 Sobol–Owen sampler, Russian roulette, firefly clamping, jittered-pixel AA,
 the closed-shell opacity ring, the `tests/path_traced/` baseline suite and
@@ -72,11 +77,12 @@ the selection structure for next-event estimation (`light_tree.py`,
 `pt_light_tree`), so emitter choice weighs distance and orientation rather
 than power alone. §6a-ter has landed with them: a `RectAreaLight` is two
 emissive triangles here rather than `K` packed cell rows
-(`area_light_quads.py`, `pt_area_light_quads`). §6a-bis closed the last loop
-that was linear in the light count: an authored-appearance material's direct
-lighting is now sampled like everything else's past the shadow cap
-(`pt_authored_light_sampling`), so the "too many lights" case is uncapped for
-every material rather than for most of them.
+(`area_light_quads.py`, `pt_area_light_quads`). §6a-bis adds sampled direct
+lighting for authored-appearance materials beyond the shadow cap
+(`pt_authored_light_sampling`). This avoids a full finite-light sum in that
+mode; ambient aggregation, scene preparation and the small-light-count or
+explicitly unsampled route can still have linear work. Nonlinear authored
+stages can also bias a sampled lighting estimate; see §6a-bis.
 
 Power-heuristic MIS covers the strategies that genuinely overlap: emissive
 triangles — a `RectAreaLight`'s own quad included, since §6a-ter — and the
@@ -159,30 +165,28 @@ These are not preferences; each is load-bearing and tested.
    why `tests/path_traced/` can still pixel-compare at a pinned memory
    budget. Treat that as a convenience the current layout happens to
    provide, not as an invariant to defend. §8 is what it bought.
-2. **The wavefront shape.** One traverse kernel shared with the deterministic
-   renderer; `pt_shade` drains `kbuf`-sized hit batches; per-path state lives
-   in `rs_ro/rs_rd/rs_sca/rs_int/rs_pix` + `pt_thru/pt_acc/pt_aov`. One
-   compiled kernel serves every scene: per-scene facts ride runtime words
-   (`nee_meta`) and runtime-gated branches, not new `ti.template()`
-   arguments — a template argument multiplies the cold compile, which on the
-   fallback is paid by a user who is already having a bad day. The one
-   acceptable kind is a *two-valued* gate the deterministic renderer already
-   compiles both sides of (the shadow any-hit mode, the closest-hit traverse;
-   §0.2), so no new kernel body exists that did not before.
+2. **The wavefront shape.** Traversal is shared with the deterministic
+   renderer; `pt_shade` drains `kbuf`-sized hit batches, and per-path state
+   lives in the ray-state, throughput, accumulation and AOV buffers.
+   `pt_shade_arena` already specializes on geometry/shadow gates, authored
+   light sampling and the injected fragment pipelines/scatters. It is not
+   one compiled kernel for every scene. Prefer runtime metadata for new
+   scene-varying data when possible, and measure compile time and steady-state
+   cost before adding another template specialization.
 
-   The argument-count pressure this contract used to cite is stale: since
-   arena packing (`arena_args_taichi.py`) `pt_shade_arena` takes 40
-   parameters, not 59 of 64. New inputs still prefer widening an existing
-   tensor (`nee_meta` has spare words, `nee_ref` can carry more row kinds)
-   because that is cheaper than a parameter, not because the ceiling is near.
-3. **Bounded per-path state.** All per-path and per-scene state is accounted
-   in `_PT_BYTES_PER_SLOT` / scoped allocations so the tile/wave split and the
-   OOM chunk-halving retry keep working — and, more than bookkeeping, the
-   *size* is fixed: paths do not split, so a scene cannot make one path cost
-   more memory than another. That is what lets this renderer finish scenes
-   the deterministic one OOMs on, which is one of the three reasons it
-   exists. A feature that makes per-path memory data-dependent is spending
-   the renderer's purpose and needs to say so out loud, with a hard cap.
+   Arena packing (`arena_args_taichi.py`) reduces argument pressure by
+   representing prepared data as arena views. Check the current signature
+   and backend binding tests rather than relying on an old parameter count.
+   Widening a suitable existing metadata tensor may avoid another argument,
+   but its offsets, allocation and upload must remain consistent.
+3. **Bounded per-path state.** `_PT_BYTES_PER_SLOT` accounts for slot-scaled
+   allocations used to size path tiles/waves; it is not the total scene-memory
+   model. Geometry, BVHs, hit events, light tables, image accumulators, AOVs
+   and scratch have additional allocation lifetimes and budgets. Preserve
+   their accounting and the chunk-halving OOM retry. Paths currently do not
+   split, and medium walks have explicit bounds. Any new data-dependent
+   state or splitting strategy needs a hard cap, overflow policy and a
+   measured peak-memory budget rather than a claim that all scenes fit.
 4. **The 2-D contract.** Camera-segment transparency composites with zero
    variance (`benchmarks/_pt_parity_check.py` holds flat interiors to ≤ 1
    channel count against the deterministic route at any spp). Note this is

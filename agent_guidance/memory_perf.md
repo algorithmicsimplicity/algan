@@ -6,20 +6,28 @@ The arena, runtime batch sizing, and the validation standard for optimizations.
 
 `ManualMemory` (`algan/utils/memory_utils.py`) is the render-time arena: a bump allocator for render-time GPU tensors, with deterministic forward allocations and pointer snapshot/restore so callers free deterministically. Render out-of-memory retries by shrinking the frame window (`OutOfRenderMemory`).
 
-There are **no byte estimators to update** when you add a buffer — see the next section. What still applies:
+The chunk model observes arena peaks rather than duplicating every allocation
+formula. Scene preflight and per-slot budgeting still have explicit bounds, so
+check those when changing geometry or ray-state storage. What always applies:
 
 - account for dtype alignment and fixed versus per-frame/per-ray scaling;
 - restore arena pointers at the same lifetime boundary at which data becomes dead;
 - test one-frame and multi-frame windows;
 - test retry behavior rather than relying on host OOM exceptions.
 
-## Batch sizing is measured at runtime, not modelled
+## Batch sizing fits a model to observed arena peaks
 
-`rendering/memory_model.py` fits `peak(n) = a + b*n` to the arena's own high-water mark over rendered chunks, and sizes the next chunk from it. **Nothing describes what gets allocated**, so a new primitive, a new tracer path or a user's own post-process is accounted for the moment it runs — there is nothing to annotate, register or regenerate. 
+`rendering/memory_model.py` fits `peak(n) = a + b*n` to the arena's own high-water mark over rendered chunks, and sizes the next chunk from it. New allocations made **through the arena** contribute to that measurement.
+External PyTorch tensors, compiler workspace and driver allocations do not; they
+need separate headroom and telemetry. An affine estimate is not an exact memory
+formula for every scene.
 
 Consequences worth knowing when changing render code:
 
-- The **first chunk of a job is ~30% cheaper per frame** than steady state (kernel/allocator warm-up), so the model grows chunks geometrically (`PROBE_GROWTH`) and fits from the two *largest* samples rather than extrapolating off the first.
+- First-chunk peaks can understate later workspace (historical probes measured
+  roughly 30%). The model grows chunks geometrically (`memory_probe_growth`)
+  and fits from the two largest observations rather than trusting that first
+  sample. The percentage is not a fixed property of every render.
 - Batches land on different lines when the frame buffer or geometry scale changes; `chunk_signature` keys that, with geometry bucketed logarithmically so ordinary scene drift keeps a usable fit.
 - The **OOM retry is the backstop and must stay** — the model measures the batch's first frames and cannot see a scene that densifies later.
 - Auto-sized ray tiles mark observations that were limited by available arena capacity. Their high-water marks still bound render chunks, but `predict_preflight` leaves scene preparation in probe mode: an elastic workspace's chosen capacity is not its minimum requirement. Otherwise the safety margin can price one frame above the whole arena and force every later scene batch to one frame. The unmeasured-batch guard, scene/merge/projection checks, and OOM retries remain active. This applies to both shadowed and unshadowed scenes. Changed batch windows can refine adaptive curve subdivision and move a few shadow-edge samples; review and update affected render baselines when enabling it. `SETTINGS.raytracing.experimental.elastic_preflight = False` restores the old prediction for all scenes for A/B checks.

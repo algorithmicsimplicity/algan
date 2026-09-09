@@ -1,9 +1,11 @@
 # API audit: `Animatable.__init__`, `Mob.__init__`, `Surface`, `BezierCircuitCubic`
 
-> **Status: acted on.** Every finding below has been fixed in the same branch; see
-> [What was done](#what-was-done) at the end for the mapping from finding to change, and for the
-> two decisions that were escalated rather than taken here. The findings are kept in their original
-> wording as the record of what was wrong.
+> **Historical audit, with implementation outcomes below.** The fixes and owner
+> decisions are recorded in [What was done](#what-was-done). The public subclass
+> hooks listed under [Not done](#not-done) were deliberately retained; not every
+> proposed rename was implemented. Original findings describe the audited source,
+> not defects asserted to remain on current `master`. See [TODO.md](TODO.md) for
+> the current prioritized backlog.
 
 Audit of the four core building blocks, against `DOCSTRINGS.md` and against what the code
 actually does. Every claim below was checked by reading the source and, where marked

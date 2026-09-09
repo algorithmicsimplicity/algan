@@ -1,8 +1,10 @@
 """The renderer's feature toggles: the storage behind ``SETTINGS.raytracing``.
 
-Every ray-tracing switch lives here as a module-level value with an environment
-variable default, under **the same name** ``SETTINGS.raytracing`` exposes it by.
-That section is the public, validated face of this module; the switches that
+Renderer switches stored here use **the same names** exposed by
+``SETTINGS.raytracing``. Some have environment-variable defaults; others have
+ordinary Python defaults. Additional fields live in the storage modules listed
+by ``algan.settings.raytracing_settings``. The validated settings facade exposes
+all of those modules together; the switches that
 change what the image looks like are exposed on it directly, and the kernel and
 performance switches through ``SETTINGS.raytracing.experimental``.
 
@@ -39,9 +41,9 @@ from algan.settings._startup import render_device
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
 max_bounces = 8
-# Rays averaged per pixel. 1 renders with the exact deterministic kernel;
-# > 1 switches to the Monte Carlo pathtracer (stochastic transparency,
-# glossy reflections, optional diffuse indirect lighting).
+# Samples averaged per pixel. 1 selects the deterministic hybrid renderer;
+# > 1 selects Monte Carlo transport with sampled scattering and jittered AA.
+# Alpha compositing remains deterministic in both renderers.
 samples_per_pixel = 1
 
 # Policy for renderer/backend combinations that cannot honor authored scene
@@ -86,7 +88,8 @@ def report_unsupported_features(message):
 # Unlit flat content is untouched, because decode-then-encode with no arithmetic
 # between is the identity. Set ALGAN_LINEAR_COLOR=0 to restore the previous
 # display-referred pipeline for A/B; that arm is byte-identical to the tree
-# before the working space landed. See LINEAR_COLOR_WORK.md.
+# before the working space landed. See agent_guidance/rendering.md and
+# benchmarks/_linear_color_check.py for the working-space contract and checks.
 linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
 
 # Base ambient coefficient: the constant fill every lighting model adds on top
@@ -122,7 +125,8 @@ ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 # of color channels are already inside the display range and 1.45% are above
 # it. Bloom runs *before* the tonemap on the unclamped HDR buffer, so over-range
 # energy is a visible halo before anything clamps. Turn it on for a filmic look,
-# accepting that every SDR value shifts. See TONEMAP_FINDINGS.md.
+# accepting that SDR values shift. See the tonemapping discussion in
+# agent_guidance/rendering.md and benchmarks/_tonemap_render_check.py.
 tonemapping = False
 tonemap_exposure = 1.0
 tonemap_method = "neutral"
@@ -2887,12 +2891,10 @@ glossy_interleave = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 # its SHAPE from prefiltering that buffer by the lobe's screen footprint before
 # compositing.
 #
-# It fixes both halves of what the fan gets wrong. Nothing crawls, because the
-# ray direction is a smooth function of position rather than a screen-fixed
-# dither pattern; nothing ghosts, because a wide lobe is a wide filter rather
-# than N discrete copies; and it costs FEWER rays than the fan, not more --
-# more taps was never the lever, since the artefact the throttle exists to hide
-# is minification aliasing and no amount of point sampling fixes that.
+# This replaces the sparse fan's discrete reflected copies with a filtered
+# screen-space signal and uses fewer rays. It is still an approximation: the
+# buffer has finite resolution and does not solve UV-texture aliasing or
+# guarantee stability at every geometric or visibility discontinuity.
 #
 # DEFAULT ON, gated behind ``glossy_reflection`` -- which is now default on too,
 # so this is the route a rough reflector takes unless something says otherwise.
@@ -2900,12 +2902,12 @@ glossy_interleave = env_flag("ALGAN_GLOSSY_INTERLEAVE", True)
 # ``set_glossy_reflection(True, prefilter=False)``.
 glossy_prefilter = env_flag("ALGAN_GLOSSY_PREFILTER", True)
 
-# How many mip levels the prefilter's reflection pyramid may have. Each level
-# doubles the blur radius it can represent, so 10 covers a sigma of ~148 px --
-# past a frame's own height at every preset below UHD, and a lobe wider than
-# the frame reads as the average of everything glossy in it either way. Lower
-# it only to cap the pyramid's memory; the buffers are per FRAME, not per
-# batch, and the runtime memory model measures them like everything else.
+# Maximum reflection-pyramid levels, including level zero. A ten-level
+# chain reaches level nine: sigma ~= 2**9 / sqrt(12) ~= 148 level-zero
+# pixels under the sampler's box approximation. This does not span every
+# preset's frame height. Smaller frames can exhaust their chain earlier,
+# and wider requested blurs clamp to the available levels. Lowering the
+# limit trades blur range for frame-local pyramid storage.
 glossy_prefilter_max_levels = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
 
 
@@ -3549,7 +3551,7 @@ def set_linear_color_space(enabled):
     Turning it off restores the previous display-referred pipeline exactly,
     including the illumination-budget normalisation that had to exist to stop
     gamma-space light sums running away. It is there for A/B comparison and for
-    reproducing pre-change output; ``LINEAR_COLOR_WORK.md`` has the
+    reproducing pre-change output; ``agent_guidance/rendering.md`` has the
     measurements.
     """
     global linear_color_space

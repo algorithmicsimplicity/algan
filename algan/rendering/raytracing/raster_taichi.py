@@ -19,24 +19,26 @@ Important implementation properties:
   weight), two intersection parameters, and an analytic coverage lane.
 * Analytic anti-aliasing (``ALGAN_ANALYTIC_AA``, see DESIGN_analytic_aa.md):
   each circuit fragment carries the fraction of the pixel square its drawn
-  region covers -- a box filter of the outline signed-distance field that
-  ``_bezier_point_metrics`` already computes -- and the resolve folds that into
-  the fragment's alpha, so circuit silhouettes resolve continuously at
+  region covers, using the configured circuit coverage estimator and the
+  prepared outline geometry. The resolve folds coverage into alpha, so
+  circuit silhouettes resolve continuously at
   ``anti_alias_level = 1`` instead of all-or-nothing.  The coverage lane is
   host-pre-filled to 1.0 and written by the circuit kernels and -- under
   ``analytic_aa_tri`` -- by ``raster_tri_write`` too, which carries each
   triangle fragment's exact clipped area for the sheet claims.
 * :func:`raster_shadow_trace` traces the sheet resolve's sparse any-hit event
-  queue and stores one visibility value per event/light, with no fixed
-  fragment-slot or packed-light limit. Point/spot emitter radii and
+  queue and stores one visibility value per event/light. Its event storage is
+  dynamically sized; the renderer's deterministic light-selection and
+  truncation policy still applies. Point/spot emitter radii and
   directional angular radii use the same deterministic golden-angle fan as
   the classic wavefront path.
 
 Emission covers the whole prepared frame window at once; each pair covers up
 to ``raster_chunk`` pixels.  Future work should benchmark square block bins
-and candidate-parallel block kernels. PN patches, custom scatter, near
-clipping, and in-place supersampling still route to the classic frontend
-without changing geometry construction.
+and candidate-parallel block kernels. Custom scatter, positive near clipping
+and other route gates can select the classic frontend. PN surfaces are diced
+into flat triangles during geometry preparation, not rejected merely for their
+PN origin.
 """
 from algan.environment import env_int
 from algan.rendering.raytracing.arena_args_taichi import (

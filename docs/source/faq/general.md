@@ -2,48 +2,87 @@
 
 ## Why is my video empty?
 
-Mobs must be spawned before they show up on screen. Constructing a `Square()` defines the object, but `Square().spawn()` is what actually puts it on screen and makes it animatable on the timeline. If you create a Mob without spawning it, Algan will warn you with a `NeverSpawnedMobWarning`.
+Mobs must be spawned before they appear. Constructing `Square()` defines the
+object; `Square().spawn()` puts it on the Scene's timeline. Algan warns about
+an unspawned Mob with `NeverSpawnedMobWarning`.
 
-## Why did my first render take a couple of minutes?
+## Why is my first render slow?
 
-Almost none of that time is spent rendering your actual animation. On the very first run, Algan compiles its GPU raytracing kernels in Taichi. Those kernels are cached to disk, so every subsequent render starts right away.
+The first render can include library startup and compilation of renderer kernel
+variants. Algan uses Quadrants by default, with kernels written in the Taichi
+language. Disk caches and the warm render daemon reduce repeat work, but a new
+variant, compiler configuration or source edit may still require compilation.
+The render itself also takes time; not every slow first run is a cache issue.
 
-To avoid Python startup overhead during development, use the render daemon with `--watch`:
+For a watched development script, use the installed environment's interpreter:
 
 ```bash
-uv run python -m algan.daemon my_scene.py --watch
+python -m algan.daemon my_scene.py --watch
 ```
 
 See {doc}`../advanced_user_tutorials/the_render_daemon`.
 
 ## Do I need a dedicated GPU?
 
-No. Algan will automatically detect and use CUDA (NVIDIA) or MPS (Apple Silicon). If no compatible GPU is found, it falls back to your CPU. CPU renders produce identical visual output, just at a slower rendering speed. You can override device selection with `SETTINGS.computing.set(render_device="cpu")` at the top of your script, or with the `ALGAN_RENDER_DEVICE` environment variable.
+No. Automatic selection uses a supported CUDA GPU or Apple Silicon MPS device
+when available, otherwise CPU. The renderers target the same visual result,
+but floating-point differences mean device outputs need not be byte-identical.
+Speed depends on the scene, backend and hardware. Set
+`SETTINGS.computing.set(render_device="cpu")` before rendering, or use the
+`ALGAN_RENDER_DEVICE` environment variable to seed that setting.
 
 ## Can I keep animating after calling `save_video()`?
 
-Yes! Calling `Scene.save_video()` does not destroy your scene. Mobs stay spawned and the timeline keeps its history, so you can continue adding animations or re-render at a different quality preset. If you want the old behavior that resets everything after rendering, pass `reset=True`.
+Yes. By default, `Scene.save_video()` preserves spawned Mobs and timeline
+history, so you can append animations or render again. Pass `reset=True` to
+reset the Scene after rendering. An explicitly requested fade-out can append
+animation, and a zero-duration video may need a one-frame timeline guard;
+rendering is not a promise that no recording operation can occur.
 
 ## Why didn't my change to `SETTINGS.video` do anything?
 
-`SETTINGS.video` is read when a `Scene` is first created, and Algan creates its default Scene as soon as your first Mob is instantiated. Make sure you set your settings at the very top of your script before creating any Mobs, or pass the preset directly into your render call:
+`SETTINGS.video` seeds each Scene when it is created. A Mob can trigger creation
+of the default Scene, but an earlier explicit Scene access can do so too. Set
+defaults before creating the Scene, use `Scene.set_video_settings(...)` to
+change the active Scene, or pass a one-off preset to a render call:
 
 ```python
 Scene.save_video("my_video", HD)
 ```
 
-## Why did setting `samples_per_pixel > 1` raise an error?
+## What changes when `samples_per_pixel` is greater than 1?
 
-Setting `samples_per_pixel` higher than 1 switches from the deterministic wavefront raytracer to the stochastic Monte Carlo path tracer. The path tracer doesn't support refractive materials, environment maps, or custom fragment pipelines. Instead of silently dropping those features, Algan raises an error to alert you. See {ref}`renderer-capabilities`.
+A value of 1 selects the deterministic hybrid raster/ray tracer. A value greater
+than 1 selects the Monte Carlo path tracer; it is an explicit choice, not an
+automatic fallback after a memory failure. The path tracer supports refractive
+materials, environment maps, authored/custom fragment pipelines and homogeneous
+scattering inside supported closed solids. Custom appearance stages and physical
+BSDF materials do not necessarily have the same lighting semantics.
+
+Homogeneous scattering and random-walk subsurface scattering require the path
+tracer. Unsupported combinations are reported according to the configured
+unsupported-feature policy. Increasing the sample count does not eliminate
+ordinary geometry, configuration or memory errors. See {ref}`renderer-capabilities`.
 
 ## Why is my LaTeX not compiling?
 
-Algan calls out to a local LaTeX installation (TeX Live, MiKTeX, or MacTeX) on your system `PATH`. Make sure to use raw strings (`r"..."`) in Python so backslashes aren't escaped, and remember that {class}`~algan.mobs.text.Tex` already runs in math mode (so you don't need `$...$`). See {doc}`../advanced_user_tutorials/text_and_math`.
+Algan uses a local LaTeX installation (such as TeX Live, MiKTeX or MacTeX) on
+`PATH`. Use raw strings (`r"..."`) so Python does not interpret backslashes.
+{class}`~algan.mobs.text.Tex` runs in math mode; do not add a second pair of
+`$...$` delimiters. See {doc}`../advanced_user_tutorials/text_and_math`.
 
 ## Why won't my transparent video play?
 
-Make sure you render with a `.mov` container extension. Algan's default transparent video codec uses PNG frames, which is supported in QuickTime `.mov` containers but not in standard `.mp4` files. See {doc}`../advanced_user_tutorials/transparent_backgrounds`.
+The container, codec and player must all support alpha. A `.mov` export is a
+useful starting point: ordinary transparent output uses PNG frames by default,
+while premultiplied-over output has its own encoder requirements. A standard
+MP4/H.264 export is not an alpha-preserving substitute. See
+{doc}`../advanced_user_tutorials/transparent_backgrounds`.
 
 ## Where are my rendered files saved?
 
-By default, Algan creates an `algan_outputs/` folder in the same directory as your Python script. If you provide a bare filename like `"my_scene"`, it saves there. If you provide a path with folders (like `"renders/test.mp4"`), Algan respects that path directly. `Scene.save_video()` returns a `RenderResult` object whose `output_path` property tells you the exact file location.
+By default, output goes under `algan_outputs/` beside the scene script. A bare
+filename such as `"my_scene"` uses the configured output directory; a path with
+a directory component, such as `"renders/test.mp4"`, is used as given.
+`Scene.save_video()` returns a `RenderResult`; its `output_path` gives the
+resolved location.

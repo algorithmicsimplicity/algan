@@ -35,9 +35,9 @@ The narrowings are safe as *values* and lossy as *reproducibility*, which are
 different claims and only the second one costs anything:
 
 * Every int64 reduction the mode narrows carries a **position, a count or a
-  surface id** -- all bounded by the fragment count, which cannot approach
-  2**31 because the arrays would not fit in any device's memory. The int32
-  answer is the int64 answer, bit for bit. The sentinels move with the width
+  surface id**. These values must fit signed int32; available device memory
+  alone is not a proof of that bound. Within the supported index range the
+  narrowing preserves the integer value exactly. The sentinels move with the width
   (``1 << 40`` becomes ``2**31 - 1``), and they are only ever compared against
   real values, never read.
 * The float accumulators genuinely lose the property they were widened for.
@@ -49,7 +49,8 @@ different claims and only the second one costs anything:
 
 Nothing here is reached unless the mode is on, and the mode is off unless the
 render device is MPS or a script asks for it, so CPU and CUDA renders keep the
-float64 path and their byte-identity. That the mode can be asked for on any
+float64 accumulation path; this is not a general promise of CPU/CUDA
+byte-identical rendering. That the mode can be asked for on any
 device is what makes it testable: ``tests/unit_tests/test_mps_friendly.py``
 runs it on the CPU, where the float64 path is right there to compare against.
 
@@ -381,12 +382,11 @@ def gather_packed_key(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor
     :func:`gather_exact` that implements it and this function names the call
     site the ceiling was first caught at.
 
-    **Not the only gather at risk, only the confirmed one.** ``sheets._lexsort``
-    gathers ``pix``, which is ``frame_rel * width * height + pixel``: 282179 for
-    the 1080p smoke frame, comfortably exact, but a multi-frame 4K chunk would
-    put it past 2**24. Nothing has rendered at that size on MPS yet, so this
-    stays scoped to the key the hardware actually caught -- it is a real
-    exposure and it is written down rather than guessed at.
+    The same risk applies to any integer identifier above the exact range,
+    including ``frame_rel * width * height + pixel`` in a multi-frame chunk.
+    This alias delegates to the general ``gather_exact`` helper; it is not
+    evidence that other integer gathers can safely use the defective operation.
+    Keep range-sensitive call sites covered by the MPS integer-operation tests.
     """
     return gather_exact(tensor, index)
 

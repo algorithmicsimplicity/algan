@@ -2,7 +2,7 @@
 
 Measured 2026-09-09 on the Mac harness (`agent_guidance/gpu_harnesses.md`),
 GitHub's virtualized M1 with 3 CPUs and 7 GB, against the locked published
-`algan-quadrants` 1.3.0 (no wheel override), torch 2.7.1, after PR 120's
+`algan-quadrants` dependency (post2 at that revision; no wheel override), torch 2.7.1, after PR 120's
 import-lifetime fix. Workload: the `nn_scene_UHD.py` fixture the earlier
 reports use -- 18 frames at 3840x2160, shadows off, one frame per chunk, a
 fixed 1720 MiB arena, software x264, CPU animation, `torch.compile` off.

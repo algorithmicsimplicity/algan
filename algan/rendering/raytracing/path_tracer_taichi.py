@@ -15,8 +15,9 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     Drains the transient hit-event batch front-to-back in ``(t, layer)``
     order -- the same peel, seam and coplanar-layer rules as the
     deterministic renderer. Transparency composites *deterministically*
-    (throughput-weighted, never stochastic alpha), so stacked vector
-    graphics and text match the deterministic composite with zero variance.
+    (throughput-weighted, never stochastic alpha). Unlit interiors therefore
+    avoid alpha-selection noise; jittered edges and stochastic illumination
+    can still differ from the deterministic renderer.
     Which emitter a next-event sample aims at is decided by descending the
     per-frame **light tree** (``light_tree.py``, Conty Estevez & Kulla
     2018) -- a selection that weighs distance and orientation as well as
@@ -57,8 +58,9 @@ Surface treatment by pipeline id (see ``shading_taichi``):
   replaces that). Light units are the deterministic renderer's; the response
   is not, so a lit surface is not as bright as its ``spp == 1`` render --
   which is deliberate (roadmap section 5). Phong has no Blinn-Phong highlight
-  here: it is GGX like everything else. Emissive surfaces illuminate their
-  surroundings through BSDF-sampled paths.
+  here: it is GGX like the other lit pipelines. Emissive triangles illuminate
+  their surroundings through next-event estimation and BSDF-sampled paths,
+  combined with MIS where both strategies can reach the emitter.
 * manim/toon/normal/matcap/depth/user (0, 6-9, >= 10): authored appearance --
   the hit is shaded exactly as the deterministic renderer shades it
   (``_run_frag_pipeline``, shadow visibility included), the result treated
@@ -69,13 +71,14 @@ Surface treatment by pipeline id (see ``shading_taichi``):
   ``rt_settings.pt_authored_light_sampling``) the branch fills the ambient
   rows deterministically and DRAWS the rest, scaling each drawn row's
   radiance by ``1 / (S * p)`` through ``_SampledLightView`` so that neither
-  the pipeline nor any stage is touched. Every built-in stage is linear in a
-  light's colour, so the estimate is unbiased for the sum (roadmap section
+  the pipeline nor any stage is touched. This weighting is unbiased for a
+  linear light sum, not for an arbitrary authored pipeline: nonlinear stages
+  such as the Manim display-range clamp can introduce bias (roadmap section
   6a-bis).
 * unlit (1) and bezier circuits: emission + deterministic transparency; a
   reflective or transmissive circuit spawns the matching specular / pane
   continuation. Unlit content never diffuse-scatters, which keeps text and
-  vector graphics exact.
+  vector interiors free of diffuse-scattering noise.
 
 Sampler
 -------

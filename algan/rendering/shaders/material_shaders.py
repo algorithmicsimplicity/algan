@@ -19,10 +19,11 @@ re-attaches the passthrough ``glow`` channel. ``light_color`` is likewise
 
 These are intentionally simplified, real-time-friendly approximations of the
 Three.js GLSL materials -- enough to reproduce their look and respond to the same
-properties, evaluated per vertex in PyTorch. Texture maps, image-based env maps,
-matcap images and view-space depth packing are not sampled (Algan has no
-per-fragment UV pipeline); the corresponding approximations are noted per
-function.
+properties, evaluated per vertex in PyTorch. These functions do not themselves
+sample texture or environment images. The renderer's default fragment path does
+have UV samplers for color, normal, roughness and metalness maps, together with
+its environment-lighting/transport paths. Limitations noted on a function here
+refer to that vertex-shader implementation, not to the whole renderer.
 """
 
 from __future__ import annotations

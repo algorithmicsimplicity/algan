@@ -1,9 +1,9 @@
 """Kernels for the fragment/sheet compaction's multi-pass host loops.
 
-``DESIGN_optimization_targets.md`` T5 and ``DESIGN_sheet_resolve.md`` §10.4.
-The compaction between the emission and the resolve is host torch, and three
-of its passes are shaped so that torch has to walk the fragment stream many
-times to compute something a kernel computes in registers in one:
+``DESIGN_sheet_resolve.md`` §10.4 describes the compaction contract. The host
+orchestrates PyTorch operations and optional fused kernels between emission and
+resolve. The historical measurements below explain why these passes were fused;
+they are not current end-to-end performance predictions:
 
 ``gather_fragment_arrays``
     The sorted fragment stream is materialized by six ``index_select`` calls
@@ -40,9 +40,9 @@ times to compute something a kernel computes in registers in one:
 
 Bit-identity
 ------------
-Every kernel here is integer-only or a verbatim copy of float bits, so
-Taichi's ``fast_math`` -- which is what makes ``logical_pn_taichi``'s criteria
-*not* bit-identical to their torch originals -- has nothing to act on. The
+The mask, rank and gather operations are integer arithmetic or copies of float
+bits, so floating-point reassociation cannot change them. Area/coverage
+reductions are separate floating-point operations, discussed below. The
 gather is a permutation. The popcount is exact. The union is an OR, and the
 fusion detector is the one non-obvious case:
 
@@ -133,8 +133,8 @@ def gather_fragment_arrays(
 ):
     """One pass of the six-array fragment gather ``idx`` drives.
 
-    A fragment count never approaches 2**31 (the arrays would not fit in any
-    device), so the source row narrows to i32 for the indexing.
+    Source and destination row indices must fit signed int32. The kernel
+    narrows source indices for indexing; callers must respect that bound.
     """
     for i in range(n):
         s = ti.cast(idx[i], ti.i32)
@@ -236,8 +236,8 @@ def sheet_conflict_rank(
     that same band -- and that is what makes every output row written exactly
     once, which is what licenses the caller's ``torch.empty`` output.
 
-    A fragment count never approaches 2**31 (the arrays would not fit in any
-    device), so the source row narrows to i32 for the indexing.
+    Source and destination row indices must fit signed int32. The kernel
+    narrows source indices for indexing; callers must respect that bound.
     """
     for i in range(n):
         if band_start[i] != 0 or i == 0:

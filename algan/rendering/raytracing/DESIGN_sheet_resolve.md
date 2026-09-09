@@ -1,19 +1,17 @@
 # Algan — the sheet resolve: analytic AA as data, not control flow
 
-**STATUS: BUILT AND SHIPPED (2026-08-19), same day as the decision.** The
-sheet resolve is the default renderer for every batch it accepts; both CUDA
-baseline sets were regenerated once under it on the box that owns them,
-frames reviewed. The CPU sets are deliberately still the old epoch: they are
-regenerated on the CI machine (owner's decision, 2026-08-19), and until then
-`tests/full_renders` and the fast pixel compare are only meaningful on CUDA. Each phase's record lives inline in §8, and every deviation from
-the plan is annotated where the plan states the original intent — the two
-that matter: the one-mesh ceiling SURVIVES as sheet data (§7's subsumption
-claim was refuted by measurement), and P7's slot rework is DEFERRED because
-the determinism criterion was met without it (§8 Phase 4 record). §H/§I
-remain live items, now on sheet records. Decided 2026-08-19 with the project
-owner: the renderer is being redesigned, output WILL move, and the committed
-baselines will be regenerated once at the end — so this document optimizes
-for the right system, not for byte-compatibility with the old one.
+**Implemented and the default for eligible hybrid batches.** The design shipped
+on 2026-08-19; the phases below retain their original measurements and deviations.
+Current eligibility and transport are documented in
+[the rendering guide](../../../agent_guidance/rendering.md). The current source,
+not this original plan, defines memory layout and settings.
+
+The one-mesh coverage ceiling survives as sheet data. Nested-IOR refraction and
+identity-aware self-shadow rejection have since landed. The old claim that CPU
+baselines are deliberately from a previous epoch is obsolete: use
+[tests/README.md](../../../tests/README.md) and the current baseline manifest.
+Historical determinism observations below are not a byte-identity guarantee
+across devices; in particular, MPS uses float32 accumulation.
 
 ================================================================================
 0. WHAT THIS SUPERSEDES, AND WHAT IT KEEPS
@@ -27,25 +25,27 @@ for the right system, not for byte-compatibility with the old one.
   run totals (§6.6–§6.8), and the remaining §-queue items about them.
 * `DESIGN_mesh_identity_open.md` — its §C (run-scan limit) queue is closed by
   this redesign; §H (nested-IOR refraction) and §I (self-shadow rejection by
-  identity) remain live items and port cleanly onto sheets (§9).
+  identity) have since landed on sheets (§9 records their planned integration).
 * `DESIGN_hybrid_raster.md` — partially: fragment EMISSION (the raster
   front-end, the exact clippers, the CSR) survives; the per-fragment sequential
   resolve it describes is replaced.
 
 **They remain the measurement record.** Every number, refutation and trap in
 them still happened; this document cites them for *why* rather than repeating
-them. `DESIGN_optimization_targets.md` (render performance) is unaffected.
+them. For current performance evidence, use the dated reports under
+`benchmarks/performance/`; the former optimization-targets document was retired.
 
 Two findings from the closing investigation of the old system shape everything
 below, and are recorded in `DESIGN_mesh_identity.md` §6.7.3:
 
-1. **A pixel diff read from an MP4 measures the encoder, not the renderer.**
+1. **Lossy video encoding can greatly amplify small renderer differences.**
    The moved-pixel figures the old design agonized over were inflated by up to
    ~2,000x by H.264 decode (18 real pixel-frames read as ~37,000; a "42 over
    16% of a frame" that was really 2,063 pixel-frames at worst |d| 4). All
    arbitration of this redesign happens on lossless renders
    (`codec="libx264rgb"`, `ffmpeg_params=["-crf", "0"]`) and on the exact-
-   reference harnesses — never on decoded mp4 diffs.
+   reference harnesses. The container extension alone is not the distinction: an
+   MP4 encoded losslessly with `libx264rgb` can support a meaningful comparison.
 2. **Every measured defect class of the old resolve traces to one fact**: it
    rediscovers surface identity DURING a bounded, stateful, per-pixel
    sequential walk. The 16-fragment scan budget and its notches (§0.5), the

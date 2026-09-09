@@ -5,9 +5,10 @@ public name, a setting, or an `ALGAN_` variable.
 
 ## Rendering API
 
-The public rendering API is Scene-owned, and these are the only spellings:
+The public rendering API is Scene-owned. These signatures use `*` to mark
+keyword-only parameters; they are not runnable calls:
 
-```python
+```text
 scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=False,
                  background=None, animate_fade_out=None, post_processes=None,
                  codec=None, audio_codec=None, ffmpeg_params=None)
@@ -43,13 +44,13 @@ The container extension is validated up front by `_check_container_is_supported`
 
 `save_frame` renders one timestamp or a sequence of them (`at`). Multiple timestamps produce files whose names append the timestamp to the resolved stem. Temporary video-settings and background overrides are fully restored afterwards.
 
-`save_frame` never mutates the Scene: nothing is despawned and the timeline is untouched, so it is safe to call repeatedly while authoring. When no timestamp is supplied it renders just after the current authored context time, offset by 1.5 frames. Explicit timestamps must be finite and non-negative.
+`save_frame` never mutates the Scene: nothing is despawned and the timeline is untouched, so it is safe to call repeatedly while authoring. When no timestamp is supplied it renders just after the current authored context time, offset by 1.5 frames. Explicit timestamps must be finite. A negative `at` is an offset from the current authored context time; its resolved timestamp must be non-negative.
 
 Keeping the timeline untouched takes more than not recording anything: rendering *resolves* replay windows (`AnimationTimeline._resolve_replay_windows`), freezing each edit's and event's context-rescaled end time into a plain `replay_end` float. From inside an unfinished context those ends are pre-rescale — a `duration` rescales its block retroactively, on exit — and only recording a new edit invalidates them, so a resolution left behind by a mid-authoring render silently truncates the animations of a later render. `save_frame` and `show_frame` therefore wrap their render in `AnimationTimeline.preserving_authoring_state()`, which restores the resolution state (and drops lifespans created for a render's transient mobs). Any render that leaves the Scene re-renderable must do the same — see the `reset` contract below.
 
 ### `save_video` and the `reset` contract
 
-`reset` defaults to **False**: the Scene is left exactly as authored. Mobs stay spawned, references stay valid, the timeline keeps its recording, and rendering again produces the accumulated timeline (the earlier animation plus whatever was added). Independent clips need independent Scenes.
+`reset` defaults to **False**: authored state is preserved, except for the explicit finalization operations described below. Mobs stay spawned, references stay valid, the timeline keeps its recording, and rendering again produces the accumulated timeline (the earlier animation plus whatever was added). Independent clips need independent Scenes.
 
 Three pieces of finalization are therefore conditional:
 
@@ -138,7 +139,7 @@ Configuration that the renderer *freezes* when it is imported — an ndarray ele
 
 Use `SETTINGS.snapshot()`/`SETTINGS.restore()` for complete public-settings state capture, and `SETTINGS.override(...)` or section-level `override(...)` for temporary changes. Do not hand-roll partial restoration that leaves live settings leaked into later tests or daemon runs.
 
-`SETTINGS.raytracing` validates every write: the accepted type of each of its ~106 fields is derived from the value it ships with (three polymorphic mode switches are exempted by name), numeric fields carry a lower bound taken from their documented meaning, and floats must be finite. A setter's own `ValueError` is re-raised as an `AlganConfigurationError` naming the field; `UnsupportedFeatureError` passes through unflattened, because it is a distinct type callers catch and *is* a subclass of `AlganConfigurationError`.
+`SETTINGS.raytracing` validates every write: the accepted type of each of its fields is derived from the value it ships with (three polymorphic mode switches are exempted by name), numeric fields carry a lower bound taken from their documented meaning, and floats must be finite. A setter's own `ValueError` is re-raised as an `AlganConfigurationError` naming the field; `UnsupportedFeatureError` passes through unflattened, because it is a distinct type callers catch and *is* a subclass of `AlganConfigurationError`.
 
 Writing a section is one operation with one set of rules: `SETTINGS.video.frames_per_second = 60` routes through `set()`, so assignment validates and normalizes exactly as `set(frames_per_second=60)` does, and `set()` writes back only the fields that actually changed (identity comparison) so an unrelated field keeps its object identity. Assigning a whole *section* (`SETTINGS.video = HD`) is still refused — sections have stable identity.
 
@@ -155,7 +156,8 @@ Initialization-only settings intentionally have no public mutable Python object.
 - `ALGAN_TAICHI_BACKEND`.
 
 `ALGAN_TAICHI_BACKEND` selects which Taichi-language compiler builds the kernels:
-`quadrants` (**the default**, 1.3.x, and the only one `pip install algan` brings) or
+`quadrants` (**the default** compiler module, supplied by the locked
+`algan-quadrants` distribution) or
 `taichi` (1.7.x, the dormant upstream, installed by the `taichi` extra and kept as the
 A/B control and the patched-Metal-wheel path). `BACKENDS[0]` in `algan/taichi_compat.py`
 is what picks the default, so that tuple's order is the decision. Every engine module

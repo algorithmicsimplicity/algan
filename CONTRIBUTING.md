@@ -16,11 +16,13 @@ git clone https://github.com/algorithmicsimplicity/algan
 cd algan
 uv venv
 uv sync --locked --all-extras --dev
-<venv-python> -m pytest -q --fast    # the curated fast suite; interpreter path: see the development guide
+.venv/bin/python -m pytest -q --fast    # Windows: .venv/Scripts/python.exe
 ```
 
-That skips the system dependencies, which differ per platform and which the
-install will fail without — the development guide lists them.
+Install the platform-specific system dependencies from the development guide
+before `uv sync --all-extras`: extras such as Pango can require native libraries.
+For a checkout with a locally built compiler wheel, read [AGENTS.md](AGENTS.md)
+before syncing; a lockfile sync can replace that wheel.
 
 Versioning, the `master` → `stable` release flow and how a release is cut and
 tagged are in the "Versioning and releases" section of that same development

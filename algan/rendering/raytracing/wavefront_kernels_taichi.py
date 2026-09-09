@@ -3570,9 +3570,11 @@ def wavefront_shade_arena(
                                 # material's own) and the transmitted branch
                                 # copies the parent stack verbatim -- it
                                 # continues in the parent medium. Bookkeeping
-                                # stays sound (a wrong-but-consistent medium
-                                # beats arena noise); extending the contract is
-                                # future work (DESIGN_mesh_identity_open.md §H).
+                                # preserves the parent's declared medium but
+                                # cannot model an interface transition. Built-in
+                                # nested IOR is implemented; extending custom
+                                # scatter to declare medium changes is separate
+                                # API work (TODO.md, later design work).
                                 _write_ior_stack(rs_sca, r, c, s_ior, False,
                                                  False, ior_stack)
                     refl_w_max = ti.max(refl_w[0],

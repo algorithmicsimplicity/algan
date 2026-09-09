@@ -1,44 +1,31 @@
-"""Ray traced rendering backend for Algan.
+"""Hybrid raster/ray-tracing and Monte Carlo transport for Algan.
 
-Algan animates whole batches of frames in one pass, so this backend is built
-around a single *spatio-temporal* BVH per primitive batch: time is treated as
-a fourth dimension alongside x/y/z, primitives are adaptively segmented into
-(frame interval, union bound) instances and ordered along a 4D Morton curve
-(see :mod:`algan.rendering.raytracing.stbvh`). One tree therefore serves every
-frame in the batch, with memory proportional to how much the scene *moves*
-rather than ``num_frames * num_primitives``.
+``tracer.render_batch_raytraced`` dispatches explicitly on
+``SETTINGS.raytracing.samples_per_pixel``:
 
-Rendering is dispatched by sample count (see ``tracer.render_batch_raytraced``,
-the entry point). The default deterministic renderer
-(``samples_per_pixel == 1``) is a *wavefront* tracer
-(:mod:`~algan.rendering.raytracing.wavefront_kernels_taichi`): rays run in
-bounded screen tiles through generate -> traverse -> shade -> composite kernel
-stages, with per-ray state pool-allocated from the render arena and host-side
-compaction between iterations. Each ray depth-peels its hits front-to-back and
-alpha-blends every surface -- following reflections and refractive splits up
-to ``max_bounces`` -- into a fixed ``[frames, pixels, channels]`` output
-buffer. ``samples_per_pixel > 1`` switches to the Monte Carlo path-tracing
-megakernel (:mod:`~algan.rendering.raytracing.raytrace_kernels_taichi`), one
-thread per (frame, pixel, sample) path. Tree and geometry preparation is
-vectorized PyTorch.
+* ``1`` uses the deterministic renderer. Eligible primary views use raster
+  emission, per-pixel sheet compaction and sheet shading. Reflected/refracted
+  continuations, and primary views that fail the raster route's gates, use
+  staged wavefront traversal and shading.
+* Values greater than ``1`` select ``path_tracer.py`` and
+  ``path_tracer_taichi.py``. Sample waves share the wavefront traversal kernels,
+  keep bounded non-splitting path state and accumulate jittered samples at
+  output resolution. Alpha compositing is deterministic; scattering is sampled.
+
+Scene preparation builds acceleration structures per geometry type. The default
+shared-topology refit BVH stores per-frame bounds; the alternative STBVH stores
+spatio-temporal primitive instances. Geometry, acceleration structures, hit
+buffers, output images and transient state all contribute to memory use.
 
 Usage::
 
-    import algan
-    from algan.rendering.raytracing import set_samples_per_pixel
+    from algan import Scene, SETTINGS, Sphere, MeshStandardMaterial
 
-    # samples_per_pixel=1 (default) renders with the exact deterministic
-    # wavefront tracer; > 1 enables the path tracer: jittered sub-pixel
-    # samples (implicit anti-aliasing) at output resolution, with
-    # deterministic Sobol-Owen sampling.
-    set_samples_per_pixel(64)  # before rendering
-
-    mirror = algan.Sphere().set_material(
-        algan.MeshStandardMaterial(metalness=1.0, roughness=0.2)
-    )
-    mirror.spawn()
-    ...
-    algan.Scene.save_video()
+    SETTINGS.raytracing.set(samples_per_pixel=64)
+    Sphere().set_material(
+        MeshStandardMaterial(metalness=1.0, roughness=0.2)
+    ).spawn()
+    Scene.save_video()
 """
 
 from __future__ import annotations

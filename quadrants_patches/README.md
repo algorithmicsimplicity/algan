@@ -1,7 +1,7 @@
 # The Quadrants patches Algan carries
 
-Seven patches against **Quadrants v1.3.0** (`ab9a58ab5`, 2026-08-11 — the latest
-public release; `v1.3.0b1`/`b2` are earlier betas despite sorting above it),
+Seven patches against **Quadrants v1.3.0** (`ab9a58ab5`, dated 2026-08-11 — the pinned upstream base, not a claim
+about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
     git clone --filter=blob:none https://github.com/Genesis-Embodied-AI/quadrants.git

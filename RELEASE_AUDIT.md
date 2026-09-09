@@ -1,19 +1,15 @@
 # Release audit: what to fix before Algan goes on PyPI
 
-> **Status: partly acted on, on this branch.** Fixed: §1, §3 (fully closed on
-> 2026-09-07 — the first pass missed Manim's second notice; see the note under
-> that finding), §4, §6 (all four
-> bugs; the auto-spawn default and `~/.algan` were kept by decision, the daemon
-> knobs stay environment variables because they are read before `SETTINGS`
-> exists), §7 except the Manim root-logger item (kept by decision), §8 except
-> the five Three.js material spellings (kept by decision), §9, §10, §11, §12
-> (OpenCV became a dev-only dependency: the tests decode frames with it, the
-> library no longer imports it), §14, §16 (see its current-resolution table),
-> and §2 (see the resolution note under that finding). Still open: §5 (docs
-> deploy), §13 (repository weight), §15 and §17. The former §7 `algan
-> --version` startup-cost leftover is also fixed: the version path reads package
-> metadata without importing the full package. The findings below are kept in
-> their original wording as the record of what was wrong.
+> **Historical audit (2026-09-02), with later resolution notes.** Findings and
+> measurements below describe their recorded snapshots, not the current release
+> gate. The source-level status was checked again on 2026-09-09: a Pages deploy
+> job now exists in `release.yaml` (§5); heavy baselines are release assets with
+> a hash-verified manifest (§13); the stale conda recipe and placeholder badges
+> have been removed (§15); and `test.yaml` includes an MPS leg (§17). This does
+> not verify live Pages/PyPI state, branch protection or a Git history rewrite.
+> Use [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) for current release procedure and
+> [TODO.md](TODO.md) for remaining work. Original rankings are retained as history,
+> not a fresh priority order.
 
 **What this is.** A pre-release audit of Algan `0.2.2` at `3c03536` (branch
 `claude/algan-release-audit-a06q1y`), carried out on 2026-09-02. The brief was to
@@ -30,8 +26,8 @@ container: Ubuntu 24.04, 4 vCPU, **CPU only**, Python 3.11, torch 2.7.1,
 Taichi 1.7.4, system `ffmpeg` and `latex` present. A CPU-only box cannot speak
 for CUDA, MPS, Windows or macOS; where that matters the finding says so.
 
-**Baseline.** `uv run -m pytest -q --fast` passes (464 tests). The PyPI name
-`algan` is free. Determinism is byte-identical across two renders. Nothing is
+**Historical baseline (2026-09-02).** The audit recorded `uv run -m pytest -q --fast` passing (464 tests). The PyPI name
+`algan` was reported free at that time. The two measured renders were byte-identical; this is not a cross-backend guarantee. Nothing is
 written to the package directory or to `$HOME` by a bare `import algan`.
 
 Severity key: **BLOCKER** — fix before the first upload; **HARD-LATER** — not
@@ -108,8 +104,9 @@ Algan's own `scene_data.py` dataclass and are fine.
 > the vendored subset uses them. `manimpango` became the `algan[pango]` extra:
 > without it the vendored package withholds `Text`/`MarkupText`/`Paragraph`,
 > `algan.Text` typesets through LaTeX's text mode, and `manim_adapters` treats
-> that as a supported configuration rather than raising. Nothing is left to
-> build from source on any platform.
+> that as a supported configuration rather than raising. The base dependency no longer requires those optional Pango bindings;
+> source builds can still be needed when a selected dependency or extra has no
+> wheel for the target platform.
 
 **Verified** (clean venv from the built wheel, plus import tracing).
 
@@ -194,6 +191,8 @@ thing a visitor sees after the README; `agent_guidance/` or `docs/dev/` would
 hold them just as well.
 
 ## 5. Docs URL has no deploy path
+
+> **Source status, 2026-09-09:** The current release workflow has `publish_docs` using GitHub Pages artifacts. `docs.yaml` remains a build check. Whether the live site and environment settings are correct must be verified during release preparation.
 
 **Verified in the repo; site not reachable from this sandbox.**
 `pyproject.toml`, README badges, `CONTRIBUTING.md` and `conf.py`'s
@@ -327,6 +326,8 @@ Python 3.11 venv and running it from outside the repo; `twine check` passes.
 
 ## 13. Repository weight
 
+> **Source status, 2026-09-09:** Heavy full-render and path-tracer baselines are no longer tracked in the current tree. `tests/baselines.json` points to release assets, and the release gate verifies their hashes. This does not remove blobs from existing Git history; the historical size below is not a current clone measurement.
+
 **Verified.** `.git` is 210 MB; 107 media blobs total 149 MiB of 232 MiB of
 blobs in history, almost all `tests/full_renders/expected_outputs_{cpu,cuda}/*.mp4`
 at ~4 MB each, re-committed on every rebaseline. The working tree's `tests/`
@@ -344,6 +345,8 @@ before the public announcement.
 - `pydub` emits `RuntimeWarning: Couldn't find ffmpeg or avconv` on `import algan` whenever ffmpeg is off `PATH`, although everything works. Point pydub at the bundled binary or filter the warning.
 
 ## 15. Metadata and hygiene
+
+> **Source status, 2026-09-09:** The stale `recipe/` directory and placeholder README badges are gone. `release.yaml` generates GitHub release notes; a hand-maintained `CHANGELOG.md` is not required by that implementation. Remote branch and publication states below are historical observations.
 
 - `recipe/meta.yaml`: version `0.0.2`, `python >=3.10,<3.13` (contradicts `requires-python`), a `pytorch-scatter` dependency that no longer exists, `license_file: LICENSE.md` (file is `LICENSE`), `noarch: python` for a package that needs Taichi and torch, and a literal `<YOUR_SHA256_HASH_HERE>`. Finish it or delete it.
 - No `CHANGELOG` and no version policy anywhere; `stable` is 133 commits behind `master` at `0.0.63`, the only tag is `BETA_v0.0.63`, and there are no GitHub releases. Decide the release branch flow (`test.yaml` assumes master→stable PRs) and tag `v0.2.2` at what you upload.
@@ -388,6 +391,8 @@ Correctness and UX, all **verified at the original audit commit**, none contract
 - Viewer: binds `127.0.0.1` only, path-safe static serving, no CORS; but no `Host`-header check and `POST /api/shutdown` is unauthenticated, so a DNS-rebound or CSRF page can stop a running viewer. A per-session token in the URL closes both.
 
 ## 17. Tests and CI
+
+> **Source status, 2026-09-09:** The current test workflow includes an MPS runner, and `tests/mps_known_failures.py` records its explicit exceptions. The old pass counts and CI runs below are historical. Consult the current workflow and `tests/README.md` for coverage and baseline skips.
 
 **Verified** locally and against the Actions history of `algorithmicsimplicity/algan`.
 

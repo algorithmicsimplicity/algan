@@ -1,10 +1,10 @@
-"""Construction/batching base for render primitives.
+"""Construction and batching base for render primitives.
 
-This package used to be the rasterization pipeline; the renderer is now the
-ray tracer under :mod:`algan.rendering.raytracing`, whose primitives subclass
-the classes here for their *construction and batching* only (gathering
-per-mob tensors into one batched primitive per geometry type). The
-rasterization code itself is gone.
+Subclasses collect per-Mob tensors into compatible batches for the renderer in
+``algan.rendering.raytracing``. That renderer includes both a hybrid raster
+frontend and ray-traced transport. The older raster implementation formerly
+housed in this primitives package has been removed; the construction and
+batching interfaces remain.
 """
 
 from __future__ import annotations

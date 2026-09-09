@@ -23,23 +23,24 @@ still cost a single traversal. Coplanar surfaces -- ubiquitous in 2D scenes
 -- are ordered deterministically by a per-primitive layer index (higher
 layer on top; triangles layer above bezier circuits).
 
-When a surface has reflectivity ``r > 0`` the ray is mirror-reflected about
-the (interpolated) surface normal and marching continues with throughput
-``weight * a * r``, up to ``max_bounces`` reflections.
+The caller determines surface transport: deterministic shading can split
+reflection/refraction continuations, while the path tracer samples a BSDF or
+medium event. These shared intersection routines do not choose the scattering
+model. Both callers enforce their configured bounce and surface limits.
 
 Traversal data is laid out for one-cache-line node visits (see ``stbvh.py``):
 ``nodes [num_nodes, 8]`` packs bounds + frame interval per node, leaves hold
 ``bvh_leaf_size`` primitive slots (``leaf_prim`` plus a packed per-slot frame
 interval ``leaf_tspan`` so out-of-frame instances are skipped exactly).
 
-Geometry comes in three packed forms, each fetched at the ray's exact frame
+Geometry comes in two packed forms, each fetched at the ray's exact frame
 (frame index modulo each array's own time length, so constant data can stay
 single-frame). Hot data (what every candidate intersection touches) is kept
 separate from cold data (what only confirmed hits touch):
 
 * triangles: positions ``tri_pos [Tp, N, 9]`` (hot); shading normals
-  ``tri_norm [Tn, N, 9]`` (cold: fetched only for mirror bounces or Monte
-  Carlo scattering), ``tri_extra`` (per-corner reflectivity +
+  ``tri_norm [Tn, N, 9]`` (cold: fetched for confirmed-hit shading and
+  scattering), ``tri_extra`` (per-corner reflectivity +
   roughness pairs, then per-corner IOR, then per-corner transmission, then
   the per-primitive RGB absorption coefficient; usually single-frame) and
   ``tri_colors [Tc, N, 3, 5]``

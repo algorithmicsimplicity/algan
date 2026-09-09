@@ -1,4 +1,12 @@
-# Zero-copy torch-MPS ↔ Taichi-Metal: what the patch would take
+# Zero-copy torch-MPS ↔ Taichi-Metal: design and implementation history
+
+> **Implemented; historical design.** The current bridge is
+> `algan/rendering/mps_zero_copy.py` with the native-buffer support in
+> `quadrants_patches/0001-metal-zero-copy-ndarray.patch`. The argument packing
+> and MPS-friendly substitutions also landed. The questions and intermediate
+> black-frame verdict below describe the original Taichi investigation, not
+> current availability. See [DESIGN_mps_support.md](DESIGN_mps_support.md) for
+> the measured integration history and current exception-list pointer.
 
 **What this is.** A follow-up to `DESIGN_mps_support.md` §1.3 and §3.3 step 1 —
 the staging copy Taichi puts between a torch MPS tensor and a Metal kernel — and

@@ -17,8 +17,9 @@ secondary K-buffer removal). `61d177f` accidentally reverted most of
 `f40cf76`'s front-end work (sparse shadow queue, PN preservation, opaque
 bezier z-prepass, per-primitive alpha masks, the Taichi compile logger) while
 landing the K-buffer change; that revert was identified and undone on
-2026-07-19, merging both lines. If a source file disagrees with this
-document, suspect a repeat of that failure mode first.
+2026-07-19, merging both lines. For a disagreement today, compare the current
+source and the later sheet design before diagnosing a regression; the old
+resolve was deliberately replaced.
 
 Author's note on scope: this is a *ground-up redesign* of the deterministic
 (samples-per-pixel == 1) render path. Byte-for-byte identity with the old

@@ -1,15 +1,11 @@
-"""Shared-topology binned-SAH refit BVH (raytracer-v2 design doc, section 9).
+"""Shared-topology binned-SAH refit BVH.
 
-The classic :mod:`stbvh` builds a spatio-temporal tree over *primitive
-instances*: moving geometry segments into near-per-frame instances at the
-confirmed-optimal ``tightness=1.0``, so the tree is up to ~10x larger than the
-primitive count and every ray wades through mostly other-frames' instances
-gated out by frame-interval tests. The phase-1 measurements
-(``benchmarks/_rt2_refit_sah.py``) showed a *refit* topology -- ONE tree over
-the N primitives whose node bounds are recomputed per frame -- costs
-1.37-2.33x fewer expected node visits, with negligible staleness (<= 1.04 vs
-a per-frame rebuild) across a render batch, and makes a real SAH build
-affordable because topology is built once per batch.
+The alternative :mod:`stbvh` builds a spatio-temporal tree over primitive
+instances. Moving geometry can require many frame-interval instances, whereas
+a refit topology has one leaf per primitive (or sliver strip) and recomputes
+its bounds per frame. This trades per-frame bounds storage for avoiding
+other-frame instances during traversal. Topology is built once per batch;
+the relative memory and traversal costs depend on scene motion and window size.
 
 This module implements that structure:
 
@@ -41,11 +37,10 @@ scheme the classic tspan uses):
                                   walk skips it. (An *empty* box cannot do
                                   this job: the slab test min/max-normalizes
                                   each axis, so inverted bounds still pass.)
-* sign bit set (``< 0``, != -1) -- leaf child: bits 0-29 the primitive index,
-                                  bit 30 the primitive's *per-frame* full-
-                                  opacity flag (exact, unlike the classic
-                                  per-interval flag; efficiency-only either
-                                  way).
+* sign bit set (``< 0``, != -1) -- leaf child: bits 0-28 contain the primitive
+                                  index, bit 29 marks a non-shadow-caster,
+                                  and bit 30 marks per-frame full opacity.
+                                  Bit 31 is the leaf tag.
 * ``>= 0``                     -- internal child: its sibling-block index.
 
 The object intentionally quacks like :class:`stbvh.STBVH` -- same five tensor
@@ -102,8 +97,8 @@ refit_pack_kernel = env_flag("ALGAN_REFIT_PACK_KERNEL", False)
 # holds for any input.
 MAX_DEPTH = 16
 
-# Link-word encoding (see module docstring). Bits 0-29 carry a primitive
-# index for leaf children, so a batch is limited to 2**30 - 1 primitives per
+# Link-word encoding (see module docstring). Bits 0-28 carry a primitive
+# index for leaf children, so indices must be below 2**29 per
 # geometry type; block indices are stored raw, and the walk packs
 # ``block << bvh_arity`` into its int32 stack entries, capping blocks at
 # 2**(31 - bvh_arity).

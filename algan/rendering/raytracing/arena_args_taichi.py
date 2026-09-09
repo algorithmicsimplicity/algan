@@ -40,12 +40,13 @@ top of those bought nothing further (+2.2%). So the split is exactly "arrays
 indexed by the per-thread ray slot stay parameters, scene-indexed tables go
 through the arena", and there is no reason to keep more than that.
 
-The cost is not the convention. Taichi loads an ndarray's base pointer and
-shapes from a global-memory argument buffer at **every use site inside the
-loop** -- LICM cannot hoist them, there is no `!invariant.load` on them -- so
-the arena adds a third level to what was already a two-level dependent-load
-chain. `DESIGN_taichi_argument_loads.md` has the PTX, the register counts and
-the fork that would remove it.
+Those measurements preceded the compiler's argument-load improvements.
+Repeated base-pointer and shape loads can inhibit loop-invariant code motion;
+arena addressing adds another dependent lookup. The patched Quadrants compiler
+now includes invariant argument-load work (``quadrants_patches/README.md``,
+patch 0004). Its effect depends on backend and compiler settings: remeasure
+before changing the hot/cold split, rather than treating the old overhead as a
+property of every current build.
 
 Launch side
 -----------

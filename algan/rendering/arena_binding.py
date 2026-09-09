@@ -1,4 +1,4 @@
-"""The arena-offset calling convention (``DESIGN_metal_native_port.md`` §1.2).
+"""Arena-offset binding analysis (``DESIGN_mps_support.md`` §1.1).
 
 Metal binds at most 31 buffers to a compute stage, measured — a 32nd is a
 compile error, ``'buffer' attribute parameter is out of bounds: must be between
@@ -23,8 +23,9 @@ take its cold arrays through the arena, so the table below is now history rather
 than a gap: no kernel asks for more than 20 ndarray arguments
 (`tests/unit_tests/test_arena_args.py`).
 
-What a live render said before the conversion, and what those kernels still hand
-their launch wrapper (``test_arena_binding_live.py`` keeps it true):
+Historical argument counts measured before conversion. Current launch contracts
+are checked by ``test_arena_binding_live.py`` and ``test_arena_args.py``; adding
+transport state can change these counts without changing the packing design:
 
 | kernel | ndarray args | arena-backed | bindings after packing |
 | --- | --- | --- | --- |

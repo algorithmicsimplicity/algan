@@ -5,7 +5,7 @@ Mirrors the Three.js light catalogue: :class:`PointLight`,
 :class:`SpotLight` and :class:`RectAreaLight`, each with an ``intensity``
 multiplier and (where physical) ``decay``/``distance`` falloff parameters.
 
-Lights are renderable Mobs: their ``location``, ``color``, ``opacity``
+Lights use the Mob authoring interface: their ``location``, ``color``, ``opacity``
 and ``intensity`` are animatable like any other mob attribute. The remaining
 parameters (``decay``, ``distance``, cone angles, emitter sizes) are plain
 per-light constants.
@@ -22,10 +22,13 @@ only the cell's centre, so its penumbra is continuous rather than a stack of
 hard shadows -- gated by ``area_light_soft_shadows``, at the ray cost noted on
 :class:`RectAreaLight`.
 
-Only the default plain :class:`PointLight` is supported by every render path;
-the extended light types are rendered by the deterministic (single-sample)
-ray tracer with per-fragment shading, which Algan enables automatically when
-any extended light is present in the scene.
+Both the deterministic fragment-shading route and the path tracer support the
+packed extended light types. The deterministic renderer enables fragment
+shading when an extended light requires it. Path tracing samples direct light
+and can merge rectangular emitters into visible geometry; point, directional
+and ambient light objects are not themselves visible meshes. See
+``raytracing/DESIGN_physical_area_lights.md`` for emitter geometry and the
+legacy distance-falloff convention.
 """
 
 from __future__ import annotations

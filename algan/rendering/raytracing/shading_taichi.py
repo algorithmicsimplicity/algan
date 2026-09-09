@@ -1,21 +1,18 @@
-"""Per-fragment (Taichi) shading for Algan's deterministic ray tracer.
+"""Shared per-fragment material stages and lighting helpers.
 
-The deterministic ray tracer normally shades *per vertex*: the PyTorch material
-shader (:mod:`algan.rendering.shaders.material_shaders`) is evaluated at each
-triangle corner before upload and the kernel only interpolates the baked colors
-(Gouraud shading). When fragment shading is enabled
-(:func:`algan.rendering.raytracing.primitives.set_fragment_shading`) the kernel
-instead receives the *raw albedo* plus a compact per-primitive parameter block,
-interpolates the surface normal at the hit, and evaluates the lighting model
-here -- per fragment (Phong shading), so specular highlights stay crisp and
-coarse meshes shade smoothly.
+Fragment shading is enabled by default. The kernel receives raw albedo and a
+per-primitive parameter block, interpolates the hit normal, and evaluates the
+material here. The PyTorch functions in ``material_shaders.py`` remain the
+vertex-shading path when fragment shading is disabled or a shader requires it.
+The path tracer also uses these helpers, but physical surface transport uses
+its BSDF evaluation and sampling rather than the deterministic lighting sum.
 
 Shading is expressed as **stages** with a single uniform ``@ti.func`` contract
 (see ``_stage_phong`` etc.). A per-primitive **pipeline** is an ordered list of
 stages run left-to-right, each receiving the previous stage's output color --
 so a user recolor stage can feed a built-in lighting stage. The built-in
 materials are the first stages: Manim's default 3-D lighting
-(:func:`~algan.rendering.shaders.material_shaders.manim_shader`),, ``MeshBasicMaterial``
+(:func:`~algan.rendering.shaders.material_shaders.manim_shader`), ``MeshBasicMaterial``
 (unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``,
 ``MeshPhysicalMaterial``, and the four that used to be vertex-baked only --
 ``MeshToonMaterial``, ``MeshNormalMaterial``, ``MeshMatcapMaterial`` and
@@ -58,15 +55,15 @@ single-stage pipeline)::
     38 medium_closed (raw closed-shell GEOMETRY declaration, independent of
     transmission-exempt opacity compositing)
 
-Every slot above carries a 0.0 default that means "the behaviour that existed
-before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
-block of a custom pipeline keeps its historical look slot by slot.
+Shared geometry/transport slots must treat zero padding as the pre-existing
+behavior. Pipeline-specific slots may have nonzero defaults when their reads
+are guarded by the matching pipeline id; see ``_MAT_ONE_SIDED`` below.
 
-The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
-terms, ``ambient_strength``, ``light_intensity == ambient == 1``) and reproduces
-its multi-light behaviour: each light is applied in sequence with the running
-color as the albedo (the renderer's vertex path overwrites the color per
-light), which is identical to a single light -- the common case.
+The stages implement the corresponding material formulas, but lighting depends
+on the caller. The default deterministic accumulated-lighting route adds light
+contributions instead of repeatedly relighting the running color. Authored
+pipelines and the path tracer have their own lighting contracts; they are not
+universally identical to the PyTorch vertex path.
 """
 
 from algan.environment import env_flag, env_int
@@ -281,12 +278,11 @@ def light_vis_index(li, c):
 # ALGAN_MAX_SHADOW_LIGHTS for denser area-light penumbras or larger rigs (more
 # registers, lower occupancy on the shadow kernels).
 # Each area-light emitter sample counts as
-# one slot; samples past the cap light without shadowing, so an under-capped
-# area light just gets a shallower umbra, never a wrong one (every built-in
-# stage treats a past-the-cap light as fully lit, exactly as it treats an
-# unshadowed one). A
-# truly unbounded (runtime) count would need the per-fragment visibilities in
-# a global scratch buffer instead of a stack vector.
+# one slot. Samples past the cap contribute as fully lit, so exceeding it
+# can wash out the umbra. That is lost shadow quality, not an equivalent
+# integration of the emitter. The host reports this capped deterministic
+# workload; a runtime-sized visibility vector would require global scratch
+# rather than this fixed local vector.
 max_shadow_lights = max(1, env_int("ALGAN_MAX_SHADOW_LIGHTS", 16))
 
 

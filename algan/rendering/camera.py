@@ -6,8 +6,9 @@ same animation contexts -- there is no separate camera-animation API. Camera
 moves usually want ``easing=easings.identity``, since easing in and out of a
 pan reads as a wobble.
 
-It carries the projection: perspective or orthographic, field of view in degrees,
-and near/far planes. :meth:`Camera.center_on` frames a
+It carries perspective projection, a field of view in degrees, and near/far
+clipping distances. ``set_near_orthographic`` approximates orthographic projection
+with a distant perspective camera; it is not a separate orthographic ray model. :meth:`Camera.center_on` frames a
 given Mob, and :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
 aims at a point.
 

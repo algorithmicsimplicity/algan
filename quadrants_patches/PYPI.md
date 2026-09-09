@@ -5,8 +5,10 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The current downstream release is `algan-quadrants==1.3.0.post2`, sixteen
-wheels published 2026-09-06; `1.3.0.post1` was the first, twelve wheels. The
+The repository currently consumes `algan-quadrants==1.3.0.post2`; the build
+workflow is staged for `1.3.0.post3`. The recorded post2 publication on 2026-09-06
+contained sixteen wheels; post1 contained twelve. Check actual PyPI availability
+before changing the consumer pin or attempting a new publication. The
 `post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
 and keeps it distinct from the upstream `quadrants==1.3.0` release.
 
@@ -36,7 +38,8 @@ The workflow refuses a stock or partial matrix when `publish` is enabled, and
 what it counts as complete is `resolve_wheel_matrix.py`'s platform table rather
 than a list of names in the YAML — so a platform added there is required here
 without this document or that gate being edited. Each platform builds the
-ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION=1.3.0.post2`, so
+ordinary `quadrants` wheel with `SETUPTOOLS_SCM_PRETEND_VERSION` set from
+the workflow's `ALGAN_QUADRANTS_VERSION` (currently `1.3.0.post3`), so
 Quadrants' Python metadata and its native build see the same version. After all
 sixteen wheels succeed, the publish job rewrites only the distribution metadata
 from `quadrants` to `algan-quadrants`, validates the complete matrix, and
@@ -46,9 +49,11 @@ Normal diagnostic builds keep `publish` disabled. Their artifacts stay named
 `quadrants-...whl`, which preserves `scripts/build_quadrants_wheels.py --install`
 and the existing wheel provenance workflow.
 
-## Bootstrap order for Algan
+## Historical bootstrap order for Algan
 
-Do **not** change Algan's dependency to `algan-quadrants` before the first
+This bootstrap has completed; do not repeat the post1 pin change below. It
+records why publication must precede consumption. Do **not** change a
+dependency to a new compiler distribution/version before the first
 release exists: `uv sync --locked` would otherwise become intentionally
 unresolvable while the package is being bootstrapped.
 

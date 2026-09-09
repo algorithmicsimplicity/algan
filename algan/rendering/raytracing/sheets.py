@@ -22,9 +22,10 @@ Determinism. Integer reductions (mask OR, min-position, counts) are exact
 under any summation order. The one float reduction — the area sum — follows
 the §6.6.4 pattern: accumulate in float64 and round to float32, which was
 measured bitwise-stable across runs where a float32 ``scatter_add_`` was not.
-The eventual shipping shape (host torch vs a fixed-tree Taichi scan,
-``DESIGN_sheet_resolve.md`` §10.4) is decided at Phase 2; this module is the
-Phase-1 implementation and the semantic reference for whatever replaces it.
+The shipping implementation combines host orchestration with optional fused
+kernels in ``sheet_compact_taichi.py``. The PyTorch arms remain comparison
+references. On MPS, accumulation uses float32 instead; the historical float64
+stability measurement does not establish bitwise reproducibility there.
 
 Band rules (``DESIGN_sheet_resolve.md`` §4.2, open parameter §10.1): within
 ``(pixel, mesh, facing)`` and sorted by depth, a gap larger than a RELATIVE

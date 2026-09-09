@@ -1016,7 +1016,7 @@ def _build_render_plan(
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
-    # The path tracer remains the complete fallback (roadmap section 9).
+    # Renderer selection is explicit; this does not retry on another backend.
     # Homogeneous interiors require stochastic transport, so the deterministic
     # route must name the unsupported feature rather than silently dropping it.
     unsupported = []
@@ -1046,20 +1046,14 @@ def _build_render_plan(
 def _validate_render_capabilities(
     samples_per_pixel, scene_environment_map, merged, light_sources=()
 ):
-    """Validate that the selected renderer can honor the authored scene.
+    """Apply the unsupported-feature policy to the selected renderer.
 
-    ``samples_per_pixel > 1`` selects the path tracer, and it refuses
-    **nothing**: it is the fallback for the scenes the deterministic renderer
-    cannot do, so a feature it rejected would leave the user with no renderer
-    at all (``DESIGN_path_tracer_roadmap.md`` section 9). Custom scatter
-    overrides were the last rejection and are now continued as a delta lobe.
-    The machinery below stays because the rule it enforces stays: silently
-    discarding a feature is more dangerous than failing early, and the global
-    unsupported-feature policy permits an explicit warning/ignore migration
-    mode for benchmarks and legacy projects.
-    ``tests/unit_tests/test_path_tracer.py`` asserts the empty refusal over
-    every feature ``_build_render_plan`` inspects, so a rejection added there
-    fails a test the moment it is written.
+    Selection is explicit: one sample uses the deterministic renderer; more
+    than one uses the path tracer. The capability checks here cover the feature
+    metadata collected by ``_build_render_plan``, not every possible geometry,
+    user shader or allocation error. Homogeneous scattering currently requires
+    the path tracer. The policy raises by default; warning and ignore modes are
+    intended for controlled migration and comparisons, not silent fallbacks.
     """
     plan = _build_render_plan(
         samples_per_pixel,
@@ -1202,12 +1196,14 @@ def render_batch_raytraced(
     post_processes=(),
     **kwargs,
 ):
-    """Render frames [time_start, time_end) of a primitive batch by ray
-    tracing into a fixed [frames, pixels, channels] buffer.
+    """Render a primitive batch through the selected hybrid or path tracer.
 
-    On out-of-memory the time window is halved and retried; per-frame memory
-    is just the output buffer (plus post-processing), independent of scene
-    depth complexity or bounce count.
+    Consume the batch's immutable scene/camera/light data, validate renderer
+    capabilities, reserve scene and transient arena storage, and render frame
+    chunks into the output buffer. Memory includes geometry, acceleration
+    structures, hit events, path/continuation state and post-processing scratch;
+    it is not independent of scene complexity. The enclosing render loop owns
+    frame-window retries, while renderer-specific tiling bounds transient work.
     """
     # Read the user-toggleable settings *live* from the settings module.
     # These names used to be imported by value at module-import time, which

@@ -1,5 +1,12 @@
 # Algan — Analytic Anti-Aliasing v2: Exact Uncontended Coverage
 
+> **Historical predecessor of the sheet resolve.** The run-correction design
+> shipped in August 2026, then its resolve was replaced by
+> [DESIGN_sheet_resolve.md](DESIGN_sheet_resolve.md). The analytic clippers and
+> sampled ownership informed that replacement; this file is not a queue to
+> reimplement. Use the public `analytic_aa` setting for the main switch; detailed tuning
+> controls are on `SETTINGS.raytracing.experimental`.
+
 Status: SHIPPED (both workstreams, defaults flipped on 2026-08-13 -- see
 `ANALYTIC_AA_RUN` and `ANALYTIC_AA_BEZ_WEDGE` in `settings.py`). Retained as the
 design record; the header used to say "nothing built" and was stale. It

@@ -1,32 +1,16 @@
-"""Runtime model of how much render arena a chunk of frames needs.
+"""Runtime model of render-arena peak storage per frame chunk.
 
-Batch sizing used to be driven by hand-written byte formulas that mirrored the
-allocation sequences in the tracer, the raster pipeline and post-processing.
-Keeping them correct meant re-deriving them by hand after every change, and
-when they drifted the failure surfaced as an out-of-memory error in somebody's
-render.
+The model observes ``ManualMemory.max_pointer`` and fits a conservative affine
+estimate, ``peak(n) = a + b*n``, separately for each render signature. Recent
+observations, safety margins and growth limits guide the next chunk size. When
+an affine fit is unsuitable it falls back to a per-frame bound.
 
-This measures instead, and measures the only thing that actually matters: the
-arena's own high-water mark. A chunk's peak is affine in its frame count --
-
-    peak(n) = a + b * n
-
--- so rendering two short chunks and reading ``ManualMemory.max_pointer``
-determines the whole line. Measured across the sample scenes, predictions from
-n=1 and n=2 land within 0.5% at n=3, 5 and 8, and usually to the byte.
-
-Two properties make this worth preferring to a model of the allocations:
-
-* it needs no knowledge of *what* was allocated, so new render code -- a new
-  primitive, a new tracer path, a user's own post-process -- is accounted for
-  the moment it runs, with nothing to register and nothing to regenerate; and
-* the frames it measures are frames the batch had to render anyway, so the
-  measurement is close to free.
-
-What it cannot do is see the future: the probe measures the first frames of a
-batch, and a scene that grows denser later in that batch will exceed the line.
-The out-of-memory retry therefore remains the backstop; this only makes it
-rare.
+This measures allocations made through the arena, including new rendering and
+post-processing code that uses it. It does not measure every PyTorch allocation,
+compiler workspace or driver reservation. The surrounding render loop handles
+those constraints and retries chunks that exhaust the arena. Later, denser
+frames can exceed a fit derived from earlier frames; the estimate is not a
+proof that an entire animation will fit.
 """
 
 from __future__ import annotations
@@ -39,11 +23,10 @@ from algan.environment import env_flag, env_float, env_int
 
 logger = logging.getLogger("algan.memory_model")
 
-# The five numbers below shape how conservatively a render sizes its batches.
-# They are the knobs to reach for when a scene keeps hitting the out-of-memory
-# retry (raise the margins) or when batches come out smaller than the card can
-# actually hold (lower them); each is read once here, so set its environment
-# variable before importing algan.
+# These values govern arena estimates, not total device memory. Environment
+# variables seed them at import; the settings facade exposes the storage fields.
+# Existing models/windows can retain constructor defaults or their original
+# deque size, so use a fresh render when comparing configurations.
 
 # How many recent chunks inform the fit. The window exists so a single
 # unusually dense chunk does not handicap the rest of the render: it raises the

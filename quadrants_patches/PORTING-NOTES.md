@@ -18,10 +18,11 @@ Verified from a fresh checkout: both apply with strict `git apply` (no fuzz, no
 `-3`), and 0002 is authored against a tree that already has 0001, exactly as the
 Taichi pair is — they share `quadrants/rhi/metal/metal_device.mm`.
 
-**Not compiled.** No macOS and no Metal on the box this was ported on. Every
-hunk was written against the surrounding Quadrants source rather than
-pattern-substituted, but nothing here has seen a compiler. §5 lists what to
-watch on the first real build.
+**Initial porting status (historical): not compiled on the porting host.**
+The patches have since been built and exercised; see `README.md` and
+`../taichi_patches/MIGRATION.md` for the hardware-specific evidence. §5 preserves
+the original first-build checklist, not a claim that the current patches are
+untested.
 
 ## 0. Global renames applied throughout
 

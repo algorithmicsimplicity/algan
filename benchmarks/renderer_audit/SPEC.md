@@ -2,18 +2,20 @@
 
 A single JSON document describing one still frame, rendered by two independent
 back ends (`algan_render.py`, `three_render.mjs`) so their images can be
-compared pixel-wise. The spec is deliberately small: only what both engines can
-express *exactly*, so that a difference in the output is a difference in the
-renderer and not in the scene.
+compared pixel-wise. This is a small comparison format, not a guarantee that
+the translators produce identical geometry, camera state or material defaults.
+The limitations below must be controlled before attributing a difference to
+shading or transport. Checked against both back ends on 2026-09-09.
 
 Conventions shared by both back ends:
 
 * Right-handed, **+Y up, +Z toward the viewer** — Algan's convention and
   Three.js's are already identical.
 * Distances in world units, angles in **degrees**.
-* Colours are **linear-ish RGB triples in [0, 1]** as authored. What each engine
-  then does with them (gamma, tonemapping) is part of what the audit measures,
-  so neither back end is allowed to "correct" for the other.
+* Colours are authored **sRGB triples in [0, 1]**. The Three.js bridge explicitly
+  calls `setRGB(..., THREE.SRGBColorSpace)`; the Algan bridge constructs `Color`.
+  Algan's `linear_color_space` setting and each bridge's tonemapping/output
+  configuration still matter, so record them with any comparison.
 * `fov` is the **vertical** field of view in degrees (both engines agree).
 
 ```jsonc
@@ -73,9 +75,23 @@ Geometry types:
 | `sphere` | `radius`, `segments` (default 64)     | Three.js `SphereGeometry(radius, segments, segments/2)`; Algan `Sphere(radius=...)` |
 | `box`    | `size` `[x, y, z]`                    | Three.js `BoxGeometry`; Algan `Prism(width=, height=, depth=)` |
 
-Every material field is optional; the defaults above are the defaults both back
-ends apply. Fields both engines ignore are still allowed in the file so that one
-spec can drive an engine that grows the feature later.
+The JSON above is an example, not a complete shared-default contract. In the
+current translators, an omitted material `type` selects **physical in Algan but
+standard in Three.js**; an omitted `color` selects **white in Algan but
+`[0.5, 0.5, 0.54]` in Three.js**. Supply both explicitly in comparison fixtures.
+Most other listed material defaults agree, including roughness `0.85` and the
+mapping of nonpositive attenuation distance to no absorption. Unrecognized or
+irrelevant fields can be ignored rather than rejected, so a successfully parsed
+scene is not proof that every requested feature reached both engines.
+
+### Geometry and camera limits
+
+`sphere.segments` controls Three.js tessellation only. Algan constructs a `Sphere`
+and uses its own surface dicing, so the triangles need not match. The Algan bridge
+sets camera position, target and FOV but does **not** apply the JSON camera's
+`up`, `near` or `far`; Three.js applies all three. Avoid roll/clipping-dependent
+comparisons until those fields are mapped and tested. These are harness gaps,
+not renderer limitations; see [TODO.md](../../TODO.md).
 
 ## Material types
 
@@ -118,13 +134,12 @@ Notes the back ends must respect:
   multiplies the base colour into it. Informational.
 * `basic`, `normal`, `matcap` and `depth` take no lighting fields (no
   `roughness`/`metalness`/`emissive`/...).
-* **Algan caveat worth knowing when reading that panel:** `MeshToonMaterial`,
-  `MeshNormalMaterial`, `MeshMatcapMaterial` and `MeshDepthMaterial` have no
-  in-kernel shader port in Algan and are baked into vertex colours before the
-  frame renders, so those four see only a plain point light's contribution,
-  receive no shadows, and warn at `set_material` time when the rig asks for
-  more (the warning is a finding, not noise). three.js shades all of these per
-  fragment.
+* **Algan material dispatch.** All nine built-in material types now have
+  in-kernel implementations in `shading_taichi.py`, selected by the default
+  fragment-material path. The former warning that these four types are
+  vertex-only is obsolete. Toon can receive lighting and shadows; normal,
+  matcap and depth intentionally visualize attributes rather than a lit BSDF.
+  Explicitly selecting vertex baking is a different rendering mode.
 
 ## Light types
 
@@ -158,7 +173,7 @@ Existing: `directional` (via `direction`), `point`, `ambient`. Additions:
 * **`hemisphere`**: `color` (sky), `ground_color`, `intensity`. No shadows on
   either side.
 
-Coordinates: every new light `position`, `target` and `direction` crosses the
-frame boundary through each back end's flip helper (`_vec` in `algan_render.py`;
-three.js needs none). A `target` is a point and flips too. A hemisphere light's
-`up` stays `(0, 1, 0)` — Y is up in both frames; only Z negates.
+Coordinates: `_vec` in `algan_render.py` copies `(x, y, z)` without a sign
+change. Both bridges use +Y up and +Z toward the viewer; positions, targets,
+directions and Y rotations are not Z-flipped. The old conversion note described
+a coordinate convention that was removed.

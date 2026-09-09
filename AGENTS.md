@@ -12,7 +12,7 @@ lives in `agent_guidance/`, split by topic so you read only what your task touch
 | `rendering/`, any `*_taichi.py`, shading, shadows, colour, post-processing | `agent_guidance/rendering.md` |
 | `ManualMemory`, batch sizing, optimization work, A/B parity fixtures | `agent_guidance/memory_perf.md` |
 | public names, `SETTINGS`, output paths, `ALGAN_` variables | `agent_guidance/api_settings.md` |
-| Manim compatability | `agent_guidance/manim_compat.md` |
+| Manim compatibility | `agent_guidance/manim_compat.md` |
 | measuring on a GPU (Mac runner, Kaggle T4) | `agent_guidance/gpu_harnesses.md` |
 | `*_taichi.py` | `agent_guidance/taichi.md` |
 
@@ -20,7 +20,7 @@ When the docs disagree, the source code wins.
 
 ## Project Overview
 
-Algan is a 3D animation engine for explanatory math videos, designed as a successor to Manim: it keeps Manim's ease of use while providing the 3D graphics capabilities of Three.js. It uses PyTorch for animation math and custom Taichi kernels for GPU ray-traced rendering.
+Algan is a 3D animation engine for explanatory math videos, designed as a successor to Manim: it keeps Manim's ease of use while providing the 3D graphics capabilities of Three.js. It uses PyTorch for animation math and Taichi-language kernels for ray-traced and path-traced rendering on CPU or GPU.
 
 Algan is **lazy**: running a user script does not compute animations, it *records*
 them on the Scene's timeline. `Scene.save_video()` materializes that recording in
@@ -37,42 +37,34 @@ the process-global stack of active Scenes.
 Run the venv interpreter directly — `.venv/Scripts/python.exe` on Windows,
 `.venv/bin/python` elsewhere.
 
-**Do not use bare `uv run`** on a machine with a locally-built compiler wheel.
-`uv run` syncs the lockfile first, and the patched Quadrants wheel's version
-(`1.3.1.dev0+g<sha>.d<date>`, built from `quadrants_patches/`) does not satisfy
-the lock — so the sync silently **uninstalls it and reinstalls stock
-`quadrants==1.3.0`**. The symptom is not a missing package: it is
-`qd.init` dying with `CUDA_ERROR_NOT_SUPPORTED ... cuModuleLoadDataEx` on
-pre-Volta (patch 0003 gone), or a render that is merely slower and reads as a
-regression in your change. The Mac harnesses hit this and now export
-`UV_NO_SYNC=1` for the whole job (`taichi_patches/MIGRATION.md` §10.3); that
-env var is the escape hatch if you need `uv run` for its script resolution.
+**Do not use bare `uv run`** with a locally built compiler wheel. A sync can
+replace that build with the version in `uv.lock`. Use the environment's Python
+or `uv run --no-sync`; the GPU harnesses also set `UV_NO_SYNC=1`.
 
-Putting the wheel back:
-```
-uv pip install --python .venv\Scripts\python.exe --reinstall-package quadrants wheels\<the wheel>.whl
-```
-`--reinstall-package quadrants`, not bare `--reinstall` — the latter also
-churns every transitive dependency. Locally-built wheels live in `wheels/`.
-A one-line check that the installed one is patched: `CompileConfig` must have
-`invariant_arg_loads` and `readonly_ndarray_ldg`, and the banner must say
-`1.3.1`, not `1.3.0`.
+The locked distribution is **`algan-quadrants==1.3.0.post2`**; the import name
+remains `quadrants`. That published distribution already contains Algan's
+patches. Diagnostic builds can instead have the distribution name `quadrants`.
+Do not install both distributions over the same import package. Follow
+`quadrants_patches/PYPI.md` for published versions and
+`quadrants_patches/README.md` for local build/install commands. Verify the
+installed distribution and compiler flags; a version banner alone does not
+identify the patch set.
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 191 curated tests
-.venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
+.venv/Scripts/python.exe -m pytest -q --fast    # curated, opt-in development suite
+.venv/Scripts/python.exe -m pytest -q           # all configured suites; requires matching render baselines
 ```
 - **`--fast` is the suite to run after every change.** It is **opt-in**: only tests marked `fast` run, everything else is deselected. It prints where it landed against a 75s budget (`fast suite: 21s of its 75s budget (28%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
 - What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
-- **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never un-mark a test off run 1 or 2.
-- Run the **full** suite after touching the renderer, and before pushing. It is also what CI runs: CI names `tests/unit_tests tests/fast` as paths and does *not* pass `--fast`, so everything portable runs there.
-- Renders are compared **pixel-wise** against `expected_outputs_cuda/` (or `expected_outputs_cpu/`) in each render suite's own directory. Any channel deviation > 2 fails; diff videos land in that suite's `output_errors/`.
+- **Separate cold compilation from warm test time.** The first test to use a kernel variant pays its compile or cache-load cost. Repeat representative runs before changing fast-suite membership; test counts and timings vary with the checkout, backend and cache state.
+- Run the **full** suite after touching the renderer, and before pushing. CI runs the portable subset, `tests/unit_tests tests/fast`, without `--fast`; it does not run the heavy full-render and path-traced baseline suites.
+- Renders are compared **pixel-wise** against device/mode-specific baselines: the fast baseline is committed, while heavy suites resolve their release-hosted assets. See `tests/README.md` for baseline selection. Any channel deviation > 2 fails; diff videos land in the suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
 - When a legitimate rendering change alters output, re-baseline with `ALGAN_UPDATE_FAST_BASELINE=1` / `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and **look at the result** before committing (this is normal practice here).
-- `tests/full_renders` and `tests/path_traced` baselines are **hosted as release assets rather than committed to git** (they are most of the repository's history and CI never compares them; `tests/fast` stays in git). A rebaseline of either is not finished until `scripts/package_baselines.py --tag ...` has been run and its tarballs uploaded — `tests/README.md`, "Where the heavy baselines live". A suite that cannot resolve baselines **skips**, so check for skips before believing a green run.
+- `tests/full_renders` and `tests/path_traced` baselines are **hosted as release assets rather than committed to git** (they are most of the repository's history and CI never compares them; `tests/fast` stays in git). A rebaseline of either is not finished until `scripts/package_baselines.py --tag ...` has been run and its tarballs uploaded — `tests/README.md`, "Where the heavy baselines live". An unresolvable baseline **fails** the comparison. The explicit macOS unbaselined opt-out and CI exclusions can still skip comparisons; inspect skips before claiming pixel coverage.
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 - A change to tessellation, projection or a level criterion is **invisible to `--fast`** (`tests/fast/scene.py` has no PN geometry) — it needs `pytest -q tests/full_renders`.
 
@@ -83,7 +75,7 @@ A one-line check that the installed one is patched: `CompileConfig` must have
 
 ### Linting — read before running ruff
 - **`*_taichi.py` files are linted but never formatted.** They must keep the `_taichi` suffix: the config keys three things off it. `I002` is off there because the `from __future__ import annotations` it would insert turns a kernel's runtime-evaluated annotations (`ti.f32`, `ti.types.ndarray()`) into strings and breaks compilation. `SIM` is off because its advice is unsound in a kernel — `SIM109`'s `x in (a, b)` is a `TaichiSyntaxError`, and `SIM102` collapsing `if ti.static(gate): if cond:` into one `and` turns a compile-time gate into a runtime one. And `[tool.ruff.format]` excludes them outright, so `ruff format` never rewraps a kernel body.
-- Ruff's `F401` fix is the one to watch in kernel modules: they re-export names to each other (`wavefront_kernels_taichi` gets `MAX_SHADOW_LIGHTS` via `raytrace_kernels_taichi`), and dropping an "unused" import breaks the import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
+- Ruff's `F401` fix is the one to watch in kernel modules: they re-export names to each other (`wavefront_kernels_taichi` gets `max_shadow_lights` via `raytrace_kernels_taichi`), and dropping an "unused" import breaks the import at load time. Mark a deliberate hop `# noqa: F401` with a comment saying who consumes it.
 
 ### Authoring Algan
 
@@ -98,15 +90,13 @@ with Sync():  # play simultaneously
     square.color = BLUE
 
 Scene.save_video("example")  # -> algan_outputs/example.mp4
-Scene.save_video("example", HD)  # one-off quality override
-Scene.view()  # or: open it in the interactive viewer instead
 ```
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background, post_processes)`. Both return `RenderResult`; `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
-- **`save_video` and `save_frame` leave the Scene exactly as authored and you can render again.
+- By default, rendering preserves authored state so you can render again. `save_video(reset=True)` explicitly resets the Scene; requested fade-out and the zero-duration video guard can record timeline events. See `agent_guidance/api_settings.md` for the preservation contract. A one-off quality override is `Scene.save_video("example", HD)`; `Scene.view()` opens the interactive viewer instead of writing a video.
 - **Viewer**: `Scene.view(video_settings=None, *, port, open_browser, block)` — reached from the Scene only. There is deliberately **no module-level `view`**: the name is far too general to spend on a star-import, and `algan.__all__` is a curated namespace a user dumps into their own. `scene.view(...)` and `Scene.view(...)` are the same method. It serves a local page that plays the Scene, shows its mob hierarchy and attributes at the playhead, and reports the depth-sorted fragment list behind any pixel. Frames render lazily, nothing is written to disk, and the Scene is left as authored. It renders at `PREVIEW`'s resolution but the Scene's own frame rate, so the frame indices it reports are the video's. `block=True` (the default) serves until Ctrl-C — on the warm daemon that occupies it for the duration, since the daemon runs one script at a time.
 - **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
-- **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The ~55 kernel/perf switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
+- **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The kernel/performance switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
 - **Paths**: `SETTINGS.paths.output_root / output_directory / name`. A bare filename goes to the output directory; anything with a directory in it is used as given.
 - **`from algan import *` is curated.** Internal helpers are excluded via `_INTERNAL_EXPORT_MODULES` / `_INTERNAL_EXPORT_NAMES` in `algan/__init__.py`. When adding a public name, check it lands in `algan.__all__`; when adding a helper, check it does not.

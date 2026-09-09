@@ -1,31 +1,16 @@
 # Algan — Mesh Identity in the Triangle Renderer
 
-**Status: PARTLY LANDED. This file is the RECORD — what was built, measured and
-settled, and why every number is what it is.**
-**One limitation ships knowingly: §0.5 — but read §6.8 first, which removes its
-full-mask half and now ships on by default.**
+**Historical implementation and measurement record.** Declared mesh identity
+landed, but the bounded run-correction resolve studied here was replaced by
+[DESIGN_sheet_resolve.md](DESIGN_sheet_resolve.md). Nested-IOR refraction and
+identity-aware self-shadow rejection are also implemented; they are not open
+simply because an older section proposes them.
 
-**If you are here to do work rather than to look something up, start with
-`DESIGN_mesh_identity_open.md`** — the queue of what is left, self-contained,
-with each item's how-to and what would settle it. It cites this file by section
-for the measurements rather than repeating them.
-
-Plan of record for replacing the renderer's epsilon-based seam heuristics with
-declared mesh identity. Written to be self-contained: a fresh session with only
-this file and the repo should be able to continue without reconstructing any of
-the reasoning.
-
-Reading order. §0 is the state of the branch and what to do next, and **§0.1 is
-how to run everything and what this machine may and may not measure** — read it
-first if you are resuming from this file alone. **§0.5 is a
-known limitation that ships in the default renderer** — diagnosed, costed and
-deliberately unfixed, so read it before treating a diced mesh's interior pixel as
-a bug. §1–§2 are the problem and what shipped. §3 is the unstarted work with the anchors to do it. §4
-is what needs a CUDA device and the experiment for each claim. §5 is what the
-system enables. §6 is **what has actually been measured about the AA gap** — the
-result that closed it is §6.6, and everything before it is a door that closed;
-read the whole of §6 before building anything in this area, it will save you a
-day. §7 is methodology that cost real debugging time.
+Read this document for the seam, winding and AA experiments and the reasons
+behind the later design. Its branch status, baseline debt, old settings and
+probe commands belong to those snapshots. Use [AGENTS.md](../../../AGENTS.md)
+for current setup and [TODO.md](../../../TODO.md) for remaining work, rather
+than treating §0/§3 or the former `_open` queue as current instructions.
 
 Everything measured here was measured on the **CPU** render device on a machine
 with no GPU, unless it says otherwise. That is why §4 exists.

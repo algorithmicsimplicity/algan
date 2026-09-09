@@ -7,8 +7,8 @@ for the design, the survey it rests on, and the items still untaken. §6.1 holds
 and the "done" markers through §7.3 say which steps are closed and what closed them.
 
 Written from a read-only survey of Taichi v1.7.4, the Quadrants fork at `b9e953111` (2026-09-02),
-and this repository. It is self-contained: a fresh session can execute it from §0 without any other
-context. Every claim carries the file, commit or measurement it rests on; "verified" means read in
+and this repository. Its commands and branch assumptions describe that survey. For current setup,
+use `../AGENTS.md` and `../quadrants_patches/README.md`, not the old bootstrap. Every claim carries the file, commit or measurement it rests on; "verified" means read in
 source, "measured" means run on the stated machine, "projected" means an estimate. Nine of those
 claims were falsified by running them — each is corrected in place, and `MIGRATION.md` §4 lists them
 together.

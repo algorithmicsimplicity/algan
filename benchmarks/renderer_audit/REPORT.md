@@ -1,5 +1,12 @@
 # Algan vs Three.js — a rendering audit
 
+> **Historical measurement report.** Each round below describes its recorded
+> source, renderer and settings; rankings are not a current work queue. Several
+> findings have since been implemented or superseded, including the path tracer
+> and default glossy prefilter. Use [TODO.md](../../TODO.md) for remaining work.
+> [SPEC.md](SPEC.md) records the present translators' differences, which must be
+> controlled before attributing a new pixel difference to the renderers alone.
+
 Two renderers, one scene description, the same frame. Where they disagree, this
 asks which one is closer to the physics, and fixes the cases where Algan is not
 and the fix is contained.

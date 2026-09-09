@@ -1,10 +1,10 @@
 """Per-pixel fragment capture: the renderer's side of the GUI viewer's inspector.
 
-The deterministic route already builds, on the host and before any kernel runs, a
-per-pixel depth-sorted record of every surface covering that pixel: the sheet stream
-that ``sheets.compact_sheets`` produces and ``prepare_sparse_raster_coverage``
-returns. That record answers "what is behind this pixel, and in what order" exactly,
-and it is discarded at the end of the render chunk that made it.
+After raster emission, the deterministic sheet route builds the per-pixel stream
+returned by ``prepare_sparse_raster_coverage``. It records the primary sheets
+used by that route, with its depth-band, coverage and truncation rules. It is not
+a complete geometric intersection oracle or a record of reflected/refracted
+paths. The stream is discarded at the end of the render chunk that made it.
 
 This module lets a caller ask for one copy of it. It is armed around a render,
 the tracer hands it the coverage dict it just built, and it copies the arrays it

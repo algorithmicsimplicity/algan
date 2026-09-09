@@ -22,10 +22,10 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ## Key Features
 
-- **Manim Feature Parity**: Everything you know and love from Manim.
+- **Manim Geometry Compatibility**: A broad compatibility layer under `algan.manim`, with selected shapes also exported at the Algan root. Animation and rendering use Algan's own API; see [compatibility boundaries](agent_guidance/manim_compat.md).
 - **GPU Ray Tracing**: High-fidelity optical effects including depth of field, area lights, glossy reflections, refractive glass, and soft shadows.
 - **Declarative Timeline Contexts**: Intuitive animation staging with `Seq()`, `Sync()`, `Lag()`, `Off()`, and `Speech()` blocks makes animation code modular and re-usable.
-- **Unified 2D/3D Geometry**: Seamless morphing and interpolation between 2D Bézier circuits and 3D meshes with `become()`.
+- **2D/3D Geometry and Transitions**: Bézier circuits, meshes, parametric surfaces, and `become()` transitions between supported Mob types.
 - **Audio & Speech Alignment**: Automatic word-level forced alignment to synchronize on-screen animations with narration.
 
 ---
@@ -36,17 +36,19 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 pip install algan
 ```
 
-Every dependency ships wheels, so there is nothing to build and no system
-package to install first. The installed footprint is large (~5 GB on Linux,
-mostly the CUDA build of `torch` and its NVIDIA dependencies).
+The core install is designed to use wheels on the supported platforms and
+Python versions (3.10–3.13). PyTorch and, on some platforms, its GPU libraries
+account for much of the installation size. Optional text, LaTeX and speech
+features have additional requirements; run `algan check` to inspect your setup.
 
 ### Optional: Pango text on Linux
 
 `Text` typesets with your system fonts through Pango, which is installed with
 Algan on Windows and macOS. `manimpango` publishes no Linux wheel, so on Linux
 it is an extra instead — without it `Text` falls back to LaTeX's text mode, and
-Manim's `MarkupText` and `Paragraph` are absent. Installing it builds Pango
-from source and wants its headers first:
+the Manim compatibility layer's Pango-backed text classes are unavailable.
+Installing the extra builds the **ManimPango Python binding**, not Pango itself,
+and requires Pango's system libraries and development headers:
 
 ```bash
 sudo apt-get install -y build-essential python3-dev libpango1.0-dev pkg-config
@@ -136,11 +138,10 @@ overrides it.
 
 ### The warm render daemon
 
-The first render of a session pays several seconds of library import plus
-Taichi kernel preparation. Algan pays that once: the first `python scene.py`
-starts a background daemon, and every later run hands its script to that warm
-process and starts rendering in about a second. Nothing is launched
-differently — it happens inside `import algan`.
+For eligible script runs, `import algan` starts or connects to a render daemon
+and hands the script to that warm process. This reuses library imports and
+compiled kernel variants across runs. New kernel variants and source changes
+can still require compilation; warm startup is not a fixed-time guarantee.
 
 ```bash
 algan daemon                # run one in this terminal (Enter re-renders, q quits)
@@ -162,9 +163,11 @@ follow from that:
 - `atexit` handlers do not run, because the warm process never shuts down;
 - `stdin` is `/dev/null`, since the daemon's own stdin is its re-render trigger.
 
-Everything else is reproduced: `sys.argv`, the working directory, the full
-environment, stdout/stderr (including from ffmpeg and other subprocesses),
-their tty-ness, and the exit code. `ALGAN_USE_DAEMON=0` runs in-process,
+The handoff forwards `sys.argv`, the working directory, the request environment,
+stdout/stderr (including subprocess output), terminal status and the exit code.
+Initialization-only settings cannot be changed in an already initialized
+process; incompatible requests are rejected with guidance to restart or bypass
+the daemon. See [the environment contract](agent_guidance/api_settings.md). `ALGAN_USE_DAEMON=0` runs in-process,
 `ALGAN_AUTO_DAEMON=0` only stops new ones being started, and a script being
 debugged is never handed off.
 
@@ -178,6 +181,13 @@ debugged is never handed off.
 - **Issue Tracker**: [GitHub Issues](https://github.com/algorithmicsimplicity/algan/issues)
 
 ---
+
+## Development status
+
+See [TODO.md](TODO.md) for prioritized remaining work and
+[AGENTS.md](AGENTS.md) for the source layout and validation commands. Design
+documents and benchmark reports distinguish current contracts from historical
+proposals and measurements.
 
 ## License
 

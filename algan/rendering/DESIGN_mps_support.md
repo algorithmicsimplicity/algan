@@ -1,20 +1,21 @@
 # Algan on Apple GPUs (MPS / Metal): measured verdict
 
-Current status: **the port works and the gate is green, with two documented
-exceptions.** `.github/workflows/test.yaml` carries an ordinary `macos-latest`
+Source status (2026-09-09): **the MPS port is implemented and the test manifest
+contains one strict expected failure**, for `ti.real_func` early return. The
+glossy-prefilter entry was removed because it never reproduced on master (§4.5).
+This is a source check, not a claim about the latest live CI conclusion. `.github/workflows/test.yaml` carries an ordinary `macos-latest`
 `render=mps` arm on every gated PR and push: it pins `ALGAN_RENDER_DEVICE=mps`,
 fails before pytest unless Algan's own startup resolver returns `mps`, and runs
 `tests/unit_tests` plus `tests/fast` against the locked published
-`algan-quadrants` — no private wheel anywhere in the path. Measured on that
-scope: **3564 passed, 217 skipped, 2 xfailed**, down from 32 failures and 3
-errors when the arm was first turned on. The two are named in
-`tests/mps_known_failures.py` and run as strict xfails, so the arm reports them
-on every run and goes red the moment either starts passing.
+`algan-quadrants` — no private wheel anywhere in the path. Historical counts and their branch/commit identities are recorded in §4.
+`tests/mps_known_failures.py` is the current exception list. Its strict xfail
+runs rather than skipping; an unexpected pass fails the gate so the entry
+cannot silently outlive the problem.
 
 **§4 is the scoreboard**: what the arm reports, which failures have been
 diagnosed, and which are still open. Read it before quoting a support claim
-from this document, because it is the only section written against a run rather
-than against an argument.
+from this document, and distinguish a recorded run from the current branch. Earlier sections
+also contain measurements, but their intermediate verdicts are superseded.
 
 `mps_probe.yaml` remains the diagnostic workflow. It is no longer the only
 place Apple-GPU regressions are exercised, which was the point of building the
@@ -1253,11 +1254,10 @@ with.**
 Emptying the MPS cache before sizing the arena (§4.4) gave the render its full
 budget, the tile sizing that follows changed, and eleven of these thirteen
 stopped tripping the loop. Nothing about the loop was fixed: `gl_frame` can
-still walk off the end at whatever window the arithmetic picks, so this is a
-latent `IndexError` rather than a closed one, and it deserves a guard whichever
-way the covered-ordinal question goes. The two entries left in the list are not
-re-measured since that fix; establishing whether they are still this defect is
-the first step.
+still walk off the end at whatever window the arithmetic picks, so that intermediate result alone did not close the suspected boundary
+defect. The later §2.3f measurement above resolved the corrupted stream; the
+old entries are no longer in the current failure manifest. A future boundary
+regression should be reproduced independently, not inferred from this old count.
 
 **The fragment stream, measured on the same runner, is where the corruption
 is.** `_mps_render_smoke` prints the compaction's input; the LD smoke scene

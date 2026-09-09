@@ -4,9 +4,9 @@ One thread per covered pixel composites its few depth-sorted SHEETS front to
 back -- per-sample transmittance as a prefix product, per-sheet magnitude from
 the sheet's own exact area -- and shades ONCE per sheet at its dominant
 fragment. The aggregation already happened on the host (``sheets.py``), so
-none of the fragment walk's machinery exists here: no run scan and no budget,
-no seam de-duplication, no one-mesh cap or ink accounting, no engagement gate.
-What remains is the per-sheet claim/occlusion arithmetic and the material
+the bounded fragment run scan and its lookahead budget are unnecessary here.
+Compaction supplies the coverage, identity and closed-shell information; this
+kernel applies per-sheet claims, occlusion and the material
 four-way split (shade / reflect / transmit / miss) with its continuations,
 inherited from the fragment walk's ``raster_first_shade`` -- deleted in
 Phase 4, so this kernel is the only copy.

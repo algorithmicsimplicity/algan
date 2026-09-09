@@ -1,59 +1,58 @@
-# Physical `RectAreaLight` geometry — future work
+# Area lights as visible emitter geometry
 
-## Decision
+**Status: implemented for path tracing.** Verified against `master` at
+`f10cc230a108863d02980fc27079254473ae7de3` (2026-09-09). This records the current
+integration, not a proposal to add another BVH or a camera-visibility switch.
 
-In the path tracer, `RectAreaLight` should represent a real rectangular emissive surface.
+## Visibility and authoring contract
 
-There is no camera-visibility toggle and no camera-invisible BVH flag. If a camera ray hits the emitting side of the rectangle, the light is visible. The same geometry is visible to reflection/refraction/BSDF continuation rays and is sampled by next-event estimation (NEE).
+A path-traced `RectAreaLight` is a rectangular physical surface: camera,
+reflection and transmission rays can hit it. Its front emits; its back is
+black. Both sides are opaque and can occlude other geometry. One-sided emission
+does **not** mean that the back face is transparent.
 
-This deliberately prefers physically coherent path-traced behavior over compatibility with the older analytic-light convention where light objects themselves are invisible.
+There is no public camera-invisibility toggle. The experimental
+`pt_area_light_quads=False` setting retains the analytic-row arm for comparisons;
+it is not a separate visibility property on the light.
 
-## Required behavior
+## One merge and one acceleration-structure build
 
-A path-traced `RectAreaLight` is two one-sided emissive triangles with these semantics:
+`scene_builder._merge_scene` calls `area_light_quads.build_area_light_quads`
+using the batch's immutable light snapshot, before the ordinary BVH build and
+arena upload. The helper appends two triangles per supported rectangular light,
+extends the material/geometry arrays and BVH inputs, and records the synthetic
+emitter rows in `pt_quad_rows` and related metadata.
 
-- **Camera-visible.** Direct camera hits return the emitter radiance.
-- **Indirectly visible.** Reflection, refraction and ordinary BSDF continuation rays can hit the same geometry.
-- **Opaque geometry.** Rays do not peel through the rectangle merely because it is a light.
-- **Geometric occluder.** The rectangle can block visibility to other emitters like any other opaque surface. A shadow/visibility ray aimed at this emitter must terminate at the sampled emitter endpoint rather than treating the emitter as an intervening blocker.
-- **One transport model.** Direct NEE and BSDF-hit emission use the same emitter radiance and MIS probability model.
+The helper handles the supported batch layouts conservatively. A light that
+cannot be represented by this geometry path keeps its analytic rows. Do not
+reintroduce the old prototype's per-window scene widening, secondary BVH build
+or unaccounted persistent copies in `path_tracer.py`.
 
-The path tracer should not add a public setting such as `visible=False`; physical visibility is the definition of `RectAreaLight` on this render path.
+## Sampling and radiometry
 
-## Why change the current prototype
+Physical next-event estimation samples the emitter surface. The corresponding
+analytic cell rows are removed from that estimator to avoid counting the light
+twice. Authored fragment pipelines retain their direct-light rows, since their
+appearance model is not simply the physical BSDF estimator.
 
-The current area-light-quad prototype appends two emissive triangles to a private copy of an already merged scene. Because the triangle BVH has already been built, the widened primitive set requires reconstructing triangle bounds and rebuilding the BVH. The synthetic quads are also marked non-opaque so camera rays can peel through them, which disables opaque/closest-hit optimizations for the batch.
+An authored diffuse continuation uses `prev_pdf=-2` to suppress its immediate
+synthetic-emitter contribution without making the panel transparent. Camera,
+delta and positive-density MIS states remain distinct. Straight pass-throughs
+preserve the marker; a new scatter replaces it.
 
-Those costs exist only to preserve camera invisibility. With the physical-emitter decision, they are unnecessary.
+`pt_quad_falloff` preserves the existing `decay`/`distance` law for both emitter
+hits and next-event samples. **`decay=2, distance=0` gives distance-independent
+emitter radiance.** The API default remains `decay=0`, a legacy no-falloff
+lighting convention, so geometry integration alone does not make every authored
+area light radiometrically physical. A consistent public radiance contract is
+remaining work, tracked in the repository's `TODO.md`.
 
-## Implementation direction
+## Regression requirements
 
-Integrate area-light geometry **before the path tracer's normal triangle acceleration build**, rather than widening an already merged scene.
-
-1. During path-traced scene preparation (`samples_per_pixel > 1`), convert every `RectAreaLight` to two triangles before triangle BVH construction.
-2. Append those triangles through the same merged triangle tables as ordinary geometry: position, normal, material/emission, object identity, frame-validity and texture metadata.
-3. Mark the triangles one-sided and opaque. Do not add a camera-invisible flag and do not force `all_visible_opaque = False` merely because area lights exist.
-4. Build the triangle BVH once over the complete primitive set, including area-light triangles. Remove the path-tracer-only post-merge BVH rebuild.
-5. Keep the emitter metadata required by NEE/light-tree sampling, but make it refer to the same triangle primitives used by BSDF hits. Remove the packed analytic area-light rows from the path tracer's direct-light table so the light is not counted twice.
-6. Preserve the existing `RectAreaLight` intensity/color/size/orientation and distance-falloff semantics when deriving emitted radiance. Direct-hit emission and NEE must evaluate the same radiometric model.
-7. Treat the rectangle as ordinary opaque geometry for visibility rays. NEE visibility should use a segment whose endpoint is the sampled light point (with the existing robust ray-offset/tmax rules), so the target emitter does not self-occlude while still allowing the panel to occlude unrelated paths.
-8. Delete the camera-segment special case, fake non-opacity, private scene widening and secondary triangle-BVH rebuild once the integrated path is complete.
-
-This integration may remain path-tracer-specific at merge time so the deterministic renderer can keep its existing analytic `RectAreaLight` implementation until/unless its semantics are deliberately changed separately.
-
-## Acceptance tests
-
-The implementation is complete when all of the following hold:
-
-- A `RectAreaLight` directly in front of the camera appears as an emissive rectangle.
-- The same light appears consistently in a mirror and through refractive transport where physically visible.
-- An opaque object behind the light is hidden by a direct camera ray through the panel.
-- The panel can occlude illumination from another emitter.
-- NEE aimed at the panel is not rejected as self-occlusion.
-- Direct-hit and NEE estimates agree with the same emitter radiance/MIS model.
-- Adding a `RectAreaLight` does not force the batch onto the non-opaque traversal path solely because it is a light.
-- Scene preparation performs one triangle-BVH build for the path-traced merged scene; no post-merge area-light BVH rebuild remains.
-
-## Non-goals
-
-This work does not add a visibility toggle, a camera-invisible leaf bit, a separate `AreaEmitter` public API, or a requirement to change the deterministic renderer's current light-object visibility semantics.
+Keep coverage for camera-visible fronts and opaque backs, reflected/refracted
+hits, finite visibility windows, emitter sampling/MIS, self-intersection at the
+sampled endpoint, and agreement between emitter-hit and sampled-light falloff.
+The area-light tests in `tests/unit_tests/test_path_tracer.py` exercise this
+integration. A geometry
+change must preserve the normal merge's frame layout, material widths, BVH
+leaf bounds and arena accounting.

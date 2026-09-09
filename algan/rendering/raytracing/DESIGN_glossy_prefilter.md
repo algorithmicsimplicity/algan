@@ -1,6 +1,7 @@
 # Split-sum glossy reflection (prefiltered reflection buffer)
 
-Status: design of record for the change implementing
+Status: implemented in `glossy_prefilter_taichi.py` and the deterministic
+renderer's frame-finalization path. This document records the design implementing
 `benchmarks/renderer_audit/REPORT.md` §4.5.1. Read §4.5 and §4.5.1 first — they
 are the measurement this is answering, and they name the two halves:
 
@@ -9,9 +10,13 @@ are the measurement this is answering, and they name the two halves:
 * a **prefiltered radiance** makes the reflected *shape* right, built by a
   screen-space reflection filter rather than by more taps.
 
-Nothing here changes the default render. The whole route is behind
-`GLOSSY_REFLECTION`, which is off by default; with it off every kernel gate
-below compiles out and no buffer is allocated.
+Both `glossy_reflection` and `glossy_prefilter` default to `True` in the current
+settings source. Set these public controls with `SETTINGS.raytracing.set(...)`;
+low-level tuning such as the maximum pyramid level is experimental.
+The old opt-in rollout described below is historical: eligible deterministic
+reflections now use this route by default. Turning the glossy route off avoids
+its additional buffers and gated kernels. This is a screen-space reflection
+pyramid, not texture mipmapping and not the path tracer's rough-glass model.
 
 ## 1. What was wrong, in one paragraph
 

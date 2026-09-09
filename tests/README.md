@@ -1,9 +1,10 @@
 # Algan test suites
 
-Four directories, three suites. Always run them with the project venv — the
-system Python has no taichi. Commands below are written as `<venv-python>`;
-`CLAUDE.md` defines the per-platform interpreter path, and `uv run python`
-works on either.
+Use the project environment's interpreter. Commands below use `<venv-python>`
+as a placeholder for `.venv/bin/python` on Linux/macOS or
+`.venv/Scripts/python.exe` on Windows; substitute the path before running them.
+See [../AGENTS.md](../AGENTS.md). Avoid bare `uv run` when using a locally built
+compiler wheel, because synchronization can replace it.
 
 ## The fast suite — run this one
 
@@ -29,7 +30,8 @@ pay a kernel compile, which is where most of the time goes when it does.
 
 Before curation this suite was *everything not marked `slow`*: 910 of the
 suite's 1038 collected tests, 112–147 s on CUDA, and every new test anywhere
-joined it automatically. It is now **191**, listed below.
+joined it automatically. The current selection is defined by the `fast` markers; the table below explains
+the coverage, not a frozen test count.
 
 **Wait for the third consecutive run before believing the number.** Taichi's
 cost is per kernel variant, charged to whichever test reaches it first, so any
@@ -148,8 +150,8 @@ you changed lives here.
 | --- | --- | --- |
 | `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~90 s |
 | `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | ~50 s |
-| `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against checked-in baselines. | ~12 minutes on CUDA |
-| `tests/path_traced/` | What the `samples_per_pixel > 1` path tracer draws across three small scenes, compared pixel-wise against checked-in baselines. | ~15 s warm |
+| `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against release-hosted baselines. | ~12 minutes on CUDA |
+| `tests/path_traced/` | What the `samples_per_pixel > 1` path tracer draws across four small scenes, compared pixel-wise against release-hosted baselines. | ~15 s warm |
 
 ## Adding a test: does it belong in the fast suite?
 
@@ -254,8 +256,8 @@ path identity, so at a pinned memory budget the same tolerance applies as
 everywhere else. Like the full-render suite the baselines are per machine,
 and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
 
-The committed `expected_outputs_cpu/` set was rendered on a cloud CPU
-container. The `expected_outputs_cuda/` set was rendered on a Kaggle Tesla T4
+The original `expected_outputs_cpu/` set was rendered on a cloud CPU
+container. The original `expected_outputs_cuda/` set was rendered on a Kaggle Tesla T4
 (`benchmarks/performance/reports/t4_2026_09/pt-cudabase-1.txt`: recorded,
 re-rendered byte-identically in the same session, and byte-identically again
 in a second session). Two of the four scenes — `environment_and_refraction`
@@ -265,10 +267,10 @@ where the two backends round the sampler differently. Re-recording either
 set is the same procedure on that device: run
 `ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
 tests/path_traced -q` twice, check the second run's outputs against the first
-(they must be byte-identical), look at the videos, and commit the directory.
-A device without a committed set renders the scenes and then fails the
-comparisons, rather than skipping them (`ALGAN_ALLOW_UNBASELINED_MACOS=1`
-excuses the macOS keys).
+(at fixed settings and memory budget), look at the videos, then package and
+upload the heavy baselines and commit the manifest as described below. A device
+without a resolvable baseline fails its comparisons; the explicit macOS opt-out
+covers unbaselined macOS keys only, not corrupt or unavailable downloads.
 
 ## The fast suite's render
 
@@ -278,34 +280,31 @@ what they are. Its docstring is worth reading before editing it: it is shaped
 by the kernel-variant cost, which is why it is one scene rather than several
 and why it contains no `Surface` geometry.
 
-## Pending: the full-render and path-traced baselines want regenerating
+## Baseline status and renderer changes
 
-The grid triangulation was re-wound so a surface triangle's cross product points
-outward, the same rule a polyhedron's faces follow
-(`agent_guidance/mobs_geometry.md`, "One rule for winding"). That moves scattered
-antialiased and texture-sampled pixels — the frames are visually identical, but
-the comparison is exact — so **`tests/full_renders` and `tests/path_traced` fail
-against their committed baselines on every device until those are regenerated**,
-CUDA and CPU alike. `tests/unit_tests` and `tests/fast` — everything CI runs —
-are unaffected and green.
+`tests/baselines.json` is the current inventory of published heavy-baseline keys,
+asset names and digests. At the 2026-09-09 documentation check it points to
+`baselines-2026-09-09.2`; that tag is provenance, not a recommendation to overwrite
+an existing baseline release.
 
-Regenerate with `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and
-`ALGAN_UPDATE_PATH_TRACED_BASELINES=1` (see the invocations in each suite's test
-module), on a machine of each device, and look at the result before committing.
+Older notes declared all devices out of date after winding and sampler changes.
+Those blanket claims are no longer a useful status check: the manifest and local
+baseline directories have changed since then. Run the comparison on the intended
+backend and toolchain, inspect the result, and distinguish a genuine rendering
+change from a missing asset or environment mismatch before regenerating anything.
 
-**`tests/path_traced`'s CPU set was regenerated on 2026-09-04** (on the same
-cloud CPU container class it was first rendered on, where the old set still
-passed 4/4 before the change), for the path tracer's new fixed-seed default
-(`pt_animated_seed = False`, `raytracing/DESIGN_path_tracer_roadmap.md` §0.3):
-frame 0 of every scene is byte-identical to before and later frames re-roll
-nothing, which is why the three videos came out at less than half their old
-size. `tests/full_renders` and the CUDA path-traced set are still pending.
+Use `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` or
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1` only for a deliberate rebaseline. Review the
+videos, package and upload the new archives, then commit the updated manifest.
+A hash-valid archive proves its bytes match the pointer; it does not prove the
+images are the right baseline for an unrelated machine or compiler build.
 
 ## Baselines are per device
 
-Each render suite keeps one baseline directory per device —
-`expected_outputs_cuda/` and `expected_outputs_cpu/` — and the harness picks
-between them with `torch.cuda.is_available()`. A machine with no baselines for its
+Each render suite selects a device/toolchain key from the actual render device
+and the suite's execution mode, not merely from `torch.cuda.is_available()`.
+Examples include `cpu`, `cuda`, `cpu_eager`, `macos_cpu` and `macos_mps`.
+The corresponding local directory is `expected_outputs_<key>/`. A machine with no baselines for its
 device renders the scene and then **fails**, naming why nothing could be
 resolved. A suite that cannot compare must never report itself green on a new
 device, which is what it used to do. macOS has an opt-out
@@ -333,8 +332,9 @@ A Mac therefore covers kernel compilation, tessellation, LaTeX, the fonts and
 the encoder, but not the pixels. To gate pixels there, render with
 `ALGAN_UPDATE_FAST_BASELINE=1` on the Mac, look at the result, and commit it.
 
-Both sets are checked in. They are *not* interchangeable, and the differences
-between them are larger than the tolerance by design:
+The fast suite keeps its CPU/CUDA baselines in Git; heavy suites use the
+release manifest. Backend sets are *not* interchangeable. Earlier measurements
+found differences larger than the tolerance:
 
 - **PN surfaces** (`Sphere`, `Cylinder`, `Cone`, `Torus`, `Surface`) differ
   across their interiors, because the subdivision-level criterion kernel runs
@@ -345,9 +345,10 @@ between them are larger than the tolerance by design:
 Text used to differ far more than either — up to ~230 — and that one was never
 a device difference at all. `Text` defaults to `font=""`, which Pango resolves
 through fontconfig, so the glyph advances changed with whatever the machine had
-installed. `Tex`/`MathTex` never had the problem: they go through LaTeX and
-`dvisvgm` to outlines and match across devices at zero shift, which is what
-identified fonts as the cause.
+installed. In that comparison, `Tex`/`MathTex` matched across devices at zero
+shift, which helped identify font selection as the cause. They use LaTeX and
+`dvisvgm` outlines, but still require a compatible toolchain: a replacement
+converter can change outlines or lose the SVG grouping used for glyph indexing.
 
 ## Baselines are per machine too, which decides what CI runs
 
@@ -451,10 +452,10 @@ three or more branches — reflective or refractive geometry under analytic AA,
 where each covered pixel takes several sub-pixel reflection taps — sums those
 branches into `pix_accum` with `ti.atomic_add` in GPU scheduling order, and
 float addition is not associative, so such a scene renders slightly differently
-every run. The effect is bounded at one channel value by the `u8` truncation in
-the compositor (measured: `|d| = 1` on tens of samples out of 165M, absorbed
-entirely by the video encoder), which is why the render suites are not flaky
-from it. It does mean a scene like that cannot be a *byte-identical* A/B parity
+every run. The recorded probe measured `|d| = 1` on tens of channel samples out of
+165M. That is an observation, not a universal bound supplied by `u8` conversion;
+rounding and encoding can amplify differences, so measure the current scene
+and backend before choosing a tolerance. It does mean a scene like that cannot be a *byte-identical* A/B parity
 fixture; `../agent_guidance/memory_perf.md` covers how to pick one, and
 `benchmarks/_split_determinism_check.py` measures a scene's own run-to-run
 floor.
@@ -464,15 +465,14 @@ run orphans children that keep the output mp4s locked.
 
 ## Where the heavy baselines live
 
-`tests/full_renders` and `tests/path_traced` carry ~21 MB of mp4s that are
-re-committed whole on every rebaseline, and they are the repository's weight
-problem: most of the blobs in its history. They are also the baselines **CI
-never compares against** — they gate locally, on the machine that rendered
-them — so every clone pays for an artifact almost no clone uses.
+Historically, full-render and path-tracer baseline videos were committed whole
+on every rebaseline, adding large blobs to Git history. They are not part of
+the normal CI pixel comparisons; they gate locally on a matching machine and
+configuration. Moving new baseline sets to release assets keeps subsequent
+source commits small; it does not rewrite the existing history.
 
 They are therefore hosted as **GitHub release assets** rather than carried in
-every clone. `tests/fast` is deliberately not: it is 368 KB and it is the one
-render baseline CI does compare, so keeping it in git means an ordinary clone
+every clone. `tests/fast` is deliberately not: it is the small render baseline CI compares, so keeping it in git means an ordinary clone
 and an ordinary CI run never fetch anything.
 
 `tests/baseline_store.py` resolves a suite's baseline directory in this order,
@@ -531,17 +531,18 @@ not fetch).
 
 ### After a rebaseline
 
-The mp4s in the tree are the source of truth; the release asset is a copy of
-them. So a rebaseline is not finished when it is committed:
+The freshly rendered local MP4s are the inputs to the baseline archive. Heavy
+baselines are not committed to the repository; the manifest is. Finish a
+rebaseline by packaging and uploading those inputs, then committing the pointer:
 
 ```bash
-uv run python scripts/package_baselines.py --tag baselines-YYYY-MM-DD
+<venv-python> scripts/package_baselines.py --tag baselines-YYYY-MM-DD
 gh release create baselines-YYYY-MM-DD dist/baselines/*.tar.gz --title ...
 git add tests/baselines.json  # the new tag and sha256s
 ```
 
 Upload **before** pushing the pointer: a tag with no assets behind it makes
-every fetch warn and every comparison skip. The tarballs are byte-reproducible
+downloads fail and comparisons report missing baselines. The tarballs are byte-reproducible
 (sorted members, normalized mtimes and modes, zeroed gzip header), so the
 pinned sha256 is a fact about the baselines rather than about the machine that
 packaged them, and anyone can re-derive it from an uploaded asset.
@@ -638,8 +639,9 @@ comment in `.github/workflows/test.yaml`). That gap is how this tier took a
 runner down once: before the texture-timeline fix it peaked at **14.7 GB** and
 was OOM-killed part way through.
 
-With that fixed it renders 77 examples in about **two minutes at 2.3 GB**, so the
-gate is now a time budget rather than a memory cliff — two minutes is more than
+A historical warm-cache run rendered 77 examples in about **two minutes at
+2.3 GB**. That measurement made runtime, rather than the old memory cliff, the
+reason to keep the render gate opt-in — two minutes is more than
 the fast suite's whole allowance, and CI would pay it on every run. Worth
 revisiting if the render-time coverage is wanted in CI; measure a cold Taichi
 cache first, since the number above is from a warm one. Run it locally with:
@@ -660,16 +662,17 @@ tests that recorded them now assert the working behaviour: see
 `test_point_cloud_mob_produces_render_primitives`. The point clouds have left
 the coverage audit's `EXEMPT` list and appear in `shapes_and_timeline`.
 
-There are no `xfail`s in the suite today. If you need to record a new defect
+Backend-specific expected failures remain in `tests/mps_known_failures.py`;
+inspect that manifest and the current run, rather than assuming none remain.
+To record a new defect
 rather than fix it, a strict `xfail` is still the way — it keeps the bug visible
 and fails the suite when it starts passing, which is what tells you to turn the
 test around and drop the marker. It is a built-in marker, so `--strict-markers`
 has nothing to say about it; only project-specific markers need the entry in
 `pyproject.toml`.
 
-## Legacy
+## Retired suites
 
-`tests/test_files/` and `tests/run_test.py` are the previous render suite — one
-scene per concept, with its own baselines in `tests/expected_outputs_*`. The
-six scenes above supersede it; it is already outside `testpaths` in
-`pyproject.toml` and can be deleted once you are happy with the new baselines.
+The former `tests/test_files/` and `tests/run_test.py` harness has been removed.
+Use `tests/full_renders/`, `tests/path_traced/` and their baseline manifest rather
+than looking for or recreating the old per-concept scene layout.

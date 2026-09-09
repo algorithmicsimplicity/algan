@@ -1,4 +1,4 @@
-"""Custom & composable per-fragment shaders for the deterministic ray tracer.
+"""Custom and composable per-fragment shaders shared by the renderers.
 
 A **fragment stage** is a Taichi ``@ti.func`` with the uniform stage contract
 (see :mod:`algan.rendering.raytracing.shading_taichi`): it shades one surface hit

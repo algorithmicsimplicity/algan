@@ -16,8 +16,8 @@ Structure per chunk::
                 wavefront_traverse_events     # SHARED with the deterministic
                                               # renderer: same state layout, so
                                               # no PT traversal variant exists
-                pt_shade                      # deterministic alpha peel (+ the
-                                              # scattering stages, as they land)
+                pt_shade                      # alpha peel, surface scattering,
+                                              # and homogeneous-medium transport
                 compact                       # keep status == _ACTIVE
             pt_reduce                         # exclusive per-pixel sums -> accum
             compact the pixel list            # adaptive sampling only

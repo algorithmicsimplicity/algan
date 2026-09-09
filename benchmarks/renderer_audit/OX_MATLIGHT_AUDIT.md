@@ -1,5 +1,11 @@
 # Algan material shaders vs three.js r185 — source-level audit
 
+> **Historical source comparison.** This predates the current in-kernel ports
+> for all nine built-in material types and the accumulated-light vertex path.
+> Its line numbers and formulas refer to the audited snapshot, not today's
+> shader implementation. See [RENDERER_WORK_QUEUE.md](../../RENDERER_WORK_QUEUE.md)
+> for current status and [SPEC.md](SPEC.md) for the comparison harness's limits.
+
 Read-only audit. Every Algan claim cites `algan/...:line`; every three.js claim
 cites the installed r185 source under
 `.../scratchpad/three/node_modules/three/src/` (paths below abbreviated as

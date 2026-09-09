@@ -2,7 +2,7 @@
 
 This document defines how docstrings on Algan's **user-facing API** must be written. It is
 prescriptive, not descriptive: much of the current codebase does not meet it yet (see
-[Current state](#current-state-and-migration-order)). When you touch a public method, bring its
+[Current state](#15-current-state-and-migration-order)). When you touch a public method, bring its
 docstring up to this standard.
 
 Audience for a user-facing docstring: **someone writing an animation script who has never read
@@ -28,7 +28,7 @@ Tier 1 — **full standard applies** (everything in this document):
 - Any function that appears in a tutorial, a docs example, or `README.md`.
 
 Tier 2 — **summary line + Parameters/Returns where non-obvious**: public-named helpers that users
-can reach but are not taught (`get_forward_basis`, `_setattr_without_record`, `refresh_history`).
+can reach but are not taught (`get_forward_basis`, `refresh_history`).
 Prefer fixing the naming: if a method is not meant for users, rename it with a leading `_` rather
 than writing a user-facing docstring for it. If it cannot be renamed (subclass hook, historical
 name), say so in one line: `"""Internal: ..."""`.
@@ -86,8 +86,8 @@ Examples
     Scene.save_video()
 ```
 
-A worked Tier-1 exemplar — this is what `Mob.rotate` should look like (it currently has no
-`Parameters` section at all, and does not state that its angle is in degrees):
+A worked Tier-1 exemplar, using `Mob.rotate`. This illustrates the standard;
+consult the method itself for its complete current signature and behavior:
 
 ```python
 @animated_function(
@@ -157,23 +157,22 @@ def rotate(
 ## 3. Summary line
 
 - **Imperative mood**: "Rotate the Mob...", not "Rotates the Mob..." and never "This method
-  rotates...". Existing docstrings are split roughly 50/50 between imperative and third-person;
-  imperative is the PEP 257 rule and the tiebreak.
+  rotates...". Use imperative wording consistently for function summaries.
 - One sentence, one line where possible, on the same line as the opening `"""`, ending in a period.
 - Say what it does **to the scene**, not what it does to the object model. ✅ "Move the Mob so it
   sits just outside the screen edge." ❌ "Set the location attribute using the boundary helper."
 - Do not restate the method name. ❌ `set_opacity`: "Sets the opacity." ✅ "Fade the Mob to a given
   opacity, 0 for invisible and 1 for fully opaque."
 - For classes, name the thing and its defining property: ✅ "A rectangle with rounded corners,
-  drawn as a cubic bezier circuit." ❌ `SurroundingRectangle`: "A rectangle." (real current text —
-  it is a copy-paste of `Rectangle`'s and never mentions that it surrounds another Mob).
+  drawn as a cubic Bezier circuit." A surrounding rectangle's summary must also say
+  that it encloses another Mob; copying the base rectangle's summary loses that distinction.
 
 ## 4. Parameters
 
 Every parameter in the signature gets an entry, **in signature order**, including `color`,
-`**kwargs`, and anything inherited-but-overridden. `Rectangle` currently documents `height` before
-`width` (the signature is the other way round), documents an `*args` it does not accept, and omits
-its `color` parameter — all three are defects.
+`**kwargs`, and anything inherited-but-overridden. Do not list parameters in a different
+order, document an `*args` the method does not accept, or omit a color parameter simply
+because a parent class also accepts it.
 
 ### 4.1 Types come from annotations, not from the docstring
 
@@ -181,9 +180,8 @@ its `color` parameter — all three are defects.
 type from its annotation. A type written in the docstring **overrides** the annotation and then
 silently drifts from it.
 
-- **Annotate every parameter and the return** of a Tier-1 function. `Scene.save_video` has a
-  thoroughly written docstring but zero annotations, so the rendered reference shows no types at
-  all for it.
+- **Annotate every parameter and the return** of a Tier-1 function. Prose alone
+  does not supply the signature types used by autodoc.
 - Write the docstring entry as a bare name, with no ` : type` suffix:
 
 ```
@@ -198,8 +196,9 @@ The `Returns` section is the exception — see §5.
 
 ### 4.2 Defaults must be stated, in prose, in the description
 
-This is the rule that is most often broken. `Square.size` ("Length of each side of the
-square.") never says it is 2; `Circle.radius` never says it is 1.
+A geometric description is not a default: "Length of each side" must also state
+which length is used when the argument is omitted. Verify the value in the signature
+or the setting used to resolve it, rather than copying an older example.
 
 State the default in the last sentence of the entry, as ``Defaults to X.``:
 
@@ -276,16 +275,15 @@ Returns
     This Mob, so calls can be chained.
 ```
 
-  Current text varies between "The Mob instance itself.", "The Mob instance itself, allowing for
-  method chaining.", and nothing at all. `Animatable.spawn` returns `self` — the `Square().spawn()`
-  idiom in `README.md` and `CLAUDE.md` depends on it — but documents no return at all.
+  This matters for lifecycle calls too: the `Square().spawn()` idiom in `README.md`
+  and `AGENTS.md` depends on `spawn` returning the Mob, not a separate handle.
 - NumPy style requires a type on the first line of the section, and it wins over the annotation.
   Keep the two in sync, and use a role for Algan types (`:class:`~.Mob``) so the rendered page links.
 - If the return is something the caller must keep, say what it is *for*: `add_updater` gets this
   right ("An ID identifying the updater... can be used to remove the updater... using
   :meth:`~.Animatable.remove_updater`").
 - If the return is a structure, name its fields: `save_video` → "``status`` (``"rendered"`` or
-  ``"skipped"``), ``output_path``, ``walltime_seconds``, ``render_plan``".
+  ``"skipped"``), ``output_path``, ``duration_seconds``, ``render_plan``".
 - **Omit the section entirely** for methods that return `None`. Do not write "Returns nothing."
 - Getters must state what convention the value is in: normalized or not, world or screen space,
   a view or a copy.
@@ -396,8 +394,8 @@ Also, for classes:
   `*emphasis*`; no backtick-single-quote pairs.
 - Roles for cross-references: `:meth:`~.Mob.move_to``, `:class:`~.Mob``, `:attr:`~.Mob.location``,
   `:func:`~.DrawBorderThenFill``. The `~.` prefix renders the short name and keeps lines short.
-- **Code in a docstring must be in a directive.** `set_shader`'s recovery recipe is currently written
-  as bare indented lines inside a paragraph, which Sphinx renders as one run-on line. Use:
+- **Code examples need a literal block or directive.** Do not put a recovery recipe
+  into ordinary paragraph text, where Sphinx can render it as a run-on line. Prefer:
 
 ```
     .. code-block:: python
@@ -419,8 +417,8 @@ Also, for classes:
 
 ## 12. Deprecation and API-change notes
 
-Algan is in private beta with **no compatibility aliases**: there is exactly one name for each
-thing. Consequently:
+Teach the current canonical API. Do not revive removed aliases in examples or
+assume that an old release's spelling is still accepted. Consequently:
 
 - Do not document removed or aliased names, even to be helpful. If you find a docstring mentioning
   `render_to_file`, `render_settings`, or `RenderSettings`, delete the mention.
@@ -430,20 +428,22 @@ thing. Consequently:
   `save_video` and the render-tolerance unit change are the kind of thing users only learn from a
   docstring.
 
-## 13. Anti-patterns, with the current-code instance
+## 13. Anti-patterns to catch during review
 
-| Anti-pattern | Where it exists today |
-|---|---|
-| Default value not stated | `Square.size`, `Circle.radius`, `Rectangle.width/height` |
-| Angle without "degrees" | `Mob.rotate`, `Mob.orbit` (both fixed in the API overhaul's Phase 3) |
-| Returns `self`, says nothing | `Animatable.spawn` |
-| No docstring on a taught API | `Animatable.clone` (6 parameters, one deprecated), `Animatable.despawn` |
-| Copy-pasted parent summary | `SurroundingRectangle` ("A rectangle.") |
-| Parameters out of signature order / phantom `*args` | `Rectangle`, `Square`, `Circle` |
-| Types duplicated in the docstring | `move_to` (vs `move_next_to`, which is correct) |
-| No annotations, so no types render | `Scene.save_video`, `Scene.save_frame` |
-| Bare indented code, not a `code-block` | `Mob.set_shader` |
-| Internal mechanics in a user docstring | `Animatable` class docstring's `data_sub_inds` / `parent_batch_sizes` entries |
+| Anti-pattern | Correction |
+| --- | --- |
+| Default value or units omitted | State the source-verified default and units in prose. |
+| Chainable call has no return description | Say that it returns the same Mob. |
+| Constructor prose copied from a parent | Explain what distinguishes this class. |
+| Internal replay or allocation details in a user tooltip | Move them to internal comments or developer guidance. |
+| An old parameter remains after a signature change | Compare every documented name with the current signature. |
+| A rendered example uses removed names or multiple video saves | Run the directive check and the example. |
+| A completed audit finding is still presented as an open defect | Update its status and retain dated evidence separately. |
+
+These are review criteria, not an inventory of defects currently present in the
+named APIs. The original audit prompted fixes to transforms, lifecycle methods,
+shape/text constructors and output annotations; do not recreate that completed
+work as a new backlog.
 
 ## 14. Checklist
 
@@ -470,45 +470,18 @@ Before you commit a change to a Tier-1 function:
 
 ## 15. Current state and migration order
 
-Measured over `algan/animatable_base/*.py` and `algan/scene.py`: **23 of 185 public functions have
-no docstring at all**, and nearly all of those are nested helper closures (`wrapper_func`, `prop`,
-`guarded`, `pad`, `visit`) that are Tier 3 and need none. Every public method on `Mob` and `Scene`
-is documented. Of the docstrings that exist, the most common remaining defect is an unstated
-default, followed by missing units and missing `Animation` semantics.
+The earlier API/docstring overhaul updated Mob transforms and lifecycle methods,
+shape and text constructors, and output annotations. Fixed function counts are
+not a useful coverage guarantee: new APIs and generated adapters change the
+surface. Audit the current exports, signatures and Sphinx reference rather than
+relying on an old count of undocumented functions.
 
-Steps 1 and 2 below are done, and step 3 is now done in both halves. Every 2-D and 3-D shape class
-in the gallery carries a `Parameters` section with defaults, units and an example, including the
-`u_range` / `v_range` domains §4.3 calls out. Documenting those turned up an API defect —
-`Sphere`'s `u_range`/`v_range` and `Cylinder`'s `v_range` were accepted and stored but never read
-by their `coord_function`, so a partial range silently built a whole shape. That is fixed: the
-ranges are folded into the endpoints of the existing interpolation, so the default domains
-reproduce the previous vertices bit for bit and no baseline moved.
+When extending documentation, prioritize the pages a script author reaches first:
+transforms and lifecycle, constructors, output/settings, then materials, lights
+and camera controls. Check generated Manim adapter docstrings at their generator
+(`algan/mobs/manim_compat.py`), not by editing generated reference stubs.
 
-The **text** constructors are done too. `Tex`'s constructor prose moved out of `__init__` into the
-class docstring (§10), and `Tex`, `Text` and `MarkupText` each document every parameter in their
-signature with its default. `MathTex` and `Title` are generated Manim-compatibility wrappers and
-used to inherit Manim's class docstring verbatim, which put a `.. manim::` block — a Manim scene,
-executed and rendered into Algan's own reference pages — on an Algan page; they now carry an
-Algan-authored docstring from `_WRAPPER_DOCSTRINGS` in `algan/mobs/manim_compat.py`. Two things
-turned up while writing them: `MarkupText` strips its markup unconditionally rather than only when
-Pango is missing (its docstring claimed otherwise), and a `Title` places itself against *Manim's*
-frame, which puts its top at exactly Algan's top border — flush against the edge with no margin.
-Both are now stated where a reader will hit them. Chasing the second one turned up a real bug in
-`move_to_screen_edge`, since fixed: it took its inset direction from `normalize(boundary - border)`, which
-is degenerate for a boundary lying on the border and points the wrong way for a Mob already
-off-screen.
-
-Fix in this order, since it tracks what users hit first:
-
-1. **Mob transforms** — `move*`, `rotate`, `orbit`, `scale`, `set_*`: add `Animation` sections,
-   degrees, defaults.
-2. **Lifecycle** — `spawn`, `despawn`, `clone`, `become`, `add_updater`: `clone` and `despawn` need
-   docstrings from scratch.
-3. **Shape and text constructors** — one accurate summary per class, correct parameter lists with
-   defaults.
-4. **Output and settings** — `Scene.save_video` / `save_frame` annotations; `SETTINGS` sections and
-   presets.
-5. **Materials, lights, camera** — already the strongest area; mainly needs examples.
-
-Do not batch-rewrite by script. These docstrings are the product; each one needs a human decision
-about what the reader needs to know.
+Repository-wide remaining work is tracked in [TODO.md](TODO.md). This document
+remains the writing standard, not a second feature backlog. Each public docstring
+needs a source-based decision about what the reader needs to know; bulk prose
+replacement is not a substitute for checking its contract.

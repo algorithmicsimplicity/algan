@@ -6,12 +6,12 @@ material parameters the shading kernel reads.
 
 Primitives from many Mobs are grouped by
 :meth:`~algan.rendering.primitives.primitive.RenderPrimitive.get_batch_identifier`
-and rebuilt into one merged primitive per group, so a Scene full of like objects
-costs one kernel launch rather than many. ``project_to_screen`` then shades and
-packs a batch once per frame window.
+and rebuilt into one merged primitive per group, reducing per-object preparation
+work. ``project_to_screen`` shades and packs a frame window; actual kernel-launch
+count depends on the renderer, tiling and transport work, not just group count.
 
-This is the flat-triangle case; curved geometry arrives as PN triangles carrying
-corner normals, and bezier outlines as
+This is the flat-triangle representation. PN surfaces are diced into triangles
+during preparation; Bezier outlines use
 :class:`~algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive`.
 """
 

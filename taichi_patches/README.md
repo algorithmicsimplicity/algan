@@ -1,5 +1,11 @@
 # The Taichi patches Algan's Apple-GPU path needs
 
+> **Legacy backend patch set.** Normal Algan installations now consume the
+> patched `algan-quadrants` distribution, whose patches live in
+> [`../quadrants_patches/`](../quadrants_patches/). This directory records the
+> Taichi 1.7.4 implementation and its optional build workflow; it is not the
+> default installation procedure. `ALGAN_TAICHI_BACKEND` selects the backend.
+
 Three patches against **Taichi v1.7.4**, applied in order onto a pristine
 checkout of that tag. They are the source of truth for the forked wheel
 `../algan/rendering/DESIGN_mps_zero_copy.md` §4.2 calls `algan-taichi`; nothing here is applied to

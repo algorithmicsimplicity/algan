@@ -36,10 +36,8 @@ Alongside the attribute timelines, the `TimelineManager` holds `FunctionApplicat
 
 Mob methods decorated with `@animated_function` bind their Scene's `AnimationManager` automatically.
 
-Critical timeline rule: events must be recorded against a context that is entered and exited. Context exit finalizes retroactively rescaled timestamps. Do not manually record events against the top-level context's raw timespan. `add_updater` and `remove_updater` demonstrate the correct pattern by opening an `Off(record_funcs=False, ...)` context.
-
 The context classes live in `../algan/animation_timeline/animation_contexts.py`. `AnimationContext`s nest and inherit
-unset parameters, and `duration` rescales all child timestamps retroactively on `__exit__`.
+unset parameters, and `runtime` rescales all child timestamps retroactively on `__exit__`.
 
 **CRITICAL:** only `__exit__` syncs a context's rescaled timestamps, so events recorded against the top-level context
 all evaluate to time 0. The `animated_function` wrapper enters a child context automatically; anything recording events
@@ -58,7 +56,9 @@ Overlapping edits to the same timeline rows are replayed in execution order usin
 
 One `AttributeTimeline` exists per animatable attribute (location, basis, color, opacity, ...): a shared `[1, N, W]` buffer of every mob's current values (each mob owns rows, keyed by its `id` in `mob_id_to_inds`) plus the log of timestamped edits to those rows (`EditRecord`: rows, pre-modification values, end time).
 
-`set_state_to_times(times)` materializes all buffers at the requested frame times in one batched pass per attribute (`generate_array_states`, a flat `torch.searchsorted` over a per-row composite key on the animation device — deliberately **not** a Taichi kernel, which would stage the whole buffer through VRAM from the batch-prep worker), then re-executes recorded function applications with per-frame interpolated arguments, then applies updaters.
+`set_state_to_times(times)` materializes all buffers at the requested frame times in one batched pass per attribute (the default `_query_row_states`/Torch query path uses `torch.searchsorted` on
+per-row composite keys on the animation device; disabling `torchquery` selects
+the comparison materializer, so this is not a claim that no Taichi arm exists), then re-executes recorded function applications with per-frame interpolated arguments, then applies updaters.
 
 Edits of the same rows may overlap in time. `_resolve_replay_windows` extends each edit's effective end over the replay windows of earlier-executed edits that overlap it (transitively, unified per function application); the base state at time t is the pre-value of a row's earliest-executed edit still unfinished at t; and functions replay through their extended window (held at final parameters past their own end), so overlapping and same-end edits rematerialize in execution order.
 
@@ -76,7 +76,12 @@ Every mob has a `Lifespan` — a `[spawn, despawn)` interval exposed as `Animata
 
 ### Why `reset=False` is safe
 
-`get_frames` calls `timeline_manager.clear_buffers()` when it finishes, returning `active_state` to `current_state`. That is what leaves the timeline queryable after a render, and what makes `save_video(reset=False)` — the default — non-destructive.
+Render-state preservation and `timeline_manager.clear_buffers()` restore authored
+state after frame materialization. `save_video(reset=False)` therefore leaves the
+recording available for another render. Explicit finalization, such as
+`animate_fade_out`, and the one-frame guard for an empty-duration scene can still
+add authored work; see [api_settings.md](api_settings.md) for the complete reset
+contract.
 
 ### Structural batch rewrites
 

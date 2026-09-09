@@ -1,13 +1,14 @@
-"""Batched cubic bezier outlines for the renderer.
+"""Batched cubic Bezier outlines for the renderer.
 
-:class:`BezierCircuitPrimitive` carries 2-D shapes and glyphs to the renderer as
-their control points, not as triangles. Coverage is decided analytically against
-the curves, which is what keeps a circle exactly round and text crisp however far
-the camera zooms in, and what makes the inside-the-outline border model exact.
+``BezierCircuitPrimitive`` carries planar shapes and glyphs as circuit control
+points rather than filled triangle meshes. Rendering preparation samples the
+outlines into polylines and builds their spatial/scanline acceleration tables.
+Coverage estimates operate on that prepared geometry; curve sampling tolerance
+still matters, so analytic pixel coverage does not imply exact cubic geometry
+at every zoom level.
 
-Like every render primitive, instances from many Mobs are merged into one batch
-before rendering, so a page of text is a single primitive rather than one per
-glyph.
+Compatible Mob primitives share batched storage. Individual circuits and their
+fill/border data remain distinct within the batch.
 """
 
 from __future__ import annotations

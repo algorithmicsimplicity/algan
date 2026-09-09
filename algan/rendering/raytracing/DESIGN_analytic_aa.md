@@ -1,6 +1,13 @@
 # Algan — Analytic Anti-Aliasing: Design Document
 
-Status (§19 is the current front line: analytic AA now beats supersampled
+> **Historical design, superseded.** This records the pre-sheet AA experiments
+> and their measured results. The default renderer no longer uses the old
+> run-correction resolve described here. See [DESIGN_sheet_resolve.md](DESIGN_sheet_resolve.md)
+> and [the rendering guide](../../../agent_guidance/rendering.md) for the current
+> architecture. Old setting names, defaults and removed probe commands below
+> belong to their dated experiments, not to the supported authoring API.
+
+Historical status before the sheet redesign (§19: analytic AA now beats supersampled
 `anti_alias_level = 2` on 8 of 11 feature configs and falls 7-9% short on the
 other three, all of them reflection/refraction/specular CONTENT).
 

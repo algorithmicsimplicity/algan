@@ -24,7 +24,8 @@ Two groups of Mobjects are absent, and both are declared in `manim_parity.py` ra
 silently missing. `Typst`/`MathTypst` (`MANIM_UNVENDORED_MOBJECT_NAMES`) are not vendored at
 all. `Text`/`MarkupText`/`Paragraph` (`MANIM_PANGO_MOBJECT_NAMES`) need `manimpango`, which is a
 dependency on Windows and macOS (where it ships a wheel) and the `algan[pango]` extra on
-Linux (where it does not, and installing it builds Pango from source) — so the absent case
+Linux (where installation may build the ManimPango Python binding against
+system-installed Pango and Cairo) — so the absent case
 is a Linux install without the extra, and there the vendored package withholds those three
 names, `algan.Text` falls back to LaTeX's text mode, and `manim_compat` wraps what is
 there. **`hasattr(mn, "Text")` is the test, never `import
