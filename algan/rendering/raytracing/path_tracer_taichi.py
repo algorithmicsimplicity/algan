@@ -33,6 +33,9 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     sampling (Dupuy & Benyoub 2023); smooth glass is delta. Transmitted
     radiance includes the relative index-squared factor, with eta-aware
     roulette and the shared nested-IOR stack and Beer-Lambert absorption.
+    Homogeneous interiors sample RGB-mixture free flights, HG phase directions,
+    and direct lighting with shell-aware analytic shadow transmittance. The
+    same bounded walk implements subsurface scattering inside closed solids.
 ``pt_reduce``
     Folds a wave's per-path accumulators into the chunk's per-pixel sample
     sums (``accum``), applying leftover throughput to the background. One
@@ -139,8 +142,8 @@ Off, the key derivation is byte-for-byte what it was.
 Dimension-pair allocation (a fixed table; keep in sync with ``pt_shade``).
 ``B`` is the render's ``max_bounces`` and ``L`` is ``pt_light_samples``; the
 per-crossing block sits after every bounce pair because it draws per surface
-CROSSING ``c`` (a translucent stack visits several lit surfaces per bounce
-ordinal), not per bounce. One crossing owns ``2L + 1`` pairs: the ``L``
+CROSSING ``c`` (surface peels plus medium events, which consume no surface
+hit), not per bounce. One crossing owns ``2L + 1`` pairs: the ``L``
 next-event pairs it may draw, plus the lobe select every crossing draws:
 
 =============================  ================================================
@@ -152,7 +155,9 @@ pair                           use
                                the roulette draw keeps one component)
 2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
 2 + 6b + 2, 3                  bounce ``b``: reserved (legacy light slots)
-2 + 6b + 4, 5                  bounce ``b``: reserved for volumes
+2 + 6b + 4                     medium free flight: x RGB channel, y distance;
+                               seed salted by straight-subsegment ordinal
+2 + 6b + 5                     medium HG continuation direction (2D)
 2 + 6B + (2L+1)c + 2s + 0      crossing ``c``, NEE sample ``s``: x entry
                                select (an authored crossing's sampling arm:
                                x light-row select)
@@ -184,6 +189,20 @@ from algan.rendering.raytracing.light_tree import (
     LT_POWER,
     LT_RIGHT,
     LT_SIN_THETA_O,
+)
+from algan.rendering.raytracing.pt_media_taichi import (
+    PT_MEDIA_SLOTS,
+    PT_STAT_MEDIA_QUERY,
+    PT_STAT_MEDIA_STACK,
+    _pt_hg_pdf,
+    _pt_hg_sample,
+    _pt_initial_media,
+    _pt_medium_coeff,
+    _pt_medium_cross,
+    _pt_medium_id,
+    _pt_medium_sample,
+    _pt_medium_top,
+    _pt_medium_transmittance,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
@@ -322,7 +341,11 @@ _SCA_ETA_SCALE = 6
 # crossing composites normally (erring toward the doubled attenuation every
 # crossing produced before the ceiling existed) and is tallied in
 # ``pt_stats[PT_STAT_SHELL_RING]``.
-PT_INT_WIDTH = 9
+PT_INT_WIDTH = 16
+_INT_MEDIA0 = 9  # four representative triangle indices, -1 = empty
+_INT_MEDIA_INIT = 13  # -1 until near-clipped camera containment is classified
+_INT_MEDIA_EVENTS = 14  # independent of the surface-peel budget
+_INT_MEDIA_SEGMENTS = 15  # free-flight draw ordinal, stable across hit batches
 _INT_RING0 = 5
 _SHELL_RING_SLOTS = 4
 
@@ -351,7 +374,7 @@ _NEE_AUTHORED_ROW = 4
 
 # Word layout of the ``nee_meta`` f32 vector (integer-valued words carry
 # exact small ints; decoded with ``+ 0.5`` casts).
-NEE_META_WIDTH = 21
+NEE_META_WIDTH = 22
 _NM_COUNT = 0  # entries in nee_cdf / nee_ref (0 = no next-event sampling)
 _NM_ENV_SHARE = 1  # env entry's selection probability (0 = env NEE off)
 _NM_LIGHT_SAMPLES = 2  # pt_light_samples
@@ -390,6 +413,7 @@ _NM_AUTHORED_COUNT = 19  # ... out of this many entries in the authored table
 # 0 leaves the vector NEE_META_WIDTH long and the key derivation exactly as it
 # was.
 _NM_BLUE_NOISE = 20
+_NM_MEDIA = 21  # second-half offset in tri_shell, 0 = no volume transport
 
 # Blue-noise screen-space error distribution (roadmap section 7; Heitz et al.
 # 2019). The tile is ``PT_BN_TILE x PT_BN_TILE`` per-pixel sampler keys --
@@ -414,7 +438,7 @@ PT_BN_TILE_MASK = PT_BN_TILE - 1
 PT_BN_TILE_VALUES = PT_BN_TILE * PT_BN_TILE
 _PT_BN_SALT = 0x9E3779B1
 #: First word of the tile inside ``nee_meta`` (the header ends there).
-_NM_BN_BASE = 21
+_NM_BN_BASE = 22
 
 # Per-path AOV row (``pt_aov``), accumulated only when ``_NM_AOV`` says so
 # (the tensor is a [1, PT_AOV_WIDTH] dummy otherwise -- every access is
@@ -1806,6 +1830,48 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
 
 
 @ti.func
+def _pt_authored_surface(media_enabled, pipelines: ti.template(), pids: ti.template(),
+                          prim, f, pos, view, normal, face, albedo, glow,
+                          light_pos: ti.template(), light_col: ti.template(),
+                          num_lights, pid_arr: ti.template(), params: ti.template(),
+                          shadows: ti.template(), vis, camera):
+    # A medium's extinction is physical transport even with surface shadows
+    # disabled. Keep the original flag in ordinary scenes, and call authored
+    # stages exactly once (custom stages need not be safe to evaluate twice).
+    result = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    if ti.static(shadows == 0):
+        if media_enabled:
+            result = _run_frag_pipeline(
+                pipelines, pids, prim, f, pos, view, normal, face, albedo, glow,
+                light_pos, light_col, num_lights, pid_arr, params, 1, vis, camera)
+        else:
+            result = _run_frag_pipeline(
+                pipelines, pids, prim, f, pos, view, normal, face, albedo, glow,
+                light_pos, light_col, num_lights, pid_arr, params, 0, vis, camera)
+    else:
+        result = _run_frag_pipeline(
+            pipelines, pids, prim, f, pos, view, normal, face, albedo, glow,
+            light_pos, light_col, num_lights, pid_arr, params, shadows, vis, camera)
+    return result
+
+
+@ti.func
+def _pt_vertex_f_pdf(medium_vertex, phase_g, e_diff, e_spec, f0, rough,
+                      shade_n, rd, wi, w_pass, w_diff, w_spec, w_trans,
+                      eta, metalness, albedo, transmission):
+    f_cos = ti.math.vec3(0.0, 0.0, 0.0)
+    pdf = 0.0
+    if medium_vertex:
+        pdf = _pt_hg_pdf(rd.dot(wi), phase_g)
+        f_cos = ti.math.vec3(pdf, pdf, pdf)
+    else:
+        f_cos, pdf = _pt_lit_f_pdf(
+            e_diff, e_spec, f0, rough, shade_n, rd, wi,
+            w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, transmission)
+    return f_cos, pdf
+
+
+@ti.func
 def _pt_nee_visibility(refit: ti.template(), anyhit: ti.template(),
                        has_tri: ti.template(),
                        has_bez: ti.template(),
@@ -2156,7 +2222,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
         # pt_aov access: with it off the tensor is a [1, PT_AOV_WIDTH] dummy.
         # The words are decoded inside the branches that read them -- an
         # escaping path reads the environment half only.
-        if num_hits > 0:
+        media_offset = ti.cast(nee_meta[_NM_MEDIA] + 0.5, ti.i32)
+        if (num_hits > 0) or (media_offset > 0):
             (n_ls, env_off, env_w, env_h, env_intensity, env_share,
              cdf_h, cdf_w, aov_on) = _pt_meta_escape(nee_meta)
             (num_nee, far_clip, amb_packed, amb_count, anim_seed,
@@ -2223,6 +2290,30 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             # Set at the first random decision this launch takes (see
             # ``_PT_ACC_STOCH``); folded into the sticky column at write-back.
             stoch = 0
+            media = ti.Vector([-1, -1, -1, -1])
+            media_events = ti.max(rs_int[r, _INT_MEDIA_EVENTS], 0)
+            media_segments = ti.max(rs_int[r, _INT_MEDIA_SEGMENTS], 0)
+            media_bad = 0
+            if media_offset > 0:
+                for q in ti.static(range(PT_MEDIA_SLOTS)):
+                    media[q] = rs_int[r, _INT_MEDIA0 + q]
+                if rs_int[r, _INT_MEDIA_INIT] < 0:
+                    media, overflow_m, truncated_m = _pt_initial_media(
+                        refit, ro, f, layer_offset_triangles,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_shell, media_offset)
+                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], overflow_m)
+                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], truncated_m)
+                    media_bad = overflow_m + truncated_m
+                    # The IOR stack and the medium stack describe the same
+                    # near-clipped point, including a camera inside glass.
+                    depth_m = 0
+                    for q in ti.static(range(PT_MEDIA_SLOTS)):
+                        if media[q] >= 0:
+                            rs_sca[r, 8 + q] = tri_mat[f % tri_mat.shape[0], media[q], 12]
+                            depth_m += 1
+                    rs_sca[r, 7] = ti.cast(depth_m, ti.f32)
+                    rs_int[r, _INT_MEDIA_INIT] = 1
 
             kb_t = ti.Vector([0.0] * kbuf)
             kb_layer = ti.Vector([0.0] * kbuf)
@@ -2242,13 +2333,18 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             bounced = False
             absorbed = False
             drained = 0
-            while drained < num_hits:
+            while (drained < num_hits) or ((media_offset > 0) and (num_hits < kbuf)):
+                if media_bad != 0:
+                    t_alpha = 0.0
+                    done = True
+                    absorbed = True
+                    break
                 # Nearest unconsumed slot; scalars + ti.static extraction keep
                 # the kb_* vectors out of local memory (same pattern as
                 # wavefront_shade).
                 sel = 0
                 sel_found = 0
-                t_hit = 0.0
+                t_hit = 1e30
                 hit_layer = 0.0
                 for q in ti.static(range(kbuf)):
                     if (q < num_hits) and (kb_prim[q] >= 0):
@@ -2263,14 +2359,51 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             t_hit = kb_t[q]
                             hit_layer = kb_layer[q]
                 if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
-                    # Past the camera's far distance, the same test and the
-                    # same site as ``wavefront_shade``. Hits drain
-                    # front-to-back so everything left is farther still;
-                    # retire the path (not absorbed, so its leftover
-                    # throughput still shows the background or the
-                    # environment map). ``base_dist`` accumulates across
-                    # scatters, so the plane clips path length from the
-                    # camera exactly as it does for the other renderer.
+                    t_hit = ti.max(far_clip - base_dist, t_prev)
+                    sel_found = 0
+
+                medium_vertex = False
+                medium_prim = _pt_medium_top(media)
+                phase_g = 0.0
+                medium_albedo = ti.math.vec3(0.0, 0.0, 0.0)
+                if (media_offset > 0) and (medium_prim >= 0) and (t_hit > t_prev):
+                    sigma_a_m, sigma_s_m, phase_g = _pt_medium_coeff(
+                        tri_mat, f, medium_prim)
+                    sigma_t_m = sigma_a_m + sigma_s_m
+                    medium_albedo = sigma_s_m / ti.max(sigma_t_m, 1e-30)
+                    seg_m = t_hit - t_prev
+                    weight_m = ti.exp(-sigma_t_m * seg_m)
+                    if (bounces_left > 0) and (sigma_s_m.max() > 0.0):
+                        # Fresh domain per straight subsegment, not per launch:
+                        # unrelated transparent layers may subdivide a flight.
+                        # The 2D Sobol prefix remains pure under batch splitting.
+                        flight_seed = _pt_hash_combine(
+                            path_seed, ti.u32(0xA511E9B3) + ti.cast(media_segments, ti.u32))
+                        pair_m = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * (max_b - bounces_left) + 4
+                        u_m = pt_sample_2d_seeded(flight_seed, pair_m, s_index)
+                        medium_vertex, distance_m, weight_m = _pt_medium_sample(
+                            sigma_a_m, sigma_s_m, seg_m, u_m)
+                        media_segments += 1
+                        stoch = 1
+                        if medium_vertex:
+                            t_hit = t_prev + distance_m
+                    rgb_before_m = thru[0] + thru[1] + thru[2]
+                    for k in ti.static(range(3)):
+                        thru[k] *= weight_m[k]
+                    thru[3] *= (weight_m[0] + weight_m[1] + weight_m[2]) / 3.0
+                    # Coverage carries the same RGB-mean survival estimator.
+                    # In particular, analytic absorption/depth exhaustion must
+                    # not leave a dark volume at alpha zero. The ratio also
+                    # preserves colored survival weights across subsegments;
+                    # a sampled collision closes coverage below as usual.
+                    if rgb_before_m > 0.0:
+                        t_alpha *= (thru[0] + thru[1] + thru[2]) / rgb_before_m
+                    if thru[0] + thru[1] + thru[2] <= 0.0:
+                        t_alpha = 0.0
+                        done = True
+                        absorbed = True
+                        break
+                if (sel_found == 0) and (not medium_vertex):
                     done = True
                     break
                 prim = 0
@@ -2278,17 +2411,22 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 a = 0.0
                 b = 0.0
                 for q in ti.static(range(kbuf)):
-                    if q == sel:
+                    if (q == sel) and (not medium_vertex):
                         prim = kb_prim[q]
                         flags = kb_flags[q]
                         a = kb_a[q]
                         b = kb_b[q]
                         kb_prim[q] = -1
-                drained += 1
-                processed += 1
+                if medium_vertex:
+                    prim = medium_prim
+                    flags = 3  # virtual interior vertex, not a triangle/circuit
+                    media_events += 1
+                else:
+                    drained += 1
+                    processed += 1
                 # This crossing's dimension-pair block (module docstring):
                 # ``2L`` next-event pairs then the lobe select.
-                pair_cross0 = pair_nee0 + pairs_per_cross * processed
+                pair_cross0 = pair_nee0 + pairs_per_cross * (processed + media_events)
                 htype = flags & 3
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
@@ -2314,13 +2452,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         0, f, prim, w0, a, b, tri_extra, tri_colors, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles)
                     pid = tri_mat_id[f % tri_mat_id.shape[0], prim]
-                else:
+                elif htype == 0:
                     color, alpha = _sample_circuit_color(
                         prim, f, a, b, border,
                         circuit_meta, circuit_colors, circuit_border_colors)
                     cm = f % circuit_meta.shape[0]
                     metalness = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
+                if medium_vertex:
+                    alpha = 1.0
+                    color = ti.math.vec4(medium_albedo[0], medium_albedo[1], medium_albedo[2], 0.0)
+                    pid = _MID_PHYSICAL
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
 
                 # Closed-shell opacity ring (``solid_shell_alpha``). On
@@ -2337,7 +2479,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 suppressed = 0
                 if htype == 1:
                     sid_cs = ti.cast(
-                        tri_shell[f % tri_shell.shape[0], prim], ti.i32)
+                        tri_shell[f % tri_shell.shape[0], prim % tri_shell.shape[1]], ti.i32)
                     if sid_cs >= 0:
                         removed = 0
                         for q in ti.static(range(_SHELL_RING_SLOTS)):
@@ -2361,6 +2503,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
 
                 lit = (htype == 1) and (pid >= _MID_LAMBERT) \
                     and (pid <= _MID_PHYSICAL)
+                lit = lit or medium_vertex
                 authored = (htype == 1) and (not lit) and (pid != _MID_UNLIT)
 
                 # IOR / transmission of the surface (material or per-texel).
@@ -2370,7 +2513,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     ior, T = _tri_ior_transmission_g(
                         0, f, prim, w0, a, b, tri_extra, tri_colors, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles)
-                else:
+                elif htype == 0:
                     cm2 = f % circuit_meta.shape[0]
                     ior = circuit_meta[cm2, prim, _M_IOR]
                     T = circuit_meta[cm2, prim, _M_TRANSMISSION]
@@ -2383,6 +2526,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 fn_len = 0.0
                 needs_normal = lit or authored or (metalness >= 0.0) \
                     or (T > 1e-4)
+                needs_normal = needs_normal and (not medium_vertex)
                 if needs_normal:
                     if htype == 1:
                         snrm = _tri_normal_g(
@@ -2461,7 +2605,10 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # side test uses the RAW interpolated normal (the sided/prepped
                 # shading normal is viewer-flipped and would never read
                 # "exiting").
-                if (T > 1e-4) and (htype == 1) and (pid < _USER_PIPELINE_BASE):
+                medium_boundary = False
+                if (media_offset > 0) and (htype == 1):
+                    medium_boundary = _pt_medium_id(tri_shell, f, prim, media_offset) >= 0
+                if (T > 1e-4) and (htype == 1) and (pid < _USER_PIPELINE_BASE) and (not medium_boundary):
                     if needs_normal and (rd.dot(snrm) > 0.0):
                         tma = f % tri_mat.shape[0]
                         sa = _MAT_ATTENUATION_SIGMA
@@ -2480,7 +2627,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 wl_diff = 0.0
                 wl_spec = 0.0
                 wl_trans = 0.0
-                if lit and (suppressed == 0):
+                if lit and (suppressed == 0) and (not medium_vertex):
                     # ``rough`` is REPLACED by the lobe set's own GGX width:
                     # phong authors its highlight as a Blinn-Phong exponent,
                     # so its lobes, its NEE responses and its continuation
@@ -2500,6 +2647,12 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                               ti.max(e_trans_l[1],
                                                      e_trans_l[2]))
                 rough_glass = glass and (rough * rough >= 1e-4)
+                # Interpolating three identical f32 transmission values can
+                # land one ulp below 1. Do not turn those nominally null
+                # boundaries into depth-consuming scatters (or black pixels
+                # when max_bounces == 0). The tolerance is below min_weight.
+                null_boundary = medium_boundary and (not glass) and (alpha > 0.999999) \
+                    and (wl_diff <= 1e-6) and (wl_spec <= 1e-6) and (wl_trans > 0.0)
 
                 # Custom-scatter state for this crossing: whether a user
                 # scatter owns it, the radiance it committed, and its three
@@ -2589,6 +2742,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             w_emit = prev_pdf * prev_pdf \
                                 / ti.max(prev_pdf * prev_pdf
                                          + pdf_ne * pdf_ne, 1e-20)
+                    if medium_vertex:
+                        emissive = ti.math.vec3(0.0, 0.0, 0.0)
                     direct = emissive * w_emit
                     recv = 1
                     if tri_mat.shape[2] > _MAT_NO_SHADOW_RECEIVE:
@@ -2596,6 +2751,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             recv = 0
                     sorigin = _pt_offset_ray_origin(
                         hit_p, fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
+                    if medium_vertex:
+                        recv = 1
+                        sorigin = hit_p
                     # Deterministic fill from the direction-less rows.  A
                     # constant-radiance environment ``L`` over the diffuse
                     # lobe integrates to exactly ``e_diff * L`` -- the
@@ -2693,8 +2851,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         # response changed. A light row is
                                         # unhittable by a BSDF ray, so there
                                         # is nothing to MIS against.
-                                        f_cos_r, _pdf_r = _pt_lit_f_pdf(
-                                            e_diff_l, e_spec_l, f0_l,
+                                        f_cos_r, _pdf_r = _pt_vertex_f_pdf(
+                                            medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, ld,
                                             wl_pass, wl_diff, wl_spec,
                                             wl_trans, eta, metalness, albedo3, T)
@@ -2745,8 +2903,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 tri_uvs, tri_tex_meta,
                                                 textures,
                                                 num_colored_triangles)
-                                            f_cos, pdf_b = _pt_lit_f_pdf(
-                                                e_diff_l, e_spec_l, f0_l,
+                                            f_cos, pdf_b = _pt_vertex_f_pdf(
+                                                medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
                                                 rough, shade_n, rd, wi,
                                                 wl_pass, wl_diff, wl_spec,
                                                 wl_trans, eta, metalness, albedo3, T)
@@ -2775,13 +2933,13 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             and ((shade_n.dot(dir_e) > 1e-6)
                                                  or ((wl_spec > 0.0) and
                                                      (spec_n.dot(dir_e) > 1e-6))
-                                                 or rough_glass):
+                                                 or rough_glass or medium_vertex):
                                         ec = _sample_env_map(
                                             f, dir_e, env_off, env_w,
                                             env_h, env_intensity,
                                             textures)
-                                        f_cos, pdf_b = _pt_lit_f_pdf(
-                                            e_diff_l, e_spec_l, f0_l,
+                                        f_cos, pdf_b = _pt_vertex_f_pdf(
+                                            medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, dir_e,
                                             wl_pass, wl_diff, wl_spec,
                                             wl_trans, eta, metalness, albedo3, T)
@@ -2808,7 +2966,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                 vis3 = ti.math.vec3(1.0, 1.0, 1.0)
                                 if ti.static(shadows != 0):
                                     if recv == 1:
-                                        if (spec_n.dot(wi_vis) > 1e-4) or rough_glass:
+                                        if (spec_n.dot(wi_vis) > 1e-4) or rough_glass or medium_vertex:
                                             shadow_origin = sorigin
                                             if rough_glass:
                                                 shadow_origin = _pt_offset_ray_origin(
@@ -2845,6 +3003,29 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         else:
                                             vis3 = ti.math.vec3(0.0, 0.0,
                                                                 0.0)
+                                if media_offset > 0:
+                                    m_origin = hit_p
+                                    m_stack = media
+                                    m_over = 0
+                                    if not medium_vertex:
+                                        m_origin = _pt_offset_ray_origin(
+                                            hit_p, fnrm if fnrm.dot(wi_vis) >= 0.0 else -fnrm)
+                                        if medium_boundary and (rd.dot(fnrm) * wi_vis.dot(fnrm) > 0.0):
+                                            m_stack, m_over = _pt_medium_cross(
+                                                m_stack, tri_shell, f, prim, media_offset,
+                                                rd.dot(fnrm) < 0.0)
+                                    m_dist = _pt_shadow_tmax(m_origin, wi_vis,
+                                        ldist - (m_origin - hit_p).dot(wi_vis))
+                                    m_vis, m_over2, m_cut = _pt_medium_transmittance(
+                                        refit, m_origin, wi_vis, f, m_dist, m_stack,
+                                        layer_offset_triangles,
+                                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], m_over + m_over2)
+                                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], m_cut)
+                                    if m_over != 0:
+                                        m_vis = ti.math.vec3(0.0, 0.0, 0.0)
+                                    vis3 *= m_vis
                                 direct += contrib * vis3
                     local = ti.math.vec4(direct[0], direct[1], direct[2],
                                          color[3])
@@ -2856,6 +3037,9 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # below. Dropping this flag would freeze the pixel on
                     # however few samples it had (see ``_PT_ACC_STOCH``).
                     stoch = 1
+                    # Always pass this visibility vector to the stage. With
+                    # surface shadows off it is all ones except for physical
+                    # medium extinction; no scene-specific kernel gate is needed.
                     vis = ti.Vector([1.0] * (SHADOW_VIS_CHANNELS * vis_lights))
                     if ti.static(auth_sampled != 0):
                         # ------------------------------------------------------
@@ -2941,14 +3125,30 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             vis[base] = v3[0]
                                             vis[base + 1] = v3[1]
                                             vis[base + 2] = v3[2]
+                                if (media_offset > 0) and (w > 0.0):
+                                    wi_m, distance_m, valid_m = _pt_light_sample_point(
+                                        light_pos, light_col, f, li, hit_p, u_pt[0], u_pt[1])
+                                    if valid_m == 1:
+                                        vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                            refit, sorigin_a, wi_m, f,
+                                            _pt_shadow_tmax(sorigin_a, wi_m,
+                                                distance_m - (sorigin_a - hit_p).dot(wi_m)),
+                                            media, layer_offset_triangles,
+                                            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                                            t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                        ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
+                                        ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                        base_m = light_vis_index(s, 0)
+                                        for channel_m in ti.static(range(3)):
+                                            vis[base_m + channel_m] *= vis_m[channel_m]
                         # Built AFTER the fill only for readability: the vectors
                         # are mutated in place, so a view built before it would
                         # read the same values.
                         lpos_v = ti.static(_SampledLightView(light_pos, lrow))
                         lcol_v = ti.static(
                             _SampledLightView(light_col, lrow, lscale))
-                        local = _run_frag_pipeline(
-                            frag_pipelines, tri_pids, prim, f, hit_p, -rd,
+                        local = _pt_authored_surface(
+                            media_offset > 0, frag_pipelines, tri_pids, prim, f, hit_p, -rd,
                             snrm, fnrm, albedo3, color[3],
                             lpos_v, lcol_v, n_slots, tri_mat_id,
                             tri_mat, shadows, vis, cam_pos)
@@ -2996,8 +3196,29 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             vis[base] = v3[0]
                                             vis[base + 1] = v3[1]
                                             vis[base + 2] = v3[2]
-                        local = _run_frag_pipeline(
-                            frag_pipelines, tri_pids, prim, f, hit_p, -rd,
+                        if media_offset > 0:
+                            sorigin_m = _pt_offset_ray_origin(
+                                hit_p, fnrm if fnrm.dot(-rd) >= 0.0 else -fnrm)
+                            for li_m in range(ti.min(num_lights, vis_lights)):
+                                u1_m = _pt_rng_seeded(path_seed, s_index, processed * 64 + li_m, 2)
+                                u2_m = _pt_rng_seeded(path_seed, s_index, processed * 64 + li_m, 3)
+                                wi_m, distance_m, valid_m = _pt_light_sample_point(
+                                    light_pos, light_col, f, li_m, hit_p, u1_m, u2_m)
+                                if valid_m == 1:
+                                    vis_m, over_m, cut_m = _pt_medium_transmittance(
+                                        refit, sorigin_m, wi_m, f,
+                                        _pt_shadow_tmax(sorigin_m, wi_m,
+                                            distance_m - (sorigin_m - hit_p).dot(wi_m)),
+                                        media, layer_offset_triangles,
+                                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                                        t_first_leaf, tri_pos, tri_mat, tri_shell, media_offset)
+                                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], over_m)
+                                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_QUERY], cut_m)
+                                    base_m = light_vis_index(li_m, 0)
+                                    for channel_m in ti.static(range(3)):
+                                        vis[base_m + channel_m] *= vis_m[channel_m]
+                        local = _pt_authored_surface(
+                            media_offset > 0, frag_pipelines, tri_pids, prim, f, hit_p, -rd,
                             snrm, fnrm, albedo3, color[3],
                             light_pos, light_col, num_lights, tri_mat_id,
                             tri_mat, shadows, vis, cam_pos)
@@ -3054,10 +3275,61 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 # prefix, at the SAME weights the radiance composite uses
                 # (no firefly clamp -- a guide, not radiance). A suppressed
                 # closed-shell exit has alpha 0 and adds nothing.
-                if aov_open == 1:
+                if (aov_open == 1) and (not null_boundary):
                     aov_alb += ti.math.vec3(thru[0], thru[1], thru[2]) \
                         * (alpha * albedo3)
                     aov_nrm += (thru[3] * alpha) * shade_n
+
+                if medium_vertex:
+                    t_alpha = 0.0
+                    aov_open = 0
+                    bounce_ord_m = max_b - bounces_left
+                    pair_phase = PAIR_BOUNCE_BASE + PAIRS_PER_BOUNCE * bounce_ord_m
+                    u_phase = pt_sample_2d_seeded(path_seed, pair_phase + 5, s_index)
+                    new_rd_m, prev_pdf = _pt_hg_sample(rd, phase_g, u_phase)
+                    survived_m = 1
+                    if bounce_ord_m >= rr_start:
+                        u_rr_m = pt_sample_2d_seeded(path_seed, pair_phase, s_index)[1]
+                        p_rr_m = ti.math.clamp(
+                            ti.max(thru[0], ti.max(thru[1], thru[2])) * eta_scale,
+                            _PT_RR_FLOOR, 1.0)
+                        if u_rr_m >= p_rr_m:
+                            survived_m = 0
+                        else:
+                            thru /= p_rr_m
+                    if survived_m == 0:
+                        absorbed = True
+                        done = True
+                        break
+                    ro = hit_p
+                    rd = new_rd_m
+                    base_dist += t_hit
+                    t_prev = 0.0
+                    layer_prev = 1e30
+                    seam_t = -1e30
+                    ring = ti.Vector([-1, -1, -1, -1])
+                    bounces_left -= 1
+                    bounced = True
+                    break
+
+                if null_boundary:
+                    # No change of direction or scattering density. Keep the
+                    # previous vertex/pdf for emitter MIS and spend no bounce.
+                    media, overflow_m = _pt_medium_cross(
+                        media, tri_shell, f, prim, media_offset, rd.dot(fnrm) < 0.0)
+                    ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], overflow_m)
+                    if overflow_m != 0:
+                        t_alpha = 0.0
+                        done = True
+                        absorbed = True
+                        break
+                    _write_ior_stack(rs_sca, r, r, ior, rd.dot(fnrm) < 0.0, 1, 1)
+                    for k in ti.static(range(3)):
+                        thru[k] *= e_trans_l[k]
+                    thru[3] *= (e_trans_l[0] + e_trans_l[1] + e_trans_l[2]) / 3.0
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
 
                 # ----------------------------------------------------------
                 # Continuation A: the user's scatter, as a delta lobe.
@@ -3269,6 +3541,15 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     path_seed, pair_cross0 + 2 * n_ls, s_index)[0]
                 pick = u_lobe * w_sum
                 if pick < w_pass:
+                    if medium_boundary:
+                        media, overflow_m = _pt_medium_cross(
+                            media, tri_shell, f, prim, media_offset, rd.dot(fnrm) < 0.0)
+                        ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], overflow_m)
+                        if overflow_m != 0:
+                            t_alpha = 0.0
+                            done = True
+                            absorbed = True
+                            break
                     # Deterministic in an unlit stack (probability 1 there).
                     scale = (1.0 - alpha) * (w_sum / w_pass)
                     thru *= scale
@@ -3433,6 +3714,13 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         # Refraction / a tinted pane is a delta lobe: what
                         # it finds next is not MIS-covered by any NEE.
                         prev_pdf = 0.0
+                    if (media_offset > 0) and medium_boundary and (ok == 1):
+                        if rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0:
+                            media, overflow_m = _pt_medium_cross(
+                                media, tri_shell, f, prim, media_offset, rd.dot(fnrm) < 0.0)
+                            ti.atomic_add(pt_stats[PT_STAT_MEDIA_STACK], overflow_m)
+                            if overflow_m != 0:
+                                ok = 0
                     if ok == 0:
                         # Rejected sample direction: absorbed, not escaped.
                         absorbed = True
@@ -3496,6 +3784,11 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
+            if media_offset > 0:
+                for q in ti.static(range(PT_MEDIA_SLOTS)):
+                    rs_int[r, _INT_MEDIA0 + q] = media[q]
+                rs_int[r, _INT_MEDIA_EVENTS] = media_events
+                rs_int[r, _INT_MEDIA_SEGMENTS] = media_segments
             if stoch == 1:
                 # Sticky: only ever written 1.0, never cleared, so a path that
                 # became stochastic on an earlier launch stays flagged.

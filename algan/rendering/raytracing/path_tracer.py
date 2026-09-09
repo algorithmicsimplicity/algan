@@ -94,6 +94,7 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     _NM_FAR_CLIP,
     _NM_INF_COUNT,
     _NM_LIGHT_SAMPLES,
+    _NM_MEDIA,
     _NM_QUAD_BASE,
     _NM_TREE_MIX,
     _NM_TREE_ON,
@@ -108,6 +109,11 @@ from algan.rendering.raytracing.path_tracer_taichi import (
     pt_generate,
     pt_reduce,
     pt_shade,
+)
+from algan.rendering.raytracing.pt_media_taichi import (
+    PT_MEDIA_SLOTS,
+    PT_STAT_MEDIA_QUERY,
+    PT_STAT_MEDIA_STACK,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     kbuf,
@@ -142,7 +148,7 @@ logger = get_logger("raytracing")
 
 # Bytes of arena state per path slot: rs_ro/rs_rd (12 + 12), rs_sca (the
 # nested-IOR width -- the path tracer always carries the media stack),
-# rs_int (PT_INT_WIDTH i32: the shared 5 plus the closed-shell ring),
+# rs_int (PT_INT_WIDTH i32: shared 5, opacity ring 4, media stack/counters 7),
 # rs_pix (i32), pt_thru (4 f32), pt_acc (PT_ACC_WIDTH f32-- the radiance,
 # leftover and alpha columns plus adaptive sampling's stochastic flag), pt_aov
 # (PT_AOV_WIDTH f32 -- budgeted whether or not the denoiser's AOVs are on,
@@ -1306,7 +1312,11 @@ def path_trace_render(
         int(time_start),
         num_frames,
     )
+    from algan.rendering.raytracing.pt_media import _prepare_media
+
     tri_shell = _build_shell_table(memory, merged)
+    tri_shell, pt_tri_extra, media_offset = _prepare_media(memory, merged, tri_shell)
+    nee_meta[_NM_MEDIA] = float(media_offset)
     logger.log(
         PERF,
         "path tracer: next-event setup %.1f ms (%d entries, %d tree nodes, %d frames)",
@@ -1428,7 +1438,10 @@ def path_trace_render(
                 )
                 active = compactor.initial(slots)
                 it = 0
-                max_iters = max_surfaces_per_ray + 4
+                # Medium events spend bounces but consume no surface peel.
+                # A dense SSS walk may therefore need MORE than the surface
+                # cap's launches; never silently clip it at 260 iterations.
+                max_iters = max_surfaces_per_ray + int(max_bounces) + 4
                 while active.numel() > 0 and it < max_iters:
                     na = int(active.numel())
                     with memory.temp():
@@ -1504,7 +1517,7 @@ def path_trace_render(
                             int(tri_bvh.first_leaf),
                             merged["tri_pos"],
                             merged["tri_norm"],
-                            merged["tri_extra"],
+                            pt_tri_extra,
                             merged["tri_colors"],
                             merged["tri_uvs"],
                             merged["tri_tex_meta"],
@@ -1636,6 +1649,12 @@ def path_trace_render(
                 record_truncation(
                     "surfaces_per_ray", truncated, cap=max_surfaces_per_ray
                 )
+            media_over = int(pt_stats[PT_STAT_MEDIA_STACK].item())
+            if media_over:
+                record_truncation("medium_stack", media_over, cap=PT_MEDIA_SLOTS)
+            media_query = int(pt_stats[PT_STAT_MEDIA_QUERY].item())
+            if media_query:
+                record_truncation("medium_query", media_query, cap=max_surfaces_per_ray)
             ring_over = int(pt_stats[PT_STAT_SHELL_RING].item())
             if ring_over:
                 record_truncation("closed_shell_ring", ring_over, cap=_SHELL_RING_SLOTS)

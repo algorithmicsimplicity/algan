@@ -1016,13 +1016,14 @@ def _build_render_plan(
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
-    # Empty on every path today: the path tracer is the fallback and refuses
-    # nothing (roadmap section 9), and the deterministic renderer never did.
-    # Kept, and kept enumerating, because the rule is that a feature a
-    # renderer cannot honour is NAMED here rather than silently dropped --
-    # tests/unit_tests/test_path_tracer.py asserts the emptiness feature by
-    # feature, so an addition here fails a test rather than a user's render.
+    # The path tracer remains the complete fallback (roadmap section 9).
+    # Homogeneous interiors require stochastic transport, so the deterministic
+    # route must name the unsupported feature rather than silently dropping it.
     unsupported = []
+    if bool(merged.get("has_scattering_media")):
+        requested.append("homogeneous scattering media / random-walk SSS")
+        if samples_requested <= 1:
+            unsupported.append("homogeneous scattering media / random-walk SSS")
     if scene_environment_map is not None:
         requested.append("environment maps")
     if bool(merged.get("has_refractive")):
@@ -1068,10 +1069,14 @@ def _validate_render_capabilities(
     )
     if plan.unsupported_features:
         feature_list = ", ".join(plan.unsupported_features)
+        suggestion = (
+            "Set samples_per_pixel > 1 to use the path tracer."
+            if plan.backend == "deterministic_wavefront"
+            else "Remove the unsupported features or use a compatible renderer."
+        )
         rt_settings.report_unsupported_features(
-            "The path tracer selected by samples_per_pixel > 1 "
-            f"cannot honor: {feature_list}. Set samples_per_pixel to 1 to use "
-            "the deterministic wavefront renderer, remove those features, or "
+            f"The {plan.backend} renderer cannot honor: {feature_list}. "
+            f"{suggestion} To discard these features deliberately, use "
             "set_unsupported_feature_policy('warn'/'ignore') explicitly."
         )
 

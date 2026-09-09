@@ -1063,6 +1063,71 @@ module instead (a ``RuntimeWarning``), because they are decided while geometry
 is built rather than while a frame is composited.
 
 
+Homogeneous volumes and subsurface scattering
+============================================
+
+The path tracer supports homogeneous participating media and random-walk
+subsurface scattering through :class:`~.MeshPhysicalMaterial`:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(samples_per_pixel=128, max_bounces=64)
+    fog = Prism(width=4, height=3, depth=2)
+    fog.set_material(MeshPhysicalMaterial(
+        color=WHITE, transmission=1, ior=1, roughness=0,
+        sigma_s=0.4, g=0.2,
+    ))
+    fog.spawn()
+
+``sigma_s`` is a non-negative scattering coefficient in inverse scene-length
+units, either a scalar or three RGB rates. It is not an sRGB color. ``g`` is
+Henyey--Greenstein anisotropy: 0 is isotropic, positive values favor forward
+scattering, negative values backscattering, and endpoints -1 and 1 are
+excluded. Both default to zero. Existing ``attenuation_color`` and
+``attenuation_distance`` separately define absorption.
+
+The invisible, index-matched boundary in the example produces fog. For
+subsurface scattering, use the same material on a closed solid with a higher
+``sigma_s`` and an ordinary dielectric IOR/roughness. Light enters through
+transmission, scatters repeatedly inside the object, and exits through that
+object's boundary. ``transmission=0`` does not let light enter from outside.
+There is no screen-space blur or diffusion-profile approximation.
+
+Both require consistently wound, watertight triangle geometry declared
+``closed_shell=True``. Built-in closed solids already declare this; open
+meshes and flat circuits do not enclose a medium. Density is uniform inside
+each shell, including when its shape or scattering parameters animate. A
+camera may start inside the medium. Surface-shadow switches do not disable
+extinction through matter. Denoising uses scatter-albedo and zero-normal
+guides at medium vertices.
+
+Important limits:
+
+* A path has a fixed stack of four active interiors. Nested zero-density
+  physical shells can form cavities; overlaps use last-entered priority,
+  not a sum of the overlapping densities. A stack overflow or exhausted
+  containment/extinction query is warned and absorbed to avoid light leaks;
+  counts appear in ``RenderResult.render_plan.truncations.medium_stack`` and
+  ``medium_query``. The renderer trusts the closed-shell declaration, rather
+  than repairing holes, winding errors, or coincident boundaries.
+* Surface and volume scatters share ``max_bounces``. Dense media need more
+  bounces and samples; too shallow a depth truncates multiple scattering and
+  can look dark. Invisible index-matched boundaries do not spend bounces.
+  The path does not split or allocate a variable-length walk history.
+* Direct-light connections integrate extinction through index-matched
+  boundaries, but stop at an index-changing interface. Refraction must be
+  sampled by the actual Fresnel/BSDF walk, not approximated with an unbent
+  transparent shadow ray. This avoids double-counting energy inside glass.
+  Delta-light refractive caustics, heterogeneous density fields, and
+  accelerated diffusion profiles remain future work.
+
+A nonzero scattering coefficient on the deterministic renderer is reported
+as unsupported, with instructions to set ``samples_per_pixel > 1``. Its
+existing glass absorption remains unchanged. In scattering-enabled path
+traces, absorption uses the medium stack and is not applied again at the
+exit surface.
+
+
 Not implemented at all
 ======================
 
@@ -1072,8 +1137,9 @@ Neither renderer does any of these, at any setting:
   light need ``samples_per_pixel > 1``.
 * **Caustics.**
 * **Ambient occlusion**, in any form -- no SSAO pass, no AO map.
-* **Volumetrics**: fog, god rays, participating media, smoke, subsurface
-  scattering.
+* **Heterogeneous volumes**: spatial density fields or simulated smoke.
+  Homogeneous fog and random-walk subsurface scattering are supported by the
+  path tracer, as described in `Homogeneous volumes and subsurface scattering`_.
 * **Displacement mapping** or height-map tessellation. Geometry comes from the
   mob; a texture never moves a vertex.
 * **Wireframe rendering.**
@@ -1092,9 +1158,8 @@ Neither renderer does any of these, at any setting:
   :class:`~algan.rendering.lights.AmbientLight` for ambient.
 
 For the path tracer's share of this list -- caustics, adaptive sampling,
-temporal stability, volumes and subsurface scattering -- the engineering side
-(why each is absent, and what implementing it would take under the renderer's
-reproducibility and kernel contracts) is written up in
+temporal stability, and heterogeneous volumes -- the engineering side
+(status, remaining scope, and the renderer's sampling and kernel contracts) is written up in
 ``algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md``, which is the
 plan of record for that remaining scope.
 

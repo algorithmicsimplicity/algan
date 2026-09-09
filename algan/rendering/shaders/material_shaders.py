@@ -796,6 +796,9 @@ def physical_shader(
     # the segment a ray travels inside the medium, which a per-vertex surface
     # pass does not see (the wavefront bounce loop applies it).
     attenuation_sigma=(0.0, 0.0, 0.0),
+    # Homogeneous transport is evaluated only by the path tracer.
+    sigma_s=(0.0, 0.0, 0.0),
+    g: float = 0.0,
 ):
     """MeshPhysicalMaterial: MeshStandard plus clearcoat, sheen, ior-driven
     specular and (approximate) transmission.
