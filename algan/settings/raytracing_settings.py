@@ -241,6 +241,7 @@ def _setter(module, field):
 # surface is obvious from tab-completion and repr.
 _PUBLIC_FIELDS = frozenset(
     {
+        "texture_antialiasing",
         "samples_per_pixel",
         "max_bounces",
         "shadows",

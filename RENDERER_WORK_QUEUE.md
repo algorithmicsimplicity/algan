@@ -187,30 +187,24 @@ mesh", or a concave solid stops shadowing itself.
 
 ---
 
-## 4. Texture minification has no filter
+## 4. Texture minification anti-aliasing
 
-**Status: named as the open residual by `DESIGN_analytic_aa.md` §19 ("what is
-still untouched is texture minification (no mip chain)"). Not started.**
+**Status: implemented, default on.** See
+`algan/rendering/raytracing/DESIGN_texture_antialiasing.md` for the data layout,
+footprint model, costs and limitations. `SETTINGS.raytracing.texture_antialiasing`
+controls the next merged batch and restores legacy bilinear filtering when off.
 
-`_sample_tex_vec5` (`wavefront_kernels_taichi.py:244`) is a plain bilinear tap
-with no level of detail. Combined with the sheet resolve's **one shade per
-same-surface region per pixel**, a minified texture is point-sampled: the region
-is shaded at its dominant fragment and whatever texel that lands on wins the
-pixel. It aliases statically and crawls under camera motion.
+UV colour, material and normal maps now have shared-bank mip pyramids with
+trilinear sampling. Primary sheet hits, classic hybrid hits and path-tracer hits
+use UV density and projected ray-cone width, rather than coverage area alone.
+Accumulated camera-path distance also filters reflected rays without extra ray
+state. Linear-light/coverage-aware filtering preserves transparent edges; odd
+sizes, packed base textures, animated endpoints and per-frame opacity are covered.
 
-Two things make this the top *quality* item rather than a nice-to-have:
-
-* Everything else in the frame is antialiased exactly, so the texture is the
-  only aliasing left and reads as a defect rather than as a resolution.
-* `DESIGN_sheet_resolve.md` §10.5 anticipated it (the flip's own review named
-  "the minified-texture `ImageMob`" as one of the populations that moved) and
-  §4.7 records the remedy it *did not* take: area-weighted multi-sample shading
-  per material.
-
-Both remedies are open. A mip chain is the cheaper one at render time and costs
-build time and texture memory; the sheet record already carries the exact area,
-which is a screen-space footprint the LOD could be derived from without
-derivatives. Measure before choosing.
+`benchmarks/_texture_antialiasing.py` is the asset-free primary/mirror A/B;
+`tests/unit_tests/test_texture_antialiasing_taichi.py` pins numerical behaviour.
+The cheap isotropic footprint deliberately does not implement anisotropic taps,
+curved-mirror/refractive focusing or environment-map anti-aliasing.
 
 ---
 

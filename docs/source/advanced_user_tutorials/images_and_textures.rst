@@ -156,8 +156,19 @@ Because the pattern lives in the map rather than in the mesh, its detail has
 nothing to do with how finely the surface is tessellated: a flat plane sampled
 at two vertices per axis carries the same checkerboard as the sphere above.
 Each generator takes the count of pattern cells and, separately, a
-``texture_resolution`` in texels; the renderer samples the map bilinearly, so
-the defaults spend 32 texels on a cell to keep its edges hard.
+``texture_resolution`` in texels; the defaults spend 32 texels on a cell to
+keep its edges hard when viewed close up. Distant or reflected UV textures use
+mipmaps with trilinear filtering by default, for colour, material and normal
+maps in both the hybrid renderer and path tracer. The footprint accounts for
+UV density, viewing angle and accumulated ray distance, without tracing extra
+rays. Colour filtering is performed in linear light with coverage-aware edges.
+
+To compare with the old bilinear-only sampler, set
+``SETTINGS.raytracing.texture_antialiasing = False`` before rendering. The
+setting takes effect at the next prepared frame batch. Mipmaps cost extra
+texture memory and batch preparation time; the filter is isotropic and can
+soften highly oblique textures. It does not filter environment maps or add
+geometric anti-aliasing.
 
 The available texture arguments:
 

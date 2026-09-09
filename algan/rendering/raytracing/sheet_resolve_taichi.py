@@ -95,6 +95,7 @@ from algan.rendering.raytracing.shading_taichi import (
     direct_specular_lobe,
     light_vis_index,
 )
+from algan.rendering.raytracing.texture_mips_taichi import _triangle_uv_footprint
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     ALLOC_TRUNC_SURFACES,
@@ -489,6 +490,7 @@ def sheet_resolve_shade_arena(
             prim = 0
             circuit = 0
             fetched_bez = False
+            tex_du, tex_dv = 0.0, 0.0
             surf_pos = ro + t_hit * rd
             surf_rd = rd
             w0 = 1.0 - a - b
@@ -521,6 +523,20 @@ def sheet_resolve_shade_arena(
                 partial = msk_low != _AA_MASK_ALL
                 if partial:
                     surf_rd = (surf_pos - ro).normalized()
+                # Avoid camera/footprint work for untextured and promoted
+                # constant maps, including the feature-disabled bank.
+                tex_idx = prim - num_colored_triangles
+                if tri_tex_meta.shape[1] >= 21:
+                    if tex_idx >= 0:
+                        if (tri_tex_meta[tex_idx, 18] >= 0
+                                or tri_tex_meta[tex_idx, 19] >= 0
+                                or tri_tex_meta[tex_idx, 20] >= 0):
+                            camera_screen = ti.math.vec3(screen_point[f, 0], screen_point[f, 1], screen_point[f, 2])
+                            pixel_basis = ti.math.vec3(pixel_basis_y[f, 0], pixel_basis_y[f, 1], pixel_basis_y[f, 2])
+                            pixel_angle = pixel_basis.norm() / ti.max(gen_meta[3] * (camera_screen - ro).norm(), 1e-12)
+                            tex_du, tex_dv = _triangle_uv_footprint(
+                                0, f, prim, surf_rd, (surf_pos - ro).norm() * pixel_angle,
+                                tri_pos, tri_uvs, tri_tex_meta, num_colored_triangles)
                 if ti.static(memo != 0 and mode == 2):
                     color = ti.math.vec4(sheet_memo[idx, 0], sheet_memo[idx, 1],
                                          sheet_memo[idx, 2], sheet_memo[idx, 3])
@@ -530,10 +546,10 @@ def sheet_resolve_shade_arena(
                 else:
                     color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                                 col_row, tri_uvs, tri_tex_meta,
-                                                textures, num_colored_triangles)
+                                                textures, num_colored_triangles, tex_du, tex_dv)
                     reflectivity, rough = _tri_extra_g(
                         0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
+                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 albedo3 = ti.math.vec3(color[0], color[1], color[2])
                 if ti.static(frag_shading != 0 and mode != 1):
                     if ti.static(mode == 2):
@@ -552,11 +568,11 @@ def sheet_resolve_shade_arena(
                             sn = _tri_normal_g(
                                 0, f, prim, w0, a, b, tri_norm, tri_pos,
                                 tri_uvs, tri_tex_meta, textures,
-                                num_colored_triangles)
+                                num_colored_triangles, tex_du, tex_dv)
                     else:
                         sn = _tri_normal_g(
                             0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
-                            tri_tex_meta, textures, num_colored_triangles)
+                            tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                     color = _shade_tri_hit(frag_pipelines, tri_pids,
                                            f, prim, a, b,
                                            surf_rd, surf_pos,
@@ -572,7 +588,7 @@ def sheet_resolve_shade_arena(
                 else:
                     ior, T = _tri_ior_transmission_g(
                         0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
+                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 # MEMO WRITE (mode 1). ``color`` is still the FETCHED color
                 # here: _shade_tri_hit is inside the ``mode != 1`` branch
                 # above, so the event walk never overwrites it. Written for
@@ -702,7 +718,7 @@ def sheet_resolve_shade_arena(
                     normal = _tri_normal_g(
                         0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles
-                    ).normalized()
+                    , tex_du, tex_dv).normalized()
                     gp = f % tri_pos.shape[0]
                     g0 = ti.math.vec3(tri_pos[gp, prim, 0],
                                       tri_pos[gp, prim, 1],

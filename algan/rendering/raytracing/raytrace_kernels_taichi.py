@@ -80,6 +80,11 @@ from algan.rendering.raytracing.shading_taichi import (
     max_shadow_lights,  # noqa: F401
 )
 from algan.rendering.raytracing.stbvh import bvh_arity, bvh_block_f16, bvh_leaf_size
+from algan.rendering.raytracing.texture_mips_taichi import (
+    _mip_blend,
+    _mip_lod,
+    _mip_table,
+)
 from algan.taichi_compat import ti
 
 
@@ -1685,7 +1690,7 @@ def _authored_texel(tc, offset, frame_texel_base, u8_packed, texel_idx,
 
 
 @ti.func
-def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), textures: ti.template()):
+def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), textures: ti.template(), footprint_u=0.0, footprint_v=0.0):
     offset = tri_tex_meta[prim_uv_index, 0]
     width = tri_tex_meta[prim_uv_index, 1]
     height = tri_tex_meta[prim_uv_index, 2]
@@ -1703,6 +1708,8 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     # endpoints i0 and i1 by w, all read from one tiny bank row. Column 3 of
     # the row says whether the blended rgb still needs the linear-light
     # decode the merge skipped (linear_color_space).
+    table = _mip_table(tri_tex_meta, prim_uv_index, 0)
+    lod = _mip_lod(table, width, height, footprint_u, footprint_v, textures)
     lerp_off = tri_tex_meta[prim_uv_index, 16]
     lerp_i0 = 0
     lerp_i1 = 0
@@ -1711,6 +1718,12 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
 
     px = u * (width - 1.0)
     py = v * (height - 1.0)
+    if table >= 0:
+        wrap = ti.bit_cast(textures[0, table, 0], ti.i32)
+        if (wrap & 1) == 0:
+            px = u * width - 0.5
+        if (wrap & 2) == 0:
+            py = v * height - 0.5
 
     px = ti.math.clamp(px, 0.0, ti.max(width - 1.0, 0.0))
     py = ti.math.clamp(py, 0.0, ti.max(height - 1.0, 0.0))
@@ -1730,55 +1743,64 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
     hi = ti.cast(height, ti.i32)
     frame_base = (f % tmap) * (wi * hi)
     lerp_u8 = 0
-    if lerp_off >= 0:
-        lerp_len = ti.max(tri_tex_meta[prim_uv_index, 17], 1)
-        lrow = lerp_off + (f % lerp_len)
-        lerp_i0 = ti.cast(textures[tc, lrow, 0], ti.i32)
-        lerp_i1 = ti.cast(textures[tc, lrow, 1], ti.i32)
-        lerp_w = textures[tc, lrow, 2]
-        lerp_dec = textures[tc, lrow, 3]
-        if lut_base != -1:
-            # -2 = packed bytes with no LUT (see _authored_texel).
-            lerp_u8 = 1
+    if lod < 1.0:
+        if lerp_off >= 0:
+            lerp_len = ti.max(tri_tex_meta[prim_uv_index, 17], 1)
+            lrow = lerp_off + (f % lerp_len)
+            lerp_i0 = ti.cast(textures[tc, lrow, 0], ti.i32)
+            lerp_i1 = ti.cast(textures[tc, lrow, 1], ti.i32)
+            lerp_w = textures[tc, lrow, 2]
+            lerp_dec = textures[tc, lrow, 3]
+            if lut_base != -1:
+                # -2 = packed bytes with no LUT (see _authored_texel).
+                lerp_u8 = 1
 
-    for corner in ti.static(range(4)):
-        cx = ti.cast(x_floor + (corner % 2), ti.i32)
-        cy = ti.cast(y_floor + (corner // 2), ti.i32)
-        w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
-            yr if (corner // 2) == 1 else 1.0 - yr)
+        for corner in ti.static(range(4)):
+            cx = ti.cast(x_floor + (corner % 2), ti.i32)
+            cy = ti.cast(y_floor + (corner // 2), ti.i32)
+            w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+                yr if (corner // 2) == 1 else 1.0 - yr)
 
-        cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
-        cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
+            cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
+            cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
-        local_idx = cx * hi + cy
-        c = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-        a = 0.0
-        if lerp_off < 0:
-            c, a = _color_map_texel(tc, offset + frame_base, lut_base,
-                                    local_idx, num_points, textures)
-        else:
-            # Endpoint blend in AUTHORED space, then decode, then the
-            # bilinear accumulate below -- the dense path's own order
-            # (timeline lerp, merge decode, per-texel bilinear).
-            c0, a0 = _authored_texel(tc, offset, lerp_i0 * (wi * hi),
-                                     lerp_u8, local_idx, num_points,
-                                     textures)
-            c1, a1 = _authored_texel(tc, offset, lerp_i1 * (wi * hi),
-                                     lerp_u8, local_idx, num_points,
-                                     textures)
-            c = c0 + lerp_w * (c1 - c0)
-            a = a0 + lerp_w * (a1 - a0)
-            if lerp_dec > 0.5:
-                c[0] = srgb_to_linear_f(c[0])
-                c[1] = srgb_to_linear_f(c[1])
-                c[2] = srgb_to_linear_f(c[2])
+            local_idx = cx * hi + cy
+            c = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+            a = 0.0
+            if lerp_off < 0:
+                c, a = _color_map_texel(tc, offset + frame_base, lut_base,
+                                        local_idx, num_points, textures)
+            else:
+                # Endpoint blend in AUTHORED space, then decode, then the
+                # bilinear accumulate below -- the dense path's own order
+                # (timeline lerp, merge decode, per-texel bilinear).
+                c0, a0 = _authored_texel(tc, offset, lerp_i0 * (wi * hi),
+                                         lerp_u8, local_idx, num_points,
+                                         textures)
+                c1, a1 = _authored_texel(tc, offset, lerp_i1 * (wi * hi),
+                                         lerp_u8, local_idx, num_points,
+                                         textures)
+                c = c0 + lerp_w * (c1 - c0)
+                a = a0 + lerp_w * (a1 - a0)
+                if lerp_dec > 0.5:
+                    c[0] = srgb_to_linear_f(c[0])
+                    c[1] = srgb_to_linear_f(c[1])
+                    c[2] = srgb_to_linear_f(c[2])
 
-        color += w * c
-        alpha += w * a
-        sum_w += w
+            if table >= 0:
+                c *= a
+            color += w * c
+            alpha += w * a
+            sum_w += w
 
-    color /= ti.max(sum_w, 1e-6)
-    alpha /= ti.max(sum_w, 1e-6)
+        color /= ti.max(sum_w, 1e-6)
+        alpha /= ti.max(sum_w, 1e-6)
+    filtered = ti.Vector([color[0], color[1], color[2], color[3], alpha])
+    filtered = _mip_blend(f, u, v, table, lod, filtered, textures)
+    alpha = filtered[4]
+    color = ti.math.vec4(filtered[0], filtered[1], filtered[2], filtered[3])
+    if table >= 0:
+        color /= ti.max(alpha, 1e-20)
     # In-sampler opacity multiply (texture_opacity_in_kernel): the mob's
     # animated opacity rides the bank as a tiny per-map region (meta col 13 =
     # its base row, col 14 = its frame count) instead of being premultiplied
@@ -1796,7 +1818,7 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
 @ti.func
 def _flat_triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template(),
                          tri_uvs: ti.template(), tri_tex_meta: ti.template(),
-                         textures: ti.template(), num_colored_triangles: ti.i32):
+                         textures: ti.template(), num_colored_triangles: ti.i32, footprint_u=0.0, footprint_v=0.0):
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
     # A "textured" triangle (prim >= num_colored_triangles) may carry only
@@ -1823,7 +1845,7 @@ def _flat_triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template(),
         v = (w0 * tri_uvs[tu, prim_uv_index, 1]
              + w1 * tri_uvs[tu, prim_uv_index, 3]
              + w2 * tri_uvs[tu, prim_uv_index, 5])
-        color, alpha = _sample_texture(f, u, v, prim_uv_index, tri_tex_meta, textures)
+        color, alpha = _sample_texture(f, u, v, prim_uv_index, tri_tex_meta, textures, footprint_u, footprint_v)
     return color, alpha
 
 
