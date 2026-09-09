@@ -461,11 +461,18 @@ def band_class_groups(band_of_frag, cls_eff, base):
         empty = band_of_frag.new_zeros(0)
         return 0, empty, empty
     # Least-significant key first, so the stable sort on the band leaves
-    # equal-band runs ordered by class.
-    order = torch.argsort(cls_eff, stable=True)
-    order = order.index_select(
-        0, torch.argsort(band_of_frag.index_select(0, order), stable=True)
-    )
+    # equal-band runs ordered by class. Imported here rather than at module
+    # scope: ``device_sort`` reads :func:`mps_friendly` from this module.
+    from algan.rendering.raytracing import device_sort
+
+    order = device_sort.stable_lexsort(band_of_frag, cls_eff)
+    if order is None:
+        order = torch.argsort(cls_eff, stable=True)
+        order = order.index_select(
+            0, torch.argsort(band_of_frag.index_select(0, order), stable=True)
+        )
+    else:
+        order = order.to(torch.int64)
     bands = band_of_frag.index_select(0, order)
     classes = cls_eff.index_select(0, order)
     starts = torch.ones_like(bands, dtype=torch.bool)

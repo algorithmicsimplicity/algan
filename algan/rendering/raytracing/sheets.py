@@ -78,6 +78,7 @@ from algan.rendering.mps_compat import (
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
 )
+from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
@@ -392,7 +393,21 @@ def _lexsort(*keys):
     """Stable argsort by ``keys`` in priority order (first key most
     significant). Composes least-significant-first, the classic LSD trick the
     emission's own ``_exact_fragment_order`` uses.
+
+    The device arm (:func:`~algan.rendering.raytracing.device_sort.stable_lexsort`)
+    is the same composition with both halves moved off torch: each pass is
+    Quadrants' radix sort, and the ``index_select`` that carries the running
+    permutation into the next key happens inside that sort's own seed loop. It
+    declines wherever it does not apply, which is everywhere but a GPU arch in
+    MPS-friendly mode today, and this falls straight through to the torch form.
+
+    Its permutation is int32; widened here so every caller keeps the int64
+    order ``torch.argsort`` hands back, which several of them pass on to a
+    kernel whose element type is part of its specialization key.
     """
+    order = device_sort.stable_lexsort(*keys)
+    if order is not None:
+        return order.to(torch.int64)
     order = None
     for key in reversed(keys):
         k = key if order is None else key.index_select(0, order)
@@ -487,6 +502,9 @@ def _sheet_walk_order(pix, position):
         # determine the walk, with original sheet index preserving stable ties.
         key_run_order(pix, position, position, order, pix.numel(), True, False)
         return order
+    order = device_sort.stable_argsort(position)
+    if order is not None:
+        return order.to(torch.int64)
     return torch.argsort(position, stable=True)
 
 
@@ -508,13 +526,19 @@ def _sheet_rank_groups(parent, rank):
     parent: each fragment increases a claimed lane's count by one, so the
     running maximum cannot jump over a rank. Ranks may decrease within a
     parent; consecutive unique would therefore be incorrect here.
+
+    The kernel arm is asked for wherever a launch stages nothing, which since
+    ``taichi_launch_is_local`` learned about the Metal adoption includes an
+    Apple GPU. That is worth more there than the sort time: the torch arm's
+    ``parent * 16 + rank`` reaches 2**25 on a 4K frame, past where an MPS
+    integer gather stops being exact (``mps_compat._MPS_EXACT_INT_BITS``), and
+    the kernel never builds a composite key at all.
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
     n = parent.numel()
     if (
         sheet_rank_groups
-        and parent.device.type == "cuda"
         and 0 < n < 2**31
         and _live_arch() is not None
         and taichi_launch_is_local(parent.device)

@@ -47,11 +47,12 @@ keys is a lexicographic order, exactly as :func:`~algan.rendering.raytracing.she
 torch form is.
 
 **Float keys.** ``f32`` is a supported key dtype -- the sort maps IEEE bits to
-a monotone unsigned order and back -- so a depth key needs no packing. The one
-place this is not torch's order is a **negative** NaN, which numpy (and this
-sort) order before every number and torch orders after: a depth is a distance
-along a ray and cannot be one, and the positive NaN that a degenerate primitive
-could produce sorts last under both.
+a monotone unsigned order and back -- so a depth key needs no packing. A bit
+order and a comparison sort disagree about two things, and the seed loop
+canonicalizes both (see the comment there) so the permutation is the one
+``torch.argsort`` produces on the CPU: signed zeros, which compare equal but
+have different bit patterns, and NaN, which torch orders last whatever its
+sign where the twiddle puts a negative one below ``-inf``.
 
 **Scratch dtype.** ``sort`` documents its scratch as ``u32``; it is passed here
 as **int32**. Torch's unsigned integer dtypes are barely implemented (and
@@ -99,7 +100,27 @@ def argsort_pairs(
         k = i
         if ti.static(mode == 2):
             k = j
-        keys[i] = src_key[k]
+        value = src_key[k]
+        if ti.static(key_dtype == ti.f32):
+            # Two float values a comparison sort calls EQUAL and a bit order
+            # does not, canonicalized here so the permutation is torch's:
+            #
+            # * -0.0 and +0.0 compare equal, and the twiddle puts every -0.0
+            #   before every +0.0. (Torch on MPS separates them too, so this
+            #   agrees with the CPU rather than with the local backend -- and
+            #   the CPU is what the renderer's baselines were taken on.)
+            # * NaN compares greater than everything under torch whatever its
+            #   sign, while the twiddle sends a NEGATIVE NaN below -inf. One
+            #   canonical quiet NaN also makes payloads tie rather than order.
+            #
+            # A depth is a distance along a ray and can be neither, so this
+            # buys agreement on inputs the renderer does not produce; it costs
+            # two compares in a loop that is already reading every element.
+            if value == 0.0:
+                value = ti.cast(0.0, ti.f32)
+            if value != value:
+                value = ti.bit_cast(ti.u32(0x7FC00000), ti.f32)
+        keys[i] = value
         values[i] = j
         if i == 0:
             count_buf[()] = count

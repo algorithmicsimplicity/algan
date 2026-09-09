@@ -194,3 +194,23 @@ def test_a_lexsort_is_all_or_nothing(monkeypatch):
     narrow = torch.arange(1 << 17, dtype=torch.int32)
     assert device_sort.stable_lexsort(wide, narrow) is None
     assert device_sort.stable_lexsort() is None
+
+
+def test_the_cpu_arch_declines_even_with_a_live_program(monkeypatch):
+    """The staging test passes on the CPU arch; the kernel still cannot run.
+
+    ``taichi_launch_is_local`` answers True for a host tensor on a CPU arch --
+    correctly, since nothing is copied -- so an availability check built out of
+    it alone lets the sort through on a CPU box. Its ``block.sync`` and
+    ``block.radix_rank_match_atomic_or`` are unimplemented there, and what that
+    produces is a compile error mid-render rather than a slower sort. Regression
+    test: the CPU arch has to be excluded by name.
+    """
+    from algan.rendering import taichi_runtime
+    from algan.taichi_compat import ti
+
+    monkeypatch.setenv("ALGAN_DEVICE_RADIX_SORT", "1")
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.cpu)
+    keys = torch.arange(1 << 17, dtype=torch.int32)
+    assert taichi_runtime.taichi_launch_is_local(keys.device) is True
+    assert device_sort.radix_sort_available(keys) is False

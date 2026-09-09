@@ -84,9 +84,16 @@ def radix_sort_available(keys) -> bool:
     * the compiler is Quadrants and publishes ``algorithms.sort`` -- the Taichi
       arm has only the deprecated ``parallel_sort``, an odd-even merge sort
       that is slower than what it would replace;
-    * a program is up and a launch against this tensor stages nothing;
+    * a program is up, it is **not** on the CPU arch, and a launch against this
+      tensor stages nothing;
     * the key dtype is one the sort orders, and there are enough of them to pay
       for its launch chain.
+
+    The CPU arch is excluded by name rather than left to the staging test,
+    which passes there: the sort is built out of ``block.sync`` and
+    ``block.radix_rank_match_atomic_or``, which the LLVM backend does not
+    implement, so the kernel does not compile at all. Nothing is lost --
+    torch's CPU sort is a parallel merge sort with nothing to gain from this.
     """
     if keys.dtype not in _END_BITS:
         return False
@@ -102,9 +109,15 @@ def radix_sort_available(keys) -> bool:
     algorithms = getattr(ti, "algorithms", None)
     if algorithms is None or not hasattr(algorithms, "sort"):
         return False
-    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+    from algan.rendering.taichi_runtime import (
+        _live_arch,
+        taichi_arch_is_cpu,
+        taichi_launch_is_local,
+    )
 
-    return _live_arch() is not None and taichi_launch_is_local(keys.device)
+    if _live_arch() is None or taichi_arch_is_cpu():
+        return False
+    return taichi_launch_is_local(keys.device)
 
 
 def _scan_depth(n: int) -> int:

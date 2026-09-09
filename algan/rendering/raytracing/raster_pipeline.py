@@ -32,6 +32,7 @@ from algan.rendering.mps_compat import (
     reduction_index_sentinel,
     taichi_accumulate_dtype,
 )
+from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
@@ -1194,6 +1195,27 @@ def _check_circuit_ref_capacity(merged):
         )
 
 
+def _primary_depth_key(frag_key):
+    """``(pixel << 32) | depth bin`` per fragment, the emission's depth order.
+
+    Elementwise in ``frag_key``, which is what lets
+    :func:`_exact_fragment_order`'s device arm build it before the layer
+    permutation rather than after: computing then gathering and gathering then
+    computing give the same values, and only the first order lets the gather
+    happen inside a sort kernel.
+    """
+    pixel = frag_key >> 32
+    t_bits = (frag_key & 0xFFFFFFFF).to(torch.int32)
+    # dtype-view reinterprets IEEE bits; it does not allocate a numeric cast.
+    t = t_bits.view(torch.float32)
+    depth_bin = torch.floor(t / depth_tie_epsilon).to(torch.int64)
+    del t, t_bits
+    depth_bin.clamp_(0, 0x7FFFFFFF)
+    primary_key = (pixel << 32) | depth_bin
+    del pixel, depth_bin
+    return primary_key
+
+
 def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     """Return one gather order matching classic depth-bin/layer semantics."""
     is_bez = frag_ref < 0
@@ -1208,20 +1230,16 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     # primitive-count offset. Same values, same stable order, half the passes.
     layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
     del is_bez, bez_code, bez_layer, tri_layer
+
+    order = _exact_fragment_order_on_device(frag_key, layer)
+    if order is not None:
+        return order
     layer_order = torch.argsort(layer, descending=True, stable=True)
     del layer
 
     key_l = gather_packed_key(frag_key, layer_order)
-    pixel = key_l >> 32
-    t_bits = (key_l & 0xFFFFFFFF).to(torch.int32)
+    primary_key = _primary_depth_key(key_l)
     del key_l
-    # dtype-view reinterprets IEEE bits; it does not allocate a numeric cast.
-    t = t_bits.view(torch.float32)
-    depth_bin = torch.floor(t / depth_tie_epsilon).to(torch.int64)
-    del t, t_bits
-    depth_bin.clamp_(0, 0x7FFFFFFF)
-    primary_key = (pixel << 32) | depth_bin
-    del pixel, depth_bin
     depth_order = torch.argsort(primary_key, stable=True)
     del primary_key
     # Named so the two permutations are freed before the caller's gathers
@@ -1229,6 +1247,28 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     order = layer_order.index_select(0, depth_order)
     del layer_order, depth_order
     return order
+
+
+def _exact_fragment_order_on_device(frag_key, layer):
+    """The same order as two Quadrants radix sorts, or None for the torch arm.
+
+    Three torch ops disappear rather than one. The layer pass sorts ``~layer``
+    ascending instead of ``layer`` descending -- ``~x`` is ``-x - 1``, strictly
+    decreasing and free of the overflow a negation would risk at ``INT32_MIN``,
+    so the two produce the identical *stable* permutation. The depth pass then
+    takes that permutation as its seed and reads ``primary_key[layer_order[i]]``
+    inside the kernel, which removes BOTH the ``gather_packed_key`` over the
+    packed 64-bit key (measured at 0.15 s a chunk on the Mac runner, and only
+    exact there because of which aten kernel advanced indexing routes to) and
+    the ``index_select`` that composed the two permutations.
+    """
+    layer_order = device_sort.stable_argsort(torch.bitwise_not(layer))
+    if layer_order is None:
+        return None
+    primary_key = _primary_depth_key(frag_key)
+    order = device_sort.stable_argsort(primary_key, perm=layer_order)
+    del primary_key, layer_order
+    return order.to(torch.int64)
 
 
 def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
