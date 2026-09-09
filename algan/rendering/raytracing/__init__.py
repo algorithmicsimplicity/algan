@@ -22,9 +22,7 @@ Usage::
     from algan import Scene, SETTINGS, Sphere, MeshStandardMaterial
 
     SETTINGS.raytracing.set(samples_per_pixel=64)
-    Sphere().set_material(
-        MeshStandardMaterial(metalness=1.0, roughness=0.2)
-    ).spawn()
+    Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
     Scene.save_video()
 """
 

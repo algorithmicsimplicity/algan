@@ -537,7 +537,6 @@ def bloom_filter_old(
         / (xb[..., -1:] + x[..., -1:] + k)
     ) * (1 - a5) + a5 * torch.ones_like(xb[..., :-1])
 
-
     xb[..., -1:] + k
     (xb[..., -1:]).clamp(min=0, max=1)
     (xb[..., -1:] * 1).clamp(min=0, max=1)
