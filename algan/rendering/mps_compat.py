@@ -465,7 +465,16 @@ def band_class_groups(band_of_frag, cls_eff, base):
     # scope: ``device_sort`` reads :func:`mps_friendly` from this module.
     from algan.rendering.raytracing import device_sort
 
-    order = device_sort.stable_lexsort(band_of_frag, cls_eff)
+    # int32 copies for the device arm, which costs a pass per key and saves
+    # four radix passes per key. Safe in the strongest sense (the argument
+    # ``sheets._narrow_sort_key`` spells out): an exact int32 copy of an int64
+    # key has the same order and the same indices, so the stable permutation is
+    # identical. Both bounds are known without asking the device -- a band id
+    # is an index into a stream that cannot approach 2**31, and a class is
+    # documented as ``[0, _SHADE_CLASS_BASE)`` with the base at 2**25.
+    order = device_sort.stable_lexsort(
+        band_of_frag.to(torch.int32), cls_eff.to(torch.int32)
+    )
     if order is None:
         order = torch.argsort(cls_eff, stable=True)
         order = order.index_select(
