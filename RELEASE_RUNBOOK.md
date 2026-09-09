@@ -67,10 +67,10 @@ same run.
 
 ## Blockers
 
-Three things will fail, in the order the release hits them, plus one step that
-is configured but has never run.
+Two are cleared; two remain. In the order the release hits them, plus one step
+that is configured but has never run.
 
-### 1. `stable` and `master` have no common ancestor
+### 1. `stable` and `master` had no common ancestor — *resolved*
 
 The `promote` job requires a fast-forward:
 
@@ -78,36 +78,64 @@ The `promote` job requires a fast-forward:
 git merge-base --is-ancestor origin/stable ${{ github.sha }}
 ```
 
-This fails today, and not because `stable` is merely behind. The two branches
-have **no merge base at all** — `git merge-base origin/stable origin/master`
-exits 1 with no output. `stable` is 133 commits of a disjoint history ending at
+This failed, and not because `stable` was merely behind. The two branches had
+**no merge base at all** — `git merge-base origin/stable origin/master` exited 1
+with no output. `stable` was 133 commits of a disjoint history ending at
 `2a0555a`, the commit tagged `BETA_v0.0.63`; `master` is 406 commits from an
 unrelated root. Master's history was evidently rewritten at some point after
-`stable` was cut, and nothing has reconciled them since.
+`stable` was cut, and nothing had reconciled them since.
 
 `RELEASE_AUDIT.md` §15 recorded this as "`stable` is 133 commits behind
 `master`". That reading is too generous: no merge will ever fast-forward it.
 
-**Fix — a one-time reset, and it needs your explicit go-ahead** because it
-discards a published branch's history:
+**Done, 2026-09-09.** `stable` was reset to `master` (`1be534d`):
 
 ```bash
 git push --force-with-lease origin origin/master:refs/heads/stable
 ```
 
-After that `stable` is an ancestor of every future release commit and the
-`promote` job's fast-forward holds normally, forever. The `BETA_v0.0.63` tag
-keeps the old history reachable, so nothing is actually lost.
+`stable` is now an ancestor of every future release commit, so the `promote`
+job's fast-forward holds normally from here on. The `BETA_v0.0.63` tag keeps the
+old history reachable, so nothing is lost.
 
-Check first whether any branch protection covers `stable`, and whether the
-`master → stable` PR flow `test.yaml` assumes is something you want to keep —
-if it is, this reset is the act that makes it possible rather than replacing it.
+### 1b. `stable` is protected, and the release bot is not you
 
-### 2. The baseline pointer does not match what was uploaded
+**This is the next thing that will break, and it breaks late.** The reset above
+printed, and still went through:
 
-The gate job HEAD-checks every archive in `tests/baselines.json`. Two of the
-five are wrong under tag `baselines-2026-09-09.1`, because two assets were
-uploaded with a **hyphen missing from the filename**:
+```
+remote: - Required status check "ubuntu-latest / Python 3.10" is in progress.
+remote: - Cannot update this protected ref.
+```
+
+It succeeded because the push carried *your* credentials and your account can
+bypass the rule. The `promote` job pushes as `GITHUB_TOKEN`, which by default
+cannot — and it runs after `gate`, `build` and `docs`, so a real release would
+spend up to three hours before hitting it, with the tag unpushed and the PyPI
+upload never reached.
+
+Before the real release, either allow the `github-actions[bot]` app to bypass
+the ruleset on `stable`, or confirm the required checks will be green on the
+release commit at the moment `promote` runs. The dry run **cannot** catch this:
+`promote` is skipped under `dry_run`, so the first time that push is attempted
+for real is the real release.
+
+Worth deciding at the same time whether the `master → stable` PR flow
+`test.yaml` assumes is something you still want. The reset makes that flow
+possible rather than replacing it.
+
+### 2. The baseline pointer does not match what was uploaded — *resolved*
+
+**Done, 2026-09-09.** `baselines-2026-09-09.2` was published with all five
+assets correctly named, and every one verifies by content:
+`scripts/gate/verify_baseline_pointer.py` passes against the committed pointer
+(31.2 MB, 5/5). The release gate now runs that script instead of a HEAD check.
+The account of what went wrong is kept below, because the failure shape is the
+reason the gate downloads.
+
+The gate job used to HEAD-check every archive in `tests/baselines.json`. Two of
+the five were wrong under tag `baselines-2026-09-09.1`, because two assets had
+been uploaded with a **hyphen missing from the filename**:
 
 | Pointer expects | sha256 | Asset actually on the release |
 | --- | --- | --- |
@@ -131,9 +159,9 @@ and pin baselines-2026-09-09.1") rewrote that entry from `adcb2818…` to
 `baselines-2026-09-09`. Both ended up on the `.1` release, and the newer one is
 the one wearing the mangled name.
 
-**Fix — five assets under `baselines-2026-09-09.2`.** `tests/baselines.json` is
-already updated to that tag on this branch. Three files carry over unchanged;
-two need renaming:
+**The fix, as carried out — five assets under `baselines-2026-09-09.2`**, with
+`tests/baselines.json` pointing at that tag. Three files carried over unchanged;
+two were renamed:
 
 | Upload as | sha256 | Take from `.1`'s asset |
 | --- | --- | --- |
@@ -146,8 +174,9 @@ two need renaming:
 Do **not** carry `adcb2818…` forward under any name; it is the superseded
 `path_traced/cpu` and nothing references it any more.
 
-**Verify after uploading**, because a HEAD check would not have caught the
-wrong-content case that created this mess:
+**Verifying it** — this is now `scripts/gate/verify_baseline_pointer.py`, which
+the gate runs, and it reports 5/5 against the committed pointer. The equivalent
+by hand:
 
 ```bash
 python - <<'PY'
@@ -160,9 +189,10 @@ for key, e in p["archives"].items():
 PY
 ```
 
-**Also worth doing:** the gate job only issues a HEAD request, which is exactly
-what let the wrong-content asset through. Folding the check above into it costs
-about 20 MB and a few seconds in the cheapest job of the release.
+Pointed at the old `.1` tag the gate reports both failure shapes and lists what
+the tag actually carries, so the two mangled names are visible side by side with
+the ones the pointer expects. `tests/unit_tests/test_verify_baseline_pointer.py`
+pins both shapes offline over `file://`.
 
 ### 3. Green CI on the exact release commit
 
@@ -233,10 +263,13 @@ its own workflow file, so they do not collide.
 
 ### Step 1 — Clear the blockers
 
-Reset `stable` (§1, needs your go-ahead) · publish `baselines-2026-09-09.2` with
-the five correctly named assets (§2 — the pointer is already updated) · confirm
-run 34317795058 is green (§3). Pages (§4) needs nothing but the rehearsal in
-Step 3.
+Done: `stable` reset (§1) · `baselines-2026-09-09.2` published and verified by
+content (§2) · PyPI pending publisher created (Step 0).
+
+Left: allow `github-actions[bot]` to bypass the ruleset on `stable`, or
+otherwise satisfy its required checks (§1b — the dry run cannot catch this) ·
+confirm the `Test` run on the release commit is green (§3). Pages (§4) needs
+nothing but the rehearsal in Step 3.
 
 ### Step 2 — Write the release notes
 
