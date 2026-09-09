@@ -97,7 +97,46 @@ bracket, then MPS with the fences (`ALGAN_MPS_SHARED_QUEUE=0`), MPS on the
 shared queue, and the same two again, ABBA. Parity between the two MPS arms'
 third renders by `compare_warm_videos.py`.
 
-RESULTS_PLACEHOLDER
+The run is at `ebe1751`, before the reset gate of §3, so both MPS arms still
+pay the first-chunk pipeline rebuild. Each child's first render is cold (91 to
+123 s) and is not compared. Warm renders, in the order they ran:
+
+| arm | wall | prelude | chunk 1 | steady chunks 2-18, mean | fences (`wait.*`) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CPU | 65.1 s | 5.1 s | 4.3 s | 3.01 s | -- |
+| MPS, fences | 58.7 s | 5.5 s | 7.5 s | 2.37 s | 8.9 s |
+| MPS, fences | 71.9 s | 8.3 s | 10.9 s | 2.70 s | 10.2 s |
+| MPS, shared queue | 66.2 s | 9.6 s | 11.6 s | 2.31 s | 0.0 s |
+| MPS, shared queue | 56.3 s | 7.6 s | 9.5 s | 2.03 s | 0.0 s |
+| MPS, fences | 65.2 s | 8.0 s | 9.9 s | 2.45 s | 9.5 s |
+| MPS, shared queue | 62.6 s | 8.9 s | 10.7 s | 2.20 s | 0.0 s |
+
+`shared_queue_launches` equalled `converted_launches` on every shared-queue
+render (2247 after two renders, 3372 after three), so the regime engaged, and
+the two fence rows went to zero.
+
+* **Steady state:** 2.51 s a chunk with the fences (mean of three), 2.18 s on
+  the shared queue -- **13% less**, and the last chunk of every shared-queue
+  render (1.74-2.03 s) was faster than the last chunk of every fenced one
+  (2.48-2.86 s).
+* **Whole render:** 65.3 s against 61.7 s, about 5% -- inside this VM's
+  drift (the fenced arm itself ranged 58.7-71.9 s, the CPU bracket 65.1 s),
+  so the wall-time gain is a direction, not a figure. The prelude and first
+  chunk did not improve and may have got slower; they are dominated by CPU
+  work and by §3, and three samples cannot rank them.
+* **Where the 9 s went:** removing the fences did not remove 9 s. The
+  `coverage` and `stage` families grew by 2-4 s: with nothing draining the
+  queue per launch, the readbacks inside the compaction now wait for the
+  kernels too. What the fences had been costing was the CPU-GPU
+  serialization, not idle time -- the GPU is genuinely busy for most of a
+  chunk, on torch's ops more than on the kernels (§4).
+* **Parity:** the third render of each arm, decoded frame by frame: frames
+  0-5 identical, frames 6-17 differ in 12-111 pixels of 8.3M by at most 6/255
+  -- the run-to-run spread MPS's float32 atomics already produce between two
+  fenced renders (`DEPTH_BUFFER_REUSE.md`, `BLOOM_FIX.md`: maximum 6/255,
+  0.0003% of channels). No frame moved in a way the fences would explain,
+  and the six identical frames say the ordering holds where the scene is
+  static.
 
 ## 3. The runtime was being torn down between renders
 
