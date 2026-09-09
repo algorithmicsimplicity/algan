@@ -265,38 +265,38 @@ def test_the_shared_queue_has_a_kill_switch(monkeypatch):
 def test_shared_torch_queue_reads_the_live_programs_config(monkeypatch):
     """The per-launch predicate follows the program, not the kwargs.
 
-    It is memoized on program identity, so the memo is cleared first; on this
-    box's program the queue is not shared, and a faked config that says it is
-    must flip the answer.
+    Every arm is a faked program rather than this box's, because what the live
+    one answers is a property of the machine -- true on the Apple GPU arm,
+    where ``init`` really was handed torch's queue, and false everywhere else
+    -- while the claim here is about which source the answer is read from. The
+    predicate is memoized on program identity, so each arm clears the memo.
     """
+    import algan.taichi_compat as compat
     from algan.rendering import taichi_runtime
 
-    taichi_runtime.init_taichi()
-    monkeypatch.setattr(taichi_runtime, "_SHARED_QUEUE_MEMO", (None, False))
-    assert taichi_runtime.shared_torch_queue() is False
-
     class _Config:
-        external_metal_command_queue = 0xC0FFEE
-        external_metal_command_queue_is_torch_queue = True
+        external_metal_command_queue = 0
+        external_metal_command_queue_is_torch_queue = False
 
     class _Program:
         def config(self):
             return _Config()
 
     prog = _Program()
-    monkeypatch.setattr(
-        "algan.rendering.taichi_runtime._SHARED_QUEUE_MEMO", (None, False)
-    )
-    import algan.taichi_compat as compat
-
     monkeypatch.setattr(compat, "program", lambda: prog)
-    assert taichi_runtime.shared_torch_queue() is True
+    monkeypatch.setattr(taichi_runtime, "_SHARED_QUEUE_MEMO", (None, False))
+
+    def answer():
+        taichi_runtime._SHARED_QUEUE_MEMO = (None, False)
+        return taichi_runtime.shared_torch_queue()
+
+    assert answer() is False
+    _Config.external_metal_command_queue = 0xC0FFEE
+    _Config.external_metal_command_queue_is_torch_queue = True
+    assert answer() is True
     # A program with the queue but not flagged as torch's keeps the fences.
     _Config.external_metal_command_queue_is_torch_queue = False
-    monkeypatch.setattr(
-        "algan.rendering.taichi_runtime._SHARED_QUEUE_MEMO", (None, False)
-    )
-    assert taichi_runtime.shared_torch_queue() is False
+    assert answer() is False
 
 
 def _touch(path, age_seconds, now):
@@ -533,11 +533,19 @@ def test_flushing_drops_the_program_so_the_compiler_writes_its_cache():
 
 
 def test_quadrants_pressure_reset_clears_runtime_state_when_safe(monkeypatch):
+    """The ordinary case: a reset the arch allows and no render in the way.
+
+    The arch is faked like everything else the decision reads, and for the
+    usual reason: on the Apple GPU arm the live one is ``metal``, which
+    declines the reset outright (below), so leaving it to the machine would
+    make this test ask a different question there than it asks here.
+    """
     from algan.rendering import taichi_runtime
 
     calls = []
     monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
     monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.cpu)
     monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: False)
     monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
     monkeypatch.setattr(taichi_runtime, "_ARCH_READY_FOR", object())
@@ -550,11 +558,16 @@ def test_quadrants_pressure_reset_clears_runtime_state_when_safe(monkeypatch):
 
 
 def test_quadrants_pressure_reset_defers_while_a_render_is_active(monkeypatch):
+    """A render holding the arch postpones the reset rather than losing it.
+
+    On an arch that takes the reset at all -- hence the fake, as above.
+    """
     from algan.rendering import taichi_runtime
 
     calls = []
     monkeypatch.setattr(taichi_runtime, "BACKEND", "quadrants")
     monkeypatch.setattr(taichi_runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: ti.cpu)
     monkeypatch.setattr(taichi_runtime, "render_is_active", lambda: True)
     monkeypatch.setattr(taichi_runtime.ti, "reset", lambda: calls.append("reset"))
     monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", False)

@@ -55,6 +55,12 @@ def test_the_setting_is_a_tristate_that_rejects_anything_else():
 
 
 def test_auto_follows_platform_support(monkeypatch):
+    # The render device is the other half of what 'auto' resolves against, and
+    # on the Apple GPU arm it declines on its own (test_auto_declines_torch_
+    # compile_on_metal, below). Pin it so this asks only about the platform.
+    monkeypatch.setattr(
+        "algan.settings._startup.render_device", lambda: torch.device("cpu")
+    )
     monkeypatch.setattr(tc, "_SUPPORT", (True, ""))
     SETTINGS.computing.set(torch_compile="auto")
     assert tc.torch_compile_enabled()
