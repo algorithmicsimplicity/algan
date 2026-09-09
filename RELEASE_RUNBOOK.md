@@ -148,9 +148,35 @@ in particular is the one that was red all morning.
 
 **So green checks alone will not unblock it.** Even with all five passing, the
 `update` and `pull_request` rules reject a direct push from Actions. The fix is
-to add the **GitHub Actions app as a bypass actor** on "Stable Rules"
-(Settings → Rules → Rulesets → Stable Rules → Bypass list). That is the minimal
-change that lets the workflow do what it was designed to do.
+to add the **GitHub Actions app as a bypass actor** on "Stable Rules".
+
+In the UI: Settings → Rules → Rulesets → **Stable Rules** → Bypass list → *Add
+bypass* → **GitHub Actions** → mode **Always** → Save. Or equivalently, from a
+machine with `gh` authenticated as the repository owner:
+
+```bash
+gh api -X PUT repos/algorithmicsimplicity/algan/rulesets/20899556 \
+  -H "Accept: application/vnd.github+json" --input - <<'JSON'
+{"bypass_actors":[{"actor_id":15368,"actor_type":"Integration","bypass_mode":"always"}]}
+JSON
+```
+
+`15368` is the GitHub Actions app, the same integration that reports all five
+required checks above. `bypass_mode` has to be `always`: the alternative,
+`pull_request`, only applies inside a PR, and `promote` pushes directly.
+
+**Know what this grants.** A bypass actor bypasses the *whole* ruleset, not just
+the rule that is in the way — so this lets the Actions app push to `stable`
+past the status checks, the PR requirement and the force-push block alike, and
+it applies to every workflow in the repository that runs with
+`contents: write`, not only `release.yaml`. On a solo repository that is a
+reasonable trade for an automated release; it is worth knowing rather than
+discovering.
+
+This cannot be done from a Claude Code session: the agent proxy refuses writes
+to the GitHub API (`403 Write access to this GitHub API path is not permitted
+through this proxy`), and no MCP tool covers rulesets. Reads work, which is how
+the table above was produced rather than guessed.
 
 The alternative is to stop having `promote` push at all and advance `stable`
 through the `master → stable` PR that `development.rst` describes — but that is
