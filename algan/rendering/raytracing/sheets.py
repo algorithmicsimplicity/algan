@@ -78,6 +78,7 @@ from algan.rendering.mps_compat import (
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
 )
+from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
@@ -171,9 +172,27 @@ sheet_sample_depth_cede = min(
 sheet_rank_pool = env_flag("ALGAN_SHEET_RANK_POOL", True)
 
 # Reuse ordered pixel and band runs instead of globally sorting their keys
-# again. Opt-in: lower sort time and scratch memory have not yet translated
-# into a repeatable whole-render speedup. Unsupported backends use torch.
-sheet_pixel_sort = env_flag("ALGAN_SHEET_PIXEL_SORT", False)
+# again. Unsupported backends (a launch that would stage its arguments) use
+# torch.
+#
+# **On by default since it was measured on two GPUs at once**, which is what
+# the earlier note ("lower sort time and scratch memory have not yet
+# translated into a repeatable whole-render speedup") was missing. The
+# emission hands the compaction a stream already grouped by pixel and a CSR
+# beside it, so a global lexicographic sort re-derives an order it was given:
+# three stable argsorts and two ``index_select``s over the whole stream, where
+# one thread per pixel run orders its own handful of fragments in place. The
+# permutation is identical -- the comparator carries the original index as its
+# last key -- so no output moves.
+#
+# Isolated, at the 2.9M fragments a warm UHD chunk carries
+# (``benchmarks/_device_sort_probe.py``): **4.1 ms against torch's 215 ms on
+# Metal, 0.75 ms against 15.8 ms on a T4**. Whole warm renders of
+# ``nn_scene_UHD``, ABBA on one box each
+# (``reports/mac_2026_09/DEVICE_SORT.md``): **57.2 s -> 43.7 s on the Mac
+# runner (-23.5%)** and **8.30 s -> 7.88 s on the T4 (-5.1%)**, with every
+# "on" run faster than every "off" run in both.
+sheet_pixel_sort = env_flag("ALGAN_SHEET_PIXEL_SORT", True)
 
 # Exact mixed-radix pixel/group/depth keys when their measured ranges fit i64.
 # Captured UHD sorts use 37-53% less time; conservative queue-size thresholds
@@ -188,7 +207,14 @@ sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
 
 # Assign dense conflict-rank groups from per-band counts instead of sorting.
 # Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
-# Whole-render warm mean improved 1.7%; other devices retain the original path.
+# Whole-render warm mean improved 1.7%.
+#
+# The kernel used to be reached only on CUDA, by name. It is now asked for
+# wherever a launch stages nothing, which the Metal adoption made true on an
+# Apple GPU as well -- and which turns out to include the arch the exclusion
+# was protecting: over 2.9M fragments on the CPU arch the two arms agree
+# exactly at **9.2 ms against 52.0 ms**. A launch that WOULD stage still takes
+# the torch path.
 sheet_rank_groups = env_flag("ALGAN_SHEET_RANK_GROUPS", True)
 
 #: Most exact area a FULL-union band may hold and still count, for
@@ -392,7 +418,21 @@ def _lexsort(*keys):
     """Stable argsort by ``keys`` in priority order (first key most
     significant). Composes least-significant-first, the classic LSD trick the
     emission's own ``_exact_fragment_order`` uses.
+
+    The device arm (:func:`~algan.rendering.raytracing.device_sort.stable_lexsort`)
+    is the same composition with both halves moved off torch: each pass is
+    Quadrants' radix sort, and the ``index_select`` that carries the running
+    permutation into the next key happens inside that sort's own seed loop. It
+    declines wherever it does not apply, which is everywhere but a GPU arch in
+    MPS-friendly mode today, and this falls straight through to the torch form.
+
+    Its permutation is int32; widened here so every caller keeps the int64
+    order ``torch.argsort`` hands back, which several of them pass on to a
+    kernel whose element type is part of its specialization key.
     """
+    order = device_sort.stable_lexsort(*keys)
+    if order is not None:
+        return order.to(torch.int64)
     order = None
     for key in reversed(keys):
         k = key if order is None else key.index_select(0, order)
@@ -487,6 +527,9 @@ def _sheet_walk_order(pix, position):
         # determine the walk, with original sheet index preserving stable ties.
         key_run_order(pix, position, position, order, pix.numel(), True, False)
         return order
+    order = device_sort.stable_argsort(position)
+    if order is not None:
+        return order.to(torch.int64)
     return torch.argsort(position, stable=True)
 
 
@@ -508,13 +551,19 @@ def _sheet_rank_groups(parent, rank):
     parent: each fragment increases a claimed lane's count by one, so the
     running maximum cannot jump over a rank. Ranks may decrease within a
     parent; consecutive unique would therefore be incorrect here.
+
+    The kernel arm is asked for wherever a launch stages nothing, which since
+    ``taichi_launch_is_local`` learned about the Metal adoption includes an
+    Apple GPU. That is worth more there than the sort time: the torch arm's
+    ``parent * 16 + rank`` reaches 2**25 on a 4K frame, past where an MPS
+    integer gather stops being exact (``mps_compat._MPS_EXACT_INT_BITS``), and
+    the kernel never builds a composite key at all.
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
     n = parent.numel()
     if (
         sheet_rank_groups
-        and parent.device.type == "cuda"
         and 0 < n < 2**31
         and _live_arch() is not None
         and taichi_launch_is_local(parent.device)

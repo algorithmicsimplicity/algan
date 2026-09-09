@@ -10,6 +10,13 @@
 > open. This file is the earlier working report and its section 1 predates
 > the arena cap; where the two disagree, FINDINGS.md is current.
 
+> **Later: [`SHARED_QUEUE.md`](SHARED_QUEUE.md)** profiles a warm Metal render
+> and removes the two per-launch host fences; **[`DEVICE_SORT.md`](DEVICE_SORT.md)**
+> answers the two candidates it left open (a Quadrants radix sort, or fusing
+> the compaction's torch stages into kernels) and settles items 6-8 below --
+> the run sort is 23.5% of a warm UHD render on this box and 5.1% on a T4, and
+> the radix sort is a whole-render loss on both.
+
 Workload: `benchmarks/performance/nn_scene_UHD.py`, unchanged — 18 frames at
 3840×2160, `shadows=False`, `libx264 -preset ultrafast`. Box: the Mac harness
 (`agent_guidance/gpu_harnesses.md`), GitHub's Apple-silicon runner, a
@@ -209,7 +216,7 @@ kernel, 15.3%) outright and shrinks `wavefront_shade` substantially.
 | --- | --- | --- | --- |
 | 6 | **Narrow the sheet lexsort's keys, and fold three syncs into one** (landed) | `_lexsort(pix, gkey, t)` sorted two int64 keys whose values provably fit int32: 20 radix passes over `[n]` → 12, and the three separate readbacks that precede it → one | ~1.5–2% of a T4 render; more on Metal, where each readback is a command-buffer commit and wait |
 | 7 | **`torch.unique` → `unique_consecutive` where the input is provably sorted** (landed, 2 of 4 sites) | each `unique` is a clone, an index array, a full sort and a scatter; on non-decreasing input `unique_consecutive` gives the identical values and identical inverse | part of a 2–6% estimate for all four sites |
-| 8 | **Densely renumber `band_id*16 + rank` by arithmetic instead of `torch.unique`** | ranks within a band are provably a contiguous prefix `{0..R}`, so `offset[band] + rank` reproduces the sorted-unique ids exactly; replaces a full `[n]` int64 sort | the largest single remaining `unique` |
+| 8 | **Densely renumber `band_id*16 + rank` by arithmetic instead of `torch.unique`** (landed on Metal: see [DEVICE_SORT.md](DEVICE_SORT.md)) | ranks within a band are provably a contiguous prefix `{0..R}`, so `offset[band] + rank` reproduces the sorted-unique ids exactly; replaces a full `[n]` int64 sort. The kernel existed and was gated on CUDA **by name**; `taichi_launch_is_local` now answers for the Metal adoption, so it runs there too — and it retires a composite key that reaches 2**25, past where an MPS integer gather is exact | the largest single remaining `unique` |
 | 9 | **Stop the diced attribute fan** | 21 of 26 diced attributes are corner-uniform per-mob constants that are barycentrically interpolated across three corners and then reduced back to corner 0 by `_pack_material` | ~2/3 of the dice's largest transient; buys longer windows, which compounds |
 | 10 | **Let the chunk model escape one-frame chunks** | `ChunkMemoryModel.plan` returns 1 until calibrated, and with one distinct frame count observed `_safety_for` stays at the 1.6 probe margin — at 4K the single-frame peak can never satisfy `peak ≤ arena/3.2`, so the job is pinned at one frame per chunk *and* pays a 60% margin forever | pays every per-chunk fixed cost 18× at UHD; needs a forced-2-frame experiment to price |
 | 11 | **Overlap the arena preflight (`prefetch_gpu_prep`)** | projection + merge + BVH run on the render thread between batches with nothing in flight; the setting exists and is off | up to 8% on a T4. A readback on the worker waits out the whole queued render — one such class measured +5.3 s of a 24 s render — but a *counted* run of the prep path (12 surfaces, 6 frames, every `.item()`/`.tolist()`/`.nonzero()`/`bool()` attributed by call site) found **128 in the batch fetch and 54 in the prewarm**, of which the merge's ~17 are already the deliberately-batched collapses. So the sync half of this is smaller than it looks; the per-mob Python dispatch is the larger half |

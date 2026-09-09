@@ -1,4 +1,15 @@
-"""Per-pixel sheet ordering must match the stable global lexicographic sort."""
+"""Per-pixel sheet ordering must match the stable global lexicographic sort.
+
+**The reference is computed on the host**, and that is load-bearing rather than
+tidy. ``_lexsort``'s torch arm carries each key through an ``index_select`` per
+pass, and on MPS an integer gather rounds through a float32 above 2**24
+(``mps_compat._MPS_EXACT_INT_BITS``) -- so on an Apple GPU the device's own
+``_lexsort`` is not a reliable answer for the wide keys these cases
+deliberately use, and comparing a kernel against it was comparing two device
+paths and trusting the wrong one. The host arm has no such ceiling. Where a
+case's keys stay inside what every backend orders exactly, the device's torch
+arm is checked against the same host reference as well.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +25,16 @@ from algan.rendering.raytracing.sheets import (
     _unique_sorted_ids,
 )
 from algan.rendering.taichi_runtime import init_taichi, taichi_launch_is_local
+
+
+def _host_lexsort(*keys, device):
+    """``_lexsort`` computed on the CPU and moved to ``device``.
+
+    Exact at every key width, on every backend, and independent of whatever the
+    device's sort does with signed zeros -- MPS's orders -0.0 before +0.0 where
+    the CPU (and the kernel under test) call them equal.
+    """
+    return _lexsort(*(key.cpu() for key in keys)).to(device)
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +54,8 @@ def initialized_sort_kernel(monkeypatch):
 
 
 @pytest.mark.parametrize("lengths", [[], [0], [1], [2, 0, 7, 16, 17], [257, 3, 4097]])
-def test_pixel_order_matches_global_sort(lengths, initialized_sort_kernel):
+@pytest.mark.parametrize("wide_keys", [False, True])
+def test_pixel_order_matches_global_sort(lengths, wide_keys, initialized_sort_kernel):
     device = SETTINGS.computing.render_device
     gen = torch.Generator().manual_seed(174)
     n = sum(lengths)
@@ -45,11 +67,14 @@ def test_pixel_order_matches_global_sort(lengths, initialized_sort_kernel):
     offsets = torch.tensor(
         [0, *torch.tensor(lengths).cumsum(0).tolist()], dtype=torch.int32
     )
-    # Exercise signed 64-bit group keys without narrowing or packed-key overflow.
-    group[::5] += 1 << 40
-    group[1::7] -= 1 << 40
+    if wide_keys:
+        # Signed 64-bit group keys, without narrowing or packed-key overflow.
+        # Past 2**24 the device's own torch arm may not be exact (see the
+        # module docstring), so only the kernel is judged in this arm.
+        group[::5] += 1 << 40
+        group[1::7] -= 1 << 40
     pix, group, depth, offsets = (x.to(device) for x in (pix, group, depth, offsets))
-    expected = _lexsort(pix, group, depth)
+    expected = _host_lexsort(pix, group, depth, device=device)
     with SETTINGS.raytracing.experimental.override(sheet_pixel_sort=True):
         actual = _pixel_group_order(pix, group, depth, offsets)
     assert torch.equal(actual, expected)
@@ -57,7 +82,9 @@ def test_pixel_order_matches_global_sort(lengths, initialized_sort_kernel):
         n and taichi_launch_is_local(pix.device)
     )
     with SETTINGS.raytracing.experimental.override(sheet_pixel_sort=False):
-        assert torch.equal(_pixel_group_order(pix, group, depth, offsets), expected)
+        fallback = _pixel_group_order(pix, group, depth, offsets)
+    if not wide_keys:
+        assert torch.equal(fallback, expected)
 
 
 @pytest.mark.parametrize("n", [12, 129])
@@ -70,7 +97,11 @@ def test_pixel_order_preserves_depth_ties_and_nonfinite_order(n):
     offsets = torch.tensor([0, n], dtype=torch.int32, device=device)
     with SETTINGS.raytracing.experimental.override(sheet_pixel_sort=True):
         actual = _pixel_group_order(pix, group, depth, offsets)
-    assert torch.equal(actual, _lexsort(pix, group, depth))
+    # Host reference: -0.0 and +0.0 tie there, as they do in the kernel's own
+    # comparator. MPS's torch sort orders every -0.0 before every +0.0, which
+    # is the backend disagreeing with the CPU rather than the kernel with
+    # either -- and a depth, being a distance, is never a negative zero.
+    assert torch.equal(actual, _host_lexsort(pix, group, depth, device=device))
 
 
 def test_missing_pixel_offsets_keeps_reference_sort():
@@ -121,7 +152,7 @@ def test_shell_key_depth_order_matches_global_lexsort(n):
     depth[1::19] = float("inf")
     with SETTINGS.raytracing.experimental.override(sheet_pixel_sort=True):
         actual = _key_depth_order(key, depth)
-    assert torch.equal(actual, _lexsort(key, depth))
+    assert torch.equal(actual, _host_lexsort(key, depth, device=device))
 
 
 @pytest.mark.parametrize("lengths", [[0], [1], [7, 0, 129, 4097]])

@@ -551,26 +551,58 @@ def taichi_arch_is_cuda():
     return _taichi_arch() == ti.cuda
 
 
+def taichi_arch_is_metal():
+    """Whether Taichi runs kernels on the Metal backend.
+
+    Distinct from "the render device is MPS": ``_ARCHS_SERVING_DEVICE`` lists
+    Vulkan as a second backend that serves an Apple GPU (a ``TI_ARCH`` /
+    ``QD_ARCH`` override reaches it), and only the Metal one has the buffer
+    adoption :func:`taichi_launch_is_local` asks about. So this names the arch
+    rather than the device, and answers False under that override.
+
+    Reads the live program's arch when Taichi is already up and Algan's
+    selected backend otherwise, so asking never forces initialization.
+    """
+    live = _live_arch()
+    if live is not None:
+        return live == ti.metal
+    return _taichi_arch() == ti.metal
+
+
 def taichi_launch_is_local(device):
     """Whether a kernel launched against a tensor on ``device`` avoids staging.
 
     The inverse of the hazard :func:`taichi_arch_is_cpu` describes. A launch is
-    free of the copy exactly when Taichi can bind the torch allocation itself,
-    and only two pairings can:
+    free of the copy exactly when the compiler can bind the torch allocation
+    itself, and three pairings can:
 
-    * a **host** tensor on a **CPU** arch, and
-    * a **CUDA** tensor on a **CUDA** arch.
+    * a **host** tensor on a **CPU** arch,
+    * a **CUDA** tensor on a **CUDA** arch, and
+    * an **MPS** tensor on a **Metal** arch, *when the zero-copy conversion is
+      installed* (:func:`algan.rendering.mps_zero_copy.installed`).
+
+    The third one is younger than the other two and is the reason this function
+    is not simply ``device.type == "cuda"``. The generic
+    ``Device::import_memory`` virtual really is CPU/CUDA only, so stock Taichi
+    copies an MPS argument to the host before a Metal launch and copies it back
+    after (``kernel_impl.py``) -- measured at 53x the cost of the same kernel on
+    the CPU arch (``DESIGN_mps_support.md`` §1.3), and *incorrect* for Algan's
+    arena convention besides. But the Metal RHI carries its own non-virtual
+    ``MetalDevice::import_mtl_buffer``, and :mod:`algan.rendering.mps_zero_copy`
+    reaches it in front of every launch, so on the build Algan installs an MPS
+    argument is bound rather than copied (``DESIGN_mps_zero_copy.md`` §1). The
+    install is what is asked about, not the platform: it is a no-op on a build
+    without the adoption, and there the answer must stay False.
 
     Everything else stages, including a pairing whose two halves name the same
-    physical device. That is not obvious and it is the whole reason this is not
-    ``device.type == render_device().type``: Taichi implements
-    ``Device::import_memory`` for ``CpuDevice`` and ``CudaDevice`` and for
-    nothing else, so its Metal and Vulkan backends cannot take a pointer they
-    did not allocate. An MPS tensor on a Metal arch is therefore copied to the
-    host before the launch and copied back after (``kernel_impl.py``), even
-    though both sides are the same Apple GPU -- measured at 53x the cost of the
-    same kernel on the CPU arch, against a device-equality test that called it
-    free (``DESIGN_mps_support.md`` §1.3).
+    physical device -- a Vulkan program serving that same Apple GPU has no
+    adoption of its own and takes the copy.
+
+    Widening this opens few paths on its own: most call sites carry a second
+    gate that is still closed on Metal (``ALGAN_REFIT_PACK_KERNEL``,
+    ``ALGAN_SHEET_PIXEL_SORT``, ``ALGAN_SHEET_METADATA_KERNEL``), and the PN
+    level searches are decided by ``pn_criterion_kernel_active`` instead, which
+    asks a different question and still answers no there.
 
     Phrased as a property of the pairing rather than as ``device.type ==
     "cuda"``, because those are not the same question either. A host tensor on
@@ -580,7 +612,13 @@ def taichi_launch_is_local(device):
     """
     if taichi_arch_is_cpu():
         return device.type == "cpu"
-    return device.type == "cuda" and taichi_arch_is_cuda()
+    if device.type == "cuda":
+        return taichi_arch_is_cuda()
+    if device.type != "mps":
+        return False
+    from algan.rendering.mps_zero_copy import installed
+
+    return taichi_arch_is_metal() and installed()
 
 
 #: CPU batch-prep kernels that are dispatched by default.
