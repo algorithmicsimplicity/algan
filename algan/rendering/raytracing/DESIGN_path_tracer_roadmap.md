@@ -193,7 +193,7 @@ These are not preferences; each is load-bearing and tested.
    by construction here.
 5. **The sampler dimension table** in `path_tracer_taichi.py`'s module
    docstring is the registry of who consumes randomness. Pairs
-   `2 + 6b + 4, 5` are already **reserved for volumes**.
+   `2 + 6b + 4, 5` are consumed by **medium free flights and HG directions** (§4).
 
 
 ## 0. Throughput first: the baseline, the cheap wins, and the switch
@@ -729,55 +729,106 @@ on the `translucency_and_order` suite scene (2-D content must pass through
 the temporal filter unchanged).
 
 
-## 4. Volumes and subsurface scattering
+## 4. Volumes and subsurface scattering — homogeneous v1 LANDED
 
-**Not fallback work**, for the same reason as §1: the deterministic renderer
-has no volumes either, so nothing here is a scene the fallback refuses. It
-is the largest new capability on the list and sits behind everything the
-fallback role needs. Kept because the scaffolding decisions below (the
-reserved sampler pairs, the media stack) constrain the work that *is*
-scheduled.
+**LANDED 2026-09-09:** homogeneous participating media and shell-scoped
+random-walk subsurface scattering. This is a new capability rather than
+parity work: the deterministic renderer has no stochastic volume transport
+and now names this limitation, pointing to `samples_per_pixel > 1`, instead
+of silently ignoring an authored scattering interior.
 
-**Why absent.** Not started; largest scope. What *does* exist is the
-scaffolding: the refraction path carries a nested-media stack in `rs_sca`
-(entry/exit tracking per closed shell), Beer–Lambert absorption is already
-applied over interior chords for transmissive solids on both view and shadow
-rays, `closed_shell` declarations identify watertight interiors, and sampler
-pairs `2 + 6b + 4, 5` are reserved for exactly this.
+### Authoring and transport
 
-**What it would take**, in landing order:
+`MeshPhysicalMaterial(sigma_s=..., g=...)` supplies a finite non-negative
+scalar or RGB scattering rate (inverse scene units) and Henyey–Greenstein
+anisotropy (`-1 < g < 1`, positive forward, zero isotropic). Existing
+`attenuation_color` / `attenuation_distance` continue to define `sigma_a`.
+These numerical rates are NOT colors and never undergo sRGB decoding.
 
-* **Homogeneous scattering media (v1).** Per-material `sigma_s` + phase
-  anisotropy `g` (Henyey–Greenstein) alongside the existing
-  `attenuation_color/_distance` (which already define `sigma_a`). In
-  `pt_shade`: after traverse returns the next surface hit at `t_hit`, sample
-  a medium-event distance `t_med ~ Exp(sigma_t)` from a reserved pair; if
-  `t_med < t_hit`, the crossing becomes a *medium vertex* — HG-sample a new
-  direction, run the NEE block from the interior point with transmittance
-  along the shadow ray (analytic for homogeneous media — no ratio tracking
-  needed), and continue. The wavefront loop barely changes shape: a medium
-  event is "a scatter that consumed no hit", and the current media stack
-  says which medium the segment is inside. MIS bookkeeping: phase-function
-  pdf slots into the existing `_SCA_PREV_PDF` convention unchanged.
-* **Heterogeneous media** (density fields, ratio tracking / delta tracking)
-  are explicitly v2: they need a field representation the scene format does
-  not have, and null-collision loops whose iteration counts are
-  data-dependent (reproducible, but a real occupancy cost).
-* **Subsurface scattering.** Once homogeneous media exist, random-walk SSS is
-  the same machinery scoped to one shell's interior: high `sigma_s`, walk
-  until the path re-crosses the *same* `tri_obj` surface (the identity the
-  closed-shell ring already reads). That is the physically-faithful version
-  and the one to land first; a Burley normalized-diffusion profile (sample a
-  disk, probe-ray back onto the surface) is a later optimization for
-  thick-media cost, not a prerequisite.
-* **Denoiser interplay:** none required — the OIDN RT weights handle
-  volumetric noise; medium vertices should write scatter albedo and a zero
-  normal into the existing AOV guides.
+The geometry must be a watertight, consistently oriented triangle shell
+with `closed_shell=True`. Closed built-in solids declare this already.
+`transmission=1, ior=1, roughness=0` produces an optically invisible fog
+boundary; use the ordinary dielectric interface and higher `sigma_s` for
+random-walk SSS. No separate surface-color diffusion hack or API toggle is
+needed. Transmission controls entry into the interior, as it does for glass.
 
-**Verification:** a homogeneous slab against the closed-form
-single-scatter + attenuation solution (the codebase's torch-quadrature
-reference-test pattern from Stage 3); a dense-medium cube converging to its
-diffusion limit.
+`pt_shade_arena` samples a flight before consuming its next surface hit.
+The RGB estimator selects one channel uniformly, samples its exponential,
+and divides by the *marginal RGB* collision/survival density, not that
+channel's PDF (`pt_media_taichi._pt_medium_sample`). Pure absorption is
+integrated analytically. At a collision, a virtual medium vertex consumes
+no surface event: it samples the existing light tree/NEE table, evaluates
+HG over the full sphere, samples an HG continuation, and stores that PDF in
+`_SCA_PREV_PDF` for the existing emitter/environment MIS. Both surface and
+medium scatters spend `max_bounces` and use eta-aware Russian roulette.
+Null index-matched boundaries preserve the previous vertex/PDF and do not
+spend bounces. Increasing the depth is important for optically thick SSS.
+
+### Identity, boundaries, and visibility
+
+The existing opacity ring's `tri_closed` is deliberately transmission-exempt;
+it CANNOT identify a physical medium. Packing therefore retains the raw
+closed-shell declaration in material slot 38. `pt_media._prepare_media`
+adds a second half to the PT shell table, containing the actual `tri_obj`
+identities, including zero-density nested cavities. Entry/exit matching is
+by object identity rather than triangle index. Four representative triangle
+indices form a fixed stack, with last-entered priority for overlapping
+interiors. An unrelated object's exit cannot pop the SSS shell.
+
+A bounded forward probe initializes containment at the actual near-clipped
+camera point, including cameras inside nested media. Shadow connections
+integrate `exp(-integral(sigma_a + sigma_s) ds)` piecewise through the same
+shell identities, including partial chords when a light is inside a medium.
+Tracked shells have their legacy chord-absorption fields zeroed in a
+PT-private `tri_extra` copy to avoid double attenuation; the shared scene
+and deterministic renderer's arrays are not mutated. Extinction remains
+active with surface shadows or `casts_shadows` disabled. Surface visibility
+passes index-matched boundaries, but stops at an index-changing interface.
+Those connections require an actual Fresnel/BSDF continuation: pretending
+that they are straight transparent shadows double-counts paths when the
+specular event resets MIS state, and adds energy in dense glass. Delta-light
+refractive caustics still require the future caustic work.
+
+### Contracts and diagnostics
+
+* No path splitting or density-dependent allocation. `PT_INT_WIDTH` grows
+  from 9 to 16 words (four medium entries plus initialization/event/segment
+  counters); `_PT_BYTES_PER_SLOT` includes the 28-byte increase. Scene tables
+  are scoped arena allocations made before selecting the tile/wave budget.
+* No new scene-specific kernel template gate or arena argument. Runtime
+  `nee_meta[21]` enables the second shell-table half; scenes with zero
+  scattering retain their old scene arrays and transport. The header grows
+  to 22 words and the optional blue-noise tile follows it.
+* Sampler pair `2 + 6b + 4` chooses the RGB channel and flight distance;
+  a documented hash salt plus straight-subsegment ordinal makes draws fresh
+  across transparent subdivisions without depending on batch boundaries.
+  Pair `2 + 6b + 5` samples HG. Surface peels and virtual medium events have
+  distinct crossing-indexed NEE blocks. There is no shared mutable RNG.
+* Transparent-export coverage carries RGB-mean medium survival, including
+  analytically absorbed or depth-exhausted segments; dark fog is not silently
+  exported with zero alpha. RGB channel-mixture weights survive subdivision.
+* Medium AOVs write scatter albedo and zero normal. Invisible boundaries do
+  not claim a surface guide. Medium draws mark pixels stochastic, so adaptive
+  sampling cannot prematurely freeze a dark low-sample volume pixel.
+* Exceeding four tracked interiors or the containment/extinction query's
+  `max_surfaces_per_ray` ceiling is fail-closed and reported in
+  `RenderPlan.truncations.medium_stack` / `medium_query`. The existing
+  snapshot/restore contract prevents counting discarded OOM attempts twice.
+
+### Verification and remaining scope
+
+`tests/unit_tests/test_pt_media.py` checks RGB free-flight expectations against
+closed-form slab integrals (including zero-rate channels), HG normalization,
+mean cosine and matched PDFs, shell matching/overflow, camera containment,
+and the complete renderer's single-scatter slab solution with absorption and
+surface shadows both on and off. A dense conservative cube checks the uniform
+radiation field that is the lossless diffusion limit, below saturation so
+energy gains cannot hide.
+
+**Explicitly deferred:** heterogeneous density fields, ratio/delta tracking,
+and Burley normalized-diffusion/profile sampling. The first needs a scene
+field representation and null-collision loops; the last is an optimization
+for thick-media walk cost, not a substitute for the implemented random walk.
 
 
 ## 5. One material, two direct-lighting responses — LANDED

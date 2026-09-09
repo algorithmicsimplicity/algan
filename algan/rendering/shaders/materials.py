@@ -431,6 +431,21 @@ def _attenuation_sigma(attenuation_color, attenuation_distance):
     return -torch.log(c.clamp(1e-6, 1.0)) / float(attenuation_distance)
 
 
+def _scattering_parameters(sigma_s, g):
+    """Validate numerical coefficients without applying any color-space decode."""
+    import torch
+
+    coefficients = torch.as_tensor(sigma_s, dtype=torch.float32).detach().reshape(-1)
+    if coefficients.numel() not in (1, 3):
+        raise ValueError("sigma_s must be a scalar or three RGB coefficients")
+    if not bool(torch.isfinite(coefficients).all()) or bool((coefficients < 0).any()):
+        raise ValueError("sigma_s must contain finite, non-negative coefficients")
+    anisotropy = float(g)
+    if not math.isfinite(anisotropy) or not -1.0 < anisotropy < 1.0:
+        raise ValueError("g must be finite and strictly between -1 and 1")
+    return coefficients.expand(3).clone(), anisotropy
+
+
 def _to_color5(value):
     """Parse a color into a 5-channel :class:`Color` ``[R, G, B, glow, opacity]``.
 
@@ -739,8 +754,108 @@ MeshStandardMaterial = PBRMaterial
 
 
 class AdvancedPBRMaterial(MeshStandardMaterial):
-    """Extends :class:`MeshStandardMaterial` with clearcoat, sheen, ior-driven
-    specular, ray-traced transmission, and approximate iridescence.
+    """Configure a physical surface and, optionally, a scattering interior.
+
+    Extends :class:`MeshStandardMaterial` with clearcoat, sheen, refraction,
+    absorption, and approximate iridescence. ``MeshPhysicalMaterial`` is an
+    alias of this class. With path tracing (``samples_per_pixel > 1``), a
+    nonzero ``sigma_s`` adds homogeneous scattering inside a watertight,
+    consistently wound triangle shell. Low coefficients describe fog; high
+    coefficients describe random-walk subsurface scattering. Use transmission
+    to let light enter the interior; ``ior=1, transmission=1, roughness=0``
+    gives an invisible fog boundary rather than a glass interface.
+
+    Animation
+    ---------
+    Construction is immediate and records no animation. Apply the material
+    with ``mob.set_material(...)`` before spawning the mob. Afterwards,
+    ``mob.sigma_s`` and ``mob.g`` are animatable shader parameters, like
+    ``mob.roughness``; coefficients are per scene-length unit, not colors.
+
+    Parameters
+    ----------
+    color
+        Surface color. Defaults to None, preserving the mob's existing color.
+    clearcoat
+        Additional coating strength. Defaults to 0, disabling it.
+    clearcoat_roughness
+        Coating roughness from 0 to 1. Defaults to 0.
+    ior
+        Interior index of refraction. Defaults to 1.5; 1 matches air.
+    reflectivity
+        Compatibility alias for dielectric IOR. Defaults to None, using
+        ``ior``; when supplied, maps to ``(1 + 0.4*r) / (1 - 0.4*r)``.
+    specular_intensity
+        Dielectric specular strength. Defaults to 1.
+    specular_color
+        Dielectric specular tint. Defaults to WHITE.
+    sheen
+        Sheen strength. Defaults to 0, disabling it.
+    sheen_roughness
+        Sheen roughness from 0 to 1. Defaults to 1.
+    sheen_color
+        Sheen tint. Defaults to BLACK.
+    transmission
+        Fraction assigned to transmission, from 0 to 1. Defaults to 0.
+        Use 1 for a fully transmitting boundary around a scattering interior.
+    thickness
+        Stored compatibility value, default 0. The renderer measures actual
+        geometric path lengths instead; this value does not scale scattering.
+    attenuation_color
+        Color transmitted after ``attenuation_distance`` scene units.
+        Defaults to WHITE, giving no absorption. This defines absorption
+        independently of ``sigma_s``.
+    attenuation_distance
+        Reference absorption distance in scene-length units. Defaults to
+        infinity, disabling absorption; non-positive values also disable it.
+    sigma_s
+        Homogeneous scattering coefficient in inverse scene-length units.
+        Accepts a finite non-negative scalar or three RGB coefficients of
+        shape ``(3,)``. Defaults to 0, disabling interior scattering. Values
+        are numerical rates and are never decoded from sRGB. Requires path
+        tracing and geometry declared ``closed_shell=True``; built-in closed
+        solids declare this automatically. Open surfaces are rejected.
+    g
+        Dimensionless Henyey--Greenstein anisotropy, strictly between -1 and 1.
+        Defaults to 0 (isotropic); positive values favor forward scattering,
+        negative values backscattering. Used only by the scattering interior.
+    iridescence
+        Approximate iridescence strength. Defaults to 0, disabling it.
+    iridescence_ior
+        Stored compatibility index for iridescence. Defaults to 1.3.
+    **kwargs
+        Parameters forwarded to :class:`MeshStandardMaterial`, including
+        ``roughness`` (default 1), ``metalness`` (default 0), and texture slots.
+
+    Raises
+    ------
+    ValueError
+        If scattering coefficients are negative, non-finite, or not scalar/RGB,
+        or if anisotropy is non-finite or outside its open interval.
+
+    Notes
+    -----
+    Scattering is homogeneous, not a density texture. Nested interiors use
+    a fixed four-shell stack with last-entered priority. Overflow is reported
+    and affected paths are absorbed. Increase ``max_bounces`` for dense media:
+    both surface and interior scatters spend that shared budget; invisible
+    index-matched boundaries do not. Density fields and diffusion-profile
+    approximations are not implemented.
+
+    Examples
+    --------
+    .. algan:: PhysicalScatteringSphere
+
+        from algan import *
+
+        SETTINGS.raytracing.set(samples_per_pixel=64, max_bounces=32)
+        sphere = Sphere()
+        sphere.set_material(MeshPhysicalMaterial(
+            color=WHITE, transmission=1, roughness=0.1,
+            sigma_s=(2.0, 3.0, 5.0), g=0.2,
+        ))
+        sphere.spawn()
+        Scene.save_video()
     """
 
     shader = staticmethod(ms.physical_shader)
@@ -762,6 +877,8 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         thickness=0.0,
         attenuation_color=WHITE,
         attenuation_distance=math.inf,
+        sigma_s: float | tuple[float, float, float] = 0.0,
+        g: float = 0.0,
         iridescence=0.0,
         iridescence_ior=1.3,
         **kwargs,
@@ -789,6 +906,7 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
         self.thickness = thickness
         self.attenuation_color = _to_color5(attenuation_color)
         self.attenuation_distance = attenuation_distance
+        self.sigma_s, self.g = _scattering_parameters(sigma_s, g)
         self.iridescence = iridescence
         self.iridescence_ior = iridescence_ior
 
@@ -812,6 +930,8 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             "iridescence": self.iridescence,
             # Beer-Lambert absorption coefficient (see _attenuation_sigma);
             # zeros when the material does not attenuate.
+            "sigma_s": _scattering_parameters(self.sigma_s, self.g)[0],
+            "g": self.g,
             "attenuation_sigma": _attenuation_sigma(
                 self.attenuation_color, self.attenuation_distance
             ),

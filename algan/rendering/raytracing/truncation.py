@@ -36,6 +36,13 @@ The ceilings, and what each costs when it binds:
     again instead of being suppressed, so translucent solids nested more
     than four deep render slightly too opaque.
 
+``medium_stack``
+    Four simultaneously tracked closed physical interiors. An overflowing path
+    or visibility query is absorbed (fail-closed), never leaked to the sky.
+``medium_query``
+    A containment/extinction query exhausted ``max_surfaces_per_ray``. Its
+    result is absorbed rather than pretending unknown geometry was vacuum.
+
 Reporting.  Truncation is a correctness event, not a budgeting one, so the
 first occurrence of each ceiling in a render is a ``WARNING`` -- unlike the
 wavefront's pool retries and batch splits, which are the memory model working
@@ -100,6 +107,10 @@ class TruncationCounts:
     #: found the per-ray ring full; those crossings attenuated per crossing
     #: (the pre-ceiling behaviour) instead of once per entry/exit pair.
     closed_shell_ring: int = 0
+    #: Medium paths/queries that exceeded the fixed shell stack; absorbed.
+    medium_stack: int = 0
+    #: Containment or extinction queries that exhausted the surface budget.
+    medium_query: int = 0
 
     @property
     def total(self) -> int:
@@ -117,6 +128,15 @@ class TruncationCounts:
 #: Written to say what moved in the image and what to do about it, because the
 #: reader of a WARNING has not read this module.
 _CEILING_MESSAGES = {
+    "medium_stack": (
+        "{count} medium path/query(s) exceeded {cap} nested interiors and were "
+        "absorbed to avoid light leaks. Reduce overlapping closed volumes."
+    ),
+    "medium_query": (
+        "{count} medium containment/extinction query(s) exceeded {cap} surfaces "
+        "and were absorbed to avoid light leaks. Reduce overlapping geometry "
+        "or raise max_surfaces_per_ray before importing Algan."
+    ),
     "surfaces_per_ray": (
         "{count} primary ray(s) hit the {cap}-surface compositing ceiling "
         "(max_surfaces_per_ray) and stopped early: the background shows "

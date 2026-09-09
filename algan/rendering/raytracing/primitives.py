@@ -50,6 +50,7 @@ from algan.rendering.raytracing.settings import (
     _shader_material_id,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MAT_MEDIUM_CLOSED,
     _MAT_NO_SHADOW_RECEIVE,
     _MAT_ONE_SIDED,
     MAT_W,
@@ -929,6 +930,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         no_shadow_receive = getattr(self, "no_shadow_receive", None)
         if no_shadow_receive is not None and rt_settings.per_mob_shadow_flags:
             pairs.append((_MAT_NO_SHADOW_RECEIVE, per_triangle(no_shadow_receive)))
+        medium_closed = getattr(self, "closed_shell", None)
+        if medium_closed is not None:
+            pairs.append((_MAT_MEDIUM_CLOSED, per_triangle(medium_closed)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = (
             torch.tensor(_MAT_DEFAULTS, device=device)

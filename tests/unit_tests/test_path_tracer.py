@@ -2476,6 +2476,7 @@ def test_the_fallback_refuses_nothing():
             scene_environment_map=torch.zeros((1, 1, 3))
         ),
         "refractive": lambda kw: kw["merged"].update(has_refractive=True),
+        "scattering": lambda kw: kw["merged"].update(has_scattering_media=True),
         "user_pipeline": lambda kw: kw["merged"].update(has_user_pipeline=True),
         "custom_scatter": lambda kw: kw["merged"].update(
             has_user_pipeline=True, has_custom_scatter=True
@@ -2516,6 +2517,7 @@ def test_the_fallback_refuses_nothing():
         )
     # ... and the features it does honour are still *reported* as requested.
     assert set(everything.requested_features) == {
+        "homogeneous scattering media / random-walk SSS",
         "environment maps",
         "refractive materials",
         "custom fragment-shader pipelines",

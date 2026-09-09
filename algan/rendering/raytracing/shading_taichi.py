@@ -53,6 +53,10 @@ single-stage pipeline)::
     both matching MeshDepthMaterial's defaults)
     33 no_shadow_receive (declared by the GEOMETRY like slot 26 -- see
     ``_MAT_NO_SHADOW_RECEIVE``)
+    34..36 sigma_s (RGB scattering coefficient, inverse scene units)
+    37 g (Henyey-Greenstein phase anisotropy)
+    38 medium_closed (raw closed-shell GEOMETRY declaration, independent of
+    transmission-exempt opacity compositing)
 
 Every slot above carries a 0.0 default that means "the behaviour that existed
 before" (the padding rule on ``_MAT_ONE_SIDED`` below), so the zero-padded
@@ -74,7 +78,10 @@ from algan.rendering.raytracing.color_space_taichi import (
 from algan.taichi_compat import ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 34
+MAT_W = 39
+_MAT_SIGMA_S = 34  # RGB scattering coefficient, inverse scene units
+_MAT_PHASE_G = 37  # Henyey-Greenstein anisotropy
+_MAT_MEDIUM_CLOSED = 38  # raw geometric declaration, NOT the opacity ceiling
 
 # Slot 26 of that block: 1.0 when the primitive's geometry declares an outside,
 # so a back-facing hit is shaded with its own normal instead of the viewer's

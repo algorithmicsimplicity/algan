@@ -2307,6 +2307,14 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     scene["has_user_pipeline"] = any(
         material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
+    from algan.rendering.raytracing.shading_taichi import _MAT_SIGMA_S, _MID_PHYSICAL
+
+    scene["has_scattering_media"] = bool(
+        (
+            (scene["tri_mat_id"] == _MID_PHYSICAL)
+            & (scene["tri_mat"][..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] != 0).any(dim=-1)
+        ).any()
+    )
     # Area-light radiance is already linear in the light snapshot. Decode the
     # authored geometry first, then insert emitters before the ONE BVH build
     # and arena preflight/upload. The deterministic merge keeps its row model.

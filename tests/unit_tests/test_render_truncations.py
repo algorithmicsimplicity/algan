@@ -127,6 +127,8 @@ def test_a_render_that_truncated_nothing_reports_zero_rather_than_nothing():
         "sheet_layers": 0,
         "dropped_continuations": 0,
         "closed_shell_ring": 0,
+        "medium_stack": 0,
+        "medium_query": 0,
     }
 
 
@@ -137,9 +139,11 @@ def test_total_covers_every_ceiling():
         sheet_layers=4,
         dropped_continuations=8,
         closed_shell_ring=16,
+        medium_stack=32,
+        medium_query=64,
     )
 
-    assert counts.total == 31
+    assert counts.total == 127
     assert counts
 
 
