@@ -1455,3 +1455,95 @@ three facts they were quietly assuming away.
   which declines on Metal by design (§7.5 of the mac_2026_09 findings).
 
 Each is now faked outright, which is what the tests around them already did.
+
+
+### 4.7 `NDArray dimension length > INT_MAX`: the pool is two machines
+
+Master @ dc63e21 killed the arm in under seven minutes, twice, with five
+renders dying in
+
+    MPSNDArray.mm:831: failed assertion
+    `[MPSNDArray initWithDevice:descriptor:isTextureBacked:]
+     Error: NDArray dimension length > INT_MAX'
+
+which is `abort()`, not an exception — so xdist replaced the worker four times
+and gave up (`-n 1` makes `--max-worker-restart` 4). Runs 34487179359 attempts
+1 and 2 landed on different runners and produced **the same 19 failures off the
+same five crashes, in the same order**: `19 failed, 1298 passed, 196 skipped`
+both times. It is not a flake.
+
+**But four other MPS runs of the same renderer code are clean**, and that is
+the finding. Run 34483019642 @ 98367d6 — which differs from dc63e21 only in
+`test_path_tracer.py` and `code_quality.yaml`, neither reachable from the tests
+that die — ran the arm to completion: `1 failed, 4050 passed`. Runs 34493582338,
+34494233578 and 34497639909 on `claude/vibrant-faraday-y8b713` reached 33-100%
+clean, well past the test that dies first. So the variable is not the commit; it
+is the machine.
+
+**Which machine, though, is not settled, and the obvious proxy does not work.**
+Setup-step duration looked like it separated them and does not: the two runners
+that abort install BasicTeX in 21-26 s and the project in 10-12 s, but runner
+1000003511 does the same work in 26 s and 13 s and stays clean. So there is no
+classifier here yet — only the fact that repeated runs on one runner agree with
+themselves and disagree across runners.
+
+**What the aborts were doing.** `PYTHONFAULTHANDLER` is now set for the job;
+the five stacks name three call sites, none of them about memory:
+
+| site | the op |
+| --- | --- |
+| `post_process._frames_to_host` ×2 | `frame_out.flip(-3)`, `uint8` |
+| `raster_pipeline.prepare_sparse_raster_coverage` ×2 | `opaque_u[a:b].fill_(True)`, `bool` |
+| `bloom.bloom_filter` ×1 | `torch.amax(x[..., 3:4])`, `uint8` |
+
+Three unrelated ordinary ops, and not one has an operand within three orders of
+magnitude of `2**31` — these are 64x64 and LD frames. What they share is that
+every operand is a **view of the render arena**, and all three are one byte
+wide. The arena is a single `uint8` tensor handing out offset slices re-viewed
+to the caller's dtype, and torch's MPS backend materialises such a view by
+describing the whole underlying buffer as a flat `MPSNDArray` of
+`storage_bytes / element_size` — which for a one-byte view *is* the arena's
+byte count. That is the only quantity in the process that can reach `INT_MAX`,
+and it is the only thing all three sites have in common.
+
+**Confirmed by experiment, on a runner that does NOT crash.** Waiting to land
+on one that does is not necessary, because the claim is about a buffer length,
+not about a render — so ask it directly. Two subprocesses, each allocating one
+`uint8` buffer and writing the same four kilobytes of it:
+
+| buffer | `t[4096:8192].fill_(1)` |
+| --- | --- |
+| `2**31 - 4096` = 2147479552 B | returncode **0**, "survived" |
+| `2**31 + 4096` = 2147487744 B | returncode **-6**, `NDArray dimension length > INT_MAX` |
+
+Eight kilobytes of buffer either side of `INT_MAX` is the entire difference,
+and the view written is 4 KiB in both. So the axis Metal is handed is the
+**buffer's** length and not the view's, one-byte views of a big arena are
+exactly the case that cannot work, and every one of the five stacks above is
+that case. Run 34538422428, on a 7 GiB runner whose own arena is nowhere near the
+ceiling — which is what makes the mechanism answerable without waiting to draw
+a runner that aborts.
+
+**And the arena is a function of the machine.** It is
+`rendering_memory_fraction` (0.4) of `get_num_available_bytes`, which
+`_MPS_HOST_SHARE` caps at 0.4 of total RAM — 0.16 of RAM, crossing `INT_MAX`
+above ~13.4 GB. The one runner measured (1000003523) reports 7.0 GiB total,
+4.67 GiB `recommended_max_memory` and a **1.12 GiB** arena, comfortably under;
+a 16 GB machine would get 2.56 GB, over by 19%.
+
+**What remains unmeasured is the arena on a runner that aborts.** No run that
+crashed has printed its figure, so the last link — that these particular aborts
+were the arena crossing the ceiling rather than some other buffer — is inferred
+from the three call sites sharing an arena view, not measured. The gate step now
+prints those four numbers on every run, so the next abort records it. Until one
+does, the clamp below is a proven guard against a proven hazard, and not yet
+demonstrated to be the fix for these runs.
+
+`_addressable_arena_bytes` caps a Metal arena a megabyte under `INT_MAX` and
+leaves every other device alone. It is an addressing limit, not a budget: past
+it the arena is not describable in one dimension on this backend, and the
+failure is a SIGABRT in an unrelated op rather than anything a caller can act
+on. The megabyte of margin is there because the length Metal sees is the buffer
+torch's allocator actually took, which it may round up from the request. Below
+the ceiling the clamp is the identity, so it changes nothing on a 7 GiB runner
+or on any Mac below ~13.4 GB.
