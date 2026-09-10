@@ -3883,3 +3883,10 @@ sheet_depth_buffer_reuse = env_flag("ALGAN_SHEET_DEPTH_BUFFER_REUSE", False)
 # Two device passes replace the Torch sibling-weight graph and its host read.
 # Live A/B switch; opt-in until whole-render measurements justify enabling it.
 sheet_sibling_weights_kernel = env_flag("ALGAN_SHEET_SIBLING_WEIGHTS_KERNEL", False)
+
+
+# UV texture anti-aliasing. Read at merge time; directories carried as DATA
+# enable/disable filtering without recompilation or extra per-ray allocations.
+# Reduced levels are linear-light and coverage-premultiplied for colour maps.
+# LOD uses UV density, grazing incidence and accumulated camera-path distance.
+texture_antialiasing = True

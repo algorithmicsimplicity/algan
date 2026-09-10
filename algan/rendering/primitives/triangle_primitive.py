@@ -160,6 +160,8 @@ class TrianglePrimitive(RenderPrimitive):
         # sampler lerps the two endpoint texels before decoding. None = the
         # map's leading axis is batch time, as always.
         self.texture_lerp = None
+        # Axes with an explicit duplicated closing texel (Surface wrap padding).
+        self.texture_wrap = (False, False)
         self.material_texture_map = None
         self.material_texture_flags = 0
         self.normal_texture_map = None
@@ -232,6 +234,9 @@ class TrianglePrimitive(RenderPrimitive):
                 tex = getattr(triangle, "texture_map", None)
                 if tex is not None:
                     self.texture_map = tex
+                    self.texture_wrap = getattr(
+                        triangle, "texture_wrap", (False, False)
+                    )
                     # The opacity scalars and the u8-provenance proof describe
                     # THIS map, so they ride the same first-member-with-a-map
                     # contract (exact because textured primitives are batched
@@ -250,6 +255,9 @@ class TrianglePrimitive(RenderPrimitive):
                 tex = getattr(triangle, "material_texture_map", None)
                 if tex is not None:
                     self.material_texture_map = tex
+                    self.texture_wrap = getattr(
+                        triangle, "texture_wrap", (False, False)
+                    )
                     self.material_texture_flags = getattr(
                         triangle, "material_texture_flags", 0
                     )
@@ -258,6 +266,9 @@ class TrianglePrimitive(RenderPrimitive):
                 tex = getattr(triangle, "normal_texture_map", None)
                 if tex is not None:
                     self.normal_texture_map = tex
+                    self.texture_wrap = getattr(
+                        triangle, "texture_wrap", (False, False)
+                    )
                     break
             return
 

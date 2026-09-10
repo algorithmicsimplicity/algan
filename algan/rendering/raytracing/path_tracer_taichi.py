@@ -245,6 +245,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _sided_shading_normal,
     light_vis_index,
 )
+from algan.rendering.raytracing.texture_mips_taichi import _triangle_uv_footprint
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _DONE,
@@ -2471,13 +2472,17 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 metalness = -1.0
                 rough = 0.0
                 pid = _MID_UNLIT
+                tex_du, tex_dv = 0.0, 0.0
                 if htype == 1:
+                    tex_du, tex_dv = _triangle_uv_footprint(
+                        0, f, prim, rd, (base_dist + t_hit) * pixel_size_per_t,
+                        tri_pos, tri_uvs, tri_tex_meta, num_colored_triangles)
                     color, alpha = _tri_color_g(
                         0, f, prim, w0, a, b, tri_colors, tri_colors, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
+                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                     metalness, rough = _tri_extra_g(
                         0, f, prim, w0, a, b, tri_extra, tri_colors, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
+                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                     pid = tri_mat_id[f % tri_mat_id.shape[0], prim]
                 elif htype == 0:
                     color, alpha = _sample_circuit_color(
@@ -2539,7 +2544,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                 if htype == 1:
                     ior, T = _tri_ior_transmission_g(
                         0, f, prim, w0, a, b, tri_extra, tri_colors, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
+                        tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                 elif htype == 0:
                     cm2 = f % circuit_meta.shape[0]
                     ior = circuit_meta[cm2, prim, _M_IOR]
@@ -2558,7 +2563,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     if htype == 1:
                         snrm = _tri_normal_g(
                             0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
-                            tri_tex_meta, textures, num_colored_triangles)
+                            tri_tex_meta, textures, num_colored_triangles, tex_du, tex_dv)
                         tp = f % tri_pos.shape[0]
                         v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                           tri_pos[tp, prim, 1],

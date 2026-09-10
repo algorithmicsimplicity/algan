@@ -628,7 +628,8 @@ def _dedup_time_group(scene, keys):
 #: leading axis is time, texture_time_lerp) -- new capabilities travel as
 #: DATA in this table because the resolve kernel sits at Taichi's
 #: runtime-argument ceiling and cannot take new arrays.
-_TEX_META_W = 18
+# Cols 18-20: colour/material/normal mip-directory bank rows (-1 absent).
+_TEX_META_W = 21
 
 
 def _tex_meta_placeholder(device):
@@ -787,6 +788,9 @@ def _split_promotable(p, _append_texture, device, scene):
                 -1,
                 -1,
                 1,
+                -1,
+                -1,
+                -1,  # promoted 1x1 maps have no reduced levels
             ]
         )
     group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
@@ -1266,6 +1270,7 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     tex_meta_t[:, 15] = -1
     tex_meta_t[:, 16] = -1
     tex_meta_t[:, 17] = 1
+    tex_meta_t[:, 18:21] = -1
     Tuv = tri_uvs.shape[0]
     tri_uvs_t = torch.zeros((Tuv, N, 6), dtype=tri_uvs.dtype, device=device)
     if tri_tex_meta.shape[0] > 0:
@@ -1448,6 +1453,28 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     # bucketed by shape/placement for the cheap prefilter; matching is exact
     # (torch.equal), so a reused placement reads byte-identical texels.
     _texture_index = {}
+    _mip_index = {}
+
+    def _append_mips_for(tex, meta, *, color=False, lerp=None, wrap=(False, False)):
+        if not SETTINGS.raytracing.texture_antialiasing or tex is None:
+            return -1
+        # L0 content dedup already proved equality. Endpoint timing is part of
+        # the key: equal endpoint images need not have equal frame weights.
+        key = (meta[0], color, id(lerp) if lerp is not None else None, wrap)
+        if key not in _mip_index:
+            from algan.rendering.raytracing.texture_mips import append_mip_pyramid
+
+            _mip_index[key] = append_mip_pyramid(
+                _texture_tensors,
+                _texel_offset,
+                tex.to(device),
+                color=color,
+                linear=bool(rt_settings.linear_color_space),
+                lerp=lerp,
+                wrap=wrap,
+                time_flat=bool(SETTINGS.raytracing.texture_time_flat),
+            )
+        return _mip_index[key]
 
     def _append_u8_lut(rgb, q_rgb):
         """Append one u8 map's 256-entry decode LUT; returns its base row.
@@ -1953,6 +1980,23 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
                         color_meta[4],
                         lerp_off,
                         lerp_len,
+                        _append_mips_for(
+                            getattr(p, "_rt_texture_map", None),
+                            color_meta,
+                            color=True,
+                            lerp=tex_lerp,
+                            wrap=getattr(p, "texture_wrap", (False, False)),
+                        ),
+                        _append_mips_for(
+                            mtex,
+                            material_meta,
+                            wrap=getattr(p, "texture_wrap", (False, False)),
+                        ),
+                        _append_mips_for(
+                            getattr(p, "_rt_normal_texture", None),
+                            normal_meta,
+                            wrap=getattr(p, "texture_wrap", (False, False)),
+                        ),
                     ],
                     dtype=torch.int32,
                     device=device,

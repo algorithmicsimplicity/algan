@@ -3731,6 +3731,8 @@ class Surface(Mob):
                 for k, v in self.grid.get_shader_params().items()
             },
         )
+        # The renderer must not count seam-padding texels in the mip integral.
+        primitive.texture_wrap = closed_axes
         if texture_opacity is not None:
             # In-sampler opacity + u8 provenance for the color map; see the
             # texture block above. Post-construction assignment, like
