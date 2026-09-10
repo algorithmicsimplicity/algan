@@ -3362,7 +3362,13 @@ def test_authored_area_light_is_not_counted_twice(tmp_path, sampling):
             height=3,
             samples=16,
             color=WHITE,
-            intensity=0.25,
+            # 0.25 * 3^2. ``RectAreaLight`` emits physically now, so the
+            # panel's three units of height cost the receiver a factor of
+            # nine this intensity did not have to cover when the light had
+            # no falloff. Without the rescale the floor lands around 8/255,
+            # where the "is it lit at all" guard below has no headroom left
+            # and a few units of estimator difference read as a failure.
+            intensity=2.25,
             target=ORIGIN,
         ).spawn(animate=False)
 

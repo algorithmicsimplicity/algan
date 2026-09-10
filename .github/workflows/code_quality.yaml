@@ -141,8 +141,15 @@ jobs:
           if missing:
               raise SystemExit("missing from the installed wheel: " + ", ".join(missing))
           print("all required data files present")
-          from algan.rendering.raytracing.glass_energy import glass_energy_table
-          assert glass_energy_table().shape == (37026, 2)
+          # Compare against the module's own constant rather than a literal:
+          # the table is re-fit from time to time, and a stale literal here
+          # fails the wheel check for a change that is perfectly fine. What
+          # this job is actually checking is that the asset decodes at all.
+          from algan.rendering.raytracing.glass_energy import (
+              GLASS_ENERGY_SHAPE,
+              glass_energy_table,
+          )
+          assert glass_energy_table().shape == GLASS_ENERGY_SHAPE
           print("glass energy lookup decodes from installed wheel")
           PY
 
