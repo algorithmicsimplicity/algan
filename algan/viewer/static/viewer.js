@@ -388,16 +388,27 @@ function nodeRow(node) {
   item.append(children);
 
   let loaded = false;
+  let loading = false;
   arrow.onclick = async () => {
     if (!node.has_children) return;
     children.hidden = !children.hidden;
     arrow.textContent = children.hidden ? "▶" : "▼";
-    if (loaded || children.hidden) return;
-    loaded = true;
+    if (loaded || loading || children.hidden) return;
+    loading = true;
     const components = el("show-components").checked ? 1 : 0;
-    const data = await getJSONPatiently(
-      `/api/children?node=${node.node}&components=${components}`);
-    for (const child of data.children) children.append(nodeRow(child));
+    try {
+      const data = await getJSONPatiently(
+        `/api/children?node=${node.node}&components=${components}`);
+      children.replaceChildren(...data.children.map(nodeRow));
+      loaded = true;
+    } catch (err) {
+      const notice = document.createElement("li");
+      notice.className = "empty";
+      notice.textContent = `${err.message} — collapse and expand to retry.`;
+      children.replaceChildren(notice);
+    } finally {
+      loading = false;
+    }
   };
   name.onclick = () => selectNode(node, name);
   return item;

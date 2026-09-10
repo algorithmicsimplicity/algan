@@ -20,6 +20,7 @@ function client() {
       clientWidth: 320, clientHeight: 320,
       classList: { add() {}, remove() {} },
       addEventListener() {}, append(...items) { this.children.push(...items); },
+      replaceChildren(...items) { this.children = items; },
       getBoundingClientRect() { return { left: 0, top: 0, width: 32, height: 32 }; },
       getContext() {
         return { drawImage(image) { draws.push(image); }, getImageData() { return { data: [0, 0, 0, 255] }; } };
@@ -147,4 +148,28 @@ test("a stale attribute error cannot replace a newer answer", async () => {
   c.requests[1].reply(attributes("new")); await current;
   c.requests[0].reject(new Error("old failure")); await old;
   assert.match(c.elements.get("attrs").innerHTML, /new at t=/);
+});
+
+
+test("a failed hierarchy expansion can be retried and does not issue concurrent duplicate loads", async () => {
+  const c = client();
+  const row = c.run("nodeRow({ node: 'parent', label: 'Parent', kind: 'mob', spawned: true, has_children: true })");
+  const arrow = row.children[0].children[0];
+  const children = row.children[1];
+  const failed = arrow.onclick();
+  const failure = assert.doesNotReject(failed);
+  c.requests[0].reject(new Error("temporarily unavailable"));
+  await failure;
+  assert.match(children.children[0].textContent, /retry/);
+  await arrow.onclick(); // collapse
+  const retry = arrow.onclick();
+  assert.equal(c.requests.length, 2);
+  await arrow.onclick(); // collapse while loading
+  await arrow.onclick(); // expand while the same load is pending
+  assert.equal(c.requests.length, 2);
+  c.requests[1].reply({ children: [] });
+  await retry;
+  await arrow.onclick();
+  await arrow.onclick();
+  assert.equal(c.requests.length, 2, "successful results stay cached");
 });
