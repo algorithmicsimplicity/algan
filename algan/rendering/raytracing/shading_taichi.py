@@ -176,6 +176,15 @@ def _linear_color_space():
     Reading through the module object keeps the value live at every call --
     whatever the setting holds when a kernel containing the gate is compiled,
     never a value frozen at import time.
+
+    "When a kernel is compiled" is the whole hazard, and it is not this
+    function's to fix: nothing keys a specialization on the answer, so a kernel
+    that already exists keeps the arm it was traced under however many times
+    the setting is written afterwards. ``linear_color_space`` is therefore in
+    ``rt_settings.KERNEL_COMPILED_IN_FIELDS``, which is what makes
+    ``ensure_taichi_for_render`` rebuild the program when a render moves it.
+    A gate added here over a setting that is *not* in that tuple renders the
+    second scene of a process wrong and says nothing.
     """
     from algan.rendering.raytracing import settings as rt_settings
 
@@ -1049,8 +1058,10 @@ def _stage_manim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     Manim shades in display-referred sRGB. Under the linear working space the
     running color is encoded before the offsets are added and decoded after
     (clamped to [0, 1] in between), under a compile-time gate exactly the way
-    ``_energy_scale`` gates its budget -- which means A/B-ing the two arms
-    needs one process per arm (CLAUDE.md on ``ti.static``).
+    ``_energy_scale`` gates its budget -- so A/B-ing the two arms costs the
+    second one a kernel-preparation pass, which is what
+    ``rt_settings.KERNEL_COMPILED_IN_FIELDS`` buys (see
+    :func:`_linear_color_space`).
     """
     tm = f % params.shape[0]
     flat = params[tm, prim, off + 10]

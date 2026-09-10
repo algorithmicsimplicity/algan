@@ -97,11 +97,14 @@ def rgb_shadow_tint():
 
     Read live through the module object -- never import the value by value --
     because every use is behind ``ti.static``: the branch is resolved when the
-    kernel COMPILES, so flipping the setting mid-process does nothing for any
-    kernel already compiled. An A/B between the two arms must therefore be one
-    process per arm. The variable is declared import-time in
-    ``algan/environment.py`` precisely so a warm daemon refuses a client whose
-    value differs instead of silently reusing the first arm's kernels.
+    kernel COMPILES, so flipping the setting reaches no kernel that already
+    exists and nothing keys a specialization on it. That is why the field is
+    in ``rt_settings.KERNEL_COMPILED_IN_FIELDS``: a render that moves it makes
+    ``ensure_taichi_for_render`` rebuild the program, so the two arms are both
+    right in one process and the switch costs a kernel-preparation pass. The
+    variable is declared import-time in ``algan/environment.py`` as well, so a
+    warm daemon refuses a client whose value differs rather than serving a run
+    that begins by rebuilding its kernels.
 
     The gate covers only the TINTING and the ABSORPTION. The payload itself is
     RGB unconditionally: with the gate off each channel carries today's scalar
@@ -235,7 +238,8 @@ def watertight_tri():
     Read live through the module object -- never import the value by value --
     for the same reason as :func:`rgb_shadow_tint`: the use is behind
     ``ti.static``, so whatever the setting holds when a kernel compiles is what
-    that kernel keeps.
+    that kernel keeps, and it is in ``KERNEL_COMPILED_IN_FIELDS`` so that a
+    render which moves it gets kernels rebuilt around the new answer.
     """
     from algan.rendering.raytracing import settings as rt_settings
 

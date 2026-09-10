@@ -254,6 +254,11 @@ def _install_taichi_compile_logger():
             if key in specializations:
                 return original_materialize(self, key=key, **kwargs)
 
+            # About to trace a body whose ``ti.static`` gates read settings.
+            # This is the moment those values stop being settings and become
+            # code, so it is the moment to remember which ones they were.
+            _note_compiled_in_settings()
+
             name = _kernel_timing_name(self, key)
             started_wall = (
                 _datetime.datetime.now(_datetime.timezone.utc)
@@ -395,6 +400,79 @@ def _install_taichi_compile_logger():
 
     program_type.compile_kernel = timed_compile_kernel
     program_type._algan_compile_timing_wrapped = True
+
+
+#: What ``rt_settings.KERNEL_COMPILED_IN_FIELDS`` held when the live
+#: specializations were traced, or ``None`` when nothing has been materialized
+#: since the last ``ti.init``. Those settings sit behind ``ti.static`` gates, so
+#: they are folded into a kernel's code and are *not* part of the key it is
+#: cached under -- a later write reaches the host and nothing else.
+_COMPILED_IN_SETTINGS = None
+
+#: Two specializations in this program were traced under different values --
+#: a write landed mid-render, between one kernel's first launch and another's.
+#: The program is then wrong for *some* of its kernels whatever the settings
+#: now say, so the next render job rebuilds it unconditionally.
+_COMPILED_IN_SETTINGS_MIXED = False
+
+
+def _forget_compiled_in_settings():
+    """Called wherever the specializations go away (any ``ti.init``/``reset``)."""
+    global _COMPILED_IN_SETTINGS, _COMPILED_IN_SETTINGS_MIXED
+    _COMPILED_IN_SETTINGS = None
+    _COMPILED_IN_SETTINGS_MIXED = False
+
+
+def _note_compiled_in_settings():
+    """Record what the specialization now being traced is folding in."""
+    global _COMPILED_IN_SETTINGS, _COMPILED_IN_SETTINGS_MIXED
+    from algan.rendering.raytracing.settings import kernel_compiled_in_values
+
+    current = kernel_compiled_in_values()
+    if _COMPILED_IN_SETTINGS is None:
+        _COMPILED_IN_SETTINGS = current
+    elif current != _COMPILED_IN_SETTINGS:
+        _COMPILED_IN_SETTINGS_MIXED = True
+        _COMPILED_IN_SETTINGS = current
+
+
+def _compiled_in_settings_moved():
+    """Whether the live kernels bake something the next render does not want.
+
+    ``False`` before anything is materialized: an empty program bakes nothing,
+    so the first render of a process never pays for this.
+
+    ``False`` too while a render still holds the arch, for the reason
+    :func:`flush_kernel_cache` skips there: the batch-prep worker launches
+    kernels on its own thread and discarding one mid-launch is a crash rather
+    than a wrong pixel. That case is a render job *nested* inside another (a
+    ``save_frame`` from a post-process) whose settings differ from the outer
+    one's -- rare enough that trading it for the crash is the easy way round.
+    """
+    if _COMPILED_IN_SETTINGS is None:
+        return False
+    if render_is_active():
+        return False
+    if _COMPILED_IN_SETTINGS_MIXED:
+        return True
+    from algan.rendering.raytracing.settings import kernel_compiled_in_values
+
+    return kernel_compiled_in_values() != _COMPILED_IN_SETTINGS
+
+
+def _describe_compiled_in_move():
+    """``field: baked -> wanted`` for each setting that moved, for the log."""
+    from algan.rendering.raytracing.settings import kernel_compiled_in_values
+
+    baked = dict(_COMPILED_IN_SETTINGS or ())
+    return (
+        ", ".join(
+            f"{name}: {baked.get(name)!r} -> {value!r}"
+            for name, value in kernel_compiled_in_values()
+            if baked.get(name) != value
+        )
+        or "a value written while a render was already compiling kernels"
+    )
 
 
 def _sync_devices():
@@ -896,6 +974,7 @@ def _start_program():
     """
     _remove_stale_offline_cache_locks(_TAICHI_CACHE_DIRECTORY)
     ti.init(**taichi_init_kwargs())
+    _forget_compiled_in_settings()
     _install_taichi_compile_logger()
     _register_kernel_cache_flush()
 
@@ -918,15 +997,21 @@ def ensure_taichi_for_render():
     """Bring Taichi up on the arch the current render device needs.
 
     Called once at the start of a render job, and the only place a running
-    Taichi program is ever replaced. Three cases:
+    Taichi program is ever replaced. Four cases:
 
     * **No program** -- ordinary first init.
     * **Program on the right arch** -- the overwhelmingly common case, and free.
     * **Program on the wrong arch** -- ``SETTINGS.computing.render_device``
       moved across the CPU/GPU line since the last render, so ``ti.init`` runs
       again on the new arch.
+    * **Program baking the wrong settings** -- one of
+      ``rt_settings.KERNEL_COMPILED_IN_FIELDS`` moved since the live kernels
+      were traced. Those sit behind ``ti.static`` gates and are not part of a
+      specialization's key, so the compiled kernels still carry the previous
+      render's answer and nothing but a rebuild reaches them. Same remedy,
+      same cost.
 
-    The third case is not cheap and is not meant to be hidden. ``ti.init``
+    The last two are not cheap and are not meant to be hidden. ``ti.init``
     itself is 0.2 s on the CPU and ~0.9 s on CUDA, but it calls ``impl.reset()``,
     which clears ``compiled_kernels`` on every registered kernel -- so the next
     render re-materializes each kernel it launches and re-reads them from the
@@ -952,9 +1037,17 @@ def ensure_taichi_for_render():
         _ARCH_READY_FOR = wanted
         return False
     if _arch_matches_render_device():
-        _install_taichi_compile_logger()
-        _ARCH_READY_FOR = wanted
-        return False
+        if not _compiled_in_settings_moved():
+            _install_taichi_compile_logger()
+            _ARCH_READY_FOR = wanted
+            return False
+        get_logger().log(
+            PERF,
+            "Rebuilding the Taichi program: the kernels compiled so far fold "
+            "in a setting this render changed (%s). They are gated at compile "
+            "time, so nothing short of recompiling them reaches the change.",
+            _describe_compiled_in_move(),
+        )
     _start_program()
     _ARCH_READY_FOR = wanted
     return True
@@ -1113,6 +1206,7 @@ def reset_quadrants_for_memory_pressure():
     _BUILT_A_SPECIALIZATION = False
     _ARCH_READY_FOR = None
     _PRESSURE_RESET_PENDING = False
+    _forget_compiled_in_settings()
     get_logger().log(
         PERF,
         "Reset the Quadrants runtime under host-memory pressure in %.2f s.",
@@ -1200,6 +1294,7 @@ def flush_kernel_cache(*, force=False):
         return False
     _BUILT_A_SPECIALIZATION = False
     _ARCH_READY_FOR = None
+    _forget_compiled_in_settings()
     get_logger().log(
         PERF,
         "Flushed newly compiled kernels to %s in %.2f s.",

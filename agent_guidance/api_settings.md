@@ -145,6 +145,8 @@ Writing a section is one operation with one set of rules: `SETTINGS.video.frames
 
 Engine modules must read mutable settings live through `SETTINGS`. Never import a mutable ray-tracing setting by value at module import time; doing so freezes the old value and makes public setters ineffective. Immutable constants may be imported by value.
 
+Reading live is necessary and not sufficient when the reader is a **kernel**. A `ti.static` gate reads live and then folds the answer into the compiled kernel, and a specialization is keyed on its `ti.template()` arguments — never on a setting — so the value the first render traced is the one every later render in that process gets. Those settings are listed in `rt_settings.KERNEL_COMPILED_IN_FIELDS` (`linear_color_space`, the two ambient coefficients, `rgb_shadow_tint`, `watertight_tri`), which is what lets `taichi_runtime.ensure_taichi_for_render` notice one has moved and rebuild the Taichi program before the render that changed it — the same remedy, and the same cost, as a render device that moved across the CPU/GPU line. **A new `ti.static` gate over a mutable setting must join that tuple**; `tests/unit_tests/test_compiled_in_settings.py` reads the gates out of the kernel sources and fails on one that has not. Prefer a `ti.template()` argument where the value can be one: Taichi then specializes on it and both arms coexist with no rebuild at all (`auth_sampled` in `path_tracer_taichi.py` is the worked example).
+
 Initialization-only settings intentionally have no public mutable Python object. Set these before importing `algan`:
 
 - `ALGAN_ANIMATION_DEVICE`;
