@@ -390,7 +390,6 @@ def get_roots_of_quadratic_no_backup(a, b, c, fill_value: float = 2e12):
     return out
 
 
-# @torch.jit.script
 def get_roots_of_quadratic(a, b, c, fill_value: float = 2e12):
     m = (a.abs() <= 1e-7).unsqueeze(-1)
     m2 = b.abs() <= 1e-7  # .unsqueeze(-1)
@@ -410,7 +409,17 @@ def get_roots_of_quadratic(a, b, c, fill_value: float = 2e12):
     return out
 
 
-@torch.jit.script
+# Deliberately uncompiled. This is complex-valued, and Inductor cannot
+# generate code for complex operators (``torch/_inductor/lowering.py``,
+# ``_warn_complex_not_supported``): ``@compiled`` here either hard-fails to
+# lower ``view_as_complex`` and demotes with a warning, or falls back to
+# per-op kernels whose result drifts about 8e-7 from the eager arm. That
+# drift is not survivable downstream -- these roots feed ``clamp_(0, 1)`` and
+# then the tessellation level criteria, where ``utils/torch_compile.py``
+# records an ulp becoming a whole subdivision level. ``torch.jit.script``
+# used to wrap this; torch 2.14 raises a FutureWarning for it at import time,
+# which is what a ``pip install algan`` user met first. Eager is the correct
+# arm here, not a stopgap.
 def nth_root(z, n: int):
     theta = z.angle()
     angles = torch.stack([(theta + k * math.pi * 2) / n for k in range(n)], -1)
@@ -418,7 +427,6 @@ def nth_root(z, n: int):
     return roots * z.unsqueeze(-1).abs().pow_(1 / n)
 
 
-# @torch.jit.script
 def get_roots_of_cubic(a, b, c, d, fill_value: float = 2e12):
     (a.abs() <= 1e-7).unsqueeze(-1)
 
