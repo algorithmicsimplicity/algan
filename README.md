@@ -9,7 +9,7 @@
   <a href="https://pypi.org/project/algan/"><img src="https://img.shields.io/pypi/v/algan.svg" alt="PyPI version" /></a>
   <a href="https://pypi.org/project/algan/"><img src="https://img.shields.io/pypi/pyversions/algan.svg" alt="Python versions" /></a>
   <a href="https://discord.gg/NvarFmvXKm"><img src="https://img.shields.io/badge/Discord-chat-7289da.svg?logo=discord&logoColor=white" alt="Discord Community" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/algorithmicsimplicity/algan/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
 </p>
 
 ---
@@ -22,7 +22,7 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ## Key Features
 
-- **Manim Geometry Compatibility**: A broad compatibility layer under `algan.manim`, with selected shapes also exported at the Algan root. Animation and rendering use Algan's own API; see [compatibility boundaries](agent_guidance/manim_compat.md).
+- **Manim Geometry Compatibility**: A broad compatibility layer under `algan.manim`, with selected shapes also exported at the Algan root. Animation and rendering use Algan's own API; see [compatibility boundaries](https://github.com/algorithmicsimplicity/algan/blob/master/agent_guidance/manim_compat.md).
 - **GPU Ray Tracing**: High-fidelity optical effects including depth of field, area lights, glossy reflections, refractive glass, and soft shadows.
 - **Declarative Timeline Contexts**: Intuitive animation staging with `Seq()`, `Sync()`, `Lag()`, `Off()`, and `Speech()` blocks makes animation code modular and re-usable.
 - **2D/3D Geometry and Transitions**: Bézier circuits, meshes, parametric surfaces, and `become()` transitions between supported Mob types.
@@ -167,7 +167,7 @@ The handoff forwards `sys.argv`, the working directory, the request environment,
 stdout/stderr (including subprocess output), terminal status and the exit code.
 Initialization-only settings cannot be changed in an already initialized
 process; incompatible requests are rejected with guidance to restart or bypass
-the daemon. See [the environment contract](agent_guidance/api_settings.md). `ALGAN_USE_DAEMON=0` runs in-process,
+the daemon. See [the environment contract](https://github.com/algorithmicsimplicity/algan/blob/master/agent_guidance/api_settings.md). `ALGAN_USE_DAEMON=0` runs in-process,
 `ALGAN_AUTO_DAEMON=0` only stops new ones being started, and a script being
 debugged is never handed off.
 
@@ -184,11 +184,13 @@ debugged is never handed off.
 
 ## Development status
 
-See [TODO.md](TODO.md) for prioritized remaining work and
-[AGENTS.md](AGENTS.md) for the source layout and validation commands. Design
+See [TODO.md](https://github.com/algorithmicsimplicity/algan/blob/master/TODO.md)
+for prioritized remaining work and
+[AGENTS.md](https://github.com/algorithmicsimplicity/algan/blob/master/AGENTS.md)
+for the source layout and validation commands. Design
 documents and benchmark reports distinguish current contracts from historical
 proposals and measurements.
 
 ## License
 
-Algan is licensed under the MIT License (see [LICENSE](LICENSE)). Copyright &copy; Algorithmic Simplicity.
+Algan is licensed under the MIT License (see [LICENSE](https://github.com/algorithmicsimplicity/algan/blob/master/LICENSE)). Copyright &copy; Algorithmic Simplicity.

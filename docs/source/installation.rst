@@ -123,7 +123,7 @@ select the tab for your operating system below and follow the instructions there
 
       .. code-block:: powershell
 
-         pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128
+         pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
 
       ``cu128`` is CUDA 12.8. If your driver is older, pick the build that
       matches it on `pytorch.org/get-started/locally
@@ -280,14 +280,15 @@ select the tab for your operating system below and follow the instructions there
 
       .. note::
 
-         This pulls in around 5 GB, far more than on the other two platforms,
+         This pulls in around 6 GB, far more than on the other two platforms,
          because PyPI's Linux PyTorch bundles the entire CUDA runtime. If you
          have no NVIDIA GPU and would rather not carry it, install the CPU
-         build of PyTorch *first* and Algan will use it:
+         build of PyTorch *first* and Algan will use it, for around 1.5 GB
+         in total:
 
          .. code-block:: bash
 
-            pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
             pip install algan
 
       .. rubric:: 2. Check the installation

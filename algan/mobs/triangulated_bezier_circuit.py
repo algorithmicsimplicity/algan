@@ -29,11 +29,7 @@ import torch.nn.functional as F
 from algan.animatable_base.mob import Mob
 from algan.constants.color import GREEN, WHITE
 from algan.constants.spatial import DOWN, RIGHT
-from algan.geometry.geometry import (
-    get_2d_polygon_mask,
-    get_roots_of_cubic,
-    get_roots_of_quadratic,
-)
+from algan.geometry.geometry import get_2d_polygon_mask
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.settings import SETTINGS
@@ -41,7 +37,6 @@ from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
     broadcast_gather,
     dot_product,
-    expand_as_left,
     packed_reorder,
     squish,
     unpack_tensor,
@@ -709,20 +704,6 @@ def point_to_tensor2(point):
 
 def point_to_tensor(point):
     return torch.tensor((2, point.y, point.x))
-
-
-def get_roots_of_l2_proj_on_cubic_bezier(a, b, c, d):
-    rc = get_roots_of_cubic(a, b, c, d, fill_value=0)
-    rq = get_roots_of_quadratic(3 * a, 2 * b, c, fill_value=0)
-    return torch.cat(
-        (
-            expand_as_left(rq.clamp_(0, 1), rc),
-            rc.clamp_(0, 1),
-            torch.zeros_like(rc[..., :1]),
-            torch.ones_like(rc[..., :1]),
-        ),
-        -1,
-    )
 
 
 eps = 1e-12
