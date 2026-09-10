@@ -206,16 +206,41 @@ jobs:
       # uses -- and separately verify that torch sees an MPS device. Printing
       # the distribution version also leaves evidence that this ordinary gate
       # used the locked published `algan-quadrants`, not a private wheel.
+      #
+      # It also reports the size this machine gives the render arena, because
+      # the hosted macOS pool is NOT one machine: runs land on at least two
+      # classes (measured, on identical work -- `brew install basictex` 21-26 s
+      # and `uv sync` 10-12 s on one, 35 s and 16-20 s on the other), and the
+      # arena is 0.16 of total RAM, so the class decides whether it clears
+      # `_MPS_MAX_ARENA_BYTES`. A render that fails only on the faster class is
+      # otherwise indistinguishable from a flake, and DESIGN_mps_support.md
+      # §4.7 is what that cost. Four numbers in the log make the machine part
+      # of the evidence rather than something to infer from step durations.
       - name: Require the MPS render device
         if: matrix.render_device == 'mps'
         run: |
           uv run python - <<'PY'
           from importlib import metadata
 
+          import psutil
           import torch
 
-          from algan.settings import _startup
+          from algan.settings import SETTINGS, _startup
           from algan.taichi_compat import BACKEND
+          from algan.utils.memory_utils import (
+              _MPS_MAX_ARENA_BYTES,
+              get_num_available_bytes,
+          )
+
+          gib = 1 << 30
+          arena = int(
+              get_num_available_bytes(torch.device("mps"))
+              * SETTINGS.computing.rendering_memory_fraction
+          )
+          print("total RAM:", psutil.virtual_memory().total / gib, "GiB")
+          print("mps.recommended_max_memory:", torch.mps.recommended_max_memory() / gib)
+          print("render arena:", arena / gib, "GiB")
+          print("arena ceiling reached:", arena >= _MPS_MAX_ARENA_BYTES)
 
           actual = _startup.render_device().type
           available = torch.backends.mps.is_available()

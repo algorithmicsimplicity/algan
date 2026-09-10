@@ -1456,27 +1456,40 @@ three facts they were quietly assuming away.
 
 Each is now faked outright, which is what the tests around them already did.
 
-### 4.7 `NDArray dimension length > INT_MAX`: one run, five aborts, no repeat
 
-Run 34487179359 (master @ dc63e21) killed the arm in 5 m 54 s: five renders
-died with
+### 4.7 `NDArray dimension length > INT_MAX`: the pool is two machines
+
+Master @ dc63e21 killed the arm in under seven minutes, twice, with five
+renders dying in
 
     MPSNDArray.mm:831: failed assertion
     `[MPSNDArray initWithDevice:descriptor:isTextureBacked:]
      Error: NDArray dimension length > INT_MAX'
 
 which is `abort()`, not an exception — so xdist replaced the worker four times
-and gave up (`-n 1` sets `--max-worker-restart` to 4), reporting 19 failures
-off 5 crashes. **It has not reproduced.** The same renderer code one commit
-earlier, run 34483019642 @ 98367d6, ran the arm to completion: `1 failed, 4050
-passed`, that one failure being the area-light assertion dc63e21 fixed, and no
-abort anywhere. Two dispatched runs on `claude/vibrant-faraday-y8b713` reached
-35% clean, including the test that died first. So this is an entry about a
-diagnosis, not a fix.
+and gave up (`-n 1` makes `--max-worker-restart` 4). Runs 34487179359 attempts
+1 and 2 landed on different runners and produced **the same 19 failures off the
+same five crashes, in the same order**: `19 failed, 1298 passed, 196 skipped`
+both times. It is not a flake.
 
-**What it was doing.** `PYTHONFAULTHANDLER` is now set for the job (it was
-pytest's own faulthandler that caught these), and the five stacks name three
-call sites — none of which is about memory:
+**But three other runs of the same renderer code are clean**, and that is the
+finding. Run 34483019642 @ 98367d6 — which differs from dc63e21 only in
+`test_path_tracer.py` and `code_quality.yaml`, neither reachable from the tests
+that die — ran the arm to completion: `1 failed, 4050 passed`. Two dispatched
+runs on `claude/vibrant-faraday-y8b713` passed 35% clean, well past the test
+that dies first. So the variable is not the commit. **It is the machine**, and
+the hosted macOS pool is at least two classes of them:
+
+| | `brew install basictex` | `uv sync` | outcome |
+| --- | --- | --- | --- |
+| runners 1000003504, 1000003518 | 26 s, 21 s | 12 s, 10 s | **abort** |
+| runners 1000003492, 1000003511, 1000003514 | 35 s, 35 s | 20 s, 16 s | clean |
+
+Identical work, ~1.6x apart, and the split is exactly the split in the
+outcome.
+
+**What the aborts were doing.** `PYTHONFAULTHANDLER` is now set for the job;
+the five stacks name three call sites, none of them about memory:
 
 | site | the op |
 | --- | --- |
@@ -1484,30 +1497,29 @@ call sites — none of which is about memory:
 | `raster_pipeline.prepare_sparse_raster_coverage` ×2 | `opaque_u[a:b].fill_(True)`, `bool` |
 | `bloom.bloom_filter` ×1 | `torch.amax(x[..., 3:4])`, `uint8` |
 
-Three unrelated ordinary ops, and not one of them has an operand with a
-dimension anywhere near `2**31`: these are 64x64 and LD frames. What they DO
-share is that every operand is a **view of the render arena**, and all three
-are one byte wide. The arena is a single `uint8` tensor and every allocation is
-an offset slice of it re-viewed to the caller's dtype, so torch's MPS backend
-materialises one by describing the whole underlying buffer as a flat
-`MPSNDArray` of `storage_bytes / element_size` — which for a one-byte view *is*
-the arena's byte count. That is the only quantity in the process that can reach
-`INT_MAX`, and it explains why the abort lands in ops that have nothing to do
-with each other.
+Three unrelated ordinary ops, and not one has an operand within three orders of
+magnitude of `2**31` — these are 64x64 and LD frames. What they share is that
+every operand is a **view of the render arena**, and all three are one byte
+wide. The arena is a single `uint8` tensor handing out offset slices re-viewed
+to the caller's dtype, and torch's MPS backend materialises such a view by
+describing the whole underlying buffer as a flat `MPSNDArray` of
+`storage_bytes / element_size` — which for a one-byte view *is* the arena's
+byte count. That is the only quantity in the process that can reach `INT_MAX`,
+and it is the only thing all three sites have in common.
 
-**What it needs is a machine bigger than the runner measured.** The arena is
+**And the arena is a function of the machine.** It is
 `rendering_memory_fraction` (0.4) of `get_num_available_bytes`, which
-`_MPS_HOST_SHARE` caps at 0.4 of total RAM — so 0.16 of RAM, and it crosses
-`INT_MAX` above ~13.4 GB. The hosted runner measured (`macos-26-arm64`,
-20260831.0337) reports 7.0 GiB total, 4.67 GiB `recommended_max_memory` and a
-**1.12 GiB** arena, comfortably under; a 16 GB Mac gets 2.56 GB, over by 19%.
-So either the fleet is heterogeneous and that run drew a larger host, or the
-mechanism above is incomplete. It was not possible to settle from a runner that
-does not reproduce it, and that is stated rather than papered over.
+`_MPS_HOST_SHARE` caps at 0.4 of total RAM — 0.16 of RAM, crossing `INT_MAX`
+above ~13.4 GB. The slow class measures 7.0 GiB total, 4.67 GiB
+`recommended_max_memory` and a **1.12 GiB** arena, comfortably under, which is
+why it is clean; a 16 GB machine gets 2.56 GB, over by 19%. The gate step now
+prints those four numbers on every run so the class is in the log rather than
+inferred from step durations, and the fast class's figure is what remains to be
+read off a run that lands on one.
 
-**The clamp is worth having either way**, because it is not a budget: past
-`INT_MAX` the arena is not addressable in one dimension on this backend, and
-the failure mode is a SIGABRT in an unrelated op rather than an error anyone
-can act on. `_addressable_arena_bytes` caps a Metal arena there and leaves
-every other device alone; below the ceiling it is the identity, so it is a
-no-op on the runner and on any Mac up to 16 GB.
+`_addressable_arena_bytes` caps a Metal arena at `INT_MAX` bytes and leaves
+every other device alone. It is an addressing limit, not a budget: past it the
+arena is not describable in one dimension on this backend, and the failure is a
+SIGABRT in an unrelated op rather than anything a caller can act on. Below the
+ceiling it is the identity, so it changes nothing on the slow class or on any
+Mac up to 16 GB.
