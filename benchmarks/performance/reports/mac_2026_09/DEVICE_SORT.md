@@ -220,3 +220,32 @@ torch orders last whatever its sign) so its permutation is the CPU's, which is
 what the renderer's baselines were taken on. A depth is a distance along a ray
 and can be neither, so this buys agreement on inputs the renderer does not
 produce.
+
+That canonicalization shipped once doing **half** of its job, and how it was
+caught is the point. `value != value` is the obvious way to ask "is this NaN",
+and Metal's fast-math folds it to `false` -- so the NaN branch was dead while
+the signed-zero branch worked. The probe's dedicated arm disagreed with torch
+on *every one* of 2.9M positions (one NaN group ordering below `-inf` instead
+of last shifts every group after it), which is a far louder signal than the
+handful of positions a subtle tie bug moves. Both tests read the bits now;
+`sheet_sort_taichi._after` inspects NaN bits for exactly this reason and says
+so.
+
+## 6. What was verified, and one failure that is not ours
+
+At the shipped defaults on the Mac runner, every probe arm reproduces
+`torch.argsort` exactly (`declined arms: 0`, so none of them silently
+abstained), the MPS smoke render is correct, and the local suites are green
+(fast 559 passed with its pixel-compared render; `tests/unit_tests` 3740
+passed, 178 skipped).
+
+The Mac's own `tests/unit_tests` run reports 37 failures, and **none of them
+is this work**: 33 are `latex` missing (the round was dispatched with
+`latex: false`), 3 are `test_taichi_runtime_config`'s pressure-reset
+assertions, which master deliberately declines on the Metal arch
+(`SHARED_QUEUE.md` §3), and the last is
+`test_glossy_prefilter::test_prefiltered_reflection_is_substantially_wider`.
+That one was bisected on the runner rather than assumed: it fails identically
+with the run sort off, with the rank-groups kernel off, and with **both** off
+-- which is master's behaviour on that box -- so it is pre-existing there and
+wants its own round.
