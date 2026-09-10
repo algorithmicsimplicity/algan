@@ -156,3 +156,41 @@ to index matching or critical angles, detailed angular multiple scattering is
 still approximate. A microscopic random-walk reference and a GPU timing sweep
 would be useful future validation; neither is claimed here. The change does not
 add a caustic estimator or bend straight transparent-shadow connections.
+
+## Measured on hardware, and the alternative that was not taken
+
+The validation note above was written without a compiler available. It has
+since been run. `benchmarks/rough_glass_furnace.py` sweeps 112 configurations
+(4 roughnesses x 7 relative indices, both sides x 4 incidences) through the
+shipped sampler and evaluator, and again through a zeroed table, which
+disables the compensation lobe and leaves plain single scatter. Results are
+recorded under `benchmarks/results/`. Uncompensated glass loses up to **69%**
+of its power (mean 14%); compensated, the furnace closes to **0.73%** worst
+case and 0.09% mean. `test_rough_glass_furnace_render.py` is the render-level
+form of the same claim: a closed rough slab in a uniform environment must come
+back within 1/255 of the environment radiance, unsaturated, at roughness 0.35,
+0.65 and 1.0.
+
+A second, independent implementation of this feature exists on
+`codex/rough-glass-energy-compensation`. It reaches the same physical model by
+the same route, differing in how the table is parameterised and stored: a
+65 x 33 x 65 f32 grid, linear in `|(eta-1)/(eta+1)|` and in cosine, held in a
+1.1 MB `.npy` appended to the `nee_meta` arena vector. Measured against a
+65536-sample quadrature reference at 400 random points, that table has a lower
+RMS error (0.00041 against this one's 0.00095) but a slightly *worse* worst
+case (0.00504 against 0.00464), and it closes the furnace sweep above to 0.25%.
+It was not adopted: the accuracy difference is far below the visible
+threshold, this implementation passes the other's own strictest render-level
+test unchanged, and the table it ships is 79 times larger in the wheel. Its
+furnace benchmark and render test were taken; its table and kernels were not.
+
+That comparison did locate a real improvement, which is **not** applied here
+because it would move path-traced output and those baselines are
+release-hosted. The error above is quantisation-limited, not grid-limited --
+uint8 storage has a +-0.00196 floor, and the measured RMS sits right on it --
+while the sqrt-warped eta axis already resolves index better than the
+alternative's 65 linear samples. Raising `GLASS_ROUGHNESS_SIZE` from 17 to 33
+and storing 16-bit measures at 0.00202 max / 0.00027 RMS, beating **both**
+shipped tables on every metric at 283 KB raw, a quarter of the alternative's.
+Roughness density is what buys this; widening the index axis to 65 as well
+changes RMS only from 0.00027 to 0.00023 and is not worth the bytes.
