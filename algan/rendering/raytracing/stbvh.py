@@ -101,14 +101,34 @@ bvh_block_f16 = env_flag("ALGAN_BVH_BLOCK_F16", True)
 # in the kernel could never shrink a box.
 _F16_MIN_NORMAL = 6.103515625e-05
 _F16_MAX = 65504.0
+#: f16 +-infinity, as the signed int16 the blocks store (0x7c00 / 0xfc00).
+_F16_POS_INF_BITS = 0x7C00
+_F16_NEG_INF_BITS = -0x0400
 
 
 def _half_bits_directed(x, up):
     """float16 bit patterns (int16) of ``x`` rounded toward +inf (``up``) or
     -inf, with subnormal results pushed outward to 0 / +-min-normal. The
     decoded f16 is guaranteed ``>= x`` (``up``) or ``<= x`` (down).
+
+    A magnitude past the finite f16 range saturates to the f16 INFINITY in the
+    rounding direction rather than to ``+-_F16_MAX``. Clamping is only
+    conservative on the side that rounds *away* from the value: an upper bound
+    of 1e6 clamped to 65504 decodes BELOW the bound it has to contain, so the
+    sibling box stops holding its child and the traversal culls real hits with
+    no error anywhere. Infinity keeps the guarantee -- the box is merely loose
+    on that side -- and the slab test consumes it safely, because
+    ``_safe_inverse`` never yields a zero or infinite reciprocal, so
+    ``(+-inf - origin) * inv_dir`` is another infinity and never a NaN.
+
+    The opposite side still clamps, which is what leaves the empty-slot
+    sentinels (``lo=+1e17``/``hi=-1e17``, packed as a lo > hi box no ray
+    selects) encoded exactly as before.
     """
-    x = x.float().clamp(-_F16_MAX, _F16_MAX)
+    x = x.float()
+    # The one direction with no finite conservative representative.
+    saturate = (x > _F16_MAX) if up else (x < -_F16_MAX)
+    x = x.clamp(-_F16_MAX, _F16_MAX)
     h = x.half()
     dec = h.float()
     # Map bit patterns to a monotone integer line so +-1 is nextafter.
@@ -130,7 +150,12 @@ def _half_bits_directed(x, up):
             v < 0, torch.full_like(v, -_F16_MIN_NORMAL), torch.zeros_like(v)
         )
     h2 = torch.where(sub, v2.half(), h2)
-    return h2.view(torch.int16)
+    bits = h2.view(torch.int16)
+    return torch.where(
+        saturate,
+        torch.full_like(bits, _F16_POS_INF_BITS if up else _F16_NEG_INF_BITS),
+        bits,
+    )
 
 
 def _build_blocks(nodes, first_leaf):

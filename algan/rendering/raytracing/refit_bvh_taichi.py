@@ -9,6 +9,11 @@ from algan.taichi_compat import ti
 
 @ti.func
 def _half_directed_bits(value, up: ti.template()):
+    """The device-side twin of ``stbvh._half_bits_directed`` -- read its
+    docstring for why a magnitude past the finite f16 range saturates to the
+    f16 infinity (0x7c00 / 0xfc00) instead of clamping to +-65504, and why
+    that leaves the empty-slot lo/hi sentinels untouched.
+    """
     x = ti.min(ti.max(value, -65504.0), 65504.0)
     h = ti.cast(x, ti.f16)
     decoded = ti.cast(h, ti.f32)
@@ -36,6 +41,12 @@ def _half_directed_bits(value, up: ti.template()):
             result = 0
             if monotone < 0x8000:
                 result = 0x8400
+    if ti.static(up):
+        if value > 65504.0:
+            result = 0x7c00
+    else:
+        if value < -65504.0:
+            result = 0xfc00
     return ti.cast(result, ti.i16)
 
 
