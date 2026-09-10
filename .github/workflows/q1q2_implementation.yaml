@@ -8,82 +8,101 @@ concurrency:
   group: q1q2-implementation
   cancel-in-progress: false
 jobs:
-  implement:
+  fix:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 40
     env:
       ALGAN_RENDER_DEVICE: cpu
       ALGAN_ANIMATION_DEVICE: cpu
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
-      BASE: dc63e21f6bb761277430935e035beca3615dbf51
+      BASE: 5be7c82dfccb85c91e1dd656b2f719ced8684493
+      ORIGINAL_BASE: dc63e21f6bb761277430935e035beca3615dbf51
       DEST: codex/q1q2-device-dispatch-20260911
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply both implementations before any validation
-        id: apply
+      - name: Apply locally verified corrections on implementation head
         run: |
-          cp -a .q1q2 "$RUNNER_TEMP/q1q2"
+          cp .q1q2/correctness_fixes.py .q1q2/region_regressions.py "$RUNNER_TEMP/"
           git checkout --detach "$BASE"
-          cp -a "$RUNNER_TEMP/q1q2/files/." .
-          python "$RUNNER_TEMP/q1q2/apply_changes.py"
+          python "$RUNNER_TEMP/correctness_fixes.py"
+          cat "$RUNNER_TEMP/region_regressions.py" >> tests/unit_tests/test_arena_regions.py
+          git diff --check
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: System dependencies
+      - name: Install native dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg texlive-latex-base texlive-latex-extra texlive-fonts-recommended dvisvgm
+          sudo apt-get install -y --no-install-recommends libpango1.0-dev pkg-config ffmpeg texlive-latex-base texlive-latex-extra texlive-fonts-recommended dvisvgm
       - uses: ./.github/actions/install-uv
       - name: Install locked dependencies
-        id: install
         run: uv sync --locked --all-extras --dev
-      - name: Feature and binding correctness
-        id: feature
+      - name: Apply import and formatting rules to this feature's Python files
+        run: |
+          mapfile -t files < <(git diff "$ORIGINAL_BASE" --name-only -- '*.py')
+          .venv/bin/ruff check --fix --select I,UP035 "${files[@]}"
+          .venv/bin/ruff format "${files[@]}"
+          git diff --check
+      - name: Ruff checks
+        id: lint
+        continue-on-error: true
         run: |
           set -o pipefail
-          uv run pytest -q tests/unit_tests/test_arena_regions.py tests/unit_tests/test_device_dispatch_taichi.py tests/unit_tests/test_device_dispatch_render.py tests/unit_tests/test_arena_args.py 2>&1 | tee "$RUNNER_TEMP/q1q2-feature.log"
+          .venv/bin/ruff check --no-fix 2>&1 | tee "$RUNNER_TEMP/lint.log"
+          .venv/bin/ruff format --check 2>&1 | tee "$RUNNER_TEMP/format.log"
+      - name: Feature, binding and control-flow correctness
+        id: target
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest -q tests/unit_tests/test_arena_regions.py tests/unit_tests/test_device_dispatch_taichi.py tests/unit_tests/test_device_dispatch_render.py tests/unit_tests/test_arena_args.py tests/unit_tests/test_kernel_control_flow.py 2>&1 | tee "$RUNNER_TEMP/targeted.log"
       - name: Fast regression suite
         id: fast
-        if: always() && steps.install.outcome == 'success'
         run: |
           set -o pipefail
-          uv run pytest -q --fast 2>&1 | tee "$RUNNER_TEMP/q1q2-fast.log"
-      - name: Publish clean implementation branch
-        if: always() && steps.apply.outcome == 'success'
-        env:
-          FEATURE_RESULT: ${{ steps.feature.outcome }}
-          FAST_RESULT: ${{ steps.fast.outcome }}
+          .venv/bin/python -m pytest -q --fast 2>&1 | tee "$RUNNER_TEMP/fast.log"
+      - name: Publish validated corrections
+        if: success() && steps.lint.outcome == 'success'
         run: |
-          git config user.name 'OpenAI'
-          git config user.email 'noreply@openai.com'
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
           python - <<'PY'
-          import os, pathlib, subprocess
-          staging = pathlib.Path(os.environ['RUNNER_TEMP']) / 'q1q2/files'
-          paths = [str(p.relative_to(staging)) for p in staging.rglob('*') if p.is_file()]
-          paths += ['algan/environment.py', 'algan/rendering/raytracing/settings.py', 'algan/utils/memory_utils.py', 'algan/rendering/raytracing/arena_args_taichi.py', 'algan/rendering/raytracing/raster_taichi.py', 'algan/rendering/raytracing/raster_pipeline.py', 'tests/unit_tests/test_arena_args.py']
-          notes = pathlib.Path('agent_guidance/device_dispatch_validation.md')
-          notes.write_text('# Q1/Q2 validation\n\nBoth features were implemented before any tests.\n\nCPU feature/binding tests: ' + os.environ['FEATURE_RESULT'] + '\n\nFast suite: ' + os.environ['FAST_RESULT'] + '\n\nRun: https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'] + '\n\nNo performance measurements. No CUDA, Metal or AMD hardware validation in this run.\n')
-          paths.append(str(notes))
-          subprocess.run(['git','add','--',*paths], check=True)
+          from pathlib import Path
+          import os
+          tmp = Path(os.environ['RUNNER_TEMP'])
+          summaries = []
+          for name in ('targeted', 'fast'):
+              summaries.append(name + ': ' + next(line for line in reversed((tmp / (name + '.log')).read_text().splitlines()) if ' passed' in line))
+          Path('agent_guidance/device_dispatch_validation.md').write_text(
+              '# Q1/Q2 validation\n\nBoth original features were implemented before testing.\n\n'
+              'The original publication reported two render failures (absolute arena offsets incorrectly limited to int32) and one fast-suite failure (continue under a static gate). Both causes are fixed.\n\n'
+              '## Corrected implementation\n\n' + '\n\n'.join(summaries) + '\n\n'
+              'Ruff lint, Ruff format and git diff --check: passed.\n\n'
+              'Environment: Ubuntu 24.04, Python 3.11, CPU, locked algan-quadrants 1.3.0.post2.\n\n'
+              'Large-offset tests use sparse file mappings, not multi-gigabyte resident tensors. The shadowed diffuse and reflective scenes test off/on/off output parity and verify that the new dispatch path ran.\n\n'
+              'Run: https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'] + '\n\n'
+              'No performance measurements or GPU hardware validation. The complete heavy render-baseline suites are not covered by this run.\n')
           PY
-          parent="$BASE"
-          if git ls-remote --exit-code origin "refs/heads/$DEST"; then
-            git fetch origin "refs/heads/$DEST:refs/remotes/origin/$DEST"
-            parent=$(git rev-parse "refs/remotes/origin/$DEST")
-          fi
-          tree=$(git write-tree)
-          commit=$(git commit-tree "$tree" -p "$parent" -m 'Implement opt-in Q1 device dispatch and Q2 typed arena regions')
-          git push origin "$commit:refs/heads/$DEST"
-          git diff --binary "$BASE" "$commit" > "$RUNNER_TEMP/q1q2.patch"
-          echo "IMPLEMENTATION_COMMIT=$commit"
+          git add -u
+          git diff --cached --check
+          test "$(git ls-remote origin "refs/heads/$DEST" | cut -f1)" = "$BASE"
+          git commit -m 'Fix Q1/Q2 arena offset validation and static-gated shadow control flow'
+          git push origin "HEAD:refs/heads/$DEST"
+          git rev-parse HEAD | tee "$RUNNER_TEMP/published_commit.txt"
+      - name: Export final patch and logs
+        if: always()
+        run: |
+          git diff --binary "$BASE" > "$RUNNER_TEMP/uncommitted.patch"
+          git diff --binary "$BASE" HEAD > "$RUNNER_TEMP/committed.patch"
+          test ! -f .venv/bin/ruff || cp .venv/bin/ruff "$RUNNER_TEMP/ruff"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: q1q2-correctness
+          name: q1q2-correctness-fixes
           path: |
-            ${{ runner.temp }}/q1q2-feature.log
-            ${{ runner.temp }}/q1q2-fast.log
-            ${{ runner.temp }}/q1q2.patch
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*.patch
+            ${{ runner.temp }}/ruff
+            ${{ runner.temp }}/published_commit.txt
