@@ -495,9 +495,10 @@ class BezierCircuitCubic(Mob):
         Per-control-point normals, shape ``(*, 3)``, used for lighting. Defaults
         to ``None``, meaning the circuit's own plane normal is used.
     stroke_width
-        Width of the border stroke, in pixels against a 960-pixel-tall frame so
-        it keeps its apparent weight at any resolution. Defaults to ``5``; pass
-        ``0`` for no border.
+        Width of the border stroke, in pixels against ``PREVIEW``'s frame height
+        (396): the renderer scales it by its own frame height over that, so a
+        border keeps its apparent weight at any resolution. Defaults to ``5``;
+        pass ``0`` for no border.
     stroke_color
         Color of the border stroke. Defaults to ``WHITE``. The circuit's
         ``color`` is its *fill* color and does not touch the border; see
@@ -545,7 +546,11 @@ class BezierCircuitCubic(Mob):
         :class:`~algan.mobs.manim_mob.ManimMob` carries it across on import.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
-        which is the fill color.
+        which is the fill color. ``location`` is the exception: a circuit's own
+        is derived from the control points (the centroid of the region they
+        enclose, so the shape turns about itself), so one given here is applied
+        as a move onto that point once the frame has been derived, rather than
+        replacing it.
 
     See Also
     --------
@@ -650,6 +655,16 @@ class BezierCircuitCubic(Mob):
         # of points fail with AttributeError instead.
         control_points = cast_to_tensor(control_points)
         control_points = control_points.reshape(-1, control_points.shape[-1])
+
+        # A circuit's ``location`` is DERIVED below, from the control points --
+        # it is the centroid of the region they enclose, not a free parameter --
+        # so a caller's own reached ``Mob.__init__`` twice and surfaced as
+        # "got multiple values for argument 'location'" from inside the texture
+        # grid's construction, naming a line the caller never wrote. It is still
+        # a perfectly sensible request (put the finished circuit here), and it
+        # is one every shape built on this already answers, so answer it the way
+        # ``Circle`` does: derive the frame, then move onto the point asked for.
+        requested_location = kwargs.pop("location", None)
 
         kwargs2 = dict(kwargs.items())
 
@@ -761,6 +776,13 @@ class BezierCircuitCubic(Mob):
         self.normals = normals
         self.is_primitive = True
         self.render_primitive = RENDERER_REGISTRY.bezier_circuit_primitive
+
+        if requested_location is not None:
+            # Off, unlike ``Circle``'s: this runs before the circuit exists to
+            # the scene, so where it was asked to be built is its starting pose
+            # and not a move recorded from somewhere it never was.
+            with Off(animation_manager=self.animation_manager):
+                self.move_to(requested_location)
 
     def _after_repack(self):
         """Re-decide the planar/patch/stroke split against the whole pack.
@@ -1706,19 +1728,27 @@ class BezierCurveCubic(BezierCircuitCubic):
     """An open path of cubic bezier curves -- a stroke with no interior.
 
     A :class:`BezierCircuitCubic` with ``filled=False``, which is the whole
-    difference: there is no fill to paint, so ``color`` has nothing to act on
-    and :attr:`~.BezierCircuitCubic.stroke_color` is what you set. The stroke
-    stays centred on the path rather than being laid inward from an outline,
-    which is what :class:`~algan.mobs.shapes_2d.Line` is built on.
+    difference: there is no fill to paint, so the color you set is the stroke's,
+    :attr:`~.BezierCircuitCubic.stroke_color`. The stroke stays centred on the
+    path rather than being laid inward from an outline, which is what
+    :class:`~algan.mobs.shapes_2d.Line` is built on.
 
-    The control points still need not describe a closed loop, but nothing stops
-    them from doing so -- a closed path drawn as a curve is an outline.
+    The control points need not describe a closed loop, and need not lie in a
+    plane either: an open path bounds no surface, so a 3-D curve keeps its true
+    position in space and is drawn by splitting it into near-straight runs, each
+    turned to face the camera so the stroke keeps a constant width on screen.
+    That decision is made once, from the control points you construct it with
+    (see :doc:`the tutorial </advanced_user_tutorials/bezier_curves>`).
+    Nothing stops the path from closing -- a closed path drawn as a curve is an
+    outline.
 
     Parameters
     ----------
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic`, except ``filled``, which is
-        always ``False``.
+        always ``False``. ``color`` stands in for ``stroke_color`` when that was
+        not given, as it does on a :class:`~algan.mobs.shapes_2d.Line`, since an
+        unfilled path has no fill for it to act on otherwise.
 
     See Also
     --------
@@ -1741,7 +1771,23 @@ class BezierCurveCubic(BezierCircuitCubic):
         Scene.save_video()
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, filled=None, **kwargs):
+        if filled:
+            raise AlganConfigurationError(
+                "BezierCurveCubic is the unfilled circuit, so it cannot be "
+                "filled. Use BezierCircuitCubic(..., filled=True) for a path "
+                "with an interior."
+            )
+        # ``color`` is the FILL color, and this circuit has no fill: left alone
+        # it would silently do nothing, which is the one way a curve comes out
+        # white after being asked for a color. ``Line`` -- the other unfilled
+        # circuit a user reaches for -- already reads it as the stroke's
+        # (``_translate_vector_style_kwargs``, ``line=True``), so this reads it
+        # the same way. An explicit ``stroke_color`` still wins; so does one
+        # passed positionally, which is ``BezierCircuitCubic``'s fourth
+        # parameter.
+        if "color" in kwargs and "stroke_color" not in kwargs and len(args) < 4:
+            kwargs["stroke_color"] = kwargs["color"]
         super().__init__(*args, filled=False, **kwargs)
 
 
