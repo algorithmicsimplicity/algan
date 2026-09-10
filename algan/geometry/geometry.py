@@ -9,12 +9,13 @@ between two vectors or two bases), projection and intersection (point onto line,
 segment or plane; line against plane), and basis changes between a Mob's local
 frame and world space.
 
-It also carries a few polynomial root-finding helpers that nothing currently
-calls. The closed-form quadratic and cubic solvers that used to sit beside them
-were removed: their only entry point, ``get_roots_of_l2_proj_on_cubic_bezier``,
-had no callers either, and the cubic had never worked -- it raised on ordinary
-inputs, and the shapes it produced could not reconcile with its own fallback.
-The ray tracer does its curve and surface intersection elsewhere.
+It used to carry polynomial root finding as well -- closed-form quadratic and
+cubic solvers, a companion-matrix eigenvalue solver, and the recursive
+lower-degree fallbacks around them. All of it was unreachable, and the cubic
+had never worked: it raised on ordinary inputs, and the shapes it produced
+could not reconcile with its own fallback. It is gone rather than repaired.
+The ray tracer does its curve and surface intersection elsewhere, and always
+did.
 
 These are internal building blocks: user-facing spatial operations live on
 :class:`~algan.animatable_base.mob.Mob`.
@@ -33,7 +34,6 @@ from algan.utils.tensor_utils import (
     broadcast_cross_product,
     broadcast_gather,
     dot_product,
-    expand_as_left,
     unsqueeze_left,
     unsquish,
 )
@@ -290,31 +290,6 @@ def get_rotation_between_orthonormal_bases(basis1, basis2):
     return basis1.transpose(-2, -1) @ basis2
 
 
-def get_roots_of_normalized_polynomial(coefs):
-    n = coefs.shape[-1] - 1
-    base_matrix = torch.cat(
-        (torch.zeros((1, n), device=coefs.device), torch.eye(n, device=coefs.device)),
-        -2,
-    )
-    coefs = coefs.unsqueeze(-1)
-    companion_matrix = torch.cat(
-        (expand_as_left(base_matrix, coefs), -coefs.flip(-2)), -1
-    )
-    roots = torch.linalg.eigvals(companion_matrix)
-    m = (roots.imag.abs() < 1e-12).type(coefs.dtype)
-    return roots.real * m + (1 - m) * 2e12
-
-
-def pad_to_length(x, length):
-    return torch.cat(
-        (
-            x,
-            torch.zeros((list(x.shape[:-1]) + [length - x.shape[-1]]), device=x.device),
-        ),
-        -1,
-    )
-
-
 def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
     """Projects point x to the closest point on a line defined by a starting point and a direction"""
     line_direction = F.normalize(line_direction, p=2, dim=dim)
@@ -363,39 +338,6 @@ def project_point_onto_plane(point, plane_normal, plane_point=0, dim=-1):
     return project_point_onto_line(
         point, get_orthonormal_vector(plane_normal), plane_point, dim
     )
-
-
-def get_roots_of_quadratic_backup_recurse_clean(coefs, fill_value: float = 2e12):
-    a = coefs[..., 0]
-    b = coefs[..., 1]
-    c = coefs[..., 2]
-    m = (a.abs() > 1e-12).type(coefs.dtype).unsqueeze(-1)
-    out = torch.empty_like(coefs[..., :2])
-    disc = (b * b - 4 * a * c).sqrt_()
-    q = -0.5 * (b + (b >= 0).type(coefs.dtype) * disc)
-    out[..., 0] = c / q
-    out[..., 1] = q / a
-    # out = out
-    out = (out * m + (1 - m) * (-c / b).unsqueeze(-1)).nan_to_num_(
-        nan=fill_value, posinf=fill_value, neginf=fill_value
-    )
-    return out
-
-
-def get_roots_of_polynomial_backup_recurse(coefs):
-    m = (coefs[..., :1].abs() > 0).type(coefs.dtype)
-
-    normalized_coefs = coefs[..., 1:] / (coefs[..., :1] * m + (1 - m))
-    roots = get_roots_of_normalized_polynomial(normalized_coefs)
-    backup_roots = (
-        get_roots_of_polynomial_backup_recurse(coefs[..., 1:])
-        if (coefs.shape[-1] > 3)
-        else (-coefs[..., -1] / coefs[..., -2])
-        .nan_to_num(nan=0, posinf=0, neginf=0)
-        .unsqueeze(-1)
-    )
-
-    return roots * m + (1 - m) * pad_to_length(backup_roots, roots.shape[-1])
 
 
 def project_onto_basis(vector, basis):
