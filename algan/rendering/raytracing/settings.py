@@ -39,6 +39,61 @@ from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.settings._startup import render_device
 
+#: The settings the KERNELS fold in when they compile, instead of reading per
+#: launch. Each sits behind a ``ti.static`` gate, so the value a kernel is
+#: traced under is the value that specialization keeps for as long as it lives
+#: -- and a specialization is keyed on its ``ti.template()`` arguments, which
+#: none of these are. A second render that changed one would otherwise reuse
+#: the first render's kernels and silently produce the first render's picture:
+#: a script rendering once in the linear working space and once in the
+#: display-referred one got the linear arm's shading twice.
+#:
+#: That is what this tuple is for. ``taichi_runtime`` records the values every
+#: live specialization was traced under and
+#: :func:`~algan.rendering.taichi_runtime.ensure_taichi_for_render` re-inits
+#: Taichi -- dropping every specialization -- when one has moved since, so the
+#: next render gets kernels that bake what it asked for. That costs the next
+#: render its "Preparing render kernels" pass, which is why these stay a short
+#: list of the gates that really are compile-time rather than a hash of the
+#: whole section.
+#:
+#: A ``ti.static`` gate over a *mutable* setting that is not named here is the
+#: defect this list exists to prevent;
+#: ``tests/unit_tests/test_compiled_in_settings.py`` reads the gates out of the
+#: kernel sources and fails on one that is missing.
+KERNEL_COMPILED_IN_FIELDS = (
+    # shading_taichi._linear_color_space: _energy_scale's illumination budget,
+    # _run_frag_pipeline's peak bound, _as_written_bytes' decode, and
+    # _stage_manim's encode/decode pair around the light sum.
+    "linear_color_space",
+    # shading_taichi._ambient_strength: the constant ambient fill every
+    # built-in stage adds, folded in as a literal (one of the pair, chosen by
+    # the gate above).
+    "ambient_strength",
+    "ambient_strength_linear",
+    # raytrace_kernels_taichi.rgb_shadow_tint: whether a shadow query tints
+    # and absorbs per channel.
+    "rgb_shadow_tint",
+    # raytrace_kernels_taichi.watertight_tri: which triangle test _tri_hit
+    # compiles.
+    "watertight_tri",
+)
+
+
+def kernel_compiled_in_values():
+    """What a kernel compiled *right now* would fold in.
+
+    Read through ``SETTINGS.raytracing`` rather than off this module's globals,
+    because two of the five are stored beside the kernels that bake them
+    (``raytrace_kernels_taichi``) and the facade resolves a field wherever its
+    storage module keeps it.
+    """
+    from algan.settings import SETTINGS
+
+    section = SETTINGS.raytracing
+    return tuple((name, getattr(section, name)) for name in KERNEL_COMPILED_IN_FIELDS)
+
+
 # Opt-in audit Q1/Q2: device-counted shadow queues and typed arena regions.
 # Capacity-guarded portable submission; no change to coverage or defaults.
 device_dispatch = env_flag("ALGAN_DEVICE_DISPATCH", False)
@@ -113,9 +168,10 @@ linear_color_space = env_flag("ALGAN_LINEAR_COLOR", True)
 # matches linear_color_space; both used to hold their own copy of the pair,
 # which is two sources of truth for one look-defining constant.
 #
-# Folded into the kernels inside ``ti.static``, so a change takes effect for
-# kernels compiled after it (CLAUDE.md's ti.static hazard); set the environment
-# variable for a guaranteed one.
+# Folded into the kernels inside ``ti.static`` rather than passed per launch,
+# which is why both are in KERNEL_COMPILED_IN_FIELDS above: a write between two
+# renders reaches the host and not the kernels, so the runtime rebuilds them
+# instead of letting the next render keep the previous value.
 ambient_strength = env_float("ALGAN_AMBIENT_STRENGTH", 0.1)
 ambient_strength_linear = env_float("ALGAN_AMBIENT_STRENGTH_LINEAR", 0.01)
 
@@ -1298,11 +1354,12 @@ def set_shadow_anyhit(enabled):
 # This gates only the tinting and the absorption, NOT the payload width: with
 # it off every channel carries today's scalar value unchanged, so renders are
 # byte-identical while the plumbing stays exercised. Every kernel use sits
-# behind ti.static, which resolves at COMPILE time -- flipping this
-# mid-process recompiles nothing, so the two arms must be separate processes.
-# Declaring the variable import-time is what makes that honest: a warm daemon
-# refuses a client whose value differs rather than serving kernels compiled
-# for the other arm.
+# behind ti.static, which resolves at COMPILE time, so this is one of
+# KERNEL_COMPILED_IN_FIELDS: flipping it between renders costs the next one a
+# kernel-preparation pass, because nothing short of recompiling reaches the
+# gate. Declaring the variable import-time as well keeps the environment
+# spelling honest: a warm daemon refuses a client whose value differs rather
+# than serving a render that begins by rebuilding its kernels.
 rgb_shadow_tint = env_flag("ALGAN_RGB_SHADOW_TINT", True)
 
 
@@ -1320,11 +1377,15 @@ watertight_tri = env_flag("ALGAN_WATERTIGHT_TRI", True)
 def set_watertight_tri(enabled):
     """Toggle the watertight ray/triangle intersection (see ``watertight_tri``).
 
-    The gate compiles into the kernels, so this takes effect for kernels
-    compiled AFTER the call -- existing variants are reused unchanged. For a
-    guaranteed switch, set ``ALGAN_WATERTIGHT_TRI`` before importing algan, or
-    run each arm in its own process. (The Taichi *offline* cache is not a
-    hazard here: it keys on the compiled IR, so each arm has its own entry.)
+    The gate compiles into the kernels, so a variant that already exists bakes
+    the previous value and no write reaches it. That is what
+    ``KERNEL_COMPILED_IN_FIELDS`` is for: the next render job rebuilds the
+    Taichi program instead of reusing those variants, so both arms are right in
+    one process and the switch costs a kernel-preparation pass rather than a
+    wrong picture. Set ``ALGAN_WATERTIGHT_TRI`` before importing algan to
+    choose an arm without paying for the switch. (The Taichi *offline* cache is
+    not a hazard here: it keys on the compiled IR, so each arm has its own
+    entry.)
     """
     global watertight_tri
     watertight_tri = bool(enabled)
@@ -3557,6 +3618,12 @@ def set_linear_color_space(enabled):
     gamma-space light sums running away. It is there for A/B comparison and for
     reproducing pre-change output; ``agent_guidance/rendering.md`` has the
     measurements.
+
+    Both arms are correct in one process, but not free: the shading kernels
+    fold this gate in when they compile (``KERNEL_COMPILED_IN_FIELDS``), so the
+    first render after a change rebuilds the Taichi program and pays a
+    kernel-preparation pass. Set it once at the top of a script rather than per
+    frame.
     """
     global linear_color_space
     linear_color_space = bool(enabled)
