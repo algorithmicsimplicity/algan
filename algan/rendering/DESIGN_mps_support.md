@@ -1455,3 +1455,59 @@ three facts they were quietly assuming away.
   which declines on Metal by design (§7.5 of the mac_2026_09 findings).
 
 Each is now faked outright, which is what the tests around them already did.
+
+### 4.7 `NDArray dimension length > INT_MAX`: one run, five aborts, no repeat
+
+Run 34487179359 (master @ dc63e21) killed the arm in 5 m 54 s: five renders
+died with
+
+    MPSNDArray.mm:831: failed assertion
+    `[MPSNDArray initWithDevice:descriptor:isTextureBacked:]
+     Error: NDArray dimension length > INT_MAX'
+
+which is `abort()`, not an exception — so xdist replaced the worker four times
+and gave up (`-n 1` sets `--max-worker-restart` to 4), reporting 19 failures
+off 5 crashes. **It has not reproduced.** The same renderer code one commit
+earlier, run 34483019642 @ 98367d6, ran the arm to completion: `1 failed, 4050
+passed`, that one failure being the area-light assertion dc63e21 fixed, and no
+abort anywhere. Two dispatched runs on `claude/vibrant-faraday-y8b713` reached
+35% clean, including the test that died first. So this is an entry about a
+diagnosis, not a fix.
+
+**What it was doing.** `PYTHONFAULTHANDLER` is now set for the job (it was
+pytest's own faulthandler that caught these), and the five stacks name three
+call sites — none of which is about memory:
+
+| site | the op |
+| --- | --- |
+| `post_process._frames_to_host` ×2 | `frame_out.flip(-3)`, `uint8` |
+| `raster_pipeline.prepare_sparse_raster_coverage` ×2 | `opaque_u[a:b].fill_(True)`, `bool` |
+| `bloom.bloom_filter` ×1 | `torch.amax(x[..., 3:4])`, `uint8` |
+
+Three unrelated ordinary ops, and not one of them has an operand with a
+dimension anywhere near `2**31`: these are 64x64 and LD frames. What they DO
+share is that every operand is a **view of the render arena**, and all three
+are one byte wide. The arena is a single `uint8` tensor and every allocation is
+an offset slice of it re-viewed to the caller's dtype, so torch's MPS backend
+materialises one by describing the whole underlying buffer as a flat
+`MPSNDArray` of `storage_bytes / element_size` — which for a one-byte view *is*
+the arena's byte count. That is the only quantity in the process that can reach
+`INT_MAX`, and it explains why the abort lands in ops that have nothing to do
+with each other.
+
+**What it needs is a machine bigger than the runner measured.** The arena is
+`rendering_memory_fraction` (0.4) of `get_num_available_bytes`, which
+`_MPS_HOST_SHARE` caps at 0.4 of total RAM — so 0.16 of RAM, and it crosses
+`INT_MAX` above ~13.4 GB. The hosted runner measured (`macos-26-arm64`,
+20260831.0337) reports 7.0 GiB total, 4.67 GiB `recommended_max_memory` and a
+**1.12 GiB** arena, comfortably under; a 16 GB Mac gets 2.56 GB, over by 19%.
+So either the fleet is heterogeneous and that run drew a larger host, or the
+mechanism above is incomplete. It was not possible to settle from a runner that
+does not reproduce it, and that is stated rather than papered over.
+
+**The clamp is worth having either way**, because it is not a budget: past
+`INT_MAX` the arena is not addressable in one dimension on this backend, and
+the failure mode is a SIGABRT in an unrelated op rather than an error anyone
+can act on. `_addressable_arena_bytes` caps a Metal arena there and leaves
+every other device alone; below the ceiling it is the identity, so it is a
+no-op on the runner and on any Mac up to 16 GB.

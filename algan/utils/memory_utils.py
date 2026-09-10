@@ -105,6 +105,51 @@ _MPS_HEADROOM = 0.1
 #: applies. ``ALGAN_MPS_HOST_SHARE`` overrides it; 0 disables the cap.
 _MPS_HOST_SHARE = 0.4
 
+#: Hard ceiling on a **Metal** arena, in bytes. Not a memory budget: an
+#: addressing limit, and the one figure here that is not a judgement call.
+#:
+#: The arena is ONE ``uint8`` tensor and every tensor it hands out is a view of
+#: it -- an offset slice, re-viewed to the caller's dtype and shape. Torch's MPS
+#: backend materialises such a view by describing the whole underlying buffer as
+#: a flat ``MPSNDArray`` of ``storage_bytes / element_size`` elements, so for the
+#: ``uint8`` and ``bool`` tensors a render takes (the frame buffer that
+#: ``_frames_to_host`` flips, the per-fragment opaque mask the raster pipeline
+#: fills) that array's single axis IS the arena's byte count. Past ``INT_MAX``
+#: Metal refuses the descriptor:
+#:
+#:     MPSNDArray.mm:831: failed assertion
+#:     `[MPSNDArray initWithDevice:descriptor:isTextureBacked:]
+#:      Error: NDArray dimension length > INT_MAX'
+#:
+#: and it refuses it with ``abort()``. There is no exception to catch and no
+#: arena bookkeeping that can help: the process dies with SIGABRT inside
+#: whichever ordinary op -- ``flip``, ``fill_``, ``amax`` -- touched such a view
+#: first, which is why this reads as a crash somewhere unrelated to memory.
+#:
+#: So the arena is clamped rather than the free figure: the free figure is a
+#: real answer about the machine, and the budgets that share it
+#: (``_render_device_pool_bytes``, the merge headroom) describe memory that is
+#: not one flat buffer and can use all of it. Only this allocation has to be
+#: addressable in one dimension.
+#:
+#: It binds on a machine with enough RAM for ``_MPS_HOST_SHARE`` of it to exceed
+#: ~5.4 GB -- 16 GB and up, which is most Apple Silicon sold, and the hosted
+#: macOS runner as of this commit. Below that the shares above bind first and
+#: this never applies.
+_MPS_MAX_ARENA_BYTES = (1 << 31) - 1
+
+
+def _addressable_arena_bytes(device, num_bytes):
+    """Clamp an arena size to what one tensor on ``device`` can address.
+
+    Separate from :class:`ManualMemory` so it can be tested without the device:
+    the limit is a property of the backend, not of a machine that has one.
+    """
+    num_bytes = max(0, int(num_bytes))
+    if torch.device(device).type == "mps":
+        return min(num_bytes, _MPS_MAX_ARENA_BYTES)
+    return num_bytes
+
 
 def get_num_available_bytes(device=torch.device("cuda")):
     device = torch.device(device)
@@ -985,7 +1030,11 @@ class ManualMemory:
                 if managed
                 else 1
             )
-        num_bytes = max(0, int(num_bytes))
+        # Clamped even when ``num_bytes`` was given outright: the ceiling is a
+        # property of the device, not of how the size was chosen, and a caller
+        # that pins a larger arena (``available_memory_override``, a benchmark
+        # fixture) would otherwise abort the process rather than get an error.
+        num_bytes = _addressable_arena_bytes(device, num_bytes)
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
         self.current_reverse_pointer = self.length
