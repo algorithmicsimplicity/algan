@@ -21,10 +21,26 @@ that every renderer kernel supports that configuration.
 ## Specialization and cache boundaries
 
 A `ti.static` read of a module setting is captured at compilation. Changing that
-setting after a kernel has compiled does not change the cached specialization.
-Use one process per arm for those A/B tests. In contrast, a `ti.template()`
+setting after a kernel has compiled does not change the cached specialization —
+nothing keys the specialization on it. In contrast, a `ti.template()`
 argument participates in specialization and can select distinct variants in one
 process. Clearing the disk cache does not remove an already-live specialization.
+
+Renderer *settings* read that way are named in
+`rt_settings.KERNEL_COMPILED_IN_FIELDS`, and for those the runtime closes the
+gap: `taichi_runtime` records what each specialization folded in, and
+`ensure_taichi_for_render` re-inits the program — dropping every specialization
+— when one of them has moved since. So both arms of `linear_color_space` (and
+of the other four) render correctly in one process, at the cost of a kernel
+preparation pass at the switch, logged at `PERF`. **Add a new `ti.static` gate
+over a mutable setting to that tuple**; the defect it prevents is invisible
+otherwise, because the first render of the process is always right and only the
+second is wrong. `tests/unit_tests/test_compiled_in_settings.py` reads the
+gates out of the source and fails on one that is missing.
+
+That covers settings, not everything a kernel folds in. A `ti.static` gate over
+anything else with a live value — an environment variable read at the point of
+use, a module global some other code assigns — is still one process per arm.
 
 Run Python through the environment's interpreter, not bare `uv run`, when using
 a locally patched compiler wheel. Lockfile synchronization can replace it. Check

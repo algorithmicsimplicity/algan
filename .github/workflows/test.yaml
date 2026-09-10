@@ -100,6 +100,17 @@ jobs:
       # the fonts, the encoder -- and the render they produce is uploaded as
       # an artifact below so the frames can be eyeballed.
       ALGAN_ALLOW_UNBASELINED_MACOS: ${{ startsWith(matrix.os, 'macos') && '1' || '0' }}
+      # A render that dies in a native assertion -- Metal's `MPSNDArray ...
+      # dimension length > INT_MAX`, a CUDA abort, a segfault in a kernel --
+      # takes the process down with SIGABRT and leaves nothing in the log but
+      # the C++ message. Several of these tests render in a SUBPROCESS and
+      # report `proc.stderr[-2000:]`, which is then just that one line: no
+      # Python frame, so nothing says which allocation asked for it. This makes
+      # every Python process the job starts dump its stack on the fatal
+      # signals, which is what turns such a crash back into something a log can
+      # be read for. pytest enables faulthandler for its own process; this is
+      # what reaches the children.
+      PYTHONFAULTHANDLER: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -195,16 +206,41 @@ jobs:
       # uses -- and separately verify that torch sees an MPS device. Printing
       # the distribution version also leaves evidence that this ordinary gate
       # used the locked published `algan-quadrants`, not a private wheel.
+      #
+      # It also reports the size this machine gives the render arena, because
+      # the hosted macOS pool is NOT one machine and this arm's worst failure
+      # to date turned on which one it drew: the same commit aborts on some
+      # runners and is clean on others (DESIGN_mps_support.md §4.7), and the
+      # arena is 0.16 of total RAM, so the machine decides whether it clears
+      # `_MPS_MAX_ARENA_BYTES`. Nothing else in the log says which machine this
+      # was -- step durations were tried as a proxy and do not separate them --
+      # so a failure that depends on it is indistinguishable from a flake
+      # without these four numbers.
       - name: Require the MPS render device
         if: matrix.render_device == 'mps'
         run: |
           uv run python - <<'PY'
           from importlib import metadata
 
+          import psutil
           import torch
 
-          from algan.settings import _startup
+          from algan.settings import SETTINGS, _startup
           from algan.taichi_compat import BACKEND
+          from algan.utils.memory_utils import (
+              _MPS_MAX_ARENA_BYTES,
+              get_num_available_bytes,
+          )
+
+          gib = 1 << 30
+          arena = int(
+              get_num_available_bytes(torch.device("mps"))
+              * SETTINGS.computing.rendering_memory_fraction
+          )
+          print("total RAM:", psutil.virtual_memory().total / gib, "GiB")
+          print("mps.recommended_max_memory:", torch.mps.recommended_max_memory() / gib)
+          print("render arena:", arena / gib, "GiB")
+          print("arena ceiling reached:", arena >= _MPS_MAX_ARENA_BYTES)
 
           actual = _startup.render_device().type
           available = torch.backends.mps.is_available()

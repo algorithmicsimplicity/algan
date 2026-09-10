@@ -117,6 +117,8 @@ This is what makes lights additive: sRGB encoding is concave, so summing encoded
 
 `raytracing/settings.py` and `_ambient_strength()` in `shading_taichi.py` define the coefficients; `benchmarks/_linear_color_check.py` is the acceptance harness, one process per arm.
 
+The switch and the two coefficients are folded into the shading kernels behind `ti.static` — they are three of `rt_settings.KERNEL_COMPILED_IN_FIELDS` — so **the first render after a change rebuilds the Taichi program** (`ensure_taichi_for_render`, logged at `PERF`) and pays a kernel-preparation pass. Both arms are correct in one process, which they were not: a specialization is keyed on its `ti.template()` arguments and none of these is one, so a second render used to reuse the first render's shading and come out up to 18 counts of 255 away from the frame it asked for. Set the working space once at the top of a script; a benchmark still gets a cleaner comparison from a process per arm, because the rebuild is a cost the measurement does not want in it.
+
 ## An area light's shadow is an integral over its emitter, not a stack of hard tests
 
 A `RectAreaLight` expands into `K = k*k` point emitter rows carrying `1/K` of the power each, and every one of them used to cast its own *hard* shadow — so the union was a staircase with `K + 1` levels (measured `[0.01, 0.25, 0.52, 0.74]`, a `k/4` grid, at the shipped `samples = 4`) where the reference path tracer ramps continuously.

@@ -363,8 +363,9 @@ print("gate-off probe ok")
 
 def test_gate_off_ignores_the_tint():
     """With ALGAN_RGB_SHADOW_TINT=0 the producer returns today's achromatic
-    value in every channel -- the green tint above must NOT appear. The gate
-    is baked in at kernel compile, so this arm has to be its own process (see
+    value in every channel -- the green tint above must NOT appear. The
+    environment variable seeds the module default during the import, so this
+    arm is its own process however the gate reaches the kernels (see
     rgb_shadow_tint).
     """
     import tempfile
