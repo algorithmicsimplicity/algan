@@ -17,6 +17,7 @@ const state = {
   // render's own pixel grid, so an inspected pixel is the same pixel however
   // far in you are.
   zoom: 1, epoch: 0, resolutionName: null, resolutionKeys: "",
+  pixelRequest: 0, attributeRequest: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -73,7 +74,11 @@ function frameImage(index) {
   const promise = new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => { state.images.delete(index); reject(new Error("not ready")); };
+    image.onerror = () => {
+      // A request from a discarded resolution may finish after its replacement.
+      if (state.images.get(index) === promise) state.images.delete(index);
+      reject(new Error("not ready"));
+    };
     // The epoch busts both caches after a resolution change: this map's, and
     // the browser's own, which is told frames are immutable for a day.
     image.src = api(`/frame/${index}.png?v=${state.epoch}`);
@@ -92,10 +97,11 @@ function frameImage(index) {
 async function showFrame(index, { redrawOnly = false } = {}) {
   index = Math.max(0, Math.min(index, state.totalFrames - 1));
   state.frame = index;
+  const epoch = state.epoch;
   updateReadouts();
   try {
     const image = await frameImage(index);
-    if (state.frame !== index) return true;   // moved on while waiting
+    if (state.frame !== index || state.epoch !== epoch) return true;
     if (canvas.width !== image.width || canvas.height !== image.height) {
       canvas.width = image.width;
       canvas.height = image.height;
@@ -106,6 +112,7 @@ async function showFrame(index, { redrawOnly = false } = {}) {
     setStatus("");
     return true;
   } catch (err) {
+    if (state.frame !== index || state.epoch !== epoch) return true;
     if (!redrawOnly) setStatus("rendering…", "busy");
     return false;
   }
@@ -263,6 +270,11 @@ async function inspect(x, y) {
   showPixelColour(x, y);
   const target = el("fragments");
   const frame = state.frame;
+  const epoch = state.epoch;
+  const request = ++state.pixelRequest;
+  const isCurrent = () => request === state.pixelRequest
+    && frame === state.frame && epoch === state.epoch
+    && state.pixel.x === x && state.pixel.y === y;
   // ``/api/fragments``, not ``/api/pixel``: content blockers ship generic
   // ``/pixel?`` rules that match the path alone, and localhost is not exempt.
   const url = `/api/fragments?frame=${frame}&x=${x}&y=${y}`;
@@ -277,19 +289,22 @@ async function inspect(x, y) {
     for (let waited = 0; data.pending && waited < 300; waited++) {
       // Abandon the poll if the click or the playhead moved on: the answer
       // being waited for is no longer the one on screen.
-      if (state.pixel.x !== x || state.pixel.y !== y || state.frame !== frame) return;
+      if (!isCurrent()) return;
       target.innerHTML =
         `<p class="empty">Reading fragments… (${waited + 1}s)`
         + `${waited > 3 ? "<br>First inspection compiles a GPU kernel." : ""}</p>`;
       await new Promise((r) => setTimeout(r, 1000));
+      if (!isCurrent()) return;
       data = await getJSONPatiently(url);
     }
+    if (!isCurrent()) return;
     if (data.pending) {
       target.innerHTML = `<p class="empty">Gave up waiting for this pixel.</p>`;
       return;
     }
     renderFragments(data);
   } catch (err) {
+    if (!isCurrent()) return;
     target.innerHTML = `<p class="empty">${escapeHTML(err.message)}</p>`;
   }
 }
@@ -398,6 +413,12 @@ async function selectNode(node, element) {
 
 async function showAttributes() {
   const target = el("attrs");
+  const selected = state.selected;
+  const frame = state.frame;
+  const epoch = state.epoch;
+  const request = ++state.attributeRequest;
+  const isCurrent = () => request === state.attributeRequest
+    && selected === state.selected && frame === state.frame && epoch === state.epoch;
   if (state.selected === null) {
     target.innerHTML = `<p class="empty">Select a mob in the hierarchy.</p>`;
     return;
@@ -405,7 +426,8 @@ async function showAttributes() {
   target.innerHTML = `<p class="empty">Reading…</p>`;
   try {
     const data = await getJSONPatiently(
-      `/api/attrs?node=${state.selected}&frame=${state.frame}`);
+      `/api/attrs?node=${selected}&frame=${frame}`);
+    if (!isCurrent()) return;
     const rows = data.attributes.map((a) => {
       let value = `<span class="note">${escapeHTML(a.note || "—")}</span>`;
       if (a.value) {
@@ -421,6 +443,7 @@ async function showAttributes() {
       `<p class="hint">${escapeHTML(data.label)} at t=${(data.at ?? 0).toFixed(3)}s</p>`
       + `<table>${rows.join("")}</table>`;
   } catch (err) {
+    if (!isCurrent()) return;
     target.innerHTML = `<p class="empty">${escapeHTML(err.message)}</p>`;
   }
 }

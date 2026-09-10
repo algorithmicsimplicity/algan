@@ -110,6 +110,11 @@ class _ProjectSceneRun:
             file_path = SETTINGS.paths.output_filename
         raw_path = os.fspath(file_path)
         requested = Path(raw_path)
+        is_directory = requested.is_dir() or raw_path.endswith(
+            tuple(separator for separator in (os.sep, os.altsep) if separator)
+        )
+        if is_directory:
+            requested = requested / SETTINGS.paths.output_filename
         if requested.suffix == "":
             requested = requested.with_suffix(".png")
         local_name = requested.stem
@@ -125,7 +130,11 @@ class _ProjectSceneRun:
 
         # Match Scene's path contract: a bare name uses the configured project
         # screenshot directory, while an explicit parent remains explicit.
-        if not requested.is_absolute() and os.path.dirname(raw_path) == "":
+        if (
+            not is_directory
+            and not requested.is_absolute()
+            and os.path.dirname(raw_path) == ""
+        ):
             requested = self.project.screenshot_directory / requested
         return requested
 

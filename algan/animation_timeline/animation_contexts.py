@@ -32,6 +32,7 @@ See :doc:`/new_user_tutorials/combining_animations`.
 from __future__ import annotations
 
 import copy
+import math
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -182,7 +183,7 @@ def _reject_context_kwargs(kwargs):
 
 
 def _reject_negative_runtime(name, value):
-    """Raise if ``value`` is a negative number of seconds.
+    """Reject non-numeric, non-finite or negative seconds before recording.
 
     Time only moves forward. A negative runtime rewinds the scene clock, which
     then silently shortens or empties the render rather than failing -- and
@@ -191,10 +192,16 @@ def _reject_negative_runtime(name, value):
     if value is None:
         return value
     try:
-        negative = value < 0
-    except TypeError:
-        return value
-    if negative:
+        finite = math.isfinite(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AlganConfigurationError(
+            f"{name} must be a finite number of seconds; got {value!r}"
+        ) from exc
+    if not finite:
+        raise AlganConfigurationError(
+            f"{name} must be a finite number of seconds; got {value!r}"
+        )
+    if value < 0:
         raise AlganConfigurationError(
             f"{name}={value!r} is negative, and a runtime is a number of "
             f"seconds, so it must be zero or more. Time in Algan only moves "
@@ -277,7 +284,7 @@ class AnimationManager:
         Parameters
         ----------
         t
-            How long to wait, in seconds. Must be zero or more. Defaults to
+            How long to wait, in seconds. Must be finite and zero or more. Defaults to
             ``None``, meaning one animation's runtime (1 second by default).
 
         Returns
@@ -400,11 +407,11 @@ class AnimationContext:
     ----------
     runtime
         Total runtime of this context, in seconds; the animations inside are
-        rescaled to fit. Must be zero or more. Defaults to ``None``, meaning the
+        rescaled to fit. Must be finite and zero or more. Defaults to ``None``, meaning the
         runtime follows from the animations themselves.
     runtime_per_part
-        Runtime of each individual animation inside, in seconds. Must be zero or
-        more. Defaults to ``None``, meaning inherit from the parent context
+        Runtime of each individual animation inside, in seconds. Must be finite
+        and zero or more. Defaults to ``None``, meaning inherit from the parent context
         (``1.0`` at the top level). ``runtime`` overrides this.
     equalize_runtimes
         Whether to stretch every animation inside to the runtime of the longest one.
@@ -448,7 +455,8 @@ class AnimationContext:
     Raises
     ------
     :class:`.AlganConfigurationError`
-        If ``runtime`` or ``runtime_per_part`` is negative, or a parameter is
+        If ``runtime`` or ``runtime_per_part`` is not finite and non-negative,
+        or a parameter is
         spelled the way Manim or an older Algan spelled it (``duration``,
         ``run_time``, ``rate_func``).
     :class:`.ContextReuseError`
@@ -891,7 +899,7 @@ class AnimationContext:
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``t`` is negative.
+            If ``t`` is not a finite, non-negative number.
         """
         if t is None:
             t = self.runtime_per_part

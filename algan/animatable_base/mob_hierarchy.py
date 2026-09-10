@@ -210,7 +210,10 @@ class MobHierarchyMixin:
             children = [_ for _ in children if _ not in self.components]
         if generation <= 0:
             return children
-        children = [_.get_children(generation - 1) for _ in children]
+        children = [
+            _.get_children(generation - 1, include_components=include_components)
+            for _ in children
+        ]
         return [x for level_children in children for x in level_children]
 
     def get_descendants(self, include_self: bool = True) -> list[Mob]:

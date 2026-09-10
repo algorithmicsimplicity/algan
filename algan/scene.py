@@ -208,6 +208,7 @@ class Scene(RenderLoopMixin):
     ):
         self.set_premultiplied_over(premultiplied_over)
         chose_video_settings = video_settings is not None
+        chose_background = background is not None
         if video_settings is None:
             video_settings = SETTINGS.video
         if background is None:
@@ -237,9 +238,14 @@ class Scene(RenderLoopMixin):
                     -1,
                 )
             )
-        self.background_frame = background
+        # Construction and set_background accept the same color/image strings.
+        # Remember an explicit choice so render defaults cannot overwrite it,
+        # including after reset; an implicit frame still defers to defaults.
+        self.set_background(background)
+        background = self.background_frame
         self._initial_background_frame = background
-        self.background = background
+        self._initial_background_is_set = chose_background
+        self.background_is_set = chose_background
         self.actors = []
         self.effects = []
         self.camera = None
@@ -318,8 +324,8 @@ class Scene(RenderLoopMixin):
         Parameters
         ----------
         time
-            How long to wait, in seconds. Must be zero or more. Defaults to
-            ``1``.
+            How long to wait, in seconds. Must be finite and zero or more.
+            Defaults to ``1``.
         **kwargs
             Accepted only so that the timing spellings Algan does not use
             (``duration``, ``run_time``, ``rate_func``) can be answered with
@@ -333,8 +339,8 @@ class Scene(RenderLoopMixin):
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``time`` is negative, or a keyword argument names a parameter
-            :meth:`~.Scene.wait` does not have.
+            If ``time`` is not a finite, non-negative number, or a keyword names
+            a parameter :meth:`~.Scene.wait` does not have.
         """
         if kwargs:
             _reject_context_kwargs(kwargs)
@@ -968,7 +974,7 @@ class Scene(RenderLoopMixin):
         self.scene_times = [[0, 0]]
         self.background_frame = self._initial_background_frame
         self.background = self._initial_background_frame
-        self.background_is_set = False
+        self.background_is_set = self._initial_background_is_set
         depth_source = (
             SETTINGS.style.frame
             if callable(self.background_frame)

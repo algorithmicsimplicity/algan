@@ -23,13 +23,14 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan.animatable_base.animatable import _rejecting_timing_kwargs
+from algan.animatable_base.animatable import Animatable, _rejecting_timing_kwargs
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.utils.python_utils import traverse
+from algan.utils.tensor_utils import cast_to_direction
 
 
 def midpoint(x):
@@ -48,6 +49,15 @@ def midpoint(x):
     mn = torch.stack([_.amin(-2, keepdim=True) for _ in x], -1).amin(-1)
     mx = torch.stack([_.amax(-2, keepdim=True) for _ in x], -1).amax(-1)
     return (mn + mx) / 2
+
+
+def _layout_direction(name, value):
+    """Use a direction's orientation, never its magnitude, for layout spacing."""
+    direction = cast_to_direction(name, value)
+    scale = direction.abs().amax(dim=-1, keepdim=True)
+    if bool((scale == 0).any()):
+        raise AlganConfigurationError(f"{name} must be a non-zero 3-D direction")
+    return F.normalize(direction / scale, p=2, dim=-1)
 
 
 class Group(Mob):
@@ -72,6 +82,11 @@ class Group(Mob):
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``scene``,
         which must be the members' own Scene, and ``name``.
 
+    Raises
+    ------
+    TypeError
+        If a member is not an :class:`~.Animatable` instance.
+
     Examples
     --------
     Arrange 3 mobs horizontally in a line, left to right.
@@ -89,6 +104,12 @@ class Group(Mob):
 
     def __init__(self, *mobs, link_children: bool = True, **kwargs):
         initial_mobs = list(traverse(mobs))
+        for mob in initial_mobs:
+            if not isinstance(mob, Animatable):
+                raise TypeError(
+                    f"Group members must be Animatable instances, "
+                    f"got {type(mob).__name__}"
+                )
         self._link_children = bool(link_children)
         if initial_mobs:
             scenes = {id(mob.scene): mob.scene for mob in initial_mobs}
@@ -351,7 +372,8 @@ class Group(Mob):
         Parameters
         ----------
         direction
-            Direction the line runs in. Defaults to ``RIGHT``.
+            Non-zero direction the line runs in; its magnitude is ignored.
+            Defaults to ``RIGHT``.
         buffer
             Gap between neighbouring members, in world units; ``0`` puts them edge to
             edge. Defaults to ``None``, meaning ``SETTINGS.style.buffer`` (``0.6``).
@@ -372,6 +394,11 @@ class Group(Mob):
         :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
 
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``direction`` or ``align_to`` is zero or not a finite 3-D vector.
+
         See Also
         --------
         :meth:`~algan.mobs.group.Group.arrange_in_grid`
@@ -381,6 +408,9 @@ class Group(Mob):
         """
         if not self.children:
             return self
+        direction = _layout_direction("direction", direction)
+        if align_to is not None:
+            align_to = _layout_direction("align_to", align_to)
         if buffer is None:
             buffer = SETTINGS.style.buffer
 
@@ -403,7 +433,7 @@ class Group(Mob):
         total_size = sum(mob_sizes) + (buffer * (len(mob_sizes) - 1))
 
         start = (
-            (self.children[0].location - direction * (mob_sizes[0] / 2))
+            (self.children[0].get_center() - direction * (mob_sizes[0] / 2))
             if start_at_first
             else (self.location - direction * total_size / 2)
         )
@@ -412,7 +442,10 @@ class Group(Mob):
                 start = start + direction * (mob_sizes[i] / 2)
                 location = start
                 if align_to is not None:
-                    location = location + alignment_offsets[i] * align_to
+                    alignment = alignment_offsets[i]
+                    if start_at_first:
+                        alignment = alignment - alignment_offsets[0]
+                    location = location + alignment * align_to
                 # loc + (disp_to_center) = l
                 mob.location = location + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
@@ -448,7 +481,8 @@ class Group(Mob):
         dif = end - start
         with Sync(animation_manager=self.animation_manager):
             for i, mob in enumerate(self.children):
-                mob.location = start + dif * ((i + 1) / (len(self.children) + 1))
+                center = start + dif * ((i + 1) / (len(self.children) + 1))
+                mob.location = center + (mob.location - mob.get_center())
         return self
 
     @_rejecting_timing_kwargs
@@ -480,9 +514,11 @@ class Group(Mob):
             ``None``, meaning ``ceil(sqrt(len(mobs)))`` -- as square a grid as the
             count allows.
         row_direction
-            Direction along which a row runs. Defaults to ``RIGHT``.
+            Non-zero direction along which a row runs; its magnitude is ignored.
+            Defaults to ``RIGHT``.
         column_direction
-            Direction in which successive rows are stacked. Defaults to ``DOWN``.
+            Non-zero direction in which successive rows are stacked; its magnitude
+            is ignored. Defaults to ``DOWN``.
         row_buffer
             Gap between members within a row, in world units. Defaults to ``None``,
             meaning ``SETTINGS.style.buffer`` (``0.6``).
@@ -503,9 +539,8 @@ class Group(Mob):
         Raises
         ------
         :class:`.AlganConfigurationError`
-            If ``num_rows`` is not a positive integer.
-        ValueError
-            If ``tight_axis`` is not ``0``, ``1`` or ``None``.
+            If ``num_rows`` is not a positive integer, a direction is zero or
+            invalid, or ``tight_axis`` is not ``0``, ``1`` or ``None``.
 
         Examples
         --------
@@ -535,8 +570,8 @@ class Group(Mob):
         num_cols = len(self.children) // num_rows
         if num_rows * num_cols < len(self.children):
             num_cols += 1
-        row_direction = F.normalize(row_direction, p=2, dim=-1)
-        column_direction = F.normalize(column_direction, p=2, dim=-1)
+        row_direction = _layout_direction("row_direction", row_direction)
+        column_direction = _layout_direction("column_direction", column_direction)
         buf_dist1 = [
             max([m.get_length_in_direction(row_direction) for m in self.children])
             + row_buffer

@@ -18,9 +18,9 @@ from math import isqrt
 
 import torch
 
-#: Leaf types that are provably not tensors, carry no ``traversable`` flag and
-#: are not iterable, so :func:`traverse` can yield them without asking.
-_ATOMIC_TYPES = frozenset({float, int, bool, type(None)})
+#: Scalar leaves. Strings and bytes stay whole: recursively flattening a
+#: one-character string would recurse forever instead of reaching a leaf.
+_ATOMIC_TYPES = frozenset({float, int, bool, type(None), str, bytes})
 
 
 def traverse(nested_iterable):
@@ -40,7 +40,7 @@ def traverse(nested_iterable):
         yield nested_iterable
         return
     if (
-        isinstance(nested_iterable, torch.Tensor)
+        isinstance(nested_iterable, (str, bytes, torch.Tensor))
         or (hasattr(nested_iterable, "traversable") and not nested_iterable.traversable)
         or not isinstance(nested_iterable, Iterable)
     ):
