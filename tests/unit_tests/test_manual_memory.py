@@ -283,12 +283,18 @@ def test_a_metal_arena_stays_inside_what_one_mpsndarray_can_address():
     ``_frames_to_host``, ``fill_`` on the opaque mask, ``amax`` in the bloom
     filter) -- a crash with nothing about memory in it.
 
+    Measured on the hosted runner, since no Mac here can be asked: writing
+    ``t[4096:8192]`` of a ``2**31 - 4096`` byte buffer returns 0, and the same
+    four kilobytes into a ``2**31 + 4096`` byte buffer returns -6 with that
+    assertion. `DESIGN_mps_support.md` §4.7 has the run.
+
     A 16 GB Mac reaches it: ``_MPS_HOST_SHARE`` of 16 GB is 6.4 G free and
     ``rendering_memory_fraction`` of that is 2.56 G, over the ceiling by 19%.
     """
     from algan.utils import memory_utils as mu
 
-    ceiling = (1 << 31) - 1
+    ceiling = mu._MPS_MAX_ARENA_BYTES
+    assert ceiling <= (1 << 31) - 4096, "must stay inside the measured-safe range"
     over = int((16 << 30) * mu._MPS_HOST_SHARE * 0.4)
     assert over > ceiling, "the 16 GB machine this is about must exceed it"
     assert mu._addressable_arena_bytes(torch.device("mps"), over) == ceiling

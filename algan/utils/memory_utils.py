@@ -133,10 +133,23 @@ _MPS_HOST_SHARE = 0.4
 #: addressable in one dimension.
 #:
 #: It binds on a machine with enough RAM for ``_MPS_HOST_SHARE`` of it to exceed
-#: ~5.4 GB -- 16 GB and up, which is most Apple Silicon sold, and the hosted
-#: macOS runner as of this commit. Below that the shares above bind first and
+#: ~5.4 GB -- 16 GB and up, which is most Apple Silicon sold, and the faster
+#: half of the hosted macOS pool. Below that the shares above bind first and
 #: this never applies.
-_MPS_MAX_ARENA_BYTES = (1 << 31) - 1
+#:
+#: **Measured on the runner**, not reasoned about: a ``uint8`` buffer of
+#: ``2**31 - 4096`` takes a ``t[4096:8192].fill_(1)`` and lives; the same four
+#: kilobytes written into a buffer of ``2**31 + 4096`` abort the process with
+#: the assertion above. Eight kilobytes of *buffer* is the whole difference,
+#: and the view is the same size either way, which is the mechanism stated as
+#: an experiment.
+#:
+#: A megabyte under, rather than ``INT_MAX`` exactly, because the length that
+#: reaches Metal is the buffer torch's allocator actually took, and it is free
+#: to round a request up to its own granularity -- landing back on the wrong
+#: side of a limit spelled ``> INT_MAX``. The margin costs 0.05% of the arena
+#: and keeps the clamp inside the range the probe measured.
+_MPS_MAX_ARENA_BYTES = (1 << 31) - (1 << 20)
 
 
 def _addressable_arena_bytes(device, num_bytes):

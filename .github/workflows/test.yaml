@@ -259,43 +259,6 @@ jobs:
 
       # Cheap environment report for all arms: accelerator choice, compiler,
       # LaTeX and FFmpeg become explicit in the log before a later test failure.
-      # TEMPORARY probe (DESIGN_mps_support.md §4.7): does a one-byte view of a
-      # buffer past INT_MAX really abort, and does one just under it not? Two
-      # short-lived 2.15 GiB allocations, sequential, no render -- small enough
-      # for the 7 GiB class, which is what makes this answerable without
-      # waiting to land on the class that reproduces the crash.
-      - name: PROBE the MPS one-dimension ceiling
-        if: matrix.render_device == 'mps'
-        run: |
-          uv run python - <<'PY'
-          import subprocess
-          import sys
-          import textwrap
-
-          CODE = textwrap.dedent(
-              """
-              import sys, torch
-              n = int(sys.argv[1])
-              t = torch.empty((n,), dtype=torch.uint8, device="mps")
-              t[4096:8192].fill_(1)
-              torch.mps.synchronize()
-              print("survived", n)
-              """
-          )
-          for label, n in (
-              ("under the ceiling", (1 << 31) - 4096),
-              ("over the ceiling", (1 << 31) + 4096),
-          ):
-              p = subprocess.run(
-                  [sys.executable, "-c", CODE, str(n)],
-                  capture_output=True,
-                  text=True,
-              )
-              print(f"--- {label}: {n} bytes -> returncode {p.returncode}")
-              print((p.stdout or "").strip()[-300:])
-              print((p.stderr or "").strip()[-500:])
-          PY
-
       - name: Report the environment Algan resolved
         run: uv run algan check
 

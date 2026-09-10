@@ -1507,6 +1507,23 @@ describing the whole underlying buffer as a flat `MPSNDArray` of
 byte count. That is the only quantity in the process that can reach `INT_MAX`,
 and it is the only thing all three sites have in common.
 
+**Confirmed by experiment, on the class that does NOT crash.** Waiting to land
+on the fast class is not necessary, because the claim is about a buffer length,
+not about a render — so ask it directly. Two subprocesses, each allocating one
+`uint8` buffer and writing the same four kilobytes of it:
+
+| buffer | `t[4096:8192].fill_(1)` |
+| --- | --- |
+| `2**31 - 4096` = 2147479552 B | returncode **0**, "survived" |
+| `2**31 + 4096` = 2147487744 B | returncode **-6**, `NDArray dimension length > INT_MAX` |
+
+Eight kilobytes of buffer either side of `INT_MAX` is the entire difference,
+and the view written is 4 KiB in both. So the axis Metal is handed is the
+**buffer's** length and not the view's, one-byte views of a big arena are
+exactly the case that cannot work, and every one of the five stacks above is
+that case. Run 34538422428 on the 7 GiB class, where the arena itself is
+nowhere near the ceiling.
+
 **And the arena is a function of the machine.** It is
 `rendering_memory_fraction` (0.4) of `get_num_available_bytes`, which
 `_MPS_HOST_SHARE` caps at 0.4 of total RAM — 0.16 of RAM, crossing `INT_MAX`
@@ -1514,12 +1531,13 @@ above ~13.4 GB. The slow class measures 7.0 GiB total, 4.67 GiB
 `recommended_max_memory` and a **1.12 GiB** arena, comfortably under, which is
 why it is clean; a 16 GB machine gets 2.56 GB, over by 19%. The gate step now
 prints those four numbers on every run so the class is in the log rather than
-inferred from step durations, and the fast class's figure is what remains to be
-read off a run that lands on one.
+inferred from step durations.
 
-`_addressable_arena_bytes` caps a Metal arena at `INT_MAX` bytes and leaves
-every other device alone. It is an addressing limit, not a budget: past it the
-arena is not describable in one dimension on this backend, and the failure is a
-SIGABRT in an unrelated op rather than anything a caller can act on. Below the
-ceiling it is the identity, so it changes nothing on the slow class or on any
-Mac up to 16 GB.
+`_addressable_arena_bytes` caps a Metal arena a megabyte under `INT_MAX` and
+leaves every other device alone. It is an addressing limit, not a budget: past
+it the arena is not describable in one dimension on this backend, and the
+failure is a SIGABRT in an unrelated op rather than anything a caller can act
+on. The megabyte of margin is there because the length Metal sees is the buffer
+torch's allocator actually took, which it may round up from the request. Below
+the ceiling the clamp is the identity, so it changes nothing on the slow class
+or on any Mac up to 16 GB.
