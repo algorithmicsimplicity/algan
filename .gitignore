@@ -43,6 +43,7 @@ __pycache__/
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+!.claude/skills/
 .codex
 .devcontainer
 
