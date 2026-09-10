@@ -15,6 +15,7 @@ lives in `agent_guidance/`, split by topic so you read only what your task touch
 | Manim compatibility | `agent_guidance/manim_compat.md` |
 | measuring on a GPU (Mac runner, Kaggle T4) | `agent_guidance/gpu_harnesses.md` |
 | `*_taichi.py` | `agent_guidance/taichi.md` |
+| publishing changes through the ChatGPT GitHub connector | `agent_guidance/github_connector_pushes.md` |
 
 When the docs disagree, the source code wins.
 

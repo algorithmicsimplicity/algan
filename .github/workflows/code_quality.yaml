@@ -134,12 +134,16 @@ jobs:
           required = [
               "rendering/post_processing/anti_aliasing/AreaTex.png",
               "rendering/post_processing/anti_aliasing/SearchTex.png",
+              "rendering/raytracing/_glass_energy_lut.npz",
               "external_libraries/manim/_config/default.cfg",
           ]
           missing = [r for r in required if not (root / r).is_file()]
           if missing:
               raise SystemExit("missing from the installed wheel: " + ", ".join(missing))
           print("all required data files present")
+          from algan.rendering.raytracing.glass_energy import glass_energy_table
+          assert glass_energy_table().shape == (37026, 2)
+          print("glass energy lookup decodes from installed wheel")
           PY
 
       # The CLI is declared as a console script in pyproject.toml, which is the

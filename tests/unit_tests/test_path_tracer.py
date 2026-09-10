@@ -809,7 +809,7 @@ def _center_patch_mean(img, half=2):
     return float(patch[..., :3].double().mean())
 
 
-def _rect_light_lambert_reference(half_u, half_v, height, radiance, decay=0.0, n=192):
+def _rect_light_lambert_reference(half_u, half_v, height, radiance, n=192):
     """Torch quadrature of the radiance a white Lambert surface returns under
     a rectangular emitter directly above it.
 
@@ -817,12 +817,10 @@ def _rect_light_lambert_reference(half_u, half_v, height, radiance, decay=0.0, n
     straight down, and carries ``radiance`` per unit area's worth of the
     light's power (``color * intensity / area``, which is what
     ``_materialize_render_state``'s ``1/K`` split plus ``_light_eval``'s
-    per-row radiometry adds up to). ``decay`` is the light's falloff exponent
-    -- ``2`` is the physical inverse-square, ``0`` the default "no falloff",
-    which the emitter model applies verbatim and this reference therefore
-    reproduces verbatim.
+    per-row radiometry adds up to). Physical inverse-square falloff is the
+    solid-angle Jacobian, not an authored exponent or a range fade.
 
-    Returns ``(albedo / pi) * radiance * integral(cos_p cos_l / d^decay dA)``.
+    Returns ``(albedo / pi) * radiance * integral(cos_p cos_l / d^2 dA)``.
     """
     cell_u = 2.0 * half_u / n
     cell_v = 2.0 * half_v / n
@@ -831,10 +829,8 @@ def _rect_light_lambert_reference(half_u, half_v, height, radiance, decay=0.0, n
     du = u.view(-1, 1)
     dv = v.view(1, -1)
     d2 = du * du + dv * dv + height * height
-    d = d2.sqrt()
     cos_pq = (height * height) / d2  # cos_p * cos_l, both against +-z
-    fall = torch.ones_like(d) if decay == 0.0 else d.pow(-decay)
-    integral = float((cos_pq * fall).sum()) * cell_u * cell_v
+    integral = float((cos_pq / d2).sum()) * cell_u * cell_v
     return radiance * integral / np.pi
 
 
@@ -852,7 +848,7 @@ def test_area_light_matches_the_reference_integral(tmp_path):
     1/N weighting of multi-sample NEE is under test too.
     """
     width = height = 3.0
-    intensity = 1.0
+    intensity = 12.0
     plane_z = 3.0
 
     def build(scene):
@@ -912,16 +908,10 @@ def test_area_light_row_and_emissive_quad_agree(tmp_path):
     **Matching the radiance.** A ``RectAreaLight`` of colour ``C`` and
     intensity ``I`` expands into ``K`` cell rows carrying ``C * I / K`` each
     (``_materialize_render_state``), and ``_light_eval`` /
-    ``_pt_nee_light_row`` apply the falloff ``d^-decay``, the range fade and
-    the one-sided cosine at the sampled point. With ``decay = 2`` and no
-    range limit, the ``K``-row sum is a Riemann sum of
-    ``integral Le cos_l / d^2 dA`` over the rectangle with
-    ``Le = C * I / K / (A / K) = C * I / A``. So an emissive quad of the same
-    size and place matches when ``emissive * emissive_intensity`` equals
-    ``C * I / area``. (``decay = 2`` is not incidental: the light row's
-    default ``decay = 0`` has no inverse-square term at all, so no emissive
-    quad can match it -- that is the emitter model, not the surface
-    response, and section 5 leaves it exactly as it was.)
+    ``_pt_nee_light_row`` apply inverse-square geometry and the one-sided
+    cosine at the sampled point. The K-row sum is a Riemann sum of
+    ``integral Le cos_l / d^2 dA`` with ``Le = C * I / A``. An emissive quad
+    therefore matches when ``emissive * emissive_intensity = C * I / area``.
     """
     size = 1.2
     area = size * size
@@ -1088,7 +1078,10 @@ def test_area_light_quad_and_row_arms_agree(tmp_path):
             height=size,
             samples=16,
             color=WHITE,
-            intensity=1.0,
+            # Emission is physical, so illumination falls off as 1/d^2 over
+            # this light's 3 units. Carry the intensity that puts the receiver
+            # back in the well-exposed range the agreement claim needs.
+            intensity=9.0,
             target=ORIGIN,
         ).spawn(animate=False)
 
@@ -1113,50 +1106,30 @@ def test_area_light_quad_and_row_arms_agree(tmp_path):
         )
 
 
-def test_area_light_quad_falloff_follows_the_row_model(tmp_path):
-    """``decay`` and ``distance`` survive the move to geometry.
+@pytest.mark.parametrize("height", [2.0, 4.0])
+def test_physical_area_light_quad_and_rows_agree_at_different_distances(
+    tmp_path, height
+):
+    """Both strategies integrate one distance-independent emitter radiance."""
 
-    A ``RectAreaLight`` defaults to ``decay = 0``: no distance falloff at
-    all. A physical emissive quad has inverse square built into transport,
-    which is ``decay = 2``. The quad therefore carries a per-emitter radiance
-    multiplier ``d^(2 - decay)`` times the row model's own range fade,
-    evaluated identically at both MIS ends -- so every authored falloff must
-    reproduce the rows arm, not just the physical one.
-    """
-    cases = (
-        ("decay0", {"decay": 0.0}),
-        ("decay1", {"decay": 1.0}),
-        ("decay2", {"decay": 2.0}),
-        ("ranged", {"decay": 2.0, "distance": 4.5}),
-    )
-    for name, params in cases:
+    def light(scene):
+        RectAreaLight(
+            location=OUT * height,
+            width=2.0,
+            height=2.0,
+            samples=16,
+            color=WHITE,
+            intensity=16.0,
+            target=ORIGIN,
+        ).spawn(animate=False)
 
-        def light(scene, params=params):
-            RectAreaLight(
-                location=OUT * 3.0,
-                width=2.0,
-                height=2.0,
-                samples=16,
-                color=WHITE,
-                intensity=1.0 * (3.0 ** params["decay"]),
-                target=ORIGIN,
-                **params,
-            ).spawn(animate=False)
-
-        build = _lit_floor(light)
-        rows = _quad_arm(tmp_path, f"fall_rows_{name}.png", build, 96, False)
-        quads = _quad_arm(tmp_path, f"fall_quads_{name}.png", build, 96, True)
-        row_mean = _center_patch_mean(rows, half=4)
-        quad_mean = _center_patch_mean(quads, half=4)
-        assert row_mean > 8.0, (
-            f"{name}: the rows arm is barely lit ({row_mean:.1f}/255)"
-        )
-        rel = abs(row_mean - quad_mean) / max(row_mean, quad_mean)
-        assert rel <= 0.07, (
-            f"{name}: the quad's falloff does not reproduce the row model "
-            f"({100 * rel:.1f}% apart: rows {row_mean:.1f}, quads "
-            f"{quad_mean:.1f})"
-        )
+    build = _lit_floor(light)
+    rows = _quad_arm(tmp_path, f"physical_rows_{height}.png", build, 96, False)
+    quads = _quad_arm(tmp_path, f"physical_quads_{height}.png", build, 96, True)
+    row_mean = _center_patch_mean(rows, half=2)
+    quad_mean = _center_patch_mean(quads, half=2)
+    assert min(row_mean, quad_mean) > 10.0, "test scene poorly scaled"
+    assert abs(row_mean - quad_mean) <= max(4.0, 0.06 * row_mean)
 
 
 @pytest.mark.parametrize("ordinary_geometry", [False, True])

@@ -233,10 +233,30 @@ light, it supports ``decay`` and ``distance``.
 Rect-Area Light
 ---------------
 
-:class:`~.RectAreaLight` is a glowing rectangle (a softbox). It produces smooth,
-soft lighting and, with shadows enabled, soft-edged shadows, because Algan samples
-it at a grid of ``samples`` emitter points. More samples give a smoother result at
-a proportional cost.
+:class:`~.RectAreaLight` is a one-sided emitting rectangle (a softbox). Its
+emitted radiance does not change with viewing distance. Illumination falls off
+through geometry, with no artificial range cutoff. The path tracer shows an
+opaque panel with an emitting front and a black back; it can appear in mirrors
+and through glass, and can occlude other objects. The deterministic renderer
+integrates a grid of ``samples`` emitting cells without drawing the panel.
+More cells improve that integration and its shadows at a proportional cost;
+the path tracer samples two triangles regardless of the cell count.
+
+``intensity`` retains Algan's area-light power normalization. For area ``A``,
+the panel's linear-RGB radiance is ``color * intensity / A`` (including the
+usual opacity/glow multipliers). Enlarging it at fixed intensity spreads the
+same power over a larger, dimmer surface. A nearby large panel does not obey
+a point source's inverse-square law as a whole: each surface element contributes
+its own distance and cosine factors.
+
+Omit ``decay`` and ``distance`` in new area-light code. Only their physical
+values, ``decay=2`` and ``distance=0``, are accepted, including later assignment
+or ``set`` calls. Other values raise :class:`~.AlganConfigurationError` rather
+than silently reverting to nonphysical emission. Existing scenes that explicitly
+used those physical values retain their intensity normalization. Scenes using
+the old no-falloff default need their intensity retuned; there is no single
+brightness conversion that preserves a nonphysical distance law everywhere.
+Point and spot lights retain their separate artistic falloff controls.
 
 .. algan:: LightingRectAreaLight
 
@@ -249,7 +269,7 @@ a proportional cost.
         # 9 samples is a 3x3 emitter grid, which spends 9 of the 16 shadow
         # slots and leaves room for the ambient light (see below).
         RectAreaLight(location=UP * 5, target=ORIGIN, width=4, height=4,
-                      samples=9, color=WHITE, intensity=1.2).spawn()
+                      samples=9, color=WHITE, intensity=30).spawn()
         AmbientLight(color=WHITE, intensity=0.2).spawn()
 
         Sphere(radius=0.8, color=BLUE).move(UP * 0.7).spawn()

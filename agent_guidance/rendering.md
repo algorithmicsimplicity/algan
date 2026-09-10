@@ -146,9 +146,10 @@ its immediate synthetic-emitter contribution; the panel still absorbs the
 ray. Camera (`-1`), delta (`0`) and positive-density MIS states are distinct.
 Pass-throughs preserve that marker; a new scatter replaces it.
 
-`pt_quad_falloff` retains the same `decay`/`distance` law at both MIS ends.
-`decay=2, distance=0` is physical radiance; default `decay=0` retains the
-existing no-falloff control. See roadmap §6a-ter and §10.
+Emission is physical at both MIS ends: radiance is `linear_colour * intensity /
+area`, independent of receiver and camera distance. `RectAreaLight` defaults to
+and only accepts `decay=2, distance=0`; the per-quad falloff table and its
+light-tree exponent override are gone. See roadmap §6a-ter and §10.
 
 ## The path tracer uses one rough dielectric interface
 

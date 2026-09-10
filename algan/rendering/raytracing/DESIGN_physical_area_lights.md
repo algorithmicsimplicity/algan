@@ -1,8 +1,11 @@
-# Area lights as visible emitter geometry
+# Physical `RectAreaLight` geometry and emission
 
-**Status: implemented for path tracing.** Verified against `master` at
-`f10cc230a108863d02980fc27079254473ae7de3` (2026-09-09). This records the current
-integration, not a proposal to add another BVH or a camera-visibility switch.
+**Status: implemented for path tracing.** Geometry integration landed
+2026-09-07; receiver-independent emission and the physical API contract landed
+2026-09-08. Verified against `master` at
+`f10cc230a108863d02980fc27079254473ae7de3` (2026-09-09). This records the
+current integration, not a proposal to add another BVH or a camera-visibility
+switch.
 
 ## Visibility and authoring contract
 
@@ -40,19 +43,38 @@ synthetic-emitter contribution without making the panel transparent. Camera,
 delta and positive-density MIS states remain distinct. Straight pass-throughs
 preserve the marker; a new scatter replaces it.
 
-`pt_quad_falloff` preserves the existing `decay`/`distance` law for both emitter
-hits and next-event samples. **`decay=2, distance=0` gives distance-independent
-emitter radiance.** The API default remains `decay=0`, a legacy no-falloff
-lighting convention, so geometry integration alone does not make every authored
-area light radiometrically physical. A consistent public radiance contract is
-remaining work, tracked in the repository's `TODO.md`.
+Emitted radiance is distance-independent: `Le = linear_colour * intensity /
+(width * height)`, including the existing glow and opacity scaling. Emitter hits
+and next-event samples read that same value, and packed cells obey the same law.
+`RectAreaLight` defaults to and only accepts `decay=2, distance=0`; other values
+raise on construction and on later assignment or `set`, rather than reinstating
+a nonphysical distance law. The per-quad falloff table, its two emission
+multipliers and its light-tree exponent override are gone, so the packed cells,
+authored materials, the light tree and the panel all agree on physical geometric
+falloff.
+
+## Radiometry and migration
+
+`intensity` retains the physical normalization already used with `decay=2,
+distance=0`: one-sided integrated flux is `pi * linear_colour * intensity`.
+At fixed intensity a larger panel has lower radiance, not larger total power.
+These are scene-linear units, not calibrated watts or lumens. `samples` changes
+the row quadrature, not power or the panel's radiance.
+
+New code should omit the two falloff keywords. Previously physical scenes keep
+their light normalization. Scenes relying on the old default `decay=0` need their
+intensity retuned; no single conversion can preserve the old distance law at
+all receivers. Arbitrary decay/range still belongs to point/spot lights, not
+emitting surfaces. No camera-visibility switch was added.
 
 ## Regression requirements
 
 Keep coverage for camera-visible fronts and opaque backs, reflected/refracted
 hits, finite visibility windows, emitter sampling/MIS, self-intersection at the
-sampled endpoint, and agreement between emitter-hit and sampled-light falloff.
-The area-light tests in `tests/unit_tests/test_path_tracer.py` exercise this
-integration. A geometry
-change must preserve the normal merge's frame layout, material widths, BVH
-leaf bounds and arena accounting.
+sampled endpoint, and agreement between emitter-hit and sampled-light radiance.
+The area-light tests in `tests/unit_tests/test_path_tracer.py` exercise the
+integration end to end, and `test_physical_area_emission.py` guards canonical
+packing, normalization, distance-independent geometry, cloning and invalid
+writes. The distance-dependent row/quad fixture was replaced with physical
+comparisons at two light distances. A geometry change must preserve the normal
+merge's frame layout, material widths, BVH leaf bounds and arena accounting.

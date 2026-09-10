@@ -33,42 +33,7 @@ stable under minification, grazing views, camera motion and reflections on both
 renderers. Include odd texture sizes, wrap seams and animated texture windows;
 measure build cost, extra memory and warm render cost on representative hardware.
 
-## 2. Compensate very rough dielectric energy loss
-
-**Current gap.** `_pt_glass_f_pdf` and `_pt_sample_glass` in
-[`path_tracer_taichi.py`](algan/rendering/raytracing/path_tracer_taichi.py) implement
-a unified single-scatter rough dielectric. Opaque GGX has multiple-scattering
-compensation, but rough glass still omits repeated microfacet scattering.
-
-**Work.** Couple reflection and transmission compensation rather than applying
-the opaque reflection-only correction to both. Preserve matching evaluation,
-sampling and PDFs, total internal reflection, nested relative IORs and the
-radiance eta-squared convention. See the glass implementation record in
-[`DESIGN_path_tracer_roadmap.md`](algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md).
-
-**Done when.** White-furnace and roughness/IOR sweeps demonstrate the intended
-energy behavior, with reciprocal-interface and TIR cases and no smooth-glass
-regression. Document any approximation rather than calling it exact transport.
-
-## 3. Finish physical area-emission semantics across the API
-
-**Current gap.** Rectangular emitter geometry is already merged into the path
-tracer's normal scene build and is visible to camera and continuation rays.
-However, [`lights.py`](algan/rendering/lights.py) still defaults to the legacy
-`decay=0, distance=0` convention. Distance-independent physical emitter radiance
-corresponds to `decay=2, distance=0`; other settings retain artistic falloff.
-
-**Work.** Define the public intensity/radiance units and the migration of legacy
-falloff explicitly. Apply the same convention to direct-light sampling, camera
-hits and BSDF-sampled emitter hits; do not silently change just one estimator.
-The current implementation is documented in
-[`DESIGN_physical_area_lights.md`](algan/rendering/raytracing/DESIGN_physical_area_lights.md).
-
-**Done when.** Equivalent emitter encounters agree at multiple distances, sizes,
-orientations and bounces; MIS does not double-count emission; the public examples
-and compatibility policy explain any deliberately changed output.
-
-## 4. Improve antialiasing where surfaces cross inside a pixel
+## 2. Improve antialiasing where surfaces cross inside a pixel
 
 **Current gap.** Sheet compaction already computes per-sample depth information.
 That repairs which surface wins samples, but it is not an exact area blend of an
@@ -86,7 +51,7 @@ supersampled reference without breaking silhouette/tiling fixtures. Reproduce
 video defects with multi-frame renders as well as stills: frame-window slicing
 has previously changed identity and hidden failures from still-only probes.
 
-## 5. Define closed-solid opacity consistently for deterministic continuations
+## 3. Define closed-solid opacity consistently for deterministic continuations
 
 **Current gap.** Primary sheet compositing and the path tracer have closed-shell
 accounting, but the deterministic wavefront's treatment of a solid encountered
@@ -103,7 +68,7 @@ Do not equate artistic shell opacity with Beer–Lambert absorption.
 reflected and nested views, with explicit controls for thin/open surfaces and
 physical glass. Validate continuation retries and surface-limit reporting too.
 
-## 6. Make renderer-audit inputs equivalent before drawing new conclusions
+## 4. Make renderer-audit inputs equivalent before drawing new conclusions
 
 **Current gap.** The comparison bridges in
 [`algan_render.py`](benchmarks/renderer_audit/algan_render.py) and
@@ -124,7 +89,7 @@ coverage merely because their files still exist.
 the bridges, deliberately non-equivalent panels are labeled, and referenced
 acceptance harnesses import and run against the current API.
 
-## 7. Make release and documentation validation reproducible
+## 5. Make release and documentation validation reproducible
 
 **Current gap.** Structural Sphinx checks, directive checks and pixel suites exist,
 but historical reports are not proof that the next release candidate passes.
@@ -146,7 +111,7 @@ local documentation links and obsolete public examples fail validation. See
 [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md) and [`tests/README.md`](tests/README.md).
 Do not regenerate baselines merely to hide an environment/toolchain mismatch.
 
-## 8. Profile and reduce avoidable CPU memory reclamation
+## 6. Profile and reduce avoidable CPU memory reclamation
 
 **Current gap.** [`_gpu_memory_pressure`](algan/utils/memory_utils.py) falls back to
 `True` without GPU telemetry, so `release_torch_memory(force_gc=False)` can still
@@ -163,7 +128,7 @@ selection as well as device availability when evaluating the predicate.
 are bounded, cyclic garbage is still reclaimed, and low-memory/retry tests pass.
 Do not treat the older profiling percentages as the current bottleneck ranking.
 
-## 9. Remove confirmed legacy render experiments in a separate code change
+## 7. Remove confirmed legacy render experiments in a separate code change
 
 **Current gap.** [`bloom.py`](algan/rendering/post_processing/bloom.py) still contains
 unused `bloom_filter_old`/`bloom_filter_conv` experiments and a compatibility probe

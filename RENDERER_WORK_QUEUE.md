@@ -27,8 +27,8 @@ reimplement features or regenerate baselines today.
 | 10. Timeline query preparation cost | Optimized since the audit | Current row-query path and caches replace the old untargeted-work claim. Further work needs a fresh profile. |
 | 11. Sparse discovery and sorting | Several optimized paths implemented | Fused compaction, packed keys, rank groups and MPS pixel sorting have separate gates. General `device_radix_sort` is not the same setting as `pixel_sort`. |
 | 12. Batched geometry builds | Multiple optimizations implemented | See `agent_guidance/mobs_geometry.md`; profile the actual preparation stage and test geometry/AA output. |
-| 13. CPU reclamation | Still worth measuring | The current function is `release_torch_memory`, not Algan's removed `empty_cache`; MPS has telemetry, CPU-only fallback still reports pressure. TODO item 8. |
-| 14. Dead render experiments | Some remain | Legacy bloom helpers and unwired SMAA need caller-checked code cleanup. TODO item 9. |
+| 13. CPU reclamation | Still worth measuring | The current function is `release_torch_memory`, not Algan's removed `empty_cache`; MPS has telemetry, CPU-only fallback still reports pressure. TODO item 6. |
+| 14. Dead render experiments | Some remain | Legacy bloom helpers and unwired SMAA need caller-checked code cleanup. TODO item 7. |
 | 15. Stale renderer documentation | Audited in this change | Module descriptions now distinguish sheet/wavefront/path transport, per-fragment defaults, texture support and backend-specific behavior. |
 | 16. Inaccessible experimental fields | Old mapping defect resolved | `raytracing_settings.py` discovers storage modules and rejects writes to initialization-only fields deliberately. |
 | 17. CPU baseline debt | Old failure report, not live CI status | Validate the exact SHA/backend/baseline key. Do not rebaseline from an old report or a missing-tool mismatch. |
@@ -60,15 +60,15 @@ Per-sample sheet depth ownership is already implemented. What remains is a
 better blend at within-pixel surface crossings, not the first implementation of
 a sample depth buffer. Primary shell opacity and path-tracer shell handling also
 do not automatically establish a common closed-solid contract for deterministic
-reflected rays. See TODO items 4–5 and the detailed
+reflected rays. See TODO items 2–3 and the detailed
 [sheet](algan/rendering/raytracing/DESIGN_sheet_resolve.md) and
 [mesh-identity](algan/rendering/raytracing/DESIGN_mesh_identity_open.md) designs.
 
-The path tracer already supports rough glass, homogeneous media, subsurface
-scattering, finite-light tree sampling and denoising. Its remaining glass-specific
-work is coupled multiple-scattering compensation. Physical area geometry is also
-implemented; the remaining API issue is the legacy radiance/falloff convention,
-not a second BVH or a missing camera-visible emitter.
+The path tracer already supports rough glass with coupled multiple-scattering
+compensation, homogeneous media, subsurface scattering, finite-light tree
+sampling and denoising. Physical area geometry is implemented and its emitter
+radiance is now receiver-independent, so neither the glass energy loss nor the
+legacy radiance/falloff convention remains open work.
 
 ## Performance measurement rules
 

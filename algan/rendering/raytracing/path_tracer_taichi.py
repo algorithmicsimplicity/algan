@@ -30,8 +30,10 @@ events with no PT-specific traversal variant. What is PT-specific lives here:
     ``_pt_lit_f_pdf``), and scatter one importance-sampled continuation:
     cosine-hemisphere diffuse, opaque GGX specular with Turquin-style
     multiple-scattering compensation, or one unified GGX dielectric
-    interface. Both rough reflection and refraction use spherical-cap VNDF
-    sampling (Dupuy & Benyoub 2023); smooth glass is delta. Transmitted
+    interface with coupled, reciprocal energy compensation. Both rough
+    reflection and refraction combine spherical-cap VNDF sampling
+    (Dupuy & Benyoub 2023) with a broad compensation lobe; smooth glass
+    is delta. Transmitted
     radiance includes the relative index-squared factor, with eta-aware
     roulette and the shared nested-IOR stack and Beer-Lambert absorption.
     Homogeneous interiors sample RGB-mixture free flights, HG phase directions,
@@ -179,6 +181,10 @@ trick next-event estimation already used, gives it one (roadmap section 7).
 from algan.rendering.raytracing.arena_args_taichi import (
     ArenaView,
     arena_packed,
+)
+from algan.rendering.raytracing.glass_energy_taichi import (
+    _pt_glass_energy_lookup,
+    _pt_glass_ms_parameters,
 )
 from algan.rendering.raytracing.light_tree import (
     LT_AXIS,
@@ -402,8 +408,8 @@ _NM_INF_COUNT = 16  # entries in nee_inf_cdf / nee_inf_ref
 # First primitive index of the synthetic RectAreaLight quads this render call
 # appended (``area_light_quads``; 1 << 30 when it appended none, which is past
 # any primitive a batch can hold). One compare against it is the whole
-# gate on one-sided emission, authored direct-light exclusion and falloff
-# in ``pt_emit_falloff``, so an ordinary emissive triangle takes neither branch
+# gate on one-sided emission and authored direct-light exclusion, so an
+# ordinary emissive triangle takes neither branch
 # and is bit-identical to what it was before area-light quads existed.
 _NM_QUAD_BASE = 17
 # The authored-appearance branch's sampled mode (roadmap section 6a-bis). Both
@@ -1175,9 +1181,9 @@ def _pt_glass_terms(f0, cos_i, eta, metalness, albedo, T):
     # ``R`` is the Schlick-remapped authored reflectance while ``trans`` uses
     # exact ``1 - F``, so an authored specular above the interface's own base
     # (``specular_intensity`` > 1, or a specular_color over white) makes
-    # R + trans exceed one. Glass deliberately gets no Turquin compensation,
-    # so nothing downstream bounds that: a ray reflecting repeatedly inside a
-    # nested solid would gain energy at every crossing. Exact at the defaults,
+    # R + trans exceed one. Bound the facet budget before adding compensation
+    # of its lossless neutral fraction: otherwise repeated internal crossings
+    # could amplify energy. The clamp is exact at the defaults,
     # where R == F and trans <= 1 - F already holds.
     trans = ti.min(trans, ti.math.clamp(ti.math.vec3(1.0, 1.0, 1.0) - R,
                                         0.0, 1.0))
@@ -1188,8 +1194,15 @@ def _pt_glass_terms(f0, cos_i, eta, metalness, albedo, T):
 
 
 @ti.func
-def _pt_glass_f_pdf(f0, rough, n, rd, wi, eta, metalness, albedo, T):
-    """Single-scatter GGX dielectric f*cos and conditional solid-angle PDF.
+def _pt_glass_f_pdf(glass_energy: ti.template(), f0, rough, n, rd, wi,
+                     eta, metalness, albedo, T):
+    """Energy-compensated GGX dielectric f*cos and conditional solid-angle PDF.
+
+    The neutral dielectric component closes its lost-power budget through a
+    reciprocal two-port lobe, coupled by the two media's squared indices.
+    Intentional absorption/tint is not normalised away. The density includes
+    BOTH the original VNDF/facet strategy and the broad compensation strategy;
+    the same mixture is sampled by _pt_sample_glass.
 
     PBRT-v4 section 9.7: both outcomes share one visible-normal distribution.
     The transmission Jacobian differs from reflection's and radiance carries
@@ -1230,11 +1243,25 @@ def _pt_glass_f_pdf(f0, rough, n, rd, wi, eta, metalness, albedo, T):
                         jacobian = ti.abs(ih) / denom2
                         fc = trans * (D * G * vh * jacobian / nv) * (eta * eta)
                         pdf = (1.0 - pr) * D * G1 * vh / nv * jacobian
+    if (rough * rough >= 1e-4) and (nv > 1e-6) and (ti.abs(ni) > 1e-6):
+        coeff, p_ms, p_reflect = _pt_glass_ms_parameters(
+            glass_energy, f0, rough, eta, metalness, albedo, T, nv)
+        if p_ms > 0.0:
+            destination_eta = eta
+            side_probability = p_reflect
+            if ni < 0.0:
+                destination_eta = 1.0 / eta
+                side_probability = 1.0 - p_reflect
+            escape = _pt_glass_energy_lookup(glass_energy, rough,
+                                               destination_eta, ti.abs(ni))
+            fc += coeff * (escape[0] * ti.abs(ni))
+            pdf = (1.0 - p_ms) * pdf \
+                + p_ms * side_probability * (ti.abs(ni) * _INV_PI)
     return fc, pdf
 
 
 @ti.func
-def _pt_sample_glass(rd, n, rough, eta, f0, metalness, albedo, T,
+def _pt_sample_glass_single(rd, n, rough, eta, f0, metalness, albedo, T,
                      u_dir, u_branch):
     """Sample the shared facet, then its Fresnel-weighted outcome.
 
@@ -1270,6 +1297,33 @@ def _pt_sample_glass(rd, n, rough, eta, f0, metalness, albedo, T,
             tint = trans * (eta * eta / ti.max(1.0 - pr, 1e-12))
             if n.dot(wi) >= -1e-6:
                 valid = 0
+    return wi, tint, transmitted, delta, valid
+
+
+@ti.func
+def _pt_sample_glass(glass_energy: ti.template(), rd, n, rough, eta, f0,
+                     metalness, albedo, T, u_dir, u_branch):
+    """VNDF/smooth glass mixed with the coupled compensation lobe.
+
+    The existing independent branch scalar is partitioned and remapped for
+    both choices. The direction pair is never reused as a branch variate.
+    Smooth glass remains the original delta sampler, bit for bit.
+    """
+    _coeff, p_ms, p_reflect = _pt_glass_ms_parameters(
+        glass_energy, f0, rough, eta, metalness, albedo, T, n.dot(-rd))
+    wi = rd
+    tint = ti.math.vec3(0.0, 0.0, 0.0)
+    transmitted, delta, valid = 0, 0, 1
+    if u_branch < p_ms:
+        side = n
+        if u_branch / p_ms >= p_reflect:
+            side = -n
+            transmitted = 1
+        wi = _pt_cosine_direction(side, u_dir)
+    else:
+        branch = (u_branch - p_ms) / ti.max(1.0 - p_ms, 1e-12)
+        wi, tint, transmitted, delta, valid = _pt_sample_glass_single(
+            rd, n, rough, eta, f0, metalness, albedo, T, u_dir, branch)
     return wi, tint, transmitted, delta, valid
 
 
@@ -1366,7 +1420,8 @@ def _pt_lit_lobes(pid, params: ti.template(), f, prim, albedo3, metalness,
 
 
 @ti.func
-def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
+def _pt_lit_f_pdf(glass_energy: ti.template(), e_diff, e_spec, f0, rough,
+                  shade_n, rd, wi,
                   w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, T):
     """Physical BSDF response of a lit vertex toward ``wi`` and the pdf with
     which its continuation sampler generates ``wi``.
@@ -1403,7 +1458,7 @@ def _pt_lit_f_pdf(e_diff, e_spec, f0, rough, shade_n, rd, wi,
         pdf = (w_diff / w_sum) * (_INV_PI * cos_i)
     glass = (eta > 0.0) and (ti.abs(eta - 1.0) >= 1e-4)
     if glass and (w_sum > 1e-6):
-        fg, pg = _pt_glass_f_pdf(f0, rough, spec_n, rd, wi,
+        fg, pg = _pt_glass_f_pdf(glass_energy, f0, rough, spec_n, rd, wi,
                                 eta, metalness, albedo, T)
         f_cos += fg
         pdf += ((w_spec + w_trans) / w_sum) * pg
@@ -1859,9 +1914,10 @@ def _pt_authored_surface(media_enabled, pipelines: ti.template(), pids: ti.templ
 
 
 @ti.func
-def _pt_vertex_f_pdf(medium_vertex, phase_g, e_diff, e_spec, f0, rough,
-                      shade_n, rd, wi, w_pass, w_diff, w_spec, w_trans,
-                      eta, metalness, albedo, transmission):
+def _pt_vertex_f_pdf(medium_vertex, phase_g, glass_energy: ti.template(),
+                     e_diff, e_spec, f0, rough,
+                     shade_n, rd, wi, w_pass, w_diff, w_spec, w_trans,
+                     eta, metalness, albedo, transmission):
     f_cos = ti.math.vec3(0.0, 0.0, 0.0)
     pdf = 0.0
     if medium_vertex:
@@ -1869,7 +1925,7 @@ def _pt_vertex_f_pdf(medium_vertex, phase_g, e_diff, e_spec, f0, rough,
         f_cos = ti.math.vec3(pdf, pdf, pdf)
     else:
         f_cos, pdf = _pt_lit_f_pdf(
-            e_diff, e_spec, f0, rough, shade_n, rd, wi,
+            glass_energy, e_diff, e_spec, f0, rough, shade_n, rd, wi,
             w_pass, w_diff, w_spec, w_trans, eta, metalness, albedo, transmission)
     return f_cos, pdf
 
@@ -2035,38 +2091,6 @@ def _pt_meta_hit(nee_meta: ti.template()):
     )
 
 
-@ti.func
-def _pt_quad_radiance_scale(pt_emit_falloff: ti.template(), prim, quad_base, d):
-    """Per-emitter radiance multiplier of a synthetic RectAreaLight quad.
-
-    A packed area-light row applies ``_light_eval``'s emitter model -- a
-    ``d^-decay`` falloff (``decay`` defaults to 0: no falloff at all) and a
-    range fade -- while a physical emissive quad has inverse square built into
-    transport. The difference is ``d^(2 - decay)`` times that same fade, and it
-    rides the EMITTER so both ends of the MIS pair evaluate it from the same
-    distance and the power-heuristic weights still sum to one: the next-event
-    end knows ``ldist``, the BSDF-hit end knows ``t_hit``.
-
-    An ordinary emissive triangle (``prim < quad_base``) returns exactly 1.0
-    without touching the table, so emissive meshes are unchanged.
-    """
-    m = 1.0
-    if prim >= quad_base:
-        j = prim - quad_base
-        expo = pt_emit_falloff[j, 0]
-        rng = pt_emit_falloff[j, 1]
-        if expo != 0.0:
-            # ``ti.max(d, 1e-4)`` is _light_eval's own clamp, so a shading
-            # point on the emitter reads the same number either model.
-            m = ti.pow(ti.max(d, 1e-4), expo)
-        if rng > 0.0:
-            q = ti.math.clamp(d / rng, 0.0, 1.0)
-            q2 = q * q
-            fade = ti.math.clamp(1.0 - q2 * q2, 0.0, 1.0)
-            m = m * (fade * fade)
-    return m
-
-
 @ti.kernel
 def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
              t_nodes: NODE_ARG, t_first_leaf: ti.i32,
@@ -2215,7 +2239,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     lt_frame = ti.static(ArenaView(arena_i32, aoff[34], (ashp[74],)))
     nee_inf_cdf = ti.static(ArenaView(arena_f32, aoff[35], (ashp[75],)))
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
-    pt_emit_falloff = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
+    pt_glass_energy = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -2694,12 +2718,6 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             tri_mat[tm, prim, 1],
                                             tri_mat[tm, prim, 2]) \
                         * tri_mat[tm, prim, 3]
-                    # The BSDF end of the falloff pair: ``t_hit`` is measured
-                    # from ``ro``, which a pass-through crossing leaves alone,
-                    # so it IS the distance from the shading point the
-                    # next-event end would have measured ``ldist`` from.
-                    emissive = emissive * _pt_quad_radiance_scale(
-                        pt_emit_falloff, prim, quad_base, t_hit)
                     # Synthetic panels emit from their front face only. An
                     # authored diffuse vertex already evaluated their rows:
                     # suppress that immediate emission, while still absorbing
@@ -2855,7 +2873,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                         # unhittable by a BSDF ray, so there
                                         # is nothing to MIS against.
                                         f_cos_r, _pdf_r = _pt_vertex_f_pdf(
-                                            medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
+                                            medium_vertex, phase_g, pt_glass_energy,
+                                            e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, ld,
                                             wl_pass, wl_diff, wl_spec,
                                             wl_trans, eta, metalness, albedo3, T)
@@ -2893,13 +2912,6 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 tri_mat[tm_e, ref, 1],
                                                 tri_mat[tm_e, ref, 2]) \
                                                 * tri_mat[tm_e, ref, 3]
-                                            # The next-event end of the
-                                            # falloff pair -- the same
-                                            # function of the same distance
-                                            # the BSDF end applies above.
-                                            le = le * _pt_quad_radiance_scale(
-                                                pt_emit_falloff, ref,
-                                                quad_base, d_e)
                                             _ec, e_alpha = _tri_color_g(
                                                 0, f, ref, ew0, ew1, ew2,
                                                 tri_colors, tri_colors,
@@ -2907,7 +2919,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                                 textures,
                                                 num_colored_triangles)
                                             f_cos, pdf_b = _pt_vertex_f_pdf(
-                                                medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
+                                                medium_vertex, phase_g, pt_glass_energy,
+                                                e_diff_l, e_spec_l, f0_l,
                                                 rough, shade_n, rd, wi,
                                                 wl_pass, wl_diff, wl_spec,
                                                 wl_trans, eta, metalness, albedo3, T)
@@ -2942,7 +2955,8 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                                             env_h, env_intensity,
                                             textures)
                                         f_cos, pdf_b = _pt_vertex_f_pdf(
-                                            medium_vertex, phase_g, e_diff_l, e_spec_l, f0_l,
+                                            medium_vertex, phase_g, pt_glass_energy,
+                                            e_diff_l, e_spec_l, f0_l,
                                             rough, shade_n, rd, dir_e,
                                             wl_pass, wl_diff, wl_spec,
                                             wl_trans, eta, metalness, albedo3, T)
@@ -3587,6 +3601,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             # A mixed diffuse/glass material must evaluate
                             # the full mixture for either sampling strategy.
                             fc_mix, pdf_mix = _pt_lit_f_pdf(
+                                pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
                                 wl_trans, eta, metalness, albedo3, T)
@@ -3608,6 +3623,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         prev_pdf = -2.0 if authored else 0.0
                         if lit:
                             _fc_d, prev_pdf = _pt_lit_f_pdf(
+                                pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
                                 wl_trans, eta, metalness, albedo3, T)
@@ -3617,6 +3633,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         wg = w_spec + w_trans
                         ug = (pick - w_pass - w_diff) / ti.max(wg, 1e-12)
                         new_rd, tint_g, crossed, delta_g, ok = _pt_sample_glass(
+                            pt_glass_energy,
                             rd, spec_n, rough, eta, f0, metalness, albedo3, T,
                             u_dir, ug)
                         geometric_cross = rd.dot(fnrm) * new_rd.dot(fnrm) > 0.0
@@ -3628,6 +3645,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                         else:
                             aov_open = 0
                             fc_g, prev_pdf = _pt_lit_f_pdf(
+                                pt_glass_energy,
                                 e_diff_l, e_spec_l, f0_l, rough, shade_n,
                                 rd, new_rd, wl_pass, wl_diff, wl_spec,
                                 wl_trans, eta, metalness, albedo3, T)
@@ -3691,6 +3709,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                             prev_pdf = 0.0
                             if lit:
                                 _fc_s, prev_pdf = _pt_lit_f_pdf(
+                                    pt_glass_energy,
                                     e_diff_l, e_spec_l, f0_l, rough,
                                     shade_n, rd, new_rd, wl_pass, wl_diff,
                                     wl_spec, wl_trans, eta, metalness, albedo3, T)
@@ -3954,7 +3973,7 @@ _PT_SHADE_ARENA = (
     ("lt_frame", "i32", 1),
     ("nee_inf_cdf", "f32", 1),
     ("nee_inf_ref", "i32", 1),
-    ("pt_emit_falloff", "f32", 2),
+    ("pt_glass_energy", "f32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -3977,7 +3996,7 @@ _PT_SHADE_PARAMS = (
     "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
     "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
     "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref", "pt_emit_falloff",
+    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy",
 )
 
 _pt_shade_launch = arena_packed(
