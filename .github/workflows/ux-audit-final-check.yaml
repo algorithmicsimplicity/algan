@@ -1,0 +1,129 @@
+name: UX audit final validation
+on:
+  push:
+    branches: [codex/ux-audit-2026-09-10]
+    paths: [.github/workflows/ux-audit-final-check.yaml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      ALGAN_USE_DAEMON: '0'
+      QD_KERNEL_COVERAGE: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: ./.github/actions/install-uv
+      - name: Apply the hierarchy retry fix and regression test
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('algan/viewer/static/viewer.js')
+          s = p.read_text()
+          old = '''  let loaded = false;
+            arrow.onclick'''
+          assert s.count(old) == 1
+          s = s.replace(old, '''  let loaded = false;
+            let loading = false;
+            arrow.onclick''')
+          old = '''    if (loaded || children.hidden) return;
+              loaded = true;'''
+          assert s.count(old) == 1
+          s = s.replace(old, '''    if (loaded || loading || children.hidden) return;
+              loading = true;''')
+          old = '''    const data = await getJSONPatiently(
+                `/api/children?node=${node.node}&components=${components}`);
+              for (const child of data.children) children.append(nodeRow(child));'''
+          new = '''    try {
+                const data = await getJSONPatiently(
+                  `/api/children?node=${node.node}&components=${components}`);
+                children.replaceChildren(...data.children.map(nodeRow));
+                loaded = true;
+              } catch (err) {
+                const notice = document.createElement("li");
+                notice.className = "empty";
+                notice.textContent = `${err.message} — collapse and expand to retry.`;
+                children.replaceChildren(notice);
+              } finally {
+                loading = false;
+              }'''
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          p = Path('tests/viewer/test_viewer_async.cjs')
+          s = p.read_text().replace(
+              'addEventListener() {}, append(...items) { this.children.push(...items); },',
+              'addEventListener() {}, append(...items) { this.children.push(...items); },\n      replaceChildren(...items) { this.children = items; },',
+          )
+          s += '''
+          
+          test("a failed hierarchy expansion can be retried and does not issue concurrent duplicate loads", async () => {
+            const c = client();
+            const row = c.run("nodeRow({ node: 'parent', label: 'Parent', kind: 'mob', spawned: true, has_children: true })");
+            const arrow = row.children[0].children[0];
+            const children = row.children[1];
+            const failed = arrow.onclick();
+            const failure = assert.doesNotReject(failed);
+            c.requests[0].reject(new Error("temporarily unavailable"));
+            await failure;
+            assert.match(children.children[0].textContent, /retry/);
+            await arrow.onclick(); // collapse
+            const retry = arrow.onclick();
+            assert.equal(c.requests.length, 2);
+            await arrow.onclick(); // collapse while loading
+            await arrow.onclick(); // expand while the same load is pending
+            assert.equal(c.requests.length, 2);
+            c.requests[1].reply({ children: [] });
+            await retry;
+            await arrow.onclick();
+            await arrow.onclick();
+            assert.equal(c.requests.length, 2, "successful results stay cached");
+          });
+          '''
+          p.write_text(s)
+          PY
+          node --test tests/viewer/test_viewer_async.cjs
+          git diff --check
+      - name: Publish only to the audit branch and remove this one-shot workflow
+        run: |
+          test "$GITHUB_REF_NAME" = codex/ux-audit-2026-09-10
+          rm .github/workflows/ux-audit-final-check.yaml
+          git config user.name 'Algan UX audit'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add algan/viewer/static/viewer.js tests/viewer/test_viewer_async.cjs .github/workflows/ux-audit-final-check.yaml
+          git commit -m 'Keep viewer hierarchy expansion retryable after a failed request'
+          git push origin HEAD:refs/heads/codex/ux-audit-2026-09-10
+      - name: Install the locked test environment
+        id: setup
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg texlive-latex-base texlive-latex-extra texlive-fonts-recommended latexmk
+          uv sync --locked --all-extras --dev
+      - name: Portable unit and render gate
+        if: ${{ !cancelled() && steps.setup.conclusion == 'success' }}
+        run: |
+          set -o pipefail
+          timeout 900 .venv/bin/python -m pytest -q tests/unit_tests tests/fast --durations=10 2>&1 | tee /tmp/ux-portable.log
+      - name: Warm curated suite
+        if: ${{ !cancelled() && steps.setup.conclusion == 'success' }}
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest -q --fast 2>&1 | tee /tmp/ux-warm-fast.log
+      - name: Save validation evidence and published source
+        if: always()
+        run: |
+          mkdir -p ux-audit-evidence
+          cp /tmp/ux-*.log ux-audit-evidence/ 2>/dev/null || true
+          git rev-parse HEAD > ux-audit-evidence/commit.txt
+          files='algan/scene.py algan/project.py algan/mobs/group.py algan/animation_timeline/animation_contexts.py algan/animatable_base/mob_hierarchy.py algan/utils/python_utils.py algan/viewer/static/viewer.js tests/unit_tests/test_ux_audit.py tests/unit_tests/test_viewer_client.py tests/viewer/test_viewer_async.cjs'
+          for file in $files; do mkdir -p "ux-audit-evidence/$(dirname "$file")"; cp "$file" "ux-audit-evidence/$file"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ux-audit-final-evidence
+          path: ux-audit-evidence/
+          if-no-files-found: error
