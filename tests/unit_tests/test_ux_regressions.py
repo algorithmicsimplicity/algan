@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -10,7 +11,7 @@ import torch
 
 import algan
 from algan import render_loop
-from algan.animation_timeline.animation_contexts import Sync
+from algan.animation_timeline.animation_contexts import Lag, Seq, Sync
 from algan.constants.math import PI
 from algan.errors import (
     AlganConfigurationError,
@@ -18,6 +19,7 @@ from algan.errors import (
 )
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
+from algan.project import _ProjectScene, _ProjectSceneRun
 from algan.rendering.camera import Camera
 from algan.rendering.lights import PointLight, RectAreaLight, SpotLight
 from algan.rendering.raytracing import settings as rt_settings
@@ -29,6 +31,7 @@ from algan.rendering.taichi_runtime import _loaded_from_offline_cache
 from algan.scene_manager import SceneManager
 from algan.settings.video_settings import PREVIEW, SMOKE_TEST, VideoSettings
 from algan.utils import algan_utils
+from algan.utils.python_utils import traverse
 
 # Marked per test rather than for the module, unlike the other fast-suite
 # files. Those are each about one mechanism, so a new test in them is the same
@@ -2041,3 +2044,272 @@ def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
             group.arrange_in_line(algan.RIGHT, equal_widths=True, align_to=algan.DOWN)
             is group
         )
+
+
+# The September 2026 public-authoring UX audit (``UX_AUDIT_2026-09-10.md``).
+# These land here rather than in a file of their own because they are what this
+# file already is: the front door, one test per way it was wrong.
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("background", ["red", "#ff0000", algan.RED])
+def test_constructor_background_is_normalized_and_survives_defaults_and_reset(
+    background,
+):
+    """``Scene(background=...)`` takes the same values ``set_background`` does.
+
+    Two bugs in one boundary. The constructor stored the argument raw, so a
+    colour name or hex string reached initialization as a string and died
+    indexing it as a frame; and it left ``background_is_set`` false, so the
+    ``set_background(..., overwrite=False)`` that render applies its default
+    through replaced a choice the user had made explicitly. ``reset`` forgot it
+    too. In the fast suite because it is settled between three places that move
+    independently -- the constructor, the setter and what rendering does with
+    ``SETTINGS.style.background`` -- and none of them names the others.
+    """
+    expected = background if torch.is_tensor(background) else algan.Color(background)
+    scene = algan.Scene(SMOKE_TEST, background=background)
+    assert torch.equal(scene.background, expected)
+    scene.set_background(algan.BLACK, overwrite=False)
+    assert torch.equal(scene.background, expected)
+    scene.reset()
+    scene.set_background(algan.BLACK, overwrite=False)
+    assert torch.equal(scene.background, expected)
+
+
+def test_constructor_background_image_uses_the_setter_path(tmp_path):
+    """The image branch of the same boundary, which needs a file on disk.
+
+    Unmarked: it only breaks when background handling itself changes, and it
+    pays for Pillow and an interpolation to the frame size.
+    """
+    from PIL import Image
+
+    path = tmp_path / "background.png"
+    Image.new("RGB", (3, 2), "red").save(path)
+    scene = algan.Scene(SMOKE_TEST, background=str(path))
+    expected = scene.background.clone()
+    assert expected.shape[-3:] == (32, 32, 5)
+    scene.set_background(algan.BLACK, overwrite=False)
+    assert torch.equal(scene.background, expected)
+    scene.reset()
+    assert torch.equal(scene.background, expected)
+    assert scene.background_is_set
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("context", [Seq, Sync, Lag])
+@pytest.mark.parametrize("field", ["runtime", "runtime_per_part"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), "one"])
+def test_invalid_runtime_is_rejected_before_entering_context(context, field, value):
+    """A runtime has to be a finite number of seconds, and say so at the line.
+
+    The guard only looked for a negative, so NaN and infinity went straight
+    into timeline arithmetic -- where they do not raise, they produce a render
+    whose frame window is nonsense -- and a non-number failed later inside a
+    comparison. In the fast suite because every context shares this one
+    validator and the timeline is what consumes what it lets through.
+    """
+    with pytest.raises(AlganConfigurationError, match=field):
+        context(**{field: value})
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_wait_does_not_change_authoring_cursor(value):
+    """``Scene.wait`` goes through the same guard, and leaves the clock alone.
+
+    Rejecting the value is only half of it: a guard that fires after the cursor
+    has moved leaves the Scene mid-wait, and the next recorded animation starts
+    somewhere the script never asked for.
+    """
+    scene = algan.Scene(SMOKE_TEST)
+    context = scene.animation_manager.context
+    before = (context.current_time, context.end_time)
+    with pytest.raises(AlganConfigurationError, match="time"):
+        scene.wait(value)
+    assert (context.current_time, context.end_time) == before
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("magnitude", [3, 3e-20, 3e20])
+def test_line_layout_uses_direction_not_vector_magnitude(magnitude):
+    """``arrange_in_line`` reads a direction's orientation, not its length.
+
+    ``buffer`` already says how far apart to put things, so ``3 * RIGHT`` was
+    silently a second, undocumented spacing control. The extreme magnitudes are
+    the reason the normalization divides by the largest component first. In the
+    fast suite because the spacing is computed from boundary points and centers
+    -- the Mob geometry surface -- rather than from anything in ``group.py``.
+    """
+    group = Group(Square(), Square())
+    group.arrange_in_line(algan.RIGHT, buffer=0.25)
+    expected = [child.get_center().clone() for child in group]
+    group.arrange_in_line(magnitude * algan.RIGHT, buffer=0.25)
+    for child, center in zip(group, expected):
+        torch.testing.assert_close(child.get_center(), center)
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("method", ["arrange_in_line", "arrange_in_grid"])
+def test_zero_layout_direction_is_rejected_without_moving_members(method):
+    """A zero direction is a mistake, not a layout, and it fails before moving.
+
+    ``F.normalize`` maps a zero vector to zero without complaining, which
+    collapsed every member onto one point. Rejecting it after half the members
+    had moved would be its own bug, so the members are checked too.
+    """
+    group = Group(Square(), Square())
+    before = [child.location.clone() for child in group]
+    kwargs = {
+        "direction" if method == "arrange_in_line" else "row_direction": algan.ORIGIN
+    }
+    with pytest.raises(AlganConfigurationError, match="direction"):
+        getattr(group, method)(**kwargs)
+    for child, location in zip(group, before):
+        torch.testing.assert_close(child.location, location)
+
+
+def _offset_anchor_member():
+    """A member whose anchor is deliberately not its visual center."""
+    member = Group(Square().move(2 * algan.RIGHT))
+    member.set_non_recursive(location=algan.ORIGIN)
+    return member
+
+
+@pytest.mark.fast
+def test_line_start_at_first_keeps_first_visual_center():
+    """``start_at_first`` builds the line out from where the first member looks.
+
+    It started from the first member's ``location``, so a Mob whose anchor sits
+    off its bounding-box center moved -- the one member the flag promises not to
+    move. In the fast suite because the anchor-to-center displacement it
+    compensates for is derived in the Mob base, not here.
+    """
+    first = _offset_anchor_member()
+    group = Group(first, Square())
+    center = first.get_center().clone()
+    group.arrange_in_line(start_at_first=True)
+    torch.testing.assert_close(first.get_center(), center)
+
+
+@pytest.mark.fast
+def test_arrange_between_points_spaces_centers_not_anchors():
+    """The same anchor-versus-center slip, in the other arrangement.
+
+    Its docstring says the centers are what get evenly spaced; it assigned
+    evenly spaced anchors, which is the same thing only for a Mob whose anchor
+    is already centred.
+    """
+    group = Group(_offset_anchor_member(), Square())
+    group.arrange_between_points(-3 * algan.RIGHT, 3 * algan.RIGHT)
+    torch.testing.assert_close(group[0].get_center(), -algan.RIGHT.reshape(1, 1, 3))
+    torch.testing.assert_close(group[1].get_center(), algan.RIGHT.reshape(1, 1, 3))
+
+
+@pytest.mark.fast
+def test_component_filter_is_preserved_when_getting_grandchildren():
+    """``include_components=False`` has to survive the recursion, not just the
+    first level.
+
+    It was dropped on the recursive call, so structural components reappeared
+    at generation 1 and below -- the levels a caller passing the flag is most
+    likely to be reaching for. In the fast suite because it is the hierarchy
+    walk every composite Mob is read through.
+    """
+    component, ordinary = Square(), Square()
+    child = Group(component, ordinary)
+    child.components.append(component)
+    parent = Group(child)
+    assert parent.get_children(generation=1, include_components=False) == [ordinary]
+    assert parent.get_children(generation=1) == [component, ordinary]
+
+
+def test_traverse_treats_strings_and_bytes_as_atomic():
+    """A string is a leaf, because iterating one never reaches a leaf.
+
+    ``traverse`` recursed into any iterable, and a one-character string
+    iterates to itself -- so a string anywhere in a nested argument was a
+    ``RecursionError``. Unmarked: it is one pure-Python helper with no
+    dependencies, so nothing else can break it.
+    """
+
+    class Label(str):
+        pass
+
+    label = Label("member")
+    assert list(traverse(["abc", [b"abc", label], 3])) == ["abc", b"abc", label, 3]
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("value", ["Square", b"Square", None, 4, object()])
+def test_group_invalid_members_raise_an_actionable_error(value):
+    """A Group says what a member has to be, before it half-registers one.
+
+    The first thing done with a member was to read ``.scene`` off it, so the
+    error named an attribute rather than the argument. Rejecting it after the
+    Group had reached the Scene would leave a half-built actor behind, so the
+    Scene's actor list is checked too.
+    """
+    scene = algan.Scene(SMOKE_TEST)
+    actors = list(scene.actors)
+    with pytest.raises(TypeError, match="Animatable"):
+        Group(value)
+    assert scene.actors == actors
+
+
+@pytest.mark.parametrize("form", ["existing", "trailing", "pathlike"])
+def test_project_frame_directory_keeps_the_file_inside_the_directory(tmp_path, form):
+    """A Project frame given a directory writes into it, as Scene output does.
+
+    The frame prefix was applied to the directory itself, turning
+    ``save_frame("stills/")`` into a file called ``stills`` beside it. Unmarked:
+    it moves with ``project.py``'s own path rules.
+    """
+    algan.SETTINGS.paths.set(output_filename="frame")
+    directory = tmp_path / "stills"
+    if form != "trailing":
+        directory.mkdir()
+    path = str(directory) + os.sep if form == "trailing" else directory
+    if form == "existing":
+        path = str(path)
+    project = SimpleNamespace(screenshot_directory=tmp_path / "project-stills")
+    scene = _ProjectScene(2, "example", lambda: None)
+    run = _ProjectSceneRun(project, scene, "screenshots")
+    assert run.prepare_frame_path(path) == directory / "s2_f0_frame.png"
+    assert run.should_render_frame()
+
+
+def test_project_frame_path_expands_a_leading_tilde(monkeypatch, tmp_path):
+    """``~`` is expanded before the directory probe, not written literally.
+
+    ``Path("~/stills").is_dir()`` is False however real the directory is, so an
+    unexpanded ``~`` was read as a file name and the frame landed in a
+    directory called ``~`` beside the working directory. Unmarked: it moves
+    with ``project.py``'s own path rules.
+    """
+    home = tmp_path / "home"
+    (home / "stills").mkdir(parents=True)
+    # ``expanduser`` reads HOME on POSIX and USERPROFILE on Windows.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    algan.SETTINGS.paths.set(output_filename="frame")
+    project = SimpleNamespace(screenshot_directory=tmp_path / "project-stills")
+    scene = _ProjectScene(2, "example", lambda: None)
+    run = _ProjectSceneRun(project, scene, "screenshots")
+    assert run.prepare_frame_path(os.path.join("~", "stills")) == (
+        home / "stills" / "s2_f0_frame.png"
+    )
+
+
+def test_project_bare_frame_name_still_uses_project_directory(tmp_path):
+    """The case the directory fix must not disturb: a bare name is a bare name.
+
+    Unmarked for the same reason as the test above.
+    """
+    project = SimpleNamespace(screenshot_directory=tmp_path / "project-stills")
+    scene = _ProjectScene(2, "example", lambda: None)
+    run = _ProjectSceneRun(project, scene, "screenshots")
+    assert run.prepare_frame_path("detail") == (
+        Path(project.screenshot_directory) / "s2_f0_detail.png"
+    )

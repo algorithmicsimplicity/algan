@@ -109,7 +109,11 @@ class _ProjectSceneRun:
         if file_path is None:
             file_path = SETTINGS.paths.output_filename
         raw_path = os.fspath(file_path)
-        requested = Path(raw_path)
+        # ``expanduser`` before the directory probe, as
+        # ``_resolve_output_destination`` does: ``Path("~/stills").is_dir()`` is
+        # False however real the directory is, so an unexpanded ``~`` would be
+        # read as a file name here and written to a literal ``~`` directory.
+        requested = Path(raw_path).expanduser()
         is_directory = requested.is_dir() or raw_path.endswith(
             tuple(separator for separator in (os.sep, os.altsep) if separator)
         )

@@ -182,12 +182,16 @@ def _reject_context_kwargs(kwargs):
         )
 
 
-def _reject_negative_runtime(name, value):
+def _reject_invalid_runtime(name, value):
     """Reject non-numeric, non-finite or negative seconds before recording.
 
     Time only moves forward. A negative runtime rewinds the scene clock, which
     then silently shortens or empties the render rather than failing -- and
     ``scene.wait(target - now)`` coming out negative is an easy thing to write.
+    A NaN or an infinity does not rewind the clock so much as destroy it: every
+    later time computed from it is NaN, and the frame window that comes out is
+    nonsense rather than short. Neither raises on its own, which is why both are
+    caught here, at the authoring line that supplied the value.
     """
     if value is None:
         return value
@@ -483,8 +487,8 @@ class AnimationContext:
     animation_manager: Any = None
 
     def __post_init__(self):
-        _reject_negative_runtime("runtime", self.runtime)
-        _reject_negative_runtime("runtime_per_part", self.runtime_per_part)
+        _reject_invalid_runtime("runtime", self.runtime)
+        _reject_invalid_runtime("runtime_per_part", self.runtime_per_part)
         if self.new_mobs is None:
             self.new_mobs = []
         if self.child_contexts is None:
@@ -903,7 +907,7 @@ class AnimationContext:
         """
         if t is None:
             t = self.runtime_per_part
-        _reject_negative_runtime("t", t)
+        _reject_invalid_runtime("t", t)
         self.timespan.original_end = max(
             self.timespan.original_end, self.timespan.current_time + t
         )

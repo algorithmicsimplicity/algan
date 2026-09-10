@@ -44,7 +44,7 @@ from algan.animation_timeline.animation_contexts import (
     Seq,
     Sync,
     _reject_context_kwargs,
-    _reject_negative_runtime,
+    _reject_invalid_runtime,
     animation_manager_context,
 )
 from algan.animation_timeline.timeline import TimelineManager
@@ -349,7 +349,7 @@ class Scene(RenderLoopMixin):
                 f"{next(iter(kwargs))!r}. wait() takes one argument, the "
                 f"number of seconds to wait."
             )
-        _reject_negative_runtime("time", time)
+        _reject_invalid_runtime("time", time)
         self.animation_manager.wait(time)
         return self
 
