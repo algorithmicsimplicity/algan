@@ -3,7 +3,7 @@
 Run from the repository root with the development interpreter. Only NumPy is
 needed; this deliberately does not import Algan or initialise a GPU. No random
 seed, training, fitting service, renderer invocation, or external data is used.
-The default has 17 x 33 x 65 x 2 directional f32 values plus cosine means,
+The default has 33 x 33 x 65 x 2 directional f32 values plus cosine means,
 integrated using 8192
 Hammersley visible-normal samples per row. Use --samples for convergence checks.
 
@@ -134,7 +134,7 @@ def main():
     table = generate(args.samples)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     directional = table.reshape(NR, NE, NM + 1, 2)[:, :, :NM, :]
-    packed = np.rint(directional * 255).astype(np.uint8)
+    packed = np.rint(directional * 65535).astype(np.uint16)
     # Modulo-256 differencing is reversible and compresses the smooth grid.
     packed = np.diff(packed, axis=2, prepend=np.zeros_like(packed[:, :, :1, :]))
     packed = np.diff(packed, axis=1, prepend=np.zeros_like(packed[:, :1, :, :]))

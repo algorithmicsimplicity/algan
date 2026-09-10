@@ -258,7 +258,7 @@ def test_coupled_glass_closes_the_two_hemisphere_white_furnace(rough, eta, angle
     power = samples[:, 5] / torch.where(samples[:, 3] > 0, eta**2, 1.0)
     assert bool(torch.isfinite(power).all())
     assert float(power.min()) >= 0.0
-    # The closure's measured worst case is 0.73% over the 112-configuration
+    # The closure's measured worst case is 0.44% over the 112-configuration
     # sweep in ``benchmarks/rough_glass_furnace.py`` (results recorded under
     # ``benchmarks/results/``), so 1.5% leaves roughly a factor of two for
     # Monte Carlo noise while still failing on a real loss of energy. The

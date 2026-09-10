@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-GLASS_ROUGHNESS_SIZE = 17
+GLASS_ROUGHNESS_SIZE = 33
 GLASS_IOR_SIZE = 33
 GLASS_COSINE_SIZE = 65
 GLASS_ENERGY_SHAPE = (
@@ -37,14 +37,16 @@ def glass_energy_table():
     with np.load(path, allow_pickle=False) as archive:
         packed = archive["loss_delta"]
     shape = (GLASS_ROUGHNESS_SIZE, GLASS_IOR_SIZE, GLASS_COSINE_SIZE, 2)
-    if packed.shape != shape or packed.dtype != np.uint8:
+    if packed.shape != shape or packed.dtype != np.uint16:
         raise ValueError(f"Invalid glass energy table: {packed.shape}, {packed.dtype}")
-    # Reconstruct the lossless modulo-256 differences along IOR and cosine.
+    # Reconstruct the lossless modulo-65536 differences along IOR and cosine.
     # This only shrinks the shipped asset; it adds no approximation.
-    packed = packed.cumsum(axis=1, dtype=np.uint8).cumsum(axis=2, dtype=np.uint8)
-    # Loss is bounded to [0,1]. Eight-bit storage introduces at most 0.5/255
-    # absolute error; all device arithmetic and interpolation remain f32.
-    values = packed.astype(np.float64) / 255.0
+    packed = packed.cumsum(axis=1, dtype=np.uint16).cumsum(axis=2, dtype=np.uint16)
+    # Loss is bounded to [0,1]. Sixteen-bit storage introduces at most
+    # 0.5/65535 absolute error, two orders of magnitude below the grid's own
+    # interpolation error, so the table is grid-limited rather than
+    # quantisation-limited. All device arithmetic and interpolation remain f32.
+    values = packed.astype(np.float64) / 65535.0
     # Exactly integrate the decoded piecewise-linear sqrt(mu) interpolant.
     # Recomputing this tiny weighted sum, rather than quantising its means
     # separately, preserves the shared budget and reciprocal normalisation.

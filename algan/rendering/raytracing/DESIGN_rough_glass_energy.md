@@ -184,13 +184,30 @@ threshold, this implementation passes the other's own strictest render-level
 test unchanged, and the table it ships is 79 times larger in the wheel. Its
 furnace benchmark and render test were taken; its table and kernels were not.
 
-That comparison did locate a real improvement, which is **not** applied here
-because it would move path-traced output and those baselines are
-release-hosted. The error above is quantisation-limited, not grid-limited --
-uint8 storage has a +-0.00196 floor, and the measured RMS sits right on it --
-while the sqrt-warped eta axis already resolves index better than the
-alternative's 65 linear samples. Raising `GLASS_ROUGHNESS_SIZE` from 17 to 33
-and storing 16-bit measures at 0.00202 max / 0.00027 RMS, beating **both**
-shipped tables on every metric at 283 KB raw, a quarter of the alternative's.
-Roughness density is what buys this; widening the index axis to 65 as well
-changes RMS only from 0.00027 to 0.00023 and is not worth the bytes.
+That comparison located a real improvement, now applied. The error was
+**quantisation**-limited rather than grid-limited -- uint8 storage has a
++-0.00196 floor and the measured RMS sat right on it -- while the sqrt-warped
+index axis already resolved eta better than the alternative's 65 linear
+samples. `GLASS_ROUGHNESS_SIZE` is now 33 rather than 17 and the deltas are
+stored 16-bit, which measures 0.00202 max / 0.00027 RMS against the reference
+above, better than either previously shipped table on both. Roughness density
+is what buys this: widening the index axis to 65 as well moves RMS only to
+0.00023 and is not worth the bytes. The asset is 145 KB, ten times the uint8
+table it replaces and a seventh of the alternative's. Sixteen-bit deltas
+compress less well than eight-bit ones because a negative delta wraps to a
+large value that does not byte-align; splitting high and low byte planes
+recovers only 13% and is not worth a second decode step.
+
+End to end this moved the furnace sweep from 0.73% to **0.44%** worst case and
+0.090% to 0.064% mean -- a real gain, but short of the alternative's 0.25%.
+That residual is **not** table accuracy and will not yield to more bytes: at
+the worst configuration (roughness 0.65, relative index 1.1, 85 degrees) both
+tables sit within 0.0003 of the reference, so the difference is in the
+compensation model itself -- the coefficient, the mixture probability, or the
+cosine-mean denominator. Closing it is model work, and is the thing to
+investigate if this ever needs to be tighter.
+
+Changing the table moves path-traced output. `tests/path_traced` has two
+scenes with transmission (`environment_and_refraction`, `lit_and_shadowed`)
+whose baselines are release-hosted, so they need regenerating and their
+tarballs uploading before that suite is meaningful again.
