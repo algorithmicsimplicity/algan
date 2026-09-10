@@ -2320,14 +2320,20 @@ def prepare_sparse_raster_coverage(
 
     # Reserve for the next chunk's discovery peak: the pre-truncation scratch
     # (frag_*_u: 8+4+8+4+4+1 B/frag) plus the persistent compact result
-    # (frag_key/ref/ab/cov/msk: 8+4+8+4+4 B/frag; covered_idx/run_offsets:
-    # 4+4 B/covered) coexist in the arena at the copy. Amortized per output
-    # frame so the render-chunk preflight sizes later chunks to fit it instead
-    # of over-committing.
-    # 28 B/fragment of compact result, plus 32 B of persistent sheet record +
+    # (frag_key/ref/ab/cov/msk/cap: 8+4+8+4+4+4 B/frag; covered_idx/
+    # run_offsets: 4+4 B/covered) coexist in the arena at the copy. Amortized
+    # per output frame so the render-chunk preflight sizes later chunks to fit
+    # it instead of over-committing.
+    # 32 B/fragment of compact result, plus 32 B of persistent sheet record +
     # the sheet CSR. The torch-side sort and scatter intermediates are
     # allocator-owned, like the fragment sort's.
-    per_frag = 28
+    # frag_cap is a persist=True allocation like the other five (it carries the
+    # per-pixel one-mesh coverage ceiling into compaction), so leaving it out
+    # of the sum reported this scope 12.5% smaller than the arena it actually
+    # took -- and this number is what the render-chunk preflight reserves
+    # against for the next chunk. The 1.25 sparse_discovery_safety factor was
+    # absorbing the error rather than spending it on the margin it exists for.
+    per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
     rt_settings.note_sparse_discovery_footprint(
