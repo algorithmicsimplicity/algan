@@ -39,6 +39,10 @@ from algan.logging.logger import get_logger
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.settings._startup import render_device
 
+# Opt-in audit Q1/Q2: device-counted shadow queues and typed arena regions.
+# Capacity-guarded portable submission; no change to coverage or defaults.
+device_dispatch = env_flag("ALGAN_DEVICE_DISPATCH", False)
+
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
 max_bounces = 8
 # Samples averaged per pixel. 1 selects the deterministic hybrid renderer;

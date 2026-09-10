@@ -952,6 +952,7 @@ class ManualMemory:
     ):
         if device is None:
             device = render_device()
+        self._region_tracker = None
         self.current_pointer = 0
         self.max_pointer = 0
         # Largest frame window a render kernel actually launched for the chunk
@@ -993,13 +994,39 @@ class ManualMemory:
     def __len__(self):
         return self.length
 
+    @property
+    def current_pointer(self):
+        return self._current_pointer
+
+    @current_pointer.setter
+    def current_pointer(self, value):
+        tracker = getattr(self, "_region_tracker", None)
+        if tracker is not None and value < self._current_pointer:
+            tracker.rewind(forward=value)
+        self._current_pointer = value
+
+    @property
+    def current_reverse_pointer(self):
+        return self._current_reverse_pointer
+
+    @current_reverse_pointer.setter
+    def current_reverse_pointer(self, value):
+        tracker = getattr(self, "_region_tracker", None)
+        if tracker is not None and value > self._current_reverse_pointer:
+            tracker.rewind(reverse=value)
+        self._current_reverse_pointer = value
+
     def get_pointers(self):
         return self.current_pointer, self.current_reverse_pointer
 
     def set_pointers(self, pointers):
         pointers = [*pointers]
-        self.current_pointer = pointers[0]
-        self.current_reverse_pointer = pointers[1]
+        if self._region_tracker is not None:
+            self._region_tracker.rewind(
+                forward=pointers[0] if pointers[0] < self.current_pointer else None,
+                reverse=pointers[1] if pointers[1] > self.current_reverse_pointer else None,
+            )
+        self._current_pointer, self._current_reverse_pointer = pointers
 
     def get_percent_used(self):
         if not len(self):
@@ -1111,6 +1138,12 @@ class ManualMemory:
             x = x.view(byte_shape).view(dtype).view(logical_shape)
             if scalar:
                 x = x.view(())
+            if self._region_tracker is not None or SETTINGS.raytracing.device_dispatch:
+                if self._region_tracker is None:
+                    from algan.rendering.arena_regions import ArenaRegionTracker
+
+                    self._region_tracker = ArenaRegionTracker(self)
+                self._region_tracker.register(x, bool(reverse))
             return x
 
         return get_data()

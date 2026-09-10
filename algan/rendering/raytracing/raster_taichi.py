@@ -2820,6 +2820,8 @@ def raster_shadow_trace_arena(
         # ``sec_aa`` a hard light's four taps are visited diagonal pair first
         # and the other two are skipped when that pair agrees exactly.
         adaptive_taps: ti.template(),
+        dispatch_header: ti.types.ndarray(),
+        counted_dispatch: ti.template(),
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -2861,33 +2863,6 @@ def raster_shadow_trace_arena(
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _RASTER_SHADOW_TRACE_ARENA's.
-    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
-    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
-    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
-    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
-    tri_colors = ti.static(ArenaView(
-        arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9])))
-    tri_uvs = ti.static(ArenaView(arena_f32, aoff[5], (ashp[10], ashp[11], ashp[12])))
-    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[6], (ashp[13], ashp[14])))
-    textures = ti.static(ArenaView(arena_f32, aoff[7], (ashp[15], ashp[16], ashp[17])))
-    tri_extra = ti.static(ArenaView(arena_f32, aoff[8], (ashp[18], ashp[19], ashp[20])))
-    b_node_miss = ti.static(ArenaView(arena_i32, aoff[9], (ashp[21],)))
-    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[10], (ashp[22],)))
-    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[11], (ashp[23],)))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26])))
-    circuit_colors = ti.static(ArenaView(
-        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30])))
-    circuit_border_colors = ti.static(ArenaView(
-        arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34])))
-    edges_2d = ti.static(ArenaView(arena_f32, aoff[15], (ashp[35], ashp[36], ashp[37])))
-    edge_accel = ti.static(ArenaView(arena_i32, aoff[16], (ashp[38],)))
-    light_pos = ti.static(ArenaView(
-        arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
-    light_col = ti.static(ArenaView(
-        arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
-    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
-    tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
     # One thread per (event, light) cell: every cell's fan is independent
     # (its result lands in its own ``shadow_vis[e, li]`` and all per-light
     # state initializes inside the body), so flattening the light loop into
@@ -2899,6 +2874,38 @@ def raster_shadow_trace_arena(
     for idx in range(num_events * num_lights):
         e = idx // num_lights
         li = idx - e * num_lights
+        if ti.static(counted_dispatch):
+            # Guard before any payload access or visibility write.
+            if dispatch_header[2] != 0 or dispatch_header[3] != 0 \
+                    or e >= dispatch_header[0]:
+                continue
+        t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],), hoist=counted_dispatch))
+        t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],), hoist=counted_dispatch))
+        t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],), hoist=counted_dispatch))
+        tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5]), hoist=counted_dispatch))
+        tri_colors = ti.static(ArenaView(
+            arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9]), hoist=counted_dispatch))
+        tri_uvs = ti.static(ArenaView(arena_f32, aoff[5], (ashp[10], ashp[11], ashp[12]), hoist=counted_dispatch))
+        tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[6], (ashp[13], ashp[14]), hoist=counted_dispatch))
+        textures = ti.static(ArenaView(arena_f32, aoff[7], (ashp[15], ashp[16], ashp[17]), hoist=counted_dispatch))
+        tri_extra = ti.static(ArenaView(arena_f32, aoff[8], (ashp[18], ashp[19], ashp[20]), hoist=counted_dispatch))
+        b_node_miss = ti.static(ArenaView(arena_i32, aoff[9], (ashp[21],), hoist=counted_dispatch))
+        b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[10], (ashp[22],), hoist=counted_dispatch))
+        b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[11], (ashp[23],), hoist=counted_dispatch))
+        circuit_meta = ti.static(ArenaView(
+            arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26]), hoist=counted_dispatch))
+        circuit_colors = ti.static(ArenaView(
+            arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30]), hoist=counted_dispatch))
+        circuit_border_colors = ti.static(ArenaView(
+            arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34]), hoist=counted_dispatch))
+        edges_2d = ti.static(ArenaView(arena_f32, aoff[15], (ashp[35], ashp[36], ashp[37]), hoist=counted_dispatch))
+        edge_accel = ti.static(ArenaView(arena_i32, aoff[16], (ashp[38],), hoist=counted_dispatch))
+        light_pos = ti.static(ArenaView(
+            arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41]), hoist=counted_dispatch))
+        light_col = ti.static(ArenaView(
+            arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44]), hoist=counted_dispatch))
+        pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],), hoist=counted_dispatch))
+        tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47]), hoist=counted_dispatch))
         f = event_frame[e]
         ff = ti.cast(f, ti.f32)
         spos = ti.math.vec3(event_pos[e, 0], event_pos[e, 1], event_pos[e, 2])
@@ -3195,12 +3202,15 @@ _RASTER_SHADOW_TRACE_PARAMS = (
     "layer_offset_triangles", "refit", "has_tri", "has_bez", "event_dp",
     "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
     "event_src_prim", "eps_self", "eps_near", "shadow_identity",
-    "shadow_term", "adaptive_taps",
+    "shadow_term", "adaptive_taps", "dispatch_header", "counted_dispatch",
 )
 
 _raster_shadow_trace_launch = arena_packed(
     __name__, "raster_shadow_trace_arena",
-    _RASTER_SHADOW_TRACE_PARAMS, _RASTER_SHADOW_TRACE_ARENA)
+    _RASTER_SHADOW_TRACE_PARAMS, _RASTER_SHADOW_TRACE_ARENA,
+    region_access={name: "write" if name == "shadow_vis" else "read"
+                   for name in _RASTER_SHADOW_TRACE_PARAMS})
+_raster_shadow_trace_launch.public_call_params = _RASTER_SHADOW_TRACE_PARAMS[:-2]
 
 
 def raster_shadow_trace(*args):
@@ -3210,6 +3220,17 @@ def raster_shadow_trace(*args):
     the arena calling convention, so no launch site changed; see
     `arena_args_taichi`.
     """
-    return _raster_shadow_trace_launch(*args)
+    from algan.rendering.device_dispatch import DeviceCount
+
+    if len(args) != len(_RASTER_SHADOW_TRACE_PARAMS) - 2:
+        raise ValueError("Invalid public raster_shadow_trace argument count")
+    if isinstance(args[0], DeviceCount):
+        extent = args[0]
+        extent.validate()
+        extent.launch_capacity(int(args[30]))  # num_lights, checked host integer
+        return _raster_shadow_trace_launch(
+            extent.capacity, *args[1:], extent.header.tensor, 1)
+    # The template-off variant never reads this event_frame dummy header.
+    return _raster_shadow_trace_launch(*args, args[4], 0)
 
 

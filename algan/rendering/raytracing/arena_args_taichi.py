@@ -131,8 +131,19 @@ class ArenaView(tuple):
 
     __slots__ = ()
 
-    def __new__(cls, buf, base, shape):
-        return super().__new__(cls, (buf, base, tuple(shape)))
+    def __new__(cls, buf, base, shape, *, hoist=False):
+        shape = tuple(shape)
+        strides = None
+        if hoist:
+            # Materialize layout values inside the parallel thread prologue,
+            # not at each access and not as invariant mutable payload loads.
+            base = _ti_impl.expr_init(base)
+            shape = tuple(_ti_impl.expr_init(d) for d in shape)
+            strides = [1] * len(shape)
+            for d in range(len(shape) - 2, -1, -1):
+                strides[d] = _ti_impl.expr_init(strides[d + 1] * shape[d + 1])
+            strides = tuple(strides)
+        return super().__new__(cls, (buf, base, shape, strides))
 
     @property
     def buf(self):
@@ -150,9 +161,15 @@ class ArenaView(tuple):
         if not isinstance(idx, tuple):
             idx = (idx,)
         shape = self.shape
+        strides = tuple.__getitem__(self, 3)
         flat = idx[0]
-        for d in range(1, len(idx)):
-            flat = flat * shape[d] + idx[d]
+        if strides is not None:
+            flat = idx[0] * strides[0]
+            for d in range(1, len(idx)):
+                flat = flat + idx[d] * strides[d]
+        else:
+            for d in range(1, len(idx)):
+                flat = flat * shape[d] + idx[d]
         # Python scope here, so the subscript is built through Taichi's own
         # builder rather than through AnyArray.__getitem__ (which does not
         # exist).
@@ -191,6 +208,9 @@ _table_cache = {}
 def clear_pack_cache():
     """Forget the cached offset/shape tables (tests, and a device change)."""
     _table_cache.clear()
+    from algan.rendering.arena_region_args import clear_region_pack_cache
+
+    clear_region_pack_cache()
 
 
 def _table_key(spec, tensors):
@@ -321,7 +341,7 @@ def pack(spec, tensors):
     return (*arenas, table[: len(offsets)], table[len(offsets) :])
 
 
-def arena_packed(module_name, kernel_attr, call_params, spec):
+def arena_packed(module_name, kernel_attr, call_params, spec, *, region_access=None):
     """Wrap a converted kernel so callers keep passing the original arguments.
 
     ``call_params`` is the parameter list the kernel had **before** conversion,
@@ -352,7 +372,20 @@ def arena_packed(module_name, kernel_attr, call_params, spec):
                 f"{kernel_attr} takes {len(call_params)} arguments, got "
                 f"{len(args)}"
             )
-        packed = pack(spec, [args[i] for i in bound_idx])
+        if region_access is not None and args[position["counted_dispatch"]]:
+            from algan.rendering.arena_region_args import (
+                checked_launch_bindings,
+                pack_regions,
+            )
+            from algan.rendering.device_dispatch import retain_dispatch_regions
+
+            views = checked_launch_bindings(call_params, args, region_access)
+            packed = pack_regions(spec, [args[i] for i in bound_idx])
+            # Keep leases/native views through the enclosing plan's fence,
+            # not merely through this asynchronous wrapper's return.
+            retain_dispatch_regions(views, packed)
+        else:
+            packed = pack(spec, [args[i] for i in bound_idx])
         kernel = getattr(sys.modules[module_name], kernel_attr)
         return kernel(*[args[i] for i in keep_idx], *packed)
 

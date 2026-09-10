@@ -78,7 +78,7 @@ def _prologue(fn):
     Returned as ``(name, tag, off_slot, [shape_slots])`` in source order.
     """
     out = []
-    for stmt in fn.body:
+    for stmt in ast.walk(fn):
         if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
             continue
         call = stmt.value
@@ -268,7 +268,8 @@ def test_every_launch_site_passes_the_arguments_the_wrapper_expects():
     expected = {}
     for mod_name, name in CONVERTED:
         module = importlib.import_module(mod_name)
-        expected[name] = len(_launcher(module, name).call_params)
+        launcher = _launcher(module, name)
+        expected[name] = len(getattr(launcher, "public_call_params", launcher.call_params))
 
     counted, uncountable = _launch_sites(set(expected))
 
