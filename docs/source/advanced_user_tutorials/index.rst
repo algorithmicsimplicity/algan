@@ -15,6 +15,7 @@ see :doc:`../galleries/index`.
    :maxdepth: 2
 
    positioning_and_layout
+   bezier_curves
    text_and_math
    importing_from_manim
    cameras

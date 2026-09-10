@@ -2041,3 +2041,103 @@ def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
             group.arrange_in_line(algan.RIGHT, equal_widths=True, align_to=algan.DOWN)
             is group
         )
+
+
+def test_bezier_curve_reads_color_as_its_stroke_and_refuses_to_be_filled():
+    """``BezierCurveCubic`` is the unfilled circuit, so ``color`` is the stroke.
+
+    ``color`` means *fill* on a circuit, and this one has no fill: passing it
+    alone used to leave the curve at the default white with nothing said, which
+    is the one way an authored color goes missing. ``Line`` -- the other
+    unfilled circuit a script reaches for -- already read it as the stroke's, so
+    this reads it the same way, and an explicit ``stroke_color`` still wins.
+    ``filled=True`` is refused by name rather than colliding with the ``False``
+    the subclass pins.
+    """
+    points = torch.tensor(
+        [[-2.0, -1.0, 0.0], [-1.0, 2.0, 0.0], [1.0, -2.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    red = algan.RED.reshape(-1)[:3]
+    blue = algan.BLUE.reshape(-1)[:3]
+
+    curve = algan.BezierCurveCubic(points, color=algan.RED, add_to_scene=False)
+    assert torch.allclose(curve.stroke_color.reshape(-1)[:3], red)
+    assert torch.allclose(
+        algan.Line(color=algan.RED, add_to_scene=False).stroke_color.reshape(-1)[:3],
+        red,
+    )
+
+    explicit = algan.BezierCurveCubic(
+        points, color=algan.RED, stroke_color=algan.BLUE, add_to_scene=False
+    )
+    assert torch.allclose(explicit.stroke_color.reshape(-1)[:3], blue)
+
+    with pytest.raises(AlganConfigurationError, match="cannot be filled"):
+        algan.BezierCurveCubic(points, filled=True, add_to_scene=False)
+    assert (
+        algan.BezierCurveCubic(points, filled=False, add_to_scene=False).filled is False
+    )
+
+
+def test_a_non_planar_bezier_curve_keeps_its_3d_geometry():
+    """A curve that leaves its plane is drawn as 3-D geometry, not flattened.
+
+    An open path bounds no surface, so ``classify_circuit`` sends it down the
+    ``stroke`` route -- split into near-straight runs, each facing the camera --
+    which is what keeps a helix a helix instead of a sinusoid. The verdict is
+    reached once, from the control points the curve is constructed with.
+    """
+    flat = torch.tensor(
+        [[-2.0, -1.0, 0.0], [-1.0, 2.0, 0.0], [1.0, -2.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    assert algan.BezierCurveCubic(flat, add_to_scene=False)._nonplanar_plan is None
+
+    turn = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.55, 0.25],
+            [0.55, 1.0, 0.5],
+            [0.0, 1.0, 0.75],
+            [0.0, 1.0, 0.75],
+            [-0.55, 1.0, 1.0],
+            [-1.0, 0.55, 1.25],
+            [-1.0, 0.0, 1.5],
+        ]
+    )
+    helix = algan.BezierCurveCubic(turn, add_to_scene=False)
+    assert helix._nonplanar_plan is not None
+    assert helix._nonplanar_plan.mode == "stroke"
+
+
+def test_a_circuit_built_at_a_location_lands_there():
+    """``location`` is a request to put the finished circuit somewhere.
+
+    A circuit derives its own from the control points, so a caller's reached
+    ``Mob.__init__`` twice and raised "got multiple values for argument
+    'location'" from inside the texture grid -- an internal line, for a keyword
+    :class:`Circle` and every other shape built on this already accept. It is
+    applied once the frame is derived, and it moves the geometry with it.
+    """
+    from algan.mobs.shapes_2d import Circle
+
+    points = torch.tensor(
+        [[-2.0, -1.0, 0.0], [-1.0, 2.0, 0.0], [1.0, -2.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    here = algan.UP * 3
+
+    placed = algan.BezierCurveCubic(points, location=here, add_to_scene=False)
+    assert torch.allclose(placed.location.reshape(-1), here, atol=1e-5)
+    moved = algan.BezierCurveCubic(points, add_to_scene=False)
+    moved.move_to(here)
+    assert torch.allclose(
+        placed.control_points.location, moved.control_points.location, atol=1e-5
+    )
+
+    # The shapes that pop it themselves are untouched.
+    assert torch.allclose(
+        Circle(radius=1, location=algan.RIGHT * 2, add_to_scene=False).location.reshape(
+            -1
+        ),
+        algan.RIGHT * 2,
+        atol=1e-5,
+    )
