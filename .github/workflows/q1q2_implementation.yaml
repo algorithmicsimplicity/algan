@@ -1,0 +1,89 @@
+name: Q1 Q2 implementation correctness
+on:
+  push:
+    branches: [codex/q1q2-transport-20260911]
+permissions:
+  contents: write
+concurrency:
+  group: q1q2-implementation
+  cancel-in-progress: false
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      ALGAN_ANIMATION_DEVICE: cpu
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      BASE: dc63e21f6bb761277430935e035beca3615dbf51
+      DEST: codex/q1q2-device-dispatch-20260911
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply both implementations before any validation
+        id: apply
+        run: |
+          cp -a .q1q2 "$RUNNER_TEMP/q1q2"
+          git checkout --detach "$BASE"
+          cp -a "$RUNNER_TEMP/q1q2/files/." .
+          python "$RUNNER_TEMP/q1q2/apply_changes.py"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg texlive-latex-base texlive-latex-extra texlive-fonts-recommended dvisvgm
+      - uses: ./.github/actions/install-uv
+      - name: Install locked dependencies
+        id: install
+        run: uv sync --locked --all-extras --dev
+      - name: Feature and binding correctness
+        id: feature
+        run: |
+          set -o pipefail
+          uv run pytest -q tests/unit_tests/test_arena_regions.py tests/unit_tests/test_device_dispatch_taichi.py tests/unit_tests/test_device_dispatch_render.py tests/unit_tests/test_arena_args.py 2>&1 | tee "$RUNNER_TEMP/q1q2-feature.log"
+      - name: Fast regression suite
+        id: fast
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          set -o pipefail
+          uv run pytest -q --fast 2>&1 | tee "$RUNNER_TEMP/q1q2-fast.log"
+      - name: Publish clean implementation branch
+        if: always() && steps.apply.outcome == 'success'
+        env:
+          FEATURE_RESULT: ${{ steps.feature.outcome }}
+          FAST_RESULT: ${{ steps.fast.outcome }}
+        run: |
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          python - <<'PY'
+          import os, pathlib, subprocess
+          staging = pathlib.Path(os.environ['RUNNER_TEMP']) / 'q1q2/files'
+          paths = [str(p.relative_to(staging)) for p in staging.rglob('*') if p.is_file()]
+          paths += ['algan/environment.py', 'algan/rendering/raytracing/settings.py', 'algan/utils/memory_utils.py', 'algan/rendering/raytracing/arena_args_taichi.py', 'algan/rendering/raytracing/raster_taichi.py', 'algan/rendering/raytracing/raster_pipeline.py', 'tests/unit_tests/test_arena_args.py']
+          notes = pathlib.Path('agent_guidance/device_dispatch_validation.md')
+          notes.write_text('# Q1/Q2 validation\n\nBoth features were implemented before any tests.\n\nCPU feature/binding tests: ' + os.environ['FEATURE_RESULT'] + '\n\nFast suite: ' + os.environ['FAST_RESULT'] + '\n\nRun: https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID'] + '\n\nNo performance measurements. No CUDA, Metal or AMD hardware validation in this run.\n')
+          paths.append(str(notes))
+          subprocess.run(['git','add','--',*paths], check=True)
+          PY
+          parent="$BASE"
+          if git ls-remote --exit-code origin "refs/heads/$DEST"; then
+            git fetch origin "refs/heads/$DEST:refs/remotes/origin/$DEST"
+            parent=$(git rev-parse "refs/remotes/origin/$DEST")
+          fi
+          tree=$(git write-tree)
+          commit=$(git commit-tree "$tree" -p "$parent" -m 'Implement opt-in Q1 device dispatch and Q2 typed arena regions')
+          git push origin "$commit:refs/heads/$DEST"
+          git diff --binary "$BASE" "$commit" > "$RUNNER_TEMP/q1q2.patch"
+          echo "IMPLEMENTATION_COMMIT=$commit"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: q1q2-correctness
+          path: |
+            ${{ runner.temp }}/q1q2-feature.log
+            ${{ runner.temp }}/q1q2-fast.log
+            ${{ runner.temp }}/q1q2.patch
