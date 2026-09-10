@@ -1,6 +1,6 @@
 [project]
 name = "algan"
-version = "0.0.1"
+version = "0.0.2"
 description = "The simplest way to animate."
 authors = [
   {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
