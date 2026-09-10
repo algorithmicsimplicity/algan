@@ -1472,21 +1472,20 @@ and gave up (`-n 1` makes `--max-worker-restart` 4). Runs 34487179359 attempts
 same five crashes, in the same order**: `19 failed, 1298 passed, 196 skipped`
 both times. It is not a flake.
 
-**But three other runs of the same renderer code are clean**, and that is the
-finding. Run 34483019642 @ 98367d6 — which differs from dc63e21 only in
+**But four other MPS runs of the same renderer code are clean**, and that is
+the finding. Run 34483019642 @ 98367d6 — which differs from dc63e21 only in
 `test_path_tracer.py` and `code_quality.yaml`, neither reachable from the tests
-that die — ran the arm to completion: `1 failed, 4050 passed`. Two dispatched
-runs on `claude/vibrant-faraday-y8b713` passed 35% clean, well past the test
-that dies first. So the variable is not the commit. **It is the machine**, and
-the hosted macOS pool is at least two classes of them:
+that die — ran the arm to completion: `1 failed, 4050 passed`. Runs 34493582338,
+34494233578 and 34497639909 on `claude/vibrant-faraday-y8b713` reached 33-100%
+clean, well past the test that dies first. So the variable is not the commit; it
+is the machine.
 
-| | `brew install basictex` | `uv sync` | outcome |
-| --- | --- | --- | --- |
-| runners 1000003504, 1000003518 | 26 s, 21 s | 12 s, 10 s | **abort** |
-| runners 1000003492, 1000003511, 1000003514 | 35 s, 35 s | 20 s, 16 s | clean |
-
-Identical work, ~1.6x apart, and the split is exactly the split in the
-outcome.
+**Which machine, though, is not settled, and the obvious proxy does not work.**
+Setup-step duration looked like it separated them and does not: the two runners
+that abort install BasicTeX in 21-26 s and the project in 10-12 s, but runner
+1000003511 does the same work in 26 s and 13 s and stays clean. So there is no
+classifier here yet — only the fact that repeated runs on one runner agree with
+themselves and disagree across runners.
 
 **What the aborts were doing.** `PYTHONFAULTHANDLER` is now set for the job;
 the five stacks name three call sites, none of them about memory:
@@ -1507,8 +1506,8 @@ describing the whole underlying buffer as a flat `MPSNDArray` of
 byte count. That is the only quantity in the process that can reach `INT_MAX`,
 and it is the only thing all three sites have in common.
 
-**Confirmed by experiment, on the class that does NOT crash.** Waiting to land
-on the fast class is not necessary, because the claim is about a buffer length,
+**Confirmed by experiment, on a runner that does NOT crash.** Waiting to land
+on one that does is not necessary, because the claim is about a buffer length,
 not about a render — so ask it directly. Two subprocesses, each allocating one
 `uint8` buffer and writing the same four kilobytes of it:
 
@@ -1521,17 +1520,24 @@ Eight kilobytes of buffer either side of `INT_MAX` is the entire difference,
 and the view written is 4 KiB in both. So the axis Metal is handed is the
 **buffer's** length and not the view's, one-byte views of a big arena are
 exactly the case that cannot work, and every one of the five stacks above is
-that case. Run 34538422428 on the 7 GiB class, where the arena itself is
-nowhere near the ceiling.
+that case. Run 34538422428, on a 7 GiB runner whose own arena is nowhere near the
+ceiling — which is what makes the mechanism answerable without waiting to draw
+a runner that aborts.
 
 **And the arena is a function of the machine.** It is
 `rendering_memory_fraction` (0.4) of `get_num_available_bytes`, which
 `_MPS_HOST_SHARE` caps at 0.4 of total RAM — 0.16 of RAM, crossing `INT_MAX`
-above ~13.4 GB. The slow class measures 7.0 GiB total, 4.67 GiB
-`recommended_max_memory` and a **1.12 GiB** arena, comfortably under, which is
-why it is clean; a 16 GB machine gets 2.56 GB, over by 19%. The gate step now
-prints those four numbers on every run so the class is in the log rather than
-inferred from step durations.
+above ~13.4 GB. The one runner measured (1000003523) reports 7.0 GiB total,
+4.67 GiB `recommended_max_memory` and a **1.12 GiB** arena, comfortably under;
+a 16 GB machine would get 2.56 GB, over by 19%.
+
+**What remains unmeasured is the arena on a runner that aborts.** No run that
+crashed has printed its figure, so the last link — that these particular aborts
+were the arena crossing the ceiling rather than some other buffer — is inferred
+from the three call sites sharing an arena view, not measured. The gate step now
+prints those four numbers on every run, so the next abort records it. Until one
+does, the clamp below is a proven guard against a proven hazard, and not yet
+demonstrated to be the fix for these runs.
 
 `_addressable_arena_bytes` caps a Metal arena a megabyte under `INT_MAX` and
 leaves every other device alone. It is an addressing limit, not a budget: past
@@ -1539,5 +1545,5 @@ it the arena is not describable in one dimension on this backend, and the
 failure is a SIGABRT in an unrelated op rather than anything a caller can act
 on. The megabyte of margin is there because the length Metal sees is the buffer
 torch's allocator actually took, which it may round up from the request. Below
-the ceiling the clamp is the identity, so it changes nothing on the slow class
-or on any Mac up to 16 GB.
+the ceiling the clamp is the identity, so it changes nothing on a 7 GiB runner
+or on any Mac below ~13.4 GB.

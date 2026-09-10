@@ -272,7 +272,7 @@ def test_the_mps_figure_is_capped_by_a_share_of_total_ram(monkeypatch):
 
 
 def test_a_metal_arena_stays_inside_what_one_mpsndarray_can_address():
-    """A Metal arena is clamped to ``INT_MAX`` bytes, whatever the machine has.
+    """A Metal arena is clamped just under ``INT_MAX`` bytes, whatever the machine.
 
     Not a memory budget. The arena is one ``uint8`` tensor and every allocation
     is a view of it, so torch's MPS backend describes the whole buffer as a flat

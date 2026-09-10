@@ -208,14 +208,14 @@ jobs:
       # used the locked published `algan-quadrants`, not a private wheel.
       #
       # It also reports the size this machine gives the render arena, because
-      # the hosted macOS pool is NOT one machine: runs land on at least two
-      # classes (measured, on identical work -- `brew install basictex` 21-26 s
-      # and `uv sync` 10-12 s on one, 35 s and 16-20 s on the other), and the
-      # arena is 0.16 of total RAM, so the class decides whether it clears
-      # `_MPS_MAX_ARENA_BYTES`. A render that fails only on the faster class is
-      # otherwise indistinguishable from a flake, and DESIGN_mps_support.md
-      # §4.7 is what that cost. Four numbers in the log make the machine part
-      # of the evidence rather than something to infer from step durations.
+      # the hosted macOS pool is NOT one machine and this arm's worst failure
+      # to date turned on which one it drew: the same commit aborts on some
+      # runners and is clean on others (DESIGN_mps_support.md §4.7), and the
+      # arena is 0.16 of total RAM, so the machine decides whether it clears
+      # `_MPS_MAX_ARENA_BYTES`. Nothing else in the log says which machine this
+      # was -- step durations were tried as a proxy and do not separate them --
+      # so a failure that depends on it is indistinguishable from a flake
+      # without these four numbers.
       - name: Require the MPS render device
         if: matrix.render_device == 'mps'
         run: |
