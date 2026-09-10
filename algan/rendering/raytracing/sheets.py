@@ -13,8 +13,8 @@ shading reference, and the depth of the nearest fragment that owns a sample
 lets a position-less area donor decide which of two interpenetrating
 surfaces takes the pixel).
 
-Everything here is a sort plus a segmented reduction — no bounded lookahead,
-no per-thread walk, and no budget, which is the point: the ``_AA_MAX_RUN_SCAN``
+Grouping uses sorts and segmented reductions with complete runs, never a
+bounded lookahead or a fragment budget. In particular, the ``_AA_MAX_RUN_SCAN``
 truncation machinery and its defect tail (``DESIGN_mesh_identity.md``
 §0.5/§6.7/§6.8) cannot exist in this representation.
 
@@ -205,6 +205,10 @@ sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
 
 # Reuse established group IDs where another grouping cannot subdivide them.
 sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
+
+# Exact local integer grouping on Metal. Keep opt-in until whole-render
+# improvements repeat: fast isolated kernels did not consistently lower wall time.
+sheet_mps_grouping = env_flag("ALGAN_SHEET_MPS_GROUPING", False)
 
 # Assign dense conflict-rank groups from per-band counts instead of sorting.
 # Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
@@ -534,13 +538,35 @@ def _sheet_walk_order(pix, position):
     return torch.argsort(position, stable=True)
 
 
+def _local_mps_grouping(tensor):
+    """Use local kernels only for sufficiently large contiguous Metal inputs."""
+    if not (
+        sheet_mps_grouping
+        and tensor.device.type == "mps"
+        and 8192 <= tensor.numel() < 2**31
+        and tensor.ndim == 1
+        and tensor.is_contiguous()
+        and tensor.dtype in (torch.int32, torch.int64)
+    ):
+        return False
+    from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+    return _live_arch() is not None and taichi_launch_is_local(tensor.device)
+
+
 def _unique_sorted_ids(keys):
     """Group nondecreasing integer IDs without sorting them a second time."""
-    # The validated Metal path also receives sorted IDs here. Keep its
-    # consecutive grouping while retaining the CPU/CUDA optimization gates.
-    if keys.device.type == "mps" or (
-        (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda")
-    ):
+    if _local_mps_grouping(keys):
+        from algan.rendering.raytracing.sheet_grouping import unique_sorted_ids
+
+        return unique_sorted_ids(keys)
+    if keys.device.type == "mps":
+        from algan.rendering.raytracing.sheet_grouping import (
+            unique_sorted_ids_reference,
+        )
+
+        return unique_sorted_ids_reference(keys)
+    if (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda"):
         return torch.unique_consecutive(keys, return_inverse=True)
     return torch.unique(keys, sorted=True, return_inverse=True)
 
@@ -589,7 +615,15 @@ def _sheet_rank_groups(parent, rank):
 
 
 def _sheet_class_groups(band_id, cls_eff, new_group, nb):
-    """Reuse dense sub-band IDs when each original group has a uniform class."""
+    """Group shading classes without re-sorting unrelated surface runs."""
+    if (
+        _local_mps_grouping(band_id)
+        and cls_eff.is_contiguous()
+        and new_group.is_contiguous()
+    ):
+        from algan.rendering.raytracing.sheet_grouping import class_groups
+
+        return class_groups(band_id, cls_eff, new_group)
     if sheet_group_reuse and cls_eff.device.type in ("cpu", "cuda"):
         # Rank/depth sub-bands never cross an original (pixel, surface, facing)
         # group. Uniform classes in that larger group therefore cannot split
@@ -1505,6 +1539,49 @@ def _sample_depth_lose_reference(
     return lose_word
 
 
+def _sheet_fragment_metadata(frag_key, frag_ref, frag_msk, tri_obj, ppf, time_start):
+    """Unpack IDs and packed depth bits without changing coverage arithmetic."""
+    if (
+        _local_mps_grouping(frag_key)
+        and frag_key.dtype == torch.int64
+        and frag_ref.is_contiguous()
+        and frag_msk.is_contiguous()
+        and tri_obj.is_contiguous()
+        and tri_obj.ndim == 2
+        and tri_obj.numel() < 2**31
+        and -(2**31) <= time_start < 2**31
+        and frag_ref.device == frag_msk.device == tri_obj.device == frag_key.device
+    ):
+        from algan.rendering.raytracing.sheet_grouping import prepare_fragments
+
+        return prepare_fragments(
+            frag_key, frag_ref, frag_msk, tri_obj, ppf, time_start, AA_BACKFACE_BIT
+        )
+    n = frag_key.numel()
+    device = frag_key.device
+    pix = frag_key >> 32
+    t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+    frame_rel = pix // ppf
+
+    is_tri = frag_ref >= 0
+    safe_ref = frag_ref.clamp_min(0).to(torch.int64)
+    sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
+    facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
+    # One arange, shared by the bezier group key here and the conflict-rank
+    # scan's torch arm below (_conflict_rank) -- they were two identical
+    # int64 [n] tensors.
+    positions = torch.arange(n, dtype=torch.int64, device=device)
+    # Triangles group by (surface, facing); every bezier fragment is its own
+    # group (negative, unique — a shared sentinel would fuse adjacent
+    # circuits into one "sheet" no consumer wants). The shading class is NOT
+    # part of this key: bands and conflict ranks are decided class-blind, so
+    # a band is the same set of fragments whatever ``shade_split`` says, and
+    # the class only SUBDIVIDES that band below (see ``_sibling_weights``).
+    gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
+    del sid, facing
+    return pix, t, frame_rel, is_tri, safe_ref, positions, gkey
+
+
 def compact_sheets(
     coverage,
     merged,
@@ -1645,28 +1722,11 @@ def compact_sheets(
     frag_cap = coverage["frag_cap"][:n]
     device = frag_key.device
 
-    pix = frag_key >> 32
-    t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
     ppf = int(width) * int(height)
-    frame_rel = pix // ppf
-
     tri_obj = merged["tri_obj"]
-    is_tri = frag_ref >= 0
-    safe_ref = frag_ref.clamp_min(0).to(torch.int64)
-    sid = tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref].to(torch.int64)
-    facing = ((frag_msk & AA_BACKFACE_BIT) != 0).to(torch.int64)
-    # One arange, shared by the bezier group key here and the conflict-rank
-    # scan's torch arm below (_conflict_rank) -- they were two identical
-    # int64 [n] tensors.
-    positions = torch.arange(n, dtype=torch.int64, device=device)
-    # Triangles group by (surface, facing); every bezier fragment is its own
-    # group (negative, unique — a shared sentinel would fuse adjacent
-    # circuits into one "sheet" no consumer wants). The shading class is NOT
-    # part of this key: bands and conflict ranks are decided class-blind, so
-    # a band is the same set of fragments whatever ``shade_split`` says, and
-    # the class only SUBDIVIDES that band below (see ``_sibling_weights``).
-    gkey = torch.where(is_tri, sid * 2 + facing, -(positions + 2))
-    del sid, facing
+    pix, t, frame_rel, is_tri, safe_ref, positions, gkey = _sheet_fragment_metadata(
+        frag_key, frag_ref, frag_msk, tri_obj, ppf, time_start
+    )
     # "Does this stream hold any triangle at all?" is asked by three separate
     # rules below (the shading-class split, the primitive band rule, and the
     # closed-shell alpha cap), and each ask was an [n] reduction AND a hard

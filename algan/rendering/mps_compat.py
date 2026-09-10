@@ -477,13 +477,13 @@ def band_class_groups(band_of_frag, cls_eff, base):
     )
     if order is None:
         order = torch.argsort(cls_eff, stable=True)
-        order = order.index_select(
-            0, torch.argsort(band_of_frag.index_select(0, order), stable=True)
+        order = gather_exact(
+            order, torch.argsort(gather_exact(band_of_frag, order), stable=True)
         )
     else:
         order = order.to(torch.int64)
-    bands = band_of_frag.index_select(0, order)
-    classes = cls_eff.index_select(0, order)
+    bands = gather_exact(band_of_frag, order)
+    classes = gather_exact(cls_eff, order)
     starts = torch.ones_like(bands, dtype=torch.bool)
     if bands.numel() > 1:
         starts[1:] = (bands[1:] != bands[:-1]) | (classes[1:] != classes[:-1])
