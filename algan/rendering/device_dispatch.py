@@ -3,12 +3,13 @@
 The int32 header stores published count, reservations, overflow, error.
 Capacity-guarded consumers never turn overflow into a truncated result.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Callable
 
 import torch
 
@@ -46,7 +47,11 @@ class DeviceCount:
             raise ValueError("Device-count header must be contiguous int32[4]")
 
     def launch_capacity(self, multiplier=1):
-        if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier < 0:
+        if (
+            isinstance(multiplier, bool)
+            or not isinstance(multiplier, int)
+            or multiplier < 0
+        ):
             raise ValueError("Dispatch multiplier must be a nonnegative integer")
         total = self.capacity * multiplier
         if total > _INT32_MAX:
@@ -60,6 +65,7 @@ class DeviceCount:
 @dataclass(frozen=True)
 class DispatchStage:
     """Reusable submission function; must not capture per-batch tensors."""
+
     name: str
     submit: Callable
 
@@ -71,6 +77,7 @@ class DispatchPlan:
     Stages and consumers write scratch only. Final output is committed after
     a consolidated status read. Leases include late-bound consumer arguments.
     """
+
     stages: tuple[DispatchStage, ...]
 
     def run(self, extent, views, bindings, *, consume, synchronize, commit=None):
@@ -92,9 +99,12 @@ class DispatchPlan:
                     raise DeviceDispatchError(f"Invalid device queue (error={error})")
                 if overflow:
                     raise DeviceDispatchOverflow(
-                        f"Device queue needs {reserved} slots; capacity is {extent.capacity}")
+                        f"Device queue needs {reserved} slots; capacity is {extent.capacity}"
+                    )
                 if not (0 <= count == reserved <= extent.capacity):
-                    raise DeviceDispatchError("Device queue published an inconsistent count")
+                    raise DeviceDispatchError(
+                        "Device queue published an inconsistent count"
+                    )
                 if commit is not None:
                     result = commit(result)
                     synchronize()
@@ -115,7 +125,9 @@ def retain_dispatch_regions(views, resources=()):
     """Hold a late-bound consumer's regions through the plan's completion fence."""
     stack = _ACTIVE_DISPATCH.get()
     if stack is None:
-        raise DeviceDispatchError("Region-aware asynchronous launch requires a dispatch plan")
+        raise DeviceDispatchError(
+            "Region-aware asynchronous launch requires a dispatch plan"
+        )
     metadata = stack.enter_context(lease_regions(views))
     stack.callback(lambda held=resources: None)
     return metadata

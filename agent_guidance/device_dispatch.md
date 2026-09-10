@@ -45,9 +45,13 @@ device-driven continuation loop.
 ## Q2: typed regions and load metadata
 
 `arena_regions.py` validates storage identity, byte range, dtype, shape, strides,
-actual alignment and allocation identity. End offsets are checked, not just
-starts. Empty tensors use storage offsets rather than their zero data pointer.
-All host metadata arithmetic uses integers; out-of-range layouts fail explicitly.
+actual alignment and allocation identity. Allocation tracking retains full-width
+host byte offsets: a small persistent view above 2 GiB is legal. The int32 kernel
+ABI is checked separately, relative to the submitted view or narrowed dtype
+buffer. Both rebased starts and ends must fit, as must shapes and strides;
+individually small views cannot be packed into an oversized shared span. Empty
+tensors use storage offsets rather than their zero data pointer. All host
+metadata arithmetic uses integers; out-of-range bindings fail explicitly.
 
 The complete launch binding set, including ordinary hot arguments, participates
 in the alias proof. Read/read aliases are legal. An overlap involving a writer

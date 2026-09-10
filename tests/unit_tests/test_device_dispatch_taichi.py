@@ -104,7 +104,7 @@ def test_scan_pack_stability_exact_ids(arena, n):
     assert torch.all(vis[count:, 0, 0] == -7)
 
 
-@pytest.mark.parametrize("footprint,terminator", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize(('footprint', 'terminator'), [(False, False), (True, False), (False, True)])
 def test_optional_payloads_plan_reuse(arena, footprint, terminator):
     q, vis = _queue(arena, 17, footprint=footprint, terminator=terminator)
     _run(q, vis)
@@ -112,14 +112,16 @@ def test_optional_payloads_plan_reuse(arena, footprint, terminator):
     vis.fill_(-7)
     _run(q, vis)
     assert q.extent.header.tensor.cpu().tolist() == [0, 0, 0, 0]
-    assert torch.all(vis == -7) and torch.all(q.reverse == -1)
+    assert torch.all(vis == -7)
+    assert torch.all(q.reverse == -1)
 
 
 def test_overflow_does_not_write_visibility_or_mapping(arena):
     q, vis = _queue(arena, 17, capacity=1)
     with pytest.raises(DeviceDispatchOverflow):
         _run(q, vis)
-    assert torch.all(vis == -7) and torch.all(q.reverse == -9)
+    assert torch.all(vis == -7)
+    assert torch.all(q.reverse == -9)
     assert q.extent.header.tensor.cpu().tolist() == [0, 11, 1, 0]
 
 
@@ -128,7 +130,8 @@ def test_invalid_accept_flag_prevents_consumer(arena):
     q.inputs["accepted"][3] = 2
     with pytest.raises(DeviceDispatchError, match="Invalid device queue"):
         _run(q, vis)
-    assert torch.all(vis == -7) and torch.all(q.reverse == -9)
+    assert torch.all(vis == -7)
+    assert torch.all(q.reverse == -9)
 
 
 def test_descriptor_rejects_host_count_and_overwide_launch(arena):

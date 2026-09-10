@@ -1024,7 +1024,9 @@ class ManualMemory:
         if self._region_tracker is not None:
             self._region_tracker.rewind(
                 forward=pointers[0] if pointers[0] < self.current_pointer else None,
-                reverse=pointers[1] if pointers[1] > self.current_reverse_pointer else None,
+                reverse=pointers[1]
+                if pointers[1] > self.current_reverse_pointer
+                else None,
             )
         self._current_pointer, self._current_reverse_pointer = pointers
 

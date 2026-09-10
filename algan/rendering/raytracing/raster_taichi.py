@@ -2874,11 +2874,14 @@ def raster_shadow_trace_arena(
     for idx in range(num_events * num_lights):
         e = idx // num_lights
         li = idx - e * num_lights
+        skip_event = 0
         if ti.static(counted_dispatch):
-            # Guard before any payload access or visibility write.
-            if dispatch_header[2] != 0 or dispatch_header[3] != 0 \
-                    or e >= dispatch_header[0]:
-                continue
+            skip_event = (dispatch_header[2] != 0 or dispatch_header[3] != 0
+                          or e >= dispatch_header[0])
+        # Keep the continue outside the static gate for SPIR-V backends,
+        # and before any payload access or visibility write.
+        if skip_event:
+            continue
         t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],), hoist=counted_dispatch))
         t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],), hoist=counted_dispatch))
         t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],), hoist=counted_dispatch))

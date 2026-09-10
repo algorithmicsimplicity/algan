@@ -269,7 +269,9 @@ def test_every_launch_site_passes_the_arguments_the_wrapper_expects():
     for mod_name, name in CONVERTED:
         module = importlib.import_module(mod_name)
         launcher = _launcher(module, name)
-        expected[name] = len(getattr(launcher, "public_call_params", launcher.call_params))
+        expected[name] = len(
+            getattr(launcher, "public_call_params", launcher.call_params)
+        )
 
     counted, uncountable = _launch_sites(set(expected))
 

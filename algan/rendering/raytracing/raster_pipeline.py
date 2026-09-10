@@ -18,6 +18,7 @@ cannot write directly into an arena view.
 from __future__ import annotations
 
 import math
+from functools import partial
 
 import torch
 
@@ -2592,11 +2593,20 @@ def shade_sparse_raster_coverage(
             )
 
             dispatch = prepare_primary_shadow_dispatch(
-                memory, n=num_slice_sheets, accepted=sheet_accept,
+                memory,
+                n=num_slice_sheets,
+                accepted=sheet_accept,
                 source=coverage["sheet_ref"][s_start:s_end],
-                pos=event_pos, snrm=event_snrm, fnrm=event_fnrm,
-                frame=event_frame, mask=event_msk, dp=event_dp, toff=event_toff,
-                reverse=sheet_event_id, footprint=sec_aa > 1, terminator=term_on,
+                pos=event_pos,
+                snrm=event_snrm,
+                fnrm=event_fnrm,
+                frame=event_frame,
+                mask=event_msk,
+                dp=event_dp,
+                toff=event_toff,
+                reverse=sheet_event_id,
+                footprint=sec_aa > 1,
+                terminator=term_on,
             )
             num_events = dispatch.extent
             event_capacity = dispatch.extent.capacity
@@ -2618,7 +2628,8 @@ def shade_sparse_raster_coverage(
                     acc_idx, coverage["sheet_ref"][s_start:s_end]
                 )
                 sheet_event_id[:num_slice_sheets].scatter_(
-                    0, acc_idx,
+                    0,
+                    acc_idx,
                     torch.arange(num_events, dtype=torch.int32, device=acc_idx.device),
                 )
                 ev_pos = event_pos.index_select(0, acc_idx)
@@ -2629,16 +2640,20 @@ def shade_sparse_raster_coverage(
                 ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
                 ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
         shadow_vis = _arena_tensor(
-            memory, (max(1, event_capacity), max(1, int(num_lights)), 3),
-            torch.float32, 1.0,
+            memory,
+            (max(1, event_capacity), max(1, int(num_lights)), 3),
+            torch.float32,
+            1.0,
         )
         if dispatch is not None or num_events:
             identity_on = bool(rt_settings.shadow_identity_reject)
             if identity_on:
                 ev_src_prim = (
-                    ordered_sources if ordered_sources is not None
+                    ordered_sources
+                    if ordered_sources is not None
                     else coverage["sheet_ref"][s_start:s_end]
-                    .index_select(0, acc_idx).to(torch.int32)
+                    .index_select(0, acc_idx)
+                    .to(torch.int32)
                 )
                 eps_self, eps_near = _shadow_identity_epsilons(merged)
             else:
@@ -2646,63 +2661,63 @@ def shade_sparse_raster_coverage(
                 eps_self, eps_near = float(min_hit_distance), 0.0
             from algan.rendering.raytracing.refit_bvh import RefitBVH
 
-            def trace_events():
-                raster_shadow_trace(
-                    num_events,
-                    ev_pos,
-                    ev_snrm,
-                    ev_fnrm,
-                    ev_frame,
-                    ev_msk,
-                    t_bvh.blocks,
-                    t_bvh.node_miss,
-                    t_bvh.leaf_prim,
-                    t_bvh.leaf_tspan,
-                    int(t_bvh.first_leaf),
-                    merged["tri_pos"],
-                    merged["tri_colors"],
-                    merged["tri_uvs"],
-                    merged["tri_tex_meta"],
-                    merged["textures"],
-                    merged["tri_extra"],
-                    int(merged["num_colored_triangles"]),
-                    bez_bvh.blocks,
-                    bez_bvh.node_miss,
-                    bez_bvh.leaf_prim,
-                    bez_bvh.leaf_tspan,
-                    int(bez_bvh.first_leaf),
-                    merged["circuit_meta"],
-                    merged["circuit_colors"],
-                    merged["circuit_border_colors"],
-                    merged["edges_2d"],
-                    merged["edge_accel"],
-                    light_pos,
-                    light_col,
-                    int(num_lights),
-                    pixel_world_scale,
-                    float(layer_offset_triangles),
-                    1 if isinstance(t_bvh, RefitBVH) else 0,
-                    1 if int(merged.get("num_triangles", 0)) > 0 else 0,
-                    1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-                    ev_dp,
-                    ev_toff,
-                    sec_aa,
-                    shadow_vis,
-                    int(shadow_flag),
-                    # Identity-aware rejection: the hit-side surface map, the
-                    # per-event source triangle, the two scene-scaled floors, and
-                    # the compile-time gate. With the toggle off the kernel never
-                    # reads either array (1-element dummies keep the signature)
-                    # and every acceptance test compiles to exactly the
-                    # pre-identity predicate.
-                    merged["tri_obj"] if identity_on else dummy_i,
-                    ev_src_prim,
-                    eps_self,
-                    eps_near,
-                    1 if identity_on else 0,
-                    term_mode,
-                    1 if rt_settings.shadow_adaptive_taps else 0,
-                )
+            trace_events = partial(
+                raster_shadow_trace,
+                num_events,
+                ev_pos,
+                ev_snrm,
+                ev_fnrm,
+                ev_frame,
+                ev_msk,
+                t_bvh.blocks,
+                t_bvh.node_miss,
+                t_bvh.leaf_prim,
+                t_bvh.leaf_tspan,
+                int(t_bvh.first_leaf),
+                merged["tri_pos"],
+                merged["tri_colors"],
+                merged["tri_uvs"],
+                merged["tri_tex_meta"],
+                merged["textures"],
+                merged["tri_extra"],
+                int(merged["num_colored_triangles"]),
+                bez_bvh.blocks,
+                bez_bvh.node_miss,
+                bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan,
+                int(bez_bvh.first_leaf),
+                merged["circuit_meta"],
+                merged["circuit_colors"],
+                merged["circuit_border_colors"],
+                merged["edges_2d"],
+                merged["edge_accel"],
+                light_pos,
+                light_col,
+                int(num_lights),
+                pixel_world_scale,
+                float(layer_offset_triangles),
+                1 if isinstance(t_bvh, RefitBVH) else 0,
+                1 if int(merged.get("num_triangles", 0)) > 0 else 0,
+                1 if int(merged.get("num_circuits", 0)) > 0 else 0,
+                ev_dp,
+                ev_toff,
+                sec_aa,
+                shadow_vis,
+                int(shadow_flag),
+                # Identity-aware rejection: the hit-side surface map, the
+                # per-event source triangle, the two scene-scaled floors, and
+                # the compile-time gate. With the toggle off the kernel never
+                # reads either array (1-element dummies keep the signature)
+                # and every acceptance test compiles to exactly the
+                # pre-identity predicate.
+                merged["tri_obj"] if identity_on else dummy_i,
+                ev_src_prim,
+                eps_self,
+                eps_near,
+                1 if identity_on else 0,
+                term_mode,
+                1 if rt_settings.shadow_adaptive_taps else 0,
+            )
 
             if dispatch is not None:
                 # Consolidated status, before mode 2 commits final shading.
