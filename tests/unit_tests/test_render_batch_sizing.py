@@ -7,6 +7,7 @@ import algan.render_loop as render_loop_module
 from algan.render_loop import (
     RenderLoopMixin,
     _max_duration_that_fits,
+    _next_arena_fetch_cap,
     _prepare_background_for_chunk,
     _render_device_pool_bytes,
 )
@@ -97,6 +98,16 @@ def test_animation_duration_search_uses_the_true_maximum():
 
 def test_animation_duration_search_preserves_single_frame_failure_path():
     assert _max_duration_that_fits(1000, lambda _n: False) == 1
+
+
+def test_next_fetch_growth_is_bounded_without_shrinking_the_accepted_batch():
+    # The Metal UHD workload accepted 7 frames, then estimated that 23 could
+    # fit. Jumping straight to 23 paid for a full rematerialization only to
+    # reject it. A 1.6x cap asks for 11 instead, while never dropping below
+    # the duration that was just proven to fit.
+    assert _next_arena_fetch_cap(7, 23) == 11
+    assert _next_arena_fetch_cap(7, 3) == 7
+    assert _next_arena_fetch_cap(1, 100) == 1
 
 
 def test_background_callback_streams_one_frame_at_a_time_on_render_device():

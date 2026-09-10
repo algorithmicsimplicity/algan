@@ -106,6 +106,23 @@ _UNMEASURED_SCENE_SHARE = 0.5
 #: trace over.
 _UNMEASURED_PROBE_FRAMES = 8
 
+#: Maximum multiplicative growth of the next fetched frame window after the
+#: arena has accepted a batch. The fitted arena capacity can be optimistic
+#: because it includes frame-independent scene bytes; an unbounded jump can
+#: therefore rematerialize a much larger batch only to reject it immediately.
+#: 1.6 preserved the accepted 7/11/12-frame partition in the UHD Metal
+#: benchmark while avoiding its failed 23-frame speculative fetch.
+_ARENA_FETCH_GROWTH_LIMIT = 1.6
+
+
+def _next_arena_fetch_cap(duration, arena_frames):
+    """Bound the next materialized window without shrinking what just fit."""
+    return min(
+        max(1, int(duration), int(arena_frames)),
+        max(1, int(duration * _ARENA_FETCH_GROWTH_LIMIT)),
+    )
+
+
 #: The spelling the failure messages below point a user at. The path tracer is
 #: the renderer for the scenes the deterministic one cannot do (too many
 #: lights, a split pool that exhausts memory, global illumination --
@@ -3446,7 +3463,9 @@ class RenderLoopMixin:
                         # Never below what just fit: the estimate reads the
                         # scene's frame-independent bytes as if they scaled, so
                         # it under-shoots (harmlessly) on a batch that fit.
-                        self._arena_fetch_frame_cap = max(1, duration, arena_frames)
+                        self._arena_fetch_frame_cap = _next_arena_fetch_cap(
+                            duration, arena_frames
+                        )
 
                     # Only prefetch the successor once the current runtime is
                     # final. A speculative successor would start at the wrong
