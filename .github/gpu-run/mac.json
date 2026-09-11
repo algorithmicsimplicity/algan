@@ -1,10 +1,10 @@
 {
-  "_request": "mps-ndarray-launch-cache-bec6ccd8-validation-2",
-  "command": "git fetch --depth=1 origin bec6ccd85346b03b7817ca6d4d87c1aef4cf0651; git checkout --detach bec6ccd85346b03b7817ca6d4d87c1aef4cf0651; git rev-parse HEAD; status=0; .venv/bin/python -m pytest -q tests/unit_tests/test_quadrants_ndarray_launch.py tests/unit_tests/test_taichi_fast_launch.py tests/unit_tests/test_mps_zero_copy.py tests/unit_tests/test_taichi_launch_pairing.py || status=$?; .venv/bin/python benchmarks/_mps_launch_cache_check.py --scenes all --iterations 200 || status=$?; exit $status",
-  "arms": ["mac-mps"],
+  "_request": "mps-ndarray-launch-cache-8778580f-validation-3",
+  "command": "git fetch --depth=1 origin 8778580fa568b3042c4f69bf294e9ac601bc379a; git checkout --detach 8778580fa568b3042c4f69bf294e9ac601bc379a; git rev-parse HEAD; status=0; .venv/bin/python -m pytest -q tests/unit_tests/test_quadrants_ndarray_launch.py tests/unit_tests/test_taichi_fast_launch.py tests/unit_tests/test_mps_zero_copy.py tests/unit_tests/test_taichi_launch_pairing.py || status=$?; .venv/bin/python benchmarks/_mps_launch_cache_check.py --scenes all --iterations 200 || status=$?; exit $status",
+  "arms": ["mac-mps", "linux-cpu"],
   "env": {"ALGAN_VIDEO_ENCODER": "software", "ALGAN_USE_DAEMON": "0"},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 50,
+  "timeout_minutes": 40,
   "artifacts": "algan_outputs/launch-cache/**"
 }
