@@ -24,7 +24,21 @@ jobs:
       - name: Reconstruct validated patch payload
         run: |
           set -euo pipefail
-          cat .github/audit_tranche8_payload_{0..10}.b64 > "$RUNNER_TEMP/tranche8.b64"
+          cat \
+            .github/audit_tranche8_payload_0.b64 \
+            .github/audit_tranche8_payload_1.b64 \
+            .github/audit_tranche8_payload_2.b64 \
+            .github/audit_tranche8_payload_3.b64 \
+            .github/audit_tranche8_payload_4.b64 \
+            .github/audit_tranche8_payload_5.b64 \
+            .github/audit_tranche8_payload_6.b64 \
+            .github/audit_tranche8_payload_7.b64 \
+            .github/audit_tranche8_payload_8.b64 \
+            .github/audit_tranche8_payload_9a.b64 \
+            .github/audit_tranche8_payload_9b.b64 \
+            .github/audit_tranche8_payload_10.b64 \
+            > "$RUNNER_TEMP/tranche8.b64"
+          test "$(wc -c < "$RUNNER_TEMP/tranche8.b64")" = 46232
           base64 -d "$RUNNER_TEMP/tranche8.b64" > "$RUNNER_TEMP/tranche8.patch.xz"
           echo '8c327192cde85d68d3d5fdf097cbc8ecd4a22c316bcb4677450a2172617b5a65  '"$RUNNER_TEMP/tranche8.patch.xz" | sha256sum -c -
           xz -dc "$RUNNER_TEMP/tranche8.patch.xz" > "$RUNNER_TEMP/tranche8.patch"
@@ -72,5 +86,3 @@ jobs:
           name: renderer-audit-tranche8-publication
           path: ${{ runner.temp }}/publication.json
           retention-days: 7
-
-# Retry after correcting the staged payload checksum input.
