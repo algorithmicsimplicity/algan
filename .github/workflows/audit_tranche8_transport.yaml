@@ -1,0 +1,25 @@
+name: Audit tranche 8 source transport
+on:
+  push:
+    branches: [codex/renderer-audit-tranche7-transport]
+    paths: [.github/workflows/audit_tranche8_transport.yaml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a222eca1468990b459528641c3a336a23b888f51
+      - name: Export immutable implementation base
+        run: |
+          mkdir -p "$RUNNER_TEMP/export"
+          git archive HEAD > "$RUNNER_TEMP/export/base.tar"
+          git cat-file commit HEAD > "$RUNNER_TEMP/export/base.commit"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/export/base.ids"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renderer-audit-tranche8-base
+          path: ${{ runner.temp }}/export/
+          retention-days: 1
