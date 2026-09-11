@@ -277,7 +277,7 @@ def test_rendered_same_surface_stack_matches_independent_surfaces(tmp_path, laye
         vertices.extend([[-2, -2, z], [2, -2, z], [2, 2, z], [-2, 2, z]])
         faces.append([first, first + 1, first + 2, first + 3])
     images = []
-    with SETTINGS.raytracing.override(shadows=False):
+    with SETTINGS.raytracing.override(shadows=False, samples_per_pixel=1):
         for shared in (True, False):
             SceneManager.reset()
             try:
@@ -298,6 +298,7 @@ def test_rendered_same_surface_stack_matches_independent_surfaces(tmp_path, laye
                     result = scene.save_frame(
                         str(path), video_settings=SMOKE_TEST, overwrite=True
                     )
+                    assert result.render_plan.primary_route == "analytic_sheets"
                     assert result.render_plan.truncations.sheet_layers == 0
                     with Image.open(path) as image:
                         images.append(np.array(image.convert("RGB")))
