@@ -601,10 +601,11 @@ def install_zero_copy_launch():
     Installed the way ``taichi_runtime.install_render_arch_guard`` is, and for
     the same reason: the conversion has to happen for every kernel and every
     call site, and a wrapper is the only placement a future call site cannot
-    forget. It must sit **outside** the fast-launch dispatcher -- that path
-    already routes every non-CPU/CUDA tensor to the original launch, so by the
-    time it sees these arguments they are ndarrays and it declines them, which
-    is correct but only because this ran first.
+    forget. It must sit **outside** the fast-launch dispatcher: Quadrants
+    fast hits bind these imported ndarrays through the patched bulk ndarray
+    setter, including byte offsets, while this wrapper still owns storage
+    lifetime and queue fences. The Taichi dispatcher continues to decline
+    ndarrays and uses the original launch path.
 
     The render-arch guard itself sits outside this wrapper. By the time control
     reaches here it has brought the compiler program up on the current render
