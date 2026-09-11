@@ -98,6 +98,31 @@ from algan.taichi_compat import ti
 # image does not depend on it -- exposed for tuning against a card's occupancy.
 raster_chunk = max(1, env_int("ALGAN_RASTER_CHUNK", 32))
 
+# Screen-bin geometry for the opt-in tiled primary frontend
+# (``tile_raster_taichi``, DESIGN_tiled_primary.md). Like ``raster_chunk``
+# these partition work and never visibility, so the image does not depend on
+# them -- but unlike it they are frozen at import, because the tile kernels
+# close over them and a warm kernel cache would ignore a later write.
+#
+# The fine tile trades three things against each other: a bigger one bins a
+# primitive into fewer candidates and lets a row span reach a full
+# ``raster_chunk``, while a smaller one keeps the per-tile pixel buckets dense
+# on a sparse scene and keeps ``_rect_proof``'s intervals tight enough to
+# certify containment. Measured in
+# ``benchmarks/performance/reports/t4_2026_09/tiled_primary_ab_3.md``.
+raster_fine_tile = max(1, env_int("ALGAN_RASTER_FINE_TILE", 16))
+# Defaults to four fine tiles on each coarse axis whatever the fine size is, so
+# raising one knob alone scales the grid instead of also changing the fan-out.
+raster_coarse_tile = max(
+    raster_fine_tile, env_int("ALGAN_RASTER_COARSE_TILE", 4 * raster_fine_tile)
+)
+if raster_coarse_tile % raster_fine_tile:
+    raise ValueError(
+        "ALGAN_RASTER_COARSE_TILE must be a multiple of ALGAN_RASTER_FINE_TILE "
+        f"(got {raster_coarse_tile} and {raster_fine_tile}): a coarse bin's "
+        "children tile it exactly, and a partial child would drop candidates."
+    )
+
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:
 #

@@ -43,6 +43,19 @@ ARM = (sys.argv[1] if len(sys.argv) > 1 else "base").lower()
 SCENE = (sys.argv[2] if len(sys.argv) > 2 else "nn").lower()
 QUALITY = (sys.argv[3] if len(sys.argv) > 3 else "UHD").upper()
 
+#: Bin geometry is compile-time (``tile_raster_taichi`` closes over it), so it
+#: is set in the environment BEFORE this process imports algan, exactly like
+#: ``nn_ablation.py``'s codegen knobs. This script only records it -- and folds
+#: it into the output tag, because two arms that share a tag share their video
+#: filename and the digest parity check then compares a file with itself.
+_FINE_TILE = os.environ.get("ALGAN_RASTER_FINE_TILE")
+_COARSE_TILE = os.environ.get("ALGAN_RASTER_COARSE_TILE")
+_SUFFIX = "".join(
+    f"_{short}{value}"
+    for short, value in (("f", _FINE_TILE), ("c", _COARSE_TILE))
+    if value
+)
+
 _ARMS = {
     "base": (False, False),
     "tile": (True, False),
@@ -163,10 +176,14 @@ def scene():
     _SCENES[SCENE]()
 
 
+from algan.rendering.raytracing import tile_raster_taichi as _tiles  # noqa: E402
+
 _PRESETS = {"UHD": UHD, "HD": HD, "PREVIEW": PREVIEW, "MD": MD, "LD": LD}
+
 print(
     f"ARM={ARM}  SCENE={SCENE}  QUALITY={QUALITY}  "
-    f"raster_tile_binning={TILE}  raster_simple_interiors={SIMPLE}",
+    f"raster_tile_binning={TILE}  raster_simple_interiors={SIMPLE}  "
+    f"fine_tile={_tiles.FINE_TILE}  coarse_tile={_tiles.COARSE_TILE}",
     flush=True,
 )
 
@@ -177,7 +194,7 @@ print(
 profile_scene(
     scene,
     _PRESETS[QUALITY],
-    f"tiled_{SCENE}_{ARM}_{QUALITY}",
+    f"tiled_{SCENE}_{ARM}_{QUALITY}{_SUFFIX}",
     runs=2,
     kernel_profiler=False,
     save_video_kwargs={"ffmpeg_params": ["-crf", "17", "-preset", "ultrafast"]},
@@ -186,6 +203,7 @@ profile_scene(
 print(
     "DIAG "
     + f"arm={ARM} scene={SCENE} quality={QUALITY} "
+    + f"fine_tile={_tiles.FINE_TILE} coarse_tile={_tiles.COARSE_TILE} "
     + " ".join(f"{k}={_STATS.get(k, 0)}" for k in ("windows",) + _KEYS),
     flush=True,
 )

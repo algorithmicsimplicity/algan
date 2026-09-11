@@ -16,6 +16,8 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_SIMPLE_INTERIOR_BIT,
     _AA_SLIVER_BIT,
     raster_chunk,
+    raster_coarse_tile,
+    raster_fine_tile,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
@@ -29,10 +31,17 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 )
 from algan.taichi_compat import ti
 
-# Fixed implementation sizes, not claims about an optimal backend-specific size.
-# Four fine tiles on each coarse axis. These partition work, never visibility.
-FINE_TILE = 16
-COARSE_TILE = 64
+# The bin geometry, frozen at import beside ``raster_chunk`` in
+# ``raster_taichi`` (``SETTINGS.raytracing.raster_fine_tile`` /
+# ``raster_coarse_tile``). These partition work, never visibility, so the image
+# does not depend on them; the kernels below close over them, which is why a
+# later write is refused rather than silently ignored.
+FINE_TILE = raster_fine_tile
+COARSE_TILE = raster_coarse_tile
+#: Fine tiles per coarse axis, and per coarse bin. The CSR that feeds the fine
+#: pass allocates one slot per child of every nonempty coarse bin.
+FINE_PER_COARSE = COARSE_TILE // FINE_TILE
+FINE_CHILDREN = FINE_PER_COARSE * FINE_PER_COARSE
 # This bit is SHEET data only. It is set for every sheet of a certified pixel,
 # never for a subset of a pixel. Bits 20..27 are the sample-depth lose mask.
 SIMPLE_INTERIOR_BIT = _AA_SIMPLE_INTERIOR_BIT
@@ -348,8 +357,8 @@ def coarse_write(records: ti.types.ndarray(), offsets: ti.types.ndarray(),
 def _fine_rect(coarse_id, child, coarse_w, coarse_h, width, height):
     fr = coarse_id // (coarse_w * coarse_h)
     local = coarse_id % (coarse_w * coarse_h)
-    x0 = (local % coarse_w) * COARSE_TILE + (child % 4) * FINE_TILE
-    y0 = (local // coarse_w) * COARSE_TILE + (child // 4) * FINE_TILE
+    x0 = (local % coarse_w) * COARSE_TILE + (child % FINE_PER_COARSE) * FINE_TILE
+    y0 = (local // coarse_w) * COARSE_TILE + (child // FINE_PER_COARSE) * FINE_TILE
     return fr, x0, y0, ti.min(x0 + FINE_TILE - 1, width - 1), ti.min(y0 + FINE_TILE - 1, height - 1)
 
 
@@ -365,7 +374,7 @@ def fine_counts(records: ti.types.ndarray(), coarse_ids: ti.types.ndarray(),
                 counts: ti.types.ndarray(), nfine: int, coarse_w: int, coarse_h: int,
                 width: int, height: int):
     for i in range(nfine):
-        parent, child = i // 16, i % 16
+        parent, child = i // FINE_CHILDREN, i % FINE_CHILDREN
         _fr, x0, y0, x1, y1 = _fine_rect(coarse_ids[parent], child, coarse_w, coarse_h, width, height)
         count = ti.cast(0, ti.i64)
         for j in range(coarse_offsets[parent], coarse_offsets[parent + 1]):
@@ -383,7 +392,7 @@ def fine_write(records: ti.types.ndarray(), coarse_ids: ti.types.ndarray(),
                width: int, height: int):
     tw, th = (width + FINE_TILE - 1) // FINE_TILE, (height + FINE_TILE - 1) // FINE_TILE
     for i in range(nfine):
-        parent, child = i // 16, i % 16
+        parent, child = i // FINE_CHILDREN, i % FINE_CHILDREN
         fr, x0, y0, x1, y1 = _fine_rect(coarse_ids[parent], child, coarse_w, coarse_h, width, height)
         dst = ti.cast(offsets[i], ti.i32)
         tile_ids[i] = (fr * th + y0 // FINE_TILE) * tw + x0 // FINE_TILE

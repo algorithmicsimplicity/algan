@@ -307,6 +307,8 @@ _IMPORT_FROZEN_FIELDS = {
         ("depth_tie_epsilon", "ALGAN_DEPTH_TIE_EPSILON"),
         ("bezier_scan_bins", "ALGAN_BEZIER_SCAN_BINS"),
         ("bezier_spatial_grid", "ALGAN_BEZIER_SPATIAL_GRID"),
+        ("raster_fine_tile", "ALGAN_RASTER_FINE_TILE"),
+        ("raster_coarse_tile", "ALGAN_RASTER_COARSE_TILE"),
     )
 }
 

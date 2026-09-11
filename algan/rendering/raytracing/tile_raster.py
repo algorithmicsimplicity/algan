@@ -123,7 +123,7 @@ def tiled_specs(
     coarse_ids, counts = torch.unique_consecutive(cid, return_counts=True)
     coarse_offsets, _ = _prefix(counts, "coarse CSR")
     del cid, counts, order
-    nf = _checked_size(coarse_ids.numel() * 16, "fine bins")
+    nf = _checked_size(coarse_ids.numel() * kernels.FINE_CHILDREN, "fine bins")
     fc = torch.empty(nf, dtype=torch.int64, device=device)
     kernels.fine_counts(
         records, coarse_ids, coarse_offsets, cr, fc, nf, cw, ch, width, height
