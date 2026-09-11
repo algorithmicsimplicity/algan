@@ -1,0 +1,29 @@
+name: Renderer audit fifth-tranche transport
+on:
+  push:
+    branches: [codex/renderer-audit-publisher]
+    paths: [.github/workflows/renderer_audit_publish.yaml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dd4bfadc52387ac6249878f2602d094d8349862e
+          fetch-depth: 1
+          persist-credentials: false
+      - run: |
+          mkdir -p "$RUNNER_TEMP/export"
+          git archive --format=tar.gz -o "$RUNNER_TEMP/export/source.tar.gz" HEAD
+          git ls-tree -r HEAD > "$RUNNER_TEMP/export/tree.txt"
+          git cat-file commit HEAD > "$RUNNER_TEMP/export/commit.txt"
+          cd "$RUNNER_TEMP/export"
+          sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renderer-audit5-base
+          path: ${{ runner.temp }}/export/*
+          retention-days: 7
