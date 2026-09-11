@@ -75,6 +75,7 @@ from algan.rendering.mps_compat import (
     gather_exact,
     gather_packed_key,
     kernel_index,
+    mps_friendly,
     reduction_index_dtype,
     taichi_accumulate_dtype,
 )
@@ -117,6 +118,8 @@ from algan.rendering.raytracing.sheet_grouping import (
     RankGroups,
     RankPoolGroups,
     class_groups,
+    consecutive_pair_ids,
+    rank_key_base,
     unique_ids,
     validate_inverse,
 )
@@ -141,17 +144,9 @@ from algan.rendering.raytracing.sheet_statistics import (
     sheet_statistics,
 )
 from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
-from algan.rendering.raytracing.truncation import record_truncation
 
 #: Band rules this module implements. "facing" is the no-depth-split fallback.
 BAND_RULES = ("facing", "prim")
-
-#: Largest conflict rank a sheet key can carry: the rank occupies the four low
-#: bits of ``cid`` (``band_id * 16 + rank``), so one pixel resolves at most 16
-#: overlapping layers of a single surface. It is a fixed ceiling that degrades
-#: the image rather than raising, so ``compact_sheets`` counts what it clamps
-#: (:mod:`algan.rendering.raytracing.truncation`).
-SHEET_RANK_LIMIT = 15
 
 #: Shading-class quantization (``shade_split``): a flat face's unit normal is
 #: rounded to this many bins per component (~0.9 degrees). Mis-binning can only
@@ -656,19 +651,18 @@ def _unique_sorted_ids(keys, *, out=None):
 
 
 def _sheet_rank_groups(parent, rank, *, workspace=None, out=None):
-    """Group ordered dense parent IDs and their clamped conflict ranks.
+    """Group ordered dense parent IDs and their full conflict ranks.
 
     Conflict ranks contain every value from zero to their maximum in each
     parent: each fragment increases a claimed lane's count by one, so the
     running maximum cannot jump over a rank. Ranks may decrease within a
     parent; consecutive unique would therefore be incorrect here.
 
-    The kernel arm is asked for wherever a launch stages nothing, which since
-    ``taichi_launch_is_local`` learned about the Metal adoption includes an
-    Apple GPU. That is worth more there than the sort time: the torch arm's
-    ``parent * 16 + rank`` reaches 2**25 on a 4K frame, past where an MPS
-    integer gather stops being exact (``mps_compat._MPS_EXACT_INT_BITS``), and
-    the kernel never builds a composite key at all.
+    Parents and ranks are nonnegative and below the fragment count. Native
+    prefix-count grouping needs no composite key. The ordinary reference arm
+    uses the stream count as its collision-free radix; the MPS-friendly arm
+    sorts bounded parent/rank pairs so it never narrows a wide packed key.
+    Both preserve lexicographic group IDs, including decreasing ranks.
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
@@ -676,6 +670,7 @@ def _sheet_rank_groups(parent, rank, *, workspace=None, out=None):
     if workspace is not None and workspace.device != parent.device:
         raise ValueError("grouping workspace and inputs must share a device")
     n = parent.numel()
+    base = rank_key_base(n)
     if (
         sheet_rank_groups
         and 0 < n < 2**31
@@ -717,12 +712,30 @@ def _sheet_rank_groups(parent, rank, *, workspace=None, out=None):
         return RankGroups(groups, cid_band, rank_of_cid)
     workspace = workspace or CompactionWorkspace(device=parent.device)
     with workspace.stage():
+        if mps_friendly():
+            # The shared pair sorter narrows each bounded ID, not their product.
+            # Returned descriptors must remain int64 even for int32 inputs.
+            parents = (
+                parent
+                if parent.dtype == torch.int64
+                else workspace.copy(parent, torch.int64)
+            )
+            ranks = (
+                rank if rank.dtype == torch.int64 else workspace.copy(rank, torch.int64)
+            )
+            count, groups, cid_band = class_groups(
+                parents, ranks, base, out=out, workspace=workspace
+            )
+            rank_of_cid = torch.empty((count,), dtype=torch.int64, device=parent.device)
+            # Repeated indices all write the same rank of that (parent, rank).
+            rank_of_cid.scatter_(0, groups, ranks)
+            return RankGroups(groups, cid_band, rank_of_cid)
         key = workspace.tensor(parent.shape, torch.int64)
         key.copy_(parent)
-        key.mul_(16).add_(rank)
+        key.mul_(base).add_(rank)
         keys, groups = unique_ids(key, out=out)
-    cid_band = keys // 16
-    return RankGroups(groups, cid_band, keys - cid_band * 16)
+    cid_band = keys // base
+    return RankGroups(groups, cid_band, keys - cid_band * base)
 
 
 def _sheet_class_groups(band_id, cls_eff, new_group, nb, *, out=None, workspace=None):
@@ -1125,8 +1138,8 @@ def _conflict_rank(band_start, order, msk, positions, *, out=None, workspace=Non
     ``rank[j]`` is the largest, over the sample lanes sorted fragment ``j``
     claims, of the number of earlier fragments of the same band claiming that
     same lane (the call site in ``compact_sheets`` explains why the sheet key
-    needs it). Returns int32; the caller owns the ``max=15`` clamp and both
-    arms must reach it the same way.
+    needs it). Returns int32; both arms retain every rank within the stream
+    index capacity, and the caller does not clamp the result.
 
     Under ``sheet_rank_kernel`` one kernel walks each band forward once with
     the eight per-lane counters in registers (``sheet_compact_taichi.
@@ -1417,6 +1430,7 @@ def _rank_pool_groups(
     (``n_pool == nb``) -- 43,065 bands and 180 splits on the frame this was
     measured on, so it is the split streams that pay.
     """
+    base = rank_key_base(nb)
     validate_inverse(out, cid_band, rank_of_cid)
     if cid_band.shape != (nb,):
         raise ValueError("rank-pool inputs must have one entry per sub-band")
@@ -1478,13 +1492,21 @@ def _rank_pool_groups(
             fuse.logical_and_(within_area)
             selected = workspace.gather(fuse, pool_of_cid)
             key.copy_(rank_of_cid).masked_fill_(selected, 0)
-            parent_key = workspace.copy(pool_of_cid)
-            parent_key.mul_(16)
-            key.add_(parent_key)
+            if not mps_friendly():
+                parent_key = workspace.copy(pool_of_cid)
+                parent_key.mul_(base)
+                key.add_(parent_key)
         # Zeroing all ranks of a selected parent cannot reorder other parents
         # or their remaining ranks. Preserve the existing unique policy.
-        uniq_key, group_of_cid = _unique_sorted_ids(key, out=out)
-        n_group = int(uniq_key.numel())
+        if mps_friendly():
+            # These descriptor pairs are already ordered, even after selected
+            # ranks become zero. Keep the no-sort Metal policy without packing.
+            n_group, group_of_cid = consecutive_pair_ids(
+                pool_of_cid, key, out=out, workspace=workspace
+            )
+        else:
+            uniq_key, group_of_cid = _unique_sorted_ids(key, out=out)
+            n_group = int(uniq_key.numel())
         if n_group == nb:
             return RankPoolGroups(nb, None)
         return RankPoolGroups(n_group, group_of_cid)
@@ -2069,6 +2091,7 @@ def _compact_sheets(
     workspace,
 ):
     n = int(coverage["num_fragments"])
+    rank_key_base(n)  # reject impossible kernel/index capacity before allocating
     num_covered = int(coverage["num_covered"])
     frag_key = coverage["frag_key"][:n]
     frag_ref = coverage["frag_ref"][:n]
@@ -2269,24 +2292,8 @@ def _compact_sheets(
         _conflict_rank(
             band_start, order, frag_msk, positions, out=rank, workspace=workspace
         )
-        # The rank rides in four bits of the sheet key, so a pixel resolves at most
-        # SHEET_RANK_LIMIT + 1 overlapping layers of ONE surface. Past that the
-        # clamp fuses the surplus into the last sub-band, where they attenuate once
-        # between them instead of once each -- the region renders too light, which
-        # is exactly the defect the conflict rank exists to prevent. Instrumented
-        # rather than raised (RENDERER_WORK_QUEUE.md item 1): the amax is a scalar
-        # reduction before grouping (which also needs a host-visible count), and
-        # the [n] comparison that counts the fragments is only
-        # materialised in the case that is about to be reported.
-        if n:
-            deepest = int(rank.amax())
-            if deepest > SHEET_RANK_LIMIT:
-                record_truncation(
-                    "sheet_layers",
-                    int((rank > SHEET_RANK_LIMIT).sum()),
-                    cap=SHEET_RANK_LIMIT + 1,
-                )
-        rank.clamp_(max=SHEET_RANK_LIMIT)
+        # Preserve every rank. Grouping and rank pooling both use count-bounded
+        # IDs rather than reserving four low key bits and merging excess layers.
         band_id, cid_band, rank_of_cid = _sheet_rank_groups(
             band_id, rank, workspace=workspace, out=rank_ids
         )

@@ -217,7 +217,7 @@ def test_shell_ceiling_preserves_arithmetic_and_inout_bits(
     monkeypatch, native, friendly, count, strided
 ):
     memory, ws = _workspace()
-    monkeypatch.setattr(mps_compat, "mps_friendly", lambda: friendly)
+    monkeypatch.setenv("ALGAN_MPS_FRIENDLY", "1" if friendly else "0")
     rng = torch.Generator().manual_seed(814 + count)
     key = torch.randint(-3, 5, (count,), generator=rng, device=ws.device)
     depth = torch.randint(0, 3, (count,), generator=rng, device=ws.device).float() / 7

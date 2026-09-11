@@ -120,7 +120,8 @@ Remaining audit work includes sheet-compaction sorting/grouping intermediates
 and tensor expressions. The audited reverse-storage retention hole is closed
 by the fifth-tranche chunk restart described below. Pixel-run CSR sharing and
 explicit invalidation are implemented in the fourth tranche.
-Removing the conflict-rank ceiling is a separate behavior change. The typed
+The eighth tranche removes the conflict-rank ceiling as a separate behavior
+change from the earlier ownership refactors. The typed
 metadata, generated ABI, prepared-batch policy and structured attempt cleanup
 are implemented in the tranches described below.
 
@@ -443,7 +444,8 @@ labels retain ordinary ownership on return from a grouping helper; production
 adopts them into its surrounding stage after the helper's scratch has unwound.
 The uniform-class fast path honors an output destination rather than returning
 an input alias. Input values retain their existing domain requirements: dense
-ordered rank parents, clamped ranks, and class values below their packing base.
+ordered rank parents, count-bounded ranks (clamped in this historical tranche),
+and class values below their packing base.
 
 `sheet_grouping.class_groups` is the one implementation shared by compaction
 and the compatibility spelling in `mps_compat`. Non-MPS grouping preserves its
@@ -585,3 +587,42 @@ signature, packed ABI, accumulation order, conflict-rank capacity, or material
 policy is changed by this ownership refactor. Library sort/scan/nonzero workspace
 and optional integer-index conversions still need external headroom. Workspace
 accounting is not a measurement of total device peak memory or warm time.
+
+
+## Eighth tranche: full conflict ranks and collision-free grouping
+
+This is a separate behavior/capacity change from the shell ownership refactor.
+The old four-bit rank field and `max=15` clamp could merge the seventeenth and
+later same-surface crossings. The compactor now retains the full integer rank.
+Native prefix-count grouping already represents all those ranks and keeps its
+existing launch/capability gate and kernel signature.
+
+For the ordinary reference path, `rank_key_base(count)` derives the radix from
+host-known row counts. A conflict rank is less than its parent's fragment count;
+a dense parent is less than the stream count. Therefore `parent * count + rank`
+is injective on the producer's domain. Rank pooling uses its number of rank
+bands as the bound: every rank through each parent's maximum is represented,
+so each rank is below that count too. The signed-int32 fragment/index capacity
+bounds each packed key below 2**62. Impossible row counts raise before compaction
+allocates or launches; no oversized-layer stream is silently clamped. This is
+not a generic encoding of unrestricted int64 pairs or a promise of unlimited
+memory, unlimited ray-walk surfaces, or unbounded path-tracer state.
+
+The MPS-friendly reference arm sorts the bounded parent and rank separately
+through the existing class-pair grouping implementation. It never narrows their
+wide product. Raw conflict ranks can decrease, so a consecutive scan alone
+would be incorrect there. Pooling's parent/rank descriptors, in contrast, are
+already ordered even after an eligible parent's ranks become zero. They use
+`consecutive_pair_ids`, an exact two-field boundary scan, without constructing
+wide keys or sorting again. The same checked helper now owns the boundary scan
+after class-pair sorting. Its default inverse is ordinary-owned; explicit
+inverse destinations are validated before mutation; boundary scratch is scoped.
+
+The `sheet_layers` counter and warning formatter remain for report compatibility
+and explicit historical recordings, but the current sheet compactor has no
+producer for that retired event. Active truncation counters, closed-shell
+allowances, rank-pooling eligibility and accumulation/rounding policies are
+unchanged. Deep-stack tests cover 16, 17, 64/65 and 257 crossings, decreasing
+ranks, donors, pooled and unpooled neighboring parents, native/reference arms,
+and CPU execution of the MPS-friendly policy. Real GPU validation and performance
+measurement are still required before attributing GPU behavior or speedups.

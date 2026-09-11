@@ -88,7 +88,18 @@ def test_rank_group_output_and_parent_descriptors(monkeypatch, native, owned, si
     rank = torch.tensor([0, 1, 0, 2, 1], dtype=torch.int32, device=ws.device).repeat(
         size
     )
-    keys, inverse = torch.unique(parent * 16 + rank, return_inverse=True)
+    pairs = list(zip(parent.tolist(), rank.tolist()))
+    labels = sorted(set(pairs))
+    lookup = {pair: i for i, pair in enumerate(labels)}
+    inverse = torch.tensor(
+        [lookup[pair] for pair in pairs], dtype=torch.int64, device=ws.device
+    )
+    expected_parent = torch.tensor(
+        [pair[0] for pair in labels], dtype=torch.int64, device=ws.device
+    )
+    expected_rank = torch.tensor(
+        [pair[1] for pair in labels], dtype=torch.int64, device=ws.device
+    )
     out = memory.get_tensor(parent.shape, torch.int64, persist=True) if owned else None
     pointers = memory.get_pointers()
     result = sheets._sheet_rank_groups(parent, rank, out=out, workspace=ws)
@@ -99,8 +110,8 @@ def test_rank_group_output_and_parent_descriptors(monkeypatch, native, owned, si
     if owned:
         assert result.ids is out
     assert torch.equal(result.ids, inverse)
-    assert torch.equal(result.parent, keys // 16)
-    assert torch.equal(result.rank, keys % 16)
+    assert torch.equal(result.parent, expected_parent)
+    assert torch.equal(result.rank, expected_rank)
 
 
 @pytest.mark.parametrize("consecutive", [False, True])
@@ -288,3 +299,78 @@ def test_int32_reference_rank_keys_are_widened_before_multiplication(monkeypatch
     assert result.ids.tolist() == [1, 0, 2]
     assert result.parent.tolist() == [2**29, 2**29, 2**29 + 1]
     assert result.rank.tolist() == [0, 1, 0]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+@pytest.mark.parametrize("size", [0, 1, 7])
+@pytest.mark.parametrize("strided", [False, True])
+def test_consecutive_pair_ids_preserve_wide_keys_and_adjacent_runs(
+    owned, size, strided
+):
+    memory, ws = _workspace()
+    first = torch.tensor(
+        [-(2**62), -(2**62), 3, 3, 3, -(2**62), 2**62], device=ws.device
+    )[:size]
+    second = torch.tensor([1, 1, 2**40, 2**40, 7, 1, 2**40], device=ws.device)[:size]
+    if strided:
+        storage = torch.empty((size, 4), dtype=torch.int64, device=ws.device)
+        storage[:, 0].copy_(first)
+        storage[:, 2].copy_(second)
+        first, second = storage[:, 0], storage[:, 2]
+    expected = torch.tensor([0, 0, 1, 1, 2, 3, 4], device=ws.device)[:size]
+    with ws.stage():
+        out = ws.tensor((size,), torch.int64) if owned else None
+        floor = memory.get_pointers()
+        count, actual = grouping.consecutive_pair_ids(
+            first, second, out=out, workspace=ws
+        )
+        assert not owned or actual is out
+        assert count == (int(expected[-1]) + 1 if size else 0)
+        assert memory.get_pointers() == floor
+        _poison(memory)
+        assert torch.equal(actual, expected)
+    assert memory.current_pointer == ws._depth == ws._live_bytes == 0
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "shape",
+        "dtype",
+        "stride",
+        "first_alias",
+        "second_alias",
+        "device",
+        "input",
+        "workspace",
+    ],
+)
+def test_pair_scan_validates_before_output_mutation(problem):
+    memory, ws = _workspace()
+    first = torch.tensor([0, 0, 1, 1], device=ws.device)
+    second = torch.tensor([0, 1, 0, 1], device=ws.device)
+    out = torch.full((4,), 71, dtype=torch.int64, device=ws.device)
+    if problem == "shape":
+        out = out[:3]
+    elif problem == "dtype":
+        out = out.int()
+    elif problem == "stride":
+        out = torch.full((8,), 71, dtype=torch.int64, device=ws.device)[::2]
+    elif problem == "first_alias":
+        out = first
+    elif problem == "second_alias":
+        out = second
+    elif problem == "device":
+        out = torch.empty(4, dtype=torch.int64, device="meta")
+    elif problem == "input":
+        first = first.float()
+    else:
+        from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+
+        ws = CompactionWorkspace(device="meta")
+    tensors = [x for x in (first, second, out) if x.device.type != "meta"]
+    saved = [x.clone() for x in tensors]
+    with pytest.raises(ValueError):
+        grouping.consecutive_pair_ids(first, second, out=out, workspace=ws)
+    assert all(torch.equal(a, b) for a, b in zip(tensors, saved))
+    assert memory.current_pointer == 0

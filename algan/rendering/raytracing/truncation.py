@@ -1,11 +1,12 @@
 """Counters for the render path's silent truncations.
 
-Each of these is a fixed ceiling that degrades the *image* when it binds --
+Each active counter measures a ceiling that degrades the *image* when it binds --
 transport that should have reached the pixel does not -- and every one of them
 used to pass without a word.  ``DESIGN_mesh_identity_open.md`` §Y states the
 rule they broke: *an instrument that reports zero may not be looking*.  So the
-counters here are unconditional; a zero is a measurement, not an absence of
-one.
+active counters here are unconditional; a zero is a measurement, not an absence
+of one. The legacy ``sheet_layers`` field is retained for report compatibility,
+but no longer has a ceiling in the sheet compactor.
 
 The ceilings, and what each costs when it binds:
 
@@ -19,10 +20,11 @@ The ceilings, and what each costs when it binds:
     *lit* -- they simply never cast.  Each :class:`~.RectAreaLight` emitter
     sample spends one slot, so a 4x4 area light fills the default cap alone.
 ``sheet_layers``
-    16 overlapping layers of one surface in one pixel (the conflict rank the
-    sheet compaction packs into the sheet key).  Layers past the 16th merge
-    into the last sub-band and attenuate once between them instead of once
-    each, so a self-overlapping morph renders too light.
+    Legacy count for the former 16-layer conflict-rank clamp. The sheet
+    compactor now uses count-bounded group IDs and retains every rank within
+    the fragment index capacity, so it no longer emits this event. Keep the
+    field and its warning formatter for older reports and explicit recordings;
+    this does not remove the independent ray-walk surface or memory limits.
 ``dropped_continuations``
     A reflection/refraction continuation that could not reserve a slot in the
     tile's shared ray pool.  A *splitting* batch (``pool_ratio > 1``) discards
@@ -85,7 +87,9 @@ class TruncationCounts:
     the render job, so the plan of the *last* batch carries the whole render's
     totals.
 
-    A count of zero means the ceiling was watched and never bound.
+    A count of zero means an active ceiling was watched and never bound.
+    The legacy ``sheet_layers`` count remains zero in the current sheet renderer;
+    its former fixed layer ceiling has been removed.
     """
 
     #: Primary rays that composited ``max_surfaces_per_ray`` surfaces and
@@ -97,8 +101,8 @@ class TruncationCounts:
     #: over the cap in every batch they are spawned for -- so it is reduced
     #: with a maximum and reads as "this many lights went unshadowed".
     shadow_lights: int = 0
-    #: Fragments that were the 17th or later layer of their own surface in one
-    #: pixel, and so merged into the 16th sub-band.
+    #: Legacy fragments merged at the former 16-layer conflict-rank ceiling.
+    #: Retained for report compatibility; current sheet compaction emits none.
     sheet_layers: int = 0
     #: Reflection/refraction continuation rays that could not reserve a pool
     #: slot and were dropped.

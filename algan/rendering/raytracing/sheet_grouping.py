@@ -1,7 +1,8 @@
-"""Destination-aware grouping without changing the existing grouping policies."""
+"""Destination-aware grouping and count-bounded conflict-rank keys."""
 
 from __future__ import annotations
 
+from operator import index
 from typing import NamedTuple
 
 import torch
@@ -32,6 +33,24 @@ class RankPoolGroups(NamedTuple):
 
     count: int
     ids: torch.Tensor | None
+
+
+def rank_key_base(count):
+    """Radix for dense parent/rank IDs derived from at most ``count`` rows.
+
+    Every conflict rank is below its parent's fragment count; every parent ID
+    is below the stream count. Pooling uses the number of rank bands, which also
+    exceeds every represented rank. Thus ``parent * base + rank`` is injective,
+    and its maximum is ``count**2 - 1``. The renderer's signed-int32 row capacity
+    bounds that key below 2**62. There is no fixed per-surface layer ceiling.
+
+    This checks host capacity, not device values: dense derived IDs are the
+    producer's contract. It does not make arbitrary int64 pairs safe to pack.
+    """
+    count = index(count)
+    if not 0 <= count < 2**31:
+        raise ValueError("sheet row count exceeds signed-int32 capacity")
+    return max(1, count)
 
 
 def validate_inverse(out, *keys):
@@ -67,6 +86,34 @@ def unique_ids(keys, *, consecutive=False, out=None):
         out.copy_(inverse)
         inverse = out
     return values, inverse
+
+
+def consecutive_pair_ids(first, second, *, out=None, workspace=None):
+    """Count adjacent pair runs into an exact int64 inverse destination.
+
+    No composite key, integer narrowing or sort is needed. Callers that want
+    global groups must supply lexicographically ordered pairs; arbitrary pairs
+    instead receive IDs for their consecutive runs. This distinction matters
+    for raw conflict ranks, which can decrease within a parent.
+    """
+    validate_inverse(out, first, second)
+    workspace = workspace or CompactionWorkspace(device=first.device)
+    if workspace.device != first.device:
+        raise ValueError("pair grouping workspace and inputs must share a device")
+    n = first.numel()
+    if out is None:
+        out = torch.empty((n,), dtype=torch.int64, device=first.device)
+    if not n:
+        return 0, out
+    with workspace.stage():
+        starts = workspace.tensor((n,), torch.bool, True)
+        changed = workspace.tensor((max(0, n - 1),), torch.bool)
+        torch.ne(first[1:], first[:-1], out=starts[1:])
+        torch.ne(second[1:], second[:-1], out=changed)
+        starts[1:].logical_or_(changed)
+        group_ids_from_starts(starts, out=out)
+        count = int(out[-1]) + 1
+    return count, out
 
 
 def class_groups(band, classes, base, *, out=None, workspace=None):
@@ -106,16 +153,11 @@ def class_groups(band, classes, base, *, out=None, workspace=None):
         )
         bands = workspace.gather(band, order)
         cls = workspace.gather(classes, order)
-        starts = workspace.tensor((n,), torch.bool, True)
-        with workspace.stage():
-            changed_class = workspace.tensor((max(0, n - 1),), torch.bool)
-            torch.ne(bands[1:], bands[:-1], out=starts[1:])
-            torch.ne(cls[1:], cls[:-1], out=changed_class)
-            starts[1:].logical_or_(changed_class)
         group_sorted = workspace.tensor((n,), torch.int64)
-        group_ids_from_starts(starts, out=group_sorted)
+        count, _ = consecutive_pair_ids(
+            bands, cls, out=group_sorted, workspace=workspace
+        )
         out.scatter_(0, order, group_sorted)
-        count = int(group_sorted[-1]) + 1
     # Every duplicate index writes the identical integer band, as in the
     # existing MPS implementation. No boolean compaction/readback is needed.
     labels = torch.empty((count,), dtype=band.dtype, device=device)

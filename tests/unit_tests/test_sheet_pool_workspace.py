@@ -57,9 +57,13 @@ def _oracle(parents, ranks, bands, areas, masks, nb):
             union == sheets.AA_MASK_ALL and area <= sheets.sheet_rank_pool_layers
         )
     fuse = torch.tensor(pooled, device=parents.device)
-    keys = pool * 16 + torch.where(fuse[pool], 0, ranks)
-    labels, result = torch.unique(keys, return_inverse=True)
-    return labels.numel(), None if labels.numel() == nb else result
+    pairs = list(zip(pool.tolist(), torch.where(fuse[pool], 0, ranks).tolist()))
+    labels = sorted(set(pairs))
+    lookup = {pair: i for i, pair in enumerate(labels)}
+    result = torch.tensor(
+        [lookup[pair] for pair in pairs], dtype=torch.int64, device=parents.device
+    )
+    return len(labels), None if len(labels) == nb else result
 
 
 @pytest.mark.parametrize(
