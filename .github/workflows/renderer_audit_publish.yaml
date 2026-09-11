@@ -1,0 +1,31 @@
+name: Renderer audit third-tranche transport
+on:
+  push:
+    branches: [codex/renderer-audit-publisher]
+    paths: [.github/workflows/renderer_audit_publish.yaml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 60597722f0e472ede8a173251f54282694172371
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export immutable source and validation tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/export"
+          git archive --format=tar.gz -o "$RUNNER_TEMP/export/source.tar.gz" HEAD
+          git ls-tree -r HEAD > "$RUNNER_TEMP/export/tree.txt"
+          git cat-file commit HEAD > "$RUNNER_TEMP/export/commit.txt"
+          python -m pip download --no-deps --only-binary=:all: --platform manylinux_2_17_x86_64 --python-version 311 --implementation cp --abi cp311 --dest "$RUNNER_TEMP/export" ruff==0.12.4 editables==0.6
+          cd "$RUNNER_TEMP/export"
+          sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renderer-audit3-base-and-tools
+          path: ${{ runner.temp }}/export/*
+          retention-days: 7
