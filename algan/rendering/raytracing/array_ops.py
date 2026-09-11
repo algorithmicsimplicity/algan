@@ -5,6 +5,24 @@ from __future__ import annotations
 import torch
 
 
+def _byte_extent(tensor: torch.Tensor, elements: int) -> int:
+    """Bytes from a tensor's first element to one past its last.
+
+    A contiguous tensor spans exactly its elements, which is the case every
+    renderer destination is in and is worth not walking the strides for: this
+    runs once per input of every checked call, and a stage passes ten of them.
+    Anything else falls back to the bounding interval of its strides, which
+    conservatively includes the gaps.
+    """
+    if tensor.is_contiguous():
+        span = elements
+    else:
+        span = 1 + sum(
+            (n - 1) * stride for n, stride in zip(tensor.shape, tensor.stride())
+        )
+    return span * tensor.element_size()
+
+
 def require_disjoint_output(output: torch.Tensor, *inputs: torch.Tensor):
     """Reject overlapping byte ranges without reading device values.
 
@@ -12,32 +30,17 @@ def require_disjoint_output(output: torch.Tensor, *inputs: torch.Tensor):
     output in a stride gap. Disjoint views of the same arena remain valid.
     This helper checks overlap only; callers validate output shape and dtype.
     """
-    if not output.numel():
+    elements = output.numel()
+    if not elements:
         return
     out_start = output.data_ptr()
-    out_end = (
-        out_start
-        + (
-            1
-            + sum((n - 1) * stride for n, stride in zip(output.shape, output.stride()))
-        )
-        * output.element_size()
-    )
+    out_end = out_start + _byte_extent(output, elements)
     for source in inputs:
-        if not source.numel() or source.device != output.device:
+        elements = source.numel()
+        if not elements or source.device != output.device:
             continue
         start = source.data_ptr()
-        end = (
-            start
-            + (
-                1
-                + sum(
-                    (n - 1) * stride for n, stride in zip(source.shape, source.stride())
-                )
-            )
-            * source.element_size()
-        )
-        if start < out_end and out_start < end:
+        if start < out_end and out_start < start + _byte_extent(source, elements):
             raise ValueError("input and output must not overlap")
 
 

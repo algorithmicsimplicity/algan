@@ -1051,6 +1051,9 @@ class ManualMemory:
         num_bytes = _addressable_arena_bytes(device, num_bytes)
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
+        # Whole-arena views by dtype, filled on demand by ``_typed_arena``.
+        # Safe to retain for the object's life: ``data`` is never replaced.
+        self._typed = {}
         self.current_reverse_pointer = self.length
 
     def __len__(self):
@@ -1082,20 +1085,44 @@ class ManualMemory:
         new_x.copy_(x)
         return new_x
 
+    def _typed_arena(self, dtype):
+        """The whole arena as one ``dtype`` view, built once per dtype.
+
+        Every allocation is a slice of this rather than a fresh
+        ``bytes -> dtype`` reinterpretation, which is two view operations per
+        allocation the renderer does not need to repeat: the byte buffer is
+        created once in ``__init__`` and never replaced, so the reinterpretation
+        is a constant. The trailing bytes that do not complete an element are
+        dropped from the view; nothing can be allocated there anyway, because
+        every start is aligned up to the element size.
+        """
+        typed = self._typed.get(dtype)
+        if typed is None:
+            usable = self.length - self.length % dtype.itemsize
+            typed = self._typed[dtype] = self.data[:usable].view(dtype)
+        return typed
+
     def get_tensor(self, shape, dtype=torch.float, persist=False):
         # Validate the entire shape before touching either allocation pointer.
         # operator.index accepts integer scalars (including tensor dimensions),
-        # but does not silently truncate a float dimension.
-        shape = tuple(operator.index(extent) for extent in shape)
-        if any(extent < 0 for extent in shape):
-            raise ValueError(f"arena tensor dimensions must be nonnegative: {shape}")
+        # but does not silently truncate a float dimension. Validation and the
+        # element count share one pass: this runs tens of times per compaction
+        # stage, so a second traversal of the shape is a measurable cost.
+        itemsize = dtype.itemsize
+        numel = 1
+        extents = []
+        for extent in shape:
+            extent = operator.index(extent)
+            if extent < 0:
+                raise ValueError(
+                    f"arena tensor dimensions must be nonnegative: {tuple(shape)}"
+                )
+            numel *= extent
+            extents.append(extent)
+        shape = tuple(extents)
         if not self.managed:
             return torch.empty(shape, dtype=dtype, device=self.data.device)
 
-        numel = 1
-        for extent in shape:
-            numel *= extent
-        itemsize = dtype.itemsize
         payload_bytes = numel * itemsize
         if persist:
             end = self.current_reverse_pointer
@@ -1113,10 +1140,15 @@ class ManualMemory:
         # Construct the typed view (including scalar and empty shapes) before
         # committing state. A failing dtype/view or poison fill must leave the
         # pointers, high-water mark and allocation recorder untouched.
-        raw = self.data[start:end]
-        out = raw.view(dtype).view(shape)
+        # Both ends are multiples of the element size -- a forward start is
+        # aligned up and a reverse end down, and the payload is a whole number
+        # of elements -- so the element indices below are exact. A vector is the
+        # slice itself; only another rank needs the reshape.
+        out = self._typed_arena(dtype)[start // itemsize : end // itemsize]
+        if len(shape) != 1:
+            out = out.view(shape)
         if self._poison >= 0:
-            raw.fill_(self._poison)
+            self.data[start:end].fill_(self._poison)
         if persist:
             self.current_reverse_pointer = start
         else:

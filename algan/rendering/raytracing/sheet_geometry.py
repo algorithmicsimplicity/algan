@@ -77,8 +77,14 @@ def shade_class_block(tri_norm, tri_pos, frames, quant, out, workspace):
         middle = workspace.tensor(shape, torch.int64)
         torch.bitwise_left_shift(q[..., 1], 8, out=middle)
         out.bitwise_or_(middle).bitwise_or_(q[..., 2]).add_(1)
-        declared.logical_or_(geometric).logical_not_()
-        out.masked_fill_(declared, 0)
+        # Zero the classes of the smooth-shaded triangles. Multiplying by the
+        # flag is the original ``where(flat, packed + 1, 0)`` exactly -- an
+        # integer times zero or one, with no value it treats specially -- and
+        # it neither inverts the mask into a second pass nor reads the table
+        # twice. The float tables keep ``masked_fill_``, where multiplying
+        # would carry a NaN through instead of replacing it.
+        declared.logical_or_(geometric)
+        out.mul_(declared)
 
 
 def depth_slope_block(tri_pos, cam_origin, tri_screen, frames, out, workspace):

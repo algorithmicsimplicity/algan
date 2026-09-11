@@ -956,9 +956,10 @@ def _shade_class(
                     workspace,
                 )
         gather_frame_table(table, frame_rel, safe_ref, out=out, workspace=workspace)
-        not_triangle = workspace.tensor((n,), torch.bool)
-        torch.logical_not(is_tri, out=not_triangle)
-        out.masked_fill_(not_triangle, 0)
+        # As in ``shade_class_block``: an integer class times the triangle flag
+        # is the original ``where(is_tri, cls, 0)``, without inverting the flag
+        # into a second per-fragment array and a second pass over the stream.
+        out.mul_(is_tri)
 
     return out
 
