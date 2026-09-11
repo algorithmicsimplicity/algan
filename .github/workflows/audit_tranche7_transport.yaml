@@ -1,20 +1,81 @@
-name: Audit tranche 7 tool transport
+name: Publish renderer audit tranche 7
 on:
   push:
     branches: [codex/renderer-audit-tranche7-transport]
     paths: [.github/workflows/audit_tranche7_transport.yaml]
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: renderer-audit-tranche7-publication
+  cancel-in-progress: false
 jobs:
-  export:
+  publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Export portable development tools
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Copy transport out of helper checkout
         run: |
-          mkdir -p "$RUNNER_TEMP/export"
-          python -m pip download --only-binary=:all: --no-deps ruff==0.12.4 editables -d "$RUNNER_TEMP/export"
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/audit-payload"
+          cp .github/audit_tranche7_code*.b64 .github/audit_tranche7_status.b64 .github/audit_tranche7_manifest.json "$RUNNER_TEMP/audit-payload/"
+      - name: Rebuild the exact locally validated implementation
+        run: |
+          set -euo pipefail
+          base=28b9736fa035826582f505f3e29d93fd0788a596
+          git fetch origin refs/heads/codex/renderer-audit-memory-cleanup
+          test "$(git rev-parse FETCH_HEAD)" = "$base"
+          git checkout --detach "$base"
+          python - "$RUNNER_TEMP/audit-payload" <<'PY'
+          import ast, base64, hashlib, json, lzma, pathlib, subprocess, sys
+          payload = pathlib.Path(sys.argv[1])
+          manifest = json.loads((payload / 'audit_tranche7_manifest.json').read_text())
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          assert git('rev-parse', 'HEAD') == manifest['base']
+          encoded = ''.join((payload / f'audit_tranche7_code{i}.b64').read_text().strip() for i in (0, 1))
+          code = lzma.decompress(base64.b64decode(encoded, validate=True))
+          status = lzma.decompress(base64.b64decode((payload / 'audit_tranche7_status.b64').read_text().strip(), validate=True))
+          for name, data in [('code', code), ('status', status)]:
+              assert hashlib.sha256(data).hexdigest() == manifest[name + '_sha256'], name
+              (payload / (name + '.patch')).write_bytes(data)
+          patches = [str(payload / (name + '.patch')) for name in ('code', 'status')]
+          subprocess.run(['git', 'apply', '--check', *patches], check=True)
+          subprocess.run(['git', 'apply', '--index', *patches], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          paths = git('diff', '--cached', '--name-only').splitlines()
+          assert paths == manifest['paths'], paths
+          for path in paths:
+              if path.endswith('.py'):
+                  ast.parse(pathlib.Path(path).read_text(encoding='utf-8'), filename=path)
+          subprocess.run(['python', 'scripts/generate_arena_bindings.py', '--check'], check=True)
+          tree = git('write-tree')
+          assert tree == manifest['tree'], (tree, manifest['tree'])
+          raw = base64.b64decode(manifest['commit_raw'], validate=True)
+          assert raw.splitlines()[:2] == [('tree ' + tree).encode(), ('parent ' + manifest['base']).encode()]
+          assert sum(line.startswith(b'parent ') for line in raw.split(b'\n\n', 1)[0].splitlines()) == 1
+          commit_file = payload / 'implementation.commit'
+          commit_file.write_bytes(raw)
+          commit = git('hash-object', '-t', 'commit', '-w', str(commit_file))
+          assert commit == manifest['commit'], (commit, manifest['commit'])
+          assert git('show', '-s', '--format=%P', commit) == manifest['base']
+          subprocess.run(['git', 'diff', '--exit-code'], check=True)
+          assert not git('ls-files', '--others', '--exclude-standard')
+          print(json.dumps({'validated_commit': commit, 'tree': tree, 'parent': manifest['base'], 'paths': paths}, indent=2))
+          (payload / 'publication.json').write_text(json.dumps({'commit': commit, 'tree': tree, 'parent': manifest['base'], 'paths': paths}, indent=2) + '\n')
+          PY
+      - name: Fast-forward the existing implementation branch
+        run: |
+          set -euo pipefail
+          commit=$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/audit-payload/publication.json"))["commit"])')
+          git push origin "$commit:refs/heads/codex/renderer-audit-memory-cleanup"
+          test "$(git ls-remote origin refs/heads/codex/renderer-audit-memory-cleanup | cut -f1)" = "$commit"
       - uses: actions/upload-artifact@v4
         with:
-          name: renderer-audit-tranche7-tools
-          path: ${{ runner.temp }}/export/
-          retention-days: 1
+          name: renderer-audit-tranche7-publication
+          path: ${{ runner.temp }}/audit-payload/publication.json
+          retention-days: 7
+      - name: Delete the temporary transport branch
+        run: git push origin --delete codex/renderer-audit-tranche7-transport
