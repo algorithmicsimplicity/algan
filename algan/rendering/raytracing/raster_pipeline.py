@@ -34,6 +34,7 @@ from algan.rendering.mps_compat import (
 )
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing.array_ops import csr_offsets
+from algan.rendering.raytracing.pixel_runs import PixelRunCSR
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
@@ -1364,7 +1365,7 @@ def _gather_fragment_arrays(idx, key, ref, ab, cov, msk, opq):
     return out_key, out_ref, out_ab, out_cov, out_msk, out_opq
 
 
-def _opaque_prefix_keep(opaque_s, counts, num_frags):
+def _opaque_prefix_keep(opaque_s, counts, num_frags, *, runs=None):
     """The opaque-prefix truncation's keep mask: ``keep[j]`` holds exactly when
     fragment j precedes its pixel's first proven-opaque hit, inclusive.
 
@@ -1377,12 +1378,16 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
     flag comparisons over identical ranges, so they agree by construction.
     """
     device = opaque_s.device
+    starts = (
+        csr_offsets(counts)[:-1]
+        if runs is None
+        else runs.require_counts(counts, num_frags)
+    )
     if not rt_settings.raster_opaque_trunc_kernel or num_frags == 0:
         positions = torch.arange(num_frags, dtype=torch.int64, device=device)
         segments = torch.repeat_interleave(
             torch.arange(counts.numel(), dtype=torch.int64, device=device), counts
         )
-        starts = csr_offsets(counts)[:-1]
         ends = starts + counts - 1
         idx_dtype = reduction_index_dtype()
         first_opaque = torch.full(
@@ -1404,7 +1409,6 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
         return keep
     from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
 
-    starts = csr_offsets(counts)[:-1]
     keep_u8 = torch.empty(num_frags, dtype=torch.uint8, device=device)
     opaque_prefix_keep(
         opaque_s.contiguous().view(torch.uint8),
@@ -1417,7 +1421,17 @@ def _opaque_prefix_keep(opaque_s, counts, num_frags):
 
 
 def _one_mesh_pixel_caps(
-    key_s, ref_s, cov_s, msk_s, mat_opaque_s, counts, tri_obj, ppf, time_start
+    key_s,
+    ref_s,
+    cov_s,
+    msk_s,
+    mat_opaque_s,
+    counts,
+    tri_obj,
+    ppf,
+    time_start,
+    *,
+    runs=None,
 ):
     """The one-mesh block (DESIGN_mesh_identity.md ss6.6): flags every pixel
     whose fragments are all opaque triangles of ONE surface by folding
@@ -1440,13 +1454,15 @@ def _one_mesh_pixel_caps(
     """
     device = key_s.device
     num_covered = int(counts.numel())
+    starts = None if runs is None else runs.require_counts(counts, key_s.numel())
     if rt_settings.sheet_one_mesh_kernel:
         from algan.rendering.raytracing.sheet_compact_taichi import (
             one_mesh_pixel_apply,
             one_mesh_pixel_reduce,
         )
 
-        starts = csr_offsets(counts)[:-1]
+        if starts is None:
+            starts = csr_offsets(counts)[:-1]
         lo = torch.full((num_covered,), 2147483647, dtype=torch.int32, device=device)
         hi = torch.full((num_covered,), -1, dtype=torch.int32, device=device)
         acc = accumulate_dtype()
@@ -2160,18 +2176,24 @@ def prepare_sparse_raster_coverage(
             else:
                 opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
         pix_s = key_s >> 32
-        covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
+        run_scratch_start = memory.current_pointer
+        runs = PixelRunCSR.from_sorted_pixels(pix_s, memory=memory)
+        run_scratch_bytes = memory.current_pointer - run_scratch_start
+        covered, counts = runs.covered, runs.counts
 
         # The dense z-buffer retained only the nearest opaque hit and discarded
         # every transparent/opaque record behind it.  Reproduce that relation
         # in sparse sorted space: each pixel keeps the prefix through its first
         # opaque event.  The sort uses the exact same depth-bin/layer keys.
         if bool(opaque_s.any().item()):
-            keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
+            keep = _opaque_prefix_keep(opaque_s, counts, num_frags, runs=runs)
             truncated = int(keep.sum().item()) != num_frags
             keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
             del keep
             if truncated:
+                # Invalidate before changing membership. A mask/coverage update
+                # alone does not invalidate runs; gathering fewer fragments does.
+                del runs
                 # One at a time, and NOT through _gather_fragment_arrays: each
                 # rebinding frees the array it replaces, which is worth more
                 # here than the fused gather's traffic saving (see its
@@ -2184,7 +2206,10 @@ def prepare_sparse_raster_coverage(
                 mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
                 del keep_idx
                 pix_s = key_s >> 32
-                covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
+                run_scratch_start = memory.current_pointer
+                runs = PixelRunCSR.from_sorted_pixels(pix_s, memory=memory)
+                run_scratch_bytes += memory.current_pointer - run_scratch_start
+                covered, counts = runs.covered, runs.counts
                 num_frags = int(key_s.shape[0])
 
         # -- ONE-MESH PIXELS (DESIGN_mesh_identity.md ss6.6) -----------------
@@ -2214,6 +2239,7 @@ def prepare_sparse_raster_coverage(
                 merged["tri_obj"],
                 int(width) * int(height),
                 int(time_start),
+                runs=runs,
             )
         else:
             # Per-fragment so the kernels index it exactly like frag_cov; 2.0
@@ -2258,8 +2284,12 @@ def prepare_sparse_raster_coverage(
             memory, (num_frags,), torch.float32, persist=retain_fragments
         )
         covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
-        run_offsets = _arena_tensor(
-            memory, (num_covered + 1,), torch.int32, 0, persist=retain_fragments
+        # Normal compaction consumes the existing discovery CSR in place.
+        # Capture/diagnostics alone need a copy that survives this scratch scope.
+        run_offsets = (
+            memory.clone(runs.offsets, persist=True)
+            if retain_fragments
+            else runs.offsets
         )
         frag_key.copy_(key_s)
         frag_ref.copy_(ref_s)
@@ -2268,12 +2298,11 @@ def prepare_sparse_raster_coverage(
         frag_msk.copy_(msk_s)
         frag_cap.copy_(cap_s)
         covered_idx.copy_(covered)
-        csr_offsets(counts, out=run_offsets)
         # Everything above now lives in the arena. The sheet compaction below
         # is this function's memory peak, so the source copies are released
         # before it starts rather than at the return.
         del key_s, ref_s, ab_s, cov_s, msk_s, cap_s, pix_s, mat_opaque_s
-        del opaque_s, covered, counts
+        del opaque_s, covered, counts, runs
 
         # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
         # Aggregation happens here, once, before any kernel: the resolve then
@@ -2355,6 +2384,10 @@ def prepare_sparse_raster_coverage(
     # Stage scopes reuse their ranges; charge the largest overlapping scratch
     # footprint, not the sum across every reduction in the compaction.
     discovery_bytes += compaction_workspace.peak_bytes
+    # The initial CSR and, after truncation, its replacement coexist until the
+    # discovery scope closes. Charge both scans' outputs, including alignment.
+    # The existing raw-CSR allowance conservatively also covers diagnostic copies.
+    discovery_bytes += run_scratch_bytes
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )

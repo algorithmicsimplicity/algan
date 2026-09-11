@@ -6,7 +6,8 @@ Pull request: #130, targeting `master` (not merged).
 The original audit examined `f2073d718364617b35ed86028efefcd0ccda5606`.
 The first implementation is `0b20f817ac25e4fe0aba9f9816b8485c9f26e8ec`.
 The second implementation is `60597722f0e472ede8a173251f54282694172371`.
-This document accompanies the third implementation, directly on that second
+The third implementation is `077d2660c585e2f73b727dfd82f371a828c595bd`.
+This document accompanies the fourth implementation, directly on that third
 commit. Checked items describe code present on this branch, not a promise that
 all platforms or the full test suite have passed.
 
@@ -16,17 +17,23 @@ not finished. “Unchanged” means a contract was preserved, not newly implemen
 
 ## Summary of this update
 
-The third tranche adds stage-scoped compaction workspace, shares the primary and
-deferred shadow trace launch through a named context, resolves one immutable
-prepared-batch execution policy, and makes the entire sparse attempt lifetime
-exception-safe while preserving late-built BVHs. It also fixes the retry case
-where BVH construction finishes but its arena publication fails.
+The fourth tranche shares one pixel-run CSR across opaque-prefix truncation,
+one-mesh classification and raw-fragment compaction. It explicitly discards and
+rebuilds that record when truncation changes the stream, while preserving
+diagnostic/capture retention through a copy rather than another scan.
 
-The changes preserve accumulation/rounding boundaries, ordering, analytic
-coverage and the existing conflict-rank ceiling. They complete substantial
-parts of scratch ownership, but do not move every reduction result or tensor
-expression into the arena and do not establish a measured speedup or peak-memory
-reduction. The broad lifetime-region split and shared run CSR remain unfinished.
+Band-composite results, final band reductions, nearest/dominant statistics and
+sibling weights now have checked caller-owned destinations. Production writes
+these results into nested forward-arena stages that remain live until persistent
+resolver records have been copied. Rank-pooling reductions use a shorter stage
+ending before the next grouping pass. Standalone/reference helpers keep their
+ordinary-allocation default and diagnostic output representation.
+
+Accumulation and rounding boundaries, analytic coverage, depth ordering and the
+conflict-rank ceiling are unchanged. Sorting/grouping intermediates and remaining
+tensor expressions still require external allocations; broad batch/chunk/tile
+lifetime-region separation is also unfinished. No measured speedup, GPU pass or
+total-device peak-memory reduction is claimed.
 
 ## 1. Arena-binding cache layout validation — Complete
 
@@ -64,14 +71,19 @@ payload's allocator-to-arena copy.
 - [x] Reuse short-lived scratch between consumers rather than retaining all converted temporaries until compaction ends.
 - [x] Keep float64-to-float32 reduction boundaries and the float32 compatibility arm; always copy same-dtype shell scratch to avoid mutating source coverage.
 - [x] Account for maximum overlapping workspace storage, including alignment, rather than summing disjoint stages.
-- [ ] Move remaining long-lived reduction results, sorting/grouping intermediates and tensor expressions into explicit destinations or further staged workspace.
+- [x] Add checked caller-owned `BandComposite`, `BandReduction`, `SheetStatistics` and `SheetWeights` destinations, with ordinary-allocation defaults for standalone/reference callers.
+- [x] Keep production band-composite results, final reductions/reference statistics, and sibling outputs in nested caller stages until the persistent resolver copy completes.
+- [x] Reclaim rank-pooling area/union results before the next grouping operation.
+- [x] Preserve empty/singleton output ownership and reject wrong metadata, input aliases, pairwise output aliases and disabled-output mismatches before mutation.
+- [ ] Move remaining sorting/grouping intermediates, gathered streams and tensor expressions into explicit destinations or further staged workspace.
 - [ ] Evaluate broader fused finalization only after preserving the current accumulation/rounding boundaries.
 
 `sheet_buffers.py` and `sheet_output_taichi.py` own persistent resolver output.
-`sheet_workspace.py` owns staged scratch; `sheet_statistics.py` names the
-nearest/dominant-reference results. Long-lived reduction outputs, remaining
-expressions, and library sort/scan workspace are still external allocations.
-The workspace counter is not a total-device peak-memory measurement.
+`sheet_workspace.py` owns staged scratch and caller result lifetimes;
+`sheet_reduction_buffers.py` and `sheet_statistics.py` name result destinations.
+Sorting/grouping intermediates, remaining expressions, and library sort/scan
+workspace are still external allocations. The workspace counter is not a
+total-device peak-memory measurement.
 
 ## 4. Unused diagnostic work — Complete for the audited outputs
 
@@ -109,7 +121,7 @@ payload gathering remains an unmeasured design choice.
 - [x] Read write boundaries together and check capacity before narrowing to int32.
 - [x] Use terminal CSR offsets in reference candidate expansion and native conflict-rank grouping, reusing the integer scan contract already used by native candidate expansion.
 - [ ] Apply the contract to other independent integer scan sites where it removes duplicated work.
-- [ ] Reuse an established CSR between consumers, rebuilding it only after stream-changing compaction/truncation.
+- [x] Reuse a `PixelRunCSR` between opaque-prefix, one-mesh and raw-fragment consumers; discard and rebuild it after stream-changing truncation.
 
 Floating-point shell prefixes were not replaced by this integer helper.
 
@@ -148,7 +160,9 @@ allocator's byte layout or reset semantics.
 - [x] `BatchExecutionPolicy` and `WavefrontPolicy` record tensor-free batch execution and allocation decisions.
 - [x] `ShadowTraceContext` owns shared scene/light shadow launch context.
 - [ ] Replace remaining large, string-keyed scene/fragment contracts with appropriate named records.
-- [ ] Extend named context ownership beyond shadow submission and introduce an explicitly invalidated/shared run-CSR record.
+- [x] `PixelRunCSR` names covered pixels, counts, offsets and fragment count for one immutable sorted stream, with explicit invalidation at membership changes.
+- [x] `BandComposite`, `BandReduction` and `SheetWeights` distinguish reduction results from scratch and final resolver records.
+- [ ] Extend named context ownership beyond shadow submission.
 
 Integer ray-state column 4 remains the sparse accumulator index; it was not
 removed as “legacy padding.” Kernel interfaces still receive arrays/scalars,
@@ -184,8 +198,18 @@ mutation during a running batch is not claimed to be supported.
 
 - [x] Decouple sheet-CSR construction from the diagnostic `sheet_metadata_kernel` switch.
 - [x] Use lower bounds for standalone sheet offsets and direct destination writes for production offsets.
-- [ ] Share unchanged run starts/counts among opaque-prefix, one-mesh and raw-fragment consumers.
+- [x] Share unchanged run starts/counts among opaque-prefix, one-mesh and raw-fragment consumers, independently of their kernel optimization gates.
+- [x] Check stale count-record mixing without device reads; discard before filtering and rebuild on the new stream. In-place payload-only changes preserve the runs.
+- [x] Use signed-int32 discovery offsets with a pre-scan capacity check; keep standalone int64 offsets and copy retained diagnostic offsets without rescanning.
+- [x] Account for initial and replacement CSR storage, including alignment, conservatively in discovery headroom.
+- [x] Test native/reference gates and real opaque/translucent discovery; require actual opaque truncation in the invalidation fixture.
 - [ ] Evaluate batched endpoint downloads versus the current full host sheet-offset cache under adaptive retries; do not replace one transfer with many synchronizing reads without measurement.
+
+The record is not a global cache or content hash. Its identity/count guard does
+not detect arbitrary in-place tensor mutation; the caller must replace it after
+any membership/order change, even with the same row count. Covered-pixel and
+count tensors still use ordinary storage. Reuse does not alter the adaptive
+retry endpoint-readback policy.
 
 ## 13. Shared bounds construction and immutable scene facts — Complete
 
@@ -209,6 +233,7 @@ temporaries now live in the arena.
 - [x] Preserve and test late-built BVH bytes while poisoning reclaimed forward/reverse scratch after injected exceptions.
 - [x] Separate BVH construction from arena-publication state: `bvh_rehome_pending` makes a smaller retry finish a failed arena copy after construction cleared `bvh_deferred`.
 - [x] Test allocation failure during partial BVH publication and after completed publication; compare retry output with the unfailed render.
+- [x] Separate compaction band-composite, final-reduction and final-copy scratch/result stages; preserve persistent outputs across reclaimed forward storage.
 - [ ] Separate batch/chunk/tile/iteration lifetime regions where one reverse-stack retention floor otherwise retains intervening temporary allocations.
 
 The retained reverse floor remains. The tests deliberately force a deferred
@@ -233,11 +258,59 @@ unbounded same-surface transparency was added by this branch.
 - [x] Correct the ray-state column-4 and classic compaction/lifetime descriptions touched by this work.
 - [x] Update renderer guidance for schema-driven bindings rather than manual index renumbering.
 - [x] Document staged workspace, prepared-batch policy, shared shadow launch and deferred-publication lifetime contracts in `DESIGN_memory_ownership.md`.
+- [x] Document shared pixel-run invalidation and caller-owned result lifetimes, and correct earlier present-tense descriptions of external reduction output storage.
 - [ ] Continue removing obsolete comments and remaining unsupported-path compatibility plumbing only after proving the callers and diagnostic fixtures no longer require it.
 
 ## Validation
 
-### Third-tranche validation in this container
+### Fourth-tranche validation in this container
+
+- [x] Final focused run: **453 passed, 28 skipped** across **22 distinct
+  modules**, including the new shared-CSR and caller-owned-destination tests,
+  real raster lifetime/capture/retry fixtures, native/reference reductions,
+  independent arena bindings and batch policy tests.
+- [x] Injected failures after band reduction, after reference selection and
+  before the persistent final copy unwind every result stage. Persistent
+  sentinels survive overwriting reclaimed forward storage. These three tests
+  are included in the focused count, not additional unique coverage.
+- [x] Exact parent-versus-new compaction comparison: **128 configurations**, all
+  bit-identical. This covers native/reference gates and diagnostic/persistent
+  outputs across 32 seeded fragment fixtures, including closed shells, shading
+  splits, sample-depth handling and nearest/dominant references. Reclaimed
+  arena storage is poisoned before serializing outputs. Both result JSON files
+  have SHA-256
+  `4a00a0c24062501de4992fc51b01714ef948ec2017ee3d476d5bd1e0e8ed4e22`.
+- [x] Final fast-render parity against unchanged `077d2660`: **45 frames,
+  704 x 396, 37,635,840 RGB values; maximum difference 0, differing values 0**.
+  Both decoded RGB streams have SHA-256
+  `65def67ad219ec774d71a5d4457d89dab1ab08f190a04e9a8d32bc544da6616a`.
+- [x] Repository-wide Ruff 0.12.4 lint and formatting checks pass; **423 files**
+  are formatted. No Taichi kernel file was formatted or modified in this tranche.
+- [x] Generated bindings check passes for four modules/five kernels. All ten
+  changed Python files parse, and `git diff --check` passes.
+- [ ] The final canonical fast suite is **not fully green**: **607 passed,
+  1 failed, 3959 deselected**. The sole failure is the container MathTex/dvisvgm
+  SVG-grouping baseline mismatch (maximum deviation 221 at frame 4). A fresh
+  unchanged-parent run produced **607 passed, the same failure**. The exact
+  output comparison above was repeated after the final fast rerun.
+- [ ] Full `pytest -q` was attempted and reached its **600-second limit
+  (exit 124)** without a final summary. Three failures appeared before timeout:
+  `text_and_math.rst:115`, `text_and_math.rst:190` and `mob_gallery.rst:329` in
+  `test_doc_examples.py`. Each was separately reproduced on unchanged `077d2660`
+  and on the new code, with missing MathTex SVG groups and indexing errors.
+  No full-suite pass or completed heavy-render comparison is claimed.
+- [ ] CUDA, Metal and AMD runtime validation, alternating warm performance and
+  actual total-device peak-memory measurements remain outstanding.
+
+The PR remains draft. No rendering baselines or fast-suite membership were
+changed. CPU tests used the supplied editable-install environment with daemon
+handoff disabled; the unchanged-parent checkout and compaction probes verified
+their source paths. Focused, fast and probe results overlap and are not an
+aggregate unique-test count. Earlier intermediate focused runs are superseded
+by the final 22-module result. Previous-tranche route fixtures and validation
+below are historical, not newly rerun GPU or path-tracer coverage.
+
+### Third-tranche validation (historical; unchanged below)
 
 - [x] Expanded focused regression suite: **546 passed, 38 skipped** across
   31 modules. Coverage includes staged scratch poisoning/reuse, native/reference
@@ -329,14 +402,14 @@ requirements.
 
 ## Recommended next implementation order
 
-1. Finish long-lived compaction destination ownership and remaining expressions,
-   using the new staged workspace rather than extending scratch lifetimes.
-2. Introduce shared run CSR with explicit stream-change invalidation; retain the
-   current endpoint-download policy until adaptive-retry behavior is measured.
-3. Split batch/chunk/tile/iteration retention regions so a late-built BVH does
-   not keep intervening reverse temporaries alive. Preserve the new publication
-   and exception tests while doing so.
-4. Validate CUDA/Metal/AMD runtime behavior and perform alternating warm timing
-   and actual memory measurements before making performance claims.
-5. Treat the conflict-rank ceiling as a separate semantic/capacity change with
-   deep same-surface transparency fixtures, not as another copy refactor.
+1. Continue destination propagation through compaction sorting/grouping and
+   gathered tensor expressions. Preserve exact packed integers, float
+   accumulation boundaries and short scratch lifetimes.
+2. Split reverse-storage lifetime regions so a late-built batch BVH does not
+   retain intervening temporary allocations. Preserve the established partial
+   publication retry and poisoned-memory tests.
+3. Validate CUDA/Metal/AMD behavior and measure alternating warm timings and
+   actual peak memory. Evaluate indexed shadow tracing and batched endpoint
+   readback only with evidence; their current policies remain unchanged.
+4. Treat the conflict-rank ceiling as a separate semantic/capacity change with
+   deep same-surface transparency fixtures, not part of a copy refactor.

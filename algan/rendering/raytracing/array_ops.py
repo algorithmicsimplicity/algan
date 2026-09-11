@@ -73,3 +73,31 @@ def csr_offsets(counts: torch.Tensor, *, out: torch.Tensor | None = None):
     out[0] = 0
     torch.cumsum(counts, dim=0, dtype=out.dtype, out=out[1:])
     return out
+
+
+def require_tensor_outputs(outputs, layouts, *, device, inputs=()):
+    """Validate all destination metadata and disjointness before any writes.
+
+    Each layout is ``(shape, dtype)`` or ``None`` for an omitted output. The
+    latter requires a ``None`` destination too. All present outputs must be
+    pairwise disjoint and disjoint from inputs. No device values are read.
+    """
+    if len(outputs) != len(layouts):
+        raise ValueError("wrong number of output tensors")
+    present = []
+    for output, layout in zip(outputs, layouts):
+        if layout is None:
+            if output is not None:
+                raise ValueError("disabled output must be None")
+            continue
+        shape, dtype = layout
+        if (
+            not isinstance(output, torch.Tensor)
+            or output.shape != shape
+            or output.dtype != dtype
+            or output.device != device
+            or not output.is_contiguous()
+        ):
+            raise ValueError("output shape, dtype, device or layout does not match")
+        require_disjoint_output(output, *inputs, *present)
+        present.append(output)

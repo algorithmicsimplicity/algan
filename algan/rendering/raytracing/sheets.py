@@ -81,7 +81,10 @@ from algan.rendering.mps_compat import (
 )
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
-from algan.rendering.raytracing.array_ops import require_disjoint_output
+from algan.rendering.raytracing.array_ops import (
+    require_disjoint_output,
+    require_tensor_outputs,
+)
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
@@ -107,7 +110,15 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
 )
-from algan.rendering.raytracing.sheet_statistics import sheet_statistics
+from algan.rendering.raytracing.sheet_reduction_buffers import (
+    BandComposite,
+    BandReduction,
+    SheetWeights,
+)
+from algan.rendering.raytracing.sheet_statistics import (
+    SheetStatistics,
+    sheet_statistics,
+)
 from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
 from algan.rendering.raytracing.truncation import record_truncation
 
@@ -834,7 +845,7 @@ def _popcount_lanes(bits):
 
 
 def _band_reduce(
-    band_id, msk, cov, nbands, *, want_sliver, want_fused=True, workspace=None
+    band_id, msk, cov, nbands, *, want_sliver, want_fused=True, workspace=None, out=None
 ):
     """Per-band ``(area, union, fused, sliver)`` over the sorted fragments.
 
@@ -869,14 +880,34 @@ def _band_reduce(
     n = int(msk.numel())
     acc = accumulate_dtype()
     workspace = workspace or CompactionWorkspace(device=device)
-    # These results outlive the stage. The f32 path can accumulate into its
-    # result directly; the f64 path rounds only after the completed reduction.
-    area = torch.zeros(nbands, dtype=torch.float32, device=device)
-    union = torch.zeros(nbands, dtype=torch.int32, device=device)
-    fused = torch.zeros(nbands, dtype=torch.bool, device=device) if want_fused else None
-    sliver = (
-        torch.zeros(nbands, dtype=torch.int32, device=device) if want_sliver else None
+    if out is None:
+        out = BandReduction(
+            torch.empty(nbands, dtype=torch.float32, device=device),
+            torch.empty(nbands, dtype=torch.int32, device=device),
+            torch.empty(nbands, dtype=torch.bool, device=device)
+            if want_fused
+            else None,
+            torch.empty(nbands, dtype=torch.int32, device=device)
+            if want_sliver
+            else None,
+        )
+    require_tensor_outputs(
+        out,
+        (
+            ((nbands,), torch.float32),
+            ((nbands,), torch.int32),
+            ((nbands,), torch.bool) if want_fused else None,
+            ((nbands,), torch.int32) if want_sliver else None,
+        ),
+        device=device,
+        inputs=(band_id, msk, cov),
     )
+    area, union, fused, sliver = out
+    for value in out:
+        if value is not None:
+            value.zero_()
+    # Outputs belong to the caller. The f64 scratch rounds only after the
+    # completed reduction; the f32 compatibility arm accumulates into area.
     with workspace.stage():
         area_acc = area if acc == torch.float32 else workspace.tensor((nbands,), acc, 0)
         if rt_settings.sheet_mask_kernel and n:
@@ -926,7 +957,7 @@ def _band_reduce(
                 )
         if acc != torch.float32:
             area.copy_(area_acc)
-    return area, union, fused, sliver
+    return BandReduction(area, union, fused, sliver)
 
 
 def _conflict_rank(band_start, order, msk, positions, *, out=None, workspace=None):
@@ -1100,7 +1131,7 @@ def _prim_split_after(
     return (t_o[1:] - t_o[:-1]) > thr
 
 
-def _band_composite(band_of_frag, nbands, cov_o, msk_o, *, workspace=None):
+def _band_composite(band_of_frag, nbands, cov_o, msk_o, *, workspace=None, out=None):
     """Per-band aggregates and the §4.4 sibling-split gate.
 
     A band is what the compaction emits as ONE sheet with ``shade_split``
@@ -1122,29 +1153,55 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o, *, workspace=None):
 
     Returns ``(area, union, corr, split)``, one entry per band.
     """
-    area, union, _fused, sliver = _band_reduce(
-        band_of_frag,
-        msk_o,
-        cov_o,
-        nbands,
-        want_sliver=True,
-        want_fused=False,
-        workspace=workspace,
+    workspace = workspace or CompactionWorkspace(device=cov_o.device)
+    if out is None:
+        out = BandComposite(
+            torch.empty(nbands, dtype=torch.float32, device=cov_o.device),
+            torch.empty(nbands, dtype=torch.int32, device=cov_o.device),
+            torch.empty(nbands, dtype=torch.float32, device=cov_o.device),
+            torch.empty(nbands, dtype=torch.bool, device=cov_o.device),
+        )
+    require_tensor_outputs(
+        out,
+        (
+            ((nbands,), torch.float32),
+            ((nbands,), torch.int32),
+            ((nbands,), torch.float32),
+            ((nbands,), torch.bool),
+        ),
+        device=cov_o.device,
+        inputs=(band_of_frag, cov_o, msk_o),
     )
-    del _fused
-
-    pop = _popcount_lanes(union)
-    clamped = area.clamp(max=1.0)
-    full = union == AA_MASK_ALL
-    corr = torch.where(
-        full,
-        torch.where((1.0 - area).abs() <= FULL_DUST, torch.ones_like(clamped), clamped),
-        clamped * float(AA_NUM_SAMPLES) / pop.clamp_min(1).to(torch.float32),
-    )
-    del pop, clamped, full
-    split = (union != 0) & (sliver == 0)
-    del sliver
-    return area, union, corr, split
+    area, union, corr, split = out
+    with workspace.stage():
+        sliver = workspace.tensor((nbands,), torch.int32)
+        _band_reduce(
+            band_of_frag,
+            msk_o,
+            cov_o,
+            nbands,
+            want_sliver=True,
+            want_fused=False,
+            workspace=workspace,
+            out=BandReduction(area, union, None, sliver),
+        )
+        pop = _popcount_lanes(union)
+        clamped = workspace.tensor((nbands,), torch.float32)
+        torch.clamp(area, max=1.0, out=clamped)
+        full = union == AA_MASK_ALL
+        # Keep the original f32 expression and its rounding boundaries. Only
+        # destination ownership changes, not the order of coverage arithmetic.
+        torch.where(
+            full,
+            torch.where(
+                (1.0 - area).abs() <= FULL_DUST, torch.ones_like(clamped), clamped
+            ),
+            clamped * float(AA_NUM_SAMPLES) / pop.clamp_min(1).to(torch.float32),
+            out=corr,
+        )
+        torch.ne(union, 0, out=split)
+        split.logical_and_(sliver == 0)
+    return out
 
 
 def _rank_pool_groups(
@@ -1180,35 +1237,42 @@ def _rank_pool_groups(
         # Every band holds exactly one sub-band: nothing to pool, and no
         # reduction pass to pay for.
         return nb, None
-    pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
-    area, union, _fused, _sliver = _band_reduce(
-        pool_of_frag,
-        msk_o,
-        cov_o,
-        n_pool,
-        want_sliver=False,
-        want_fused=False,
-        workspace=workspace,
-    )
-    del pool_of_frag, _fused, _sliver
-    # A FULL union at about unit area: the band owns every sub-pixel sample and
-    # its fragments' exact areas cover the pixel once. There is nothing left to
-    # anti-alias inside such a band -- the only question it still answers is how
-    # much it occludes, and that is its own exact area, which is exactly what
-    # §4.4 commits. A partial union is excluded on purpose rather than by a
-    # looser threshold: there, area and sample count disagree by up to a whole
-    # sample cell for reasons that have nothing to do with layering (that IS
-    # what a silhouette is), so no ratio between them can tell one layer from
-    # two -- and the sweep recorded on ``sheet_rank_pool_layers`` says so.
-    fuse = (union == AA_MASK_ALL) & (area <= float(sheet_rank_pool_layers))
-    del union, area
-    # Zeroing a sub-band's rank in the key IS the pooling: every sub-band of a
-    # fused band lands on ``pool * 16``, and the key still orders by
-    # ``(band, rank)``, so the groups come out in walk order.
-    key = pool_of_cid * 16 + torch.where(
-        fuse.index_select(0, pool_of_cid), torch.zeros_like(rank_of_cid), rank_of_cid
-    )
-    del fuse, pool_of_cid
+    workspace = workspace or CompactionWorkspace(device=cov_o.device)
+    with workspace.stage():
+        pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
+        area, union, _fused, _sliver = _band_reduce(
+            pool_of_frag,
+            msk_o,
+            cov_o,
+            n_pool,
+            want_sliver=False,
+            want_fused=False,
+            workspace=workspace,
+            out=BandReduction.allocate(
+                workspace, n_pool, want_fused=False, want_sliver=False
+            ),
+        )
+        del pool_of_frag, _fused, _sliver
+        # A FULL union at about unit area: the band owns every sub-pixel sample and
+        # its fragments' exact areas cover the pixel once. There is nothing left to
+        # anti-alias inside such a band -- the only question it still answers is how
+        # much it occludes, and that is its own exact area, which is exactly what
+        # §4.4 commits. A partial union is excluded on purpose rather than by a
+        # looser threshold: there, area and sample count disagree by up to a whole
+        # sample cell for reasons that have nothing to do with layering (that IS
+        # what a silhouette is), so no ratio between them can tell one layer from
+        # two -- and the sweep recorded on ``sheet_rank_pool_layers`` says so.
+        fuse = (union == AA_MASK_ALL) & (area <= float(sheet_rank_pool_layers))
+        del union, area
+        # Zeroing a sub-band's rank in the key IS the pooling: every sub-band of a
+        # fused band lands on ``pool * 16``, and the key still orders by
+        # ``(band, rank)``, so the groups come out in walk order.
+        key = pool_of_cid * 16 + torch.where(
+            fuse.index_select(0, pool_of_cid),
+            torch.zeros_like(rank_of_cid),
+            rank_of_cid,
+        )
+        del fuse, pool_of_cid
     # Pooling zeros every rank of a selected band together; it cannot reorder
     # bands or the remaining ranks within a band.
     uniq_key, group_of_cid = _unique_sorted_ids(key)
@@ -1220,7 +1284,7 @@ def _rank_pool_groups(
 
 
 def _sibling_weights(
-    sheet_band, cov, msk, band_area, band_union, band_corr, *, workspace=None
+    sheet_band, cov, msk, band_area, band_union, band_corr, *, workspace=None, out=None
 ):
     """§4.4 compositing weights for the sheets of a subdivided band.
 
@@ -1263,20 +1327,32 @@ def _sibling_weights(
     sheet's own where its band holds one sheet.
     """
     workspace = workspace or CompactionWorkspace(device=cov.device)
+    nb = sheet_band.numel()
+    if out is not None:
+        require_tensor_outputs(
+            out,
+            (((nb,), cov.dtype), ((nb,), msk.dtype)),
+            device=cov.device,
+            inputs=(sheet_band, cov, msk, band_area, band_union, band_corr),
+        )
     with workspace.stage():
-        nb = sheet_band.numel()
         device = cov.device
         if rt_settings.sheet_sibling_weights_kernel:
             if nb < 2:
-                return cov, msk
+                if out is None:
+                    return SheetWeights(cov, msk)
+                out[0].copy_(cov)
+                out[1].copy_(msk)
+                return SheetWeights(*out)
             from algan.rendering.raytracing.sheet_sibling_taichi import (
                 sibling_band_counts,
                 sibling_coverage_weights,
             )
 
             counts = workspace.tensor((band_area.numel(), 2), torch.int32, 0)
-            weights = torch.empty_like(cov)
-            masks = torch.empty_like(msk)
+            weights, masks = (
+                (torch.empty_like(cov), torch.empty_like(msk)) if out is None else out
+            )
             band = sheet_band.contiguous()
             sibling_band_counts(band, nb, counts)
             sibling_coverage_weights(
@@ -1292,7 +1368,7 @@ def _sibling_weights(
                 masks,
                 taichi_accumulate_dtype(),
             )
-            return weights, masks
+            return SheetWeights(weights, masks)
 
         members = workspace.tensor(band_area.shape, torch.int64, 0)
         members.scatter_add_(
@@ -1324,7 +1400,11 @@ def _sibling_weights(
         )
         del whole
         if not bool(multi.any()):
-            return cov, msk
+            if out is None:
+                return SheetWeights(cov, msk)
+            out[0].copy_(cov)
+            out[1].copy_(msk)
+            return SheetWeights(*out)
 
         acc = accumulate_dtype()
         area_g = band_area.index_select(0, sheet_band).to(acc)
@@ -1364,7 +1444,13 @@ def _sibling_weights(
         # ``_band_composite`` leaves those bands whole.
         flags = msk & ~AA_MASK_ALL & ~AA_SLIVER_BIT
         wmsk = union.to(msk.dtype) | flags
-        return torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+        if out is None:
+            return SheetWeights(
+                torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+            )
+        torch.where(multi, wgt, cov, out=out[0])
+        torch.where(multi, wmsk, msk, out=out[1])
+        return SheetWeights(*out)
 
 
 def _lane_first_owners(band_id, msk_o, t_o, nb, n, *, out=None, workspace=None):
@@ -2117,292 +2203,339 @@ def compact_sheets(
     # claim additively against one incoming visibility and occlude once.
     band_area = band_union = band_corr = sheet_band = None
     n_group, group_of_cid = nb, None
-    if sheet_rank_pool and nb:
-        n_group, group_of_cid = _rank_pool_groups(
-            cid_band, rank_of_cid, band_id, cov_o, msk_o, nb, workspace=workspace
-        )
-    del rank_of_cid
-    if shade_split:
-        band_of_frag = (
-            band_id if group_of_cid is None else group_of_cid.index_select(0, band_id)
-        )
-        band_area, band_union, band_corr, band_split = _band_composite(
-            band_of_frag, n_group, cov_o, msk_o, workspace=workspace
-        )
-        cls_o = cls.index_select(0, order)
-        cls = None
-        cls_eff = torch.where(
-            band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
-        )
-        del cls_o, band_split, band_of_frag
-        # Keyed by the SUB-BAND, not by the compositing group: pooling must not
-        # merge two sub-bands into one sheet, only make them claim as one band.
-        nb, band_id, sheet_cid = _sheet_class_groups(band_id, cls_eff, new_group, nb)
-        del cls_eff
-        sheet_band = (
-            sheet_cid
-            if group_of_cid is None
-            else group_of_cid.index_select(0, sheet_cid)
-        )
-        del sheet_cid
-    elif group_of_cid is not None:
-        # No class split: one sheet per sub-band, so the group table is already
-        # per sheet. Left as ``None`` when nothing pooled, which keeps the
-        # weights -- and the multi-sheet-band exemption below -- exactly as
-        # they were.
-        band_area, band_union, band_corr, _split = _band_composite(
-            group_of_cid.index_select(0, band_id),
-            n_group,
-            cov_o,
-            msk_o,
-            workspace=workspace,
-        )
-        del _split
-        sheet_band = group_of_cid
-    del group_of_cid
-
-    # The band's aggregates in one walk of the sorted stream: exact area
-    # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,
-    # and the fusion detector.
-    sheet_cov, union, fused, _ = _band_reduce(
-        band_id,
-        msk_o,
-        cov_o,
-        nb,
-        want_sliver=False,
-        want_fused=diagnostics,
-        workspace=workspace,
-    )
-    sheet_cov.clamp_min_(0.0)
-
-    stats = sheet_statistics(
-        band_id,
-        msk_o,
-        positions,
-        pos_o,
-        pix_o,
-        cov_o,
-        nb,
-        mask_all=AA_MASK_ALL,
-        positioned=positioned_depth,
-        diagnostics=diagnostics,
-        workspace=workspace,
-    )
-    nearest_orig = stats.nearest_fragment
-    rep_orig = stats.representative_fragment
-    sheet_pix = stats.pixel
-    min_pos = stats.min_position
-    first_sorted = stats.first_sorted
-    nfrag = stats.fragment_count
-    del stats, cov_o
-
-    # Only the lane table and final-classification scratch survive to output
-    # gathering. Returning the persistent records releases this whole phase.
     with workspace.stage():
-        # ---- sheet_sample_depth: per-sample nearest-owner depths ---------------
-        # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
-        # owning sample bit s. See ``_lane_first_owners``, which computes the
-        # table (one masked amin scatter per lane in torch, one kernel pass under
-        # ``sheet_sample_depth_kernel``).
-        sample_depths = None
-        if sample_depth:
-            sample_depths = workspace.tensor((nb, AA_NUM_SAMPLES), torch.float32)
-            _lane_first_owners(
-                band_id, msk_o, t_o, nb, n, out=sample_depths, workspace=workspace
+        if sheet_rank_pool and nb:
+            n_group, group_of_cid = _rank_pool_groups(
+                cid_band, rank_of_cid, band_id, cov_o, msk_o, nb, workspace=workspace
             )
-        del t_o
-        del positions, msk_o
-
-        # Split-group accounting (diagnostic): groups are triangle-only. Kept
-        # device-side end to end -- the group tables are over-allocated to ``nb``
-        # (group ids are < the true group count <= nb) and the two counters stay
-        # 0-d tensors, evaluated only when something reads them -- because this
-        # block used to cost three device syncs per compaction for numbers
-        # nothing on the render path consumes.
-        if diagnostics:
-            metadata_ids = band_id if sheet_metadata_kernel else None
-            num_tri_groups, num_split_groups = _sheet_group_counts(
-                new_group, metadata_ids, order, is_tri, first_sorted, nb
+        del rank_of_cid
+        if shade_split:
+            band_of_frag = (
+                band_id
+                if group_of_cid is None
+                else group_of_cid.index_select(0, band_id)
             )
-            del metadata_ids
-        del band_id
-        del new_group
-        # Last read of the sorted stream: from here the function works only in
-        # per-sheet arrays, so the per-fragment ones go now rather than at the
-        # return (they are 28 MB apiece on a 4K frame).
-        del first_sorted, is_tri, order, pos_o
-
-        # Flags: facing from the band key; one-mesh / sliver policy bits from the
-        # dominant fragment (uniform per pixel / per emission policy); the sliver
-        # bit FORCED on for an empty union, which is an areal positionless sheet
-        # whatever its dominant fragment carried.
-        rep_msk = frag_msk.index_select(0, rep_orig)
-        flags = rep_msk & (~AA_MASK_ALL)
-        del rep_msk
-        empty_union = union == 0
-        flags = flags | torch.where(
-            empty_union,
-            torch.full_like(flags, AA_SLIVER_BIT),
-            torch.zeros_like(flags),
-        )
-        del empty_union
-        sheet_msk = union.to(torch.int32) | flags
-        del union, flags
-
-        # ---- Final order: (pixel, classic order of nearest fragment) -----------
-        # Band IDs (and their class/rank subdivisions) retain pixel order. Only
-        # the sheets within a pixel need restoring to nearest-fragment order.
-        final = _sheet_walk_order(sheet_pix, min_pos, memory=resolver_memory)
-
-        # §4.4's additive sibling compositing, expressed in the weights the walk
-        # consumes (see ``_sibling_weights``). Where a band holds one sheet --
-        # every band with ``shade_split`` off -- these ARE the sheet's own area
-        # and mask, so the resolve reads exactly what it read before.
-        sheet_cov_final = sheet_cov.index_select(0, final)
-        sheet_msk_final = sheet_msk.index_select(0, final)
-        sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
-        if sheet_band is not None:
-            sheet_wgt, sheet_wmsk = _sibling_weights(
-                sheet_band.index_select(0, final),
-                sheet_cov_final,
-                sheet_msk_final,
-                band_area,
-                band_union,
-                band_corr,
+            band_area, band_union, band_corr, band_split = _band_composite(
+                band_of_frag,
+                n_group,
+                cov_o,
+                msk_o,
                 workspace=workspace,
+                out=BandComposite.allocate(workspace, n_group)
+                if resolver_memory is not None
+                else None,
             )
-
-        # Compose indices before gathering the packed payload, using the exact
-        # MPS integer paths for both. Ordinary MPS integer gathers can round the
-        # index or packed depth bits; no payload-sized key intermediate is needed.
-        if resolver_memory is None:
-            sheet_key = gather_packed_key(frag_key, gather_exact(nearest_orig, final))
-        sheet_pix = sheet_pix.index_select(0, final)
-        rep_final = rep_orig.index_select(0, final)
-
-        # ---- sheet_sample_depth: classify, floor, cede --------------------------
-        # Everything here works on the FINAL-ordered per-sheet arrays; the lose
-        # words land in both mask outputs so the resolve (which consumes the
-        # weights) and every record reader see the same thing. Off, none of this
-        # runs and the outputs above are exactly what they were.
-        if sample_depth:
-            ppf = int(width) * int(height)
-            rep_ref = frag_ref.index_select(0, rep_final)
-            is_tri_sheet = rep_ref >= 0
-            low = sheet_msk_final & AA_MASK_ALL
-            positioned_s = low != 0
-            full_s = low == AA_MASK_ALL
-            mat_opaque_s = (sheet_msk_final & AA_MAT_OPAQUE_BIT) != 0
-            nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
-            # The depth table was built in sheet order; everything below works in
-            # the final (walk) order.
-            sample_depths = sample_depths.index_select(0, final)
-            # Band identity and the multi-sheet-band exemption: a band split into
-            # siblings (shade-class split, conflict-rank split) claims against
-            # band-pooled arithmetic whose single occlusion write ignores slots,
-            # so gating a sibling would over-occlude. Its sheets are neither
-            # subjects nor enforcers.
-            if sheet_band is not None:
-                band_of_sheet = sheet_band.index_select(0, final)
-            else:
-                band_of_sheet = cid_band.index_select(0, final)
-            n_bands = int(band_of_sheet.max().item()) + 1
-            members = torch.zeros(n_bands, dtype=torch.int64, device=device)
-            members.scatter_add_(
-                0, band_of_sheet, torch.ones(nb, dtype=torch.int64, device=device)
+            cls_o = cls.index_select(0, order)
+            cls = None
+            cls_eff = torch.where(
+                band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
             )
-            only_band = members.index_select(0, band_of_sheet) == 1
-            del members
-            positive_wgt = sheet_wgt >= 0.0
-            # The surface id: one band never spans two meshes, so the dominant
-            # fragment's mesh is every member's. Circuits have no sid and are
-            # excluded by ``is_tri_sheet`` on both sides.
-            f_rel_s = sheet_pix // ppf
-            safe_rep = rep_ref.clamp_min(0).to(torch.int64)
-            row_to = (f_rel_s + int(time_start)) % merged["tri_obj"].shape[0]
-            sheet_sid = merged["tri_obj"][row_to, safe_rep].to(torch.int64)
-            del f_rel_s, safe_rep, rep_ref, row_to
-
-            enforcer = (
-                is_tri_sheet
-                & mat_opaque_s
-                & full_s
-                & ((sheet_cov_final - 1.0).abs() <= FULL_DUST)
-                & only_band
-                & positive_wgt
+            del cls_o, band_split, band_of_frag
+            # Keyed by the SUB-BAND, not by the compositing group: pooling must not
+            # merge two sub-bands into one sheet, only make them claim as one band.
+            nb, band_id, sheet_cid = _sheet_class_groups(
+                band_id, cls_eff, new_group, nb
             )
-            subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
+            del cls_eff
+            sheet_band = (
+                sheet_cid
+                if group_of_cid is None
+                else group_of_cid.index_select(0, sheet_cid)
+            )
+            del sheet_cid
+        elif group_of_cid is not None:
+            # No class split: one sheet per sub-band, so the group table is already
+            # per sheet. Left as ``None`` when nothing pooled, which keeps the
+            # weights -- and the multi-sheet-band exemption below -- exactly as
+            # they were.
+            band_area, band_union, band_corr, _split = _band_composite(
+                group_of_cid.index_select(0, band_id),
+                n_group,
+                cov_o,
+                msk_o,
+                workspace=workspace,
+                out=BandComposite.allocate(workspace, n_group)
+                if resolver_memory is not None
+                else None,
+            )
+            del _split
+            sheet_band = group_of_cid
+        del group_of_cid
 
-            if rt_settings.sheet_depth_reduce_kernel:
-                from algan.rendering.raytracing.sheet_depth_taichi import (
-                    sheet_depth_lose,
+        with workspace.stage():
+            # The band's aggregates in one walk of the sorted stream: exact area
+            # (float64 accumulate, float32 round -- §6.6.4), the sample-mask union,
+            # and the fusion detector.
+            sheet_cov, union, fused, _ = _band_reduce(
+                band_id,
+                msk_o,
+                cov_o,
+                nb,
+                want_sliver=False,
+                want_fused=diagnostics,
+                workspace=workspace,
+                out=(
+                    BandReduction.allocate(
+                        workspace, nb, want_fused=False, want_sliver=False
+                    )
+                    if resolver_memory is not None
+                    else None
+                ),
+            )
+            sheet_cov.clamp_min_(0.0)
+
+            stats = sheet_statistics(
+                band_id,
+                msk_o,
+                positions,
+                pos_o,
+                pix_o,
+                cov_o,
+                nb,
+                mask_all=AA_MASK_ALL,
+                positioned=positioned_depth,
+                diagnostics=diagnostics,
+                workspace=workspace,
+                out=(
+                    SheetStatistics.allocate(workspace, nb, diagnostics=False)
+                    if resolver_memory is not None
+                    else None
+                ),
+            )
+            nearest_orig = stats.nearest_fragment
+            rep_orig = stats.representative_fragment
+            sheet_pix = stats.pixel
+            min_pos = stats.min_position
+            first_sorted = stats.first_sorted
+            nfrag = stats.fragment_count
+            del stats, cov_o
+
+            # Only the lane table and final-classification scratch survive to output
+            # gathering. Returning the persistent records releases this whole phase.
+            with workspace.stage():
+                # ---- sheet_sample_depth: per-sample nearest-owner depths ---------------
+                # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
+                # owning sample bit s. See ``_lane_first_owners``, which computes the
+                # table (one masked amin scatter per lane in torch, one kernel pass under
+                # ``sheet_sample_depth_kernel``).
+                sample_depths = None
+                if sample_depth:
+                    sample_depths = workspace.tensor(
+                        (nb, AA_NUM_SAMPLES), torch.float32
+                    )
+                    _lane_first_owners(
+                        band_id,
+                        msk_o,
+                        t_o,
+                        nb,
+                        n,
+                        out=sample_depths,
+                        workspace=workspace,
+                    )
+                del t_o
+                del positions, msk_o
+
+                # Split-group accounting (diagnostic): groups are triangle-only. Kept
+                # device-side end to end -- the group tables are over-allocated to ``nb``
+                # (group ids are < the true group count <= nb) and the two counters stay
+                # 0-d tensors, evaluated only when something reads them -- because this
+                # block used to cost three device syncs per compaction for numbers
+                # nothing on the render path consumes.
+                if diagnostics:
+                    metadata_ids = band_id if sheet_metadata_kernel else None
+                    num_tri_groups, num_split_groups = _sheet_group_counts(
+                        new_group, metadata_ids, order, is_tri, first_sorted, nb
+                    )
+                    del metadata_ids
+                del band_id
+                del new_group
+                # Last read of the sorted stream: from here the function works only in
+                # per-sheet arrays, so the per-fragment ones go now rather than at the
+                # return (they are 28 MB apiece on a 4K frame).
+                del first_sorted, is_tri, order, pos_o
+
+                # Flags: facing from the band key; one-mesh / sliver policy bits from the
+                # dominant fragment (uniform per pixel / per emission policy); the sliver
+                # bit FORCED on for an empty union, which is an areal positionless sheet
+                # whatever its dominant fragment carried.
+                rep_msk = frag_msk.index_select(0, rep_orig)
+                flags = rep_msk & (~AA_MASK_ALL)
+                del rep_msk
+                empty_union = union == 0
+                flags = flags | torch.where(
+                    empty_union,
+                    torch.full_like(flags, AA_SLIVER_BIT),
+                    torch.zeros_like(flags),
                 )
+                del empty_union
+                sheet_msk = union.to(torch.int32) | flags
+                del union, flags
 
-                lose_word = workspace.tensor((nb,), torch.int32)
-                sheet_depth_lose(
-                    kernel_index(sheet_pix),
-                    sheet_sid,
-                    sample_depths,
-                    low,
-                    subject.contiguous().view(torch.uint8),
-                    enforcer.contiguous().view(torch.uint8),
-                    nb,
-                    float(depth_tie_epsilon),
-                    float(sheet_sample_depth_cede),
-                    int(AA_LOSE_SHIFT),
-                    lose_word,
+                # ---- Final order: (pixel, classic order of nearest fragment) -----------
+                # Band IDs (and their class/rank subdivisions) retain pixel order. Only
+                # the sheets within a pixel need restoring to nearest-fragment order.
+                final = _sheet_walk_order(sheet_pix, min_pos, memory=resolver_memory)
+
+                # §4.4's additive sibling compositing, expressed in the weights the walk
+                # consumes (see ``_sibling_weights``). Where a band holds one sheet --
+                # every band with ``shade_split`` off -- these ARE the sheet's own area
+                # and mask, so the resolve reads exactly what it read before.
+                sheet_cov_final = sheet_cov.index_select(0, final)
+                sheet_msk_final = sheet_msk.index_select(0, final)
+                sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
+                if sheet_band is not None:
+                    sheet_wgt, sheet_wmsk = _sibling_weights(
+                        sheet_band.index_select(0, final),
+                        sheet_cov_final,
+                        sheet_msk_final,
+                        band_area,
+                        band_union,
+                        band_corr,
+                        workspace=workspace,
+                        out=(
+                            SheetWeights.allocate(workspace, nb)
+                            if resolver_memory is not None
+                            else None
+                        ),
+                    )
+
+                # Compose indices before gathering the packed payload, using the exact
+                # MPS integer paths for both. Ordinary MPS integer gathers can round the
+                # index or packed depth bits; no payload-sized key intermediate is needed.
+                if resolver_memory is None:
+                    sheet_key = gather_packed_key(
+                        frag_key, gather_exact(nearest_orig, final)
+                    )
+                sheet_pix = sheet_pix.index_select(0, final)
+                rep_final = rep_orig.index_select(0, final)
+
+                # ---- sheet_sample_depth: classify, floor, cede --------------------------
+                # Everything here works on the FINAL-ordered per-sheet arrays; the lose
+                # words land in both mask outputs so the resolve (which consumes the
+                # weights) and every record reader see the same thing. Off, none of this
+                # runs and the outputs above are exactly what they were.
+                if sample_depth:
+                    ppf = int(width) * int(height)
+                    rep_ref = frag_ref.index_select(0, rep_final)
+                    is_tri_sheet = rep_ref >= 0
+                    low = sheet_msk_final & AA_MASK_ALL
+                    positioned_s = low != 0
+                    full_s = low == AA_MASK_ALL
+                    mat_opaque_s = (sheet_msk_final & AA_MAT_OPAQUE_BIT) != 0
+                    nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
+                    # The depth table was built in sheet order; everything below works in
+                    # the final (walk) order.
+                    sample_depths = sample_depths.index_select(0, final)
+                    # Band identity and the multi-sheet-band exemption: a band split into
+                    # siblings (shade-class split, conflict-rank split) claims against
+                    # band-pooled arithmetic whose single occlusion write ignores slots,
+                    # so gating a sibling would over-occlude. Its sheets are neither
+                    # subjects nor enforcers.
+                    if sheet_band is not None:
+                        band_of_sheet = sheet_band.index_select(0, final)
+                    else:
+                        band_of_sheet = cid_band.index_select(0, final)
+                    n_bands = int(band_of_sheet.max().item()) + 1
+                    members = torch.zeros(n_bands, dtype=torch.int64, device=device)
+                    members.scatter_add_(
+                        0,
+                        band_of_sheet,
+                        torch.ones(nb, dtype=torch.int64, device=device),
+                    )
+                    only_band = members.index_select(0, band_of_sheet) == 1
+                    del members
+                    positive_wgt = sheet_wgt >= 0.0
+                    # The surface id: one band never spans two meshes, so the dominant
+                    # fragment's mesh is every member's. Circuits have no sid and are
+                    # excluded by ``is_tri_sheet`` on both sides.
+                    f_rel_s = sheet_pix // ppf
+                    safe_rep = rep_ref.clamp_min(0).to(torch.int64)
+                    row_to = (f_rel_s + int(time_start)) % merged["tri_obj"].shape[0]
+                    sheet_sid = merged["tri_obj"][row_to, safe_rep].to(torch.int64)
+                    del f_rel_s, safe_rep, rep_ref, row_to
+
+                    enforcer = (
+                        is_tri_sheet
+                        & mat_opaque_s
+                        & full_s
+                        & ((sheet_cov_final - 1.0).abs() <= FULL_DUST)
+                        & only_band
+                        & positive_wgt
+                    )
+                    subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
+
+                    if rt_settings.sheet_depth_reduce_kernel:
+                        from algan.rendering.raytracing.sheet_depth_taichi import (
+                            sheet_depth_lose,
+                        )
+
+                        lose_word = workspace.tensor((nb,), torch.int32)
+                        sheet_depth_lose(
+                            kernel_index(sheet_pix),
+                            sheet_sid,
+                            sample_depths,
+                            low,
+                            subject.contiguous().view(torch.uint8),
+                            enforcer.contiguous().view(torch.uint8),
+                            nb,
+                            float(depth_tie_epsilon),
+                            float(sheet_sample_depth_cede),
+                            int(AA_LOSE_SHIFT),
+                            lose_word,
+                        )
+                    else:
+                        lose_word = _sample_depth_lose_reference(
+                            sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
+                        )
+                    sheet_msk_final = sheet_msk_final | lose_word
+                    sheet_wmsk = sheet_wmsk | lose_word
+
+                if resolver_memory is not None:
+                    from algan.rendering.raytracing.sheet_buffers import (
+                        finish_sheet_buffers,
+                    )
+
+                    return finish_sheet_buffers(
+                        resolver_memory,
+                        coverage["covered_idx"][:num_covered],
+                        final,
+                        nearest_orig,
+                        rep_orig,
+                        frag_key,
+                        frag_ref,
+                        frag_ab,
+                        frag_cap,
+                        sheet_wgt,
+                        sheet_wmsk,
+                        sheet_pix,
+                    )
+
+                out = {
+                    "sheet_key": sheet_key,
+                    "sheet_pix": sheet_pix,
+                    "sheet_ref": frag_ref.index_select(0, rep_final),
+                    "sheet_ab": frag_ab.index_select(0, rep_final),
+                    "sheet_cov": sheet_cov_final,
+                    "sheet_msk": sheet_msk_final,
+                    "sheet_wgt": sheet_wgt,
+                    "sheet_wmsk": sheet_wmsk,
+                    "sheet_cap": frag_cap.index_select(0, rep_final),
+                    "num_sheets": nb,
+                    "band_rule": band_rule,
+                    "band_c": float(band_c),
+                }
+
+                if diagnostics:
+                    out.update(
+                        sheet_nfrag=nfrag.index_select(0, final),
+                        sheet_fused=fused.index_select(0, final),
+                        num_groups=num_tri_groups,
+                        num_split_groups=num_split_groups,
+                    )
+
+                # CSR aligned with covered_idx: every covered pixel holds at least one
+                # fragment, hence at least one sheet, so the two pixel sets coincide.
+                out["sheet_offsets"] = _sheet_offsets(
+                    coverage["covered_idx"][:num_covered], sheet_pix
                 )
-            else:
-                lose_word = _sample_depth_lose_reference(
-                    sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
-                )
-            sheet_msk_final = sheet_msk_final | lose_word
-            sheet_wmsk = sheet_wmsk | lose_word
-
-        if resolver_memory is not None:
-            from algan.rendering.raytracing.sheet_buffers import finish_sheet_buffers
-
-            return finish_sheet_buffers(
-                resolver_memory,
-                coverage["covered_idx"][:num_covered],
-                final,
-                nearest_orig,
-                rep_orig,
-                frag_key,
-                frag_ref,
-                frag_ab,
-                frag_cap,
-                sheet_wgt,
-                sheet_wmsk,
-                sheet_pix,
-            )
-
-        out = {
-            "sheet_key": sheet_key,
-            "sheet_pix": sheet_pix,
-            "sheet_ref": frag_ref.index_select(0, rep_final),
-            "sheet_ab": frag_ab.index_select(0, rep_final),
-            "sheet_cov": sheet_cov_final,
-            "sheet_msk": sheet_msk_final,
-            "sheet_wgt": sheet_wgt,
-            "sheet_wmsk": sheet_wmsk,
-            "sheet_cap": frag_cap.index_select(0, rep_final),
-            "num_sheets": nb,
-            "band_rule": band_rule,
-            "band_c": float(band_c),
-        }
-
-        if diagnostics:
-            out.update(
-                sheet_nfrag=nfrag.index_select(0, final),
-                sheet_fused=fused.index_select(0, final),
-                num_groups=num_tri_groups,
-                num_split_groups=num_split_groups,
-            )
-
-        # CSR aligned with covered_idx: every covered pixel holds at least one
-        # fragment, hence at least one sheet, so the two pixel sets coincide.
-        out["sheet_offsets"] = _sheet_offsets(
-            coverage["covered_idx"][:num_covered], sheet_pix
-        )
-        return out
+                return out

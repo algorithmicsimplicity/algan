@@ -61,8 +61,9 @@ passes disjoint slices to each geometry/class count kernel. One wide prefix
 scan replaces concatenation, a full-array conversion, exclusive-prefix
 subtraction and a separate sum. One boundary readback supplies each write
 pass's range and the total. Candidate and fragment totals are checked before
-narrowing to int32 kernel indexing. The raw-fragment CSR is also written directly
-into its arena destination. Candidate expansion and native conflict-rank group
+narrowing to int32 kernel indexing. The raw-fragment CSR reuses the pixel-run scan described below; diagnostic
+retention copies its offsets into reverse storage without another scan.
+Candidate expansion and native conflict-rank group
 counts use the same terminal-offset contract. Float shell-coverage prefixes
 retain their accumulation dtype and global scan/subtraction boundaries; they
 are not replaced by this integer helper. PyTorch may still allocate internal
@@ -115,9 +116,10 @@ CPU validation does not establish CUDA/Metal/AMD parity or a performance gain.
 Use the repository's GPU harnesses for those checks before drawing performance
 conclusions. No rendering baseline should be regenerated to hide a mismatch.
 
-Remaining audit work includes the rest of sheet-compaction workspace/output
-propagation, shared run CSR with explicit invalidation, and broader lifetime
-regions that can release temporary reverse allocations beneath a retained BVH.
+Remaining audit work includes sheet-compaction sorting/grouping intermediates
+and tensor expressions, and broader lifetime regions that can release temporary
+reverse allocations beneath a retained BVH. Pixel-run CSR sharing and explicit
+invalidation are implemented in the fourth tranche below.
 Removing the conflict-rank ceiling is a separate behavior change. The typed
 metadata, generated ABI, prepared-batch policy and structured attempt cleanup
 are implemented in the tranches described below.
@@ -173,9 +175,10 @@ footprint estimate, even where a native sort falls back to PyTorch. The forward
 scope can be overwritten after return without damaging persistent sheet data.
 
 This is **not** a complete arena conversion of compaction. The third tranche
-adds short stage lifetimes for many reductions and temporary tables, but
-remaining tensor expressions, long-lived reduction results and library sorting
-workspace remain allocator-owned. The standalone sheet CSR now uses lower
+adds short stage lifetimes for many reductions and temporary tables. The fourth
+tranche moves band-composite, final band-reduction, reference-selection and
+sibling-weight results into caller-owned stages. Remaining tensor expressions,
+sorting/grouping intermediates and library workspace remain allocator-owned. The standalone sheet CSR now uses lower
 bounds independently of `sheet_metadata_kernel`, which controls diagnostic
 counting only; it no longer selects two unrelated algorithms together.
 
@@ -217,10 +220,10 @@ rank-group counts/CSR, shell-ceiling reordered coverage and prefixes, band
 reference statistics, sibling membership/count arithmetic, lane first-owner
 and depth tables, and final lost-lane masks. Nested stages reuse storage after
 each consumer rather than retaining all arrays until compaction ends. A named
-`SheetStatistics` record owns the reduction results that cross stage boundaries;
-those results remain ordinary allocations. Explicit rank and lane-depth output
-destinations are checked for layout and conservative byte-range overlap before
-writing.
+`SheetStatistics` record names the reduction results that cross stage boundaries.
+They were ordinary allocations in this tranche; the fourth tranche adds explicit
+output destinations. Explicit rank and lane-depth output destinations are checked
+for layout and conservative byte-range overlap before writing.
 
 Float64 accumulation still rounds only after its completed reduction; the
 float32 compatibility arm retains float32 accumulation. Shell-ceiling scans
@@ -277,3 +280,62 @@ construction, inside arena copying, and during resolve/drain/readback/compositin
 They check retry output and poison reclaimed storage while verifying retained
 BVH bytes. This is not a claim that all batch/chunk/tile/iteration lifetimes are
 separate: a reverse retention floor can still keep intervening allocations alive.
+
+
+## Fourth tranche: shared pixel-run CSR
+
+`PixelRunCSR` describes one immutable, pixel-sorted fragment stream: covered
+pixels, counts, terminal offsets and the fragment count. Discovery builds it
+after sorting. Opaque-prefix truncation and one-mesh classification use the
+same starts/counts, regardless of their independent kernel gates. The final raw
+fragment record reuses its offsets instead of scanning the counts again.
+
+The owner discards the record before filtering the stream and builds a fresh
+record for the filtered rows. Changes to coverage or mask flags do not change
+run boundaries. The count-identity/count-length guard catches accidentally
+mixing two records without reading device values; it is not a content hash and
+cannot detect arbitrary in-place mutation. Callers must also replace the record
+after any reordering or membership change, including changes that keep the same
+number of rows. No long-lived tensor cache was added.
+
+Counts and covered-pixel tensors remain ordinary allocations. Production offsets
+use forward discovery storage and signed int32, after checking that the fragment
+count fits. Standalone construction retains int64 offsets. Diagnostic/capture
+retention copies those already-computed offsets into persistent reverse storage;
+normal rendering keeps them only until compaction finishes. Both the initial and
+replacement CSR can occupy forward storage until discovery returns. The budget
+charges their actual allocation deltas, including alignment; the existing raw
+CSR allowance remains conservative and also covers a diagnostic retained copy.
+
+## Fourth tranche: caller-owned reduction results
+
+`BandComposite`, `BandReduction`, `SheetStatistics` and `SheetWeights` distinguish
+results from each helper's scratch. Their `allocate` methods use the caller's
+already-open `CompactionWorkspace.stage()`. The helper opens a nested scratch
+stage, writes the supplied `out` buffers and rewinds only its own temporaries.
+Layout and byte-range overlap checks precede all writes to supplied outputs.
+The helpers retain ordinary-allocation defaults for standalone/reference use;
+empty and singleton sibling outputs are copied when a destination is supplied
+rather than silently aliasing their inputs.
+
+Production compaction has three nested result lifetimes. The outer stage owns
+band-composite area, union, correction and split flags through shade-class and
+rank grouping. The next stage owns final band area/mask and nearest/dominant
+reference statistics through final ordering. The innermost stage owns final
+sibling weights, masks and lane-depth work until `finish_sheet_buffers` copies
+the resolver records into reverse storage. Returning or raising unwinds every
+forward result stage. Standalone diagnostic outputs remain ordinary owned
+tensors and do not escape as dangling arena views. Rank-pooling area/union
+results have a shorter scope ending before the next grouping operation.
+
+Area accumulation keeps its float64-to-float32 boundary, and the float32
+compatibility path still accumulates in float32. Narrow integer reference
+reductions use int32 scratch then copy to exact int64 result buffers. The final
+coverage expressions retain their original rounding and signed-continuation
+conventions. There is no additional kernel binding, new specialization gate,
+reordered depth walk or change to the rank ceiling.
+
+The workspace high-water counter includes these overlapping output stages.
+This is a change in allocation ownership, not a measured reduction in total
+peak memory: sorting, gathered streams, remaining tensor expressions and native
+library/compiler workspace still require external headroom.

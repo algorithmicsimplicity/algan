@@ -1317,3 +1317,84 @@ def test_resolver_arena_output_matches_diagnostic_record(
     for name, value in actual._asdict().items():
         assert torch.equal(value.cpu(), expected[renamed.get(name, name)].cpu()), name
     assert actual.num_sheets == expected["num_sheets"]
+
+
+@pytest.mark.parametrize("failure_site", ["band", "statistics", "final_copy"])
+def test_caller_owned_compaction_stages_unwind_on_failure(monkeypatch, failure_site):
+    from algan import SETTINGS
+    from algan.rendering.raytracing import sheet_buffers, sheets
+    from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.utils.memory_utils import ManualMemory
+
+    init_taichi()
+    device = SETTINGS.computing.render_device
+    coverage, merged, cam, pws = _coverage(
+        [(0, 1.0, 0, 0.4, 15), (0, 1.001, 1, 0.6, 240), (3, 1.0, 4, 0.5, 255)],
+        tri_norm=torch.tensor([[[0.0, 0.0, 1.0] * 3] * 8]),
+    )
+    coverage = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in coverage.items()
+    }
+    merged = {k: v.to(device) if torch.is_tensor(v) else v for k, v in merged.items()}
+    memory = ManualMemory(0, device=device, num_bytes=1 << 20)
+    ws = CompactionWorkspace(memory)
+    sentinel = memory.get_tensor((7,), torch.int32, persist=True).fill_(173)
+    before = memory.get_pointers()
+    reached = []
+
+    def fail_after_reduction(original):
+        def wrapped(*args, **kwargs):
+            result = original(*args, **kwargs)
+            out = kwargs.get("out")
+            assert out is not None
+            assert ws._depth >= 1
+            for value in out:
+                if value is not None:
+                    assert (
+                        value.untyped_storage()._cdata
+                        == memory.data.untyped_storage()._cdata
+                    )
+            reached.append(True)
+            raise RuntimeError("injected compaction output failure")
+
+        return wrapped
+
+    if failure_site == "band":
+        monkeypatch.setattr(
+            sheets, "_band_composite", fail_after_reduction(sheets._band_composite)
+        )
+    elif failure_site == "statistics":
+        monkeypatch.setattr(
+            sheets, "sheet_statistics", fail_after_reduction(sheets.sheet_statistics)
+        )
+    else:
+
+        def fail_final_copy(*args, **kwargs):
+            assert ws._depth >= 3
+            reached.append(True)
+            raise RuntimeError("injected compaction output failure")
+
+        monkeypatch.setattr(sheet_buffers, "finish_sheet_buffers", fail_final_copy)
+
+    with memory.temp():
+        with pytest.raises(RuntimeError, match="injected compaction output failure"):
+            compact_sheets(
+                coverage,
+                merged,
+                cam.to(device),
+                pws.to(device),
+                0,
+                4,
+                4,
+                shade_split=True,
+                diagnostics=False,
+                resolver_memory=memory,
+                workspace=ws,
+            )
+        assert ws._depth == 0
+        assert ws._live_bytes == 0
+    assert reached == [True]
+    assert memory.get_pointers() == before
+    memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).fill_(241)
+    assert sentinel.tolist() == [173] * 7

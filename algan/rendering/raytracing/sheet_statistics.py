@@ -12,6 +12,7 @@ from algan.rendering.mps_compat import (
     taichi_reduction_index_dtype,
 )
 from algan.rendering.raytracing import settings as rt_settings
+from algan.rendering.raytracing.array_ops import require_tensor_outputs
 from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
 
 
@@ -22,6 +23,15 @@ class SheetStatistics(NamedTuple):
     min_position: torch.Tensor
     first_sorted: torch.Tensor | None
     fragment_count: torch.Tensor | None
+
+    @classmethod
+    def allocate(cls, workspace, count, *, diagnostics):
+        """Allocate in the caller's stage so results outlive reduction scratch."""
+        return cls(
+            *(workspace.tensor((count,), torch.int64) for _ in range(4)),
+            workspace.tensor((count,), torch.int64) if diagnostics else None,
+            workspace.tensor((count,), torch.int64) if diagnostics else None,
+        )
 
 
 def sheet_statistics(
@@ -37,11 +47,13 @@ def sheet_statistics(
     positioned,
     diagnostics,
     workspace=None,
+    out=None,
 ):
     """Reduce exact position/count/max statistics without retaining scratch.
 
-    Results use ordinary caller-owned tensors; only those results leave the
-    stage. Integer min/max and the f32 area maximum keep their existing
+    Results use ordinary tensors unless ``out`` supplies disjoint caller-owned
+    destinations allocated before this helper's scratch stage. Only results
+    leave the stage. Integer min/max and the f32 area maximum keep their existing
     reduction boundaries and tie-breaking. The count and unrestricted first
     position are returned only for diagnostics. No coverage sum is fused into
     this integer/reference work.
@@ -50,17 +62,46 @@ def sheet_statistics(
     n, nb = int(coverage.numel()), int(num_bands)
     idx_dtype = reduction_index_dtype()
     workspace = workspace or CompactionWorkspace(device=device)
-    # These arrays (or their int64 conversions) survive the stage. Do not
-    # allocate them from scratch then rely on .to being a copy on every device.
-    min_position = torch.full((nb,), n, dtype=idx_dtype, device=device)
-    representative = torch.full((nb,), n, dtype=idx_dtype, device=device)
-    counts = None
-    with workspace.stage():
-        first = (
-            torch.full((nb,), n, dtype=idx_dtype, device=device)
+    if out is not None:
+        require_tensor_outputs(
+            out,
+            (((nb,), torch.int64),) * 4 + (((nb,), torch.int64),) * 2
             if diagnostics
-            else workspace.tensor((nb,), idx_dtype, n)
+            else (((nb,), torch.int64),) * 4 + (None, None),
+            device=device,
+            inputs=(band, masks, positions, original_positions, pixels, coverage),
         )
+    # Allocate ordinary outputs before the stage; explicit destinations are
+    # already owned by the caller. Narrow reduction results are stage-local.
+    if out is None:
+        out = SheetStatistics(
+            torch.empty(nb, dtype=torch.int64, device=device),
+            torch.empty(nb, dtype=torch.int64, device=device),
+            torch.empty(nb, dtype=torch.int64, device=device),
+            torch.empty(nb, dtype=torch.int64, device=device),
+            torch.empty(nb, dtype=torch.int64, device=device) if diagnostics else None,
+            torch.empty(nb, dtype=torch.int64, device=device) if diagnostics else None,
+        )
+    with workspace.stage():
+        min_position = (
+            out.min_position
+            if idx_dtype == torch.int64
+            else workspace.tensor((nb,), idx_dtype)
+        )
+        representative = (
+            out.representative_fragment
+            if idx_dtype == torch.int64
+            else workspace.tensor((nb,), idx_dtype)
+        )
+        first = (
+            out.first_sorted
+            if diagnostics and idx_dtype == torch.int64
+            else workspace.tensor((nb,), idx_dtype)
+        )
+        min_position.fill_(n)
+        representative.fill_(n)
+        first.fill_(n)
+        counts = None
         native = bool(rt_settings.sheet_band_stats_kernel and nb)
         cmax = workspace.tensor((nb,), torch.float32, 0)
         if native:
@@ -71,9 +112,13 @@ def sheet_statistics(
 
             first_p = workspace.tensor((nb if positioned else 1,), idx_dtype, n)
             min_p = workspace.tensor((nb if positioned else 1,), idx_dtype, n)
-            counts = (
-                torch.zeros(nb, dtype=idx_dtype, device=device) if diagnostics else None
-            )
+            if diagnostics:
+                counts = (
+                    out.fragment_count
+                    if idx_dtype == torch.int64
+                    else workspace.tensor((nb,), idx_dtype)
+                )
+                counts.zero_()
             count_arg = counts if diagnostics else workspace.tensor((1,), idx_dtype, 0)
             band_stats_reduce(
                 kernel_index(band.contiguous()),
@@ -137,29 +182,30 @@ def sheet_statistics(
                     0, band, candidate, reduce="amin", include_self=True
                 )
             if diagnostics:
-                counts = torch.zeros(nb, dtype=torch.int64, device=device)
+                counts = out.fragment_count
+                counts.zero_()
                 counts.scatter_add_(0, band, torch.ones_like(band))
         first_long = first.to(torch.int64)
-        nearest = original_positions.index_select(0, first_long)
-        pixel = pixels.index_select(0, first_long)
-        min_position = min_position.to(torch.int64)
+        torch.index_select(original_positions, 0, first_long, out=out.nearest_fragment)
+        torch.index_select(pixels, 0, first_long, out=out.pixel)
+        out.min_position.copy_(min_position)
         if positioned:
             first_p = first_p.to(torch.int64)
             has_position = first_p < n
-            nearest = torch.where(
+            torch.where(
                 has_position,
                 original_positions.index_select(0, first_p.clamp_max(max(n - 1, 0))),
-                nearest,
+                out.nearest_fragment,
+                out=out.nearest_fragment,
             )
-            min_position = torch.where(
-                has_position, min_p.to(torch.int64), min_position
+            torch.where(
+                has_position,
+                min_p.to(torch.int64),
+                out.min_position,
+                out=out.min_position,
             )
-        result = SheetStatistics(
-            nearest,
-            representative.to(torch.int64),
-            pixel,
-            min_position,
-            first_long if diagnostics else None,
-            counts.to(torch.int64) if diagnostics else None,
-        )
-    return result
+        out.representative_fragment.copy_(representative)
+        if diagnostics:
+            out.first_sorted.copy_(first_long)
+            out.fragment_count.copy_(counts)
+    return out

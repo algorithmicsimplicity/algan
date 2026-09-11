@@ -305,3 +305,57 @@ def test_late_bvh_memory_retry_rebinds_and_matches_clean_render(
     if failure_stage == "rehome":
         assert (False, True) in builds, "publication was not retried after construction"
     assert (actual.to(torch.int16) - reference.to(torch.int16)).abs().max() <= 1
+
+
+@pytest.mark.parametrize("opaque", [False, True])
+def test_discovery_reuses_runs_and_rebuilds_only_after_truncation(
+    monkeypatch, fresh_scene, opaque
+):
+    """Exercise the production ownership transition, not just helper arguments."""
+    from algan.rendering.raytracing.pixel_runs import PixelRunCSR
+
+    SETTINGS.raytracing.set(shadows=False)
+    SETTINGS.raytracing.experimental.set(
+        analytic_aa_one_mesh=True, glossy_reflection=False
+    )
+    scene = Scene.current()
+    scene.set_video_settings(PREVIEW.set(resolution=(24, 16), frames_per_second=1))
+    with Off():
+        for depth in (0, -0.5):
+            Cube().set_color(RED).set_opacity(1.0 if opaque else 0.5).move(
+                OUT * depth
+            ).spawn(animate=False)
+    build = PixelRunCSR.from_sorted_pixels
+    prefix = raster_pipeline._opaque_prefix_keep
+    one_mesh = raster_pipeline._one_mesh_pixel_caps
+    builds, cuts, consumers = [], [], []
+
+    def track_build(cls, pixels, **kwargs):
+        result = build(pixels, **kwargs)
+        builds.append(result)
+        return result
+
+    def track_prefix(flags, counts, n, *, runs=None):
+        assert runs is builds[-1]
+        keep = prefix(flags, counts, n, runs=runs)
+        cuts.append(int(keep.sum()) != n)
+        return keep
+
+    def track_one_mesh(*args, runs=None):
+        assert runs is builds[-1]
+        assert runs.num_fragments == args[0].numel()
+        consumers.append(runs)
+        return one_mesh(*args, runs=runs)
+
+    monkeypatch.setattr(PixelRunCSR, "from_sorted_pixels", classmethod(track_build))
+    monkeypatch.setattr(raster_pipeline, "_opaque_prefix_keep", track_prefix)
+    monkeypatch.setattr(raster_pipeline, "_one_mesh_pixel_caps", track_one_mesh)
+    with torch.inference_mode():
+        frames = list(scene.get_frames(0, 1, post_processes=()))
+    assert frames
+    assert consumers
+    assert len(builds) == len(consumers) + sum(cuts)
+    if opaque:
+        assert any(cuts), "fixture must exercise membership-changing truncation"
+    else:
+        assert not cuts
