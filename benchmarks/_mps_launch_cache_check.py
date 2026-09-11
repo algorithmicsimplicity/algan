@@ -137,11 +137,14 @@ def launch_benchmark(iterations):
             enqueued = time.perf_counter()
             sync()
             ended = time.perf_counter()
-            actual = (
-                arrays[0].cpu().numpy()
-                if isinstance(arrays[0], torch.Tensor)
-                else arrays[0].to_numpy()
-            )
+            # Imported Metal ndarrays deliberately expose no host-copy API;
+            # read their owning torch view, after the same device fences.
+            if render_device().type == "mps":
+                actual = tensors[0].cpu().numpy()
+            elif isinstance(arrays[0], torch.Tensor):
+                actual = arrays[0].cpu().numpy()
+            else:
+                actual = arrays[0].to_numpy()
             expected = 19 * (0.5 + ((iterations - 1) % 2) * 0.5) + 1000 + iterations - 1
             assert actual[0] == expected
             samples[enabled].append((enqueued - started) * 1e6 / iterations)
