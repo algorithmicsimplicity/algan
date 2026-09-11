@@ -1,31 +1,53 @@
-name: Renderer audit third-tranche transport
+name: Renderer audit third-tranche publisher
 on:
   push:
     branches: [codex/renderer-audit-publisher]
     paths: [.github/workflows/renderer_audit_publish.yaml]
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: renderer-audit-third-tranche-publish
+  cancel-in-progress: false
 jobs:
-  export:
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BASE: 60597722f0e472ede8a173251f54282694172371
+      DEST: codex/renderer-audit-memory-cleanup
+      EXPECTED_TREE: 654f29dd65d85782a45a5ed88e52da6b01a815f1
+      EXPECTED_COMMIT: 077d2660c585e2f73b727dfd82f371a828c595bd
+      GIT_AUTHOR_DATE: '2026-09-11T05:16:06Z'
+      GIT_COMMITTER_DATE: '2026-09-11T05:16:06Z'
+      STATUS_DIGEST: 45c59e5831e737de18982c0f6923c3434e7f081c7cae98569211e518ab7ed34c
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 60597722f0e472ede8a173251f54282694172371
           fetch-depth: 1
-          persist-credentials: false
-      - name: Export immutable source and validation tools
+      - name: Reconstruct and verify the exact locally tested tree
+        shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/export"
-          git archive --format=tar.gz -o "$RUNNER_TEMP/export/source.tar.gz" HEAD
-          git ls-tree -r HEAD > "$RUNNER_TEMP/export/tree.txt"
-          git cat-file commit HEAD > "$RUNNER_TEMP/export/commit.txt"
-          python -m pip download --no-deps --only-binary=:all: --platform manylinux_2_17_x86_64 --python-version 311 --implementation cp --abi cp311 --dest "$RUNNER_TEMP/export" ruff==0.12.4 editables==0.6
-          cd "$RUNNER_TEMP/export"
-          sha256sum * > SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: renderer-audit3-base-and-tools
-          path: ${{ runner.temp }}/export/*
-          retention-days: 7
+          set -euo pipefail
+          cp -a .renderer-audit3 "$RUNNER_TEMP/renderer-audit3"
+          git fetch --no-tags --depth=1 origin "$BASE"
+          test "$(git ls-remote origin "refs/heads/$DEST" | cut -f1)" = "$BASE"
+          git checkout --detach "$BASE"
+          python "$RUNNER_TEMP/renderer-audit3/apply.py" "$RUNNER_TEMP/renderer-audit3" "$STATUS_DIGEST"
+          git diff --cached --check
+          python scripts/generate_arena_bindings.py --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+      - name: Fast-forward the existing implementation branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE"
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          git config commit.gpgsign false
+          git commit -m 'refactor(renderer): scope compaction and unify batch execution'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git push origin "HEAD:refs/heads/$DEST"
+          git show --stat --oneline HEAD
+          printf 'head=%s\nparent=%s\ntree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^)" "$(git rev-parse HEAD^{tree})"
