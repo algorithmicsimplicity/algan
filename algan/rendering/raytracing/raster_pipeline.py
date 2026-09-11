@@ -2308,8 +2308,9 @@ def prepare_sparse_raster_coverage(
         # Aggregation happens here, once, before any kernel: the resolve then
         # composites a few depth-sorted sheets per pixel instead of walking
         # the raw fragment list. Stage-local workspace uses forward scratch;
-        # long-lived reduction results and library workspace remain external.
-        # Only the final sheets persist unless diagnostics retain raw fragments.
+        # sorted payloads and reduction/group results share that workspace.
+        # Dynamic unique temporaries, preprocessing and library workspace still
+        # need external headroom. Only final sheets persist unless requested.
         from algan.rendering.raytracing.sheets import compact_sheets
 
         compaction_workspace = CompactionWorkspace(memory)

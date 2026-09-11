@@ -160,6 +160,9 @@ def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
     monkeypatch.setattr(torch.mps, "is_available", lambda: True)
     monkeypatch.setattr(torch.mps, "empty_cache", lambda: None)
     monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda *a, **k: False)
+    # Host pressure independently triggers this reclaim, even for an idle GPU.
+    # The steady-state fixture must not depend on the machine running pytest.
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: False)
 
     mu.release_torch_memory(force_gc=False)
     assert cleared == [], "a steady-state reclaim dropped the import cache"
@@ -501,3 +504,26 @@ def test_dtype_alignment_exhaustion_keeps_state(persist):
     with pytest.raises(InsufficientMemoryException):
         memory.get_tensor((1,), torch.float32, persist=persist)
     assert (memory.get_pointers(), memory.max_pointer) == before
+
+
+def test_host_pressure_reclaims_mps_imports_without_gpu_pressure(monkeypatch):
+    from algan.rendering import mps_zero_copy
+    from algan.utils import memory_utils as mu
+
+    events = []
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: True)
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: None)
+    monkeypatch.setattr(
+        mu, "_reset_quadrants_runtime_for_memory_pressure", lambda: False
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(
+        mps_zero_copy, "clear_import_cache", lambda: events.append("imports")
+    )
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: events.append("cache"))
+
+    mu.release_torch_memory(force_gc=False)
+    assert events == ["gc", "imports", "cache"]

@@ -154,3 +154,28 @@ def gather_rows(source: torch.Tensor, indices: torch.Tensor, *, out=None):
     else:
         torch.index_select(source, 0, indices, out=out)
     return out
+
+
+def group_ids_from_starts(starts: torch.Tensor, *, out=None):
+    """Inclusive boundary scan minus one, with an optional integer destination.
+
+    A true flag begins a group. Callers provide a true first flag for nonempty
+    streams; like the original expression, a leading false flag produces -1.
+    Validate metadata, capacity and aliasing without reading device values.
+    No converted boundary vector or separate subtraction result is allocated.
+    """
+    if starts.ndim != 1 or starts.dtype != torch.bool:
+        raise ValueError("group starts must be a one-dimensional boolean tensor")
+    if out is None:
+        out = torch.empty(starts.shape, dtype=torch.int64, device=starts.device)
+    if out.dtype not in (torch.int32, torch.int64):
+        raise ValueError("group IDs must use int32 or int64")
+    require_tensor_outputs(
+        (out,), ((starts.shape, out.dtype),), device=starts.device, inputs=(starts,)
+    )
+    # The inclusive scan must fit too, before subtracting one from each ID.
+    if starts.numel() > torch.iinfo(out.dtype).max:
+        raise ValueError("group-start scan exceeds the output integer capacity")
+    torch.cumsum(starts, 0, dtype=out.dtype, out=out)
+    out.sub_(1)
+    return out

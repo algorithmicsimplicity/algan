@@ -62,6 +62,7 @@ contributed twice has provably fused at least two sheets.
 from __future__ import annotations
 
 import warnings
+from contextlib import nullcontext
 
 import torch
 
@@ -69,7 +70,6 @@ from algan.environment import env_flag, env_float
 from algan.errors import AlganWarning
 from algan.rendering.mps_compat import (
     accumulate_dtype,
-    band_class_groups,
     clamp_floor,
     cummax_values,
     gather_exact,
@@ -82,6 +82,7 @@ from algan.rendering.mps_compat import (
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.array_ops import (
+    group_ids_from_starts,
     require_disjoint_output,
     require_tensor_outputs,
 )
@@ -109,6 +110,16 @@ from algan.rendering.raytracing.raster_taichi import (
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
+)
+from algan.rendering.raytracing.sheet_fragments import (
+    SortedFragments,
+    gather_sorted_fragments,
+)
+from algan.rendering.raytracing.sheet_grouping import (
+    RankGroups,
+    class_groups,
+    unique_ids,
+    validate_inverse,
 )
 from algan.rendering.raytracing.sheet_reduction_buffers import (
     BandComposite,
@@ -532,8 +543,6 @@ def _pixel_group_order(
     pix, group, depth, offsets, *, key_bounds=None, memory=None, workspace=None
 ):
     """Order pixel runs, retaining stable packed/global-sort fallbacks."""
-    from contextlib import nullcontext
-
     # Allocate the result before opening sort scratch, regardless of which
     # backend is selected. This is the same reserved permutation on every arm.
     order = None if memory is None else memory.get_tensor(pix.shape, torch.int64)
@@ -608,18 +617,18 @@ def _sheet_walk_order(pix, position, *, memory=None, workspace=None):
     return _lexsort(position, out=order, workspace=workspace)
 
 
-def _unique_sorted_ids(keys):
+def _unique_sorted_ids(keys, *, out=None):
     """Group nondecreasing integer IDs without sorting them a second time."""
     # The validated Metal path also receives sorted IDs here. Keep its
     # consecutive grouping while retaining the CPU/CUDA optimization gates.
     if keys.device.type == "mps" or (
         (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda")
     ):
-        return torch.unique_consecutive(keys, return_inverse=True)
-    return torch.unique(keys, sorted=True, return_inverse=True)
+        return unique_ids(keys, consecutive=True, out=out)
+    return unique_ids(keys, out=out)
 
 
-def _sheet_rank_groups(parent, rank, *, workspace=None):
+def _sheet_rank_groups(parent, rank, *, workspace=None, out=None):
     """Group ordered dense parent IDs and their clamped conflict ranks.
 
     Conflict ranks contain every value from zero to their maximum in each
@@ -636,6 +645,9 @@ def _sheet_rank_groups(parent, rank, *, workspace=None):
     """
     from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
 
+    validate_inverse(out, parent, rank)
+    if workspace is not None and workspace.device != parent.device:
+        raise ValueError("grouping workspace and inputs must share a device")
     n = parent.numel()
     if (
         sheet_rank_groups
@@ -650,25 +662,55 @@ def _sheet_rank_groups(parent, rank, *, workspace=None):
         workspace = workspace or CompactionWorkspace(device=parent.device)
         with workspace.stage():
             counts = workspace.tensor((parents,), torch.int32, 0)
-            counts.scatter_reduce_(0, parent, rank, reduce="amax", include_self=True)
+            counts.scatter_reduce_(
+                0,
+                parent
+                if parent.dtype == torch.int64
+                else workspace.copy(parent, torch.int64),
+                rank
+                if rank.dtype == torch.int32
+                else workspace.copy(rank, torch.int32),
+                reduce="amax",
+                include_self=True,
+            )
             counts.add_(1)
             offsets = workspace.tensor((parents + 1,), torch.int32)
             csr_offsets(counts, out=offsets)
             nb = int(offsets[-1])
-            groups = torch.empty_like(parent)
+            groups = (
+                torch.empty(parent.shape, dtype=torch.int64, device=parent.device)
+                if out is None
+                else out
+            )
             cid_band = torch.empty(nb, dtype=torch.int64, device=parent.device)
             rank_of_cid = torch.empty_like(cid_band)
             rank_groups(
                 parent, rank, offsets[1:], groups, cid_band, rank_of_cid, n, parents
             )
-        return groups, cid_band, rank_of_cid
-    keys, groups = torch.unique(parent * 16 + rank, sorted=True, return_inverse=True)
+        return RankGroups(groups, cid_band, rank_of_cid)
+    workspace = workspace or CompactionWorkspace(device=parent.device)
+    with workspace.stage():
+        key = workspace.tensor(parent.shape, torch.int64)
+        key.copy_(parent)
+        key.mul_(16).add_(rank)
+        keys, groups = unique_ids(key, out=out)
     cid_band = keys // 16
-    return groups, cid_band, keys - cid_band * 16
+    return RankGroups(groups, cid_band, keys - cid_band * 16)
 
 
-def _sheet_class_groups(band_id, cls_eff, new_group, nb):
+def _sheet_class_groups(band_id, cls_eff, new_group, nb, *, out=None, workspace=None):
     """Reuse dense sub-band IDs when each original group has a uniform class."""
+    validate_inverse(out, band_id, cls_eff)
+    if (
+        new_group.shape != band_id.shape
+        or new_group.dtype != torch.bool
+        or new_group.device != band_id.device
+    ):
+        raise ValueError("class grouping needs matching boolean group boundaries")
+    if out is not None:
+        require_disjoint_output(out, new_group)
+    if workspace is not None and workspace.device != band_id.device:
+        raise ValueError("grouping workspace and inputs must share a device")
     if sheet_group_reuse and cls_eff.device.type in ("cpu", "cuda"):
         # Rank/depth sub-bands never cross an original (pixel, surface, facing)
         # group. Uniform classes in that larger group therefore cannot split
@@ -676,12 +718,16 @@ def _sheet_class_groups(band_id, cls_eff, new_group, nb):
         # mixed classes retain the full grouping algorithm below.
         mixed = (cls_eff[1:] != cls_eff[:-1]) & ~new_group[1:]
         if not bool(mixed.any()):
+            if out is not None:
+                out.copy_(band_id)
             return (
                 nb,
-                band_id,
+                band_id if out is None else out,
                 torch.arange(nb, dtype=torch.int64, device=band_id.device),
             )
-    return band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+    return class_groups(
+        band_id, cls_eff, _SHADE_CLASS_BASE, out=out, workspace=workspace
+    )
 
 
 def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
@@ -714,7 +760,7 @@ def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
         totals = partial.sum(dim=0, dtype=torch.int64)
         return totals[0], totals[1]
 
-    group_id = torch.cumsum(new_group.to(torch.int64), 0) - 1
+    group_id = group_ids_from_starts(new_group)
     bands_per_group = torch.zeros(
         max(nb, 1), dtype=torch.int64, device=new_group.device
     )
@@ -1652,7 +1698,7 @@ def _sample_depth_lose_reference(
         new_group_e = torch.ones_like(epk, dtype=torch.bool)
         if epk.numel() > 1:
             new_group_e[1:] = epk[1:] != epk[:-1]
-        grp = torch.cumsum(new_group_e.to(torch.int64), 0) - 1
+        grp = group_ids_from_starts(new_group_e)
         uniq_pk = epk[new_group_e]
         best_d = edepth[new_group_e]
         best_sid = esid[new_group_e]
@@ -1860,8 +1906,10 @@ def compact_sheets(
     around the call and keep it alive through the final copy. ``workspace``
     supplies nested forward-arena stages for reductions, ranks, shell prefixes,
     sibling counts and lane-depth tables. Only caller-owned results may escape
-    those stages. Remaining tensor expressions, long-lived reduction outputs
-    and library sort/scan workspace still use the ordinary allocator.
+    those stages. Sorted payloads and group inverses use the surrounding
+    compaction stage through the final copy; its forward storage is reclaimed
+    on every exit. Preprocessing metadata, pooling maps, dynamic unique
+    temporaries and library sort/scan workspace still need external headroom.
     """
     # Diagnostic keys are omitted when diagnostics=False; correctness and
     # truncation checks remain unconditional.
@@ -1871,6 +1919,51 @@ def compact_sheets(
         )
     if band_rule not in BAND_RULES:
         raise ValueError(f"unknown band rule {band_rule!r}; one of {BAND_RULES}")
+    device = coverage["frag_key"].device
+    workspace = workspace or CompactionWorkspace(resolver_memory, device=device)
+    if workspace.device != device:
+        raise ValueError("compaction workspace and fragment inputs must share a device")
+
+    with workspace.stage():
+        return _compact_sheets(
+            coverage,
+            merged,
+            cam_origin,
+            pixel_world_scale,
+            time_start,
+            width,
+            height,
+            band_rule=band_rule,
+            band_c=band_c,
+            tri_screen=tri_screen,
+            shade_split=shade_split,
+            positioned_depth=positioned_depth,
+            sample_depth=sample_depth,
+            diagnostics=diagnostics,
+            resolver_memory=resolver_memory,
+            workspace=workspace,
+        )
+
+
+def _compact_sheets(
+    coverage,
+    merged,
+    cam_origin,
+    pixel_world_scale,
+    time_start,
+    width,
+    height,
+    *,
+    band_rule,
+    band_c,
+    tri_screen,
+    shade_split,
+    positioned_depth,
+    sample_depth,
+    diagnostics,
+    resolver_memory,
+    workspace,
+):
     n = int(coverage["num_fragments"])
     num_covered = int(coverage["num_covered"])
     frag_key = coverage["frag_key"][:n]
@@ -1880,9 +1973,7 @@ def compact_sheets(
     frag_msk = coverage["frag_msk"][:n]
     frag_cap = coverage["frag_cap"][:n]
     device = frag_key.device
-    workspace = workspace or CompactionWorkspace(resolver_memory, device=device)
-    if workspace.device != device:
-        raise ValueError("compaction workspace and fragment inputs must share a device")
+    owned = resolver_memory is not None
 
     pix = frag_key >> 32
     t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
@@ -1965,9 +2056,15 @@ def compact_sheets(
         memory=resolver_memory,
         workspace=workspace,
     )
-    pix_o = pix.index_select(0, order)
+    pix_o, t_o, cov_o, msk_o = gather_sorted_fragments(
+        pix,
+        t,
+        frag_cov,
+        frag_msk,
+        order,
+        out=SortedFragments.allocate(workspace, n) if owned else None,
+    )
     g_o = gkey.index_select(0, order)
-    t_o = t.index_select(0, order)
     del pix, gkey
 
     new_group = torch.ones(n, dtype=torch.bool, device=device)
@@ -2063,7 +2160,7 @@ def compact_sheets(
     # owner per sample. It is one [n] f32 array, freed at that block.
     del frame_rel, safe_ref, t
 
-    band_id = torch.cumsum(band_start.to(torch.int64), 0) - 1
+    band_id = group_ids_from_starts(band_start)
 
     # ---- The fill rule is the sheet-membership oracle -----------------------
     # Within one true sheet the masks PARTITION the samples, so a band in
@@ -2079,6 +2176,7 @@ def compact_sheets(
     # and rendered ~30% too light... dark; the fragment walk composited them
     # per fragment and was right). Donors (empty masks) carry rank 0 and
     # ride with their sheet's owners. Integer throughout: deterministic.
+    rank_ids = workspace.tensor((n,), torch.int64) if owned else None
     with workspace.stage():
         rank = workspace.tensor((n,), torch.int32)
         _conflict_rank(
@@ -2103,9 +2201,13 @@ def compact_sheets(
                 )
         rank.clamp_(max=SHEET_RANK_LIMIT)
         band_id, cid_band, rank_of_cid = _sheet_rank_groups(
-            band_id, rank, workspace=workspace
+            band_id, rank, workspace=workspace, out=rank_ids
         )
         del rank
+    if owned:
+        cid_band = workspace.copy(cid_band)
+        rank_of_cid = workspace.copy(rank_of_cid)
+    del rank_ids
     nb = int(cid_band.numel())
     # Band identity for sheet_sample_depth's multi-sheet-band exemption: a
     # conflict-rank split makes several sheets of ONE parent band. cid_band
@@ -2116,8 +2218,6 @@ def compact_sheets(
         return None
 
     # ---- P2: segmented reduction over bands --------------------------------
-    cov_o = frag_cov.index_select(0, order)
-    msk_o = frag_msk.index_select(0, order)
     pos_o = order  # original stream position of each sorted fragment
 
     # ---- The ceiling, applied ----------------------------------------------
@@ -2204,7 +2304,9 @@ def compact_sheets(
                 if n > 1:
                     seg_start[1:] = k2[1:] != k2[:-1]
                 del k2
-                seg = torch.cumsum(seg_start.to(torch.int64), 0) - 1
+                seg = group_ids_from_starts(
+                    seg_start, out=workspace.tensor((n,), torch.int64)
+                )
                 nseg = int(seg[-1].item()) + 1
                 # The running total each fragment's in-segment predecessors have
                 # already spent: the global exclusive prefix minus its value at the
@@ -2295,8 +2397,15 @@ def compact_sheets(
             # Keyed by the SUB-BAND, not by the compositing group: pooling must not
             # merge two sub-bands into one sheet, only make them claim as one band.
             nb, band_id, sheet_cid = _sheet_class_groups(
-                band_id, cls_eff, new_group, nb
+                band_id,
+                cls_eff,
+                new_group,
+                nb,
+                out=workspace.tensor((n,), torch.int64) if owned else None,
+                workspace=workspace,
             )
+            if owned:
+                sheet_cid = workspace.copy(sheet_cid)
             del cls_eff
             sheet_band = (
                 sheet_cid
@@ -2410,27 +2519,30 @@ def compact_sheets(
                     del metadata_ids
                 del band_id
                 del new_group
-                # Last read of the sorted stream: from here the function works only in
-                # per-sheet arrays, so the per-fragment ones go now rather than at the
-                # return (they are 28 MB apiece on a 4K frame).
+                # Last reads of the sorted stream. Ordinary tensors release their
+                # storage here; arena views remain allocated until their enclosing
+                # compaction stage closes after the persistent final copy.
                 del first_sorted, is_tri, order, pos_o
 
                 # Flags: facing from the band key; one-mesh / sliver policy bits from the
                 # dominant fragment (uniform per pixel / per emission policy); the sliver
                 # bit FORCED on for an empty union, which is an areal positionless sheet
                 # whatever its dominant fragment carried.
-                rep_msk = frag_msk.index_select(0, rep_orig)
-                flags = rep_msk & (~AA_MASK_ALL)
-                del rep_msk
-                empty_union = union == 0
-                flags = flags | torch.where(
-                    empty_union,
-                    torch.full_like(flags, AA_SLIVER_BIT),
-                    torch.zeros_like(flags),
+                sheet_msk = (
+                    workspace.tensor((nb,), torch.int32)
+                    if owned
+                    else torch.empty((nb,), dtype=torch.int32, device=device)
                 )
-                del empty_union
-                sheet_msk = union.to(torch.int32) | flags
-                del union, flags
+                with workspace.stage():
+                    rep_msk = workspace.gather(frag_msk, rep_orig)
+                    torch.bitwise_and(rep_msk, ~AA_MASK_ALL, out=sheet_msk)
+                    sheet_msk.bitwise_or_(union)
+                    empty_union = workspace.tensor((nb,), torch.bool)
+                    torch.eq(union, 0, out=empty_union)
+                    sliver_flag = workspace.tensor((nb,), torch.int32, 0)
+                    sliver_flag.masked_fill_(empty_union, AA_SLIVER_BIT)
+                    sheet_msk.bitwise_or_(sliver_flag)
+                del union, rep_msk, empty_union, sliver_flag
 
                 # ---- Final order: (pixel, classic order of nearest fragment) -----------
                 # Band IDs (and their class/rank subdivisions) retain pixel order. Only
@@ -2443,12 +2555,26 @@ def compact_sheets(
                 # consumes (see ``_sibling_weights``). Where a band holds one sheet --
                 # every band with ``shade_split`` off -- these ARE the sheet's own area
                 # and mask, so the resolve reads exactly what it read before.
-                sheet_cov_final = sheet_cov.index_select(0, final)
-                sheet_msk_final = sheet_msk.index_select(0, final)
+                sheet_cov_final = (
+                    workspace.gather(sheet_cov, final)
+                    if owned
+                    else sheet_cov.index_select(0, final)
+                )
+                sheet_msk_final = (
+                    workspace.gather(sheet_msk, final)
+                    if owned
+                    else sheet_msk.index_select(0, final)
+                )
                 sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
+                final_band = None
                 if sheet_band is not None:
+                    final_band = (
+                        workspace.gather(sheet_band, final)
+                        if owned
+                        else sheet_band.index_select(0, final)
+                    )
                     sheet_wgt, sheet_wmsk = _sibling_weights(
-                        sheet_band.index_select(0, final),
+                        final_band,
                         sheet_cov_final,
                         sheet_msk_final,
                         band_area,
@@ -2469,8 +2595,20 @@ def compact_sheets(
                     sheet_key = gather_packed_key(
                         frag_key, gather_exact(nearest_orig, final)
                     )
-                sheet_pix = sheet_pix.index_select(0, final)
-                rep_final = rep_orig.index_select(0, final)
+                sheet_pix = (
+                    workspace.gather(sheet_pix, final)
+                    if owned
+                    else sheet_pix.index_select(0, final)
+                )
+                # Persistent output gathers representatives itself. Only the
+                # depth gate and the diagnostic record need a host-side gather.
+                rep_final = None
+                if not owned or sample_depth:
+                    rep_final = (
+                        workspace.gather(rep_orig, final)
+                        if owned
+                        else rep_orig.index_select(0, final)
+                    )
 
                 # ---- sheet_sample_depth: classify, floor, cede --------------------------
                 # Everything here works on the FINAL-ordered per-sheet arrays; the lose
@@ -2488,24 +2626,34 @@ def compact_sheets(
                     nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
                     # The depth table was built in sheet order; everything below works in
                     # the final (walk) order.
-                    sample_depths = sample_depths.index_select(0, final)
+                    sample_depths = (
+                        workspace.gather(sample_depths, final)
+                        if owned
+                        else sample_depths.index_select(0, final)
+                    )
                     # Band identity and the multi-sheet-band exemption: a band split into
                     # siblings (shade-class split, conflict-rank split) claims against
                     # band-pooled arithmetic whose single occlusion write ignores slots,
                     # so gating a sibling would over-occlude. Its sheets are neither
                     # subjects nor enforcers.
-                    if sheet_band is not None:
-                        band_of_sheet = sheet_band.index_select(0, final)
+                    if final_band is not None:
+                        band_of_sheet = final_band
                     else:
-                        band_of_sheet = cid_band.index_select(0, final)
+                        band_of_sheet = (
+                            workspace.gather(cid_band, final)
+                            if owned
+                            else cid_band.index_select(0, final)
+                        )
                     n_bands = int(band_of_sheet.max().item()) + 1
-                    members = torch.zeros(n_bands, dtype=torch.int64, device=device)
-                    members.scatter_add_(
-                        0,
-                        band_of_sheet,
-                        torch.ones(nb, dtype=torch.int64, device=device),
-                    )
-                    only_band = members.index_select(0, band_of_sheet) == 1
+                    only_band = workspace.tensor((nb,), torch.bool)
+                    with workspace.stage():
+                        members = workspace.tensor((n_bands,), torch.int64, 0)
+                        members.scatter_add_(
+                            0, band_of_sheet, workspace.tensor((nb,), torch.int64, 1)
+                        )
+                        torch.eq(
+                            workspace.gather(members, band_of_sheet), 1, out=only_band
+                        )
                     del members
                     positive_wgt = sheet_wgt >= 0.0
                     # The surface id: one band never spans two meshes, so the dominant

@@ -169,16 +169,19 @@ Standalone compaction keeps its diagnostic dictionary and raw-area semantics;
 it remains the reference arm in tests. Supplying `resolver_memory` together
 with `diagnostics=True` is rejected rather than silently returning another
 representation. Native per-pixel and final-walk sort permutations also write
-into forward arena scratch. The caller's discovery scope must surround the
-whole call. Both permutations are included conservatively in the discovery
+into forward arena scratch. The caller's discovery scope still owns the surrounding raw records. The sixth
+tranche additionally wraps compaction's own workspace in an exception-safe
+forward scope. Both permutations are included conservatively in the discovery
 footprint estimate, even where a native sort falls back to PyTorch. The forward
 scope can be overwritten after return without damaging persistent sheet data.
 
 This is **not** a complete arena conversion of compaction. The third tranche
 adds short stage lifetimes for many reductions and temporary tables. The fourth
 tranche moves band-composite, final band-reduction, reference-selection and
-sibling-weight results into caller-owned stages. Remaining tensor expressions,
-sorting/grouping intermediates and library workspace remain allocator-owned. The standalone sheet CSR now uses lower
+sibling-weight results into caller-owned stages. The fifth and sixth tranches
+extend ownership to sorting, sorted payloads and grouping inverses as recorded
+below; remaining expressions and library workspace still need external
+headroom. The standalone sheet CSR uses lower
 bounds independently of `sheet_metadata_kernel`, which controls diagnostic
 counting only; it no longer selects two unrelated algorithms together.
 
@@ -418,3 +421,67 @@ the split chunks. Separate tests inject partial forward/reverse publication
 allocations and non-memory failures and verify bounded retries and persistent
 sentinels. These fixtures do not claim ordinary reflective scenes are normally
 eligible for deferral, or establish a performance or total-device-memory result.
+
+
+## Sixth tranche: sorted payloads, grouping inverses and final gathers
+
+`SortedFragments` groups the sorted pixel IDs, exact depth values, private
+coverage values and mask words. `gather_sorted_fragments` validates every input
+and destination's metadata and disjointness before writing any field, and uses
+`gather_rows` rather than converting integer values through floating point.
+Private coverage ownership is required because the closed-shell ceiling changes
+it in place. Production fields occupy forward workspace; diagnostic outputs
+remain independently allocated. No per-fragment Python objects are introduced.
+
+`RankGroups` names inverse IDs and per-group parent/rank descriptors. Rank and
+class grouping accept an exact, contiguous int64 inverse destination. Native
+rank grouping writes it directly; source integer widths are normalized in
+scratch for the count reduction. The torch unique path still uses its own
+inverse temporarily, then copies it into the supplied destination. Dynamic
+labels retain ordinary ownership on return from a grouping helper; production
+adopts them into its surrounding stage after the helper's scratch has unwound.
+The uniform-class fast path honors an output destination rather than returning
+an input alias. Input values retain their existing domain requirements: dense
+ordered rank parents, clamped ranks, and class values below their packing base.
+
+`sheet_grouping.class_groups` is the one implementation shared by compaction
+and the compatibility spelling in `mps_compat`. Non-MPS grouping preserves its
+sorted packed-key unique policy. The MPS-friendly arm preserves stable pair
+ordering with known-int32 band/class keys, never a wide composite key. Its sort
+keys, permutation, comparisons and boundary scan are staged; its result inverse
+outlives them. Metadata and overlap rejection precedes writes. A valid output
+is not promised to be transactionally unchanged after an execution failure;
+workspace pointers are restored so the caller can discard and retry the result.
+
+`group_ids_from_starts` implements the existing boolean boundary scan as one
+inclusive integer cumsum into its destination followed by an in-place subtract.
+It avoids the materialized boolean-to-integer input and subtraction result.
+Both int32 and int64 outputs are supported. Metadata, byte ranges and the
+inclusive scan's worst-case capacity are checked without reading device values.
+Callers supply a true first flag for a normal nonempty stream; a false first
+flag retains the old expression's -1 result rather than silently changing it.
+This helper replaces integer grouping scans, not floating shell prefixes.
+
+Final sheet coverage, masks, pixels and sample-depth tables use exact destination
+gathers. Sibling weights and sample-depth classification share the final band
+map. Persistent finalization already follows the representative indices itself,
+so compaction skips its extra representative gather unless sample-depth work
+needs it. Mask flag construction and membership-count scratch use short nested
+stages; all floating coverage arithmetic and output ordering remain unchanged.
+
+An outer `CompactionWorkspace.stage()` now bounds the new sorted-payload and
+group-result allocations. With the normal shared workspace/resolver arena, it
+also reclaims direct sort permutations on return or exception. A separately
+supplied workspace only owns its own arena: callers must still scope direct
+resolver-arena permutations when using different arenas. Existing discovery
+scopes remain in place. Final reverse-arena output survives; diagnostics contain
+no references to reclaimed workspace. Individual result arrays are not freed at
+their last Python `del`: they remain until their owning stage closes.
+
+The workspace's overlapping-byte counter automatically accounts for the new
+fields and adopted labels, including alignment. Discovery still conservatively
+charges direct sort permutations separately. Preprocessing metadata, rank-pooling
+maps, PyTorch unique intermediates, and compiler/library/driver workspace need
+external headroom. No total-device peak reduction or speedup follows merely from
+moving the result arrays into the arena. The rank ceiling and all kernel layouts
+are unchanged.
