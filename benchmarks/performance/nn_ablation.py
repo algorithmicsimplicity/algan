@@ -73,13 +73,16 @@ def scene():
 # is there to check. ``ALGAN_SHADOW_ANYHIT`` is the exception -- it selects a
 # different shadow-query algorithm, documented as sharing the ordered march's
 # output up to one seam-merge corner -- so there the digest is the question
-# rather than the assertion.
+# rather than the assertion. ``ALGAN_DEVICE_DISPATCH`` (audit Q1/Q2) changes
+# the host/device dataflow rather than the codegen, but it claims to preserve
+# the stable sheet order exactly, so the digest is the assertion there too.
 _CODEGEN_ENV = (
     ("ALGAN_SHADOW_ANYHIT", "ah"),
     ("ALGAN_SHADOW_VIS_EXACT", "vis"),
     ("ALGAN_OPT_LEVEL", "opt"),
     ("ALGAN_ADV_OPT", "adv"),
     ("ALGAN_ANALYTIC_AA_SECONDARY", "sec"),
+    ("ALGAN_DEVICE_DISPATCH", "dd"),
 )
 _SUFFIX = "".join(
     f"_{short}{os.environ[name]}" for name, short in _CODEGEN_ENV if name in os.environ
