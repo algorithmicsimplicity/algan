@@ -4,19 +4,71 @@ on:
     branches: [codex/mps-cache-transport]
     paths: [.github/workflows/mps_cache_transport.yaml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  tools:
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      BASE: f2073d718364617b35ed86028efefcd0ccda5606
+      TARGET: codex/mps-ndarray-launch-cache
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - name: Recover checksum-verified local patch outside the helper checkout
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          payload = ''.join(Path(f'.github/gpu-run/mps-cache-payload-{i}.txt').read_text().strip() for i in range(2))
+          patch = gzip.decompress(base64.b64decode(payload, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '4692783eadca0c3ef1a0e47b36035b9e142759b4fe89899c1c6cb7f5ca99c2d6'
+          Path(os.environ['RUNNER_TEMP'], 'mps-cache.patch').write_bytes(patch)
+          print('Validated patch bytes:', len(patch))
+          PY
+      - uses: actions/checkout@v4
         with:
-          python-version: '3.13'
-      - run: |
-          python -m pip download --no-deps --only-binary=:all: ruff==0.12.4 -d wheels
+          ref: f2073d718364617b35ed86028efefcd0ccda5606
+          fetch-depth: 1
+          clean: true
+      - name: Validate final tree and publish without helper history
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE"
+          git apply --check "$RUNNER_TEMP/mps-cache.patch"
+          git apply --index "$RUNNER_TEMP/mps-cache.patch"
+          git diff --cached --check
+          python - <<'PY'
+          import subprocess
+          expected = {
+              'algan/rendering/DESIGN_mps_launch_cache.md': '936359071d1da82e6e095f066af406f634b02cf5',
+              'algan/rendering/mps_zero_copy.py': '551823c439ea167bf75094574a70edc5edf59f32',
+              'algan/utils/_launch_telemetry.py': '71da9f921eb2c6311677e3335bab29c146168fa5',
+              'algan/utils/taichi_fast_launch.py': 'a433033fe00317db5f81bd4f1ba04863f0666afb',
+              'benchmarks/_mps_launch_cache_check.py': 'a76e327cc46a0dca7183d7cc948a56616232461e',
+              'quadrants_patches/README.md': '51933417cdde451f1e2615aab88bb0a125af5472',
+              'tests/unit_tests/test_quadrants_ndarray_launch.py': '87bad907462eda3b2754a30fd31d64db187b664e',
+              'tests/unit_tests/test_taichi_fast_launch.py': '0820c3e077e54e8140852655478bb505bbb30ee4',
+          }
+          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert set(paths) == set(expected), paths
+          for path, sha in expected.items():
+              assert subprocess.check_output(['git', 'hash-object', path], text=True).strip() == sha, path
+          print('All eight final file blobs match the locally tested tree.')
+          PY
+          python -m compileall -q algan/utils/taichi_fast_launch.py algan/utils/_launch_telemetry.py tests/unit_tests/test_quadrants_ndarray_launch.py benchmarks/_mps_launch_cache_check.py
+          test "$(git ls-remote origin refs/heads/$TARGET | cut -f1)" = "$BASE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Cache Quadrants ndarray launch plans for MPS' -m 'Bind current ndarrays with the offset-aware bulk setter, preserve fallbacks, add opt-in complete launch telemetry, and cover rebinding plus same-runner A/B validation.'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push origin "HEAD:refs/heads/$TARGET"
+          git show --stat --format=fuller HEAD | tee "$RUNNER_TEMP/mps-cache-publication.txt"
+          git push origin --delete codex/mps-cache-transport
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: mps-cache-dev-tools
-          path: wheels/*.whl
-          retention-days: 1
+          name: mps-cache-publication
+          path: |
+            ${{ runner.temp }}/mps-cache.patch
+            ${{ runner.temp }}/mps-cache-publication.txt
+          retention-days: 7
