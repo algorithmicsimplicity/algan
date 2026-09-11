@@ -215,7 +215,9 @@ def index_reduce_(out, index, source, reduce):
 _MPS_CLAMP_FLOOR = 5.9604645e-8
 
 
-def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
+def clamp_floor(
+    tensor: torch.Tensor, floor: float, *, out=None, workspace=None
+) -> torch.Tensor:
     """``tensor.clamp_min(floor)`` for a floor too small for MPS to carry.
 
     **MPS rounds a clamp's scalar bound through float16.** Every bound at or
@@ -258,14 +260,36 @@ def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
     which is where that belongs: a call-time exception on a valid floor would
     fire mid-render, on whichever scene first reached the branch.
 
+    ``out`` optionally supplies the result, including an exact in-place alias.
+    ``workspace`` scopes the workaround's comparison mask; the default call
+    retains ordinary ownership and the same backend policy. Autograd keeps its
+    saved predicate outside reusable scratch. Like torch's ``out``
+    operations, destination calls are for render-time tensors without gradients.
+
     **One magnitude is beyond either spelling.** At a float32 *subnormal* floor
     (1.4e-45) the sweep has ``where`` failing on MPS as well -- the constant
     itself does not survive -- so neither form is a guard there. No call site
     is anywhere near it, and this says so rather than implying a universal fix.
     """
     if floor >= _MPS_CLAMP_FLOOR or not mps_friendly():
-        return tensor.clamp_min(floor)
-    return torch.where(tensor < floor, floor, tensor)
+        return torch.clamp_min(tensor, floor, out=out)
+    if workspace is None or (
+        out is None and torch.is_grad_enabled() and tensor.requires_grad
+    ):
+        if out is None:
+            # Autograd retains the predicate for backward; it must not be a
+            # view of scratch that the caller may reuse after this returns.
+            return torch.where(tensor < floor, floor, tensor)
+        return torch.where(tensor < floor, tensor.new_full((), floor), tensor, out=out)
+    # A caller-owned destination may alias tensor exactly. Only the predicate
+    # is scratch; an omitted destination still returns ordinary-owned storage.
+    with workspace.stage():
+        below = workspace.tensor(tensor.shape, torch.bool)
+        torch.lt(tensor, floor, out=below)
+        if out is None:
+            return torch.where(below, floor, tensor)
+        bound = workspace.tensor((), tensor.dtype, floor)
+        return torch.where(below, bound, tensor, out=out)
 
 
 def kernel_index(tensor: torch.Tensor) -> torch.Tensor:
@@ -425,100 +449,20 @@ def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
 
 
 def band_class_groups(band_of_frag, cls_eff, base):
-    """Group the fragments by ``(band, shading class)``, without a wide key.
+    """Group ``(band, shading class)`` pairs without a wide key on MPS.
 
-    ``compact_sheets`` subdivides each band by shading class with a composite
-    key, ``band * _SHADE_CLASS_BASE + cls``, and a ``unique`` over it
-    (``sheets.py`` §4.4). The base is ``1 << 25``, so for a 1080p frame with
-    40956 bands the key reaches **2**40** -- past where MPS int64 stops being
-    exact, and rows that differ only in their low bits merge.
-
-    Measured, and measured as the *only* thing left: with the split off the
-    same Apple GPU compaction produced 40956 sheets, exactly the CPU's, and
-    with it on, 128.
-
-    So this groups the pairs directly. It sorts by class and then stably by
-    band -- a two-pass LSD sort, the same trick ``sheets._lexsort`` uses -- and
-    walks the result for boundaries, which never multiplies the two together
-    and never handles a value wider than the larger of them. Returns what the
-    ``unique`` returned: the group count, the per-fragment group id, and each
-    group's band.
-
-    The group ORDER is the same. ``unique(..., sorted=True)`` orders by the
-    composite, and because ``base`` exceeds every class the composite orders by
-    ``(band, class)`` -- which is what the sort here produces, so the ids match
-    the wide-key ones exactly and every consumer downstream is unaffected.
-
-    Off the mode this is the wide key, unchanged: the composite form is one
-    sort where this is two, and CPU and CUDA have no reason to pay for that.
+    The destination-aware implementation, and the reasoning this arm exists for
+    at all -- the composite key reaching 2**40 past MPS int64 exactness, the
+    40956-to-128 sheet collapse that measured it, and why the group IDs still
+    match the wide-key ones -- are in
+    :func:`~algan.rendering.raytracing.sheet_grouping.class_groups`. Keep this
+    spelling for compatibility callers; it returns ordinary-owned results.
+    Classes must be in ``[0, base)``, and band/class values fit signed int32 on
+    the MPS path.
     """
-    if not mps_friendly():
-        skey = band_of_frag * base + cls_eff
-        uniq_skey, inverse = torch.unique(skey, sorted=True, return_inverse=True)
-        return int(uniq_skey.numel()), inverse, uniq_skey // base
+    from algan.rendering.raytracing.sheet_grouping import class_groups
 
-    if band_of_frag.numel() == 0:
-        empty = band_of_frag.new_zeros(0)
-        return 0, empty, empty
-    # Least-significant key first, so the stable sort on the band leaves
-    # equal-band runs ordered by class. Imported here rather than at module
-    # scope: ``device_sort`` reads :func:`mps_friendly` from this module.
-    from algan.rendering.raytracing import device_sort
-
-    # int32 copies for the device arm, which costs a pass per key and saves
-    # four radix passes per key. Safe in the strongest sense (the argument
-    # ``sheets._narrow_sort_key`` spells out): an exact int32 copy of an int64
-    # key has the same order and the same indices, so the stable permutation is
-    # identical. Both bounds are known without asking the device -- a band id
-    # is an index into a stream that cannot approach 2**31, and a class is
-    # documented as ``[0, _SHADE_CLASS_BASE)`` with the base at 2**25.
-    order = device_sort.stable_lexsort(
-        band_of_frag.to(torch.int32), cls_eff.to(torch.int32)
-    )
-    if order is None:
-        order = torch.argsort(cls_eff, stable=True)
-        order = order.index_select(
-            0, torch.argsort(band_of_frag.index_select(0, order), stable=True)
-        )
-    else:
-        order = order.to(torch.int64)
-    bands = band_of_frag.index_select(0, order)
-    classes = cls_eff.index_select(0, order)
-    starts = torch.ones_like(bands, dtype=torch.bool)
-    if bands.numel() > 1:
-        starts[1:] = (bands[1:] != bands[:-1]) | (classes[1:] != classes[:-1])
-    del classes
-    group_sorted = torch.cumsum(starts.to(torch.int64), 0) - 1
-    inverse = torch.empty_like(group_sorted)
-    inverse.scatter_(0, order, group_sorted)
-    del order
-    # Each group's band, written by a scatter rather than gathered through
-    # ``bands[starts]``. The two agree exactly -- every fragment of a group
-    # carries the group's band, so the duplicates a scatter resolves in
-    # whatever order all write one value -- and the difference is what the
-    # boolean index costs on MPS: it is a ``nonzero`` (a count readback and a
-    # compaction pass) followed by a gather, where this is one scatter beside a
-    # scalar readback the caller needs anyway. Measured on the Mac runner's UHD
-    # profile as 17 gathers over 2.5M fragments at 0.15 s each, the largest
-    # single torch op left in the compaction after the fences moved.
-    #
-    # ``torch.empty``, never ``bands.new_empty``: the fragment stream reaches
-    # here as a :class:`~algan.constants.color.Color`-subclassed tensor (torch
-    # propagates a Tensor subclass through every op that touched one, and the
-    # band ids descend from one that did), and ``Color`` overrides
-    # ``new_empty`` to return an opaque black ``[R, G, B, glow, opacity]``
-    # row -- five float32 values, whatever size was asked for -- so the
-    # destination was neither the right dtype nor the right length. The dtype
-    # is what the scatter complained about (``scatter(): Expected self.dtype
-    # to be equal to src.dtype``, which is how it took down the MPS arm); the
-    # length would have been next. So the allocation names its dtype and
-    # device rather than inheriting them through a method a subclass may have
-    # redefined.
-    num_groups = int(group_sorted[-1].item()) + 1
-    band_of_group = torch.empty(num_groups, dtype=bands.dtype, device=bands.device)
-    band_of_group.scatter_(0, group_sorted, bands)
-    del group_sorted
-    return num_groups, inverse, band_of_group
+    return class_groups(band_of_frag, cls_eff, base)
 
 
 def taichi_accumulate_dtype():

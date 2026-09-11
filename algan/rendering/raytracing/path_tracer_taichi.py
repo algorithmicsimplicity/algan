@@ -2195,34 +2195,29 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _PT_SHADE_ARENA's.
+    # BEGIN GENERATED pt_shade bindings
     t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
     t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
     t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
     tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
     tri_norm = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8])))
     tri_extra = ti.static(ArenaView(arena_f32, aoff[5], (ashp[9], ashp[10], ashp[11])))
-    tri_colors = ti.static(ArenaView(
-        arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
+    tri_colors = ti.static(ArenaView(arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
     tri_uvs = ti.static(ArenaView(arena_f32, aoff[7], (ashp[16], ashp[17], ashp[18])))
     tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[8], (ashp[19], ashp[20])))
     textures = ti.static(ArenaView(arena_f32, aoff[9], (ashp[21], ashp[22], ashp[23])))
     b_node_miss = ti.static(ArenaView(arena_i32, aoff[10], (ashp[24],)))
     b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[11], (ashp[25],)))
     b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[12], (ashp[26],)))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29])))
-    circuit_colors = ti.static(ArenaView(
-        arena_f32, aoff[14], (ashp[30], ashp[31], ashp[32], ashp[33])))
-    circuit_border_colors = ti.static(ArenaView(
-        arena_f32, aoff[15], (ashp[34], ashp[35], ashp[36], ashp[37])))
+    circuit_meta = ti.static(ArenaView(arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29])))
+    circuit_colors = ti.static(ArenaView(arena_f32, aoff[14], (ashp[30], ashp[31], ashp[32], ashp[33])))
+    circuit_border_colors = ti.static(ArenaView(arena_f32, aoff[15], (ashp[34], ashp[35], ashp[36], ashp[37])))
     edges_2d = ti.static(ArenaView(arena_f32, aoff[16], (ashp[38], ashp[39], ashp[40])))
     edge_accel = ti.static(ArenaView(arena_i32, aoff[17], (ashp[41],)))
     tri_mat_id = ti.static(ArenaView(arena_i32, aoff[18], (ashp[42], ashp[43])))
     tri_mat = ti.static(ArenaView(arena_f32, aoff[19], (ashp[44], ashp[45], ashp[46])))
-    light_pos = ti.static(ArenaView(
-        arena_f32, aoff[20], (ashp[47], ashp[48], ashp[49])))
-    light_col = ti.static(ArenaView(
-        arena_f32, aoff[21], (ashp[50], ashp[51], ashp[52])))
+    light_pos = ti.static(ArenaView(arena_f32, aoff[20], (ashp[47], ashp[48], ashp[49])))
+    light_col = ti.static(ArenaView(arena_f32, aoff[21], (ashp[50], ashp[51], ashp[52])))
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[22], (ashp[53],)))
     cam_origin = ti.static(ArenaView(arena_f32, aoff[23], (ashp[54], ashp[55])))
     nee_cdf = ti.static(ArenaView(arena_f32, aoff[24], (ashp[56],)))
@@ -2232,15 +2227,14 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
     env_cdf = ti.static(ArenaView(arena_f32, aoff[28], (ashp[61], ashp[62])))
     tri_shell = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63], ashp[64])))
     tri_emit_entry = ti.static(ArenaView(arena_i32, aoff[30], (ashp[65],)))
-    lt_node_f = ti.static(ArenaView(
-        arena_f32, aoff[31], (ashp[66], ashp[67], ashp[68])))
-    lt_node_i = ti.static(ArenaView(
-        arena_i32, aoff[32], (ashp[69], ashp[70], ashp[71])))
+    lt_node_f = ti.static(ArenaView(arena_f32, aoff[31], (ashp[66], ashp[67], ashp[68])))
+    lt_node_i = ti.static(ArenaView(arena_i32, aoff[32], (ashp[69], ashp[70], ashp[71])))
     lt_entry_leaf = ti.static(ArenaView(arena_i32, aoff[33], (ashp[72], ashp[73])))
     lt_frame = ti.static(ArenaView(arena_i32, aoff[34], (ashp[74],)))
     nee_inf_cdf = ti.static(ArenaView(arena_f32, aoff[35], (ashp[75],)))
     nee_inf_ref = ti.static(ArenaView(arena_i32, aoff[36], (ashp[76],)))
     pt_glass_energy = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
+    # END GENERATED pt_shade bindings
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -3940,6 +3934,7 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
 #: binding prologue reads those slots by literal index, so the two
 #: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
 #: fails if they stop agreeing.
+# BEGIN GENERATED pt_shade layout
 _PT_SHADE_ARENA = (
     ("t_node_miss", "i32", 1),
     ("t_leaf_prim", "i32", 1),
@@ -3981,28 +3976,86 @@ _PT_SHADE_ARENA = (
     ("pt_glass_energy", "f32", 2),
 )
 
-#: The argument list every launch site passes. Unchanged by the
-#: conversion -- that is the point of the wrapper below.
 _PT_SHADE_PARAMS = (
-    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
-    "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_norm", "tri_extra",
-    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
-    "num_colored_triangles", "b_nodes", "b_node_miss", "b_leaf_prim",
-    "b_leaf_tspan", "b_first_leaf", "circuit_meta", "circuit_colors",
-    "circuit_border_colors", "edges_2d", "edge_accel", "tri_mat_id",
-    "tri_mat", "light_pos", "light_col", "num_lights", "pixel_world_scale",
-    "layer_offset_triangles", "cam_origin", "refit", "has_tri", "has_bez",
-    "shadows", "shadow_mode",
-    "vis_lights", "auth_sampled",
-    "frag_pipelines", "frag_scatters", "tri_pids", "seed_root",
+    "active",
+    "num_active",
+    "t_nodes",
+    "t_node_miss",
+    "t_leaf_prim",
+    "t_leaf_tspan",
+    "t_first_leaf",
+    "tri_pos",
+    "tri_norm",
+    "tri_extra",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "textures",
+    "num_colored_triangles",
+    "b_nodes",
+    "b_node_miss",
+    "b_leaf_prim",
+    "b_leaf_tspan",
+    "b_first_leaf",
+    "circuit_meta",
+    "circuit_colors",
+    "circuit_border_colors",
+    "edges_2d",
+    "edge_accel",
+    "tri_mat_id",
+    "tri_mat",
+    "light_pos",
+    "light_col",
+    "num_lights",
+    "pixel_world_scale",
+    "layer_offset_triangles",
+    "cam_origin",
+    "refit",
+    "has_tri",
+    "has_bez",
+    "shadows",
+    "shadow_mode",
+    "vis_lights",
+    "auth_sampled",
+    "frag_pipelines",
+    "frag_scatters",
+    "tri_pids",
+    "seed_root",
     "sample_base",
-    "tile_pixels", "rr_start", "firefly_clamp", "time_start", "width",
-    "height", "ray_offset", "rs_ro", "rs_rd", "rs_sca", "rs_int", "rs_pix",
-    "hit_f", "hit_i", "pt_thru", "pt_acc", "pt_stats", "nee_cdf", "nee_ref",
-    "nee_meta", "tri_emit_prob", "env_cdf", "tri_shell", "pt_aov",
-    "tri_emit_entry", "lt_node_f", "lt_node_i", "lt_entry_leaf", "lt_frame",
-    "nee_inf_cdf", "nee_inf_ref", "pt_glass_energy",
+    "tile_pixels",
+    "rr_start",
+    "firefly_clamp",
+    "time_start",
+    "width",
+    "height",
+    "ray_offset",
+    "rs_ro",
+    "rs_rd",
+    "rs_sca",
+    "rs_int",
+    "rs_pix",
+    "hit_f",
+    "hit_i",
+    "pt_thru",
+    "pt_acc",
+    "pt_stats",
+    "nee_cdf",
+    "nee_ref",
+    "nee_meta",
+    "tri_emit_prob",
+    "env_cdf",
+    "tri_shell",
+    "pt_aov",
+    "tri_emit_entry",
+    "lt_node_f",
+    "lt_node_i",
+    "lt_entry_leaf",
+    "lt_frame",
+    "nee_inf_cdf",
+    "nee_inf_ref",
+    "pt_glass_energy",
 )
+# END GENERATED pt_shade layout
 
 _pt_shade_launch = arena_packed(
     __name__, "pt_shade_arena", _PT_SHADE_PARAMS, _PT_SHADE_ARENA)

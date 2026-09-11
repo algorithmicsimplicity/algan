@@ -53,11 +53,11 @@ from algan.settings import SETTINGS
 # parameter list as the tracer passes it (positionally), and the total the
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
-_WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
-# 70 since the per-batch ``vis_lights`` slot count joined the list directly
-# after the gate (the shadow-visibility payload sizing) and the one-sided
-# shadow cull's ``sided_cull`` template joined it after ``shadow_term``.
-_EXPECTED_SHADE_ARGS = 70
+_WEIGHT_FLOOR_EXIT_ARG_INDEX = 48
+# Splitting the old float-only metadata into render_floats/render_ints adds
+# one array before the shading gates. Keep this independent pin so render
+# spies still fail loudly if the schema or their inspected argument drifts.
+_EXPECTED_SHADE_ARGS = 71
 
 
 @pytest.mark.fast

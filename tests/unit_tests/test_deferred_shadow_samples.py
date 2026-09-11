@@ -18,7 +18,7 @@ from algan import (
     Scene,
     Square,
 )
-from algan.rendering.raytracing import raster_pipeline, raster_taichi
+from algan.rendering.raytracing import raster_taichi
 from algan.rendering.raytracing.tracer import _deferred_shadow_sample_count
 from algan.scene_manager import SceneManager
 
@@ -39,7 +39,7 @@ def test_only_compact_hard_lights_collapse(enabled, columns, samples):
 def test_zero_footprint_visibility_matches_every_original_sample(
     tmp_path, monkeypatch, radius
 ):
-    original = raster_pipeline.raster_shadow_trace
+    original = raster_taichi.raster_shadow_trace
     params = raster_taichi._RASTER_SHADOW_TRACE_PARAMS
     checks = []
     saw_attenuation = []
@@ -76,7 +76,7 @@ def test_zero_footprint_visibility_matches_every_original_sample(
                 checks.append(adaptive)
         return original(*inputs)
 
-    monkeypatch.setattr(raster_pipeline, "raster_shadow_trace", checked)
+    monkeypatch.setattr(raster_taichi, "raster_shadow_trace", checked)
     SceneManager.reset()
     try:
         with SETTINGS.override():

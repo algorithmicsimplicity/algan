@@ -41,13 +41,17 @@ import torch
 
 from algan.environment import env_float
 from algan.rendering import fragment_capture
-from algan.rendering.mps_compat import clamp_floor, index_copy_rows
+from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_samples,
     kbuf,
     max_surfaces_per_ray,
+)
+from algan.rendering.raytracing.render_metadata import (
+    GLOSS_BASE,
+    allocate_render_metadata,
 )
 from algan.rendering.raytracing.scene_builder import (
     _downsample_background,
@@ -100,6 +104,10 @@ _WAVEFRONT_POOL_RETRIES = [0]
 # instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
 _FRAG_PID_LAST = {"tri": ALL_PIDS, "pn": ALL_PIDS}
 from algan.logging.logger import PERF, get_logger
+from algan.rendering.raytracing.batch_policy import (
+    BatchExecutionPolicy,
+    WavefrontPolicy,
+)
 
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
@@ -114,6 +122,12 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_composite,
     gloss_pyramid_level,
     gloss_scatter,
+)
+from algan.rendering.raytracing.scene_bounds import triangle_scene_bounds
+from algan.rendering.raytracing.shadow_queue import (
+    ShadowTraceContext,
+    _gather_shadow_payload,
+    _scatter_shadow_visibility,
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -137,6 +151,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wf_finalize_aa,
     wf_finalize_uncovered,
 )
+from algan.rendering.raytracing.wavefront_state import RayState
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ensure_render_headroom,
@@ -176,6 +191,9 @@ class RenderPlan:
     #: stop at ``pt_min_samples``. **Zero means the path tracer did not run**,
     #: so it is 0.0 on every deterministic render.
     path_samples_mean: float = 0.0
+    primary_route: str | None = None
+    effective_anti_alias_level: int = 1
+    fallback_reasons: tuple[str, ...] = ()
 
     @property
     def is_supported(self) -> bool:
@@ -189,6 +207,9 @@ class RenderPlan:
             "unsupported_features": list(self.unsupported_features),
             "truncations": self.truncations.as_dict(),
             "path_samples_mean": self.path_samples_mean,
+            "primary_route": self.primary_route,
+            "effective_anti_alias_level": self.effective_anti_alias_level,
+            "fallback_reasons": list(self.fallback_reasons),
         }
 
 
@@ -222,13 +243,13 @@ def _arena_values(memory, values, dtype=torch.float32):
     return _arena_copy(memory, source)
 
 
-def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
+def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True) -> RayState:
     """Allocate the wavefront's per-ray global state from the render memory pool
     (a bump allocator) rather than fresh ``torch.empty`` tensors.
 
     The caller snapshots ``memory.get_pointers()`` before each tile and restores
     them after, so this ~hundreds-of-MB of state is released *deterministically*
-    at the end of every iteration and the next tile reuses the same arena bytes.
+    at the end of every tile and the next tile reuses the same arena bytes.
     Previously these were ``torch.empty`` allocations that the CUDA caching
     allocator / Python GC didn't reclaim before the next tile asked for its own,
     so consecutive tiles' state piled up and OOMed the GPU at HD/AA>=2.
@@ -242,20 +263,23 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
         # rs_sca: 0 weight red, 1 t_prev, 2 layer_prev, 3 seam_t, 4 base_dist,
         # 5 weight green, 6 weight blue (color transport).
         memory.get_tensor((tn, sca_width), f32),  # rs_sca (7 general)
-        # rs_int: 0 bounces_left, 1 processed, 2 status, 3 num_hits, 4 drained
-        # (column 4 is used only by the legacy sorted-material path
-        # (unsupported); the classic kernels index columns 0-3 and never
-        # read it).
+        # rs_int: bounces_left, processed, status, num_hits, accumulator_row.
+        # Column 4 is live on the sparse route; dense kernels use columns 0-3.
         memory.get_tensor((tn, 5), i32),  # rs_int
     )
     if global_hits:
-        return core + (
-            memory.get_tensor((tn, kbuf), f32),  # rs_kt
-            memory.get_tensor((tn, kbuf), f32),  # rs_kl
-            memory.get_tensor((tn, kbuf), f32),  # rs_ka
-            memory.get_tensor((tn, kbuf), f32),  # rs_kb
-            memory.get_tensor((tn, kbuf), i32),  # rs_kp
-            memory.get_tensor((tn, kbuf), i32),  # rs_kf
+        return RayState(
+            *(
+                core
+                + (
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kt
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kl
+                    memory.get_tensor((tn, kbuf), f32),  # rs_ka
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kb
+                    memory.get_tensor((tn, kbuf), i32),  # rs_kp
+                    memory.get_tensor((tn, kbuf), i32),  # rs_kf
+                )
+            )
         )
 
     # The supported general renderer no longer attaches a K-buffer to every
@@ -266,7 +290,7 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     # queue instead.
     stub_f = memory.get_tensor((1, 1), f32)
     stub_i = memory.get_tensor((1, 1), i32)
-    return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
+    return RayState(*(core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)))
 
 
 def _gloss_pyramid_levels(width, height, max_levels):
@@ -478,7 +502,9 @@ def _split_pool_ratio(splitting, merged, analytic_raster=False, custom_scatter=F
     return ratio
 
 
-def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_raster):
+def _shared_pool_slots(
+    primary_capacity, memory_primary, pool_ratio, analytic_raster, *, triangle_aa=None
+):
     """How many slots to allocate for the shared continuation pool.
 
     ``pool_ratio`` is an ESTIMATE of the average continuations per primary (see
@@ -502,7 +528,9 @@ def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio, analytic_ra
     """
     budgeted = max(1, int(memory_primary)) * int(pool_ratio)
     ratio = int(pool_ratio)
-    if analytic_raster and rt_settings.analytic_aa_tri_active():
+    if triangle_aa is None:
+        triangle_aa = analytic_raster and rt_settings.analytic_aa_tri_active()
+    if analytic_raster and triangle_aa:
         from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
 
         ratio = max(ratio, _AA_NUM_SAMPLES + 1)
@@ -581,90 +609,86 @@ def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
     return max(1, min(scaled, attempt_primary - 1))
 
 
-def analytic_raster_route_active(
+def _shrink_sparse_memory_retry(attempt_primary, shared_pool_capacity, pool_ratio):
+    """Reduce both primary work and its pool after an arena allocation failure.
+
+    Overflow retries intentionally keep the pool so fewer primaries inherit
+    its spare slots. Memory retries cannot: that pool may be the allocation
+    preventing even one primary's scratch from fitting. Both the primary
+    resolve and secondary drain use this rule, after their one-pixel guard.
+    """
+    primary = max(1, int(attempt_primary) // 2)
+    if pool_ratio > 1:
+        shared_pool_capacity = max(primary, int(shared_pool_capacity) // 2)
+        pool = shared_pool_capacity
+    else:
+        pool = primary
+    return primary, shared_pool_capacity, pool
+
+
+def _resolve_wavefront_policy(
     merged,
     *,
-    light_sources=(),
-    environment_map=None,
-    near_clip=0.0,
-    far_clip=0.0,
-    transparent_background=False,
+    analytic_raster,
+    aa_level,
+    near_clip,
+    refraction,
+    ior_stack,
+    shadow_mode,
+    custom_scatter,
+    has_triangles,
 ):
-    """Whether this batch can use analytic coverage at output resolution.
-
-    This is the single host-side route decision shared by allocation planning
-    and rendering.  A requested supersample level is therefore retained for
-    every route that the raster frontend cannot honor; only a batch whose
-    complete primary geometry has analytic coverage selects AA=1.
-
-    Analytic coverage is resolved by the sheet route and nothing else
-    (DESIGN_sheet_resolve.md; the fragment walk that once served it is
-    deleted), so the sheet resolve's own preconditions are route vetoes here:
-    with any of them off the batch falls back to the classic wavefront at the
-    requested supersample level.  A transparent background composites fine
-    from sheet leftover weight, but not together with an environment map
-    (the env prefill would fill the alpha the background owes), so that one
-    combination also falls back.
-    """
-    if (
-        int(rt_settings.samples_per_pixel) > 1
-        or not rt_settings.hybrid_raster
-        or not rt_settings.analytic_aa
-        or not rt_settings.sheet_resolve
-        or not rt_settings.analytic_aa_run
-        or not rt_settings.raster_sparse_coverage
-        or not rt_settings.raster_empty_skip
-        or not rt_settings.raster_covered_shade
-        or (transparent_background and environment_map is not None)
-        or merged.get("tri_frame_valid") is None
-        or float(near_clip) > 0.0
-    ):
-        return False
-
-    num_tri = int(merged.get("num_triangles", 0))
-    num_bez = int(merged.get("num_circuits", 0))
-    if num_tri <= 0 and num_bez <= 0:
-        return False
-    if num_tri > 0 and not rt_settings.analytic_aa_tri_active():
-        return False
-    if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
-        return False
-
-    shadow = bool(rt_settings.shadows)
-    lights_extended = any(
-        getattr(light, "_render_aux", None) is not None
-        for light in (light_sources or ())
-    )
-    has_environment = environment_map is not None
-    frag = (
-        bool(rt_settings.fragment_shading)
-        or shadow
-        or _scene_has_user_pipeline(merged)
-        or lights_extended
-        or has_environment
-    )
-    custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
-    if custom_scatter:
-        return False
-
-    analytic_split = _secondary_split_needed(merged, True)
-    refraction = bool(
-        merged.get("has_refractive")
-        or merged.get("has_refl_transparent")
-        or analytic_split
-    )
-    mem_trim = bool(
+    """Resolve once; low-level callers can use their already-decided flags."""
+    pool_ratio = _split_pool_ratio(refraction, merged, analytic_raster, custom_scatter)
+    memory_trim = bool(
         rt_settings.wf_mem_trim
         and merged.get("mem_trim_active")
-        and not shadow
+        and not shadow_mode
+        and not custom_scatter
         and not refraction
     )
-    return not mem_trim
+    opaque_allowed = bool(
+        not merged.get("opaque_bvh_skipped", False)
+        and not refraction
+        and not custom_scatter
+        and not memory_trim
+    )
+    return WavefrontPolicy(
+        refraction=bool(refraction),
+        ior_stack=bool(ior_stack),
+        state_scalar_width=sca_width(ior_stack),
+        pool_ratio=pool_ratio,
+        tile_rays=int(rt_settings.wavefront_tile_rays),
+        memory_trim=memory_trim,
+        opaque_closest=bool(
+            rt_settings.wf_opaque_closest
+            and opaque_allowed
+            and merged.get("all_visible_opaque", False)
+        ),
+        opaque_prepass=bool(
+            rt_settings.wf_opaque_prepass
+            and opaque_allowed
+            and merged.get("has_any_opaque", False)
+            and merged.get("has_any_translucent", False)
+            and not merged.get("has_uncertain_texture_alpha", False)
+        ),
+        fused_generation=bool(
+            rt_settings.wf_gen_fused_active()
+            and pool_ratio == 1
+            and near_clip <= 0.0
+            and max(1, int(aa_level)) <= 1
+            and not analytic_raster
+        ),
+        triangle_pipeline_mask=_frag_pid_mask(
+            merged, "tri", has_triangles, _record=False
+        ),
+        triangle_aa=bool(rt_settings.analytic_aa_tri_active()),
+    )
 
 
-def effective_anti_alias_level(
+def resolve_batch_policy(
     merged,
-    requested,
+    requested_aa=1,
     *,
     light_sources=(),
     environment_map=None,
@@ -672,24 +696,153 @@ def effective_anti_alias_level(
     far_clip=0.0,
     transparent_background=False,
 ):
-    """Return 1 for analytic raster or the path tracer, otherwise the
-    requested AA setting.
+    """Prepare the shared allocation/execution policy from live settings.
+
+    Called once for each newly prepared batch, never at import time. Cheap
+    scene facts and capability gates are resolved here rather than independently
+    in arena preflight, frame sizing, and wavefront allocation. Fallback reasons
+    name the vetoes; they do not silently select a different renderer backend.
     """
-    requested = max(1, int(requested))
-    if int(rt_settings.samples_per_pixel) > 1:
-        # The path tracer renders at output resolution: jittered sub-pixel
-        # samples are its anti-aliasing.
-        return 1
-    if analytic_raster_route_active(
-        merged,
-        light_sources=light_sources,
-        environment_map=environment_map,
+    samples = max(1, int(rt_settings.samples_per_pixel))
+    deterministic = samples <= 1
+    requested_aa = max(1, int(requested_aa))
+    near_clip, far_clip = float(near_clip), float(far_clip)
+    requested_shadows = bool(rt_settings.shadows)
+    shadows = bool(requested_shadows and deterministic)
+    extended = bool(
+        deterministic
+        and any(
+            getattr(light, "_render_aux", None) is not None
+            for light in (light_sources or ())
+        )
+    )
+    fragment = bool(
+        deterministic
+        and (
+            rt_settings.fragment_shading
+            or shadows
+            or _scene_has_user_pipeline(merged)
+            or extended
+            or environment_map is not None
+        )
+    )
+    custom_scatter = bool(
+        (fragment or not deterministic) and _scene_has_custom_scatter(merged)
+    )
+    num_tri, num_bez = (
+        int(merged.get("num_triangles", 0)),
+        int(merged.get("num_circuits", 0)),
+    )
+    has_tri = bool(not rt_settings.gate_empty_traversals or num_tri > 0)
+    has_bez = bool(not rt_settings.gate_empty_traversals or num_bez > 0)
+    analytic_split = bool(deterministic and _secondary_split_needed(merged, True))
+    physical_split = bool(
+        merged.get("has_refractive") or merged.get("has_refl_transparent")
+    )
+
+    reasons = []
+    if deterministic:
+        for name in (
+            "hybrid_raster",
+            "analytic_aa",
+            "sheet_resolve",
+            "analytic_aa_run",
+            "raster_sparse_coverage",
+            "raster_empty_skip",
+            "raster_covered_shade",
+        ):
+            if not getattr(rt_settings, name):
+                reasons.append(f"{name}_disabled")
+        if transparent_background and environment_map is not None:
+            reasons.append("transparent_environment_background")
+        if merged.get("tri_frame_valid") is None:
+            reasons.append("analytic_projection_unavailable")
+        if near_clip > 0.0:
+            reasons.append("near_clipping")
+        if num_tri <= 0 and num_bez <= 0:
+            reasons.append("no_raster_geometry")
+        if num_tri > 0 and not rt_settings.analytic_aa_tri_active():
+            reasons.append("triangle_analytic_aa_unavailable")
+        if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
+            reasons.append("bezier_analytic_aa_unavailable")
+        if custom_scatter:
+            reasons.append("custom_scatter")
+        if (
+            rt_settings.wf_mem_trim
+            and merged.get("mem_trim_active")
+            and not shadows
+            and not physical_split
+            and not analytic_split
+            and not custom_scatter
+        ):
+            reasons.append("memory_trim")
+    analytic = bool(deterministic and not reasons)
+    effective_aa = 1 if analytic or not deterministic else requested_aa
+    inplace_aa = bool(rt_settings.inplace_aa)
+    shadow_mode = int(shadows)
+    if shadows and rt_settings.shadow_anyhit:
+        if rt_settings.shadow_anyhit == "gather":
+            shadow_mode = 4
+        elif merged.get("has_transmissive", True):
+            shadow_mode = 1
+        else:
+            translucent = bool(
+                merged.get("tri_has_translucent", True)
+                or merged.get("bez_has_translucent", True)
+                or merged.get("has_uncertain_texture_alpha", True)
+            )
+            shadow_mode = 2 if translucent else 3
+    refraction = bool(
+        deterministic
+        and (physical_split or custom_scatter or (analytic and analytic_split))
+    )
+    ior_stack = bool(rt_settings.nested_ior_mode() != 0 and refraction)
+    wavefront = None
+    if deterministic:
+        wavefront = _resolve_wavefront_policy(
+            merged,
+            analytic_raster=analytic,
+            aa_level=effective_aa if inplace_aa else 1,
+            near_clip=near_clip,
+            refraction=refraction,
+            ior_stack=ior_stack,
+            shadow_mode=shadow_mode,
+            custom_scatter=custom_scatter,
+            has_triangles=has_tri,
+        )
+    return BatchExecutionPolicy(
+        primary_route="path_tracer"
+        if not deterministic
+        else "analytic_sheets"
+        if analytic
+        else "classic_wavefront",
+        fallback_reasons=tuple(reasons),
+        samples_per_pixel=samples,
+        requested_aa=requested_aa,
+        effective_aa=effective_aa,
+        inplace_aa=inplace_aa,
+        fragment_shading=fragment,
+        shadow_mode=shadow_mode,
+        shadows=requested_shadows,
+        custom_scatter=custom_scatter,
+        lights_extended=extended,
+        has_triangles=has_tri,
+        has_beziers=has_bez,
+        max_bounces=int(rt_settings.max_bounces),
         near_clip=near_clip,
         far_clip=far_clip,
-        transparent_background=transparent_background,
-    ):
-        return 1
-    return requested
+        wavefront=wavefront,
+    )
+
+
+def analytic_raster_route_active(merged, **kwargs):
+    """Compatibility query for callers that need only the primary-route flag."""
+    return resolve_batch_policy(merged, **kwargs).analytic_raster
+
+
+def effective_anti_alias_level(merged, requested, **kwargs):
+    """Sample AA level; use the prepared policy's frame_scale for buffer sizes."""
+    return resolve_batch_policy(merged, requested, **kwargs).effective_aa
 
 
 def _wavefront_state_bytes_per_primary(
@@ -911,7 +1064,7 @@ def _append_env_texture(textures, env, intensity, device):
 
     Returns the widened buffer and the map's placement meta
     ``(offset, width, height, intensity)`` for the shade kernel (packed into
-    the ``layer_offsets`` ndarray -- the kernel is at the 64-arg ceiling).
+    the typed render metadata arrays -- the kernel is at the 64-arg ceiling).
     Texels are stored column-major (``offset + x * height + y``) to match
     ``_sample_tex_vec5``.
     """
@@ -1010,7 +1163,12 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity, devic
 
 
 def _build_render_plan(
-    samples_per_pixel, scene_environment_map, merged, light_sources=()
+    samples_per_pixel,
+    scene_environment_map,
+    merged,
+    light_sources=(),
+    *,
+    execution_policy=None,
 ):
     """Resolve the renderer route and feature compatibility for a batch."""
     samples_requested = max(1, int(samples_per_pixel))
@@ -1040,11 +1198,25 @@ def _build_render_plan(
         samples_per_pixel=samples_requested,
         requested_features=tuple(requested),
         unsupported_features=tuple(unsupported),
+        primary_route=execution_policy.primary_route
+        if execution_policy is not None
+        else None,
+        effective_anti_alias_level=execution_policy.effective_aa
+        if execution_policy is not None
+        else 1,
+        fallback_reasons=execution_policy.fallback_reasons
+        if execution_policy is not None
+        else (),
     )
 
 
 def _validate_render_capabilities(
-    samples_per_pixel, scene_environment_map, merged, light_sources=()
+    samples_per_pixel,
+    scene_environment_map,
+    merged,
+    light_sources=(),
+    *,
+    execution_policy=None,
 ):
     """Apply the unsupported-feature policy to the selected renderer.
 
@@ -1060,6 +1232,7 @@ def _validate_render_capabilities(
         scene_environment_map,
         merged,
         light_sources,
+        execution_policy=execution_policy,
     )
     if plan.unsupported_features:
         feature_list = ", ".join(plan.unsupported_features)
@@ -1101,6 +1274,54 @@ def _retain_persistent(merged, memory):
     retained = merged.get(ARENA_RETAINED_REVERSE_POINTER)
     if retained is None or reverse < retained:
         merged[ARENA_RETAINED_REVERSE_POINTER] = reverse
+
+
+class _DeferredBVHRequired(Exception):
+    """Restart a sparse chunk at a boundary that owns no coverage or tile state."""
+
+
+def _publish_deferred_bvhs(merged, memory):
+    """Publish a batch's trees transactionally, then retain only their storage.
+
+    Call before chunk-local reverse allocations. A sparse continuation discovered
+    later requests a chunk restart instead of pinning the coverage beneath it.
+    Construction and publication have separate state: a failed copy leaves the
+    external trees available for a retry, with neither arena end consumed.
+    """
+    from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
+
+    pointers = memory.get_pointers()
+    try:
+        build_deferred_bvhs(merged, memory)
+    except Exception:
+        memory.set_pointers(pointers)
+        raise
+    _retain_persistent(merged, memory)
+
+
+def _publish_bvhs_at_chunk_boundary(merged, memory):
+    """One reclaim-and-retry for allocator pressure, never retry a real error.
+
+    At this boundary a smaller ray tile cannot free any more arena bytes. If
+    publication still fails after allocator cleanup, the prepared scene batch
+    must shrink; do not repeatedly rediscover coverage or halve its ray pool.
+    """
+    for attempt in range(2):
+        try:
+            _publish_deferred_bvhs(merged, memory)
+            return
+        except (InsufficientMemoryException, RuntimeError) as exc:
+            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                exc
+            ):
+                raise
+            if attempt:
+                raise OutOfRenderMemory(
+                    "Deferred BVHs did not fit at the clean chunk boundary. "
+                    "Reduce the prepared scene batch or geometry complexity."
+                ) from exc
+            traceback.clear_frames(exc.__traceback__)
+            release_torch_memory(force_gc=False)
 
 
 def _build_raster_tables(
@@ -1205,31 +1426,38 @@ def render_batch_raytraced(
     it is not independent of scene complexity. The enclosing render loop owns
     frame-window retries, while renderer-specific tiling bounds transient work.
     """
-    # Read the user-toggleable settings *live* from the settings module.
-    # These names used to be imported by value at module-import time, which
-    # froze them before user code ran -- silently disabling
-    # set_shadows() / set_samples_per_pixel() / etc. for anyone
-    # calling the setters after `import algan` (i.e. everyone).
-    samples_per_pixel = rt_settings.samples_per_pixel
-    shadows = rt_settings.shadows
-    fragment_shading = rt_settings.fragment_shading
-    max_bounces = rt_settings.max_bounces
+    # Core route/allocation choices come from the prepared batch, not module
+    # imports or a second, potentially inconsistent settings resolution.
     tonemap_exposure = rt_settings.tonemap_exposure
     scene_env_map = getattr(scene, "environment_map", None)
     env_map = scene_env_map
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
+    policy = getattr(primitives[0], "_rt_batch_policy", None)
+    camera = getattr(scene, "camera", None)
+    policy_inputs = {
+        "light_sources": light_sources,
+        "environment_map": env_map,
+        "near_clip": float(getattr(camera, "near", 0.0) or 0.0),
+        "far_clip": float(getattr(camera, "far", 0.0) or 0.0),
+        "transparent_background": transparent_background,
+    }
     if merged is None:
         merged_host = _merge_scene(primitives, light_sources=light_sources)
+        if policy is None:
+            policy = resolve_batch_policy(
+                merged_host, anti_alias_level, **policy_inputs
+            )
         # Validate on host metadata before reserving/copying the persistent
         # device scene. Unsupported combinations therefore fail before costly
         # arena allocations or any Taichi kernel compilation.
         plan = _validate_render_capabilities(
-            samples_per_pixel,
+            policy.samples_per_pixel,
             scene_env_map,
             merged_host,
             light_sources,
+            execution_policy=policy,
         )
         if env_map is not None:
             merged_host = dict(merged_host)
@@ -1242,77 +1470,27 @@ def render_batch_raytraced(
             )
         merged = copy_merged_scene_to_arena(merged_host, memory, persist=True)
     else:
+        if policy is None:
+            policy = resolve_batch_policy(merged, anti_alias_level, **policy_inputs)
         plan = _validate_render_capabilities(
-            samples_per_pixel,
+            policy.samples_per_pixel,
             scene_env_map,
             merged,
             light_sources,
+            execution_policy=policy,
         )
     scene.last_render_plan = plan
 
-    # These flags gate the deterministic wavefront's refraction template and
-    # split pool only; the path tracer (samples > 1) always carries the
-    # nested-IOR media stack and refracts through its own stochastic
-    # transmission lobe instead.
-    refractive_det = bool(merged.get("has_refractive")) and int(samples_per_pixel) <= 1
-    # Semi-transparent PBR surfaces split off a reflection branch, so they need
-    # the same pool + split code the refraction path compiles in. No routing
-    # implication: the deterministic (samples <= 1) path is already wavefront.
-    refl_transparent_det = (
-        bool(merged.get("has_refl_transparent")) and int(samples_per_pixel) <= 1
-    )
-
-    # Extended lights (directional / ambient / hemisphere / spot / area /
-    # falloff / soft shadows) and environment maps are features of the
-    # deterministic general wavefront with per-fragment lighting: their
-    # presence forces fragment shading on and routes away from the textured /
-    # sorted variants. Plain point-light scenes keep the compact light packing
-    # and are untouched.
-    lights_extended = int(samples_per_pixel) <= 1 and any(
-        getattr(light, "_render_aux", None) is not None
-        for light in (light_sources or ())
-    )
-    cam = getattr(scene, "camera", None)
-    near_clip = float(getattr(cam, "near", 0.0) or 0.0)
-    far_clip = float(getattr(cam, "far", 0.0) or 0.0)
-    analytic_raster = analytic_raster_route_active(
-        merged,
-        light_sources=light_sources,
-        environment_map=env_map,
-        near_clip=near_clip,
-        far_clip=far_clip,
-        transparent_background=transparent_background,
-    )
-    # The path tracer renders at output resolution: its jittered sub-pixel
-    # samples ARE the anti-aliasing, so a supersample level would multiply the
-    # pixel count for nothing (render_loop._effective_anti_alias_level makes
-    # the same call for the host-side buffer planning).
-    if analytic_raster or int(samples_per_pixel) > 1:
-        aa = 1
-    else:
-        aa = max(1, int(anti_alias_level))
-
-    # Anti-aliasing strategy. Analytic raster coverage always renders at output
-    # resolution (aa == 1). Every route it cannot cover keeps the requested
-    # setting and either renders a supersampled buffer or, with inplace_aa,
-    # averages ``aa^2`` jittered sub-pixel rays in place at the output
-    # resolution, so the frame buffer stays ``screen_width x screen_height``
-    # regardless of ``aa`` (aa^2x less render memory than super-sampling): the
-    # wavefront runs the full gen→traverse→shade→compact→composite pipeline
-    # once per sub-pixel sample, accumulating into a float buffer and
-    # averaging at the end, while the Monte Carlo megakernel folds the aa^2
-    # factor into its per-pixel sample count (see samples_eff below).
-    inplace_aa = bool(rt_settings.inplace_aa)
-    if inplace_aa:
-        width = screen_width
-        height = screen_height
-        kernel_aa = aa  # in-kernel sub-pixel averaging factor
-        post_aa = 1  # post-processing does not down-sample
-    else:
-        width = screen_width * aa
-        height = screen_height * aa
-        kernel_aa = 1
-        post_aa = aa
+    samples_per_pixel = policy.samples_per_pixel
+    max_bounces = policy.max_bounces
+    lights_extended = policy.lights_extended
+    near_clip, far_clip = policy.near_clip, policy.far_clip
+    analytic_raster = policy.analytic_raster
+    aa = policy.effective_aa
+    width = screen_width * policy.frame_scale
+    height = screen_height * policy.frame_scale
+    kernel_aa = policy.kernel_aa
+    post_aa = policy.frame_scale
 
     C_out = 5 if transparent_background else 4
     device = memory.data.device
@@ -1373,20 +1551,14 @@ def render_batch_raytraced(
     # trees; the Monte Carlo megakernel traverses unconditionally, so build
     # the real trees now if that is where this batch is headed. (The
     # deterministic wavefront has its own later, finer-grained check.)
-    if merged.get("bvh_deferred") and int(samples_per_pixel) > 1:
-        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
-
-        build_deferred_bvhs(merged, memory)
-        _retain_persistent(merged, memory)
+    if (merged.get("bvh_deferred") or merged.get("bvh_rehome_pending")) and int(
+        samples_per_pixel
+    ) > 1:
+        _publish_deferred_bvhs(merged, memory)
     tri_bvh = merged["tri_bvh"]
     bez_bvh = merged["bez_bvh"]
-    # A geometry type absent from the whole batch has only a placeholder BVH;
-    # tell the deterministic kernel so it skips that empty traversal per ray.
-    if rt_settings.gate_empty_traversals:
-        has_tri = 1 if merged["num_triangles"] > 0 else 0
-        has_bez = 1 if merged["num_circuits"] > 0 else 0
-    else:  # benchmarking escape hatch: traverse every (possibly empty) tree
-        has_tri = has_bez = 1
+    has_tri = int(policy.has_triangles)
+    has_bez = int(policy.has_beziers)
     t_val = _get_tonemap_t_val()
     # The scene builder has already reduced every geometry type's per-frame
     # bounds/edge geometry to conservative batch-wide coverage-possibility bits.
@@ -1420,66 +1592,9 @@ def render_batch_raytraced(
     # folds the ``aa^2`` sub-pixel average into the per-pixel sample count.
     samples_eff = samples * (kernel_aa * kernel_aa)
 
-    # Deterministic per-fragment shading is active for a single-sample,
-    # non-physical render with the toggle on; it needs the scene's point lights
-    # in the kernel. (Physical mode packs the same lights for its own path.)
-    # Deterministic hard shadows are evaluated inside the per-fragment lighting
-    # model, so enabling them implies fragment shading for this render.
-    det_shadows = bool(shadows) and samples <= 1
-    # A mob with a custom fragment pipeline (Mob.set_fragment_shader) forces
-    # fragment shading on for this render, without a persistent global toggle.
-    scene_has_frag_pipeline = _scene_has_user_pipeline(merged)
-    det_frag = (
-        bool(fragment_shading)
-        or det_shadows
-        or scene_has_frag_pipeline
-        or lights_extended
-        or env_map is not None
-    ) and samples <= 1
-    frag_flag = 1 if det_frag else 0
-    shadow_flag = 1 if det_shadows else 0
-    # Opaque any-hit shadow early-out (compile-time mode of the shadow
-    # query; see rt_settings.shadow_anyhit): 2 = any-hit pre-pass over the
-    # opaque-flagged leaves with the ordered march as fallback; 3 = any-hit
-    # only, valid when the batch provably contains no translucent geometry
-    # (every visible primitive carries the opaque leaf flag, so a miss proves
-    # the ray lit). Uncertain texture alpha keeps the fallback: such
-    # primitives are not opaque-flagged, and their shadow attenuation only
-    # the march can evaluate. 4 = gather-march: the ordered peel rebuilt on
-    # the kbuf gather, valid for any batch (the drain evaluates translucent
-    # attenuation exactly like the march), so it needs no translucent gate.
-    if shadow_flag and rt_settings.shadow_anyhit:
-        if rt_settings.shadow_anyhit == "gather":
-            shadow_flag = 4
-        elif merged.get("has_transmissive", True):
-            # Both any-hit modes ask "is anything there", and answer full
-            # occlusion when something is. That was equivalent to the march
-            # while a covered surface always blocked; it is not once a
-            # transmissive one passes light instead (see
-            # ``raytrace_kernels_taichi._shadow_pass_through``) -- a glass
-            # ball is alpha 1, so it does not even read as translucent below.
-            # Such a batch keeps the ordered march, which evaluates the
-            # attenuation exactly.
-            shadow_flag = 1
-        else:
-            batch_has_translucent = (
-                merged.get("tri_has_translucent", True)
-                or merged.get("bez_has_translucent", True)
-                or merged.get("has_uncertain_texture_alpha", True)
-            )
-            shadow_flag = 2 if batch_has_translucent else 3
-    # THE SHEET ROUTE (DESIGN_sheet_resolve.md): decided ONCE here so the
-    # frame-buffer prefill in render_chunk, the sparse-route gate and the
-    # emission's compaction all answer the same question (the host/kernel
-    # dual-language rule). Shadows are served by the route itself since
-    # Phase 4a — the resolve kernel's event pass builds the shadow queue
-    # from sheet records, so no second walk exists. The sheet resolve is
-    # the ONLY resolve for analytic coverage (the fragment walk is deleted),
-    # so its preconditions — sheet_resolve, analytic_aa_run, the sparse
-    # toggles, samples <= 1, transparent background only without an env map
-    # — all live inside analytic_raster_route_active, and the route IS the
-    # analytic-raster decision. prepare_sparse_raster_coverage still raises
-    # on an emission-side disagreement rather than painting a wrong frame.
+    det_frag = policy.fragment_shading
+    frag_flag = int(det_frag)
+    shadow_flag = policy.shadow_mode
     sheet_route = analytic_raster
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
@@ -1504,42 +1619,16 @@ def render_batch_raytraced(
         # continuation there (pt_shade), not a refusal.
         batch_pids = _batch_user_pipeline_ids(merged)
         frag_pipelines = build_frag_pipelines(batch_pids)
-        frag_scatters = (
-            build_frag_scatters(batch_pids) if _scene_has_custom_scatter(merged) else ()
-        )
+        frag_scatters = build_frag_scatters(batch_pids) if policy.custom_scatter else ()
     else:
         frag_pipelines = ()
         frag_scatters = ()
-    # Refraction (general wavefront only; see refractive_det above). A custom
-    # scatter may spawn a transmitted branch, so it needs the same split pool +
-    # transmitted-branch code the refraction path compiles in.
-    # Continuation-ray supersampling makes every reflector a splitting path, so
-    # it needs the same shared pool (see _secondary_split_needed). Deterministic
-    # only: the Monte Carlo path tracer antialiases by jittered sampling
-    # already, and it never splits -- it samples ONE of a scatter's branches
-    # (contract 3), so a custom scatter buys it no pool either.
+    wavefront_policy = policy.wavefront
     refraction_flag = (
-        1
-        if (
-            refractive_det
-            or refl_transparent_det
-            or (samples <= 1 and frag_scatters)
-            or (samples <= 1 and _secondary_split_needed(merged, analytic_raster))
-        )
-        else 0
+        int(wavefront_policy.refraction) if wavefront_policy is not None else 0
     )
-    # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H). Gated on
-    # ``refraction_flag`` as well as the setting, and that conjunction is
-    # load-bearing beyond "the stack only makes sense where rays split": the
-    # stack rides a WIDER rs_sca and its initialisation story leans on the
-    # split pool existing. Every batch with refraction_flag == 1 has
-    # pool_ratio > 1 (refract_initial_pool_ratio >= 2), which is exactly what
-    # excludes the two init paths that cannot write the new columns -- the
-    # host const_fill broadcast (requires pool_ratio == 1) and fused
-    # generation (same). Key this gate on the raw setting alone and those
-    # paths would hand the kernels uninitialised stack columns to read.
     ior_stack_flag = (
-        1 if (rt_settings.nested_ior_mode() != 0 and refraction_flag) else 0
+        int(wavefront_policy.ior_stack) if wavefront_policy is not None else 0
     )
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
@@ -1619,24 +1708,13 @@ def render_batch_raytraced(
     launched_frames = []
 
     def rewind_to(pointers):
-        """Rewind the arena to ``pointers`` without reclaiming what the batch
-        allocated persistently from inside a chunk.
+        """Reclaim chunk state while preserving explicitly published batch data.
 
-        Two things do that. ``_build_raster_tables`` allocates the batch-wide
-        raster tables at the arena's persistent (reverse) end from inside the
-        *first* chunk; ``build_deferred_bvhs`` re-homes an on-demand STBVH
-        build there (`scene_builder.rehome_deferred_bvhs_to_arena`). Both cache
-        on ``merged`` -- which lives for the whole batch -- and publish the
-        reverse pointer they reached through ``_retain_persistent``, so every
-        later chunk reads the cache instead of rebuilding.
-
-        Restoring the reverse pointer to this chunk's entry value would hand
-        their range back to the allocator while the cache still points into it,
-        so the next chunk's forward allocations grow straight over the tables
-        and ``_window_pairs`` reads garbage bounds (a negative bbox width
-        surfaced as ``repeats can not be negative``). Only the split retry and
-        the recursive halves could hit that: between the per-chunk rewind and
-        the render loop's own ``set_pointers`` nothing else allocates.
+        The first chunk may build raster tables before it allocates coverage.
+        A deferred BVH is published before that coverage, or after unwinding
+        the chunk and requesting a restart. Both cache on ``merged`` and record
+        their reverse boundary through ``_retain_persistent``. Retaining that
+        boundary does not retain intervening coverage/tile allocations.
         """
         forward, reverse = pointers
         if merged is not None:
@@ -1646,6 +1724,7 @@ def render_batch_raytraced(
         memory.set_pointers((forward, reverse))
 
     def render_chunk(start, end):
+        nonlocal tri_bvh, bez_bvh
         # The Monte Carlo kernels launch one thread per (frame, pixel,
         # sample) path; keep the flattened index within int32 range. (The
         # deterministic kernels loop the aa^2 sub-pixels serially per pixel, so
@@ -1848,7 +1927,7 @@ def render_batch_raytraced(
                         num_lights=num_lights,
                         frag_pipelines=frag_pipelines,
                         frag_scatters=frag_scatters,
-                        shadows=1 if bool(shadows) else 0,
+                        shadows=int(policy.shadows),
                         max_bounces=int(max_bounces),
                         near_clip=near_clip,
                         far_clip=far_clip,
@@ -1938,6 +2017,7 @@ def render_batch_raytraced(
                             near_clip=near_clip,
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
+                            policy=wavefront_policy,
                         )
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
@@ -1959,6 +2039,22 @@ def render_batch_raytraced(
             rewind_to(entry_pointers)
             launched_frames.append(end - start)
             return [frames]
+        except _DeferredBVHRequired as exc:
+            # The resolve discovered a continuation after merge-time deferral.
+            # Unwind coverage and all tile/iteration state before publishing
+            # batch-lived trees. Otherwise retaining the trees also pins every
+            # reverse allocation made between the batch floor and this tile.
+            rewind_to(entry_pointers)
+            restore_truncations(entry_truncations)
+            restore_path_samples(entry_path_samples)
+            traceback.clear_frames(exc.__traceback__)
+            _publish_bvhs_at_chunk_boundary(merged, memory)
+            tri_bvh, bez_bvh = merged["tri_bvh"], merged["bez_bvh"]
+            # Refill the output as well as rediscovering coverage: earlier tiles
+            # may already have composited, and uncovered pixels may be tonemapped.
+            # Successful publication clears both deferred flags, so this restart
+            # can happen only once per prepared batch (not once per ray tile).
+            return render_chunk(start, end)
         except (InsufficientMemoryException, RuntimeError) as exc:
             # A Taichi kernel launch (e.g. the post-process tonemap) exhausts
             # VRAM as a plain RuntimeError from its own allocator, not a torch
@@ -2040,10 +2136,10 @@ def _run_wavefront_tiles(
     two-word counter: next free slot and overflow flag.
 
     Pool exhaustion is never accepted as a rendering approximation. An
-    overflowing attempt is discarded before compositing and retried with half
-    as many primaries while retaining the same pool capacity. Thus the
-    continuation headroom doubles on every retry without increasing arena
-    memory, and there is no fixed per-pixel split limit.
+    overflowing attempt is discarded before compositing and retried with fewer
+    primaries based on measured demand, retaining the same pool capacity. An
+    attempt scope restores both arena ends on every exit, including exceptions
+    during allocator readback or compositing.
     """
     t_val = _get_tonemap_t_val()
     i32 = torch.int32
@@ -2123,8 +2219,7 @@ def _run_wavefront_tiles(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
-                    state_ptrs = memory.get_pointers()
-                    try:
+                    with memory.temp(clear_persist=True):
                         # Per-ray state for one tile: ``pool`` slots plus
                         # ``attempt_primary`` per-primary rows. Calibrated as
                         # unit coefficients (bytes per slot, per primary, and
@@ -2240,69 +2335,63 @@ def _run_wavefront_tiles(
                             pix_accum,
                             rs_alloc,
                         )
-                    except (InsufficientMemoryException, RuntimeError):
-                        memory.set_pointers(state_ptrs)
-                        raise
-
-                    alloc = _read_tile_alloc(rs_alloc)
-                    overflow = pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0
-                    if overflow:
-                        memory.set_pointers(state_ptrs)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "A single pixel's deterministic ray tree "
-                                f"exceeded the shared wavefront pool of {pool} "
-                                "slots. Lower MAX_BOUNCES / transparency "
-                                "complexity, or increase WAVEFRONT_TILE_RAYS."
+                        alloc = _read_tile_alloc(rs_alloc)
+                        overflow = pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0
+                        if overflow:
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "A single pixel's deterministic ray tree "
+                                    f"exceeded the shared wavefront pool of {pool} "
+                                    "slots. Lower MAX_BOUNCES / transparency "
+                                    "complexity, or increase WAVEFRONT_TILE_RAYS."
+                                )
+                            next_primary = _overflow_retry_primary(
+                                attempt_primary, alloc[ALLOC_NEXT], pool
                             )
-                        next_primary = _overflow_retry_primary(
-                            attempt_primary, alloc[ALLOC_NEXT], pool
-                        )
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        logger.log(
-                            PERF,
-                            "Wavefront continuation pool overflowed for tile "
-                            f"{tile_start}:{tile_start + attempt_primary}; "
-                            f"retrying with {next_primary} primaries and the "
-                            f"same {pool}-slot pool",
-                        )
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
-                    # Past the retry: this attempt is the one that composites,
-                    # so its counters are the ones that count.
-                    _record_tile_truncations(alloc, pool)
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            logger.log(
+                                PERF,
+                                "Wavefront continuation pool overflowed for tile "
+                                f"{tile_start}:{tile_start + attempt_primary}; "
+                                f"retrying with {next_primary} primaries and the "
+                                f"same {pool}-slot pool",
+                            )
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+                        # Past the retry: this attempt is the one that composites,
+                        # so its counters are the ones that count.
+                        _record_tile_truncations(alloc, pool)
 
-                    if do_aa:
-                        wf_composite_accum_aa(
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            1 if transparent else 0,
-                            int(tile_start),
-                            pix_accum,
-                            out,
-                            aa_accum,
-                        )
-                    else:
-                        wf_composite_accum(
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            1 if transparent else 0,
-                            int(tile_start),
-                            pix_accum,
-                            t_val,
-                            float(rt_settings.tonemap_exposure),
-                            0,
-                            0,
-                            covered_dummy,
-                            0,
-                            out,
-                        )
-                    memory.set_pointers(state_ptrs)
-                    tile_start += attempt_primary
-                    break
+                        if do_aa:
+                            wf_composite_accum_aa(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                int(tile_start),
+                                pix_accum,
+                                out,
+                                aa_accum,
+                            )
+                        else:
+                            wf_composite_accum(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                int(tile_start),
+                                pix_accum,
+                                t_val,
+                                float(rt_settings.tonemap_exposure),
+                                0,
+                                0,
+                                covered_dummy,
+                                0,
+                                out,
+                            )
+                        tile_start += attempt_primary
+                        break
 
     if do_aa:
         wf_finalize_aa(
@@ -2354,11 +2443,13 @@ def raytrace_render_wavefront(
     near_clip=0.0,
     far_clip=0.0,
     analytic_raster=False,
+    *,
+    policy=None,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
-    Persistent continuation state is stage-split in global memory and PyTorch
-    compacts ray indices between host iterations. Hit records are different:
+    Persistent continuation state is stage-split in global memory; arena-backed
+    index buffers and a filter kernel compact rays between host iterations. Hit records are different:
     traversal writes one exact-size ``[num_active, kbuf]`` transient event
     batch, shade consumes it immediately, and the arena range is then reused.
     No pool-wide K-buffer is attached to secondary radiance ray slots. The
@@ -2406,7 +2497,31 @@ def raytrace_render_wavefront(
     # wavefront_kernels_taichi, so a bare ``sca_width`` inside this function is
     # the FUNCTION, not a width (that mistake allocated ray state with a
     # function object as its column count).
-    state_sca_width = sca_width(ior_stack_flag)
+    if policy is None:
+        policy = _resolve_wavefront_policy(
+            merged,
+            analytic_raster=analytic_raster,
+            aa_level=aa_level,
+            near_clip=near_clip,
+            refraction=refraction_flag,
+            ior_stack=ior_stack_flag,
+            shadow_mode=shadow_flag,
+            custom_scatter=bool(frag_scatters),
+            has_triangles=has_tri,
+        )
+    elif policy.refraction != bool(refraction_flag) or policy.ior_stack != bool(
+        ior_stack_flag
+    ):
+        raise RuntimeError("prepared wavefront policy disagrees with ray-state flags")
+    state_sca_width = policy.state_scalar_width
+    shadow_context = ShadowTraceContext(
+        merged,
+        light_pos,
+        light_col,
+        num_lights,
+        pixel_world_scale,
+        layer_offset_triangles,
+    )
     i32 = torch.int32
     f32 = torch.float32
     max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
@@ -2420,33 +2535,9 @@ def raytrace_render_wavefront(
 
     bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
 
-    # Pool over-allocation for ray splitting. Glass (reflective+refractive)
-    # surfaces split, and so does any reflector under continuation-ray
-    # supersampling; the plain single-ray path keeps pool_ratio == 1 (one slot
-    # per pixel, as before).
-    pool_ratio = _split_pool_ratio(
-        refraction_flag, merged, analytic_raster, bool(frag_scatters)
-    )
-    # Read live (settings convention): runtime-mutable for tile-size A/B.
-    primary_per_tile = max(1, rt_settings.wavefront_tile_rays // pool_ratio)
-
-    # Family A+B memory-trim: engage only for the no-shadow, non-refractive,
-    # scatter-free triangle path (the trim arrays are built by scene_builder
-    # only when ALGAN_WF_MEM_TRIM). Rebinds the triangle geometry + BVH to the
-    # band-reordered/compacted variants and supplies the col_row remap; PN and
-    # bezier are untouched. tri_colors/tri_extra stay in their original order
-    # (addressed via col_row). ``mem_trim == 0`` leaves everything byte-identical.
-    mem_trim = (
-        1
-        if (
-            rt_settings.wf_mem_trim
-            and merged.get("mem_trim_active")
-            and shadow_flag == 0
-            and len(frag_scatters) == 0
-            and refraction_flag == 0
-        )
-        else 0
-    )
+    pool_ratio = policy.pool_ratio
+    primary_per_tile = max(1, policy.tile_rays // pool_ratio)
+    mem_trim = int(policy.memory_trim)
     if mem_trim:
         _MEM_TRIM_ENGAGED[0] += 1
         t_bvh = merged["tri_bvh_t"]
@@ -2462,56 +2553,20 @@ def raytrace_render_wavefront(
         with memory.scope("batch_metadata", col_row_placeholder=1):
             col_row_arr = memory.get_tensor((1,), i32)
         col_row_arr.zero_()
-    # ``opaque_bvh_skipped``: the merge aliased the opaque trees to the main
-    # ones because neither rollout was live when it ran -- keep them off for
-    # this batch even if a toggle flipped since (the dedicated trees do not
-    # exist to walk).
-    opaque_closest = int(
-        rt_settings.wf_opaque_closest
-        and not merged.get("opaque_bvh_skipped", False)
-        and merged.get("all_visible_opaque", False)
-        and not refraction_flag
-        and len(frag_scatters) == 0
-        and not mem_trim
-    )
-    opaque_prepass = int(
-        rt_settings.wf_opaque_prepass
-        and not merged.get("opaque_bvh_skipped", False)
-        and merged.get("has_any_opaque", False)
-        and merged.get("has_any_translucent", False)
-        and not merged.get("has_uncertain_texture_alpha", False)
-        and not refraction_flag
-        and len(frag_scatters) == 0
-        and not mem_trim
-    )
-    # Compile-time material gating of the shade kernels: the pipeline ids this
-    # batch's triangles / PN patches carry, as a bitmask template, so the
-    # stages it cannot reach are never compiled in (rt_settings.frag_pid_gate;
-    # ALL_PIDS = ungated). Per geometry type, because the two shade sites are
-    # separate funcs -- a mesh scene's flat triangles and its PN patches each
-    # get their own gate.
-    tri_pids = _frag_pid_mask(merged, "tri", has_tri)
-    # Hybrid raster front-end: primary visibility resolved by the sheet route
-    # (DESIGN_sheet_resolve.md) — the sparse emission compacts exact analytic
-    # coverage into per-pixel sheets and one kernel resolves, builds shadow
-    # events for, and shades them; only bounced continuations enter the
-    # classic wavefront loop. PN patches are conservatively routed to the
-    # classic path without altering their geometry. This re-derives the route
-    # from the live toggles and the merged batch facts so drift against the
-    # allocation-time decision (analytic_raster, which IS the sheet route) is
-    # caught below rather than rendered wrong.
-    use_raster = (
-        rt_settings.hybrid_raster
-        and analytic_raster
+    opaque_closest = int(policy.opaque_closest)
+    opaque_prepass = int(policy.opaque_prepass)
+    tri_pids = policy.triangle_pipeline_mask
+    _FRAG_PID_LAST["tri"] = tri_pids
+    # Settings were resolved during preparation; still reject missing data or
+    # incompatible state instead of silently executing a different AA route.
+    use_raster = bool(
+        analytic_raster
         and merged.get("tri_frame_valid") is not None
         and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
-        and mem_trim == 0
-        and len(frag_scatters) == 0
+        and not mem_trim
+        and not frag_scatters
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
-        and rt_settings.raster_sparse_coverage
-        and rt_settings.raster_empty_skip
-        and rt_settings.raster_covered_shade
     )
     if analytic_raster and not use_raster:
         raise RuntimeError(
@@ -2536,20 +2591,15 @@ def raytrace_render_wavefront(
         # trees and rebind everything derived from the placeholders. Deferral
         # implies mem_trim was inactive at merge, so t_bvh is plain tri_bvh.
         nonlocal tri_bvh, bez_bvh, t_bvh, bvh_refit
-        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
-
-        # ``memory`` re-homes the built trees into the arena the rest of the
-        # merged scene lives in; without it the next launch to bind a BVH table
-        # through the arena raises ArenaBindingError (t_leaf_prim allocated
-        # somewhere other than the edge_accel beside it).
-        build_deferred_bvhs(merged, memory)
-        _retain_persistent(merged, memory)
+        _publish_deferred_bvhs(merged, memory)
         tri_bvh = merged["tri_bvh"]
         bez_bvh = merged["bez_bvh"]
         t_bvh = tri_bvh
         bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
 
-    if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
+    if (merged.get("bvh_deferred") or merged.get("bvh_rehome_pending")) and (
+        shadow_flag != 0 or not use_raster
+    ):
         # Runtime routing needs the trees after all: primary shadows trace
         # them from the sheet resolve's event queue (raster_shadow_trace),
         # and a batch that fell back to classic primary traversal (near
@@ -2557,17 +2607,10 @@ def raytrace_render_wavefront(
         # primary ray.
         _ensure_bvhs()
 
-    gen_fused = (
-        rt_settings.wf_gen_fused_active()
-        and pool_ratio == 1
-        and near_clip <= 0.0
-        and max(1, int(aa_level)) <= 1
-        and not use_raster
-    )
-    # Route metadata words: a handful of floats whose count depends on the
-    # selected route, paid once per batch. Separate from the raster precompute
-    # tables below so the latter's per-(frame, primitive) coefficient is not
-    # fitted through a route-dependent constant.
+    gen_fused = policy.fused_generation
+    # Fixed render metadata and ray-generation scalars, paid once per batch.
+    # Keep these separate from the raster precompute tables so the latter's
+    # per-(frame, primitive) coefficient is not fitted through a constant.
     with memory.scope("batch_metadata"):
         # Always the real four values, even where primary generation is not
         # fused into traverse: the traverse kernel rebuilds each pixel's
@@ -2579,44 +2622,14 @@ def raytrace_render_wavefront(
         gen_meta = _arena_values(
             memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
         )
-    if gen_fused or use_raster or env_meta is not None or far_clip > 0.0:
-        # Extras packed behind the two layer offsets (the shade kernel is at
-        # the 64-arg ceiling): env map placement in the shared texel buffer +
-        # the camera's far clip distance, and -- read only by the fused first
-        # shade iteration -- max_bounces. The kernel detects them by length.
-        eo, ew, eh, ei = env_meta if env_meta is not None else (0, 0, 0, 0.0)
-        layer_values = [
-            float(layer_offset_triangles),
-            float(eo),
-            float(ew),
-            float(eh),
-            float(ei),
-            float(far_clip),
-            float(max_bounces),
-            # [7] the split-sum glossy route's first glossy accumulator row,
-            # rewritten per tile by the sparse loop below and 0 (inert)
-            # everywhere else. It rides here rather than as a kernel argument
-            # for the same reason the env placement does -- see the comment
-            # above and DESIGN_glossy_prefilter.md §4.3.
-            0.0,
-        ]
-        with memory.scope(
-            "batch_metadata",
-            gen_fused=int(bool(gen_fused)),
-            raster=int(bool(use_raster)),
-            extended=int(env_meta is not None or far_clip > 0.0),
-        ):
-            layer_offsets_t = _arena_values(memory, layer_values, f32)
-    else:
-        with memory.scope(
-            "batch_metadata",
-            gen_fused=int(bool(gen_fused)),
-            raster=int(bool(use_raster)),
-            extended=int(env_meta is not None or far_clip > 0.0),
-        ):
-            layer_offsets_t = _arena_values(
-                memory, [float(layer_offset_triangles)], f32
-            )
+    with memory.scope("batch_metadata"):
+        render_metadata = allocate_render_metadata(
+            memory,
+            layer_offset_triangles,
+            env_meta=env_meta,
+            far_clip=far_clip,
+            max_bounces=max_bounces,
+        )
 
     tri_screen = None
     tri_bounds = None
@@ -2661,15 +2674,11 @@ def raytrace_render_wavefront(
         """
         bounds = merged.get("_ray_sort_bounds")
         if bounds is None:
-            tp = merged["tri_pos"]
-            if tp.numel():
-                flat = tp.reshape(-1, 3).float()
-                vals = torch.cat((flat.amin(0), flat.amax(0))).tolist()
-            else:
-                vals = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-            lo3 = vals[:3]
+            scene_box = triangle_scene_bounds(merged)
+            lo3 = list(scene_box.lower)
             inv3 = [
-                1023.0 / max(hi_v - lo_v, 1e-12) for lo_v, hi_v in zip(lo3, vals[3:])
+                1023.0 / max(hi_v - lo_v, 1e-12)
+                for lo_v, hi_v in zip(lo3, scene_box.upper)
             ]
             bounds = (lo3, inv3)
             merged["_ray_sort_bounds"] = bounds
@@ -2712,7 +2721,6 @@ def raytrace_render_wavefront(
         from algan.rendering.raytracing.raster_pipeline import (
             _shadow_identity_epsilons,
         )
-        from algan.rendering.raytracing.raster_taichi import raster_shadow_trace
 
         rows = na * kbuf
         term_mode = int(rt_settings.shadow_terminator_mode())
@@ -2806,61 +2814,35 @@ def raytrace_render_wavefront(
             )
 
             eps_self, eps_near = float(min_hit_distance), 0.0
-        raster_shadow_trace(
-            num_events,
-            ev_pos.index_select(0, acc_idx),
-            ev_snrm.index_select(0, acc_idx),
-            ev_fnrm.index_select(0, acc_idx),
-            ev_frame.index_select(0, acc_idx),
-            ev_msk.index_select(0, acc_idx),
-            t_bvh.blocks,
-            t_bvh.node_miss,
-            t_bvh.leaf_prim,
-            t_bvh.leaf_tspan,
-            int(t_bvh.first_leaf),
-            merged["tri_pos"],
-            merged["tri_colors"],
-            merged["tri_uvs"],
-            merged["tri_tex_meta"],
-            merged["textures"],
-            merged["tri_extra"],
-            int(merged["num_colored_triangles"]),
-            bez_bvh.blocks,
-            bez_bvh.node_miss,
-            bez_bvh.leaf_prim,
-            bez_bvh.leaf_tspan,
-            int(bez_bvh.first_leaf),
-            merged["circuit_meta"],
-            merged["circuit_colors"],
-            merged["circuit_border_colors"],
-            merged["edges_2d"],
-            merged["edge_accel"],
-            light_pos,
-            light_col,
-            int(num_lights),
-            pixel_world_scale,
-            float(layer_offset_triangles),
-            1 if bvh_refit else 0,
-            int(has_tri),
-            int(has_bez),
+        payload = _gather_shadow_payload(
+            memory,
+            acc_idx,
+            ev_pos,
+            ev_snrm,
+            ev_fnrm,
+            ev_frame,
+            ev_msk,
             ev_dp,
-            ev_toff.index_select(0, acc_idx) if term_mode == 1 else ev_toff,
-            sec_aa,
+            ev_toff,
+            with_terminator=term_mode == 1,
+        )
+        shadow_context.trace(
+            payload,
+            t_bvh,
+            bez_bvh,
             shadow_vis,
-            int(shadow_flag),
-            merged["tri_obj"] if identity_on else dummy_i,
-            ev_src,
-            eps_self,
-            eps_near,
-            1 if identity_on else 0,
-            term_mode,
-            1 if rt_settings.shadow_adaptive_taps else 0,
+            samples=sec_aa,
+            shadow_mode=shadow_flag,
+            has_triangles=has_tri,
+            has_beziers=has_bez,
+            source_primitives=ev_src,
+            identity_enabled=identity_on,
+            self_epsilon=eps_self,
+            near_epsilon=eps_near,
+            terminator_mode=term_mode,
+            adaptive_taps=rt_settings.shadow_adaptive_taps,
         )
-        filled = torch.ones(
-            (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
-        )
-        filled[:, : 3 * int(num_lights)] = shadow_vis.view(num_events, -1)
-        index_copy_rows(vis_tab, acc_idx, filled)
+        _scatter_shadow_visibility(vis_tab, acc_idx, shadow_vis)
         return vis_tab
 
     def _drain_sparse_secondary(
@@ -2872,19 +2854,9 @@ def raytrace_render_wavefront(
         ``rs_int[:, 4]`` contains the compact accumulator row.  A zero
         ``ray_offset`` therefore addresses the full prepared frame window.
         """
-        (
-            rs_ro,
-            rs_rd,
-            rs_acc,
-            rs_sca,
-            rs_int,
-            _rs_kt,
-            _rs_kl,
-            _rs_ka,
-            _rs_kb,
-            _rs_kp,
-            _rs_kf,
-        ) = state
+        rs_ro, rs_rd = state.origin, state.direction
+        rs_acc, rs_sca = state.accumulated, state.scalars
+        rs_int = state.integers
         it = 1
         while active.numel() > 0 and it < max_iters:
             with _stage("wavefront:   - drain active count"):
@@ -3005,7 +2977,8 @@ def raytrace_render_wavefront(
                         merged["edges_2d"],
                         merged["edge_accel"],
                         pixel_world_scale,
-                        layer_offsets_t,
+                        render_metadata.floats,
+                        render_metadata.ints,
                         int(frag_flag),
                         frag_pipelines,
                         frag_scatters,
@@ -3074,15 +3047,14 @@ def raytrace_render_wavefront(
         # of the window.  Coverage-sized ray pools are allocated/reset from the
         # forward end one compact slice at a time.
         #
-        # ``persist_floor``: the bounce drain inside this scope can release a
-        # deferred BVH build (``_ensure_bvhs``), which re-homes the trees at the
-        # same reverse end and publishes the pointer. Those trees are cached on
-        # ``merged`` for the whole batch, so the scope's persist rewind has to
-        # stop short of them; everything else it allocates is still reclaimed.
+        # Batch tables/trees are published before this scope. A newly discovered
+        # need for a deferred BVH unwinds the whole chunk before publication, so
+        # the batch floor can never pin these window-local reverse allocations.
         with memory.temp(
             clear_persist=True,
             persist_floor=lambda: merged.get(ARENA_RETAINED_REVERSE_POINTER),
         ):
+            capture_fragments = fragment_capture.is_armed()
             coverage = prepare_sparse_raster_coverage(
                 merged,
                 tri_screen,
@@ -3103,12 +3075,13 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 layer_offset_triangles,
                 env_in_composite=env_active,
+                retain_fragments=capture_fragments,
             )
             # The GUI viewer's per-pixel inspector, when one is waiting for this
             # chunk. Off, it is a module-global read; on, it copies the coverage
             # record to the host, which has to happen HERE -- the arrays are
             # arena tensors and the enclosing ``memory.temp`` reclaims them.
-            if fragment_capture.is_armed():
+            if capture_fragments:
                 fragment_capture.capture(coverage, merged, time_start, width, height)
             t_val_sparse = _get_tonemap_t_val()
             # Display-referred coverage resolve (settings.aa_display_resolve).
@@ -3229,7 +3202,11 @@ def raytrace_render_wavefront(
                 )
                 primary_capacity = min(max(1, int(sparse_primary)), num_covered_total)
                 shared_pool_capacity = _shared_pool_slots(
-                    primary_capacity, sparse_primary, pool_ratio, analytic_raster
+                    primary_capacity,
+                    sparse_primary,
+                    pool_ratio,
+                    analytic_raster,
+                    triangle_aa=policy.triangle_aa,
                 )
                 learned_primary_cap = primary_capacity
                 covered_start = 0
@@ -3253,313 +3230,311 @@ def raytrace_render_wavefront(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
-                    try:
-                        with _stage("wavefront:   - tile state alloc"):
-                            state_ptrs = memory.get_pointers()
-                            # Same unit-coefficient treatment as the dense tile
-                            # above; this route additionally holds the visibility
-                            # word and both compaction index buffers.
-                            with memory.scope(
-                                "wavefront_state",
-                                pool=pool,
-                                primary=attempt_primary,
-                                global_hits=0,
-                                sparse=1,
-                            ):
-                                state = _alloc_wavefront_state(
-                                    memory, pool, state_sca_width, global_hits=False
-                                )
-                                rs_pix = memory.get_tensor((pool,), i32)
-                                # The glossy route doubles the rows (a second
-                                # accumulator per pixel for the reflection alone)
-                                # and widens them (the reflection's energy, blur
-                                # scale and distances) rather than spending a
-                                # kernel argument on any of it -- both kernels
-                                # involved are at 72 parameters against Taichi's
-                                # 64 runtime ones. See DESIGN_glossy_prefilter.md.
-                                pix_accum = memory.get_tensor(
-                                    (
-                                        attempt_primary * pix_accum_rows,
-                                        pix_accum_cols,
-                                    ),
-                                    f32,
-                                )
-                                rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
-                                rs_vis = memory.get_tensor((1,), i32)
-                                compactor = _ArenaRayCompactor(memory, pool, i32)
-                            rs_int = state[4]
-                            if state_sca_width != SCA_WIDTH_PLAIN:
-                                # Same per-tile stack zeroing as the dense tile
-                                # above (DESIGN_mesh_identity_open.md §H).
-                                state[3][:, _SCA_IOR_DEPTH:].zero_()
-                            pix_accum.zero_()
-                            if gl_active:
-                                # A glossy ray that never hits anything writes no
-                                # distance at all, and that has to read as "the
-                                # reflection is infinitely far", i.e. fully
-                                # blurred -- not as the zero a cleared buffer
-                                # would give, which is a contact reflection.
-                                pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
-                                layer_offsets_t[7] = float(attempt_primary)
-                            rs_int[:, 2].fill_(1)
-                            rs_alloc.zero_()
-                            rs_alloc[0] = attempt_primary
+                    # A tile attempt owns both ends through readback/compositing.
+                    # A missing BVH requests a restart outside the chunk; no batch
+                    # allocation may be published beneath this attempt's scratch.
+                    with memory.temp(
+                        clear_persist=True,
+                        persist_floor=lambda: merged.get(
+                            ARENA_RETAINED_REVERSE_POINTER
+                        ),
+                    ):
+                        try:
+                            with _stage("wavefront:   - tile state alloc"):
+                                # Same unit-coefficient treatment as the dense tile
+                                # above; this route additionally holds the visibility
+                                # word and both compaction index buffers.
+                                with memory.scope(
+                                    "wavefront_state",
+                                    pool=pool,
+                                    primary=attempt_primary,
+                                    global_hits=0,
+                                    sparse=1,
+                                ):
+                                    state = _alloc_wavefront_state(
+                                        memory, pool, state_sca_width, global_hits=False
+                                    )
+                                    rs_pix = memory.get_tensor((pool,), i32)
+                                    # The glossy route doubles the rows (a second
+                                    # accumulator per pixel for the reflection alone)
+                                    # and widens them (the reflection's energy, blur
+                                    # scale and distances) rather than spending a
+                                    # kernel argument on any of it -- both kernels
+                                    # involved are at 72 parameters against Taichi's
+                                    # 64 runtime ones. See DESIGN_glossy_prefilter.md.
+                                    pix_accum = memory.get_tensor(
+                                        (
+                                            attempt_primary * pix_accum_rows,
+                                            pix_accum_cols,
+                                        ),
+                                        f32,
+                                    )
+                                    rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
+                                    rs_vis = memory.get_tensor((1,), i32)
+                                    compactor = _ArenaRayCompactor(memory, pool, i32)
+                                rs_int = state.integers
+                                if state_sca_width != SCA_WIDTH_PLAIN:
+                                    # Same per-tile stack zeroing as the dense tile
+                                    # above (DESIGN_mesh_identity_open.md §H).
+                                    state.scalars[:, _SCA_IOR_DEPTH:].zero_()
+                                pix_accum.zero_()
+                                if gl_active:
+                                    # A glossy ray that never hits anything writes no
+                                    # distance at all, and that has to read as "the
+                                    # reflection is infinitely far", i.e. fully
+                                    # blurred -- not as the zero a cleared buffer
+                                    # would give, which is a contact reflection.
+                                    pix_accum[attempt_primary:, GL_ROW_DIST] = float(
+                                        "inf"
+                                    )
+                                    render_metadata.ints[GLOSS_BASE] = attempt_primary
+                                rs_int[:, 2].fill_(1)
+                                rs_alloc.zero_()
+                                rs_alloc[0] = attempt_primary
 
-                        with memory.temp():
-                            covered_idx = shade_sparse_raster_coverage(
-                                coverage,
-                                covered_start,
-                                covered_start + attempt_primary,
-                                merged,
-                                tri_screen,
-                                memory,
-                                cam_origin,
-                                screen_point,
-                                pixel_basis_x,
-                                pixel_basis_y,
-                                pixel_world_scale,
-                                layer_offsets_t,
-                                gen_meta,
-                                light_pos,
-                                light_col,
-                                num_lights,
-                                col_row_arr,
-                                frag_flag,
-                                frag_pipelines,
-                                int(tri_pids),
-                                int(rt_settings.wf_skip_unlit_normal),
-                                refraction_flag,
-                                ior_stack_flag,
-                                time_start,
-                                width,
-                                height,
-                                half_screen_w,
-                                half_screen_h,
-                                state,
-                                rs_pix,
-                                pix_accum,
-                                rs_alloc,
-                                shadow_flag,
-                                t_bvh,
-                                bez_bvh,
-                                layer_offset_triangles,
-                                max_bounces,
-                            )
-                    except (InsufficientMemoryException, RuntimeError) as exc:
-                        # Taichi launches OOM as a bare RuntimeError from their
-                        # own allocator; treat those as OOM, re-raise real ones.
-                        if not isinstance(
-                            exc, InsufficientMemoryException
-                        ) and not is_cuda_oom(exc):
-                            raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster state did not fit for one "
-                                "covered pixel. Lower the resolution or "
-                                "transparency complexity."
-                            ) from exc
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        # A splitting batch holds the pool fixed across the
-                        # OVERFLOW retry on purpose (the shrunken tile inherits
-                        # the spare slots), but the pool is also the tile's
-                        # dominant allocation -- so halving only the primaries
-                        # after a MEMORY failure re-attempts a state block of
-                        # very nearly the same size, fails identically, and
-                        # rides all the way down to the one-pixel diagnostic
-                        # without ever having freed anything. Halve the pool
-                        # with it, keeping the primaries' own slots (the shared
-                        # allocator starts at ``attempt_primary``); an
-                        # under-sized pool overflows, and the overflow retry
-                        # above is exact and terminating.
-                        if pool_ratio > 1:
-                            shared_pool_capacity = max(
-                                next_primary, shared_pool_capacity // 2
-                            )
-                            pool = shared_pool_capacity
-                        else:
-                            pool = attempt_primary
-                        continue
-
-                    # The resolve's own overflow, checked before the bounce
-                    # drain adds to the same counters. Truncations are folded
-                    # in at the ACCEPT point below, once, so this stage keeps
-                    # the split-free short-circuit it always had.
-                    with _stage("wavefront:   - pool overflow poll"):
-                        overflow = (
-                            pool_ratio > 1 and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
-                        )
-                    if overflow:
-                        memory.set_pointers(state_ptrs)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "A single covered pixel's deterministic ray "
-                                f"tree exceeded the shared pool of {pool} "
-                                "slots."
-                            )
-                        next_primary = _overflow_retry_primary(
-                            attempt_primary, int(rs_alloc[ALLOC_NEXT].item()), pool
-                        )
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
-
-                    try:
-                        with _stage("wavefront:   - bounce drain"):
-                            active = compactor.select(
-                                rs_int, 0, source=compactor.current, scan_pool=True
-                            )
-                            if active.numel() > 0 and merged.get("bvh_deferred"):
-                                _ensure_bvhs()
-                            _drain_sparse_secondary(
-                                active,
-                                state,
-                                rs_pix,
-                                pix_accum,
-                                rs_alloc,
-                                compactor,
-                                rs_vis,
-                            )
-                    except (InsufficientMemoryException, RuntimeError) as exc:
-                        # Taichi launches OOM as a bare RuntimeError from their
-                        # own allocator; treat those as OOM, re-raise real ones.
-                        if not isinstance(
-                            exc, InsufficientMemoryException
-                        ) and not is_cuda_oom(exc):
-                            raise
-                        memory.set_pointers(state_ptrs)
-                        release_torch_memory(force_gc=False)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "Sparse raster bounce scratch did not fit for "
-                                "one covered pixel. Lower the resolution or "
-                                "transparency complexity."
-                            ) from exc
-                        next_primary = max(1, attempt_primary // 2)
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
-
-                    # Secondary shading can itself split again.  Discard and
-                    # retry the whole compact slice before compositing if any
-                    # of those later allocations exhausted the shared pool.
-                    # This is the slice's accept point, so it is also where the
-                    # resolve's and the drain's truncation counters are folded
-                    # into the render's totals.
-                    with _stage("wavefront:   - alloc readback"):
-                        alloc = _read_tile_alloc(rs_alloc)
-                    if pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0:
-                        memory.set_pointers(state_ptrs)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "A single covered pixel's deterministic ray "
-                                f"tree exceeded the shared pool of {pool} "
-                                "slots."
-                            )
-                        next_primary = _overflow_retry_primary(
-                            attempt_primary, alloc[ALLOC_NEXT], pool
-                        )
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
-                    _record_tile_truncations(alloc, pool)
-
-                    with _stage("wavefront:   - tile composite"):
-                        if gl_active:
-                            # The reflection buffers hold ONE frame, so a tile that
-                            # spans several is scattered, composited and finished
-                            # one frame-part at a time, in frame order: the
-                            # scatter reads the raw prefilled background and must
-                            # precede the composite of the same pixels, and the
-                            # finish overwrites the composite's values for the
-                            # glossy pixels, so a frame's part is composited before
-                            # it is finished and the buffers are cleared only once
-                            # a frame's last pixel is in -- a frame whose pixels
-                            # straddle two tiles keeps its buffer across them.
-                            tile_start = covered_start
-                            tile_end = covered_start + attempt_primary
-                            ppf = int(width) * int(height)
-                            while covered_start < tile_end:
-                                frame_end = gl_bounds[gl_frame + 1]
-                                if frame_end <= covered_start:
-                                    # A frame with no covered pixel: nothing to
-                                    # scatter or finish, exactly as the skip at
-                                    # the top of the tile treats it.
-                                    gl_frame += 1
-                                    continue
-                                part_end = min(tile_end, frame_end)
-                                a = covered_start - tile_start
-                                b = part_end - tile_start
-                                gloss_scatter(
-                                    int(b - a),
-                                    int(attempt_primary),
-                                    gl_frame * ppf,
-                                    gl_frame,
-                                    int(width),
-                                    float(gl_sigma_max),
-                                    covered_idx[a:b],
+                            with memory.temp():
+                                covered_idx = shade_sparse_raster_coverage(
+                                    coverage,
+                                    covered_start,
+                                    covered_start + attempt_primary,
+                                    merged,
+                                    tri_screen,
+                                    memory,
+                                    cam_origin,
+                                    screen_point,
+                                    pixel_basis_x,
+                                    pixel_basis_y,
+                                    pixel_world_scale,
+                                    render_metadata,
+                                    gen_meta,
+                                    light_pos,
+                                    light_col,
+                                    num_lights,
+                                    col_row_arr,
+                                    frag_flag,
+                                    frag_pipelines,
+                                    int(tri_pids),
+                                    int(rt_settings.wf_skip_unlit_normal),
+                                    refraction_flag,
+                                    ior_stack_flag,
+                                    time_start,
+                                    width,
+                                    height,
+                                    half_screen_w,
+                                    half_screen_h,
+                                    state,
+                                    rs_pix,
                                     pix_accum,
-                                    gl_main,
-                                    gl_pyr,
-                                    out,
-                                    int(a),
+                                    rs_alloc,
+                                    shadow_flag,
+                                    t_bvh,
+                                    bez_bvh,
+                                    layer_offset_triangles,
+                                    max_bounces,
+                                    shadow_context=shadow_context,
                                 )
-                                wf_composite_accum_sparse(
-                                    int(time_start),
-                                    int(width),
-                                    int(height),
-                                    1 if transparent else 0,
-                                    0,
-                                    covered_idx[a:b],
-                                    pix_accum[a:b],
-                                    t_val_sparse,
-                                    float(rt_settings.tonemap_exposure),
-                                    geo_cov_sparse,
-                                    out,
+                        except (InsufficientMemoryException, RuntimeError) as exc:
+                            # Taichi launches OOM as a bare RuntimeError from their
+                            # own allocator; treat those as OOM, re-raise real ones.
+                            if not isinstance(
+                                exc, InsufficientMemoryException
+                            ) and not is_cuda_oom(exc):
+                                raise
+                            release_torch_memory(force_gc=False)
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "Sparse raster state did not fit for one "
+                                    "covered pixel. Lower the resolution or "
+                                    "transparency complexity."
+                                ) from exc
+                            next_primary, shared_pool_capacity, pool = (
+                                _shrink_sparse_memory_retry(
+                                    attempt_primary, shared_pool_capacity, pool_ratio
                                 )
-                                covered_start = part_end
-                                if covered_start >= frame_end:
-                                    # Frame complete: prefilter its reflection
-                                    # buffer and composite the glossy pixels over
-                                    # the values just written for them.
-                                    _gloss_finish_frame(
+                            )
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+
+                        # The resolve's own overflow, checked before the bounce
+                        # drain adds to the same counters. Truncations are folded
+                        # in at the ACCEPT point below, once, so this stage keeps
+                        # the split-free short-circuit it always had.
+                        with _stage("wavefront:   - pool overflow poll"):
+                            overflow = (
+                                pool_ratio > 1
+                                and int(rs_alloc[ALLOC_OVERFLOW].item()) != 0
+                            )
+                        if overflow:
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "A single covered pixel's deterministic ray "
+                                    f"tree exceeded the shared pool of {pool} "
+                                    "slots."
+                                )
+                            next_primary = _overflow_retry_primary(
+                                attempt_primary, int(rs_alloc[ALLOC_NEXT].item()), pool
+                            )
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+
+                        try:
+                            with _stage("wavefront:   - bounce drain"):
+                                active = compactor.select(
+                                    rs_int, 0, source=compactor.current, scan_pool=True
+                                )
+                                if active.numel() > 0 and (
+                                    merged.get("bvh_deferred")
+                                    or merged.get("bvh_rehome_pending")
+                                ):
+                                    raise _DeferredBVHRequired
+                                _drain_sparse_secondary(
+                                    active,
+                                    state,
+                                    rs_pix,
+                                    pix_accum,
+                                    rs_alloc,
+                                    compactor,
+                                    rs_vis,
+                                )
+                        except (InsufficientMemoryException, RuntimeError) as exc:
+                            # Taichi launches OOM as a bare RuntimeError from their
+                            # own allocator; treat those as OOM, re-raise real ones.
+                            if not isinstance(
+                                exc, InsufficientMemoryException
+                            ) and not is_cuda_oom(exc):
+                                raise
+                            release_torch_memory(force_gc=False)
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "Sparse raster bounce scratch did not fit for "
+                                    "one covered pixel. Lower the resolution or "
+                                    "transparency complexity."
+                                ) from exc
+                            next_primary, shared_pool_capacity, pool = (
+                                _shrink_sparse_memory_retry(
+                                    attempt_primary, shared_pool_capacity, pool_ratio
+                                )
+                            )
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+
+                        # Secondary shading can itself split again.  Discard and
+                        # retry the whole compact slice before compositing if any
+                        # of those later allocations exhausted the shared pool.
+                        # This is the slice's accept point, so it is also where the
+                        # resolve's and the drain's truncation counters are folded
+                        # into the render's totals.
+                        with _stage("wavefront:   - alloc readback"):
+                            alloc = _read_tile_alloc(rs_alloc)
+                        if pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0:
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "A single covered pixel's deterministic ray "
+                                    f"tree exceeded the shared pool of {pool} "
+                                    "slots."
+                                )
+                            next_primary = _overflow_retry_primary(
+                                attempt_primary, alloc[ALLOC_NEXT], pool
+                            )
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+                        _record_tile_truncations(alloc, pool)
+
+                        with _stage("wavefront:   - tile composite"):
+                            if gl_active:
+                                # The reflection buffers hold ONE frame, so a tile that
+                                # spans several is scattered, composited and finished
+                                # one frame-part at a time, in frame order: the
+                                # scatter reads the raw prefilled background and must
+                                # precede the composite of the same pixels, and the
+                                # finish overwrites the composite's values for the
+                                # glossy pixels, so a frame's part is composited before
+                                # it is finished and the buffers are cleared only once
+                                # a frame's last pixel is in -- a frame whose pixels
+                                # straddle two tiles keeps its buffer across them.
+                                tile_start = covered_start
+                                tile_end = covered_start + attempt_primary
+                                ppf = int(width) * int(height)
+                                while covered_start < tile_end:
+                                    frame_end = gl_bounds[gl_frame + 1]
+                                    if frame_end <= covered_start:
+                                        # A frame with no covered pixel: nothing to
+                                        # scatter or finish, exactly as the skip at
+                                        # the top of the tile treats it.
+                                        gl_frame += 1
+                                        continue
+                                    part_end = min(tile_end, frame_end)
+                                    a = covered_start - tile_start
+                                    b = part_end - tile_start
+                                    gloss_scatter(
+                                        int(b - a),
+                                        int(attempt_primary),
+                                        gl_frame * ppf,
                                         gl_frame,
-                                        gl_levels,
+                                        int(width),
+                                        float(gl_sigma_max),
+                                        covered_idx[a:b],
+                                        pix_accum,
                                         gl_main,
                                         gl_pyr,
+                                        out,
+                                        int(a),
+                                    )
+                                    wf_composite_accum_sparse(
+                                        int(time_start),
                                         int(width),
                                         int(height),
+                                        1 if transparent else 0,
+                                        0,
+                                        covered_idx[a:b],
+                                        pix_accum[a:b],
                                         t_val_sparse,
+                                        float(rt_settings.tonemap_exposure),
+                                        geo_cov_sparse,
                                         out,
                                     )
-                                    _gloss_clear(gl_main, gl_pyr)
-                                    gl_frame += 1
-                            memory.set_pointers(state_ptrs)
-                            break
+                                    covered_start = part_end
+                                    if covered_start >= frame_end:
+                                        # Frame complete: prefilter its reflection
+                                        # buffer and composite the glossy pixels over
+                                        # the values just written for them.
+                                        _gloss_finish_frame(
+                                            gl_frame,
+                                            gl_levels,
+                                            gl_main,
+                                            gl_pyr,
+                                            int(width),
+                                            int(height),
+                                            t_val_sparse,
+                                            out,
+                                        )
+                                        _gloss_clear(gl_main, gl_pyr)
+                                        gl_frame += 1
+                                break
 
-                        wf_composite_accum_sparse(
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            1 if transparent else 0,
-                            0,
-                            covered_idx,
-                            pix_accum,
-                            t_val_sparse,
-                            float(rt_settings.tonemap_exposure),
-                            geo_cov_sparse,
-                            out,
-                        )
-                        memory.set_pointers(state_ptrs)
-                        covered_start += attempt_primary
-                        break
+                            wf_composite_accum_sparse(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                0,
+                                covered_idx,
+                                pix_accum,
+                                t_val_sparse,
+                                float(rt_settings.tonemap_exposure),
+                                geo_cov_sparse,
+                                out,
+                            )
+                            covered_start += attempt_primary
+                            break
         return
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):
@@ -3681,7 +3656,8 @@ def raytrace_render_wavefront(
                     merged["edges_2d"],
                     merged["edge_accel"],
                     pixel_world_scale,
-                    layer_offsets_t,
+                    render_metadata.floats,
+                    render_metadata.ints,
                     int(frag_flag),
                     frag_pipelines,
                     frag_scatters,

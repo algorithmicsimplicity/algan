@@ -778,6 +778,7 @@ def test_the_int32_band_stats_kernel_answers_the_int64_one(wide_kernel_arms):
             nfrag,
             True,
             ti_dtype,
+            True,
         )
         rep = torch.full((nb,), n, dtype=torch_dtype)
         band_stats_rep_orig(
@@ -837,6 +838,7 @@ def test_the_float32_area_kernel_tracks_the_float64_one(wide_kernel_arms):
             sliver,
             False,
             ti_dtype,
+            True,
         )
         areas[torch_dtype] = area.to(torch.float64)
         unions[torch_dtype] = union

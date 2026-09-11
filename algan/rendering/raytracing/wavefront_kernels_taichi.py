@@ -62,6 +62,16 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
     min_weight,
 )
+from algan.rendering.raytracing.render_metadata import (
+    ENV_HEIGHT,
+    ENV_INTENSITY,
+    ENV_OFFSET,
+    ENV_WIDTH,
+    FAR_CLIP,
+    GLOSS_BASE,
+    LAYER_OFFSET,
+    MAX_BOUNCES,
+)
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_ATTENUATION_SIGMA,
     _MAT_NO_SHADOW_RECEIVE,
@@ -1995,6 +2005,7 @@ def wavefront_traverse_events_arena(
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _WAVEFRONT_TRAVERSE_EVENTS_ARENA's.
+    # BEGIN GENERATED wavefront_traverse_events bindings
     t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
     t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
     t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
@@ -2002,8 +2013,7 @@ def wavefront_traverse_events_arena(
     b_node_miss = ti.static(ArenaView(arena_i32, aoff[4], (ashp[6],)))
     b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[5], (ashp[7],)))
     b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[6], (ashp[8],)))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[7], (ashp[9], ashp[10], ashp[11])))
+    circuit_meta = ti.static(ArenaView(arena_f32, aoff[7], (ashp[9], ashp[10], ashp[11])))
     edges_2d = ti.static(ArenaView(arena_f32, aoff[8], (ashp[12], ashp[13], ashp[14])))
     edge_accel = ti.static(ArenaView(arena_i32, aoff[9], (ashp[15],)))
     ot_node_miss = ti.static(ArenaView(arena_i32, aoff[10], (ashp[16],)))
@@ -2018,6 +2028,7 @@ def wavefront_traverse_events_arena(
     pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[19], (ashp[27], ashp[28])))
     pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[20], (ashp[29], ashp[30])))
     gen_meta = ti.static(ArenaView(arena_f32, aoff[21], (ashp[31],)))
+    # END GENERATED wavefront_traverse_events bindings
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -2171,6 +2182,7 @@ def wavefront_traverse_events_arena(
 #: binding prologue reads those slots by literal index, so the two
 #: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
 #: fails if they stop agreeing.
+# BEGIN GENERATED wavefront_traverse_events layout
 _WAVEFRONT_TRAVERSE_EVENTS_ARENA = (
     ("t_node_miss", "i32", 1),
     ("t_leaf_prim", "i32", 1),
@@ -2196,21 +2208,59 @@ _WAVEFRONT_TRAVERSE_EVENTS_ARENA = (
     ("gen_meta", "f32", 1),
 )
 
-#: The argument list every launch site passes. Unchanged by the
-#: conversion -- that is the point of the wrapper below.
 _WAVEFRONT_TRAVERSE_EVENTS_PARAMS = (
-    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
-    "t_leaf_tspan", "t_first_leaf", "tri_pos", "b_nodes", "b_node_miss",
-    "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta", "edges_2d",
-    "edge_accel", "ot_nodes", "ot_node_miss", "ot_leaf_prim", "ot_leaf_tspan",
-    "ot_first_leaf", "ob_nodes", "ob_node_miss", "ob_leaf_prim",
-    "ob_leaf_tspan", "ob_first_leaf", "pixel_world_scale",
-    "layer_offset_triangles", "refit", "has_tri", "has_bez", "opaque_closest",
-    "opaque_prepass", "time_start", "width", "height", "ray_offset", "rs_ro",
-    "rs_rd", "rs_sca", "rs_int", "hit_f", "hit_i", "rs_pix", "gen_first",
-    "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
+    "active",
+    "num_active",
+    "t_nodes",
+    "t_node_miss",
+    "t_leaf_prim",
+    "t_leaf_tspan",
+    "t_first_leaf",
+    "tri_pos",
+    "b_nodes",
+    "b_node_miss",
+    "b_leaf_prim",
+    "b_leaf_tspan",
+    "b_first_leaf",
+    "circuit_meta",
+    "edges_2d",
+    "edge_accel",
+    "ot_nodes",
+    "ot_node_miss",
+    "ot_leaf_prim",
+    "ot_leaf_tspan",
+    "ot_first_leaf",
+    "ob_nodes",
+    "ob_node_miss",
+    "ob_leaf_prim",
+    "ob_leaf_tspan",
+    "ob_first_leaf",
+    "pixel_world_scale",
+    "layer_offset_triangles",
+    "refit",
+    "has_tri",
+    "has_bez",
+    "opaque_closest",
+    "opaque_prepass",
+    "time_start",
+    "width",
+    "height",
+    "ray_offset",
+    "rs_ro",
+    "rs_rd",
+    "rs_sca",
+    "rs_int",
+    "hit_f",
+    "hit_i",
+    "rs_pix",
+    "gen_first",
+    "cam_origin",
+    "screen_point",
+    "pixel_basis_x",
+    "pixel_basis_y",
     "gen_meta",
 )
+# END GENERATED wavefront_traverse_events layout
 
 _wavefront_traverse_events_launch = arena_packed(
     __name__, "wavefront_traverse_events_arena",
@@ -2391,7 +2441,7 @@ def wavefront_shade_arena(
         # it is used as compile-time constants here (acc = 0, weight = 1,
         # t_prev = 0, layer_prev = 1e30, seam_t = -1e30, base_dist = 0,
         # processed = 0, pix = r) instead of read from global state;
-        # max_bounces rides in layer_offsets[6] (this kernel is at the CUDA
+        # max_bounces rides in render_ints[MAX_BOUNCES] (this kernel is at the CUDA
         # 64-arg ceiling). Survivors write their state back below exactly as
         # before (plus rs_pix), so iterations >= 1 run the classic kernel.
         first_iter: ti.template(),
@@ -2455,75 +2505,45 @@ def wavefront_shade_arena(
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _WAVEFRONT_SHADE_ARENA's.
+    # BEGIN GENERATED wavefront_shade bindings
     t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
     t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
     t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
     tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
     tri_norm = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8])))
     tri_extra = ti.static(ArenaView(arena_f32, aoff[5], (ashp[9], ashp[10], ashp[11])))
-    tri_colors = ti.static(ArenaView(
-        arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
+    tri_colors = ti.static(ArenaView(arena_f32, aoff[6], (ashp[12], ashp[13], ashp[14], ashp[15])))
     tri_uvs = ti.static(ArenaView(arena_f32, aoff[7], (ashp[16], ashp[17], ashp[18])))
     tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[8], (ashp[19], ashp[20])))
     textures = ti.static(ArenaView(arena_f32, aoff[9], (ashp[21], ashp[22], ashp[23])))
-    # Family A+B memory-trim: the per-prim color/extra remap that goes with
-    # the reordered/compacted triangle arrays (see scene_builder._build_mem_
-    # _trim). Unused when ``mem_trim == 0``, where it is a 1-elem stub.
     col_row = ti.static(ArenaView(arena_i32, aoff[10], (ashp[24],)))
     b_node_miss = ti.static(ArenaView(arena_i32, aoff[11], (ashp[25],)))
     b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[12], (ashp[26],)))
     b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[13], (ashp[27],)))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[14], (ashp[28], ashp[29], ashp[30])))
-    circuit_colors = ti.static(ArenaView(
-        arena_f32, aoff[15], (ashp[31], ashp[32], ashp[33], ashp[34])))
-    circuit_border_colors = ti.static(ArenaView(
-        arena_f32, aoff[16], (ashp[35], ashp[36], ashp[37], ashp[38])))
+    circuit_meta = ti.static(ArenaView(arena_f32, aoff[14], (ashp[28], ashp[29], ashp[30])))
+    circuit_colors = ti.static(ArenaView(arena_f32, aoff[15], (ashp[31], ashp[32], ashp[33], ashp[34])))
+    circuit_border_colors = ti.static(ArenaView(arena_f32, aoff[16], (ashp[35], ashp[36], ashp[37], ashp[38])))
     edges_2d = ti.static(ArenaView(arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
     edge_accel = ti.static(ArenaView(arena_i32, aoff[18], (ashp[42],)))
-    # Two floats in one array: [tri, pn].
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[43],)))
-    layer_offsets = ti.static(ArenaView(arena_f32, aoff[20], (ashp[44],)))
-    tri_mat_id = ti.static(ArenaView(arena_i32, aoff[21], (ashp[45], ashp[46])))
-    tri_mat = ti.static(ArenaView(arena_f32, aoff[22], (ashp[47], ashp[48], ashp[49])))
-    light_pos = ti.static(ArenaView(
-        arena_f32, aoff[23], (ashp[50], ashp[51], ashp[52])))
-    light_col = ti.static(ArenaView(
-        arena_f32, aoff[24], (ashp[53], ashp[54], ashp[55])))
-    # Per-frame camera world position, handed on to the material stages
-    # (``cam_pos``): depth-style shading measures from the CAMERA, and a
-    # bounced ray's own origin is not it.
-    cam_origin = ti.static(ArenaView(arena_f32, aoff[25], (ashp[56], ashp[57])))
+    render_floats = ti.static(ArenaView(arena_f32, aoff[20], (ashp[44],)))
+    render_ints = ti.static(ArenaView(arena_i32, aoff[21], (ashp[45],)))
+    tri_mat_id = ti.static(ArenaView(arena_i32, aoff[22], (ashp[46], ashp[47])))
+    tri_mat = ti.static(ArenaView(arena_f32, aoff[23], (ashp[48], ashp[49], ashp[50])))
+    light_pos = ti.static(ArenaView(arena_f32, aoff[24], (ashp[51], ashp[52], ashp[53])))
+    light_col = ti.static(ArenaView(arena_f32, aoff[25], (ashp[54], ashp[55], ashp[56])))
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[26], (ashp[57], ashp[58])))
+    # END GENERATED wavefront_shade bindings
     pixels_per_frame = width * height
-    # Unpack the layer offset (packed into one ndarray to stay within the
-    # 64-arg ceiling); the body below references this name unchanged.
-    layer_offset_triangles = layer_offsets[0]
-    # Optional extras ride behind the layer offset in the same packed
-    # ndarray (again: 64-arg ceiling): [1..4] = environment map placement
-    # (offset, width, height, intensity) in the shared texel buffer -- rays
-    # that retire without consuming all their throughput pick up the
-    # environment in their final direction (skybox + correct reflections) --
-    # and [5] = the camera's far clip distance (0 = disabled).
-    env_off = 0
-    env_w = 0
-    env_h = 0
-    env_intensity = 0.0
-    far_clip = 0.0
-    if layer_offsets.shape[0] > 5:
-        env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
-        env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-        env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-        env_intensity = layer_offsets[4]
-        far_clip = layer_offsets[5]
-    # First accumulator row belonging to the split-sum glossy half of
-    # ``pix_accum`` (DESIGN_glossy_prefilter.md §4.3), or 0 when the route is
-    # not active -- which is every render but an opt-in glossy one, and the
-    # reason this rides in ``layer_offsets`` rather than as a kernel argument:
-    # this kernel is at 72 parameters against Taichi's 64 runtime ones, the
-    # same ceiling that put the environment map's placement in here.
-    gloss_base = 0
-    if layer_offsets.shape[0] > 7:
-        gloss_base = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+    # Fixed typed metadata: integer addresses/counts are never encoded as f32.
+    layer_offset_triangles = render_floats[LAYER_OFFSET]
+    env_off = render_ints[ENV_OFFSET]
+    env_w = render_ints[ENV_WIDTH]
+    env_h = render_ints[ENV_HEIGHT]
+    env_intensity = render_floats[ENV_INTENSITY]
+    far_clip = render_floats[FAR_CLIP]
+    # First accumulator row for the split-sum glossy branch; zero off that route.
+    gloss_base = render_ints[GLOSS_BASE]
     for i in range(num_active):
         r = active[i]
         pix = r
@@ -2549,7 +2569,7 @@ def wavefront_shade_arena(
             bounces_left = 0
             processed = 0
             if ti.static(first_iter != 0):
-                bounces_left = ti.cast(layer_offsets[6] + 0.5, ti.i32)
+                bounces_left = render_ints[MAX_BOUNCES]
             else:
                 acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                                    rs_acc[r, 3])
@@ -3722,6 +3742,7 @@ def wavefront_shade_arena(
 #: binding prologue reads those slots by literal index, so the two
 #: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
 #: fails if they stop agreeing.
+# BEGIN GENERATED wavefront_shade layout
 _WAVEFRONT_SHADE_ARENA = (
     ("t_node_miss", "i32", 1),
     ("t_leaf_prim", "i32", 1),
@@ -3743,7 +3764,8 @@ _WAVEFRONT_SHADE_ARENA = (
     ("edges_2d", "f32", 3),
     ("edge_accel", "i32", 1),
     ("pixel_world_scale", "f32", 1),
-    ("layer_offsets", "f32", 1),
+    ("render_floats", "f32", 1),
+    ("render_ints", "i32", 1),
     ("tri_mat_id", "i32", 2),
     ("tri_mat", "f32", 3),
     ("light_pos", "f32", 3),
@@ -3751,24 +3773,80 @@ _WAVEFRONT_SHADE_ARENA = (
     ("cam_origin", "f32", 2),
 )
 
-#: The argument list every launch site passes. Unchanged by the
-#: conversion -- that is the point of the wrapper below.
 _WAVEFRONT_SHADE_PARAMS = (
-    "active", "num_active", "t_nodes", "t_node_miss", "t_leaf_prim",
-    "t_leaf_tspan", "t_first_leaf", "tri_pos", "tri_norm", "tri_extra",
-    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
-    "num_colored_triangles", "col_row", "b_nodes", "b_node_miss",
-    "b_leaf_prim", "b_leaf_tspan", "b_first_leaf", "circuit_meta",
-    "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel",
-    "pixel_world_scale", "layer_offsets", "frag_shading", "frag_pipelines",
-    "frag_scatters", "tri_pids", "shadows", "refraction", "ior_stack",
-    "refit", "has_tri", "has_bez", "deferred_shadows", "shadow_term",
-    "sided_cull", "skip_unlit_normal", "direct_spec", "mem_trim", "opaque_closest",
-    "first_iter", "compact", "weight_floor_exit", "vis_lights", "tri_mat_id",
-    "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
-    "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
-    "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin",
+    "active",
+    "num_active",
+    "t_nodes",
+    "t_node_miss",
+    "t_leaf_prim",
+    "t_leaf_tspan",
+    "t_first_leaf",
+    "tri_pos",
+    "tri_norm",
+    "tri_extra",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "textures",
+    "num_colored_triangles",
+    "col_row",
+    "b_nodes",
+    "b_node_miss",
+    "b_leaf_prim",
+    "b_leaf_tspan",
+    "b_first_leaf",
+    "circuit_meta",
+    "circuit_colors",
+    "circuit_border_colors",
+    "edges_2d",
+    "edge_accel",
+    "pixel_world_scale",
+    "render_floats",
+    "render_ints",
+    "frag_shading",
+    "frag_pipelines",
+    "frag_scatters",
+    "tri_pids",
+    "shadows",
+    "refraction",
+    "ior_stack",
+    "refit",
+    "has_tri",
+    "has_bez",
+    "deferred_shadows",
+    "shadow_term",
+    "sided_cull",
+    "skip_unlit_normal",
+    "direct_spec",
+    "mem_trim",
+    "opaque_closest",
+    "first_iter",
+    "compact",
+    "weight_floor_exit",
+    "vis_lights",
+    "tri_mat_id",
+    "tri_mat",
+    "light_pos",
+    "light_col",
+    "num_lights",
+    "time_start",
+    "width",
+    "height",
+    "ray_offset",
+    "rs_ro",
+    "rs_rd",
+    "rs_acc",
+    "rs_sca",
+    "rs_int",
+    "hit_f",
+    "hit_i",
+    "rs_pix",
+    "pix_accum",
+    "rs_alloc",
+    "rs_vis",
+    "cam_origin",
 )
+# END GENERATED wavefront_shade layout
 
 _wavefront_shade_launch = arena_packed(
     __name__, "wavefront_shade_arena", _WAVEFRONT_SHADE_PARAMS, _WAVEFRONT_SHADE_ARENA)
