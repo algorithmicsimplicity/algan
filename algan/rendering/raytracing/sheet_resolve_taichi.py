@@ -84,6 +84,14 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
     min_weight,
 )
+from algan.rendering.raytracing.render_metadata import (
+    ENV_HEIGHT,
+    ENV_INTENSITY,
+    ENV_OFFSET,
+    ENV_WIDTH,
+    FAR_CLIP,
+    MAX_BOUNCES,
+)
 from algan.rendering.raytracing.shading_taichi import (
     _MAT_NO_SHADOW_RECEIVE,
     _MAT_ONE_SIDED,
@@ -202,6 +210,7 @@ def sheet_resolve_shade_arena(
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _SHEET_RESOLVE_SHADE_ARENA's.
+    # BEGIN GENERATED sheet_resolve_shade bindings
     sheet_offsets = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
     sheet_key = ti.static(ArenaView(arena_i64, aoff[1], (ashp[1],)))
     sheet_ref = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
@@ -212,54 +221,46 @@ def sheet_resolve_shade_arena(
     tri_pos = ti.static(ArenaView(arena_f32, aoff[7], (ashp[8], ashp[9], ashp[10])))
     tri_norm = ti.static(ArenaView(arena_f32, aoff[8], (ashp[11], ashp[12], ashp[13])))
     tri_extra = ti.static(ArenaView(arena_f32, aoff[9], (ashp[14], ashp[15], ashp[16])))
-    tri_colors = ti.static(ArenaView(
-        arena_f32, aoff[10], (ashp[17], ashp[18], ashp[19], ashp[20])))
+    tri_colors = ti.static(ArenaView(arena_f32, aoff[10], (ashp[17], ashp[18], ashp[19], ashp[20])))
     tri_uvs = ti.static(ArenaView(arena_f32, aoff[11], (ashp[21], ashp[22], ashp[23])))
     tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[12], (ashp[24], ashp[25])))
     textures = ti.static(ArenaView(arena_f32, aoff[13], (ashp[26], ashp[27], ashp[28])))
     col_row = ti.static(ArenaView(arena_i32, aoff[14], (ashp[29],)))
     tri_mat_id = ti.static(ArenaView(arena_i32, aoff[15], (ashp[30], ashp[31])))
     tri_mat = ti.static(ArenaView(arena_f32, aoff[16], (ashp[32], ashp[33], ashp[34])))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[17], (ashp[35], ashp[36], ashp[37])))
-    circuit_colors = ti.static(ArenaView(
-        arena_f32, aoff[18], (ashp[38], ashp[39], ashp[40], ashp[41])))
-    circuit_border_colors = ti.static(ArenaView(
-        arena_f32, aoff[19], (ashp[42], ashp[43], ashp[44], ashp[45])))
-    light_pos = ti.static(ArenaView(
-        arena_f32, aoff[20], (ashp[46], ashp[47], ashp[48])))
-    light_col = ti.static(ArenaView(
-        arena_f32, aoff[21], (ashp[49], ashp[50], ashp[51])))
-    layer_offsets = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
-    sheet_memo = ti.static(ArenaView(arena_f32, aoff[23], (ashp[53], ashp[54])))
-    sheet_accept = ti.static(ArenaView(arena_i32, aoff[24], (ashp[55],)))
-    event_pos = ti.static(ArenaView(arena_f32, aoff[25], (ashp[56], ashp[57])))
-    event_snrm = ti.static(ArenaView(arena_f32, aoff[26], (ashp[58], ashp[59])))
-    event_fnrm = ti.static(ArenaView(arena_f32, aoff[27], (ashp[60], ashp[61])))
-    event_frame = ti.static(ArenaView(arena_i32, aoff[28], (ashp[62],)))
-    event_msk = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63],)))
-    event_dp = ti.static(ArenaView(arena_f32, aoff[30], (ashp[64], ashp[65])))
-    # Per-event shadow-terminator displacement (vec3), written by the mode-1
-    # build exactly when ``sheet_accept`` is set; uninitialised arena memory
-    # otherwise, so nothing may read a row that was not written this frame.
-    event_toff = ti.static(ArenaView(arena_f32, aoff[31], (ashp[66], ashp[67])))
-    sheet_event_id = ti.static(ArenaView(arena_i32, aoff[32], (ashp[68],)))
-    shadow_vis = ti.static(ArenaView(
-        arena_f32, aoff[33], (ashp[69], ashp[70], ashp[71])))
-    covered_idx = ti.static(ArenaView(arena_i32, aoff[34], (ashp[72],)))
-    cam_origin = ti.static(ArenaView(arena_f32, aoff[35], (ashp[73], ashp[74])))
-    screen_point = ti.static(ArenaView(arena_f32, aoff[36], (ashp[75], ashp[76])))
-    pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[37], (ashp[77], ashp[78])))
-    pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[38], (ashp[79], ashp[80])))
-    gen_meta = ti.static(ArenaView(arena_f32, aoff[39], (ashp[81],)))
-    rs_alloc = ti.static(ArenaView(arena_i32, aoff[40], (ashp[82],)))
+    circuit_meta = ti.static(ArenaView(arena_f32, aoff[17], (ashp[35], ashp[36], ashp[37])))
+    circuit_colors = ti.static(ArenaView(arena_f32, aoff[18], (ashp[38], ashp[39], ashp[40], ashp[41])))
+    circuit_border_colors = ti.static(ArenaView(arena_f32, aoff[19], (ashp[42], ashp[43], ashp[44], ashp[45])))
+    light_pos = ti.static(ArenaView(arena_f32, aoff[20], (ashp[46], ashp[47], ashp[48])))
+    light_col = ti.static(ArenaView(arena_f32, aoff[21], (ashp[49], ashp[50], ashp[51])))
+    render_floats = ti.static(ArenaView(arena_f32, aoff[22], (ashp[52],)))
+    render_ints = ti.static(ArenaView(arena_i32, aoff[23], (ashp[53],)))
+    sheet_memo = ti.static(ArenaView(arena_f32, aoff[24], (ashp[54], ashp[55])))
+    sheet_accept = ti.static(ArenaView(arena_i32, aoff[25], (ashp[56],)))
+    event_pos = ti.static(ArenaView(arena_f32, aoff[26], (ashp[57], ashp[58])))
+    event_snrm = ti.static(ArenaView(arena_f32, aoff[27], (ashp[59], ashp[60])))
+    event_fnrm = ti.static(ArenaView(arena_f32, aoff[28], (ashp[61], ashp[62])))
+    event_frame = ti.static(ArenaView(arena_i32, aoff[29], (ashp[63],)))
+    event_msk = ti.static(ArenaView(arena_i32, aoff[30], (ashp[64],)))
+    event_dp = ti.static(ArenaView(arena_f32, aoff[31], (ashp[65], ashp[66])))
+    event_toff = ti.static(ArenaView(arena_f32, aoff[32], (ashp[67], ashp[68])))
+    sheet_event_id = ti.static(ArenaView(arena_i32, aoff[33], (ashp[69],)))
+    shadow_vis = ti.static(ArenaView(arena_f32, aoff[34], (ashp[70], ashp[71], ashp[72])))
+    covered_idx = ti.static(ArenaView(arena_i32, aoff[35], (ashp[73],)))
+    cam_origin = ti.static(ArenaView(arena_f32, aoff[36], (ashp[74], ashp[75])))
+    screen_point = ti.static(ArenaView(arena_f32, aoff[37], (ashp[76], ashp[77])))
+    pixel_basis_x = ti.static(ArenaView(arena_f32, aoff[38], (ashp[78], ashp[79])))
+    pixel_basis_y = ti.static(ArenaView(arena_f32, aoff[39], (ashp[80], ashp[81])))
+    gen_meta = ti.static(ArenaView(arena_f32, aoff[40], (ashp[82],)))
+    rs_alloc = ti.static(ArenaView(arena_i32, aoff[41], (ashp[83],)))
+    # END GENERATED sheet_resolve_shade bindings
     pixels_per_frame = width * height
-    env_off = ti.cast(layer_offsets[1] + 0.5, ti.i32)
-    env_w = ti.cast(layer_offsets[2] + 0.5, ti.i32)
-    env_h = ti.cast(layer_offsets[3] + 0.5, ti.i32)
-    env_intensity = layer_offsets[4]
-    far_clip = layer_offsets[5]
-    max_bounces = ti.cast(layer_offsets[6] + 0.5, ti.i32)
+    env_off = render_ints[ENV_OFFSET]
+    env_w = render_ints[ENV_WIDTH]
+    env_h = render_ints[ENV_HEIGHT]
+    env_intensity = render_floats[ENV_INTENSITY]
+    far_clip = render_floats[FAR_CLIP]
+    max_bounces = render_ints[MAX_BOUNCES]
     for t in range(num_covered):
         r = t
         pixel = covered_idx[t]
@@ -297,7 +298,7 @@ def sheet_resolve_shade_arena(
         # derived from a pixel size. Computed here rather than taken as an
         # argument: this kernel is at 72 parameters and Taichi's ceiling is 64
         # runtime ones, which is why the env map's placement already rides
-        # inside ``layer_offsets``.
+        # in the typed render metadata.
         gl_px_per_rad = 0.0
         gl_taken = False
         # The prefiltered glossy event is a per-PIXEL resource -- one ``W``,
@@ -1334,6 +1335,7 @@ def sheet_resolve_shade_arena(
 #: binding prologue reads those slots by literal index, so the two
 #: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
 #: fails if they stop agreeing.
+# BEGIN GENERATED sheet_resolve_shade layout
 _SHEET_RESOLVE_SHADE_ARENA = (
     ("sheet_offsets", "i32", 1),
     ("sheet_key", "i64", 1),
@@ -1357,7 +1359,8 @@ _SHEET_RESOLVE_SHADE_ARENA = (
     ("circuit_border_colors", "f32", 4),
     ("light_pos", "f32", 3),
     ("light_col", "f32", 3),
-    ("layer_offsets", "f32", 1),
+    ("render_floats", "f32", 1),
+    ("render_ints", "i32", 1),
     ("sheet_memo", "f32", 2),
     ("sheet_accept", "i32", 1),
     ("event_pos", "f32", 2),
@@ -1378,26 +1381,83 @@ _SHEET_RESOLVE_SHADE_ARENA = (
     ("rs_alloc", "i32", 1),
 )
 
-#: The argument list every launch site passes. Unchanged by the
-#: conversion -- that is the point of the wrapper below.
 _SHEET_RESOLVE_SHADE_PARAMS = (
-    "num_covered", "sheet_offsets", "sheet_key", "sheet_ref", "sheet_ab",
-    "sheet_cov", "sheet_msk", "sheet_cap", "tri_pos", "tri_norm", "tri_extra",
-    "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
-    "num_colored_triangles", "col_row", "tri_mat_id", "tri_mat",
-    "circuit_meta", "circuit_colors", "circuit_border_colors", "light_pos",
-    "light_col", "num_lights", "vis_lights", "layer_offsets", "frag_shading",
-    "frag_pipelines", "tri_pids", "refraction", "ior_stack",
-    "skip_unlit_normal", "has_bez", "sec_aa", "sec_min_energy", "glossy",
-    "env_in_composite", "direct_spec", "mode", "shadow_term", "sided_cull",
+    "num_covered",
+    "sheet_offsets",
+    "sheet_key",
+    "sheet_ref",
+    "sheet_ab",
+    "sheet_cov",
+    "sheet_msk",
+    "sheet_cap",
+    "tri_pos",
+    "tri_norm",
+    "tri_extra",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "textures",
+    "num_colored_triangles",
+    "col_row",
+    "tri_mat_id",
+    "tri_mat",
+    "circuit_meta",
+    "circuit_colors",
+    "circuit_border_colors",
+    "light_pos",
+    "light_col",
+    "num_lights",
+    "vis_lights",
+    "render_floats",
+    "render_ints",
+    "frag_shading",
+    "frag_pipelines",
+    "tri_pids",
+    "refraction",
+    "ior_stack",
+    "skip_unlit_normal",
+    "has_bez",
+    "sec_aa",
+    "sec_min_energy",
+    "glossy",
+    "env_in_composite",
+    "direct_spec",
+    "mode",
+    "shadow_term",
+    "sided_cull",
     "memo",
-    "sheet_memo", "sheet_accept", "event_pos", "event_snrm", "event_fnrm",
-    "event_frame", "event_msk", "event_dp", "event_toff", "sheet_event_id",
-    "shadow_vis", "covered_idx", "time_start", "width", "height",
-    "cam_origin", "screen_point", "pixel_basis_x", "pixel_basis_y",
-    "gen_meta", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "rs_pix",
-    "pix_accum", "rs_alloc", "dump", "dump_out",
+    "sheet_memo",
+    "sheet_accept",
+    "event_pos",
+    "event_snrm",
+    "event_fnrm",
+    "event_frame",
+    "event_msk",
+    "event_dp",
+    "event_toff",
+    "sheet_event_id",
+    "shadow_vis",
+    "covered_idx",
+    "time_start",
+    "width",
+    "height",
+    "cam_origin",
+    "screen_point",
+    "pixel_basis_x",
+    "pixel_basis_y",
+    "gen_meta",
+    "rs_ro",
+    "rs_rd",
+    "rs_acc",
+    "rs_sca",
+    "rs_int",
+    "rs_pix",
+    "pix_accum",
+    "rs_alloc",
+    "dump",
+    "dump_out",
 )
+# END GENERATED sheet_resolve_shade layout
 
 _sheet_resolve_shade_launch = arena_packed(
     __name__, "sheet_resolve_shade_arena",

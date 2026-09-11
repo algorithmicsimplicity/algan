@@ -2861,12 +2861,12 @@ def raster_shadow_trace_arena(
     # Arena-bound parameters (arena_args_taichi): each name is
     # rebound to a window into its dtype's buffer, at the offset
     # the host wrote into aoff. Order is _RASTER_SHADOW_TRACE_ARENA's.
+    # BEGIN GENERATED raster_shadow_trace bindings
     t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
     t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
     t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
     tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
-    tri_colors = ti.static(ArenaView(
-        arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9])))
+    tri_colors = ti.static(ArenaView(arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9])))
     tri_uvs = ti.static(ArenaView(arena_f32, aoff[5], (ashp[10], ashp[11], ashp[12])))
     tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[6], (ashp[13], ashp[14])))
     textures = ti.static(ArenaView(arena_f32, aoff[7], (ashp[15], ashp[16], ashp[17])))
@@ -2874,20 +2874,16 @@ def raster_shadow_trace_arena(
     b_node_miss = ti.static(ArenaView(arena_i32, aoff[9], (ashp[21],)))
     b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[10], (ashp[22],)))
     b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[11], (ashp[23],)))
-    circuit_meta = ti.static(ArenaView(
-        arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26])))
-    circuit_colors = ti.static(ArenaView(
-        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30])))
-    circuit_border_colors = ti.static(ArenaView(
-        arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34])))
+    circuit_meta = ti.static(ArenaView(arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26])))
+    circuit_colors = ti.static(ArenaView(arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30])))
+    circuit_border_colors = ti.static(ArenaView(arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34])))
     edges_2d = ti.static(ArenaView(arena_f32, aoff[15], (ashp[35], ashp[36], ashp[37])))
     edge_accel = ti.static(ArenaView(arena_i32, aoff[16], (ashp[38],)))
-    light_pos = ti.static(ArenaView(
-        arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
-    light_col = ti.static(ArenaView(
-        arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
+    light_pos = ti.static(ArenaView(arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
+    light_col = ti.static(ArenaView(arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
     pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
     tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
+    # END GENERATED raster_shadow_trace bindings
     # One thread per (event, light) cell: every cell's fan is independent
     # (its result lands in its own ``shadow_vis[e, li]`` and all per-light
     # state initializes inside the body), so flattening the light loop into
@@ -3158,6 +3154,7 @@ def raster_shadow_trace_arena(
 #: binding prologue reads those slots by literal index, so the two
 #: are one edit apart -- ``tests/unit_tests/test_arena_args.py``
 #: fails if they stop agreeing.
+# BEGIN GENERATED raster_shadow_trace layout
 _RASTER_SHADOW_TRACE_ARENA = (
     ("t_node_miss", "i32", 1),
     ("t_leaf_prim", "i32", 1),
@@ -3182,21 +3179,57 @@ _RASTER_SHADOW_TRACE_ARENA = (
     ("tri_obj", "i32", 2),
 )
 
-#: The argument list every launch site passes. Unchanged by the
-#: conversion -- that is the point of the wrapper below.
 _RASTER_SHADOW_TRACE_PARAMS = (
-    "num_events", "event_pos", "event_snrm", "event_fnrm", "event_frame",
-    "event_msk", "t_nodes", "t_node_miss", "t_leaf_prim", "t_leaf_tspan",
-    "t_first_leaf", "tri_pos", "tri_colors", "tri_uvs", "tri_tex_meta",
-    "textures", "tri_extra", "num_colored_triangles", "b_nodes",
-    "b_node_miss", "b_leaf_prim", "b_leaf_tspan", "b_first_leaf",
-    "circuit_meta", "circuit_colors", "circuit_border_colors", "edges_2d",
-    "edge_accel", "light_pos", "light_col", "num_lights", "pixel_world_scale",
-    "layer_offset_triangles", "refit", "has_tri", "has_bez", "event_dp",
-    "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
-    "event_src_prim", "eps_self", "eps_near", "shadow_identity",
-    "shadow_term", "adaptive_taps",
+    "num_events",
+    "event_pos",
+    "event_snrm",
+    "event_fnrm",
+    "event_frame",
+    "event_msk",
+    "t_nodes",
+    "t_node_miss",
+    "t_leaf_prim",
+    "t_leaf_tspan",
+    "t_first_leaf",
+    "tri_pos",
+    "tri_colors",
+    "tri_uvs",
+    "tri_tex_meta",
+    "textures",
+    "tri_extra",
+    "num_colored_triangles",
+    "b_nodes",
+    "b_node_miss",
+    "b_leaf_prim",
+    "b_leaf_tspan",
+    "b_first_leaf",
+    "circuit_meta",
+    "circuit_colors",
+    "circuit_border_colors",
+    "edges_2d",
+    "edge_accel",
+    "light_pos",
+    "light_col",
+    "num_lights",
+    "pixel_world_scale",
+    "layer_offset_triangles",
+    "refit",
+    "has_tri",
+    "has_bez",
+    "event_dp",
+    "event_toff",
+    "sec_aa",
+    "shadow_vis",
+    "shadow_anyhit",
+    "tri_obj",
+    "event_src_prim",
+    "eps_self",
+    "eps_near",
+    "shadow_identity",
+    "shadow_term",
+    "adaptive_taps",
 )
+# END GENERATED raster_shadow_trace layout
 
 _raster_shadow_trace_launch = arena_packed(
     __name__, "raster_shadow_trace_arena",

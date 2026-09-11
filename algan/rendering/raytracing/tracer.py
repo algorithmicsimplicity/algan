@@ -49,6 +49,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     kbuf,
     max_surfaces_per_ray,
 )
+from algan.rendering.raytracing.render_metadata import (
+    GLOSS_BASE,
+    allocate_render_metadata,
+)
 from algan.rendering.raytracing.scene_builder import (
     _downsample_background,
     _merge_scene,
@@ -115,6 +119,7 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_pyramid_level,
     gloss_scatter,
 )
+from algan.rendering.raytracing.scene_bounds import triangle_scene_bounds
 from algan.rendering.raytracing.shadow_queue import (
     _gather_shadow_payload,
     _scatter_shadow_visibility,
@@ -141,6 +146,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wf_finalize_aa,
     wf_finalize_uncovered,
 )
+from algan.rendering.raytracing.wavefront_state import RayState
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ensure_render_headroom,
@@ -226,13 +232,13 @@ def _arena_values(memory, values, dtype=torch.float32):
     return _arena_copy(memory, source)
 
 
-def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
+def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True) -> RayState:
     """Allocate the wavefront's per-ray global state from the render memory pool
     (a bump allocator) rather than fresh ``torch.empty`` tensors.
 
     The caller snapshots ``memory.get_pointers()`` before each tile and restores
     them after, so this ~hundreds-of-MB of state is released *deterministically*
-    at the end of every iteration and the next tile reuses the same arena bytes.
+    at the end of every tile and the next tile reuses the same arena bytes.
     Previously these were ``torch.empty`` allocations that the CUDA caching
     allocator / Python GC didn't reclaim before the next tile asked for its own,
     so consecutive tiles' state piled up and OOMed the GPU at HD/AA>=2.
@@ -246,20 +252,23 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
         # rs_sca: 0 weight red, 1 t_prev, 2 layer_prev, 3 seam_t, 4 base_dist,
         # 5 weight green, 6 weight blue (color transport).
         memory.get_tensor((tn, sca_width), f32),  # rs_sca (7 general)
-        # rs_int: 0 bounces_left, 1 processed, 2 status, 3 num_hits, 4 drained
-        # (column 4 is used only by the legacy sorted-material path
-        # (unsupported); the classic kernels index columns 0-3 and never
-        # read it).
+        # rs_int: bounces_left, processed, status, num_hits, accumulator_row.
+        # Column 4 is live on the sparse route; dense kernels use columns 0-3.
         memory.get_tensor((tn, 5), i32),  # rs_int
     )
     if global_hits:
-        return core + (
-            memory.get_tensor((tn, kbuf), f32),  # rs_kt
-            memory.get_tensor((tn, kbuf), f32),  # rs_kl
-            memory.get_tensor((tn, kbuf), f32),  # rs_ka
-            memory.get_tensor((tn, kbuf), f32),  # rs_kb
-            memory.get_tensor((tn, kbuf), i32),  # rs_kp
-            memory.get_tensor((tn, kbuf), i32),  # rs_kf
+        return RayState(
+            *(
+                core
+                + (
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kt
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kl
+                    memory.get_tensor((tn, kbuf), f32),  # rs_ka
+                    memory.get_tensor((tn, kbuf), f32),  # rs_kb
+                    memory.get_tensor((tn, kbuf), i32),  # rs_kp
+                    memory.get_tensor((tn, kbuf), i32),  # rs_kf
+                )
+            )
         )
 
     # The supported general renderer no longer attaches a K-buffer to every
@@ -270,7 +279,7 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     # queue instead.
     stub_f = memory.get_tensor((1, 1), f32)
     stub_i = memory.get_tensor((1, 1), i32)
-    return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
+    return RayState(*(core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)))
 
 
 def _gloss_pyramid_levels(width, height, max_levels):
@@ -932,7 +941,7 @@ def _append_env_texture(textures, env, intensity, device):
 
     Returns the widened buffer and the map's placement meta
     ``(offset, width, height, intensity)`` for the shade kernel (packed into
-    the ``layer_offsets`` ndarray -- the kernel is at the 64-arg ceiling).
+    the typed render metadata arrays -- the kernel is at the 64-arg ceiling).
     Texels are stored column-major (``offset + x * height + y``) to match
     ``_sample_tex_vec5``.
     """
@@ -2061,10 +2070,10 @@ def _run_wavefront_tiles(
     two-word counter: next free slot and overflow flag.
 
     Pool exhaustion is never accepted as a rendering approximation. An
-    overflowing attempt is discarded before compositing and retried with half
-    as many primaries while retaining the same pool capacity. Thus the
-    continuation headroom doubles on every retry without increasing arena
-    memory, and there is no fixed per-pixel split limit.
+    overflowing attempt is discarded before compositing and retried with fewer
+    primaries based on measured demand, retaining the same pool capacity. An
+    attempt scope restores both arena ends on every exit, including exceptions
+    during allocator readback or compositing.
     """
     t_val = _get_tonemap_t_val()
     i32 = torch.int32
@@ -2144,8 +2153,7 @@ def _run_wavefront_tiles(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
-                    state_ptrs = memory.get_pointers()
-                    try:
+                    with memory.temp(clear_persist=True):
                         # Per-ray state for one tile: ``pool`` slots plus
                         # ``attempt_primary`` per-primary rows. Calibrated as
                         # unit coefficients (bytes per slot, per primary, and
@@ -2261,69 +2269,63 @@ def _run_wavefront_tiles(
                             pix_accum,
                             rs_alloc,
                         )
-                    except (InsufficientMemoryException, RuntimeError):
-                        memory.set_pointers(state_ptrs)
-                        raise
-
-                    alloc = _read_tile_alloc(rs_alloc)
-                    overflow = pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0
-                    if overflow:
-                        memory.set_pointers(state_ptrs)
-                        if attempt_primary <= 1:
-                            raise OutOfRenderMemory(
-                                "A single pixel's deterministic ray tree "
-                                f"exceeded the shared wavefront pool of {pool} "
-                                "slots. Lower MAX_BOUNCES / transparency "
-                                "complexity, or increase WAVEFRONT_TILE_RAYS."
+                        alloc = _read_tile_alloc(rs_alloc)
+                        overflow = pool_ratio > 1 and alloc[ALLOC_OVERFLOW] != 0
+                        if overflow:
+                            if attempt_primary <= 1:
+                                raise OutOfRenderMemory(
+                                    "A single pixel's deterministic ray tree "
+                                    f"exceeded the shared wavefront pool of {pool} "
+                                    "slots. Lower MAX_BOUNCES / transparency "
+                                    "complexity, or increase WAVEFRONT_TILE_RAYS."
+                                )
+                            next_primary = _overflow_retry_primary(
+                                attempt_primary, alloc[ALLOC_NEXT], pool
                             )
-                        next_primary = _overflow_retry_primary(
-                            attempt_primary, alloc[ALLOC_NEXT], pool
-                        )
-                        _WAVEFRONT_POOL_RETRIES[0] += 1
-                        logger.log(
-                            PERF,
-                            "Wavefront continuation pool overflowed for tile "
-                            f"{tile_start}:{tile_start + attempt_primary}; "
-                            f"retrying with {next_primary} primaries and the "
-                            f"same {pool}-slot pool",
-                        )
-                        learned_primary_cap = min(learned_primary_cap, next_primary)
-                        attempt_primary = next_primary
-                        continue
-                    # Past the retry: this attempt is the one that composites,
-                    # so its counters are the ones that count.
-                    _record_tile_truncations(alloc, pool)
+                            _WAVEFRONT_POOL_RETRIES[0] += 1
+                            logger.log(
+                                PERF,
+                                "Wavefront continuation pool overflowed for tile "
+                                f"{tile_start}:{tile_start + attempt_primary}; "
+                                f"retrying with {next_primary} primaries and the "
+                                f"same {pool}-slot pool",
+                            )
+                            learned_primary_cap = min(learned_primary_cap, next_primary)
+                            attempt_primary = next_primary
+                            continue
+                        # Past the retry: this attempt is the one that composites,
+                        # so its counters are the ones that count.
+                        _record_tile_truncations(alloc, pool)
 
-                    if do_aa:
-                        wf_composite_accum_aa(
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            1 if transparent else 0,
-                            int(tile_start),
-                            pix_accum,
-                            out,
-                            aa_accum,
-                        )
-                    else:
-                        wf_composite_accum(
-                            int(time_start),
-                            int(width),
-                            int(height),
-                            1 if transparent else 0,
-                            int(tile_start),
-                            pix_accum,
-                            t_val,
-                            float(rt_settings.tonemap_exposure),
-                            0,
-                            0,
-                            covered_dummy,
-                            0,
-                            out,
-                        )
-                    memory.set_pointers(state_ptrs)
-                    tile_start += attempt_primary
-                    break
+                        if do_aa:
+                            wf_composite_accum_aa(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                int(tile_start),
+                                pix_accum,
+                                out,
+                                aa_accum,
+                            )
+                        else:
+                            wf_composite_accum(
+                                int(time_start),
+                                int(width),
+                                int(height),
+                                1 if transparent else 0,
+                                int(tile_start),
+                                pix_accum,
+                                t_val,
+                                float(rt_settings.tonemap_exposure),
+                                0,
+                                0,
+                                covered_dummy,
+                                0,
+                                out,
+                            )
+                        tile_start += attempt_primary
+                        break
 
     if do_aa:
         wf_finalize_aa(
@@ -2378,8 +2380,8 @@ def raytrace_render_wavefront(
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
-    Persistent continuation state is stage-split in global memory and PyTorch
-    compacts ray indices between host iterations. Hit records are different:
+    Persistent continuation state is stage-split in global memory; arena-backed
+    index buffers and a filter kernel compact rays between host iterations. Hit records are different:
     traversal writes one exact-size ``[num_active, kbuf]`` transient event
     batch, shade consumes it immediately, and the arena range is then reused.
     No pool-wide K-buffer is attached to secondary radiance ray slots. The
@@ -2600,44 +2602,14 @@ def raytrace_render_wavefront(
         gen_meta = _arena_values(
             memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
         )
-    if gen_fused or use_raster or env_meta is not None or far_clip > 0.0:
-        # Extras packed behind the two layer offsets (the shade kernel is at
-        # the 64-arg ceiling): env map placement in the shared texel buffer +
-        # the camera's far clip distance, and -- read only by the fused first
-        # shade iteration -- max_bounces. The kernel detects them by length.
-        eo, ew, eh, ei = env_meta if env_meta is not None else (0, 0, 0, 0.0)
-        layer_values = [
-            float(layer_offset_triangles),
-            float(eo),
-            float(ew),
-            float(eh),
-            float(ei),
-            float(far_clip),
-            float(max_bounces),
-            # [7] the split-sum glossy route's first glossy accumulator row,
-            # rewritten per tile by the sparse loop below and 0 (inert)
-            # everywhere else. It rides here rather than as a kernel argument
-            # for the same reason the env placement does -- see the comment
-            # above and DESIGN_glossy_prefilter.md §4.3.
-            0.0,
-        ]
-        with memory.scope(
-            "batch_metadata",
-            gen_fused=int(bool(gen_fused)),
-            raster=int(bool(use_raster)),
-            extended=int(env_meta is not None or far_clip > 0.0),
-        ):
-            layer_offsets_t = _arena_values(memory, layer_values, f32)
-    else:
-        with memory.scope(
-            "batch_metadata",
-            gen_fused=int(bool(gen_fused)),
-            raster=int(bool(use_raster)),
-            extended=int(env_meta is not None or far_clip > 0.0),
-        ):
-            layer_offsets_t = _arena_values(
-                memory, [float(layer_offset_triangles)], f32
-            )
+    with memory.scope("batch_metadata"):
+        render_metadata = allocate_render_metadata(
+            memory,
+            layer_offset_triangles,
+            env_meta=env_meta,
+            far_clip=far_clip,
+            max_bounces=max_bounces,
+        )
 
     tri_screen = None
     tri_bounds = None
@@ -2682,15 +2654,11 @@ def raytrace_render_wavefront(
         """
         bounds = merged.get("_ray_sort_bounds")
         if bounds is None:
-            tp = merged["tri_pos"]
-            if tp.numel():
-                flat = tp.reshape(-1, 3).float()
-                vals = torch.cat((flat.amin(0), flat.amax(0))).tolist()
-            else:
-                vals = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-            lo3 = vals[:3]
+            scene_box = triangle_scene_bounds(merged)
+            lo3 = list(scene_box.lower)
             inv3 = [
-                1023.0 / max(hi_v - lo_v, 1e-12) for lo_v, hi_v in zip(lo3, vals[3:])
+                1023.0 / max(hi_v - lo_v, 1e-12)
+                for lo_v, hi_v in zip(lo3, scene_box.upper)
             ]
             bounds = (lo3, inv3)
             merged["_ray_sort_bounds"] = bounds
@@ -2901,19 +2869,9 @@ def raytrace_render_wavefront(
         ``rs_int[:, 4]`` contains the compact accumulator row.  A zero
         ``ray_offset`` therefore addresses the full prepared frame window.
         """
-        (
-            rs_ro,
-            rs_rd,
-            rs_acc,
-            rs_sca,
-            rs_int,
-            _rs_kt,
-            _rs_kl,
-            _rs_ka,
-            _rs_kb,
-            _rs_kp,
-            _rs_kf,
-        ) = state
+        rs_ro, rs_rd = state.origin, state.direction
+        rs_acc, rs_sca = state.accumulated, state.scalars
+        rs_int = state.integers
         it = 1
         while active.numel() > 0 and it < max_iters:
             with _stage("wavefront:   - drain active count"):
@@ -3034,7 +2992,8 @@ def raytrace_render_wavefront(
                         merged["edges_2d"],
                         merged["edge_accel"],
                         pixel_world_scale,
-                        layer_offsets_t,
+                        render_metadata.floats,
+                        render_metadata.ints,
                         int(frag_flag),
                         frag_pipelines,
                         frag_scatters,
@@ -3318,11 +3277,11 @@ def raytrace_render_wavefront(
                                 rs_alloc = memory.get_tensor((ALLOC_WIDTH,), i32)
                                 rs_vis = memory.get_tensor((1,), i32)
                                 compactor = _ArenaRayCompactor(memory, pool, i32)
-                            rs_int = state[4]
+                            rs_int = state.integers
                             if state_sca_width != SCA_WIDTH_PLAIN:
                                 # Same per-tile stack zeroing as the dense tile
                                 # above (DESIGN_mesh_identity_open.md §H).
-                                state[3][:, _SCA_IOR_DEPTH:].zero_()
+                                state.scalars[:, _SCA_IOR_DEPTH:].zero_()
                             pix_accum.zero_()
                             if gl_active:
                                 # A glossy ray that never hits anything writes no
@@ -3331,7 +3290,7 @@ def raytrace_render_wavefront(
                                 # blurred -- not as the zero a cleared buffer
                                 # would give, which is a contact reflection.
                                 pix_accum[attempt_primary:, GL_ROW_DIST] = float("inf")
-                                layer_offsets_t[7] = float(attempt_primary)
+                                render_metadata.ints[GLOSS_BASE] = attempt_primary
                             rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()
                             rs_alloc[0] = attempt_primary
@@ -3349,7 +3308,7 @@ def raytrace_render_wavefront(
                                 pixel_basis_x,
                                 pixel_basis_y,
                                 pixel_world_scale,
-                                layer_offsets_t,
+                                render_metadata,
                                 gen_meta,
                                 light_pos,
                                 light_col,
@@ -3701,7 +3660,8 @@ def raytrace_render_wavefront(
                     merged["edges_2d"],
                     merged["edge_accel"],
                     pixel_world_scale,
-                    layer_offsets_t,
+                    render_metadata.floats,
+                    render_metadata.ints,
                     int(frag_flag),
                     frag_pipelines,
                     frag_scatters,

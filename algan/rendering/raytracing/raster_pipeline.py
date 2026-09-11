@@ -37,6 +37,7 @@ from algan.rendering.raytracing.array_ops import csr_offsets
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     min_hit_distance,
 )
+from algan.rendering.raytracing.scene_bounds import triangle_scene_bounds
 from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
 from algan.rendering.raytracing.shadow_queue import _gather_shadow_payload
 from algan.settings import SETTINGS
@@ -725,6 +726,48 @@ def _frame_bez_pairs(
     )
 
 
+def _pack_screen_bounds(
+    xmin,
+    xmax,
+    ymin,
+    ymax,
+    bounded,
+    has_front,
+    valid,
+    opaque,
+    width,
+    memory,
+    *,
+    persist=False,
+):
+    """Pack conservative extents using the common triangle/circuit schema.
+
+    Projection, clipping and opacity classification are caller-specific. This
+    stage preserves the inclusive pixel margin, whole-window fallback for
+    unbounded front-facing candidates, and valid translucent classification.
+    """
+    frames, primitives = xmin.shape
+    fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
+    fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
+    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
+    x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
+    pre_f = memory.get_tensor((frames, primitives, 4), torch.float32, persist=persist)
+    pre_f.copy_(
+        torch.stack(((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1)
+    )
+    pre_x = memory.get_tensor((frames, primitives, 2), torch.int64, persist=persist)
+    pre_x.copy_(torch.stack((x0, x1), -1))
+    pre_m = memory.get_tensor((frames, primitives, 5), torch.bool, persist=persist)
+    pre_m.copy_(
+        torch.stack(
+            (bounded, bounded & x_on, ~bounded & has_front, opaque, valid & ~opaque),
+            -1,
+        )
+    )
+    return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
+
+
 def precompute_circuit_screen_bounds(
     merged,
     cam_origin,
@@ -830,32 +873,22 @@ def precompute_circuit_screen_bounds(
         xmax = torch.where(all_front, xmax, clip_x1)
         ymin = torch.where(all_front, ymin, clip_y0)
         ymax = torch.where(all_front, ymax, clip_y1)
-    fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
-    fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
-    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
-    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
-    x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
     valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
     opaque = valid & opaque_all.index_select(0, frame_ids % opaque_all.shape[0]).bool()
-
-    ncirc = int(lo.shape[1])
-    memory.note_scope_params(bez_bounds_cells=frames * ncirc)
-    pre_f = memory.get_tensor((frames, ncirc, 4), torch.float32, persist=persist)
-    pre_f.copy_(
-        torch.stack(((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1)
+    memory.note_scope_params(bez_bounds_cells=frames * int(lo.shape[1]))
+    return _pack_screen_bounds(
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        bounded,
+        front_any,
+        valid,
+        opaque,
+        width,
+        memory,
+        persist=persist,
     )
-    pre_x = memory.get_tensor((frames, ncirc, 2), torch.int64, persist=persist)
-    pre_x.copy_(torch.stack((x0, x1), -1))
-    # all_front implies front_any (eight corners), so the bounded reach base
-    # omits the redundant ``& front_any``: a clipped straddler kept a front
-    # corner by construction.
-    pre_m = memory.get_tensor((frames, ncirc, 5), torch.bool, persist=persist)
-    pre_m.copy_(
-        torch.stack(
-            (bounded, bounded & x_on, ~bounded & front_any, opaque, valid & ~opaque), -1
-        )
-    )
-    return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
 
 
 def precompute_triangle_screen_bounds(
@@ -933,11 +966,6 @@ def precompute_triangle_screen_bounds(
         xmax = torch.where(all_front, xmax, clip_x1)
         ymin = torch.where(all_front, ymin, clip_y0)
         ymax = torch.where(all_front, ymax, clip_y1)
-    fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
-    fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
-    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
-    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
-    x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
     valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
     unc = unc_all.index_select(0, frame_ids % unc_all.shape[0]).bool()
     opaque = (
@@ -945,24 +973,20 @@ def precompute_triangle_screen_bounds(
         & opaque_all.index_select(0, frame_ids % opaque_all.shape[0]).bool()
         & ~unc
     )
-
     memory.note_scope_params(tri_bounds_cells=frames * ntri)
-    pre_f = memory.get_tensor((frames, ntri, 4), torch.float32, persist=persist)
-    pre_f.copy_(
-        torch.stack(((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1)
+    return _pack_screen_bounds(
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        bounded,
+        not_behind,
+        valid,
+        opaque,
+        width,
+        memory,
+        persist=persist,
     )
-    pre_x = memory.get_tensor((frames, ntri, 2), torch.int64, persist=persist)
-    pre_x.copy_(torch.stack((x0, x1), -1))
-    # ``bounded`` already implies not-behind, so its reach base omits the
-    # redundant ``& not_behind``.
-    pre_m = memory.get_tensor((frames, ntri, 5), torch.bool, persist=persist)
-    pre_m.copy_(
-        torch.stack(
-            (bounded, bounded & x_on, ~bounded & not_behind, opaque, valid & ~opaque),
-            -1,
-        )
-    )
-    return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
 
 
 def _class_any_flags(pre_m):
@@ -1682,17 +1706,8 @@ def _shadow_identity_epsilons(merged):
     """
     scale = merged.get("_shadow_scene_diag")
     if scale is None:
-        tri_pos = merged["tri_pos"]
-        scale = 0.0
-        if tri_pos.numel():
-            # tri_pos is [frames, N, 9]: three vertices, three coordinates
-            # each.
-            verts = tri_pos.reshape(-1, 3, 3)
-            lo = verts.amin(dim=(0, 1))
-            hi = verts.amax(dim=(0, 1))
-            diag = (hi - lo).norm().item()
-            if math.isfinite(diag):
-                scale = diag
+        diag = triangle_scene_bounds(merged).diagonal
+        scale = diag if math.isfinite(diag) else 0.0
         merged["_shadow_scene_diag"] = scale
     eps_self = float(rt_settings.shadow_eps_relative) * scale
     if not (eps_self > 0.0) or not math.isfinite(eps_self):
@@ -2291,42 +2306,13 @@ def prepare_sparse_raster_coverage(
             positioned_depth=bool(rt_settings.sheet_positioned_depth),
             sample_depth=bool(rt_settings.sheet_sample_depth),
             diagnostics=False,
+            resolver_memory=memory,
         )
-        ns = int(stream["num_sheets"])
-        sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
-        sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
-        sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_offsets = _arena_tensor(
-            memory, (num_covered + 1,), torch.int32, persist=True
-        )
-        sheet_key.copy_(stream["sheet_key"])
-        sheet_ref.copy_(stream["sheet_ref"])
-        sheet_ab.copy_(stream["sheet_ab"])
-        # The resolve consumes the COMPOSITING weights, not the record: they
-        # are the sheet's own area and union everywhere except inside a band
-        # the shading-class split subdivided, where they carry §4.4's
-        # additive sibling arithmetic (``sheets._sibling_weights``).
-        sheet_cov.copy_(stream["sheet_wgt"])
-        sheet_msk.copy_(stream["sheet_wmsk"])
-        sheet_cap_t.copy_(stream["sheet_cap"])
-        sheet_offsets.copy_(stream["sheet_offsets"])
-        stream = None
-        sheet_data = {
-            "sheet_key": sheet_key,
-            "sheet_ref": sheet_ref,
-            "sheet_ab": sheet_ab,
-            "sheet_cov": sheet_cov,
-            "sheet_msk": sheet_msk,
-            "sheet_cap": sheet_cap_t,
-            "sheet_offsets": sheet_offsets,
-            "num_sheets": ns,
-            # Pinned with the emission like aa_*: the resolve's env
-            # handling must match the frame buffer this batch prefilled.
-            "env_in_composite": bool(env_in_composite),
-        }
+        # The final gather writes resolver weights and the CSR straight into
+        # persistent arena records. No allocator-owned final payload is copied.
+        sheet_data = dict(stream._asdict())
+        sheet_data["num_sheets"] = stream.num_sheets
+        sheet_data["env_in_composite"] = bool(env_in_composite)
 
         # Recorded for calibration: the fragment/covered counts are this
         # scope's value-dependent drivers and are only known once the COUNT
@@ -2358,6 +2344,9 @@ def prepare_sparse_raster_coverage(
     per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
+    # Native per-pixel and final walk permutations now use forward scratch.
+    # Conservatively reserve both even when a sort falls back to PyTorch.
+    discovery_bytes += (num_frags + sheet_data["num_sheets"]) * 8
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -2399,7 +2388,7 @@ def shade_sparse_raster_coverage(
     pixel_basis_x,
     pixel_basis_y,
     pixel_world_scale,
-    layer_offsets,
+    render_metadata,
     gen_meta,
     light_pos,
     light_col,
@@ -2427,19 +2416,9 @@ def shade_sparse_raster_coverage(
     max_bounces,
 ):
     """Resolve one compact covered-pixel slice and seed its continuations."""
-    (
-        rs_ro,
-        rs_rd,
-        rs_acc,
-        rs_sca,
-        rs_int,
-        _rs_kt,
-        _rs_kl,
-        _rs_ka,
-        _rs_kb,
-        _rs_kp,
-        _rs_kf,
-    ) = state
+    rs_ro, rs_rd = state.origin, state.direction
+    rs_acc, rs_sca = state.accumulated, state.scalars
+    rs_int = state.integers
     c0, c1 = int(covered_start), int(covered_end)
     num_covered = c1 - c0
     covered_idx = coverage["covered_idx"][c0:c1]
@@ -2474,7 +2453,6 @@ def shade_sparse_raster_coverage(
     s_end = int(so_host[c1])
     sheet_offsets = _arena_tensor(memory, (num_covered + 1,), torch.int32)
     torch.sub(coverage["sheet_offsets"][c0 : c1 + 1], s_start, out=sheet_offsets)
-    (rs_ro, rs_rd, rs_acc, rs_sca, rs_int, *_stubs) = state
     sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
     dump_req = _aa_dump_request()
     sdump = (
@@ -2512,7 +2490,8 @@ def shade_sparse_raster_coverage(
         # Light slots the lvis payload carries: what this batch needs,
         # bucketed, rather than the 16-light compile-time cap.
         shadow_vis_slots(num_lights),
-        layer_offsets,
+        render_metadata.floats,
+        render_metadata.ints,
         int(frag_flag),
         frag_pipelines,
         int(tri_pids),

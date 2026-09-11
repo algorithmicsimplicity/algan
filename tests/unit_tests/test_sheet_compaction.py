@@ -1263,3 +1263,57 @@ def test_production_compaction_skips_diagnostics_without_changing_records(
             assert torch.equal(value, expected[name]), name
         else:
             assert value == expected[name], name
+
+
+@pytest.mark.parametrize("shade_split", [False, True])
+@pytest.mark.parametrize("sample_depth", [False, True])
+@pytest.mark.parametrize("closed_shell", [False, True])
+def test_resolver_arena_output_matches_diagnostic_record(
+    shade_split, sample_depth, closed_shell
+):
+    from algan import SETTINGS
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.utils.memory_utils import ManualMemory
+
+    init_taichi()
+    device = SETTINGS.computing.render_device
+    frags = [
+        (0, 1.0, 0, 0.3, 0x0F | MAT_OPAQUE),
+        (0, 1.001, 1, 0.7, 0xF0 | MAT_OPAQUE),
+        (0, 1.1, 2, 1.0, MASK_ALL | BACKFACE),
+        (3, 1.0, 0, 0.4, 0x03),
+        (3, 1.1, 4, 0.6, 0xFC),
+    ]
+    normals = torch.tensor([[[0.0, 0.0, 1.0] * 3, [0.0, 1.0, 0.0] * 3] * 4])
+    coverage, merged, cam, pws = _coverage(frags, tri_norm=normals)
+    if closed_shell:
+        merged["tri_closed"] = torch.ones_like(merged["tri_obj"])
+    coverage = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in coverage.items()
+    }
+    merged = {k: v.to(device) if torch.is_tensor(v) else v for k, v in merged.items()}
+    kwargs = {"shade_split": shade_split, "sample_depth": sample_depth}
+    expected = compact_sheets(
+        coverage, merged, cam.to(device), pws.to(device), 0, 4, 4, **kwargs
+    )
+    memory = ManualMemory(0, device=device, num_bytes=1 << 20)
+    memory._poison = 255
+    with memory.temp():
+        actual = compact_sheets(
+            coverage,
+            merged,
+            cam.to(device),
+            pws.to(device),
+            0,
+            4,
+            4,
+            **kwargs,
+            diagnostics=False,
+            resolver_memory=memory,
+        )
+    assert memory.current_pointer == 0
+    memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).zero_()
+    renamed = {"sheet_cov": "sheet_wgt", "sheet_msk": "sheet_wmsk"}
+    for name, value in actual._asdict().items():
+        assert torch.equal(value.cpu(), expected[renamed.get(name, name)].cpu()), name
+    assert actual.num_sheets == expected["num_sheets"]

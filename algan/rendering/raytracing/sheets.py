@@ -85,6 +85,7 @@ from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
+from algan.rendering.raytracing.raster_taichi import _AA_FULL_DUST as FULL_DUST
 from algan.rendering.raytracing.raster_taichi import (
     _AA_LOSE_SHIFT as AA_LOSE_SHIFT,
 )
@@ -128,11 +129,6 @@ SHADE_CLASS_QUANT = 64
 #: class is three (2 * SHADE_CLASS_QUANT + 1 <= 129)-valued components in 8
 #: bits each, plus one to keep 0 as "smooth": < 2**25.
 _SHADE_CLASS_BASE = 1 << 25
-
-#: Interior-tiling dust band, shared with the kernels: a full-union sheet whose
-#: exact area is within this of 1 composites at exactly 1, so a genuine tiling
-#: stays bit-clean.
-FULL_DUST = 1e-3
 
 #: ``sheet_sample_depth``: the share of its own samples a sheet must be losing
 #: before it cedes any of them. A fragment's depth is evaluated at the centroid
@@ -482,12 +478,16 @@ def _packed_depth_order(keys, depth):
     return torch.argsort(key, stable=True)
 
 
-def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None):
+def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None, memory=None):
     """Order an already pixel-grouped stream, retaining the global-sort fallback."""
     if offsets is not None and _local_sheet_sort(pix):
         from algan.rendering.raytracing.sheet_sort_taichi import pixel_group_order
 
-        order = torch.empty_like(pix)
+        order = (
+            torch.empty_like(pix)
+            if memory is None
+            else memory.get_tensor(pix.shape, pix.dtype)
+        )
         pixel_group_order(offsets, group, depth, order, offsets.numel() - 1)
         return order
     if sheet_packed_sort:
@@ -519,12 +519,16 @@ def _key_depth_order(key, depth):
     return _lexsort(key, depth)
 
 
-def _sheet_walk_order(pix, position):
+def _sheet_walk_order(pix, position, *, memory=None):
     """Restore fragment walk order within an already pixel-grouped sheet table."""
     if _local_sheet_sort(pix):
         from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
 
-        order = torch.empty_like(pix)
+        order = (
+            torch.empty_like(pix)
+            if memory is None
+            else memory.get_tensor(pix.shape, pix.dtype)
+        )
         # The depth argument is inert in this specialization: positions alone
         # determine the walk, with original sheet index preserving stable ties.
         key_run_order(pix, position, position, order, pix.numel(), True, False)
@@ -650,25 +654,13 @@ def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
 
 
 def _sheet_offsets(covered_idx, sheet_pix):
-    """Build CSR for sorted sheets over the same ordered set of covered pixels."""
+    """CSR lower bounds; independent of the optional diagnostic-counting gate."""
     covered = covered_idx.to(torch.int64)
-    if sheet_metadata_kernel:
-        # Every covered pixel has sheets, so its lower bound is its CSR start.
-        # Searching once per pixel replaces a search per sheet plus a scatter
-        # and prefix sum, and needs only the output allocation.
-        offsets = torch.empty(
-            covered.numel() + 1, dtype=torch.int64, device=sheet_pix.device
-        )
-        torch.searchsorted(sheet_pix, covered, out=offsets[:-1])
-        offsets[-1] = sheet_pix.numel()
-    else:
-        counts = torch.zeros_like(covered)
-        seg = torch.searchsorted(covered, sheet_pix)
-        counts.scatter_add_(0, seg, torch.ones_like(seg))
-        offsets = torch.zeros(
-            covered.numel() + 1, dtype=torch.int64, device=sheet_pix.device
-        )
-        offsets[1:] = torch.cumsum(counts, 0)
+    offsets = torch.empty(
+        covered.numel() + 1, dtype=torch.int64, device=sheet_pix.device
+    )
+    torch.searchsorted(sheet_pix, covered, out=offsets[:-1])
+    offsets[-1] = sheet_pix.numel()
     return offsets
 
 
@@ -1522,6 +1514,7 @@ def compact_sheets(
     positioned_depth=True,
     sample_depth=False,
     diagnostics=True,
+    resolver_memory=None,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -1639,9 +1632,19 @@ def compact_sheets(
         int; the two group counters are DIAGNOSTIC and stay 0-d device
         tensors (evaluated only when read), so the render path never pays
         their device syncs.
+    With ``resolver_memory`` supplied and ``diagnostics=False``, return a
+    ``SheetBuffers`` record directly in the reverse arena instead. Its coverage
+    and mask are resolver weights, not raw diagnostic areas/unions. Native
+    sort permutations use forward scratch; the caller must scope that scratch
+    around the call and keep it alive through the final copy. Other PyTorch
+    compaction intermediates and library workspace remain allocator-owned.
     """
     # Diagnostic keys are omitted when diagnostics=False; correctness and
     # truncation checks remain unconditional.
+    if resolver_memory is not None and diagnostics:
+        raise ValueError(
+            "resolver_memory requires diagnostics=False; use the standalone record for diagnostics"
+        )
     if band_rule not in BAND_RULES:
         raise ValueError(f"unknown band rule {band_rule!r}; one of {BAND_RULES}")
     n = int(coverage["num_fragments"])
@@ -1732,6 +1735,7 @@ def compact_sheets(
         t,
         coverage.get("run_offsets"),
         key_bounds=(num_frames * ppf, gkey_bound),
+        memory=resolver_memory,
     )
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
@@ -2284,7 +2288,7 @@ def compact_sheets(
     # ---- Final order: (pixel, classic order of nearest fragment) -----------
     # Band IDs (and their class/rank subdivisions) retain pixel order. Only
     # the sheets within a pixel need restoring to nearest-fragment order.
-    final = _sheet_walk_order(sheet_pix, min_pos)
+    final = _sheet_walk_order(sheet_pix, min_pos, memory=resolver_memory)
 
     # §4.4's additive sibling compositing, expressed in the weights the walk
     # consumes (see ``_sibling_weights``). Where a band holds one sheet --
@@ -2306,7 +2310,8 @@ def compact_sheets(
     # Compose indices before gathering the packed payload, using the exact
     # MPS integer paths for both. Ordinary MPS integer gathers can round the
     # index or packed depth bits; no payload-sized key intermediate is needed.
-    sheet_key = gather_packed_key(frag_key, gather_exact(nearest_orig, final))
+    if resolver_memory is None:
+        sheet_key = gather_packed_key(frag_key, gather_exact(nearest_orig, final))
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
 
@@ -2386,6 +2391,24 @@ def compact_sheets(
             )
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
+
+    if resolver_memory is not None:
+        from algan.rendering.raytracing.sheet_buffers import finish_sheet_buffers
+
+        return finish_sheet_buffers(
+            resolver_memory,
+            coverage["covered_idx"][:num_covered],
+            final,
+            nearest_orig,
+            rep_orig,
+            frag_key,
+            frag_ref,
+            frag_ab,
+            frag_cap,
+            sheet_wgt,
+            sheet_wmsk,
+            sheet_pix,
+        )
 
     out = {
         "sheet_key": sheet_key,
