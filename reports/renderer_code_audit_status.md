@@ -3,14 +3,14 @@
 Updated: September 11, 2026. Target branch: `codex/renderer-audit-memory-cleanup`.
 Existing pull request: #130, targeting `master` (draft, not merged).
 
-**Publication status: eighth-tranche changes are implemented and committed
-locally, but are NOT published.** The remote branch was verified at seventh-tranche
-`a222eca1468990b459528641c3a336a23b888f51`. This session's GitHub connector exposes
-read operations only; neither Git-data writes nor the one-off Actions publisher
-can be invoked. An ordinary `git push` also failed because this container could
-not resolve `github.com`. The supplied patch carries the local commits for
-publication by a writable development session.
-No PR update, remote implementation push, master write or force push is claimed.
+**Publication status: eighth-tranche changes are published.** The four validated
+commits were fast-forwarded from seventh-tranche
+`a222eca1468990b459528641c3a336a23b888f51` through implementation head
+`25ab7967cf2fe2befc8c460b68c0526b0561f83d`. GitHub Actions run `34595612033`
+reconstructed the exact multi-commit patch, verified its hashes, recreated the
+expected commit/tree, checked generated bindings and advanced the existing branch
+without force. The temporary transport branch was subsequently restored to the
+seventh-tranche source tree. This status-only follow-up changes no renderer code.
 
 The original audit examined `f2073d718364617b35ed86028efefcd0ccda5606`.
 The first implementation is `0b20f817ac25e4fe0aba9f9816b8485c9f26e8ec`.
@@ -27,8 +27,8 @@ separate local commits so the behavior change is not hidden in the memory refact
 - `9f87cca1134d607dbf7ff1e6b1bf60a455d85a85`: full conflict ranks and collision-free grouping.
 - `5a12513ca62ef09e70106fa71a572ebdd0c6adba`: explicit analytic-sheet route assertions in deep-render parity tests.
 
-Checked items describe the earlier published work plus this local patch, not
-necessarily the current remote tree and not a promise of full-suite/GPU validation.
+Checked items describe code published on this branch and are not a promise of
+full-suite/GPU validation.
 
 Legend: `[x]` implemented; `[ ]` remaining. A **Partial** heading means the
 listed completed sub-items are present but the entire audit recommendation is
@@ -65,7 +65,7 @@ pooled/unpooled parents. Real 17-layer and 65-layer transparent same-surface ren
 match equivalent independent-surface renders exactly. Ordinary/MPS-friendly CPU
 policy coverage is not Metal execution. No kernel source, packed ABI, baseline or
 existing fast marker changed. No measured speedup or total-device memory saving
-is claimed; publication and broader GPU/full-suite validation remain outstanding.
+is claimed; broader GPU/full-suite validation remains outstanding.
 
 ## 1. Arena-binding cache layout validation — Complete
 
@@ -420,7 +420,8 @@ Renderer probes/focused/fast runs disable daemon handoff; the full attempt leave
 `ALGAN_USE_DAEMON` unset. Focused, fast, standalone render and probe results
 intersect and are not a sum of unique tests. No actual GPU execution, alternating
 warm benchmark, total-device peak measurement or completed heavy-baseline suite
-is claimed. The existing PR was not updated; the local changes await publication.
+is claimed. The changes are published on the existing PR branch; PR #130 remains
+draft pending the broader validation described below.
 
 ### Seventh-tranche validation (historical; unchanged below)
 
@@ -729,41 +730,35 @@ requirements.
 
 ## Recommended next implementation order
 
-1. Publish the attached, locally verified eighth-tranche commits onto
-   `codex/renderer-audit-memory-cleanup` with a writable GitHub session, preserving
-   their direct ancestry from `a222eca1468990b459528641c3a336a23b888f51` and keeping
-   the semantic capacity fix separate from the memory refactor. Recheck the
-   remote head before updating the ref and PR #130; do not force-push over newer work.
-2. Continue ownership propagation through blocked floating-point expressions,
+1. Continue ownership propagation through blocked floating-point expressions,
    reference reductions/lose-mask expressions and other unstaged scratch. Shorten
    durable sorted-payload/result lifetimes where feasible without changing
    accumulation or rounding boundaries. Library unique/sort/scan/nonzero internals
    still allocate workspace; the closed-shell host stages themselves are now scoped.
-3. Validate actual CUDA/Metal/AMD execution, particularly full-rank native/pair
+2. Validate actual CUDA/Metal/AMD execution, particularly full-rank native/pair
    grouping, exact integer copies, caller destinations and staged shell work.
    Measure alternating warm time and actual total-device peak memory before
    making speed or peak-memory claims. Complete broader/heavy-render validation.
-4. Benchmark indexed shadow tracing and batched endpoint downloads before changing
+3. Benchmark indexed shadow tracing and batched endpoint downloads before changing
    current payload-gather and full host-offset-cache policies. Continue the other
    independent integer-scan audit and named context ownership beyond shadows.
 
 ## Publication record for this update
 
-The remote source was read through GitHub and reconstructed locally from the
-immutable source archive and prior validated patch. Its complete starting tree
-matched `47d5fa88376cc1eeaa71167360172288c2a6c712`, not merely selected source files.
-The unchanged parent comparisons import the separate `a222eca1` worktree explicitly.
+The remote implementation branch was rechecked at exact base
+`a222eca1468990b459528641c3a336a23b888f51` before publication. Direct container
+network push still could not resolve `github.com`, so the documented one-off
+Actions transport was used. The successful publisher run `34595612033` verified
+the staged XZ and patch SHA-256 values, reapplied all four commits with their
+original metadata, required final implementation head
+`25ab7967cf2fe2befc8c460b68c0526b0561f83d`, required tree
+`c64cac9239c9ccf41e9ff90bfc117d6fbbc82f5c`, checked generated arena bindings and
+performed a normal fast-forward push. Independent GitHub comparison reports exactly
+four implementation commits and no transport files in the target branch.
 
-The current connector's complete tool list contains only reads. The documented
-Git-data write sequence and temporary Actions publisher both require write actions
-that are not exposed in this session. No helper branch/workflow was created, no
-remote branch was advanced, and no PR write was performed. The implementation
-is available in the accompanying multi-commit patch; it is not already in PR #130.
-
-An ordinary non-force push was also attempted after the focused/probe/fast/full
-validation and the explicit-route rerun. It failed before reaching GitHub with
-`Could not resolve host: github.com` (exit 128). It did not create an implementation
-ref or advance the remote branch. The accompanying patch includes the status
-record as a separate documentation commit in addition to the three code/test
-commits listed above. Clean replay is checked against the final committed tree;
-this is local transport verification, not a remote publication or CI pass.
+The transport branch could not be deleted under the repository branch rule, so it
+was cleaned with a normal fast-forward commit restoring the exact seventh-tranche
+source tree; comparison against `a222eca1` reports no changed files. No force push,
+master write or helper ancestry entered the implementation branch. This publication
+record is transport verification; the runtime validation results above remain the
+ones performed before publication.
