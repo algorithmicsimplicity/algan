@@ -214,8 +214,8 @@ def tiled_specs(
     # ``flags`` outlives the count pass now: it carries the per-candidate
     # box/span choice the write pass must reproduce exactly.
     del intervals, bound, opaque, fo, pc
-    stats["tile_bbox_rejected"], stats["tile_occluded"] = counters.cpu().tolist()
     if not npairs:
+        stats["tile_bbox_rejected"], stats["tile_occluded"] = counters.cpu().tolist()
         return [], active_tiles, stats
     pairs = torch.empty((npairs, 8), dtype=torch.int32, device=device)
     classes = torch.empty(npairs, dtype=torch.int32, device=device)
@@ -223,13 +223,33 @@ def tiled_specs(
         candidates, po, flags, tri_screen, pairs, classes, nfc, spans
     )
     del flags
+    # Group by class with ONE host round-trip, not one per class. Four
+    # ``(classes == cls).nonzero()`` calls are four separate full-device
+    # drains, and on this frontend the host round-trips are what is left of
+    # its cost once the chunks pack properly (nn at UHD: the discovery's own
+    # host time is 0.32s in the reference arm and 0.57s here). A stable sort
+    # by class leaves each class's pairs in ascending candidate order --
+    # exactly the permutation the per-class ``nonzero`` produced -- so the
+    # fragment slots, and therefore the primary sort's original-index tie
+    # key, are unchanged.
+    ordered = gather_exact(pairs, torch.argsort(classes, stable=True))
+    sizes = torch.bincount(classes, minlength=4)
+    del classes, pairs
+    # The diagnostic counters ride the same transfer rather than buying a
+    # drain of their own.
+    readback = torch.cat((sizes.to(torch.int64), counters.to(torch.int64))).cpu()
+    sizes = readback[:4].tolist()
+    stats["tile_bbox_rejected"], stats["tile_occluded"] = readback[4:].tolist()
     specs = []
-    for cls, (kind, opaque_class) in enumerate(
-        (("bez", True), ("bez", False), ("tri", True), ("tri", False))
+    start = 0
+    for count, (kind, opaque_class) in zip(
+        sizes, (("bez", True), ("bez", False), ("tri", True), ("tri", False))
     ):
-        idx = (classes == cls).nonzero(as_tuple=True)[0]
-        if idx.numel():
-            specs.append((kind, gather_exact(pairs, idx), opaque_class))
+        if count:
+            # A row slice of a contiguous [N, 8] tensor is contiguous, which
+            # is what the geometry kernels' ndarray arguments require.
+            specs.append((kind, ordered[start : start + count], opaque_class))
+        start += count
     return specs, active_tiles, stats
 
 

@@ -75,6 +75,36 @@ reference's late opaque-prefix rule is retained unchanged for other cases.
 Zero-sample area donors and crossing candidates are not discarded merely for
 having no ownership samples or an apparently farther center.
 
+### Chunk packing: box or rows
+
+A surviving candidate's box is its bbox clipped to the tile, and rejecting a
+tile says nothing about how full the tiles that survive are. A thin diagonal
+crosses a tile while owning two or three of its pixels per row, so emitting
+the box hands the COUNT pass the whole tile. Measured on the `nn` scene at HD:
+11.4M candidate pixels against the reference frontend's 2.9M for the same
+frame, which is what `raster_span_candidates` is for there.
+
+So a candidate may instead emit one `bh == 1` box per pixel row, clipped to
+the triangle's own conservative x-extent over that row *and* to the tile — the
+reference's `_span_row_extent` / `_span_mode` helpers, behind the same
+`raster_span_candidates` kill switch and the same minimum box area. The tile
+bounds the span, so two tiles still never claim the same pixel, and the row
+extent carries the reference's one-pixel margin, so the pixel set the geometry
+kernels see is unchanged.
+
+Rows are not always better. A tile a large triangle covers outright is already
+packed at `raster_chunk` pixels a chunk, and splitting it by row only
+multiplies the chunk count (measured: the overdraw scene went 3.08s -> 3.99s
+warm on CPU when every eligible candidate took rows). The COUNT pass therefore
+walks the rows, compares their pixels against the box's, and takes rows only
+where they at least **halve** the candidate pixels. That decision rides in
+candidate `flags` bit 2 (`_SPAN_FORM_BIT`) so the WRITE pass reads it back
+rather than re-deriving it and disagreeing with the slice it must fill.
+
+WRITE is driven by the COUNT pass's prefix slice in both forms. A rejected
+candidate counted zero chunks and must emit nothing: walking its geometry
+anyway overwrites the next candidate's slice and runs off the buffer.
+
 ### Ordering and capacity
 
 After emission, sparse tile-owned pixel buckets form a pixel CSR by histogram,
@@ -158,6 +188,14 @@ Coverage results expose `raster_tile_binning`, `raster_simple_interiors`,
 `num_simple_pixels`, and `num_general_pixels`. The tiled frontend also exposes
 `tile_candidates`, `tile_bbox_rejected`, and `tile_occluded`; the latter counts
 triangle/tile incidences, not pixels or a promised number of saved fragments.
+
+**Neither switch certifies anything on every scene, and a neutral timing does
+not say which.** On the repository's anchor benchmark (`nn_scene_UHD`'s scene)
+`tile_occluded` and `num_simple_pixels` are both exactly zero: nearly every
+triangle there is a closed shell, and `_rect_proof`'s distance interval is too
+loose to close on geometry that small. Read those counters beside any
+measurement of these switches, and see
+`benchmarks/performance/reports/t4_2026_09/tiled_primary_ab_1.md`.
 
 ```bash
 python -m pytest -q tests/unit_tests/test_tiled_primary_taichi.py
