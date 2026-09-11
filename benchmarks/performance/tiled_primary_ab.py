@@ -123,9 +123,11 @@ def _overdraw_scene():
             # bearing (all four gates were measured on this branch, CPU, LD):
             #   * a ``Square`` is a *circuit*, and the tiled frontend never
             #     culls a circuit nor certifies one as an occluder;
-            #   * a ``Cube`` is a closed shell, and both
-            #     ``interior_fragment_proofs`` (``closed == 0``) and
-            #     ``tri_frame_opaque`` reject it;
+            #   * a ``Cube`` defaults to opacity 0.75, so ``tri_frame_opaque``
+            #     is false for every one of its faces and
+            #     ``opaque_material_proofs`` certifies none of them -- and it
+            #     is a closed shell besides, which
+            #     ``interior_fragment_proofs`` rejects outright;
             #   * a textured or shaded surface is alpha-uncertain, which
             #     ``opaque_material_proofs`` refuses to certify.
             # Each layer is larger than the one in front of it so perspective
