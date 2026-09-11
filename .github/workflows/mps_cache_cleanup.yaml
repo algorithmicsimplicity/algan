@@ -1,0 +1,20 @@
+name: Clean up completed MPS cache validation
+on:
+  push:
+    branches: [codex/mps-cache-validation]
+    paths: [.github/workflows/mps_cache_cleanup.yaml]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete only this completed validation branch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/codex/mps-cache-validation
+          test "$(git ls-remote origin "$GITHUB_REF" | cut -f1)" = "$GITHUB_SHA"
+          test "$(git ls-remote origin refs/heads/codex/mps-ndarray-launch-cache | cut -f1)" = 8778580fa568b3042c4f69bf294e9ac601bc379a
+          git push origin --delete codex/mps-cache-validation
