@@ -1,5 +1,5 @@
 {
-  "_request": "renderer-audit-tranche8-final-b2a73dea",
+  "_request": "renderer-audit-tranche8-final-static-e9cc42aa",
   "command": "cp .github/audit_tranche8_validate.py \"$RUNNER_TEMP/audit_tranche8_validate.py\" && .venv/bin/python -u \"$RUNNER_TEMP/audit_tranche8_validate.py\"",
   "arms": ["mac-mps", "linux-cpu"],
   "env": {"ALGAN_USE_DAEMON": "0", "ALGAN_VIDEO_ENCODER": "software", "UV_NO_SYNC": "1"},
