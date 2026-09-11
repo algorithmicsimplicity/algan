@@ -1276,6 +1276,54 @@ def _retain_persistent(merged, memory):
         merged[ARENA_RETAINED_REVERSE_POINTER] = reverse
 
 
+class _DeferredBVHRequired(Exception):
+    """Restart a sparse chunk at a boundary that owns no coverage or tile state."""
+
+
+def _publish_deferred_bvhs(merged, memory):
+    """Publish a batch's trees transactionally, then retain only their storage.
+
+    Call before chunk-local reverse allocations. A sparse continuation discovered
+    later requests a chunk restart instead of pinning the coverage beneath it.
+    Construction and publication have separate state: a failed copy leaves the
+    external trees available for a retry, with neither arena end consumed.
+    """
+    from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
+
+    pointers = memory.get_pointers()
+    try:
+        build_deferred_bvhs(merged, memory)
+    except Exception:
+        memory.set_pointers(pointers)
+        raise
+    _retain_persistent(merged, memory)
+
+
+def _publish_bvhs_at_chunk_boundary(merged, memory):
+    """One reclaim-and-retry for allocator pressure, never retry a real error.
+
+    At this boundary a smaller ray tile cannot free any more arena bytes. If
+    publication still fails after allocator cleanup, the prepared scene batch
+    must shrink; do not repeatedly rediscover coverage or halve its ray pool.
+    """
+    for attempt in range(2):
+        try:
+            _publish_deferred_bvhs(merged, memory)
+            return
+        except (InsufficientMemoryException, RuntimeError) as exc:
+            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                exc
+            ):
+                raise
+            if attempt:
+                raise OutOfRenderMemory(
+                    "Deferred BVHs did not fit at the clean chunk boundary. "
+                    "Reduce the prepared scene batch or geometry complexity."
+                ) from exc
+            traceback.clear_frames(exc.__traceback__)
+            release_torch_memory(force_gc=False)
+
+
 def _build_raster_tables(
     merged,
     memory,
@@ -1506,10 +1554,7 @@ def render_batch_raytraced(
     if (merged.get("bvh_deferred") or merged.get("bvh_rehome_pending")) and int(
         samples_per_pixel
     ) > 1:
-        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
-
-        build_deferred_bvhs(merged, memory)
-        _retain_persistent(merged, memory)
+        _publish_deferred_bvhs(merged, memory)
     tri_bvh = merged["tri_bvh"]
     bez_bvh = merged["bez_bvh"]
     has_tri = int(policy.has_triangles)
@@ -1663,24 +1708,13 @@ def render_batch_raytraced(
     launched_frames = []
 
     def rewind_to(pointers):
-        """Rewind the arena to ``pointers`` without reclaiming what the batch
-        allocated persistently from inside a chunk.
+        """Reclaim chunk state while preserving explicitly published batch data.
 
-        Two things do that. ``_build_raster_tables`` allocates the batch-wide
-        raster tables at the arena's persistent (reverse) end from inside the
-        *first* chunk; ``build_deferred_bvhs`` re-homes an on-demand STBVH
-        build there (`scene_builder.rehome_deferred_bvhs_to_arena`). Both cache
-        on ``merged`` -- which lives for the whole batch -- and publish the
-        reverse pointer they reached through ``_retain_persistent``, so every
-        later chunk reads the cache instead of rebuilding.
-
-        Restoring the reverse pointer to this chunk's entry value would hand
-        their range back to the allocator while the cache still points into it,
-        so the next chunk's forward allocations grow straight over the tables
-        and ``_window_pairs`` reads garbage bounds (a negative bbox width
-        surfaced as ``repeats can not be negative``). Only the split retry and
-        the recursive halves could hit that: between the per-chunk rewind and
-        the render loop's own ``set_pointers`` nothing else allocates.
+        The first chunk may build raster tables before it allocates coverage.
+        A deferred BVH is published before that coverage, or after unwinding
+        the chunk and requesting a restart. Both cache on ``merged`` and record
+        their reverse boundary through ``_retain_persistent``. Retaining that
+        boundary does not retain intervening coverage/tile allocations.
         """
         forward, reverse = pointers
         if merged is not None:
@@ -1690,6 +1724,7 @@ def render_batch_raytraced(
         memory.set_pointers((forward, reverse))
 
     def render_chunk(start, end):
+        nonlocal tri_bvh, bez_bvh
         # The Monte Carlo kernels launch one thread per (frame, pixel,
         # sample) path; keep the flattened index within int32 range. (The
         # deterministic kernels loop the aa^2 sub-pixels serially per pixel, so
@@ -2004,6 +2039,22 @@ def render_batch_raytraced(
             rewind_to(entry_pointers)
             launched_frames.append(end - start)
             return [frames]
+        except _DeferredBVHRequired as exc:
+            # The resolve discovered a continuation after merge-time deferral.
+            # Unwind coverage and all tile/iteration state before publishing
+            # batch-lived trees. Otherwise retaining the trees also pins every
+            # reverse allocation made between the batch floor and this tile.
+            rewind_to(entry_pointers)
+            restore_truncations(entry_truncations)
+            restore_path_samples(entry_path_samples)
+            traceback.clear_frames(exc.__traceback__)
+            _publish_bvhs_at_chunk_boundary(merged, memory)
+            tri_bvh, bez_bvh = merged["tri_bvh"], merged["bez_bvh"]
+            # Refill the output as well as rediscovering coverage: earlier tiles
+            # may already have composited, and uncovered pixels may be tonemapped.
+            # Successful publication clears both deferred flags, so this restart
+            # can happen only once per prepared batch (not once per ray tile).
+            return render_chunk(start, end)
         except (InsufficientMemoryException, RuntimeError) as exc:
             # A Taichi kernel launch (e.g. the post-process tonemap) exhausts
             # VRAM as a plain RuntimeError from its own allocator, not a torch
@@ -2540,14 +2591,7 @@ def raytrace_render_wavefront(
         # trees and rebind everything derived from the placeholders. Deferral
         # implies mem_trim was inactive at merge, so t_bvh is plain tri_bvh.
         nonlocal tri_bvh, bez_bvh, t_bvh, bvh_refit
-        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
-
-        # ``memory`` re-homes the built trees into the arena the rest of the
-        # merged scene lives in; without it the next launch to bind a BVH table
-        # through the arena raises ArenaBindingError (t_leaf_prim allocated
-        # somewhere other than the edge_accel beside it).
-        build_deferred_bvhs(merged, memory)
-        _retain_persistent(merged, memory)
+        _publish_deferred_bvhs(merged, memory)
         tri_bvh = merged["tri_bvh"]
         bez_bvh = merged["bez_bvh"]
         t_bvh = tri_bvh
@@ -3003,11 +3047,9 @@ def raytrace_render_wavefront(
         # of the window.  Coverage-sized ray pools are allocated/reset from the
         # forward end one compact slice at a time.
         #
-        # ``persist_floor``: the bounce drain inside this scope can release a
-        # deferred BVH build (``_ensure_bvhs``), which re-homes the trees at the
-        # same reverse end and publishes the pointer. Those trees are cached on
-        # ``merged`` for the whole batch, so the scope's persist rewind has to
-        # stop short of them; everything else it allocates is still reclaimed.
+        # Batch tables/trees are published before this scope. A newly discovered
+        # need for a deferred BVH unwinds the whole chunk before publication, so
+        # the batch floor can never pin these window-local reverse allocations.
         with memory.temp(
             clear_persist=True,
             persist_floor=lambda: merged.get(ARENA_RETAINED_REVERSE_POINTER),
@@ -3188,10 +3230,9 @@ def raytrace_render_wavefront(
                 pool = shared_pool_capacity if pool_ratio > 1 else attempt_primary
 
                 while True:
-                    # A tile attempt owns both arena ends through readback and
-                    # compositing. A deferred BVH, however, belongs to the batch
-                    # even when the first continuation creates it inside this
-                    # attempt; preserve the live retention floor on every exit.
+                    # A tile attempt owns both ends through readback/compositing.
+                    # A missing BVH requests a restart outside the chunk; no batch
+                    # allocation may be published beneath this attempt's scratch.
                     with memory.temp(
                         clear_persist=True,
                         persist_floor=lambda: merged.get(
@@ -3349,7 +3390,7 @@ def raytrace_render_wavefront(
                                     merged.get("bvh_deferred")
                                     or merged.get("bvh_rehome_pending")
                                 ):
-                                    _ensure_bvhs()
+                                    raise _DeferredBVHRequired
                                 _drain_sparse_secondary(
                                     active,
                                     state,

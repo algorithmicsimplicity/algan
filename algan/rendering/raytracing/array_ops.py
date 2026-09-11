@@ -101,3 +101,56 @@ def require_tensor_outputs(outputs, layouts, *, device, inputs=()):
             raise ValueError("output shape, dtype, device or layout does not match")
         require_disjoint_output(output, *inputs, *present)
         present.append(output)
+
+
+def gather_rows(source: torch.Tensor, indices: torch.Tensor, *, out=None):
+    """Gather dimension-zero rows exactly, optionally into a caller destination.
+
+    Indices must be a one-dimensional integer tensor of valid nonnegative row
+    indices. Validate metadata and byte-range aliasing before any output write;
+    bounds remain the caller's responsibility, without another device readback.
+    MPS integer output uses a local copy kernel where available. Its fallback
+    retains the measured exact advanced-indexing path (and its temporary).
+    """
+    from algan.rendering.mps_compat import gather_exact, mps_friendly
+
+    if (
+        source.ndim == 0
+        or indices.ndim != 1
+        or indices.dtype not in (torch.int32, torch.int64)
+        or indices.device != source.device
+    ):
+        raise ValueError("row gather needs an array and integer indices on one device")
+    if out is None:
+        return gather_exact(source, indices)
+    shape = (indices.numel(), *source.shape[1:])
+    require_tensor_outputs(
+        (out,), ((shape, source.dtype),), device=source.device, inputs=(source, indices)
+    )
+    if not out.numel():
+        return out
+    if mps_friendly() and source.dtype in (torch.int32, torch.int64):
+        from algan.rendering.taichi_runtime import _live_arch, taichi_launch_is_local
+
+        if (
+            source.is_contiguous()
+            and indices.is_contiguous()
+            and out.numel() < 2**31
+            and source.numel() < 2**31
+            and _live_arch() is not None
+            and taichi_launch_is_local(source.device)
+        ):
+            from algan.rendering.raytracing.array_copy_taichi import gather_rows_into
+
+            gather_rows_into(
+                source.view(-1),
+                indices,
+                out.view(-1),
+                indices.numel(),
+                source.numel() // source.shape[0],
+            )
+        else:
+            out.copy_(gather_exact(source, indices))
+    else:
+        torch.index_select(source, 0, indices, out=out)
+    return out

@@ -1077,8 +1077,10 @@ def rehome_deferred_bvhs_to_arena(merged, memory):
     allocation from the ``edge_accel`` bound beside it.
 
     Copied at the arena's persistent (reverse) end, because these trees live
-    for the whole batch while this runs from inside a chunk. The caller
-    publishes the pointer reached so the per-chunk rewind and the render loop's
+    for the whole batch. The tracer calls this before chunk-local reverse
+    allocations, or after unwinding a chunk whose resolve discovered a late
+    continuation. The caller publishes the pointer reached so the chunk rewind
+    and the render loop's
     between-chunk restore hold the arena open exactly that far -- the same
     treatment the batch-wide raster tables get (``tracer.rewind_to``).
 
@@ -1094,8 +1096,8 @@ def rehome_deferred_bvhs_to_arena(merged, memory):
         merged["bvh_rehome_pending"] = False
         return
     # Construction can finish before an arena copy runs out of room. Keep a
-    # separate publication state so a smaller tile retries the copy and rebinds
-    # its local tree references even though bvh_deferred is already false.
+    # separate publication state so a clean-boundary retry completes the copy
+    # and rebinds local trees even though bvh_deferred is already false.
     merged["bvh_rehome_pending"] = True
     merged.update(_copy_merged_scene_to_arena(group, memory, persist=True))
     merged["bvh_rehome_pending"] = False

@@ -7,7 +7,8 @@ The original audit examined `f2073d718364617b35ed86028efefcd0ccda5606`.
 The first implementation is `0b20f817ac25e4fe0aba9f9816b8485c9f26e8ec`.
 The second implementation is `60597722f0e472ede8a173251f54282694172371`.
 The third implementation is `077d2660c585e2f73b727dfd82f371a828c595bd`.
-This document accompanies the fourth implementation, directly on that third
+The fourth implementation is `dd4bfadc52387ac6249878f2602d094d8349862e`.
+This document accompanies the fifth implementation, directly on that fourth
 commit. Checked items describe code present on this branch, not a promise that
 all platforms or the full test suite have passed.
 
@@ -17,23 +18,26 @@ not finished. “Unchanged” means a contract was preserved, not newly implemen
 
 ## Summary of this update
 
-The fourth tranche shares one pixel-run CSR across opaque-prefix truncation,
-one-mesh classification and raw-fragment compaction. It explicitly discards and
-rebuilds that record when truncation changes the stream, while preserving
-diagnostic/capture retention through a copy rather than another scan.
+The fifth tranche closes the late-BVH reverse-storage retention hole. A newly
+discovered continuation unwinds the sparse tile and coverage scopes, releases
+the discarded chunk output, restores its statistics, and publishes the trees
+at a clean batch/chunk boundary. The same chunk is then refilled and rerendered;
+later chunks reuse the trees. Partial publication failures are transactional,
+with one allocator-reclaim retry rather than repeated ray-tile shrinking.
 
-Band-composite results, final band reductions, nearest/dominant statistics and
-sibling weights now have checked caller-owned destinations. Production writes
-these results into nested forward-arena stages that remain live until persistent
-resolver records have been copied. Rank-pooling reductions use a shorter stage
-ending before the next grouping pass. Standalone/reference helpers keep their
-ordinary-allocation default and diagnostic output representation.
+It also adds explicit stable-sort destinations and staged scratch for the
+PyTorch fallback, native radix composition and packed CUDA ordering. Pixel and
+final-walk permutations use arena storage on every production arm. Shell-order
+permutations and gathered run keys use their shell stage. A shared exact row
+gather writes into caller storage, including a local MPS-friendly integer copy
+kernel and the existing exact fallback. Rank-pooling fragment gathers now end
+at the reduction boundary.
 
-Accumulation and rounding boundaries, analytic coverage, depth ordering and the
-conflict-rank ceiling are unchanged. Sorting/grouping intermediates and remaining
-tensor expressions still require external allocations; broad batch/chunk/tile
-lifetime-region separation is also unfinished. No measured speedup, GPU pass or
-total-device peak-memory reduction is claimed.
+Stable ordering, analytic coverage, accumulation/rounding boundaries and the
+conflict-rank ceiling are unchanged. Grouping results, the long-lived sorted
+fragment streams and remaining tensor expressions still need ownership work.
+Library sort/scan/compiler workspace remains external. No measured speedup,
+GPU runtime pass or total-device peak-memory reduction is claimed.
 
 ## 1. Arena-binding cache layout validation — Complete
 
@@ -75,15 +79,23 @@ payload's allocator-to-arena copy.
 - [x] Keep production band-composite results, final reductions/reference statistics, and sibling outputs in nested caller stages until the persistent resolver copy completes.
 - [x] Reclaim rank-pooling area/union results before the next grouping operation.
 - [x] Preserve empty/singleton output ownership and reject wrong metadata, input aliases, pairwise output aliases and disabled-output mismatches before mutation.
-- [ ] Move remaining sorting/grouping intermediates, gathered streams and tensor expressions into explicit destinations or further staged workspace.
+- [x] Add a checked caller-owned int64 stable lexsort destination; reuse per-pass gather, sort-value and composed-permutation scratch in nested stages.
+- [x] Propagate caller-owned int32 outputs and staged key/count/scan workspace through optional device radix argsort and lexsort without changing their capability gates.
+- [x] Allocate production pixel/final-walk permutations directly in forward scratch on every sort arm; stage shell-order permutations and gathered run keys.
+- [x] Stage packed CUDA key/delta/sort-value storage while preserving the original queue-size, value-range and stable-sort policies.
+- [x] Add exact caller-owned row gathers, with metadata/alias checks and local MPS-friendly integer copying; retain the exact allocating fallback where a local kernel is unavailable.
+- [x] Release the rank-pooling per-fragment gather immediately after its reduction rather than retaining it through pooling-key construction.
+- [ ] Move remaining grouping results, long-lived sorted fragment streams and tensor expressions into explicit destinations or further staged workspace.
 - [ ] Evaluate broader fused finalization only after preserving the current accumulation/rounding boundaries.
 
 `sheet_buffers.py` and `sheet_output_taichi.py` own persistent resolver output.
 `sheet_workspace.py` owns staged scratch and caller result lifetimes;
 `sheet_reduction_buffers.py` and `sheet_statistics.py` name result destinations.
-Sorting/grouping intermediates, remaining expressions, and library sort/scan
-workspace are still external allocations. The workspace counter is not a
-total-device peak-memory measurement.
+`sheet_order.py` owns stable-order composition scratch; `device_sort.py`
+accepts native destinations. `array_ops.gather_rows` and `array_copy_taichi.py`
+provide exact row-copy destinations. Grouping results, long-lived sorted streams,
+remaining expressions and library sort/scan workspace still require external
+storage. The workspace counter is not a total-device peak-memory measurement.
 
 ## 4. Unused diagnostic work — Complete for the audited outputs
 
@@ -223,7 +235,7 @@ retry endpoint-readback policy.
 This is shared preparation and metadata reuse, not a claim that all screen-bound
 temporaries now live in the arena.
 
-## 14. Lifetime classes and cleanup — Partial
+## 14. Lifetime classes and cleanup — Complete for the audited renderer paths
 
 - [x] Reclaim normal raw-fragment scratch at the discovery boundary.
 - [x] Correct sparse allocation-failure retries to shrink the pool as well as the primary count; keep overflow retries' pool policy distinct.
@@ -231,16 +243,21 @@ temporaries now live in the arena.
 - [x] Test success/reuse and exceptions injected during drain, readback and compositing, including non-OOM exceptions.
 - [x] Scope each sparse attempt through allocation, resolve, drain, readback and compositing, restoring both arena ends on all exits subject to the retained batch floor.
 - [x] Preserve and test late-built BVH bytes while poisoning reclaimed forward/reverse scratch after injected exceptions.
-- [x] Separate BVH construction from arena-publication state: `bvh_rehome_pending` makes a smaller retry finish a failed arena copy after construction cleared `bvh_deferred`.
+- [x] Separate BVH construction from arena-publication state: `bvh_rehome_pending` lets a retry finish a failed copy after construction cleared `bvh_deferred`.
 - [x] Test allocation failure during partial BVH publication and after completed publication; compare retry output with the unfailed render.
 - [x] Separate compaction band-composite, final-reduction and final-copy scratch/result stages; preserve persistent outputs across reclaimed forward storage.
-- [ ] Separate batch/chunk/tile/iteration lifetime regions where one reverse-stack retention floor otherwise retains intervening temporary allocations.
+- [x] Publish late-built BVHs only after unwinding the tile, coverage and chunk-output regions, eliminating the intervening reverse-allocation retention hole.
+- [x] Restart/refill the discarded chunk and restore truncation/path-sample counters; accept no partial composites or discarded statistics.
+- [x] Roll back both arena ends after partial publication, allow one allocator-reclaim retry, and escalate exhausted clean-boundary capacity to prepared-batch recovery; do not retry non-memory errors.
+- [x] Test the actual publication pointers, discarded-background poisoning, one-time publication, later chunk splitting/reuse, and transactional bounded failures.
 
-The retained reverse floor remains. The tests deliberately force a deferred
-eligibility false positive to exercise runtime late construction; they do not
-claim the reflective fixture would normally be selected for deferral. These
-structured scopes fix cleanup/retry correctness but do not eliminate all
-intervening reverse allocations retained beneath a late-built batch BVH.
+The retained-floor mechanism still protects genuine batch tables and trees;
+this is not a redesign of `ManualMemory` as an arbitrary region allocator.
+Current batch publishers run before coverage or at the clean restart boundary,
+so they no longer pin coverage/tile allocations. Tests deliberately force a
+false-positive deferral eligibility decision; ordinary reflective scenes are
+not claimed to select deferral. That exceptional path pays one chunk replay,
+not an eager BVH reservation for every otherwise split-free batch.
 
 ## 15. Conflict-rank packing ceiling — Remaining, separate behavior change
 
@@ -259,11 +276,65 @@ unbounded same-surface transparency was added by this branch.
 - [x] Update renderer guidance for schema-driven bindings rather than manual index renumbering.
 - [x] Document staged workspace, prepared-batch policy, shared shadow launch and deferred-publication lifetime contracts in `DESIGN_memory_ownership.md`.
 - [x] Document shared pixel-run invalidation and caller-owned result lifetimes, and correct earlier present-tense descriptions of external reduction output storage.
+- [x] Correct deferred-publication/retry comments and document clean-boundary restarts, exact gathers and stable-sort output lifetimes.
 - [ ] Continue removing obsolete comments and remaining unsupported-path compatibility plumbing only after proving the callers and diagnostic fixtures no longer require it.
 
 ## Validation
 
-### Fourth-tranche validation in this container
+### Fifth-tranche validation in this container
+
+- [x] Final focused suite: **494 passed, 28 skipped** across **26 distinct
+  modules**, after the final seven metadata/native-sort failure tests were added.
+  Includes real sparse discovery/retry/capture fixtures, independent arena ABI
+  checks, shared runs, compaction results, stable ordering and exact row copies.
+- [x] The new lifetime module's **five tests** cover a forced late continuation
+  with actual clean-boundary pointer assertions, discarded-background poisoning,
+  truncation/path-sample rollback, one-time tree publication, post-publication
+  chunk splitting, and bounded transactional publication failures. These five
+  are included in the focused count, not additional coverage.
+- [x] The new sort/gather module's **65 tests** cover caller-owned/default outputs,
+  empty/singleton streams, stable ties, strided/nonfinite floating keys, large
+  integer bits, invalid destinations, scratch poisoning/reuse, packed-key
+  arithmetic, and injected nested-sort failures. The local exact-copy kernel was
+  exercised on CPU under the MPS-friendly policy. CPU-native radix test doubles
+  check the host storage/composition contract, not CUDA/Metal runtime behavior.
+- [x] Parent-versus-new compaction comparison: **128 configurations**, all
+  bit-identical. Native/reference and diagnostic/persistent outputs were checked
+  across 32 seeded fixtures, including closed shells, shading splits, sample
+  depths and nearest/dominant references. Reclaimed scratch was poisoned before
+  serializing outputs, and each process asserted its imported source path.
+  Both result JSON files have SHA-256
+  `d221adbd6bff24115ce64aa105d88f1ce699ccc356bd9f0f00de3e53c6e468bf`.
+- [x] Final fast-render comparison against unchanged `dd4bfadc`: **45 frames,
+  704 x 396, 37,635,840 RGB values; zero differences**. Both decoded streams have
+  SHA-256 `65def67ad219ec774d71a5d4457d89dab1ab08f190a04e9a8d32bc544da6616a`.
+- [x] Repository-wide Ruff 0.12.4 lint and formatting checks passed (**426 files**).
+  All eleven changed Python files parse; generated bindings and
+  `git diff --check` pass. The new Taichi copy kernel was linted, not formatted.
+- [ ] The final canonical fast suite is **not fully green**: **608 passed,
+  1 failed, 4029 deselected**. Unchanged `dd4bfadc` produced **607 passed,
+  1 failed, 3959 deselected**. Both failures are the same MathTex/dvisvgm baseline
+  mismatch, maximum deviation 221 at frame 4. The additional fast case is the
+  existing automatic static-control-flow check discovering the new copy-kernel
+  file; no existing test markers or rendering baselines were changed.
+- [ ] Full `pytest -q` reached its **600-second limit (exit 124)** at approximately
+  23% progress, without a final summary. Its one observed failure was
+  `test_cli.py::test_a_plain_run_launches_the_script_as_its_own_process`: it
+  expects `ALGAN_USE_DAEMON` to be absent, whereas this validation environment
+  explicitly disables daemon handoff. The same isolated failure reproduced on
+  both parent and new code; it passed on the parent after removing that override.
+  The full suite was not rerun to completion in that alternate environment.
+  No full-suite pass or completed heavy-baseline comparison is claimed.
+- [ ] CUDA, Metal and AMD runtime validation, alternating warm performance and
+  actual total-device peak-memory measurements remain outstanding.
+
+The PR remains draft. CPU tests used the supplied editable-install environment,
+with daemon handoff disabled and no baseline updates. The final focused, fast
+and probe results overlap; their counts are not an aggregate unique-test total.
+Earlier fifth-tranche intermediate runs are superseded by the final focused and
+fast results above. Previous-tranche route fixtures below remain historical.
+
+### Fourth-tranche validation (historical, unchanged below)
 
 - [x] Final focused run: **453 passed, 28 skipped** across **22 distinct
   modules**, including the new shared-CSR and caller-owned-destination tests,
@@ -402,14 +473,13 @@ requirements.
 
 ## Recommended next implementation order
 
-1. Continue destination propagation through compaction sorting/grouping and
-   gathered tensor expressions. Preserve exact packed integers, float
-   accumulation boundaries and short scratch lifetimes.
-2. Split reverse-storage lifetime regions so a late-built batch BVH does not
-   retain intervening temporary allocations. Preserve the established partial
-   publication retry and poisoned-memory tests.
-3. Validate CUDA/Metal/AMD behavior and measure alternating warm timings and
-   actual peak memory. Evaluate indexed shadow tracing and batched endpoint
-   readback only with evidence; their current policies remain unchanged.
+1. Continue ownership propagation through grouping results, long-lived sorted
+   fragment streams and remaining tensor expressions. Preserve short stage
+   lifetimes rather than converting everything into one long-lived arena block.
+2. Validate actual CUDA/Metal/AMD execution, including the native radix and
+   integer-copy destinations, and measure alternating warm time and real peak
+   memory before making performance claims.
+3. Benchmark indexed shadow tracing and batched endpoint downloads before
+   replacing the current gathering and host-offset-cache policies.
 4. Treat the conflict-rank ceiling as a separate semantic/capacity change with
    deep same-surface transparency fixtures, not part of a copy refactor.

@@ -2378,8 +2378,8 @@ def prepare_sparse_raster_coverage(
     per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
-    # Native per-pixel and final walk permutations now use forward scratch.
-    # Conservatively reserve both even when a sort falls back to PyTorch.
+    # Per-pixel and final walk permutations use forward scratch on every arm.
+    # Packed/global sorts additionally charge their staged workspace below.
     discovery_bytes += (num_frags + sheet_data["num_sheets"]) * 8
     # Stage scopes reuse their ranges; charge the largest overlapping scratch
     # footprint, not the sum across every reduction in the compaction.

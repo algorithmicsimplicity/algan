@@ -425,7 +425,7 @@ def _narrow_sort_key(key, magnitude_bound):
     return key
 
 
-def _lexsort(*keys):
+def _lexsort(*keys, out=None, workspace=None):
     """Stable argsort by ``keys`` in priority order (first key most
     significant). Composes least-significant-first, the classic LSD trick the
     emission's own ``_exact_fragment_order`` uses.
@@ -441,6 +441,10 @@ def _lexsort(*keys):
     order ``torch.argsort`` hands back, which several of them pass on to a
     kernel whose element type is part of its specialization key.
     """
+    if out is not None or workspace is not None:
+        from algan.rendering.raytracing.sheet_order import stable_lexsort
+
+        return stable_lexsort(*keys, out=out, workspace=workspace)
     order = device_sort.stable_lexsort(*keys)
     if order is not None:
         return order.to(torch.int64)
@@ -463,7 +467,7 @@ def _local_sheet_sort(tensor):
     )
 
 
-def _packed_depth_order(keys, depth):
+def _packed_depth_order(keys, depth, *, out=None, workspace=None):
     # Nonnegative finite float32 depths have the same order as their IEEE bits.
     # Retain every bit, and subtract minima only to save unused key space.
     # Negative zero, negative/nonfinite depths and oversized key ranges keep
@@ -484,6 +488,10 @@ def _packed_depth_order(keys, depth):
         capacity *= span
     if bounds[-2] < 0 or bounds[-1] >= 0x7F800000 or capacity > (1 << 63) - 1:
         return None
+    if out is not None or workspace is not None:
+        return _sort_packed_depth(
+            keys, bits, bounds, spans, out=out, workspace=workspace
+        )
     key = keys[0] - bounds[0]
     for i, column in enumerate(keys[1:], 1):
         key.mul_(spans[i]).add_(column - bounds[2 * i])
@@ -491,65 +499,113 @@ def _packed_depth_order(keys, depth):
     return torch.argsort(key, stable=True)
 
 
-def _pixel_group_order(pix, group, depth, offsets, *, key_bounds=None, memory=None):
-    """Order an already pixel-grouped stream, retaining the global-sort fallback."""
+def _sort_packed_depth(keys, bits, bounds, spans, *, out=None, workspace=None):
+    """Pack validated bounded integer columns; keep only the output permutation.
+
+    The caller has proved finite nonnegative depth bits and a composite range
+    below signed-int64 capacity. This arithmetic does not change the packed
+    path's CUDA/queue-size gate or its choice of the stable PyTorch sort.
+    """
+    shape, device = bits.shape, bits.device
+    if out is None:
+        out = torch.empty(shape, dtype=torch.int64, device=device)
+    require_tensor_outputs(
+        (out,), ((shape, torch.int64),), device=device, inputs=(*keys, bits)
+    )
+    workspace = workspace or CompactionWorkspace(device=device)
+    if workspace.device != device:
+        raise ValueError("sort workspace and keys must share a device")
+    with workspace.stage():
+        key = workspace.tensor(shape, torch.int64)
+        torch.sub(keys[0], bounds[0], out=key)
+        for i, column in enumerate((*keys[1:], bits), 1):
+            with workspace.stage():
+                delta = workspace.tensor(shape, column.dtype)
+                torch.sub(column, bounds[2 * i], out=delta)
+                key.mul_(spans[i]).add_(delta)
+        values = workspace.tensor(shape, torch.int64)
+        torch.sort(key, stable=True, out=(values, out))
+    return out
+
+
+def _pixel_group_order(
+    pix, group, depth, offsets, *, key_bounds=None, memory=None, workspace=None
+):
+    """Order pixel runs, retaining stable packed/global-sort fallbacks."""
+    from contextlib import nullcontext
+
+    # Allocate the result before opening sort scratch, regardless of which
+    # backend is selected. This is the same reserved permutation on every arm.
+    order = None if memory is None else memory.get_tensor(pix.shape, torch.int64)
     if offsets is not None and _local_sheet_sort(pix):
         from algan.rendering.raytracing.sheet_sort_taichi import pixel_group_order
 
-        order = (
-            torch.empty_like(pix)
-            if memory is None
-            else memory.get_tensor(pix.shape, pix.dtype)
-        )
+        if order is None:
+            order = torch.empty(pix.shape, dtype=torch.int64, device=pix.device)
         pixel_group_order(offsets, group, depth, order, offsets.numel() - 1)
         return order
     if sheet_packed_sort:
-        order = _packed_depth_order((pix, group), depth)
-        if order is not None:
-            return order
-    # Preserve the packed CUDA and local-kernel routes above, which require
-    # the original int64 IDs. Narrow only the reference sort's copies when
-    # the caller knows safe bounds without another device reduction.
-    if key_bounds is not None:
-        pix = _narrow_sort_key(pix, key_bounds[0])
-        group = _narrow_sort_key(group, key_bounds[1])
-    return _lexsort(pix, group, depth)
+        packed = (
+            _packed_depth_order((pix, group), depth)
+            if memory is None and workspace is None
+            else _packed_depth_order(
+                (pix, group), depth, out=order, workspace=workspace
+            )
+        )
+        if packed is not None:
+            return packed
+    with workspace.stage() if workspace is not None else nullcontext():
+        if key_bounds is not None:
+            if workspace is None:
+                pix = _narrow_sort_key(pix, key_bounds[0])
+                group = _narrow_sort_key(group, key_bounds[1])
+            else:
+                if pix.dtype == torch.int64 and key_bounds[0] <= _INT32_MAX:
+                    pix = workspace.copy(pix, torch.int32)
+                if group.dtype == torch.int64 and key_bounds[1] <= _INT32_MAX:
+                    group = workspace.copy(group, torch.int32)
+        return _lexsort(pix, group, depth, out=order, workspace=workspace)
 
 
-def _key_depth_order(key, depth):
-    """Stable key/depth order, with packed and per-run sorting alternatives."""
+def _key_depth_order(key, depth, *, workspace=None):
+    """Stable key/depth order with stage-owned permutation and gathered keys."""
+    order = None if workspace is None else workspace.tensor(key.shape, torch.int64)
     if _local_sheet_sort(key):
         from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
 
-        order = torch.argsort(key, stable=True)
-        run_key = key.index_select(0, order)
-        key_run_order(run_key, key, depth, order, key.numel(), False, True)
+        if workspace is None:
+            order = torch.argsort(key, stable=True)
+            run_key = key.index_select(0, order)
+            key_run_order(run_key, key, depth, order, key.numel(), False, True)
+        else:
+            with workspace.stage():
+                _lexsort(key, out=order, workspace=workspace)
+                run_key = workspace.gather(key, order)
+                key_run_order(run_key, key, depth, order, key.numel(), False, True)
         return order
     if sheet_packed_sort:
-        order = _packed_depth_order((key,), depth)
-        if order is not None:
-            return order
-    return _lexsort(key, depth)
+        packed = (
+            _packed_depth_order((key,), depth)
+            if workspace is None
+            else _packed_depth_order((key,), depth, out=order, workspace=workspace)
+        )
+        if packed is not None:
+            return packed
+    return _lexsort(key, depth, out=order, workspace=workspace)
 
 
-def _sheet_walk_order(pix, position, *, memory=None):
-    """Restore fragment walk order within an already pixel-grouped sheet table."""
+def _sheet_walk_order(pix, position, *, memory=None, workspace=None):
+    """Restore the stable nearest-fragment walk in a caller-owned permutation."""
+    order = None if memory is None else memory.get_tensor(pix.shape, torch.int64)
     if _local_sheet_sort(pix):
         from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
 
-        order = (
-            torch.empty_like(pix)
-            if memory is None
-            else memory.get_tensor(pix.shape, pix.dtype)
-        )
-        # The depth argument is inert in this specialization: positions alone
-        # determine the walk, with original sheet index preserving stable ties.
+        # Depth is inert here: position orders each run, with stable ties.
+        if order is None:
+            order = torch.empty(pix.shape, dtype=torch.int64, device=pix.device)
         key_run_order(pix, position, position, order, pix.numel(), True, False)
         return order
-    order = device_sort.stable_argsort(position)
-    if order is not None:
-        return order.to(torch.int64)
-    return torch.argsort(position, stable=True)
+    return _lexsort(position, out=order, workspace=workspace)
 
 
 def _unique_sorted_ids(keys):
@@ -1239,20 +1295,24 @@ def _rank_pool_groups(
         return nb, None
     workspace = workspace or CompactionWorkspace(device=cov_o.device)
     with workspace.stage():
-        pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
-        area, union, _fused, _sliver = _band_reduce(
-            pool_of_frag,
-            msk_o,
-            cov_o,
-            n_pool,
-            want_sliver=False,
-            want_fused=False,
-            workspace=workspace,
-            out=BandReduction.allocate(
-                workspace, n_pool, want_fused=False, want_sliver=False
-            ),
+        reduced = BandReduction.allocate(
+            workspace, n_pool, want_fused=False, want_sliver=False
         )
-        del pool_of_frag, _fused, _sliver
+        # The per-fragment gather is larger than these per-band results. Release
+        # it before the pooling key is built, not at the end of the whole stage.
+        with workspace.stage():
+            pool_of_frag = workspace.gather(pool_of_cid, band_of_frag)
+            area, union, _fused, _sliver = _band_reduce(
+                pool_of_frag,
+                msk_o,
+                cov_o,
+                n_pool,
+                want_sliver=False,
+                want_fused=False,
+                workspace=workspace,
+                out=reduced,
+            )
+        del pool_of_frag, _fused, _sliver, reduced
         # A FULL union at about unit area: the band owns every sub-pixel sample and
         # its fragments' exact areas cover the pixel once. There is nothing left to
         # anti-alias inside such a band -- the only question it still answers is how
@@ -1903,6 +1963,7 @@ def compact_sheets(
         coverage.get("run_offsets"),
         key_bounds=(num_frames * ppf, gkey_bound),
         memory=resolver_memory,
+        workspace=workspace,
     )
     pix_o = pix.index_select(0, order)
     g_o = gkey.index_select(0, order)
@@ -2092,7 +2153,7 @@ def compact_sheets(
             # the sample-depth block below keeps live anyway -- so this used to
             # rebuild it: the same mask-shift-view over [n] plus the same gather,
             # for a bit-identical copy of a tensor already in hand.
-            o2 = _key_depth_order(key, t_o)
+            o2 = _key_depth_order(key, t_o, workspace=workspace)
             # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
             # prefix comes out of a cub scan, and a serial register walk cannot
             # reproduce its reassociation bitwise (measured on the real nn-scene
@@ -2374,7 +2435,9 @@ def compact_sheets(
                 # ---- Final order: (pixel, classic order of nearest fragment) -----------
                 # Band IDs (and their class/rank subdivisions) retain pixel order. Only
                 # the sheets within a pixel need restoring to nearest-fragment order.
-                final = _sheet_walk_order(sheet_pix, min_pos, memory=resolver_memory)
+                final = _sheet_walk_order(
+                    sheet_pix, min_pos, memory=resolver_memory, workspace=workspace
+                )
 
                 # §4.4's additive sibling compositing, expressed in the weights the walk
                 # consumes (see ``_sibling_weights``). Where a band holds one sheet --

@@ -117,9 +117,9 @@ Use the repository's GPU harnesses for those checks before drawing performance
 conclusions. No rendering baseline should be regenerated to hide a mismatch.
 
 Remaining audit work includes sheet-compaction sorting/grouping intermediates
-and tensor expressions, and broader lifetime regions that can release temporary
-reverse allocations beneath a retained BVH. Pixel-run CSR sharing and explicit
-invalidation are implemented in the fourth tranche below.
+and tensor expressions. The audited reverse-storage retention hole is closed
+by the fifth-tranche chunk restart described below. Pixel-run CSR sharing and
+explicit invalidation are implemented in the fourth tranche.
 Removing the conflict-rank ceiling is a separate behavior change. The typed
 metadata, generated ABI, prepared-batch policy and structured attempt cleanup
 are implemented in the tranches described below.
@@ -263,8 +263,9 @@ inside a running batch is not a supported contract.
 Each sparse tile attempt scopes allocation, resolve, drain, allocator readback,
 and final compositing with `memory.temp(clear_persist=True, persist_floor=...)`.
 All retry, success, break and exceptional exits restore forward scratch and
-reverse temporary storage while retaining a batch BVH published during that
-attempt. Memory-failure retries still shrink both primary work and pool size;
+reverse temporary storage while retaining the already-published batch floor.
+The fifth tranche moves late publication outside the chunk's temporary scopes.
+Memory-failure retries still shrink both primary work and pool size;
 capacity-overflow retries retain their separate pool policy.
 
 Construction and arena publication are distinct states. If BVH construction
@@ -273,13 +274,14 @@ succeeds but its arena copy fails, `bvh_deferred` is already false.
 After successful copying, local tree references are rebound and the retained
 reverse floor is published. Copy failure leaves the constructed source trees
 available and the pending flag set; partial arena scratch is reclaimed by the
-attempt scope.
+publication transaction and enclosing scopes.
 
 Tests force a deferred eligibility false positive, then inject failures after
 construction, inside arena copying, and during resolve/drain/readback/compositing.
 They check retry output and poison reclaimed storage while verifying retained
-BVH bytes. This is not a claim that all batch/chunk/tile/iteration lifetimes are
-separate: a reverse retention floor can still keep intervening allocations alive.
+BVH bytes. These tests originally proved safe cleanup subject to a retained
+floor. The fifth tranche additionally proves publication occurs at the clean
+batch/chunk boundary rather than retaining intervening reverse allocations.
 
 
 ## Fourth tranche: shared pixel-run CSR
@@ -337,5 +339,82 @@ reordered depth walk or change to the rank ceiling.
 
 The workspace high-water counter includes these overlapping output stages.
 This is a change in allocation ownership, not a measured reduction in total
-peak memory: sorting, gathered streams, remaining tensor expressions and native
-library/compiler workspace still require external headroom.
+peak memory. Gathered streams, grouping, remaining tensor expressions and native
+library/compiler workspace still require external headroom. The fifth tranche
+adds sort and gather workspace ownership below.
+
+
+## Fifth tranche: stable sort and exact gather destinations
+
+`sheet_order.stable_lexsort` accepts a caller-owned int64 permutation and a
+`CompactionWorkspace`. Its PyTorch fallback keeps one composed permutation and
+one pass-index buffer, then stages each gathered key and sort-value buffer.
+Their storage is reused between key passes. The result remains valid after the
+scratch stage closes, including when a standalone caller supplies a workspace
+but requests an ordinary allocated result. Stable least-significant-first
+composition, float NaN/signed-zero behavior, and integer key precision are
+unchanged.
+
+`device_sort.stable_argsort` and `stable_lexsort` accept int32 destinations and
+stage their radix key, permutation, count and scan scratch. The original GPU,
+compiler, dtype, size and opt-in gates remain. No CPU block-radix implementation
+was added. The sheet wrapper widens the native permutation directly into the
+caller-owned int64 output. Tests with a CPU oracle check native launch ownership
+and composition; they do not constitute GPU radix-sort runtime validation.
+
+Per-pixel ordering and final-walk ordering allocate their outputs directly in
+forward discovery storage on every arm, not only the run-local kernel arm.
+Shell key/depth ordering and its gathered run keys use the surrounding shell
+stage. The validated packed CUDA path keeps its eligibility checks, full depth
+bits, signed-int64 capacity check and PyTorch stable-sort choice; its packed key,
+per-column deltas and sort values now accept staged workspace. Delta storage is
+released between columns. Standalone calls without destinations keep their
+existing allocation defaults. Discovery charges the two long-lived permutation
+arrays separately and includes overlapping sort scratch in `peak_bytes`.
+
+`array_ops.gather_rows` copies dimension-zero rows into a contiguous destination
+without changing dtype. It checks index metadata, output metadata and byte-range
+overlap before writes; valid nonnegative index values remain the caller's
+responsibility. Ordinary CPU/CUDA and floating gathers use `index_select(out=)`.
+The MPS-friendly integer route uses a local exact-copy kernel, with the existing
+advanced-indexing fallback when no local kernel is available. That fallback may
+still allocate. `CompactionWorkspace.gather` owns a result until its stage ends.
+The rank-pooling per-fragment gather is released immediately after the reduction,
+before constructing the pooling key. No float-to-integer representation shortcut
+was introduced.
+
+## Fifth tranche: late-BVH publication at a clean chunk boundary
+
+A sparse resolve can discover a continuation after merge-time BVH deferral.
+Previously it built and retained the trees underneath already-allocated reverse
+coverage records, so the retained floor also kept the intervening records alive
+for later chunks. Moving pointers without moving the trees would corrupt them;
+reserving a worst-case tree region eagerly would defeat deferral's memory saving.
+
+The tracer now raises a private restart signal at that discovery point. Tile
+and coverage scopes unwind first; `render_chunk` rewinds its output and other
+forward state, preserving only previously published batch tables. It restores
+the chunk-entry truncation and path-sample counters, clears the discarded
+traceback frames, and publishes the trees transactionally at that clean boundary.
+It then restarts the same chunk, including background prefill. This is a bounded
+restart: successful publication clears the deferred/pending flags, and later
+chunks reuse the trees. No partial composite or discarded statistic is accepted.
+
+A publication failure restores both arena ends. The constructed external trees
+and `bvh_rehome_pending` survive a failed copy, so one allocator-reclaim retry
+can finish publication without rebuilding. If that clean-boundary retry still
+cannot fit, it raises `OutOfRenderMemory` for prepared-batch recovery; halving a
+ray tile cannot free more storage there. Non-memory exceptions are not retried.
+Early shadow, classic and path-tracer builds use the same transactional publisher
+before coverage allocation. The retained-floor mechanism still protects real
+batch tables and trees across chunks; it no longer pins chunk-local coverage
+beneath a late-built tree.
+
+Real-render regression fixtures deliberately force a false-positive deferral
+eligibility decision, assert the publication pointers are at the batch floor,
+poison a discarded background, inject a later chunk split, and compare output to
+eager construction. They assert one build, clean statistics, and reuse across
+the split chunks. Separate tests inject partial forward/reverse publication
+allocations and non-memory failures and verify bounded retries and persistent
+sentinels. These fixtures do not claim ordinary reflective scenes are normally
+eligible for deferral, or establish a performance or total-device-memory result.

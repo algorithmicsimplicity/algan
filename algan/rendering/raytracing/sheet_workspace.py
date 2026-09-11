@@ -65,3 +65,10 @@ class CompactionWorkspace:
         result = self.tensor(value.shape, value.dtype if dtype is None else dtype)
         result.copy_(value)
         return result
+
+    def gather(self, value, indices):
+        """Gather exact rows into this stage, without an allocator-owned result."""
+        from algan.rendering.raytracing.array_ops import gather_rows
+
+        result = self.tensor((indices.numel(), *value.shape[1:]), value.dtype)
+        return gather_rows(value, indices, out=result)
