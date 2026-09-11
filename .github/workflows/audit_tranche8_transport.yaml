@@ -1,4 +1,4 @@
-name: Audit tranche 8 source transport
+name: Audit tranche 8 patch recovery
 on:
   push:
     branches: [codex/renderer-audit-tranche7-transport]
@@ -10,16 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: a222eca1468990b459528641c3a336a23b888f51
-      - name: Export immutable implementation base
+      - name: Recover staged patch
         run: |
           mkdir -p "$RUNNER_TEMP/export"
-          git archive HEAD > "$RUNNER_TEMP/export/base.tar"
-          git cat-file commit HEAD > "$RUNNER_TEMP/export/base.commit"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/export/base.ids"
+          cp .github/audit_tranche8_code*.b64 .github/audit_tranche8_validate.py "$RUNNER_TEMP/export/"
+          python - "$RUNNER_TEMP/export" <<'PY'
+          import base64, hashlib, lzma, pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          raw = ''.join((p / f'audit_tranche8_code{i}.b64').read_text().strip() for i in range(7))
+          patch = lzma.decompress(base64.b64decode(raw, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '7ddea58fc44ef8d488a43ca2ed470fd3185fd513eed95cb7d33499bfbc57a3ef'
+          (p / 'tranche8.patch').write_bytes(patch)
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: renderer-audit-tranche8-base
+          name: renderer-audit-tranche8-recovered
           path: ${{ runner.temp }}/export/
           retention-days: 1
