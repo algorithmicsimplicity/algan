@@ -16,6 +16,9 @@ import torch
 from algan.rendering.mps_compat import gather_exact, gather_packed_key, kernel_index
 from algan.rendering.raytracing import tile_raster_taichi as kernels
 from algan.rendering.raytracing.settings import _scene_has_user_pipeline
+from algan.settings import SETTINGS
+
+rt_settings = SETTINGS.raytracing
 
 _INT_MAX = (1 << 31) - 1
 
@@ -187,15 +190,39 @@ def tiled_specs(
     kernels.tile_occluders(fo, intervals, flags, bound, nf)
     pc = torch.empty(nfc, dtype=torch.int64, device=device)
     counters = torch.zeros(2, dtype=torch.int32, device=device)
-    kernels.tile_pair_counts(candidates, flags, intervals, bound, pc, counters, nfc)
+    # Row spans inside the tile, on the same terms as the reference frontend's
+    # ``raster_span_candidates``: same kill switch, same minimum box area, and
+    # the same conservative row extent. Rejecting a whole tile and following
+    # the projection inside the tiles that survive are complementary, not
+    # alternatives -- the box form made COUNT test 3.9x the reference's
+    # candidate pixels on the nn scene (DESIGN_tiled_primary.md).
+    spans = int(bool(rt_settings.raster_span_candidates))
+    span_min_area = 4 * kernels.raster_chunk
+    kernels.tile_pair_counts(
+        candidates,
+        flags,
+        intervals,
+        bound,
+        tri_screen,
+        pc,
+        counters,
+        nfc,
+        span_min_area,
+        spans,
+    )
     po, npairs = _prefix(pc, "candidate chunks")
-    del flags, intervals, bound, opaque, fo, pc
+    # ``flags`` outlives the count pass now: it carries the per-candidate
+    # box/span choice the write pass must reproduce exactly.
+    del intervals, bound, opaque, fo, pc
     stats["tile_bbox_rejected"], stats["tile_occluded"] = counters.cpu().tolist()
     if not npairs:
         return [], active_tiles, stats
     pairs = torch.empty((npairs, 8), dtype=torch.int32, device=device)
     classes = torch.empty(npairs, dtype=torch.int32, device=device)
-    kernels.tile_pair_write(candidates, po, pairs, classes, nfc)
+    kernels.tile_pair_write(
+        candidates, po, flags, tri_screen, pairs, classes, nfc, spans
+    )
+    del flags
     specs = []
     for cls, (kind, opaque_class) in enumerate(
         (("bez", True), ("bez", False), ("tri", True), ("tri", False))

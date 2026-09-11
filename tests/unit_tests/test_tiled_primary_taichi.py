@@ -4,6 +4,8 @@ These feature tests intentionally launch the real kernels. Wide-index ordering
 uses a CPU oracle even when the tested backend is Metal. No timing assertions.
 """
 
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -416,7 +418,111 @@ def test_candidate_depth_saturation_and_integer_overflow_do_not_authorize_cullin
     intervals = torch.tensor([[1e10, 2e10], [1., 1e20]])
     bound = torch.tensor([0.01])
     counts, stats = torch.empty(2, dtype=torch.int64), torch.zeros(2, dtype=torch.int32)
-    args = _device(candidates, flags, intervals, bound, counts, stats)
-    kernels.tile_pair_counts(*args, 2)
+    screen = torch.zeros(1, 1, 10)
+    args = _device(candidates, flags, intervals, bound, screen, counts, stats)
+    kernels.tile_pair_counts(*args, 2, 4 * kernels.raster_chunk, 0)
     assert args[-1].cpu().tolist() == [0, 0]
     assert bool((args[-2] > 0).all())
+
+
+def test_a_rejected_candidate_writes_no_rows_at_all():
+    """The WRITE pass is driven by the COUNT pass's slice, not by geometry.
+
+    A candidate the proofs rejected counts zero chunks, so its prefix slice is
+    empty and it must emit nothing. Walking its box or its rows anyway would
+    write over the NEXT candidate's slice and off the end of the buffer -- a
+    silent heap overrun that reached a segfault only on a scene big enough to
+    run out of slack, which is why it is pinned here at three candidates.
+    """
+    candidates = torch.zeros(3, 9, dtype=torch.int32)
+    candidates[:, 0] = torch.tensor([0, 1, 2], dtype=torch.int32)  # prim
+    candidates[:, 4:6] = 15  # a 16x16 box each: 8 chunks if emitted
+    candidates[:, 6] = 1  # triangles
+    flags = torch.tensor([1, 0, 1], dtype=torch.int32)  # only the middle survives
+    intervals = torch.zeros(3, 2)
+    intervals[:, 1] = float('inf')
+    bound = torch.full((1,), float('inf'))
+    screen = torch.zeros(1, 3, 10)  # no valid projection -> box form
+    counts, stats = torch.empty(3, dtype=torch.int64), torch.zeros(2, dtype=torch.int32)
+    args = _device(candidates, flags, intervals, bound, screen, counts, stats)
+    kernels.tile_pair_counts(*args, 3, 4 * kernels.raster_chunk, 1)
+    counts = args[-2]
+    assert counts.cpu().tolist() == [0, 8, 0]
+    offsets, npairs = tiled._prefix(counts, 'chunks')
+    assert npairs == 8
+    pairs = torch.full((npairs, 8), -7, dtype=torch.int32, device=counts.device)
+    classes = torch.full((npairs,), -7, dtype=torch.int32, device=counts.device)
+    kernels.tile_pair_write(args[0], offsets, args[1], args[4], pairs, classes, 3, 1)
+    # Every allocated row was filled, and by the kept candidate alone.
+    assert int((pairs == -7).sum()) == 0
+    assert int((classes == -7).sum()) == 0
+    assert pairs[:, 0].cpu().tolist() == [1] * 8
+
+
+def _candidate_pixels(specs):
+    """The (primitive, pixel) pairs the COUNT pass will actually test.
+
+    A chunk walks ``raster_chunk`` linear indices of its ``bw x bh`` box from
+    its offset, which is what both frontends' geometry kernels decode.
+    """
+    visited = set()
+    for _kind, pairs, _opaque in specs:
+        for prim, _f, x0, y0, bw, bh, off, _z in pairs.cpu().tolist():
+            for k in range(off, min(off + kernels.raster_chunk, bw * bh)):
+                visited.add((prim, x0 + k % bw, y0 + k // bw))
+    return visited
+
+
+def test_tile_rows_follow_the_projection_and_only_drop_uncovered_pixels():
+    """Spans shrink the candidate pixels without dropping a coverable one.
+
+    A thin diagonal owns two or three pixels per row but its bbox fills the
+    tile, so the box form hands COUNT the whole tile. The span form must hand
+    it strictly fewer pixels and must not drop any pixel the box form had
+    that the triangle's own row extent still reaches -- that containment, not
+    the saving, is what makes the switch output-preserving. Fragment-level
+    parity against the reference frontend is
+    ``test_tiled_discovery_preserves_records_and_culls_only_certified_suffix``,
+    which runs with spans on by default.
+    """
+    thin = [[0.5, 0.5], [15.5, 14.0], [15.5, 15.5]]
+    merged, screen, camera = _scene_data([thin], [[5.] * 3], [1.], 16, 16)
+    from algan.rendering.raytracing.raster_pipeline import (
+        precompute_triangle_screen_bounds,
+    )
+    from algan.utils.memory_utils import ManualMemory
+    memory = ManualMemory(0, device=screen.device, num_bytes=1 << 20)
+    sp, pbx, pby = _device(torch.tensor([[0., 0., 1.]]), torch.tensor([[1., 0., 0.]]),
+                           torch.tensor([[0., 1., 0.]]))
+    bounds = precompute_triangle_screen_bounds(merged, screen, camera, sp, pbx, pby,
+                                               8., 8., 16, memory)
+    col_row = torch.zeros(1, dtype=torch.int32, device=screen.device)
+    seen = {}
+    for spans in (False, True):
+        with SETTINGS.raytracing.experimental.override(raster_span_candidates=spans):
+            specs, _, _ = tiled.tiled_specs(merged, screen, bounds, None, camera,
+                                            col_row, 0, 1, 16, 16)
+        assert specs
+        seen[spans] = _candidate_pixels(specs)
+    assert seen[True] < seen[False], "spans must be a subset of the box candidates"
+    assert len(seen[True]) * 2 < len(seen[False]), "and a much smaller one here"
+    # Every pixel dropped is one an INDEPENDENT float64 row-extent oracle says
+    # the triangle cannot reach, margin included. Clipping each edge to the
+    # row band and taking the clipped endpoints' x bounds the extent exactly.
+    for _prim, x, y in seen[False] - seen[True]:
+        lo, hi, ok = 1e30, -1e30, False
+        for i in range(3):
+            ax, ay = thin[i]
+            bx, by = thin[(i + 1) % 3]
+            if max(ay, by) < y or min(ay, by) > y + 1:
+                continue
+            t0, t1 = 0.0, 1.0
+            if abs(by - ay) > 1e-12:
+                ta, tb = (y - ay) / (by - ay), (y + 1 - ay) / (by - ay)
+                t0, t1 = max(0.0, min(ta, tb)), min(1.0, max(ta, tb))
+            lo = min(lo, ax + (bx - ax) * t0, ax + (bx - ax) * t1)
+            hi = max(hi, ax + (bx - ax) * t0, ax + (bx - ax) * t1)
+            ok = True
+        assert not ok or not (math.floor(lo) - 1 <= x <= math.floor(hi) + 1), (
+            f"span dropped pixel ({x}, {y}) the triangle reaches"
+        )

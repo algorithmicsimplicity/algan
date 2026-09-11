@@ -21,6 +21,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
     min_hit_distance,
 )
+from algan.rendering.raytracing.sheet_compact_taichi import _span_chunks, _span_mode
 from algan.rendering.raytracing.sheet_sort_taichi import _sort_run
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _tri_color_g,
@@ -35,6 +36,12 @@ COARSE_TILE = 64
 # This bit is SHEET data only. It is set for every sheet of a certified pixel,
 # never for a subset of a pixel. Bits 20..27 are the sample-depth lose mask.
 SIMPLE_INTERIOR_BIT = _AA_SIMPLE_INTERIOR_BIT
+
+# Candidate ``flags`` values 0/1/2 are keep / geometrically separated / proven
+# full-footprint opaque occluder. This bit rides beside them and says the COUNT
+# pass chose the row-span form for that candidate, so the WRITE pass emits the
+# rows it was sized for instead of re-deciding.
+_SPAN_FORM_BIT = 4
 
 
 @ti.func
@@ -435,23 +442,83 @@ def tile_occluders(offsets: ti.types.ndarray(), intervals: ti.types.ndarray(),
         bound[tile] = far
 
 
+@ti.func
+def _tile_span_mode(candidates: ti.template(), i, screen: ti.template(),
+                    span_min_area, spans: ti.template()):
+    """Whether this tile candidate expands row by row, and its screen row.
+
+    Exactly the reference frontend's gate (``_span_mode``) applied to the
+    tile-clipped box instead of the whole primitive bbox: triangles only,
+    all-front projections only, boxes of at least ``span_min_area`` pixels.
+    A straddler keeps its box, because its projection is not a bound.
+    """
+    use = 0
+    fr = 0
+    if ti.static(spans):
+        if candidates[i, 6] == 1:
+            bw = candidates[i, 4] - candidates[i, 2] + 1
+            bh = candidates[i, 5] - candidates[i, 3] + 1
+            fr = candidates[i, 1] % screen.shape[0]
+            use = _span_mode(1, bw, bh, span_min_area, screen, fr,
+                             candidates[i, 0], spans)
+    return use, fr
+
+
 @ti.kernel
 def tile_pair_counts(candidates: ti.types.ndarray(), flags: ti.types.ndarray(),
                      intervals: ti.types.ndarray(), bound: ti.types.ndarray(),
-                     counts: ti.types.ndarray(), stats: ti.types.ndarray(), n: int):
+                     screen: ti.types.ndarray(), counts: ti.types.ndarray(),
+                     stats: ti.types.ndarray(), n: int, span_min_area: int,
+                     spans: ti.template()):
+    """Chunks per candidate, and which form it emits them in.
+
+    A tile candidate's box is the triangle's bbox clipped to the tile, and how
+    well that box is FILLED is what decides the form. A tile the triangle
+    crosses diagonally is mostly empty, and emitting the box hands COUNT the
+    whole tile: measured on the nn scene at HD, 11.4M candidate pixels against
+    the reference frontend's 2.9M for the same frame, which is where this
+    frontend's COUNT/WRITE regression came from. A tile the triangle covers
+    outright is the opposite case -- its box is already perfectly packed at 32
+    pixels a chunk, and row-splitting it only doubles the chunk count for no
+    saving (measured: the overdraw scene went 3.08s -> 3.99s warm on CPU when
+    every eligible candidate took spans).
+
+    So take spans only where they at least HALVE the candidate pixels. The
+    decision rides in flags bit 2 so the write pass reads it back rather than
+    re-deriving it and risking a different answer than the counts it fills.
+    """
     for i in range(n):
-        keep = flags[i] != 1
+        rejected = flags[i] == 1
+        keep = not rejected
         hidden = False
         if keep and candidates[i, 6] == 1:
             hidden = (_depth_range_safe(intervals[i, 1])
                       and _strictly_behind(intervals[i, 0], bound[candidates[i, 8]]))
             keep = not hidden
         count = ti.cast(0, ti.i64)
+        use_span = 0
         if keep:
-            area = (candidates[i, 4] - candidates[i, 2] + 1) * (candidates[i, 5] - candidates[i, 3] + 1)
-            count = (area + raster_chunk - 1) // raster_chunk
+            x0, y0 = candidates[i, 2], candidates[i, 3]
+            x1, y1 = candidates[i, 4], candidates[i, 5]
+            box_px = (x1 - x0 + 1) * (y1 - y0 + 1)
+            count = (box_px + raster_chunk - 1) // raster_chunk
+            eligible, fr = _tile_span_mode(candidates, i, screen, span_min_area, spans)
+            if eligible == 1:
+                span_px = 0
+                span_chunks = ti.cast(0, ti.i64)
+                for y in range(y0, y1 + 1):
+                    nch, xs, xe = _span_chunks(screen, fr, candidates[i, 0], y,
+                                               x0, x1, raster_chunk)
+                    span_chunks += nch
+                    if nch > 0:
+                        span_px += xe - xs + 1
+                if span_px * 2 <= box_px:
+                    use_span = 1
+                    count = span_chunks
         counts[i] = count
-        if flags[i] == 1:
+        if use_span != 0:
+            flags[i] = flags[i] | _SPAN_FORM_BIT
+        if rejected:
             ti.atomic_add(stats[0], 1)
         if hidden:
             ti.atomic_add(stats[1], 1)
@@ -459,19 +526,56 @@ def tile_pair_counts(candidates: ti.types.ndarray(), flags: ti.types.ndarray(),
 
 @ti.kernel
 def tile_pair_write(candidates: ti.types.ndarray(), offsets: ti.types.ndarray(),
-                    pairs: ti.types.ndarray(), classes: ti.types.ndarray(), n: int):
+                    flags: ti.types.ndarray(), screen: ti.types.ndarray(),
+                    pairs: ti.types.ndarray(), classes: ti.types.ndarray(),
+                    n: int, spans: ti.template()):
     for i in range(n):
-        for j in range(offsets[i], offsets[i + 1]):
+        # The COUNT pass's slice is the authority on how many rows this
+        # candidate owns -- and on whether it owns any at all. A candidate the
+        # proofs rejected counted ZERO chunks, so it must write none: walking
+        # its geometry here anyway would write over the next candidate's slice
+        # and off the end of the buffer, which is why the emission is driven
+        # by the prefix range rather than by recomputing acceptance.
+        start, end = offsets[i], offsets[i + 1]
+        if end > start:
             prim, f = candidates[i, 0], candidates[i, 1]
             x0, y0 = candidates[i, 2], candidates[i, 3]
-            bw, bh = candidates[i, 4] - x0 + 1, candidates[i, 5] - y0 + 1
-            pairs[j, 0], pairs[j, 1] = prim, f
-            pairs[j, 2], pairs[j, 3] = x0, y0
-            pairs[j, 4], pairs[j, 5] = bw, bh
-            pairs[j, 6], pairs[j, 7] = (j - offsets[i]) * raster_chunk, 0
+            x1, y1 = candidates[i, 4], candidates[i, 5]
             # Same class order as the reference frontend: bez opaque/trans,
-            # tri opaque/trans. Within a pixel a primitive occurs only once.
-            classes[j] = 2 * candidates[i, 6] + (1 - candidates[i, 7])
+            # tri opaque/trans. Within a pixel a primitive occurs only once,
+            # whichever form its rows take -- a span is clipped to this tile's
+            # x-range, so two tiles never claim the same pixel.
+            cls = 2 * candidates[i, 6] + (1 - candidates[i, 7])
+            j = start
+            use = 0
+            fr = 0
+            if ti.static(spans):
+                use = ti.cast((flags[i] & _SPAN_FORM_BIT) != 0, ti.i32)
+                fr = candidates[i, 1] % screen.shape[0]
+            if use == 1:
+                # The COUNT pass chose this form and sized the slice from the
+                # SAME row walk, so it lands exactly inside; the bound below
+                # is belt and braces.
+                for y in range(y0, y1 + 1):
+                    nch, xs, xe = _span_chunks(screen, fr, prim, y, x0, x1, raster_chunk)
+                    for c in range(nch):
+                        if j < end:
+                            pairs[j, 0], pairs[j, 1] = prim, f
+                            pairs[j, 2], pairs[j, 3] = xs, y
+                            pairs[j, 4], pairs[j, 5] = xe - xs + 1, 1
+                            pairs[j, 6], pairs[j, 7] = c * raster_chunk, 0
+                            classes[j] = cls
+                            j += 1
+            else:
+                bw, bh = x1 - x0 + 1, y1 - y0 + 1
+                for c in range((bw * bh + raster_chunk - 1) // raster_chunk):
+                    if j < end:
+                        pairs[j, 0], pairs[j, 1] = prim, f
+                        pairs[j, 2], pairs[j, 3] = x0, y0
+                        pairs[j, 4], pairs[j, 5] = bw, bh
+                        pairs[j, 6], pairs[j, 7] = c * raster_chunk, 0
+                        classes[j] = cls
+                        j += 1
 
 
 @ti.func
