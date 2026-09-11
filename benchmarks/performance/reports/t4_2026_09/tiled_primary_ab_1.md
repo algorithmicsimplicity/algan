@@ -1,5 +1,11 @@
 # Tiled primary discovery and simple interiors: T4 A/B
 
+> **Superseded in part by `tiled_primary_ab_2.md`.** The chunk-packing defect
+> this report identifies as most of the `nn` regression was fixed; the
+> regression fell to about +1.5% and the rest turned out not to be packing.
+> The counter readings, the overdraw numbers and the parity results below
+> still stand.
+
 `raster_tile_binning` (speed-audit Rank 3) and `raster_simple_interiors`
 (Rank 4), both opt-in and both off by default, measured against the branch's
 own `base` configuration.
