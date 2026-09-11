@@ -1,9 +1,10 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
-  "arms": ["mac-mps"],
-  "env": {},
+  "_request": "mps-ndarray-launch-cache-9f9e4ab7-validation-1",
+  "command": "git rev-parse HEAD; status=0; .venv/bin/python -m pytest -q tests/unit_tests/test_quadrants_ndarray_launch.py tests/unit_tests/test_taichi_fast_launch.py tests/unit_tests/test_mps_zero_copy.py tests/unit_tests/test_taichi_launch_pairing.py || status=$?; .venv/bin/python benchmarks/_mps_launch_cache_check.py --scenes all --iterations 200 || status=$?; exit $status",
+  "arms": ["mac-mps", "linux-cpu"],
+  "env": {"ALGAN_VIDEO_ENCODER": "software", "ALGAN_USE_DAEMON": "0"},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 50,
+  "artifacts": "algan_outputs/launch-cache/**"
 }
