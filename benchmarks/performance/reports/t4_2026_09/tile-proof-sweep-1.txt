@@ -1,0 +1,97 @@
+Counter sweep over tests/full_renders/scenes/, both switches on, PREVIEW,
+CPU, full-render settings contract. Commit 52dde91. See tiled_primary_ab_5.md.
+
+--- rendering complex_hierarchy_become ...
+[Quadrants] Starting on arch=x64
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_complex_hierarchy_become.mp4
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_complex_hierarchy_become.mp4 in 11.1 s
+
+### complex_hierarchy_become
+  windows=4 tri=17632 circ=440
+  geometry: frame_opaque  35.4%  closed  98.3%  alpha_uncertain   0.1%
+  RANK 3: candidates=329437 tri=278746 opaque_class=226268 fills_tile=1636 material_proven=117094/326192
+          outside=13763 CERTIFIED_OCCLUDERS=32 OCCLUSION_REJECTED=0
+  RANK 4: fragments=2878053 tri=1601230 cov==1=884868 fullmask=1607443 pre_geometry=278191 eligible=18100
+          pixels=1724004 SIMPLE_PIXELS=12938 (coverage num_simple=12938 of 1724004)
+--- rendering shapes_and_timeline ...
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_shapes_and_timeline.mp4
+Prepared batch does not fit the render arena; binary-searching the largest fitting runtime.
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_shapes_and_timeline.mp4 in 47.8 s
+
+### shapes_and_timeline
+  windows=15 tri=131219 circ=4348
+  geometry: frame_opaque  13.7%  closed 100.0%  alpha_uncertain   0.0%
+  RANK 3: candidates=735601 tri=549722 opaque_class=400131 fills_tile=1016 material_proven=245083/1789350
+          outside=19673 CERTIFIED_OCCLUDERS=86 OCCLUSION_REJECTED=0
+  RANK 4: fragments=4245913 tri=1462060 cov==1=2298431 fullmask=2980650 pre_geometry=186287 eligible=185393
+          pixels=3111900 SIMPLE_PIXELS=185393 (coverage num_simple=185393 of 9075458)
+
+
+===== SUMMARY =====
+scene                          occluded  simple px   of covered
+complex_hierarchy_become              0      12938      1724004
+shapes_and_timeline                   0     185393      9075458
+          pixels=1724004 SIMPLE_PIXELS=12938 (coverage num_simple=12938 of 1724004)
+--- rendering manim_compat_and_plots ...
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_manim_compat_and_plots.mp4
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_manim_compat_and_plots.mp4 in 7.7 s
+
+### manim_compat_and_plots
+  windows=4 tri=0 circ=872
+  geometry: frame_opaque   0.0%  closed   0.0%  alpha_uncertain   0.0%
+  RANK 3: candidates=93187 tri=0 opaque_class=0 fills_tile=0 material_proven=0/0
+          outside=0 CERTIFIED_OCCLUDERS=0 OCCLUSION_REJECTED=0
+  RANK 4: fragments=0 tri=0 cov==1=0 fullmask=0 pre_geometry=0 eligible=0
+          pixels=0 SIMPLE_PIXELS=0 (coverage num_simple=0 of 2593453)
+--- rendering materials_and_lighting ...
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_materials_and_lighting.mp4
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_materials_and_lighting.mp4 in 231.3 s
+
+### materials_and_lighting
+  windows=16 tri=387408 circ=2640
+  geometry: frame_opaque  20.7%  closed  90.6%  alpha_uncertain   0.0%
+  RANK 3: candidates=2650349 tri=2612692 opaque_class=1875507 fills_tile=105952 material_proven=898320/4309914
+          outside=163015 CERTIFIED_OCCLUDERS=39130 OCCLUSION_REJECTED=0
+  RANK 4: fragments=21556207 tri=20749598 cov==1=9161267 fullmask=10206372 pre_geometry=8867643 eligible=71166
+          pixels=9727932 SIMPLE_PIXELS=0 (coverage num_simple=0 of 9727932)
+--- rendering solids_and_camera ...
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_solids_and_camera.mp4
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_solids_and_camera.mp4 in 48.9 s
+
+### solids_and_camera
+  windows=16 tri=229968 circ=2560
+  geometry: frame_opaque  32.0%  closed  96.7%  alpha_uncertain   3.3%
+  RANK 3: candidates=2753664 tri=2691921 opaque_class=2225718 fills_tile=26887 material_proven=1100793/3420774
+          outside=176922 CERTIFIED_OCCLUDERS=46 OCCLUSION_REJECTED=0
+  RANK 4: fragments=16127018 tri=14594326 cov==1=2905186 fullmask=4401052 pre_geometry=2214033 eligible=0
+          pixels=5604431 SIMPLE_PIXELS=0 (coverage num_simple=0 of 5604431)
+--- rendering text_and_media ...
+Encoding video with libx264rgb
+Began rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_text_and_media.mp4
+Prepared batch does not fit the render arena; binary-searching the largest fitting runtime.
+Finished rendering /home/user/algan/tests/full_renders/algan_outputs/sweep_text_and_media.mp4 in 113.1 s
+
+### text_and_media
+  windows=13 tri=909380 circ=1995
+  geometry: frame_opaque  84.5%  closed   1.8%  alpha_uncertain   0.3%
+  RANK 3: candidates=8411841 tri=8315603 opaque_class=7088591 fills_tile=6052 material_proven=266189/337469
+          outside=433609 CERTIFIED_OCCLUDERS=0 OCCLUSION_REJECTED=0
+  RANK 4: fragments=2256233 tri=488085 cov==1=782214 fullmask=1768148 pre_geometry=0 eligible=0
+          pixels=1751397 SIMPLE_PIXELS=0 (coverage num_simple=0 of 4309328)
+
+
+===== SUMMARY =====
+scene                          occluded  simple px   of covered
+complex_hierarchy_become              0      12938      1724004
+manim_compat_and_plots                0          0      2593453
+materials_and_lighting                0          0      9727932
+solids_and_camera                     0          0      5604431
+text_and_media                        0          0      4309328
+
+[exited with code 0]
