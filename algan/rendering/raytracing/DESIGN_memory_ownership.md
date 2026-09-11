@@ -539,8 +539,49 @@ The workspace counter includes these staged allocations and their alignment.
 Discovery also charges worst-case alignment for its two directly allocated
 int64 sort permutations. These estimates exclude compiler/library/driver
 storage and cannot establish total-device peak savings or faster warm renders.
-Closed-shell eligibility still creates dynamic ordinary-owned arrays before
-production adopts them, and several floating expressions remain unstaged.
+At the seventh tranche, closed-shell eligibility still created dynamic ordinary-owned
+arrays before production adopted them. The eighth-tranche stages below replace
+those arrays; several block floating expressions remain unstaged.
 Runtime failures restore scratch pointers, not partially written caller results;
 callers discard those results on failure. Persistent reverse outputs and prior
 arena sentinels remain protected by the existing discovery/compaction scopes.
+
+
+## Eighth tranche: closed-shell metadata and coverage stages
+
+`sheet_shells.ShellSegments` names the sorted shell segment key and facing flag.
+`shell_segments` accepts checked caller destinations or returns ordinary-owned
+standalone results. Closed declarations and surface IDs use the exact shared
+frame/primitive gather, including independent animated-table wrapping and the
+existing circuit-safe reference policy. The stride still uses the maximum of
+all looked-up surface IDs, not just active closed triangles: the order of the
+subsequent global floating-point scan must not change. Empty or inactive inputs
+leave supplied outputs untouched and skip the surface lookup.
+
+`apply_shell_ceiling` owns both the native and reference arms' temporary arrays.
+Both retain the original global exclusive coverage prefix and the separate
+within-segment subtraction. The reference arm names group IDs, first positions,
+spent coverage, face sums and scale destinations, reclaims its grouping and face
+scratch in nested stages, and rounds the maximum face sum through float32 before
+converting back to the accumulator dtype. The denominator floor also changes the
+final coverage multiplicand, as before. Float32 scratch is always a private copy,
+not an alias of the mutable coverage. Strided diagnostic sort inputs get staged
+contiguous copies; normal contiguous inputs are borrowed.
+
+The shell ceiling now runs at the end of fragment preprocessing, before conflict
+rank grouping. It mutates only private sorted coverage; conflict ranks still read
+the unchanged sample masks. All shell lookups, result keys and reduction scratch
+therefore end before the rank-group stage. Regression tests inspect both active
+stage depth and forward pointer at that boundary, poison reclaimed storage, and
+verify resolver outputs. Failures during lookup, sorting, scan, face reduction,
+copy and native application unwind scratch. As with the other helpers, a runtime
+failure can leave a caller result partially written; the enclosing attempt must
+discard it, rather than expecting a transactional output buffer.
+
+Declared shells still spend `max(front_area, back_area)` in true depth order,
+without clamping that allowance to one. Same-facing self-overlap, undeclared or
+transmissive surfaces, and circuit pass-through behavior are unchanged. No kernel
+signature, packed ABI, accumulation order, conflict-rank capacity, or material
+policy is changed by this ownership refactor. Library sort/scan/nonzero workspace
+and optional integer-index conversions still need external headroom. Workspace
+accounting is not a measurement of total device peak memory or warm time.

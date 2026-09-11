@@ -2309,7 +2309,7 @@ def prepare_sparse_raster_coverage(
         # composites a few depth-sorted sheets per pixel instead of walking
         # the raw fragment list. Stage-local workspace uses forward scratch;
         # sorted payloads and reduction/group results share that workspace.
-        # Dynamic unique temporaries, preprocessing and library workspace still
+        # Dynamic unique temporaries, block expressions and library workspace still
         # need external headroom. Only final sheets persist unless requested.
         from algan.rendering.raytracing.sheets import compact_sheets
 

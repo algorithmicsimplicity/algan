@@ -74,7 +74,6 @@ from algan.rendering.mps_compat import (
     cummax_values,
     gather_exact,
     gather_packed_key,
-    index_copy_rows,
     kernel_index,
     reduction_index_dtype,
     taichi_accumulate_dtype,
@@ -89,7 +88,7 @@ from algan.rendering.raytracing.array_ops import (
     require_tensor_outputs,
 )
 from algan.rendering.raytracing.raster_taichi import (
-    _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
+    _AA_BACKFACE_BIT as AA_BACKFACE_BIT,  # noqa: F401 -- renderer diagnostic fixtures
 )
 from algan.rendering.raytracing.raster_taichi import _AA_FULL_DUST as FULL_DUST
 from algan.rendering.raytracing.raster_taichi import (
@@ -131,6 +130,11 @@ from algan.rendering.raytracing.sheet_reduction_buffers import (
     BandComposite,
     BandReduction,
     SheetWeights,
+)
+from algan.rendering.raytracing.sheet_shells import (
+    ShellSegments,
+    apply_shell_ceiling,
+    shell_segments,
 )
 from algan.rendering.raytracing.sheet_statistics import (
     SheetStatistics,
@@ -2007,8 +2011,9 @@ def compact_sheets(
     compaction stage through the final copy; its forward storage is reclaimed
     on every exit. Decoded preprocessing metadata ends before rank grouping;
     pooling maps and sample-depth classification also use explicit stages.
-    Closed-shell preprocessing, block floating-point expressions, dynamic unique
-    temporaries and library sort/scan workspace still need external headroom.
+    Closed-shell keys, metadata and both ceiling arms also end in preprocessing.
+    Block floating-point expressions, dynamic unique temporaries and library
+    sort/scan workspace still need external headroom.
     """
     # Diagnostic keys are omitted when diagnostics=False; correctness and
     # truncation checks remain unconditional.
@@ -2204,70 +2209,36 @@ def _compact_sheets(
                 band_start[1:].logical_or_(split_after)
                 del split_after
 
-        # ---- The solid-shell opacity ceiling (solid_shell_alpha) ----------------
-        # ``Mob.opacity`` says the MOB renders at alpha a: backdrop attenuated ONCE,
-        # whatever its geometry. A declared closed shell (``Mob.closed_shell`` --
-        # built-ins prove it, primitives carry it merged as ``tri_closed``, folded
-        # with the transmission exemption at pack time) is crossed twice by every
-        # interior ray, so both of its sheets would composite and deliver the extra
-        # ``a * (1 - a)`` painted with the interior's own shading -- an authored
-        # 0.55 sphere rendered 0.679. The ceiling: per (pixel, SURFACE), the
-        # surface's cumulative exact coverage may not exceed ``max(front, back)``,
-        # the larger of its two shells' own footprint areas, spent in depth order.
-        #
-        # It lives HERE, on the fragments, rather than in the resolve like the
-        # opaque one-mesh rule, and the difference is the point: that rule needs a
-        # whole-pixel predicate (every fragment one usable opaque mesh), so a
-        # translucent solid would composite correctly only where it has the pixel
-        # to itself and revert to doubled over anything behind it -- a visible seam
-        # along the overlap boundary, measured (see DESIGN notes in the audit).
-        # Keying by (pixel, surface) has no whole-pixel requirement, so the fix is
-        # uniform wherever the solid is. It costs the visibility-weighted allowance
-        # spending the resolve could do -- under a partial occluder the hidden part
-        # of the near shell still consumes area -- which is inert in the common
-        # cases: an interior pixel holds front = back = 1 so the far sheet gets
-        # zero regardless of sample visibility, and at the silhouette the cap IS
-        # the shell's own area, so the rim keeps its ink (harness ``ink`` column).
-        #
-        # The cap is deliberately NOT clamped to 1: a ray crossing a declared shell
-        # more than twice (a torus hole, a mid-morph self-overlap) attenuates per
-        # crossing -- the conflict-rank machinery's measured contract -- and a
-        # front sum past 1 keeps that. Plain suppression (cap = min(front, back))
-        # was refuted: it flipped a rod's signed coverage error to -0.0344 and
-        # notched 1676 of 3508 interior pixels.
-        #
-        # Applied to the FRAGMENTS, before banding and the shading-class split, so
-        # every downstream aggregate -- band areas, corr, sibling shares, the
-        # dominant fragment -- sees exactly the coverage that will composite. A
-        # fragment clamped to zero contributes no area anywhere: its sheet falls
-        # out at the resolve's ``eff <= min_alpha`` branch, claiming nothing and
-        # occluding nothing. Determinism follows the §6.6.4 pattern (float64
-        # accumulate, float32 round) because the cap feeds a threshold.
-        closed_s = None
-        shell_sid = shell_back = None
-        tri_closed_arr = (
-            merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
-        )
-        if tri_closed_arr is not None and tri_present:
-            closed_flag = (
-                tri_closed_arr[
-                    _rows(tri_closed_arr, frame_rel, time_start), safe_ref
-                ].reshape(-1)
-                > 0.5
-            ) & is_tri
-            del tri_closed_arr
-            if bool(closed_flag.any()):
-                closed_s = closed_flag.index_select(0, order)
-                # Carry surface/facing facts past the preprocessing stage for
-                # the shell ceiling. Only scenes with a declaration pay for
-                # these extra gathers.
-                shell_sid = (
-                    tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref]
-                    .to(torch.int64)
-                    .index_select(0, order)
+        # Shell coverage is private and does not participate in conflict ranks
+        # (which read masks). Finish the ceiling while decoded metadata is live;
+        # every shell key/lookup/prefix can then be reclaimed before rank grouping.
+        tri_closed = merged.get("tri_closed")
+        if rt_settings.solid_shell_alpha and tri_present and tri_closed is not None:
+            with workspace.stage():
+                segments = shell_segments(
+                    pix_o,
+                    msk_o,
+                    frame_rel,
+                    safe_ref,
+                    is_tri,
+                    order,
+                    positions,
+                    tri_obj,
+                    tri_closed,
+                    time_start,
+                    out=ShellSegments.allocate(workspace, n),
+                    workspace=workspace,
                 )
-                shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
-            del closed_flag
+                if segments is not None:
+                    apply_shell_ceiling(
+                        segments,
+                        t_o,
+                        cov_o,
+                        order_builder=_key_depth_order,
+                        use_kernel=rt_settings.sheet_shell_ceiling_kernel,
+                        workspace=workspace,
+                    )
+            del segments
         # ``t_o`` (the sorted exact depths) stays live past this point: the
         # sheet_sample_depth block below reads it to find each sheet's nearest
         # owner per sample. Its owned storage lasts through compaction, even
@@ -2275,10 +2246,6 @@ def _compact_sheets(
         del frame_rel, safe_ref, t, meta, _triangle
 
     del sorted_out
-    if owned and closed_s is not None:
-        closed_s = workspace.copy(closed_s)
-        shell_sid = workspace.copy(shell_sid)
-        shell_back = workspace.copy(shell_back)
 
     # ---- The fill rule is the sheet-membership oracle -----------------------
     # Within one true sheet the masks PARTITION the samples, so a band in
@@ -2340,133 +2307,6 @@ def _compact_sheets(
     # ---- P2: segmented reduction over bands --------------------------------
     pos_o = order  # original stream position of each sorted fragment
 
-    # ---- The ceiling, applied ----------------------------------------------
-    # ``cov_o`` is this function's own gather (a copy), so it is clamped in
-    # place: every consumer below -- the shading-class aggregates, the band
-    # area sums, the dominant-fragment choice -- then reads exactly the
-    # coverage that will composite. Within one (pixel, surface) segment the
-    # stream already runs front-facing run first, each facing depth-ascending
-    # (the sort key is ``(pix, sid * 2 + facing, t)``), which is depth order
-    # for a shell seen from outside and the near-shell-first spend wanted
-    # everywhere else. Fragments of undeclared or transmissive surfaces get
-    # unique negative keys, so each is its own pass-through segment and
-    # neither spends nor consumes allowance.
-    if closed_s is not None:
-        with workspace.stage():
-            # Strictly greater than any surface id, so ``pix * K + sid`` cannot
-            # collide across pixels (one amax sync, in the branch that needs it).
-            K = int(shell_sid.amax().item()) + 2
-            key = torch.where(closed_s, pix_o * K + shell_sid, -(positions + 1))
-            del shell_sid
-            # Stable within a key -- but the stream's own within-segment order is
-            # FACING-major (``gkey = sid * 2 + facing`` sorts both facings into
-            # consecutive runs), and the backface bit does not mean "far": measured
-            # on an interior sphere pixel, the NEAR crossing is the one carrying
-            # the bit (negative screen-space winding), so facing-run order would
-            # spend the allowance on the far shell first and zero the visible one.
-            # Order each segment by TRUE DEPTH instead: the near crossing spends
-            # first, whichever bit it carries. (The cap itself is unaffected --
-            # ``max(front, back)`` is symmetric under the swap.)
-            # ``frag_key`` is the ORIGINAL stream; every other operand here is in
-            # the compaction's sorted order, so the depth key must be in sorted
-            # order to break ties within a segment. That is exactly ``t_o``, which
-            # the sample-depth block below keeps live anyway -- so this used to
-            # rebuild it: the same mask-shift-view over [n] plus the same gather,
-            # for a bit-identical copy of a tensor already in hand.
-            o2 = _key_depth_order(key, t_o, workspace=workspace)
-            # Both arms need the f64 areas and their GLOBAL exclusive prefix: the
-            # prefix comes out of a cub scan, and a serial register walk cannot
-            # reproduce its reassociation bitwise (measured on the real nn-scene
-            # 3840x2160 frame: a serial spend moved 61 of 3.13 M values and flipped
-            # 10 visible f32 outputs, all sliver areas below 1e-4 -- against the
-            # byte-identity contract). The kernel takes the prefix as input and
-            # does everything else per segment in registers; the torch arm below
-            # stays as the A/B arm.
-            # ``copy=True`` because ``cov_o`` is already float32: at
-            # ``accumulate_dtype() is torch.float32`` -- MPS-friendly mode --
-            # ``.to`` is the identity, and the kernel arm below hands this same
-            # buffer to the kernel as its reassociation-barrier ``scratch`` while
-            # ``cov_o`` is its INOUT coverage. Aliased, the barrier store
-            # overwrites the coverage mid-walk and the stream comes back with
-            # negative areas in it.
-            cov64 = workspace.copy(cov_o, accumulate_dtype())
-            c2 = workspace.tensor(cov64.shape, cov64.dtype)
-            torch.index_select(cov64, 0, o2, out=c2)
-            csum = workspace.tensor(c2.shape, c2.dtype)
-            torch.cumsum(c2, 0, out=csum)
-            excl_global = csum.sub_(c2)
-            if rt_settings.sheet_shell_ceiling_kernel and n:
-                from algan.rendering.raytracing.sheet_compact_taichi import (
-                    solid_shell_ceiling,
-                )
-
-                # ``cov64`` doubles as the kernel's reassociation-barrier scratch
-                # (see the kernel docstring); the torch arm needed it only to
-                # build ``excl`` either way.
-                solid_shell_ceiling(
-                    key.contiguous(),
-                    kernel_index(o2.contiguous()),
-                    shell_back.contiguous().view(torch.uint8),
-                    excl_global,
-                    cov64,
-                    n,
-                    cov_o,
-                    taichi_accumulate_dtype(),
-                )
-                del key, o2, shell_back, excl_global, c2, cov64
-            else:
-                # Dead past the prefix in this arm; the kernel arm reuses it as
-                # its reassociation-barrier scratch instead.
-                del cov64
-                k2 = key.index_select(0, o2)
-                del key
-                seg_start = torch.ones(n, dtype=torch.bool, device=device)
-                if n > 1:
-                    seg_start[1:] = k2[1:] != k2[:-1]
-                del k2
-                seg = group_ids_from_starts(
-                    seg_start, out=workspace.tensor((n,), torch.int64)
-                )
-                nseg = int(seg[-1].item()) + 1
-                # The running total each fragment's in-segment predecessors have
-                # already spent: the global exclusive prefix minus its value at the
-                # segment's first row (the same construction ``_conflict_rank``'s
-                # torch arm uses, and deterministic for the same reason).
-                first = torch.zeros(nseg, dtype=torch.int64, device=device)
-                first.scatter_(0, seg[seg_start], torch.nonzero(seg_start).reshape(-1))
-                spent = excl_global - excl_global.index_select(0, first).index_select(
-                    0, seg
-                )
-                del excl_global, first, seg_start
-                # The segment's cap: its surface's two shells' own footprint areas,
-                # accumulated float64 and rounded through float32 -- §6.6.4, because a
-                # ceiling that wobbles in its low bits flips borderline fragments in
-                # and out of being clipped.
-                backf2 = shell_back.index_select(0, o2)
-                del shell_back
-                acc = accumulate_dtype()
-                z64 = torch.zeros((), dtype=acc, device=device)
-                front = torch.zeros(nseg, dtype=acc, device=device)
-                back = torch.zeros(nseg, dtype=acc, device=device)
-                front.scatter_add_(0, seg, torch.where(backf2, z64, c2))
-                back.scatter_add_(0, seg, torch.where(backf2, c2, z64))
-                del backf2, z64
-                cap = torch.maximum(front, back).to(torch.float32).to(acc)
-                del front, back
-                scale = (
-                    cap.index_select(0, seg)
-                    .sub_(spent)
-                    .clamp_min_(0.0)
-                    .div_(c2.clamp_min_(1e-12))
-                    .clamp_max_(1.0)
-                )
-                del spent, cap, seg
-                # A fragment clamped to zero carries no area into any band aggregate:
-                # its sheet falls out at the resolve's ``eff <= min_alpha`` branch,
-                # claiming nothing and occluding nothing.
-                index_copy_rows(cov_o, o2, (c2 * scale).to(torch.float32))
-                del scale, c2, o2
-            closed_s = None
     # ``band_id`` is now the SUB-BAND -- the sheet this compaction would build
     # with the split off, once the conflict rank has divided it. Two things
     # subdivide it further or pool it back:

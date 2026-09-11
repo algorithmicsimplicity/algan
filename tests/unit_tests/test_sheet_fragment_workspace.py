@@ -132,6 +132,8 @@ def test_sorted_fragment_validation_is_atomic(problem):
         "shade_values",
         "prim_values",
         "sorted",
+        "shell_metadata",
+        "shell_ceiling",
         "rank",
         "pool",
         "class",
@@ -145,6 +147,7 @@ def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failur
         [(0, 1.0, 0, 0.3, 15), (0, 1.001, 1, 0.7, 240), (3, 1.0, 4, 0.5, 255)],
         tri_norm=normals,
     )
+    merged["tri_closed"] = torch.ones((1, 8))
     coverage = {
         k: v.to(ws.device) if torch.is_tensor(v) else v for k, v in coverage.items()
     }
@@ -165,6 +168,8 @@ def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failur
             "pool": "_rank_pool_groups",
             "depth_values": "sample_depth_metadata",
             "sorted": "gather_sorted_fragments",
+            "shell_metadata": "shell_segments",
+            "shell_ceiling": "apply_shell_ceiling",
             "rank": "_sheet_rank_groups",
             "class": "_sheet_class_groups",
         }[failure_site]
