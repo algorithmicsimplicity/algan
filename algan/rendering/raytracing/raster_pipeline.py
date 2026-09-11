@@ -5,9 +5,10 @@ at once (not per GPU tile): each primitive is split into ``raster_chunk``-sized
 candidate chunks, exact hits are emitted, the surviving fragment records are
 ordered by the classic deterministic ``(depth-bin, descending layer)``
 relation, and ``sheets.compact_sheets`` aggregates them into the per-pixel
-sheet records the resolve kernel consumes (DESIGN_sheet_resolve.md).  Future
-work should benchmark a true square screen-tile/bin architecture for better
-projection reuse and cache locality.
+sheet records the resolve kernel consumes (DESIGN_sheet_resolve.md). The opt-in
+``raster_tile_binning`` frontend instead builds coarse/fine screen bins and
+orders fragments within pixels. ``raster_simple_interiors`` bypasses general
+sheet metadata for certified full-footprint stacks (DESIGN_tiled_primary.md).
 
 Large transient arrays are allocated from ``ManualMemory`` so failed raster
 attempts can restore the arena pointer and retry a smaller primary slice.
@@ -1722,8 +1723,9 @@ def prepare_sparse_raster_coverage(
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
-    No tile-pixel z-buffer, coverage mask, or ray state is allocated.
-    Candidate bboxes launch exact intersection COUNT/WRITE passes; the
+    No tile-pixel ray state is allocated. The optional tile frontend bins
+    conservative candidates and proves full-footprint occlusion before COUNT.
+    Otherwise candidate bboxes launch intersection COUNT/WRITE passes; the
     resulting hit records are ordered in sparse hit space, truncated after
     each pixel's first proven-opaque hit, then compacted into per-pixel
     sheets (DESIGN_sheet_resolve.md) for the resolve.  The persistent result
@@ -1749,90 +1751,135 @@ def prepare_sparse_raster_coverage(
     has_tri = int(merged.get("num_triangles", 0)) > 0
     has_bez = int(merged.get("num_circuits", 0)) > 0
 
-    tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
-    use_tri_pre = has_tri and tri_bounds is not None
-    use_bez_pre = has_bez and bez_bounds is not None
-    if (has_tri and not use_tri_pre) or (has_bez and not use_bez_pre):
-        for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
-            f = int(time_start) + f_rel
-            lo_p = max(g0 - f_rel * ppf, 0)
-            hi_p = min(g1 - f_rel * ppf, ppf)
-            row_lo = lo_p // width
-            row_hi = (hi_p - 1) // width
-            if has_tri and not use_tri_pre:
-                po, pt = _frame_pairs(
-                    merged,
-                    tri_screen,
-                    f,
-                    width,
-                    row_lo,
-                    row_hi,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    half_w,
-                    half_h,
-                    device,
-                )
-                if po is not None:
-                    tri_opaque.append(po)
-                if pt is not None:
-                    tri_trans.append(pt)
-            if has_bez and not use_bez_pre:
-                po, pt = _frame_bez_pairs(
-                    merged,
-                    f,
-                    width,
-                    row_lo,
-                    row_hi,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    half_w,
-                    half_h,
-                    device,
-                )
-                if po is not None:
-                    bez_opaque.append(po)
-                if pt is not None:
-                    bez_trans.append(pt)
-    if use_tri_pre:
-        po, pt = _window_pairs(
+    tile_frontend = bool(rt_settings.raster_tile_binning)
+    simple_interiors = bool(rt_settings.raster_simple_interiors)
+    active_tile_ids = None
+    tile_stats = {}
+    if tile_frontend:
+        from algan.rendering.raytracing.tile_raster import tiled_specs
+
+        if has_tri and tri_bounds is None:
+            tri_bounds = precompute_triangle_screen_bounds(
+                merged,
+                tri_screen,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                half_w,
+                half_h,
+                width,
+                memory,
+            )
+        if has_bez and bez_bounds is None:
+            bez_bounds = precompute_circuit_screen_bounds(
+                merged,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                half_w,
+                half_h,
+                width,
+                memory,
+            )
+        specs, active_tile_ids, tile_stats = tiled_specs(
+            merged,
+            tri_screen,
             tri_bounds,
+            bez_bounds,
+            cam_origin,
+            col_row_arr,
             int(time_start),
-            g0,
-            g1,
-            ppf,
+            int(time_end),
             int(width),
-            device,
-            screen=tri_screen,
+            int(height),
         )
-        if po is not None:
-            tri_opaque.append(po)
-        if pt is not None:
-            tri_trans.append(pt)
-    if use_bez_pre:
-        po, pt = _window_pairs(
-            bez_bounds, int(time_start), g0, g1, ppf, int(width), device
-        )
-        if po is not None:
-            bez_opaque.append(po)
-        if pt is not None:
-            bez_trans.append(pt)
+    else:
+        tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
+        use_tri_pre = has_tri and tri_bounds is not None
+        use_bez_pre = has_bez and bez_bounds is not None
+        if (has_tri and not use_tri_pre) or (has_bez and not use_bez_pre):
+            for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
+                f = int(time_start) + f_rel
+                lo_p = max(g0 - f_rel * ppf, 0)
+                hi_p = min(g1 - f_rel * ppf, ppf)
+                row_lo = lo_p // width
+                row_hi = (hi_p - 1) // width
+                if has_tri and not use_tri_pre:
+                    po, pt = _frame_pairs(
+                        merged,
+                        tri_screen,
+                        f,
+                        width,
+                        row_lo,
+                        row_hi,
+                        cam_origin,
+                        screen_point,
+                        pixel_basis_x,
+                        pixel_basis_y,
+                        half_w,
+                        half_h,
+                        device,
+                    )
+                    if po is not None:
+                        tri_opaque.append(po)
+                    if pt is not None:
+                        tri_trans.append(pt)
+                if has_bez and not use_bez_pre:
+                    po, pt = _frame_bez_pairs(
+                        merged,
+                        f,
+                        width,
+                        row_lo,
+                        row_hi,
+                        cam_origin,
+                        screen_point,
+                        pixel_basis_x,
+                        pixel_basis_y,
+                        half_w,
+                        half_h,
+                        device,
+                    )
+                    if po is not None:
+                        bez_opaque.append(po)
+                    if pt is not None:
+                        bez_trans.append(pt)
+        if use_tri_pre:
+            po, pt = _window_pairs(
+                tri_bounds,
+                int(time_start),
+                g0,
+                g1,
+                ppf,
+                int(width),
+                device,
+                screen=tri_screen,
+            )
+            if po is not None:
+                tri_opaque.append(po)
+            if pt is not None:
+                tri_trans.append(pt)
+        if use_bez_pre:
+            po, pt = _window_pairs(
+                bez_bounds, int(time_start), g0, g1, ppf, int(width), device
+            )
+            if po is not None:
+                bez_opaque.append(po)
+            if pt is not None:
+                bez_trans.append(pt)
 
-    def _cat(parts):
-        return torch.cat(parts, 0) if len(parts) > 1 else (parts[0] if parts else None)
+        def _cat(parts):
+            return torch.cat(parts, 0) if len(parts) > 1 else (parts[0] if parts else None)
 
-    po_t, pt, po_b, pb = map(_cat, (tri_opaque, tri_trans, bez_opaque, bez_trans))
-    specs = [
-        ("bez", po_b, True),
-        ("bez", pb, False),
-        ("tri", po_t, True),
-        ("tri", pt, False),
-    ]
-    specs = [s for s in specs if s[1] is not None]
+        po_t, pt, po_b, pb = map(_cat, (tri_opaque, tri_trans, bez_opaque, bez_trans))
+        specs = [
+            ("bez", po_b, True),
+            ("bez", pb, False),
+            ("tri", po_t, True),
+            ("tri", pt, False),
+        ]
+        specs = [s for s in specs if s[1] is not None]
     if not specs:
         return None
 
@@ -1975,6 +2022,10 @@ def prepare_sparse_raster_coverage(
         counts64 = counts_all.to(torch.int64)
         prefix = torch.cumsum(counts64, 0) - counts64
         num_frags = int(counts64.sum().item())
+        if (tile_frontend or simple_interiors) and num_frags > 0x7FFFFFFF:
+            # Validate BEFORE narrowing offsets or launching WRITE. A later
+            # sort-time check cannot protect an already-overflowed write.
+            raise OverflowError("Tiled primary fragment count exceeds int32 capacity")
         if num_frags == 0:
             return None
         # Pre-truncation emitted-fragment count: this sizes the discovery
@@ -2091,7 +2142,19 @@ def prepare_sparse_raster_coverage(
 
         _check_emitted_keys(frag_key_u, int(g1), num_frags)
 
-        order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
+        if tile_frontend:
+            from algan.rendering.raytracing.tile_raster import tile_fragment_order
+
+            order = tile_fragment_order(
+                frag_key_u,
+                frag_ref_u,
+                layer_offset_triangles,
+                active_tile_ids,
+                int(width),
+                int(height),
+            )
+        else:
+            order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
             order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
         )
@@ -2245,7 +2308,12 @@ def prepare_sparse_raster_coverage(
         # torch sort scratch above); only the final sheet arrays persist.
         from algan.rendering.raytracing.sheets import compact_sheets
 
-        stream = compact_sheets(
+        compact = compact_sheets
+        if simple_interiors:
+            from algan.rendering.raytracing.tile_raster import compact_interior_sheets
+
+            compact = compact_interior_sheets
+        stream = compact(
             {
                 "frag_key": frag_key,
                 "frag_ref": frag_ref,
@@ -2272,6 +2340,7 @@ def prepare_sparse_raster_coverage(
             sample_depth=bool(rt_settings.sheet_sample_depth),
         )
         ns = int(stream["num_sheets"])
+        num_simple_pixels = int(stream.get("num_simple_pixels", 0))
         sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
         sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
         sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
@@ -2302,6 +2371,11 @@ def prepare_sparse_raster_coverage(
             "sheet_cap": sheet_cap_t,
             "sheet_offsets": sheet_offsets,
             "num_sheets": ns,
+            "num_simple_pixels": num_simple_pixels,
+            "num_general_pixels": num_covered - num_simple_pixels,
+            "raster_tile_binning": tile_frontend,
+            "raster_simple_interiors": simple_interiors,
+            **tile_stats,
             # Pinned with the emission like aa_*: the resolve's env
             # handling must match the frame buffer this batch prefilled.
             "env_in_composite": bool(env_in_composite),

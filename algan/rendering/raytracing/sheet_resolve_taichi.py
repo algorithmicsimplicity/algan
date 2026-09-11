@@ -51,6 +51,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT,
     _AA_SAMPLE_WEIGHT,
     _AA_SEC_JITTER,
+    _AA_SIMPLE_INTERIOR_BIT,
     _AA_SLIVER_BIT,
     _GLOSSY_MIN_ROUGHNESS,
     _aa_dump_frag,
@@ -111,6 +112,30 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _tri_normal_g,
 )
 from algan.taichi_compat import ti
+
+
+@ti.func
+def _sheet_visibility_write(svis: ti.template(), slots, alpha, transmission,
+                            correction, owned, simple, scalar):
+    if simple:
+        # Every layer covers the same complete footprint. One ordinary alpha
+        # transmittance is equivalent to eight identical ownership lanes.
+        a = correction * alpha
+        scalar *= ti.max((1.0 - a) + a * transmission, 0.0)
+    else:
+        residue = _run_svis_write(svis, slots, alpha, transmission, correction, 1)
+        _run_redistribute(svis, owned, residue)
+    return scalar
+
+
+@ti.func
+def _sheet_visibility_total(svis: ti.template(), simple, scalar):
+    total = scalar * _AA_NUM_SAMPLES
+    if not simple:
+        total = 0.0
+        for lane in ti.static(range(_AA_NUM_SAMPLES)):
+            total += svis[lane]
+    return total
 
 
 @ti.kernel
@@ -338,6 +363,14 @@ def sheet_resolve_shade_arena(
         acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         weight = ti.math.vec3(1.0, 1.0, 1.0)
         svis = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
+        simple = False
+        if total > 0:
+            simple = (sheet_msk[start] & _AA_SIMPLE_INTERIOR_BIT) != 0
+        if ti.static(dump):
+            # Diagnostics expose the eight lanes. Use the equivalent general
+            # walk for those captures rather than reporting stale lane state.
+            simple = False
+        scalar_vis = 1.0
         # ONE-MESH ceiling bookkeeping: coverage this pixel's single mesh has
         # already committed. Only meaningful where the host flagged the pixel
         # (the _AA_ONE_MESH_BIT rides in every sheet's flags there).
@@ -413,33 +446,35 @@ def sheet_resolve_shade_arena(
             # the ORIGINAL mask popcount; off, the host sets no bits and this
             # reads zero, which is bit-identical arithmetic.
             lose = 0
-            if not areal:
-                lose = (msk >> _AA_LOSE_SHIFT) & _AA_MASK_ALL
-            if areal:
-                dens = area
-            else:
-                pop = _popcount_samples(msk_low)
-                nsm = pop
-                if msk_low == _AA_MASK_ALL:
-                    if ti.abs(1.0 - cov) > _AA_FULL_DUST:
-                        cfac = area
-                    if lose != 0:
-                        for s in ti.static(range(_AA_NUM_SAMPLES)):
-                            if ((lose >> s) & 1) != 0:
-                                slots[s] = 0.0
+            vis = scalar_vis * _AA_NUM_SAMPLES
+            if not simple:
+                vis = 0.0
+                if not areal:
+                    lose = (msk >> _AA_LOSE_SHIFT) & _AA_MASK_ALL
+                if areal:
+                    dens = area
                 else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if ((msk_low >> s) & 1) == 0:
-                            slots[s] = 0.0
-                    if lose != 0:
+                    pop = _popcount_samples(msk_low)
+                    nsm = pop
+                    if msk_low == _AA_MASK_ALL:
+                        if ti.abs(1.0 - cov) > _AA_FULL_DUST:
+                            cfac = area
+                        if lose != 0:
+                            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                                if ((lose >> s) & 1) != 0:
+                                    slots[s] = 0.0
+                    else:
                         for s in ti.static(range(_AA_NUM_SAMPLES)):
-                            if ((lose >> s) & 1) != 0:
+                            if ((msk_low >> s) & 1) == 0:
                                 slots[s] = 0.0
-                    cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
-                        / ti.cast(pop, ti.f32)
-            vis = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis += slots[s] * svis[s]
+                        if lose != 0:
+                            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                                if ((lose >> s) & 1) != 0:
+                                    slots[s] = 0.0
+                        cfac = area * ti.static(float(_AA_NUM_SAMPLES)) \
+                            / ti.cast(pop, ti.f32)
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis += slots[s] * svis[s]
             eff = vis * _AA_SAMPLE_WEIGHT * dens * cfac
             # ONE-MESH ceiling (kept from the walk as sheet DATA — see
             # sheets.py's docstring for the measurement that kept it): on a
@@ -1004,8 +1039,9 @@ def sheet_resolve_shade_arena(
                                     bounces_left - 1, processed, pixel, r, r, 1,
                                     ior_stack, 0, 0.0, 0)
                     if not defer:
-                        rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
-                        _run_redistribute(svis, own_msk, rr)
+                        scalar_vis = _sheet_visibility_write(
+                            svis, slots, w_a_s, 0.0, w_cfac,
+                            own_msk, simple, scalar_vis)
                         band_p = 0.0
             elif prefilter_take:
                 # ONE ray, the mirror direction, throughput 1, accumulating
@@ -1073,8 +1109,9 @@ def sheet_resolve_shade_arena(
                                 2.0 * rough * rough * gl_px_per_rad)
                             pix_accum[gl_row, GL_ROW_DP] = base_dist + t_hit
                 if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, 0.0, w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
+                    scalar_vis = _sheet_visibility_write(
+                        svis, slots, w_a_s, 0.0, w_cfac,
+                        own_msk, simple, scalar_vis)
                     band_p = 0.0
             elif is_pane or split_refl:
                 wt = weight * refl_energy
@@ -1128,9 +1165,9 @@ def sheet_resolve_shade_arena(
                 ts_s = w_a_s * trans_share
                 pm = (1.0 - w_a_s) + ts_s
                 if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
-                                         w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
+                    scalar_vis = _sheet_visibility_write(
+                        svis, slots, w_a_s, trans_share, w_cfac,
+                        own_msk, simple, scalar_vis)
                     band_p = 0.0
                     if ts_s > 1e-6:
                         frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
@@ -1195,9 +1232,9 @@ def sheet_resolve_shade_arena(
                 ts_s = w_a_s * trans_share
                 pm = (1.0 - w_a_s) + ts_s
                 if not defer:
-                    rr = _run_svis_write(svis, slots, w_a_s, trans_share,
-                                         w_cfac, 1)
-                    _run_redistribute(svis, own_msk, rr)
+                    scalar_vis = _sheet_visibility_write(
+                        svis, slots, w_a_s, trans_share, w_cfac,
+                        own_msk, simple, scalar_vis)
                     band_p = 0.0
                     if ts_s > 1e-6:
                         frac = w_cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
@@ -1212,18 +1249,14 @@ def sheet_resolve_shade_arena(
                                   _popcount_samples(msk), cfac, eff,
                                   mat_alpha, alpha, trans_share, refl_max,
                                   t_hit, svis)
-            vis_all = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis_all += svis[s]
+            vis_all = _sheet_visibility_total(svis, simple, scalar_vis)
             cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < min_weight:
                 done = True
                 break
 
         if not bounced:
-            vis_all = 0.0
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                vis_all += svis[s]
+            vis_all = _sheet_visibility_total(svis, simple, scalar_vis)
             weight *= vis_all * _AA_SAMPLE_WEIGHT
 
         if processed >= max_surfaces_per_ray:

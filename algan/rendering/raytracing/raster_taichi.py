@@ -173,6 +173,11 @@ _AA_MAT_OPAQUE_BIT = 8 << _AA_FLAG_SHIFT  # bit 19, set per fragment
 # reader of them) before widening the pattern.
 _AA_LOSE_SHIFT = 20  # bits 20..27, per sheet
 
+# Sheet-only certificate: EVERY record of this pixel is a proven full-footprint,
+# distinct-surface, noncrossing layer (DESIGN_tiled_primary.md). Raw fragments
+# never carry this flag; bit 31 remains clear for signed int32 masks.
+_AA_SIMPLE_INTERIOR_BIT = 1 << 28
+
 # Sample-less-triangle policies, matching ``settings.ANALYTIC_AA_SLIVER_MODES``.
 # The live mode reaches ``_ss_pixel`` inside the ``aa`` template value (the
 # geometry kernels are launched with ``1 + mode``) so that each policy gets its

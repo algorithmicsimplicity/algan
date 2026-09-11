@@ -1933,6 +1933,23 @@ def set_raster_span_candidates(enabled):
     raster_span_candidates = bool(enabled)
 
 
+# Opt-in primary-visibility architecture experiments. These are read once per
+# coverage window, not folded into mutable module globals in kernels. Both
+# default to False and are independently switchable between render jobs via
+# SETTINGS.raytracing.experimental.set(...). No compiler/runtime patches or
+# backend-specific subgroup assumptions are required.
+#
+# Tile binning uses coarse candidate CSR lists and fine square tiles, with
+# conservative full-footprint opaque rejection and per-pixel primary sorting.
+# Simple interiors bypass general sheet construction/ownership for whole pixels
+# certified to contain distinct, full-coverage, noncrossing triangle layers.
+# Boundaries, circuits, folds, closed shells and uncertain materials retain the
+# existing analytic sheet machinery. See DESIGN_tiled_primary.md for the proof
+# gates, memory contract and deliberately unchanged approximation policies.
+raster_tile_binning = False
+raster_simple_interiors = False
+
+
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from
