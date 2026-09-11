@@ -304,7 +304,7 @@ def test_simple_construction_bypasses_general_metadata(monkeypatch, general_pixe
     if general_pixel:
         cov['frag_cov'][2] = 0.5
         cov['frag_msk'][2] = 0  # an analytic-area donor between sample locations
-    options = dict(tri_screen=screen, positioned_depth=False, sample_depth=False)
+    options = {'tri_screen': screen, 'positioned_depth': False, 'sample_depth': False}
     expected = sheets.compact_sheets(cov, merged, cam, pws, 0, 4, 4, **options)
     original = sheets.compact_sheets
     seen = []
@@ -340,7 +340,7 @@ def test_simple_metadata_fallback_is_whole_pixel_and_preserves_general_results(r
     else:
         merged['tri_pos'][:, 1] = merged['tri_pos'][:, 0]
         screen[:, 1] = screen[:, 0]
-    options = dict(tri_screen=screen, positioned_depth=False, sample_depth=False)
+    options = {'tri_screen': screen, 'positioned_depth': False, 'sample_depth': False}
     expected = compact_sheets(cov, merged, cam, pws, 0, 4, 4, **options)
     actual = tiled.compact_interior_sheets(cov, merged, cam, pws, 0, 4, 4, **options)
     assert actual['num_simple_pixels'] == 0
@@ -395,7 +395,9 @@ def test_opaque_rejection_requires_strict_material_proof(case):
         merged['tri_tex_meta'] = torch.full((2, 21), -1, dtype=torch.int32, device=screen.device)
         merged['tri_tex_meta'][0, :3] = torch.tensor([0, 2, 1], device=screen.device)
         merged['textures'] = torch.ones(1, 2, 5, device=screen.device)
-    from algan.rendering.raytracing.raster_pipeline import precompute_triangle_screen_bounds
+    from algan.rendering.raytracing.raster_pipeline import (
+        precompute_triangle_screen_bounds,
+    )
     from algan.utils.memory_utils import ManualMemory
     memory = ManualMemory(0, device=screen.device, num_bytes=1 << 20)
     sp, pbx, pby = _device(torch.tensor([[0., 0., 1.]]), torch.tensor([[1., 0., 0.]]), torch.tensor([[0., 1., 0.]]))

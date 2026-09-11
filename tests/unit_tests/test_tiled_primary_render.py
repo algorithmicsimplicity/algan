@@ -92,7 +92,11 @@ def test_tiled_and_simple_paths_match_complete_renderer(monkeypatch, shadows):
                     (2.0, WHITE, 0.35),
                 ):
                     panel = TriangleMesh(
-                        vertices=[[-40.0, -40.0, z], [80.0, -40.0, z], [-40.0, 80.0, z]],
+                        vertices=[
+                            [-40.0, -40.0, z],
+                            [80.0, -40.0, z],
+                            [-40.0, 80.0, z],
+                        ],
                         faces=[[0, 1, 2]],
                     )
                     panel.set_material(MeshLambertMaterial(color=color, opacity=alpha))
@@ -123,7 +127,10 @@ def test_tiled_and_simple_paths_match_complete_renderer(monkeypatch, shadows):
                 ):
                     before = len(seen)
                     frame = torch.cat(
-                        [batch.cpu() for batch in scene.get_frames(0, 1, post_processes=())]
+                        [
+                            batch.cpu()
+                            for batch in scene.get_frames(0, 1, post_processes=())
+                        ]
                     )
                     assert len(seen) > before, (
                         "scene fell back from the analytic sparse frontend"
@@ -134,7 +141,9 @@ def test_tiled_and_simple_paths_match_complete_renderer(monkeypatch, shadows):
                         for row in seen[before:]
                     )
                     if simple:
-                        assert sum(row["num_simple_pixels"] for row in seen[before:]) > 0
+                        assert (
+                            sum(row["num_simple_pixels"] for row in seen[before:]) > 0
+                        )
                     outputs.append(frame.to(torch.int32))
             for result in outputs[1:]:
                 assert result.shape == outputs[0].shape

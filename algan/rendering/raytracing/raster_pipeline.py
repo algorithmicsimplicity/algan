@@ -1870,7 +1870,9 @@ def prepare_sparse_raster_coverage(
                 bez_trans.append(pt)
 
         def _cat(parts):
-            return torch.cat(parts, 0) if len(parts) > 1 else (parts[0] if parts else None)
+            return (
+                torch.cat(parts, 0) if len(parts) > 1 else (parts[0] if parts else None)
+            )
 
         po_t, pt, po_b, pb = map(_cat, (tri_opaque, tri_trans, bez_opaque, bez_trans))
         specs = [
@@ -2154,7 +2156,9 @@ def prepare_sparse_raster_coverage(
                 int(height),
             )
         else:
-            order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
+            order = _exact_fragment_order(
+                frag_key_u, frag_ref_u, layer_offset_triangles
+            )
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
             order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
         )
