@@ -138,6 +138,7 @@ def test_sorted_fragment_validation_is_atomic(problem):
         "pool",
         "class",
         "depth_values",
+        "depth_reference",
     ],
 )
 def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failure_site):
@@ -167,12 +168,15 @@ def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failur
             "prim_values": "_prim_split_after",
             "pool": "_rank_pool_groups",
             "depth_values": "sample_depth_metadata",
+            "depth_reference": "_sample_depth_lose_reference",
             "sorted": "gather_sorted_fragments",
             "shell_metadata": "shell_segments",
             "shell_ceiling": "apply_shell_ceiling",
             "rank": "_sheet_rank_groups",
             "class": "_sheet_class_groups",
         }[failure_site]
+        if failure_site == "depth_reference":
+            monkeypatch.setattr(sheets.rt_settings, "sheet_depth_reduce_kernel", False)
         original = getattr(sheets, name)
 
         def fail_after(*a, **kw):

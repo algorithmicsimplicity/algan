@@ -215,7 +215,9 @@ def index_reduce_(out, index, source, reduce):
 _MPS_CLAMP_FLOOR = 5.9604645e-8
 
 
-def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
+def clamp_floor(
+    tensor: torch.Tensor, floor: float, *, out=None, workspace=None
+) -> torch.Tensor:
     """``tensor.clamp_min(floor)`` for a floor too small for MPS to carry.
 
     **MPS rounds a clamp's scalar bound through float16.** Every bound at or
@@ -258,14 +260,36 @@ def clamp_floor(tensor: torch.Tensor, floor: float) -> torch.Tensor:
     which is where that belongs: a call-time exception on a valid floor would
     fire mid-render, on whichever scene first reached the branch.
 
+    ``out`` optionally supplies the result, including an exact in-place alias.
+    ``workspace`` scopes the workaround's comparison mask; the default call
+    retains ordinary ownership and the same backend policy. Autograd keeps its
+    saved predicate outside reusable scratch. Like torch's ``out``
+    operations, destination calls are for render-time tensors without gradients.
+
     **One magnitude is beyond either spelling.** At a float32 *subnormal* floor
     (1.4e-45) the sweep has ``where`` failing on MPS as well -- the constant
     itself does not survive -- so neither form is a guard there. No call site
     is anywhere near it, and this says so rather than implying a universal fix.
     """
     if floor >= _MPS_CLAMP_FLOOR or not mps_friendly():
-        return tensor.clamp_min(floor)
-    return torch.where(tensor < floor, floor, tensor)
+        return torch.clamp_min(tensor, floor, out=out)
+    if workspace is None or (
+        out is None and torch.is_grad_enabled() and tensor.requires_grad
+    ):
+        if out is None:
+            # Autograd retains the predicate for backward; it must not be a
+            # view of scratch that the caller may reuse after this returns.
+            return torch.where(tensor < floor, floor, tensor)
+        return torch.where(tensor < floor, tensor.new_full((), floor), tensor, out=out)
+    # A caller-owned destination may alias tensor exactly. Only the predicate
+    # is scratch; an omitted destination still returns ordinary-owned storage.
+    with workspace.stage():
+        below = workspace.tensor(tensor.shape, torch.bool)
+        torch.lt(tensor, floor, out=below)
+        if out is None:
+            return torch.where(below, floor, tensor)
+        bound = workspace.tensor((), tensor.dtype, floor)
+        return torch.where(below, bound, tensor, out=out)
 
 
 def kernel_index(tensor: torch.Tensor) -> torch.Tensor:

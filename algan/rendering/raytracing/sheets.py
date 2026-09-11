@@ -114,6 +114,10 @@ from algan.rendering.raytracing.sheet_fragments import (
     SortedFragments,
     gather_sorted_fragments,
 )
+from algan.rendering.raytracing.sheet_geometry import (
+    depth_slope_block,
+    shade_class_block,
+)
 from algan.rendering.raytracing.sheet_grouping import (
     RankGroups,
     RankPoolGroups,
@@ -824,18 +828,10 @@ def _sheet_offsets(covered_idx, sheet_pix):
     return offsets
 
 
-def _rows(arr, frame_rel, time_start):
-    """The row of a per-frame array for a fragment's batch-relative frame —
-    the same ``(f_rel + time_start) % rows`` convention as ``_tri_obj_row``.
-    """
-    return (frame_rel + int(time_start)) % arr.shape[0]
-
-
-#: (frame, triangle) pairs one block of a per-(frame, triangle) table may carry.
-#: Their intermediates are ``[block, N, 9]`` float32 -- 36 bytes a pair, half a
-#: dozen live at once -- so this is roughly a 220 MB ceiling on the transient,
-#: whatever the chunk's frame count is. Read by :func:`_shade_class` and
-#: :func:`_prim_split_after`, the two functions that build such a table.
+#: Target (frame, triangle) pairs per geometry-table block. A single frame is
+#: the minimum block, even if it exceeds this budget. Block-local stages bound
+#: intermediate lifetimes; the retained tables, dtype and overlapping stages
+#: still determine memory use. This is not a total-byte or device-memory cap.
 _FRAME_TABLE_BUDGET = 1 << 20
 
 #: Above this many (frame, triangle) pairs the table is not merely large, it is
@@ -943,48 +939,22 @@ def _shade_class(
     num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
     _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
     with workspace.stage():
-        zero = torch.zeros((), dtype=torch.int64, device=device)
         table = workspace.tensor((num_frames, num_tri), torch.int64)
-        # The table itself is one int64 per (frame, triangle) and is small; its
-        # INTERMEDIATES are [block, N, 3, 3] floats and there are half a dozen of
-        # them live at once, so the frame axis is walked in blocks. A one-frame
-        # chunk -- what a 4K render takes today -- is one block and the arithmetic
-        # is exactly what it was. A wide chunk used to size those intermediates by
-        # its whole frame count, which is how a Metal render at PREVIEW came to ask
-        # for a single 6.45 GB buffer here.
         block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
         for f0 in range(0, num_frames, block):
             f1 = min(num_frames, f0 + block)
-            frames = torch.arange(f0, f1, device=device) + int(time_start)
-            nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
-                f1 - f0, -1, 3, 3
-            )
-            mag = nrm.norm(dim=3)
-            unit = nrm / clamp_floor(mag.unsqueeze(3), 1e-12)
-            spread = torch.maximum(
-                (unit[:, :, 1] - unit[:, :, 0]).abs().amax(dim=2),
-                (unit[:, :, 2] - unit[:, :, 0]).abs().amax(dim=2),
-            )
-            declared_flat = (mag.amin(dim=2) > 1e-6) & (spread < 1e-6)
-            # All-degenerate vertex normals: the kernel falls back to the geometric
-            # normal, so the class does too (the Polyhedron family authors none).
-            geometric_flat = mag.amax(dim=2) < 1e-6
-            vertex_n = unit[:, :, 0]
-            pos = tri_pos.index_select(0, frames % tri_pos.shape[0])
-            p0 = pos[..., 0:3]
-            e1 = pos[..., 3:6] - p0
-            e2 = pos[..., 6:9] - p0
-            gn = torch.cross(e1, e2, dim=-1)
-            gn = gn / clamp_floor(gn.norm(dim=-1, keepdim=True), 1e-12)
-            face_n = torch.where(geometric_flat.unsqueeze(-1), gn, vertex_n)
-            q = (
-                torch.round(face_n * float(SHADE_CLASS_QUANT))
-                .to(torch.int64)
-                .clamp_(-SHADE_CLASS_QUANT, SHADE_CLASS_QUANT)
-                + SHADE_CLASS_QUANT
-            )
-            packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
-            table[f0:f1] = torch.where(declared_flat | geometric_flat, packed + 1, zero)
+            with workspace.stage():
+                frames = workspace.tensor((f1 - f0,), torch.int64)
+                torch.arange(f0, f1, out=frames)
+                frames.add_(int(time_start))
+                shade_class_block(
+                    tri_norm,
+                    tri_pos,
+                    frames,
+                    SHADE_CLASS_QUANT,
+                    table[f0:f1],
+                    workspace,
+                )
         gather_frame_table(table, frame_rel, safe_ref, out=out, workspace=workspace)
         not_triangle = workspace.tensor((n,), torch.bool)
         torch.logical_not(is_tri, out=not_triangle)
@@ -993,27 +963,38 @@ def _shade_class(
     return out
 
 
-def _popcount_lanes(bits):
-    """Number of set sample bits in each element of a mask tensor.
-
-    The count cannot exceed ``AA_NUM_SAMPLES`` and both callers cast it to a
-    float before use, so the accumulator is int32 whatever ``bits`` is: on a
-    4K frame the ``zeros_like`` version held 26 MB of int64 for values below
-    nine, and every one of these arrays is live at the compaction's peak.
-    """
+def _popcount_lanes(bits, *, out=None, workspace=None):
+    """Count low sample bits into checked int32 storage, reusing lane scratch."""
+    workspace = workspace or CompactionWorkspace(device=bits.device)
+    if workspace.device != bits.device:
+        raise ValueError("popcount workspace must share the input device")
+    if out is None:
+        out = torch.empty(bits.shape, dtype=torch.int32, device=bits.device)
+    require_tensor_outputs(
+        (out,), ((bits.shape, torch.int32),), device=bits.device, inputs=(bits,)
+    )
     n = int(bits.numel())
-    # The kernel walks one dimension; both callers pass a flat sheet array, and
-    # anything else falls through to the loop rather than silently reshaping.
-    if rt_settings.sheet_mask_kernel and n and bits.dim() == 1:
-        from algan.rendering.raytracing.sheet_compact_taichi import mask_popcount
+    with workspace.stage():
+        if rt_settings.sheet_mask_kernel and n and bits.dim() == 1:
+            from algan.rendering.raytracing.sheet_compact_taichi import mask_popcount
 
-        pop = torch.empty(n, dtype=torch.int32, device=bits.device)
-        mask_popcount(bits.contiguous(), n, pop)
-        return pop
-    pop = torch.zeros(bits.shape, dtype=torch.int32, device=bits.device)
-    for b in range(AA_NUM_SAMPLES):
-        pop += ((bits >> b) & 1).to(torch.int32)
-    return pop
+            source = bits if bits.is_contiguous() else workspace.copy(bits)
+            mask_popcount(source, n, out)
+        else:
+            out.zero_()
+            lane = workspace.tensor(bits.shape, bits.dtype)
+            narrow = (
+                lane
+                if bits.dtype == torch.int32
+                else workspace.tensor(bits.shape, torch.int32)
+            )
+            for b in range(AA_NUM_SAMPLES):
+                torch.bitwise_right_shift(bits, b, out=lane)
+                lane.bitwise_and_(1)
+                if narrow is not lane:
+                    narrow.copy_(lane)
+                out.add_(narrow)
+    return out
 
 
 def _band_reduce(
@@ -1109,24 +1090,38 @@ def _band_reduce(
             if want_fused:
                 torch.ne(dup, 0, out=fused)
         else:
-            cov_acc = cov if cov.dtype == acc else workspace.copy(cov, acc)
-            area_acc.scatter_add_(0, band_id, cov_acc)
-            bits = (msk & AA_MASK_ALL).to(torch.int64)
-            lane = workspace.tensor((nbands,), torch.int64, 0)
-            for b in range(AA_NUM_SAMPLES):
-                lane.zero_()
-                lane.scatter_add_(0, band_id, (bits >> b) & 1)
-                union |= (lane > 0).to(torch.int32) << b
-                if want_fused:
-                    fused |= lane > 1
+            with workspace.stage():
+                cov_acc = cov if cov.dtype == acc else workspace.copy(cov, acc)
+                area_acc.scatter_add_(0, band_id, cov_acc)
+            # Counts keep their original width; only the per-lane masks and
+            # shifted union bits are reused instead of allocated each iteration.
+            with workspace.stage():
+                bits = workspace.copy(msk, torch.int64)
+                bits.bitwise_and_(AA_MASK_ALL)
+                values = workspace.tensor((n,), torch.int64)
+                lane = workspace.tensor((nbands,), torch.int64)
+                present = workspace.tensor((nbands,), torch.bool)
+                union_bit = workspace.tensor((nbands,), torch.int32)
+                for b in range(AA_NUM_SAMPLES):
+                    torch.bitwise_right_shift(bits, b, out=values)
+                    values.bitwise_and_(1)
+                    lane.zero_().scatter_add_(0, band_id, values)
+                    torch.gt(lane, 0, out=present)
+                    union_bit.copy_(present).bitwise_left_shift_(b)
+                    union.bitwise_or_(union_bit)
+                    if want_fused:
+                        torch.gt(lane, 1, out=present)
+                        fused.logical_or_(present)
             if want_sliver:
-                sliver.scatter_reduce_(
-                    0,
-                    band_id,
-                    ((msk & AA_SLIVER_BIT) != 0).to(torch.int32),
-                    reduce="amax",
-                    include_self=True,
-                )
+                with workspace.stage():
+                    flag = workspace.tensor((n,), torch.int32)
+                    present = workspace.tensor((n,), torch.bool)
+                    torch.bitwise_and(msk, AA_SLIVER_BIT, out=flag)
+                    torch.ne(flag, 0, out=present)
+                    flag.copy_(present)
+                    sliver.scatter_reduce_(
+                        0, band_id, flag, reduce="amax", include_self=True
+                    )
         if acc != torch.float32:
             area.copy_(area_acc)
     return BandReduction(area, union, fused, sliver)
@@ -1276,59 +1271,54 @@ def _prim_split_after(
     _check_frame_table(
         "sheets._prim_split_after", num_frames, num_tri, t.numel(), frame_rel
     )
-    # Blocked over the frame axis for the reason ``_shade_class`` gives: the
-    # table is one float per (frame, triangle), but the world positions and
-    # screen bounds it is derived from are ``[block, N, 9]`` with several live
-    # at once, and sizing those by the chunk's whole frame count is what asked
-    # a Metal render for a single 6.45 GB buffer on the line below.
+    # Keep the original frame blocking and table-storage rounding. Only the
+    # gathered slopes survive table construction; each block reuses its scratch.
     with workspace.stage():
-        slope = workspace.tensor((num_frames, num_tri), tri_pos.dtype)
-        block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
-        for f0 in range(0, num_frames, block):
-            f1 = min(num_frames, f0 + block)
-            frames = torch.arange(f0, f1, device=device) + int(time_start)
-            pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [B, N, 9]
-            ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(
-                f1 - f0, 1, 3
+        scale_dtype = torch.promote_types(
+            tri_pos.dtype, torch.promote_types(pixel_world_scale.dtype, t.dtype)
+        )
+        scale_o = workspace.tensor(t.shape, scale_dtype)
+        with workspace.stage():
+            slope_f = workspace.tensor(frame_rel.shape, tri_pos.dtype)
+            with workspace.stage():
+                slope = workspace.tensor((num_frames, num_tri), tri_pos.dtype)
+                block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
+                for f0 in range(0, num_frames, block):
+                    f1 = min(num_frames, f0 + block)
+                    with workspace.stage():
+                        frames = workspace.tensor((f1 - f0,), torch.int64)
+                        torch.arange(f0, f1, out=frames)
+                        frames.add_(int(time_start))
+                        depth_slope_block(
+                            tri_pos,
+                            cam_origin,
+                            tri_screen,
+                            frames,
+                            slope[f0:f1],
+                            workspace,
+                        )
+                gather_frame_table(
+                    slope, frame_rel, safe_ref, out=slope_f, workspace=workspace
+                )
+            rows = workspace.copy(frame_rel, torch.int64)
+            rows.add_(int(time_start)).remainder_(pixel_world_scale.shape[0])
+            pws = workspace.gather(pixel_world_scale, rows)
+            pixel_size = workspace.tensor(
+                t.shape, torch.promote_types(pws.dtype, t.dtype)
             )
-            dmin = dmax = None
-            for k in range(3):
-                dk = torch.linalg.norm(pos[..., 3 * k : 3 * k + 3] - ro, dim=-1)
-                dmin = dk if dmin is None else torch.minimum(dmin, dk)
-                dmax = dk if dmax is None else torch.maximum(dmax, dk)
-            del ro, dk, pos
-            ext = dmax - dmin
-            del dmin, dmax
-            # Per-PIXEL depth slope: two neighbouring fragments of one sheet can
-            # differ by about one pixel's worth of the surface's depth gradient,
-            # not by the triangle's whole extent. Where the projection table is
-            # valid, divide by the projected size in pixels; a camera-plane
-            # straddler keeps the conservative raw extent.
-            block_slope = ext
-            if tri_screen is not None and tri_screen.shape[2] >= 10:
-                scr = tri_screen.index_select(0, frames % tri_screen.shape[0])
-                sx = scr[..., 0:3]
-                span_x = sx.amax(dim=-1) - sx.amin(dim=-1)
-                sy = scr[..., 3:6]
-                span_y = sy.amax(dim=-1) - sy.amin(dim=-1)
-                proj = torch.maximum(span_x, span_y).clamp_min_(1.0)
-                valid = scr[..., 9] > 0.5
-                block_slope = torch.where(valid, ext / proj, ext)
-                del scr, sx, sy, span_x, span_y, proj, valid
-            del ext
-            slope[f0:f1] = block_slope
-            del block_slope
-        slope_f = workspace.tensor(frame_rel.shape, slope.dtype)
-        gather_frame_table(slope, frame_rel, safe_ref, out=slope_f, workspace=workspace)
-        del slope
-        pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-        scale = torch.where(is_tri, slope_f + pws * t, torch.zeros_like(t))
-        del pws, slope_f
-        scale_o = workspace.gather(scale, order)
-        del scale
-        thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
-        del scale_o
-        torch.gt(t_o[1:] - t_o[:-1], thr, out=out)
+            torch.mul(pws, t, out=pixel_size)
+            scale = workspace.tensor(t.shape, scale_dtype)
+            torch.add(slope_f, pixel_size, out=scale)
+            not_triangle = workspace.tensor(is_tri.shape, torch.bool)
+            torch.logical_not(is_tri, out=not_triangle)
+            scale.masked_fill_(not_triangle, 0)
+            gather_rows(scale, order, out=scale_o)
+        threshold = workspace.tensor(shape, scale_dtype)
+        torch.add(scale_o[1:], scale_o[:-1], out=threshold)
+        threshold.mul_(float(band_c))
+        gap = workspace.tensor(shape, t_o.dtype)
+        torch.sub(t_o[1:], t_o[:-1], out=gap)
+        torch.gt(gap, threshold, out=out)
 
     return out
 
@@ -1387,22 +1377,32 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o, *, workspace=None, out=N
             workspace=workspace,
             out=BandReduction(area, union, None, sliver),
         )
-        pop = _popcount_lanes(union)
+        pop = workspace.tensor((nbands,), torch.int32)
+        _popcount_lanes(union, out=pop, workspace=workspace)
         clamped = workspace.tensor((nbands,), torch.float32)
         torch.clamp(area, max=1.0, out=clamped)
-        full = union == AA_MASK_ALL
-        # Keep the original f32 expression and its rounding boundaries. Only
-        # destination ownership changes, not the order of coverage arithmetic.
+        full = workspace.tensor((nbands,), torch.bool)
+        torch.eq(union, AA_MASK_ALL, out=full)
+        # Keep subtract/abs, multiply and divide as separate f32 operations.
+        delta = workspace.tensor((nbands,), torch.float32)
+        torch.sub(1.0, area, out=delta)
+        delta.abs_()
+        predicate = workspace.tensor((nbands,), torch.bool)
+        torch.le(delta, FULL_DUST, out=predicate)
+        full_corr = workspace.tensor((nbands,), torch.float32)
         torch.where(
-            full,
-            torch.where(
-                (1.0 - area).abs() <= FULL_DUST, torch.ones_like(clamped), clamped
-            ),
-            clamped * float(AA_NUM_SAMPLES) / pop.clamp_min(1).to(torch.float32),
-            out=corr,
+            predicate, workspace.tensor((), torch.float32, 1.0), clamped, out=full_corr
         )
+        pop.clamp_min_(1)
+        denominator = workspace.copy(pop, torch.float32)
+        partial = workspace.tensor((nbands,), torch.float32)
+        torch.mul(clamped, float(AA_NUM_SAMPLES), out=partial)
+        partial.div_(denominator)
+        torch.where(full, full_corr, partial, out=corr)
         torch.ne(union, 0, out=split)
-        split.logical_and_(sliver == 0)
+        torch.eq(sliver, 0, out=predicate)
+        split.logical_and_(predicate)
+
     return out
 
 
@@ -1565,7 +1565,6 @@ def _sibling_weights(
             inputs=(sheet_band, cov, msk, band_area, band_union, band_corr),
         )
     with workspace.stage():
-        device = cov.device
         if rt_settings.sheet_sibling_weights_kernel:
             if nb < 2:
                 if out is None:
@@ -1599,35 +1598,25 @@ def _sibling_weights(
             )
             return SheetWeights(weights, masks)
 
-        members = workspace.tensor(band_area.shape, torch.int64, 0)
-        members.scatter_add_(
-            0, sheet_band, torch.ones(nb, dtype=torch.int64, device=device)
-        )
-        # ...and ONLY where the band's sheets are one unbroken run of the walk.
-        # The arithmetic below is a band's, not a sheet's: it hands every sibling
-        # the band's union and its share of the band's coverage factor, and that is
-        # only paid back if the deferral chain below reaches the band's last sheet
-        # and writes the summed occlusion there. Where something else interleaves
-        # them the chain breaks, and a sibling that writes on its own would be
-        # painting its own exact area over samples it does not own -- ink moved
-        # off the geometry for nothing. Such a band composites sheet by sheet
-        # instead, which is the pre-split behaviour this docstring already promised
-        # for the interleaved case (measured: on a fold pixel of
-        # ``solids_and_camera``'s saddle Surface, where the two facings alternate
-        # in depth, the union substitution alone moved the pixel 36 channel values
-        # AWAY from an AA-off supersampled reference).
-        runs = workspace.tensor(band_area.shape, torch.int64, 0)
-        starts = workspace.tensor((nb,), torch.int64, 1)
-        if nb > 1:
-            starts[1:] = (sheet_band[1:] != sheet_band[:-1]).to(torch.int64)
-        runs.scatter_add_(0, sheet_band, starts)
-        del starts
-        whole = runs == 1
-        del runs
-        multi = (members.index_select(0, sheet_band) > 1) & whole.index_select(
-            0, sheet_band
-        )
-        del whole
+        # Retain only the per-sheet decision across the membership stage.
+        # Interleaved bands still composite sheet by sheet: the deferred sum
+        # must reach the band's last sibling without another surface intervening.
+        multi = workspace.tensor((nb,), torch.bool)
+        with workspace.stage():
+            members = workspace.tensor(band_area.shape, torch.int64, 0)
+            starts = workspace.tensor((nb,), torch.int64, 1)
+            members.scatter_add_(0, sheet_band, starts)
+            runs = workspace.tensor(band_area.shape, torch.int64, 0)
+            changed = workspace.tensor((nb,), torch.bool, True)
+            if nb > 1:
+                torch.ne(sheet_band[1:], sheet_band[:-1], out=changed[1:])
+            starts.copy_(changed)
+            runs.scatter_add_(0, sheet_band, starts)
+            counts = workspace.gather(members, sheet_band)
+            torch.gt(counts, 1, out=multi)
+            gather_rows(runs, sheet_band, out=counts)
+            torch.eq(counts, 1, out=changed)
+            multi.logical_and_(changed)
         if not bool(multi.any()):
             if out is None:
                 return SheetWeights(cov, msk)
@@ -1635,50 +1624,60 @@ def _sibling_weights(
             out[1].copy_(msk)
             return SheetWeights(*out)
 
-        acc = accumulate_dtype()
-        area_g = band_area.index_select(0, sheet_band).to(acc)
-        # ``clamp_floor``, not ``clamp_min``: MPS rounds a clamp's scalar bound
-        # through float16 and cannot carry this floor (``mps_compat.clamp_floor``
-        # has the measurement). This is the call site where that first reached a
-        # frame -- a band whose siblings were all clamped to zero coverage by the
-        # closed-shell ceiling has exactly zero area, the guard did not hold, and
-        # the divide produced a NaN. Nothing downstream catches one: ``eff <=
-        # min_alpha`` is false against a NaN like every comparison is, so the sheet
-        # composited instead of dropping out and a closed shell's interior edge came
-        # back attenuated twice (``DESIGN_mps_support.md`` §2.3c).
-        share = cov.to(acc) / clamp_floor(area_g, 1e-12)
-        del area_g
-        p = band_corr.index_select(0, sheet_band).to(acc) * share
-
-        union = band_union.index_select(0, sheet_band)
-        pop = _popcount_lanes(union).clamp_min(1).to(acc)
-        full = union == AA_MASK_ALL
-        # The resolve reads the coverage through its own branch, so hand it the
-        # value that branch turns back into p: the factor itself on a full union,
-        # the sample-share fraction of it on a partial one.
-        wgt = torch.where(full, p, p * pop / float(AA_NUM_SAMPLES)).to(torch.float32)
-
-        # Negative = "this band continues at the NEXT sheet of the walk", which
-        # is exactly when the register sum is safe to carry. Nothing reorders the
-        # walk for it: a band whose sheets some other surface interleaves (a
-        # coincident depth) simply closes early there and its remainder
-        # composites sheet by sheet, as it did before the split existed.
-        cont = torch.zeros(nb, dtype=torch.bool, device=device)
-        if nb > 1:
-            cont[:-1] = sheet_band[1:] == sheet_band[:-1]
-        wgt = torch.where(multi & cont, -wgt, wgt)
-        # A donor sibling carries the sliver bit because its OWN union is empty;
-        # inside a band it holds the band's samples, so the areal (position-less)
-        # rule no longer applies to it. Fragment slivers cannot appear here --
-        # ``_band_composite`` leaves those bands whole.
-        flags = msk & ~AA_MASK_ALL & ~AA_SLIVER_BIT
-        wmsk = union.to(msk.dtype) | flags
         if out is None:
-            return SheetWeights(
-                torch.where(multi, wgt, cov), torch.where(multi, wmsk, msk)
+            out = SheetWeights(
+                torch.empty_like(
+                    cov, dtype=torch.promote_types(cov.dtype, torch.float32)
+                ),
+                torch.empty_like(msk),
             )
-        torch.where(multi, wgt, cov, out=out[0])
-        torch.where(multi, wmsk, msk, out=out[1])
+        weights, masks = out
+        acc = accumulate_dtype()
+        with workspace.stage():
+            area = workspace.tensor((nb,), acc)
+            p = workspace.tensor((nb,), acc)
+            with workspace.stage():
+                gathered = workspace.gather(band_area, sheet_band)
+                area.copy_(gathered)
+                p.copy_(workspace.gather(band_corr, sheet_band))
+            # Preserve the tiny-floor MPS workaround, the wide division and
+            # multiplication, then the original f32 rounding before negation.
+            clamp_floor(area, 1e-12, out=area, workspace=workspace)
+            share = workspace.copy(cov, acc)
+            share.div_(area)
+            p.mul_(share)
+            union = workspace.gather(band_union, sheet_band)
+            pop = workspace.tensor((nb,), torch.int32)
+            _popcount_lanes(union, out=pop, workspace=workspace)
+            pop.clamp_min_(1)
+            pop_acc = workspace.copy(pop, acc)
+            partial = workspace.tensor((nb,), acc)
+            torch.mul(p, pop_acc, out=partial)
+            partial.div_(float(AA_NUM_SAMPLES))
+            full = workspace.tensor((nb,), torch.bool)
+            torch.eq(union, AA_MASK_ALL, out=full)
+            torch.where(full, p, partial, out=partial)
+            rounded = (
+                weights
+                if weights.dtype == torch.float32
+                else workspace.tensor((nb,), torch.float32)
+            )
+            rounded.copy_(partial)
+
+            # The sign (including negative zero) marks continuation at the
+            # next sheet, not merely membership in the same band.
+            cont = workspace.tensor((nb,), torch.bool, False)
+            if nb > 1:
+                torch.eq(sheet_band[1:], sheet_band[:-1], out=cont[:-1])
+            cont.logical_and_(multi)
+            negative = workspace.tensor((nb,), torch.float32)
+            torch.neg(rounded, out=negative)
+            torch.where(cont, negative, rounded, out=rounded)
+            torch.where(multi, rounded, cov, out=weights)
+            # Donors receive the band's union, without their own sliver flag.
+            torch.bitwise_and(msk, ~AA_MASK_ALL, out=masks)
+            masks.bitwise_and_(~AA_SLIVER_BIT).bitwise_or_(union)
+            torch.where(multi, masks, msk, out=masks)
         return SheetWeights(*out)
 
 
@@ -1761,10 +1760,11 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n, *, out=None, workspace=None):
 
                     sheet_lane_depths(first_lane, t_o, n, out)
             else:
-                has = first_lane < n
-                d_lane = t_o.index_select(0, first_lane.clamp_max(max(n - 1, 0)))
-                inf = workspace.tensor((), torch.float32, float("inf"))
-                torch.where(has, d_lane, inf, out=out.view(-1))
+                missing = workspace.tensor(first_lane.shape, torch.bool)
+                torch.ge(first_lane, n, out=missing)
+                first_lane.clamp_max_(n - 1)
+                gather_rows(t_o, first_lane, out=out.view(-1))
+                out.view(-1).masked_fill_(missing, float("inf"))
             return out
 
         idx_dtype = reduction_index_dtype()
@@ -1774,117 +1774,201 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n, *, out=None, workspace=None):
         masked = workspace.tensor((n,), idx_dtype)
         first_sorted = workspace.tensor((nb,), idx_dtype)
         inf = workspace.tensor((), torch.float32, float("inf"))
+        bits = workspace.tensor(msk_o.shape, msk_o.dtype)
+        owns = workspace.tensor(msk_o.shape, torch.bool)
+        first_long = (
+            first_sorted
+            if idx_dtype == torch.int64
+            else workspace.tensor((nb,), torch.int64)
+        )
+        has = workspace.tensor((nb,), torch.bool)
+        d_lane = workspace.tensor((nb,), torch.float32)
         for lane in range(AA_NUM_SAMPLES):
-            owns = ((msk_o >> lane) & 1) != 0
+            torch.bitwise_right_shift(msk_o, lane, out=bits)
+            bits.bitwise_and_(1)
+            torch.ne(bits, 0, out=owns)
             torch.where(owns, positions, big, out=masked)
             first_sorted.fill_(n)
             first_sorted.scatter_reduce_(
                 0, band_id, masked, reduce="amin", include_self=True
             )
-            first_long = first_sorted.to(torch.int64)
-            has = first_long < n
-            d_lane = t_o.index_select(0, first_long.clamp_max(max(n - 1, 0)))
-            out[:, lane] = torch.where(has, d_lane, inf)
+            if first_long is not first_sorted:
+                first_long.copy_(first_sorted)
+            torch.lt(first_long, n, out=has)
+            # Owner indices are dead after this gather; the next lane resets
+            # first_sorted. Keep validity before clamping the sentinel.
+            first_long.clamp_max_(n - 1)
+            gather_rows(t_o, first_long, out=d_lane)
+            torch.where(has, d_lane, inf, out=out[:, lane])
     return out
 
 
 def _sample_depth_lose_reference(
-    sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
+    sheet_pix,
+    sample_depths,
+    sheet_sid,
+    enforcer,
+    subject,
+    low,
+    *,
+    out=None,
+    workspace=None,
 ):
-    """Global expanded-lane reference for the per-pixel depth reduction."""
-    nb, device = sheet_pix.numel(), sheet_pix.device
-    # Per-(pixel, sample) floor over the enforcers: the minimum depth AND
-    # the second minimum over DIFFERENT-surface entries, so each subject
-    # compares against the best OTHER-sid enforcer at that sample.
-    other_d = torch.full(
-        (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
-    )
-    enf = enforcer.nonzero(as_tuple=True)[0]
-    if int(enf.numel()) > 0:
-        lanes = torch.arange(AA_NUM_SAMPLES, device=device)
-        epk = (
-            sheet_pix.index_select(0, enf).unsqueeze(1) * AA_NUM_SAMPLES
-            + lanes.view(1, -1)
-        ).reshape(-1)
-        edepth = sample_depths.index_select(0, enf).reshape(-1)
-        esid = (
-            sheet_sid.index_select(0, enf)
-            .unsqueeze(1)
-            .expand(-1, AA_NUM_SAMPLES)
-            .reshape(-1)
-        )
-        ord_e = _lexsort(epk, edepth)
-        epk = epk.index_select(0, ord_e)
-        edepth = edepth.index_select(0, ord_e)
-        esid = esid.index_select(0, ord_e)
-        del ord_e
-        new_group_e = torch.ones_like(epk, dtype=torch.bool)
-        if epk.numel() > 1:
-            new_group_e[1:] = epk[1:] != epk[:-1]
-        grp = group_ids_from_starts(new_group_e)
-        uniq_pk = epk[new_group_e]
-        best_d = edepth[new_group_e]
-        best_sid = esid[new_group_e]
-        diff_sid = esid != best_sid.index_select(0, grp)
-        sec_d = torch.full(
-            (int(uniq_pk.numel()),),
-            float("inf"),
-            dtype=torch.float32,
-            device=device,
-        )
-        if bool(diff_sid.any()):
-            sec_d.scatter_reduce_(
-                0,
-                grp[diff_sid],
-                edepth[diff_sid],
-                reduce="amin",
-                include_self=True,
-            )
-        del diff_sid
-        del new_group_e, epk, edepth, esid
-        qpk = (sheet_pix.unsqueeze(1) * AA_NUM_SAMPLES + lanes.view(1, -1)).reshape(-1)
-        loc = torch.searchsorted(uniq_pk, qpk).clamp_max(int(uniq_pk.numel()) - 1)
-        found = uniq_pk.index_select(0, loc) == qpk
-        bd = best_d.index_select(0, loc)
-        bsid = best_sid.index_select(0, loc)
-        sd = sec_d.index_select(0, loc)
-        own_here = (
-            bsid == sheet_sid.unsqueeze(1).expand(-1, AA_NUM_SAMPLES).reshape(-1)
-        ).reshape(-1)
-        other_d = torch.where(found & own_here, sd, bd)
-        other_d = torch.where(found, other_d, other_d.new_full((), float("inf")))
-        other_d = other_d.view(nb, AA_NUM_SAMPLES)
-        del found, bd, bsid, sd, loc, qpk, grp, uniq_pk, best_d, best_sid
-        del sec_d, lanes
+    """Expanded-lane reference with checked output and phase-local scratch.
 
-    # Lose: the subject owns s AND the best other-surface enforcer there
-    # is strictly nearer beyond depth_tie_epsilon -- exact ties and
-    # near-ties keep today's walk order.
-    lane_bits = torch.arange(AA_NUM_SAMPLES, device=device)
-    owns = ((low.unsqueeze(1) >> lane_bits.view(1, -1)) & 1) == 1
-    gate = owns & (other_d < sample_depths - depth_tie_epsilon)
-    gate &= subject.unsqueeze(1)
-    # ALL OR NOTHING, above a floor. A fragment's depth is evaluated at
-    # the centroid of the samples it OWNS (raster_taichi.py:1308-1330), so
-    # a lane's depth is that centroid's rather than the lane's: the finer
-    # the margin, the less the comparison is entitled to decide anything.
-    # A sheet losing only a thin share of its samples is reading exactly
-    # that weakest margin, on a pixel it otherwise wins -- measured, ceding
-    # there regressed two pixels by 110 and 55 channel values while fixing
-    # nothing, because the surface behind does not always claim what was
-    # ceded. So a sheet cedes everything it loses or nothing at all, and
-    # only once it is losing more than sheet_sample_depth_cede of what
-    # it owns.
-    n_lose = gate.sum(dim=1)
-    n_own = owns.sum(dim=1)
-    gate &= (
-        n_lose.to(torch.float32) > sheet_sample_depth_cede * n_own.to(torch.float32)
-    ).unsqueeze(1)
-    del n_lose, n_own
-    lose_word = (
-        (gate.to(torch.int64) << lane_bits.view(1, -1)).sum(dim=1).to(torch.int32)
-    ) << AA_LOSE_SHIFT
-    return lose_word
+    Preserve the two OTHER-surface minima, stable sort, strict depth epsilon,
+    and all-or-nothing ceding threshold. Dynamic nonzero indices and library
+    sort workspace remain external; their payloads and every fixed-size result
+    are stage-owned. An omitted output retains ordinary ownership.
+    """
+    nb, device = sheet_pix.numel(), sheet_pix.device
+    shape = (nb, AA_NUM_SAMPLES)
+    inputs = (sheet_pix, sample_depths, sheet_sid, enforcer, subject, low)
+    integer = (torch.int32, torch.int64)
+    if (
+        sheet_pix.ndim != 1
+        or sheet_pix.dtype not in integer
+        or sample_depths.shape != shape
+        or sample_depths.dtype != torch.float32
+        or sheet_sid.shape != (nb,)
+        or sheet_sid.dtype not in integer
+        or low.shape != (nb,)
+        or low.dtype not in integer
+        or enforcer.shape != (nb,)
+        or enforcer.dtype != torch.bool
+        or subject.shape != (nb,)
+        or subject.dtype != torch.bool
+        or any(value.device != device for value in inputs)
+    ):
+        raise ValueError("sample-depth reference needs matching sheet and lane arrays")
+    workspace = workspace or CompactionWorkspace(device=device)
+    if workspace.device != device:
+        raise ValueError("sample-depth workspace must share the input device")
+    if out is None:
+        out = torch.empty((nb,), dtype=torch.int32, device=device)
+    require_tensor_outputs(
+        (out,), (((nb,), torch.int32),), device=device, inputs=inputs
+    )
+    with workspace.stage():
+        other_d = workspace.tensor(shape, torch.float32, float("inf"))
+        with workspace.stage():
+            enf = enforcer.nonzero(as_tuple=True)[0]
+            ne = int(enf.numel())
+            if ne:
+                size = ne * AA_NUM_SAMPLES
+                # Reserve descriptor capacity before sorting so expanded input
+                # and grouping scratch can be reclaimed before querying sheets.
+                uniq_pk = workspace.tensor((size,), torch.int64)
+                best_d = workspace.tensor((size,), torch.float32)
+                best_sid = workspace.tensor((size,), sheet_sid.dtype)
+                sec_d = workspace.tensor((size,), torch.float32, float("inf"))
+                lanes = workspace.tensor((AA_NUM_SAMPLES,), torch.int64)
+                torch.arange(AA_NUM_SAMPLES, out=lanes)
+                with workspace.stage():
+                    epk = workspace.tensor((size,), torch.int64)
+                    edepth = workspace.tensor((size,), torch.float32)
+                    esid = workspace.tensor((size,), sheet_sid.dtype)
+                    with workspace.stage():
+                        pixels = workspace.gather(sheet_pix, enf)
+                        pixels.mul_(AA_NUM_SAMPLES)
+                        raw_key = workspace.tensor((ne, AA_NUM_SAMPLES), torch.int64)
+                        torch.add(pixels.unsqueeze(1), lanes.view(1, -1), out=raw_key)
+                        raw_depth = workspace.gather(sample_depths, enf).view(-1)
+                        surfaces = workspace.gather(sheet_sid, enf)
+                        raw_sid = workspace.tensor(
+                            (ne, AA_NUM_SAMPLES), sheet_sid.dtype
+                        )
+                        raw_sid.copy_(surfaces.unsqueeze(1).expand_as(raw_sid))
+                        del enf
+                        order = workspace.tensor((size,), torch.int64)
+                        _lexsort(
+                            raw_key.view(-1), raw_depth, out=order, workspace=workspace
+                        )
+                        gather_rows(raw_key.view(-1), order, out=epk)
+                        gather_rows(raw_depth, order, out=edepth)
+                        gather_rows(raw_sid.view(-1), order, out=esid)
+                    starts = workspace.tensor((size,), torch.bool, True)
+                    if size > 1:
+                        torch.ne(epk[1:], epk[:-1], out=starts[1:])
+                    groups = workspace.tensor((size,), torch.int64)
+                    group_ids_from_starts(starts, out=groups)
+                    first = starts.nonzero(as_tuple=True)[0]
+                    count = int(first.numel())
+                    uniq_pk, best_d = uniq_pk[:count], best_d[:count]
+                    best_sid, sec_d = best_sid[:count], sec_d[:count]
+                    gather_rows(epk, first, out=uniq_pk)
+                    gather_rows(edepth, first, out=best_d)
+                    gather_rows(esid, first, out=best_sid)
+                    del first
+                    diff_sid = workspace.tensor((size,), torch.bool)
+                    torch.ne(esid, workspace.gather(best_sid, groups), out=diff_sid)
+                    if bool(diff_sid.any()):
+                        different = diff_sid.nonzero(as_tuple=True)[0]
+                        sec_d.scatter_reduce_(
+                            0,
+                            workspace.gather(groups, different),
+                            workspace.gather(edepth, different),
+                            reduce="amin",
+                            include_self=True,
+                        )
+                        del different
+                # Only descriptors survive here. Query workspace reuses the
+                # expanded sort/group region rather than overlapping with it.
+                with workspace.stage():
+                    pixels = workspace.copy(sheet_pix)
+                    pixels.mul_(AA_NUM_SAMPLES)
+                    qpk = workspace.tensor(shape, torch.int64)
+                    torch.add(pixels.unsqueeze(1), lanes.view(1, -1), out=qpk)
+                    qpk = qpk.view(-1)
+                    loc = workspace.tensor(qpk.shape, torch.int64)
+                    torch.searchsorted(uniq_pk, qpk, out=loc)
+                    loc.clamp_max_(count - 1)
+                    found = workspace.tensor(qpk.shape, torch.bool)
+                    torch.eq(workspace.gather(uniq_pk, loc), qpk, out=found)
+                    bd = workspace.gather(best_d, loc)
+                    bsid = workspace.gather(best_sid, loc)
+                    sd = workspace.gather(sec_d, loc)
+                    own_here = workspace.tensor(shape, torch.bool)
+                    torch.eq(bsid.view(shape), sheet_sid.unsqueeze(1), out=own_here)
+                    own_here.view(-1).logical_and_(found)
+                    torch.where(own_here.view(-1), sd, bd, out=other_d.view(-1))
+                    found.logical_not_()
+                    other_d.view(-1).masked_fill_(found, float("inf"))
+            else:
+                del enf
+
+        # Preserve the original expanded-lane comparisons and f32 cede test.
+        # Counts and packed words reuse integer storage only after their last
+        # consumer; no floating reduction is fused or reassociated.
+        with workspace.stage():
+            lanes = workspace.tensor((AA_NUM_SAMPLES,), torch.int64)
+            torch.arange(AA_NUM_SAMPLES, out=lanes)
+            lane_values = workspace.tensor(shape, torch.int64)
+            torch.bitwise_right_shift(
+                low.unsqueeze(1), lanes.view(1, -1), out=lane_values
+            )
+            lane_values.bitwise_and_(1)
+            owns = workspace.tensor(shape, torch.bool)
+            torch.eq(lane_values, 1, out=owns)
+            threshold = workspace.tensor(shape, torch.float32)
+            torch.sub(sample_depths, depth_tie_epsilon, out=threshold)
+            gate = workspace.tensor(shape, torch.bool)
+            torch.lt(other_d, threshold, out=gate)
+            gate.logical_and_(owns).logical_and_(subject.unsqueeze(1))
+            count = workspace.tensor((nb,), torch.int64)
+            lose_count = workspace.tensor((nb,), torch.float32)
+            own_count = workspace.tensor((nb,), torch.float32)
+            torch.sum(gate, dim=1, dtype=torch.int64, out=count)
+            lose_count.copy_(count)
+            torch.sum(owns, dim=1, dtype=torch.int64, out=count)
+            own_count.copy_(count).mul_(sheet_sample_depth_cede)
+            cede = workspace.tensor((nb,), torch.bool)
+            torch.gt(lose_count, own_count, out=cede)
+            gate.logical_and_(cede.unsqueeze(1))
+            lane_values.copy_(gate).bitwise_left_shift_(lanes.view(1, -1))
+            torch.sum(lane_values, dim=1, out=count)
+            out.copy_(count).bitwise_left_shift_(AA_LOSE_SHIFT)
+    return out
 
 
 def compact_sheets(
@@ -2034,8 +2118,10 @@ def compact_sheets(
     on every exit. Decoded preprocessing metadata ends before rank grouping;
     pooling maps and sample-depth classification also use explicit stages.
     Closed-shell keys, metadata and both ceiling arms also end in preprocessing.
-    Block floating-point expressions, dynamic unique temporaries and library
-    sort/scan workspace still need external headroom.
+    Geometry blocks, coverage/weight math and reference depth competition now
+    use phase-local scratch as well. Dynamic unique/nonzero temporaries,
+    optional boundary conversions and library sort/scan workspace still need
+    external headroom.
     """
     # Diagnostic keys are omitted when diagnostics=False; correctness and
     # truncation checks remain unconditional.
@@ -2667,6 +2753,8 @@ def _compact_sheets(
                                 enforcer,
                                 subject,
                                 low,
+                                out=workspace.tensor((nb,), torch.int32),
+                                workspace=workspace,
                             )
                         if owned:
                             # Both masks already have caller storage. They can

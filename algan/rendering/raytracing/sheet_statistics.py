@@ -12,7 +12,7 @@ from algan.rendering.mps_compat import (
     taichi_reduction_index_dtype,
 )
 from algan.rendering.raytracing import settings as rt_settings
-from algan.rendering.raytracing.array_ops import require_tensor_outputs
+from algan.rendering.raytracing.array_ops import gather_rows, require_tensor_outputs
 from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
 
 
@@ -62,6 +62,8 @@ def sheet_statistics(
     n, nb = int(coverage.numel()), int(num_bands)
     idx_dtype = reduction_index_dtype()
     workspace = workspace or CompactionWorkspace(device=device)
+    if workspace.device != device:
+        raise ValueError("statistics workspace must share the input device")
     if out is not None:
         require_tensor_outputs(
             out,
@@ -147,8 +149,16 @@ def sheet_statistics(
                 taichi_reduction_index_dtype(),
             )
         else:
-            pos_src = original_positions.to(idx_dtype)
-            positions_src = positions.to(idx_dtype)
+            pos_src = (
+                original_positions
+                if original_positions.dtype == idx_dtype
+                else workspace.copy(original_positions, idx_dtype)
+            )
+            positions_src = (
+                positions
+                if positions.dtype == idx_dtype
+                else workspace.copy(positions, idx_dtype)
+            )
             first.scatter_reduce_(
                 0, band, positions_src, reduce="amin", include_self=True
             )
@@ -158,11 +168,14 @@ def sheet_statistics(
             if positioned:
                 first_p = workspace.tensor((nb,), idx_dtype, n)
                 min_p = workspace.tensor((nb,), idx_dtype, n)
-                owns_sample = (masks & mask_all) != 0
-                big = workspace.tensor((), idx_dtype, n)
                 # Each masked stream is consumed before the same bytes are
                 # reused for the next amin, rather than retained per output.
                 with workspace.stage():
+                    low = workspace.tensor(masks.shape, masks.dtype)
+                    owns_sample = workspace.tensor(masks.shape, torch.bool)
+                    torch.bitwise_and(masks, mask_all, out=low)
+                    torch.ne(low, 0, out=owns_sample)
+                    big = workspace.tensor((), idx_dtype, n)
                     masked = workspace.tensor((n,), idx_dtype)
                     torch.where(owns_sample, positions_src, big, out=masked)
                     first_p.scatter_reduce_(
@@ -176,7 +189,9 @@ def sheet_statistics(
             with workspace.stage():
                 candidate = workspace.tensor((n,), idx_dtype)
                 big = workspace.tensor((), idx_dtype, n)
-                is_max = coverage >= cmax.index_select(0, band)
+                gathered = workspace.gather(cmax, band)
+                is_max = workspace.tensor(coverage.shape, torch.bool)
+                torch.ge(coverage, gathered, out=is_max)
                 torch.where(is_max, pos_src, big, out=candidate)
                 representative.scatter_reduce_(
                     0, band, candidate, reduce="amin", include_self=True
@@ -184,26 +199,31 @@ def sheet_statistics(
             if diagnostics:
                 counts = out.fragment_count
                 counts.zero_()
-                counts.scatter_add_(0, band, torch.ones_like(band))
-        first_long = first.to(torch.int64)
-        torch.index_select(original_positions, 0, first_long, out=out.nearest_fragment)
-        torch.index_select(pixels, 0, first_long, out=out.pixel)
+                with workspace.stage():
+                    ones = workspace.tensor(band.shape, band.dtype, 1)
+                    counts.scatter_add_(0, band, ones)
+        first_long = (
+            first if first.dtype == torch.int64 else workspace.copy(first, torch.int64)
+        )
+        gather_rows(original_positions, first_long, out=out.nearest_fragment)
+        gather_rows(pixels, first_long, out=out.pixel)
         out.min_position.copy_(min_position)
         if positioned:
-            first_p = first_p.to(torch.int64)
-            has_position = first_p < n
-            torch.where(
-                has_position,
-                original_positions.index_select(0, first_p.clamp_max(max(n - 1, 0))),
-                out.nearest_fragment,
-                out=out.nearest_fragment,
-            )
-            torch.where(
-                has_position,
-                min_p.to(torch.int64),
-                out.min_position,
-                out=out.min_position,
-            )
+            with workspace.stage():
+                first_p = workspace.copy(first_p, torch.int64)
+                has_position = workspace.tensor((nb,), torch.bool)
+                torch.lt(first_p, n, out=has_position)
+                first_p.clamp_max_(max(n - 1, 0))
+                nearest = workspace.gather(original_positions, first_p)
+                torch.where(
+                    has_position,
+                    nearest,
+                    out.nearest_fragment,
+                    out=out.nearest_fragment,
+                )
+                # min_p's narrower reference arm contains only bounded indices;
+                # where promotes it to the same int64 result as the old cast.
+                torch.where(has_position, min_p, out.min_position, out=out.min_position)
         out.representative_fragment.copy_(representative)
         if diagnostics:
             out.first_sorted.copy_(first_long)

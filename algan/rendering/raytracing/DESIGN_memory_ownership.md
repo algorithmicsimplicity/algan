@@ -510,7 +510,8 @@ nested preprocessing stage. That stage owns decoded keys and reference maps.
 Raw shading classes are built only after sorting and released immediately after
 their gather; the per-frame class table is nested inside that lifetime. Group
 comparisons and primitive-split results have their own shorter stages. The
-primitive-depth-slope table is staged too, but its per-block floating-point
+primitive-depth-slope table is staged too; in this tranche its per-block
+floating-point
 expressions retain their original arithmetic and ordinary temporary ownership.
 The preprocessing region closes before conflict-rank grouping. A regression test
 checks that the rank inverse actually reuses the decoded pixel buffer's address,
@@ -543,7 +544,8 @@ int64 sort permutations. These estimates exclude compiler/library/driver
 storage and cannot establish total-device peak savings or faster warm renders.
 At the seventh tranche, closed-shell eligibility still created dynamic ordinary-owned
 arrays before production adopted them. The eighth-tranche stages below replace
-those arrays; several block floating expressions remain unstaged.
+those arrays. At the end of the seventh tranche several block floating
+expressions remained unstaged; the ninth-tranche section records their conversion.
 Runtime failures restore scratch pointers, not partially written caller results;
 callers discard those results on failure. Persistent reverse outputs and prior
 arena sentinels remain protected by the existing discovery/compaction scopes.
@@ -626,3 +628,66 @@ unchanged. Deep-stack tests cover 16, 17, 64/65 and 257 crossings, decreasing
 ranks, donors, pooled and unpooled neighboring parents, native/reference arms,
 and CPU execution of the MPS-friendly policy. Real GPU validation and performance
 measurement are still required before attributing GPU behavior or speedups.
+
+
+## Ninth tranche: floating expressions and reference reductions
+
+Geometry tables keep the same frame-block budget, but `sheet_geometry.py` now
+owns each block's row gathers, normal magnitudes, normalizations, geometric
+normals, quantization and distance/projection-span expressions. The retained
+class/slope table is allocated before block scratch. Vertex-normal classification
+ends before geometric-normal work; vertex-distance extrema end before projection
+work. Every block rewinds before the next block starts, including exceptional
+exits. Per-fragment slope, pixel-world-scale, gap and threshold arrays have a
+separate stage after the table is reclaimed. The former table-assignment
+rounding boundary and mixed-input promotion are preserved.
+
+Each subtract, norm, clamp, divide, multiply, round and cast remains a separate
+operation. The distance calculation uses `torch.linalg.vector_norm(out=)`, the
+same vector norm selected by the old `torch.linalg.norm(dim=-1)` call. The latter
+wrapper can allocate a vector result even with `out`; tests trace the actual
+operator destinations rather than assuming the argument eliminates allocation.
+No fused multiply-add, reordered floating reduction or precision-policy change
+is introduced. `clamp_floor` accepts optional output/workspace arguments and
+keeps the tiny-floor MPS workaround. Its ordinary default still supports
+autograd; a predicate needed by backward is not stored in reclaimable scratch.
+
+Reference band reduction reuses its per-lane integer counts, shifted bits and
+predicates. Coverage correction reuses the popcount, full-union dust predicate
+and float32 expression outputs. Reference statistics stage their casts,
+positioned-owner predicates, dominant-coverage gathers, candidate masks and
+diagnostic counts. Final reference gathers use the existing exact-copy API.
+The native reduction kernels, precision gates and stable tie rules are unchanged.
+
+Reference sibling weighting separates membership/run counting from its weight
+math. It retains wide division/multiplication where supported, the float32
+rounding before continuation-sign selection, and negative-zero weights. Default
+no-multi callers retain their existing input-alias return; explicit destinations
+remain caller-owned. The reference lane-owner path reuses lane masks, bounded
+indices, depth gathers and missing-owner predicates. The native-owner/reference-
+depth combination gathers directly into the final table after saving validity.
+
+The expanded sample-depth reference takes a checked int32 destination and a
+workspace. It retains the stable pixel/lane/depth grouping and the two minima
+from different surfaces, then the same strict epsilon and all-or-nothing cede
+test. Group descriptors reserve capacity at the expanded enforcer count before
+the sort stage. Sorted input and group scratch are reclaimed before querying
+sheets, and descriptor/query scratch is reclaimed before gate/count/word packing.
+Only actual descriptor slices are read. This capacity reservation may increase
+arena residency for repeated keys; shorter lifetimes do not by themselves prove
+a lower peak. An omitted destination retains ordinary output ownership.
+
+New feature fixtures check exact old-formula results, frame-block address reuse,
+independent per-sheet competitor minima, invalid destinations, scratch poisoning
+and exception unwinding. An operator-dispatch recorder checks selected fixed-size
+paths for visible tensor results outside the input/arena storages. This is not
+a measurement of internal library workspace or total GPU memory. Runtime errors
+may partially write a caller output; the containing attempt discards it.
+
+Dynamic `unique`, `nonzero` and sort/scan internals still allocate. Reference
+conflict-prefix helpers and optional boundary/index normalization also retain
+external temporaries. No kernel source or packed ABI changes in this tranche.
+Discovery includes the new maximum overlapping staged allocations through the
+existing workspace counter; directly allocated sort outputs remain separate.
+No total-device peak-memory reduction, warm speedup or Metal/CUDA/AMD runtime
+validation follows from the CPU ownership and parity checks.

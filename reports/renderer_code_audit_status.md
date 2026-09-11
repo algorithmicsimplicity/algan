@@ -3,14 +3,11 @@
 Updated: September 11, 2026. Target branch: `codex/renderer-audit-memory-cleanup`.
 Existing pull request: #130, targeting `master` (draft, not merged).
 
-**Publication status: eighth-tranche changes are published.** The four validated
-commits were fast-forwarded from seventh-tranche
-`a222eca1468990b459528641c3a336a23b888f51` through implementation head
-`25ab7967cf2fe2befc8c460b68c0526b0561f83d`. GitHub Actions run `34595612033`
-reconstructed the exact multi-commit patch, verified its hashes, recreated the
-expected commit/tree, checked generated bindings and advanced the existing branch
-without force. The temporary transport branch was subsequently restored to the
-seventh-tranche source tree. This status-only follow-up changes no renderer code.
+**Ninth implementation tranche:** floating-point and reference compaction work
+on immutable published base `a883caee3f3a9ddd0e8b32e5f594a4d129556334`.
+The implementation commit carrying this report continues the same branch and
+existing draft PR. This is memory-ownership work, not a new renderer algorithm,
+rank-capacity change, measured speedup or GPU-validation claim.
 
 The original audit examined `f2073d718364617b35ed86028efefcd0ccda5606`.
 The first implementation is `0b20f817ac25e4fe0aba9f9816b8485c9f26e8ec`.
@@ -20,12 +17,13 @@ The fourth implementation is `dd4bfadc52387ac6249878f2602d094d8349862e`.
 The fifth implementation is `234ac00663aa54a1837c4a2d8441fe52a224697c`.
 The sixth implementation is `28b9736fa035826582f505f3e29d93fd0788a596`.
 The seventh implementation is `a222eca1468990b459528641c3a336a23b888f51`.
-This document accompanies the eighth tranche on that immutable base, split into
-separate local commits so the behavior change is not hidden in the memory refactor:
+The eighth tranche separated its memory refactor from the rank-capacity change:
 
 - `41925b87118d93c77e43e8e8d6503a491e9c6149`: closed-shell ownership and lifetime refactor.
 - `9f87cca1134d607dbf7ff1e6b1bf60a455d85a85`: full conflict ranks and collision-free grouping.
 - `5a12513ca62ef09e70106fa71a572ebdd0c6adba`: explicit analytic-sheet route assertions in deep-render parity tests.
+- `25ab7967cf2fe2befc8c460b68c0526b0561f83d`: cumulative eighth-tranche status.
+- `a883caee3f3a9ddd0e8b32e5f594a4d129556334`: eighth-tranche publication record; the ninth tranche's exact base.
 
 Checked items describe code published on this branch and are not a promise of
 full-suite/GPU validation.
@@ -36,36 +34,39 @@ not finished. “Unchanged” means a contract was preserved, not newly implemen
 
 ## Summary of this update
 
-Closed-shell preprocessing now has a checked `ShellSegments` result and scoped
-lookup/reduction scratch. Static and animated table lookups preserve exact surface
-IDs and the original wrapping/eligibility rules. Both ceiling arms retain the
-global coverage prefix, separate per-segment subtraction, float32 face-cap rounding
-and denominator floor. The entire shell stage ends before conflict-rank grouping;
-regressions inspect actual arena pointers and poison reclaimed storage. Ordinary
-standalone outputs and private mutable coverage remain supported. Library
-sort/scan/nonzero workspace and optional index conversions are not eliminated.
+Geometry normal classification and primitive depth-slope tables now use
+block-local arena scratch for frame gathers, normalization, cross products,
+distance extrema, projection spans and class quantization. Their original
+operations, input promotion and table-storage rounding boundaries are retained.
+Each block reclaims its scratch before the next block; per-fragment depth-gap
+work runs after table construction scratch is reclaimed.
 
-A separate capacity fix removes the old 16-layer conflict-rank clamp. The native
-prefix-count path already supports full ranks. Ordinary reference grouping and
-pooling use a host-known row-count radix, proven collision-free for their dense
-producer IDs and below 2**62 at signed-int32 row capacity. The MPS-friendly rank
-fallback sorts bounded parent/rank components, never their wide product. Already
-ordered pooling descriptors instead use a shared checked two-field boundary scan,
-which also replaces the duplicate boundary logic after class-pair sorting.
+Reference band reductions, coverage correction, nearest/dominant statistics,
+sibling weights and lane-owner/depth conversion use explicit destinations and
+reused predicates, index arrays and expression outputs. Sibling membership ends
+before weight arithmetic. Float32 correction boundaries and the float32 round
+before continuation signs (including negative zero) remain unchanged.
 
-There is no longer a fixed per-surface sheet-rank ceiling, but memory/index limits
-and independent ray/path-tracer limits still apply. Deep same-surface crossings now
-remain separate rather than being merged into rank 15. Pooling eligibility,
-closed-shell allowances, analytic coverage and floating-point rounding rules are
-unchanged. The public legacy `sheet_layers` report field remains for compatibility;
-the current compactor no longer produces that retired truncation event.
+The expanded sample-depth reference has a checked caller-owned int32 loss-mask
+output. Expanded input sorting, grouped surface minima, querying and final
+comparison/packing use separate stages. The original best-depth/second-different-surface-depth
+algorithm, strict epsilon and all-or-nothing cede test are preserved. Descriptor
+capacity is reserved before sorting so input/group scratch can be released before
+querying; this may increase arena residency for highly repeated keys and is not
+in itself a measured peak reduction.
 
-Tests cover 16, 17, 64/65 and 257 crossings, decreasing ranks, donors and neighboring
-pooled/unpooled parents. Real 17-layer and 65-layer transparent same-surface renders
-match equivalent independent-surface renders exactly. Ordinary/MPS-friendly CPU
-policy coverage is not Metal execution. No kernel source, packed ABI, baseline or
-existing fast marker changed. No measured speedup or total-device memory saving
-is claimed; broader GPU/full-suite validation remains outstanding.
+The shared tiny-floor helper accepts output/workspace arguments without changing
+its default policy or autograd behavior. Tests caught an allocating vector-norm
+wrapper despite its `out` argument; the direct vector-norm output API now owns that
+result. Dispatch tracing verifies selected visible tensor outputs, not internal
+library or driver workspace. New tests cover precision, strides, empty/scalar
+inputs, destination validation, exact old-formula outputs, independent depth
+oracles, block reuse, poisoning and exceptions.
+
+No kernel source, packed ABI, rendering baseline or existing fast marker is
+changed. Dynamic unique/nonzero results, library internals, reference conflict
+prefixes and some optional boundary conversions remain external. Actual
+CUDA/Metal/AMD execution and warm/peak-memory measurement are still outstanding.
 
 ## 1. Arena-binding cache layout validation — Complete
 
@@ -131,7 +132,15 @@ payload's allocator-to-arena copy.
 - [x] Add checked `ShellSegments` destinations; stage closed/active lookups, exact surface IDs, key arithmetic, facing flags and standalone contiguous copies.
 - [x] Scope both native and reference closed-shell ceiling work, including group IDs, first positions, spent coverage, face sums, cap and scaling destinations; preserve the global scan and float32 rounding barriers.
 - [x] End the complete closed-shell stage before rank grouping, validating actual pointer/stage restoration, scratch poisoning and failure cleanup.
-- [ ] Move remaining blocked floating-point expressions, reference reductions/lose-mask expressions and other unstaged temporaries into explicit destinations or shorter stages. PyTorch unique and other library operations still create their own temporary arrays; adopting results does not eliminate library workspace.
+- [x] Stage normal classification and primitive-slope floating-point blocks, with exact frame gathers, separate normalization/distance/projection lifetimes and unchanged promotion/table rounding.
+- [x] Stage per-fragment primitive-gap scaling/threshold arithmetic after reclaiming table scratch.
+- [x] Reuse reference band-reduction lane counts, union/sliver predicates and coverage-correction expression outputs, with checked popcount destinations.
+- [x] Stage reference nearest/dominant statistics casts, positioned masks, maximum-coverage gathers, candidate masks and final exact gathers.
+- [x] Reclaim sibling membership/run scratch before wide weight math; retain the float32 rounding before sign selection and ordinary no-multi aliases.
+- [x] Reuse reference lane-owner predicates/indices/depth gathers; write native-owner/reference-depth conversion directly into its caller destination.
+- [x] Add checked caller-owned expanded sample-depth loss masks and distinct sorting/grouping/query/packing lifetimes, preserving the original surface-minimum and cede algorithms.
+- [x] Check actual visible operator destinations, block address reuse, reclaimed-memory poisoning, autograd predicate ownership and failures through the complete compaction attempt.
+- [ ] Continue selected remaining integer-prefix, optional boundary/conversion and diagnostic temporary cleanup where justified. PyTorch unique/nonzero and sort/scan internals still allocate; adopting their results is not elimination of library workspace.
 - [ ] Evaluate broader fused finalization only after preserving the current accumulation/rounding boundaries.
 
 `sheet_buffers.py` and `sheet_output_taichi.py` own persistent resolver output.
@@ -143,9 +152,11 @@ provide exact row-copy destinations. `sheet_fragments.py` names sorted payloads;
 `sheet_grouping.py` owns shared grouping and inverse destinations.
 `sheet_preprocessing.py` names decoded-fragment and sample-depth metadata;
 `array_ops.gather_frame_table` owns exact scalar table lookup. `sheet_shells.py`
-owns shell metadata and ceiling stages. Dynamic unique results, remaining blocked
-floating-point/reference expressions, library sort/scan/nonzero workspace and
-optional index conversions still require external storage.
+owns shell metadata and ceiling stages. `sheet_geometry.py` owns floating-point
+geometry blocks; reference statistics, weights and expanded depth competition
+now use explicit scratch stages. Dynamic unique/nonzero results, reference
+conflict-prefix helpers, library workspace and optional index conversions still
+require external storage.
 Adopting a dynamic result into the arena does not eliminate its original
 allocation. The workspace counter is not a total-device peak-memory measurement.
 
@@ -319,7 +330,7 @@ false-positive deferral eligibility decision; ordinary reflective scenes are
 not claimed to select deferral. That exceptional path pays one chunk replay,
 not an eager BVH reservation for every otherwise split-free batch.
 
-## 15. Conflict-rank packing ceiling — Implemented locally; GPU validation remaining
+## 15. Conflict-rank packing ceiling — Implemented and published; GPU validation remaining
 
 - [x] Replace shipping `parent * 16 + rank` assumptions in reference rank grouping and rank pooling with collision-free row-count-radix or two-field grouping.
 - [x] Retain every derived conflict rank, removing the rank-15 clamp and its producer of truncation events only after native, reference and pooling paths support larger ranks.
@@ -349,11 +360,74 @@ keys are not the shipping grouping implementation.
 - [x] Consolidate the compatibility class-group implementation and correct touched comments about external reduction/sorted-payload ownership.
 - [x] Document preprocessing/table/pooling/sample-depth destination contracts and correct touched comments about metadata lifetimes and discovery workspace accounting.
 - [x] Extract and document shell ownership, distinguish the new rank-capacity fix from the exact refactor, update user-facing renderer limits and retain the legacy report field explicitly rather than implying it still clamps layers.
+- [x] Extract block geometry ownership, remove the retired private `_rows` wrapper, and document phase-local floating/reference buffers and the limits of dispatch-level allocation checks.
 - [ ] Continue removing obsolete comments and remaining unsupported-path compatibility plumbing only after proving the callers and diagnostic fixtures no longer require it.
 
 ## Validation
 
-### Eighth-tranche validation in this container
+### Ninth-tranche validation
+
+- [x] Final focused regression suite: **1,410 passed, 27 skipped**, across
+  **37 distinct modules**, on the final Python source. The two new modules
+  contain **243 cases** (173 floating-workspace and 70 depth-reference cases);
+  two additional full-compaction failure cases bring the tranche to **245 added
+  tests**. These are included in the focused count, not extra unique coverage.
+- [x] Exact old-formula class, slope, coverage and sibling-weight comparisons
+  cover ordinary/MPS-friendly CPU policies, mixed float32/float64 inputs,
+  frame wrapping, strided/scalar/empty inputs, negative zero and boundary values.
+  Independent per-sheet depth oracles cover surface identity, missing lanes,
+  strict depth epsilon, and all-or-nothing ceding. Scope tests verify actual
+  block-address reuse, poisoning and exceptional exits; invalid output metadata
+  and aliases are rejected before mutation. Runtime failures can partially write
+  results, which the enclosing attempt discards.
+- [x] Operator-dispatch tracing verifies selected visible fixed-size tensor
+  results use input/caller/workspace storage. It exposed a norm wrapper that
+  allocated despite `out`; the direct vector-norm output route now passes.
+  Default autograd floor calls retain the saved predicate outside reusable
+  scratch, including after poisoning. This is not a library/driver allocation
+  measurement or proof that every operation is allocation-free.
+- [x] Parent-versus-new compaction: **256 configurations, all bit-identical**,
+  across 32 seeded one-to-three-frame inputs, native/reference, diagnostic/
+  persistent and ordinary/MPS-friendly CPU policies. This round also explicitly
+  disables band-statistics and depth-reduction kernels in reference runs, forces
+  small geometry blocks, and supplies animated projection tables. Source paths
+  are asserted and reclaimed storage is poisoned before serialization. Matching
+  hashes for each parent/new pair:
+  - ordinary: `78b41ecc1b72fee9637e6b70779ed2bda4a59e6741c9c9aeebc1ee44a253a3db`;
+  - MPS-friendly CPU: `d3835dbab8328a16c8f3dcfc7e23b43d17df37c4fb416cee57969e8a9d9315a2`.
+- [x] Decoded standard fast-render comparison against unchanged `a883caee`:
+  **45 frames, 704 x 396, 37,635,840 RGB values; maximum difference 0,
+  differing values 0**. Both streams have SHA-256
+  `65def67ad219ec774d71a5d4457d89dab1ab08f190a04e9a8d32bc544da6616a`.
+- [x] Repository-wide Ruff 0.12.4 lint and formatting pass (**440 files**);
+  all **eight changed Python files** parse; generated arena bindings and diff
+  checks pass. No kernel source, packed ABI, baseline or fast marker changed.
+- [ ] Canonical fast suite is **not fully green**: **608 passed, 1 failed,
+  4835 deselected**. Unchanged parent: **608 passed, 1 failed, 4590 deselected**.
+  Both fail only the known MathTex/dvisvgm baseline mismatch, maximum channel
+  deviation 221 at frame 4. The decoded parent/new outputs match exactly.
+  The final collection contains **5,444 tests**, 245 more than the parent.
+- [ ] Full `pytest -q` reached its **600-second limit (exit 124)** without
+  a final summary; its last printed progress was **27%**. The **3 observed
+  failures** were:
+  - `tests/unit_tests/test_doc_examples.py::test_doc_example_authors_without_error[advanced_user_tutorials/text_and_math.rst:115]`.
+  - `tests/unit_tests/test_doc_examples.py::test_doc_example_authors_without_error[advanced_user_tutorials/text_and_math.rst:190]`.
+  - `tests/unit_tests/test_doc_examples.py::test_doc_example_authors_without_error[galleries/mob_gallery.rst:329]`.
+  Source-verified isolated runs reproduce these cases on both unchanged parent
+  and new code; the results are not a completed full-suite/heavy-baseline pass.
+- [ ] CUDA/Metal/AMD execution, alternating warm performance and actual
+  total-device peak-memory measurement remain outstanding.
+
+Validation used the supplied editable CPU installation: Python 3.13.5,
+PyTorch 2.10.0+cpu and patched `quadrants` distribution 1.3.0.post1 (runtime 1.3.0).
+Focused and renderer comparison runs disable daemon handoff; the full attempt
+leaves `ALGAN_USE_DAEMON` unset. The final focused run supersedes the earlier
+1,396-pass run, which preceded the last 14 feature cases. Suite and probe counts
+overlap and are not an aggregate unique-test total. CPU execution under the
+MPS-friendly policy is not actual Metal validation. No measured speedup or
+reduction in total device peak memory is claimed.
+
+### Eighth-tranche validation (historical)
 
 - [x] Final focused suite: **1,111 passed, 27 skipped**, across **34 modules**.
   The two new modules contain 110 shell cases and 109 deep-rank cases (including
@@ -728,22 +802,21 @@ performance measurements remain outstanding. Moving visible outputs into an
 arena does not remove library/compiler/driver workspace or external headroom
 requirements.
 
-## Recommended next implementation order
+## Recommended next work
 
-1. Continue ownership propagation through blocked floating-point expressions,
-   reference reductions/lose-mask expressions and other unstaged scratch. Shorten
-   durable sorted-payload/result lifetimes where feasible without changing
-   accumulation or rounding boundaries. Library unique/sort/scan/nonzero internals
-   still allocate workspace; the closed-shell host stages themselves are now scoped.
-2. Validate actual CUDA/Metal/AMD execution, particularly full-rank native/pair
-   grouping, exact integer copies, caller destinations and staged shell work.
-   Measure alternating warm time and actual total-device peak memory before
-   making speed or peak-memory claims. Complete broader/heavy-render validation.
+1. Validate actual CUDA/Metal/AMD execution: full-rank grouping, exact integer
+   copies, caller destinations, tiny floors and the new staged floating/reference
+   work. Measure alternating warm time and real total-device peak memory; complete
+   broader/heavy-render validation before declaring the PR ready.
+2. Use those measurements to decide whether further lifetime reductions and
+   remaining reference prefix/index-conversion work are worthwhile. Library
+   unique/sort/scan/nonzero internals still allocate independently of result
+   ownership; do not replace them merely to label every tensor arena-owned.
 3. Benchmark indexed shadow tracing and batched endpoint downloads before changing
-   current payload-gather and full host-offset-cache policies. Continue the other
-   independent integer-scan audit and named context ownership beyond shadows.
+   payload gathering or full host-offset caching. Independent integer-scan and
+   broader named-context cleanup remain separate tasks.
 
-## Publication record for this update
+## Eighth-tranche publication record (historical)
 
 The remote implementation branch was rechecked at exact base
 `a222eca1468990b459528641c3a336a23b888f51` before publication. Direct container
