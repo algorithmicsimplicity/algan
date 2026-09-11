@@ -69,8 +69,6 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     runtime = amc.runtime_per_part  # max(amc.runtime_per_part - lag_duration, 0)
     # lag_duration = min(lag_duration, amc.runtime_per_part - runtime)
     start_time = amc.timespan.current_time
-    old_max_time = amc.timespan.original_end
-    # amc.max_max_time = max(amc.max_time, start_time + (runtime + lag_duration))
     for i in range(len(mobs)):
         # ``rf`` already delays every attribute row by its normalized spatial
         # position.  Starting each primitive at its own minimum position would
@@ -90,7 +88,14 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
             animation_manager=animation_manager_for(mobs),
         ):
             animation_func(mobs[i])
-    amc.timespan.original_end_time = max(
-        old_max_time, start_time + (runtime + lag_duration)
+    # The wave covers one lagged runtime from where it started, and the block
+    # containing it has to be at least that long. Written the way every other
+    # recorded animation extends its context -- against the span's current end,
+    # so a wave can only ever lengthen the block, never cut short what was
+    # recorded inside it. (This used to assign ``original_end_time``, which is
+    # not a field of TimelineSpan: the attribute stuck to the span object, no
+    # reader ever looked for it, and the extension simply did not happen.)
+    amc.timespan.original_end = max(
+        amc.timespan.original_end, start_time + (runtime + lag_duration)
     )
     amc.timespan.current_time = start_time + amc.lag_ratio * (runtime + lag_duration)

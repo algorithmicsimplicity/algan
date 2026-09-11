@@ -2580,13 +2580,77 @@ def _pack_lights(light_sources, num_frames, device):
     return light_pos, light_col, light_pos.shape[1]
 
 
+def _decode_background_colour(colour, decode, dim=-1):
+    """Put a callback's ``[0, 1]`` colour on the frame buffer's 0-255 scale.
+
+    Under the linear working space the colour channels are decoded and the
+    result stays in float; otherwise it lands on the byte grid, which is where
+    a display-referred buffer holds it. Glow and opacity are scaled but never
+    decoded: neither is a colour, and the transfer function does not apply to
+    a weight.
+    """
+    colour_channels = min(3, colour.shape[dim])
+    if not decode:
+        return (colour * 255).round_()
+    head = colour.narrow(dim, 0, colour_channels)
+    tail = colour.narrow(dim, colour_channels, colour.shape[dim] - colour_channels)
+    return torch.cat((srgb_to_linear(head), tail), dim) * 255
+
+
+def _fill_unsupplied_background_channels(out, filled, last, source_channels):
+    """Write the frame-buffer channels the background itself did not supply.
+
+    The buffer is ``[R, G, B, glow]`` plus alpha on a transparent render --
+    Algan's colour layout (:meth:`Color.add_defaults`) minus nothing. A
+    background narrower than that is missing *meaning*, not data, so each
+    unsupplied channel takes its own default rather than a copy of whatever
+    channel happened to come last.
+
+    Only a colour channel may be stood in for by the source's last one (a
+    one-channel greyscale background is that grey in R, G and B). Glow is not
+    colour: filling it from blue is what made a plain RGB background bloom,
+    every pixel of it, at the strength of its own blue. Nor is opacity, which
+    an RGB background does not carry at all and which defaults to opaque.
+
+    A source that reaches four channels *does* carry alpha -- that is what the
+    premultiply above reads out of it -- so its last channel still fills the
+    one channel it can be missing.
+
+    ``filled`` is how many channels were copied from the source, ``last`` the
+    source's final channel (already in the buffer's 0-255 scale), and
+    ``source_channels`` its width before the destination clipped it.
+    """
+    channels_out = out.shape[-1]
+    if channels_out <= filled:
+        return
+    if source_channels >= 4:
+        out[..., filled:].copy_(last)
+        return
+    colour_end = min(channels_out, 3)
+    if colour_end > filled:
+        out[..., filled:colour_end].copy_(last)
+    if channels_out > 3:
+        out[..., 3:4].zero_()
+    if channels_out > 4:
+        out[..., 4:].fill_(255)
+
+
 def _prefill_deferred_background(out, background, frame_offset):
     """Evaluate a callback directly into its target-device output.
 
-    The render arena already owns ``out``. Python callback frames are quantized
-    and copied one at a time, bounding their temporary memory to one frame. A
-    Taichi callback instead fills the complete batch in one kernel launch and
-    has no callback result tensor to retain.
+    The render arena already owns ``out``. Python callback frames are copied
+    one at a time, bounding their temporary memory to one frame. A Taichi
+    callback instead fills the complete batch in one kernel launch and has no
+    callback result tensor to retain.
+
+    A procedural background is authored display-referred, exactly like a colour
+    or an image, so under the linear working space it is decoded on the way in
+    and left in float: a callback is the one background that can draw a smooth
+    gradient, and quantizing it onto the byte grid *in linear light* is what
+    banded the darks (linear 0.033 -- an ordinary dark grey -- is byte 8, so
+    the bottom of every ramp collapsed onto a handful of values). The byte
+    destination is display-referred by construction: the tracer refuses the
+    linear space without the float HDR buffer, for that same reason.
     """
     requested_device = background.device
     device = out.device
@@ -2609,6 +2673,8 @@ def _prefill_deferred_background(out, background, frame_offset):
             "deferred background resolution does not match render output"
         )
 
+    decode = rt_settings.linear_color_space and out.dtype.is_floating_point
+
     if background.is_taichi_func:
         from algan.rendering.raytracing.background_taichi import (
             fill_background_from_func,
@@ -2626,6 +2692,7 @@ def _prefill_deferred_background(out, background, frame_offset):
             background.first_frame,
             frame_offset,
             background.frames_per_second,
+            decode,
         )
         return
 
@@ -2652,12 +2719,15 @@ def _prefill_deferred_background(out, background, frame_offset):
         frame = frame.to(device)
 
         if frame.dim() <= 1:
-            values = (frame.float().flatten()[:5] * 255).round_().clamp_(0, 255)
+            values = frame.float().flatten()[:5].clamp(0, 1)
+            values = _decode_background_colour(values, decode, dim=0)
             channels = min(values.shape[0], out.shape[-1])
-            out[local_frame : local_frame + k, :, :channels].copy_(values[:channels])
-            if out.shape[-1] > channels:
-                out[local_frame : local_frame + k, :, channels:].copy_(values[-1])
-            del frame, values, time
+            target = out[local_frame : local_frame + k]
+            target[:, :, :channels].copy_(values[:channels])
+            _fill_unsupplied_background_channels(
+                target, channels, values[-1], values.shape[0]
+            )
+            del frame, values, target, time
             continue
 
         channels = frame.shape[-1]
@@ -2667,22 +2737,27 @@ def _prefill_deferred_background(out, background, frame_offset):
                 "callable background must produce one value per supersampled "
                 "pixel or a resolution-free color"
             )
-        rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255).to(torch.uint8)
+        if decode:
+            # Decoded before the anti-alias average below, so the samples are
+            # box-filtered in linear light -- where they add up -- rather than
+            # through the transfer function.
+            rows = _decode_background_colour(rows.float().clamp(0, 1), True)
+        else:
+            rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255).to(torch.uint8)
 
         if output_pixels == base_pixels and aa > 1:
             image = rows.view(k, height, width, channels).float().permute(0, 3, 1, 2)
             rows = F.avg_pool2d(image, aa).permute(0, 2, 3, 1).reshape(-1, channels)
-            rows = (rows + 0.5).clamp_(0, 255).to(torch.uint8)
+            if not decode:
+                rows = (rows + 0.5).clamp_(0, 255).to(torch.uint8)
 
         copied_channels = min(rows.shape[-1], out.shape[-1])
-        out[local_frame : local_frame + k, :, :copied_channels].copy_(
-            rows[..., :copied_channels]
+        target = out[local_frame : local_frame + k]
+        target[:, :, :copied_channels].copy_(rows[..., :copied_channels])
+        _fill_unsupplied_background_channels(
+            target, copied_channels, rows[..., -1:], rows.shape[-1]
         )
-        if out.shape[-1] > copied_channels:
-            out[local_frame : local_frame + k, :, copied_channels:].copy_(
-                rows[..., -1:]
-            )
-        del frame, rows, time
+        del frame, rows, target, time
         if output_pixels == base_pixels and aa > 1:
             del image
 
@@ -2753,10 +2828,7 @@ def _prefill_background(out, background, frame_offset, device, background_frames
             vals = (vals * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
         out[..., :k].copy_(vals[:k])
-        if C_out > k:
-            # Alpha (and any missing channel) defaults to the background's
-            # last channel, matching opaque-by-default behavior.
-            out[..., k:].copy_(vals[-1])
+        _fill_unsupplied_background_channels(out, k, vals[-1], vals.shape[0])
     else:
         rows = bg.reshape(-1, bg.shape[-1])[1:]
         if background_frames:
@@ -2804,8 +2876,7 @@ def _prefill_background(out, background, frame_offset, device, background_frames
                 out[..., head_channels:k].copy_(rows[..., head_channels:k])
         else:
             out[..., :k].copy_(rows[..., :k])
-        if C_out > k:
-            out[..., k:].copy_(rows[..., -1:])
+        _fill_unsupplied_background_channels(out, k, rows[..., -1:], rows.shape[-1])
 
 
 def _downsample_background(background, aa, num_frames, screen_height, screen_width):

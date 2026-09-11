@@ -94,6 +94,13 @@ seconds; all three arrive as broadcastable torch tensors:
 
     Scene.save_video(background=sunset)
 
+The five channels are Algan's own colour layout, and a callable that returns
+fewer is widened the way a :class:`~algan.constants.color.Color` is: three
+channels are ``[R, G, B]`` with no glow, drawn against an opaque background, so
+``sunset`` above could return its first three rows alone. The colour channels
+are authored display-referred, exactly like a colour constant or an image, and
+are decoded into the renderer's working space on the way in.
+
 Because ``time`` is passed in, a procedural background can animate (e.g. a drifting
 gradient, a pulse, a scrolling pattern) even though the background itself is not
 on the animation timeline.
