@@ -401,6 +401,25 @@ def fine_write(records: ti.types.ndarray(), coarse_ids: ti.types.ndarray(),
                 dst += 1
 
 
+@ti.func
+def _tile_rect(candidates: ti.template(), i, width, height):
+    """This candidate's fine tile, and whether the candidate fills it.
+
+    Containment of the tile by the primitive's BBOX is necessary for
+    containment by the primitive, and the clipped box already encodes it: a
+    candidate that does not reach every pixel of its tile cannot certify
+    ``full``, so it need not pay the exact proof to find that out. On the nn
+    scene almost no triangle fills a 16x16 tile, and the proof was running
+    twice for every one of 47.6M candidates to reject them all.
+    """
+    x0 = candidates[i, 2] // FINE_TILE * FINE_TILE
+    y0 = candidates[i, 3] // FINE_TILE * FINE_TILE
+    x1, y1 = ti.min(x0 + FINE_TILE, width), ti.min(y0 + FINE_TILE, height)
+    fills = (candidates[i, 2] == x0 and candidates[i, 3] == y0
+             and candidates[i, 4] == x1 - 1 and candidates[i, 5] == y1 - 1)
+    return x0, y0, x1, y1, fills
+
+
 @ti.kernel
 def candidate_proofs(candidates: ti.types.ndarray(), intervals: ti.types.ndarray(),
                      flags: ti.types.ndarray(), screen: ti.types.ndarray(),
@@ -412,9 +431,7 @@ def candidate_proofs(candidates: ti.types.ndarray(), intervals: ti.types.ndarray
         intervals[i, 0], intervals[i, 1] = 0.0, float('inf')
         if candidates[i, 6] == 1:
             prim, f = candidates[i, 0], candidates[i, 1]
-            x0 = candidates[i, 2] // FINE_TILE * FINE_TILE
-            y0 = candidates[i, 3] // FINE_TILE * FINE_TILE
-            x1, y1 = ti.min(x0 + FINE_TILE, width), ti.min(y0 + FINE_TILE, height)
+            x0, y0, x1, y1, fills = _tile_rect(candidates, i, width, height)
             # The coverage kernel's filter reaches outside the geometric
             # footprint. Separation of the expanded tile encloses that reach,
             # including sample-less area donors and its distance-test margin.
@@ -423,12 +440,42 @@ def candidate_proofs(candidates: ti.types.ndarray(), intervals: ti.types.ndarray
             if outside:
                 flags[i] = 1  # geometric reject
             elif ti.static(cull):
-                full, _outside, near, far = _rect_proof(prim, f, ti.cast(x0, ti.f32), ti.cast(y0, ti.f32),
-                                                       ti.cast(x1, ti.f32), ti.cast(y1, ti.f32), screen, pos, camera)
-                intervals[i, 0], intervals[i, 1] = near, far
-                if full and near > min_hit_distance and candidates[i, 7] != 0:
-                    if opaque_proven[f - time_start, prim] != 0:
+                # Only a candidate that could BE an occluder proves here. Every
+                # other candidate's distance interval is needed solely to test
+                # it against an occluder, so it is deferred to
+                # ``candidate_near``, which runs on the tiles that turn out to
+                # have one.
+                if fills and candidates[i, 7] != 0 and opaque_proven[f - time_start, prim] != 0:
+                    full, _outside, near, far = _rect_proof(
+                        prim, f, ti.cast(x0, ti.f32), ti.cast(y0, ti.f32),
+                        ti.cast(x1, ti.f32), ti.cast(y1, ti.f32), screen, pos, camera)
+                    intervals[i, 0], intervals[i, 1] = near, far
+                    if full and near > min_hit_distance:
                         flags[i] = 2  # full-footprint, materially opaque
+
+
+@ti.kernel
+def candidate_near(candidates: ti.types.ndarray(), intervals: ti.types.ndarray(),
+                   flags: ti.types.ndarray(), bound: ti.types.ndarray(),
+                   screen: ti.types.ndarray(), pos: ti.types.ndarray(),
+                   camera: ti.types.ndarray(), n: int, width: int, height: int):
+    """Distance intervals for candidates that now have something to hide behind.
+
+    A tile with no certified occluder has an infinite bound, and nothing can be
+    proven strictly behind an infinite bound, so its candidates never needed an
+    interval at all. Splitting the pass this way is what keeps the second
+    ``_rect_proof`` off scenes that certify no occluder anywhere -- which is
+    every scene measured so far except the deliberate overdraw fixture.
+    """
+    for i in range(n):
+        if flags[i] == 0 and candidates[i, 6] == 1:
+            if _finite(bound[candidates[i, 8]]):
+                prim, f = candidates[i, 0], candidates[i, 1]
+                x0, y0, x1, y1, _fills = _tile_rect(candidates, i, width, height)
+                _full, _outside, near, far = _rect_proof(
+                    prim, f, ti.cast(x0, ti.f32), ti.cast(y0, ti.f32),
+                    ti.cast(x1, ti.f32), ti.cast(y1, ti.f32), screen, pos, camera)
+                intervals[i, 0], intervals[i, 1] = near, far
 
 
 @ti.kernel

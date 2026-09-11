@@ -188,6 +188,21 @@ def tiled_specs(
         int(allow_cull),
     )
     kernels.tile_occluders(fo, intervals, flags, bound, nf)
+    if allow_cull:
+        # Second phase of the occlusion proof: only tiles that ended up with a
+        # certified occluder need their other candidates' distance intervals.
+        kernels.candidate_near(
+            candidates,
+            intervals,
+            flags,
+            bound,
+            tri_screen,
+            merged["tri_pos"],
+            camera,
+            nfc,
+            width,
+            height,
+        )
     pc = torch.empty(nfc, dtype=torch.int64, device=device)
     counters = torch.zeros(2, dtype=torch.int32, device=device)
     # Row spans inside the tile, on the same terms as the reference frontend's
