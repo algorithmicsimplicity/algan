@@ -117,11 +117,33 @@ def consecutive_pair_ids(first, second, *, out=None, workspace=None):
 
 
 def class_groups(band, classes, base, *, out=None, workspace=None):
-    """The existing packed or MPS pair grouping, with an exact inverse output.
+    """Group the fragments by ``(band, shading class)``, with an exact inverse.
 
-    The inverse is fixed-size and allocated before scratch. Group labels have
-    dynamic size and ordinary ownership; callers may copy these smaller labels
-    into their result stage after this function has released sorting scratch.
+    ``compact_sheets`` subdivides each band by shading class with a composite
+    key, ``band * _SHADE_CLASS_BASE + cls``, and a ``unique`` over it
+    (``sheets.py`` §4.4). That is the arm below on CPU and CUDA, and it is one
+    sort where the other is two, so neither has a reason to pay for the other.
+
+    **Why the MPS arm exists.** The base is ``1 << 25``, so for a 1080p frame
+    with 40956 bands the composite reaches **2**40** -- past where MPS int64
+    stops being exact, and rows that differ only in their low bits merge.
+    Measured, and measured as the *only* thing left: with the split off, the
+    same Apple GPU compaction produced 40956 sheets, exactly the CPU's, and
+    with it on, 128. So that arm groups the pairs directly, sorting them
+    instead of multiplying them together, and never handles a value wider than
+    the larger of the two.
+
+    **The group order is the same either way.** ``unique(..., sorted=True)``
+    orders by the composite, and because ``base`` exceeds every class the
+    composite orders by ``(band, class)`` -- which is what the pair sort
+    produces, so the IDs match the wide-key ones exactly and every consumer
+    downstream is unaffected.
+
+    Returns what the ``unique`` returned: the group count, the per-fragment
+    group ID, and each group's band. The inverse is fixed-size and allocated
+    before scratch. Group labels have dynamic size and ordinary ownership;
+    callers may copy these smaller labels into their result stage after this
+    function has released sorting scratch.
     """
     validate_inverse(out, band, classes)
     device, n = band.device, band.numel()
@@ -143,7 +165,14 @@ def class_groups(band, classes, base, *, out=None, workspace=None):
     if n == 0:
         return 0, out, torch.empty((0,), dtype=band.dtype, device=device)
     with workspace.stage():
-        # Same exact narrowing and stable order as the established MPS arm.
+        # int32 copies, most significant key first. The narrowing costs a pass
+        # per key and saves four radix passes per key, and it is safe in the
+        # strongest sense (the argument ``sheets._narrow_sort_key`` spells
+        # out): an exact int32 copy of an int64 key has the same order and the
+        # same indices, so the stable permutation is identical. Both bounds are
+        # known without asking the device -- a band ID is an index into a
+        # stream that cannot approach 2**31, and a class is documented as
+        # ``[0, _SHADE_CLASS_BASE)`` with the base at 2**25.
         order = workspace.tensor((n,), torch.int64)
         stable_lexsort(
             workspace.copy(band, torch.int32),
@@ -158,8 +187,28 @@ def class_groups(band, classes, base, *, out=None, workspace=None):
             bands, cls, out=group_sorted, workspace=workspace
         )
         out.scatter_(0, order, group_sorted)
-    # Every duplicate index writes the identical integer band, as in the
-    # existing MPS implementation. No boolean compaction/readback is needed.
+    # Each group's band, written by a scatter rather than gathered through
+    # ``band[starts]``. The two agree exactly -- every fragment of a group
+    # carries the group's band, so the duplicates a scatter resolves in
+    # whatever order all write one value -- and the difference is what the
+    # boolean index costs on MPS: it is a ``nonzero`` (a count readback and a
+    # compaction pass) followed by a gather, where this is one scatter beside a
+    # scalar readback the caller needs anyway. Measured on the Mac runner's UHD
+    # profile as 17 gathers over 2.5M fragments at 0.15 s each, the largest
+    # single torch op left in the compaction after the fences moved.
+    #
+    # ``torch.empty``, never ``band.new_empty``: the fragment stream reaches
+    # here as a :class:`~algan.constants.color.Color`-subclassed tensor (torch
+    # propagates a Tensor subclass through every op that touched one, and the
+    # band IDs descend from one that did), and ``Color`` overrides
+    # ``new_empty`` to return an opaque black ``[R, G, B, glow, opacity]``
+    # row -- five float32 values, whatever size was asked for -- so the
+    # destination was neither the right dtype nor the right length. The dtype
+    # is what the scatter complained about (``scatter(): Expected self.dtype
+    # to be equal to src.dtype``, which is how it took down the MPS arm); the
+    # length would have been next. So the allocation names its dtype and
+    # device rather than inheriting them through a method a subclass may have
+    # redefined.
     labels = torch.empty((count,), dtype=band.dtype, device=device)
     labels.scatter_(0, out, band)
     return count, out, labels

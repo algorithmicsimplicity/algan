@@ -451,11 +451,14 @@ def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
 def band_class_groups(band_of_frag, cls_eff, base):
     """Group ``(band, shading class)`` pairs without a wide key on MPS.
 
-    The destination-aware implementation lives with sheet grouping. Keep this
+    The destination-aware implementation, and the reasoning this arm exists for
+    at all -- the composite key reaching 2**40 past MPS int64 exactness, the
+    40956-to-128 sheet collapse that measured it, and why the group IDs still
+    match the wide-key ones -- are in
+    :func:`~algan.rendering.raytracing.sheet_grouping.class_groups`. Keep this
     spelling for compatibility callers; it returns ordinary-owned results.
     Classes must be in ``[0, base)``, and band/class values fit signed int32 on
-    the MPS path. Pair ordering is identical to sorted packed-key grouping on
-    CPU/CUDA without relying on wide MPS integer arithmetic.
+    the MPS path.
     """
     from algan.rendering.raytracing.sheet_grouping import class_groups
 

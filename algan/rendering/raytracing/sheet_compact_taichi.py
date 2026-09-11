@@ -230,8 +230,12 @@ def sheet_conflict_rank(
     ``band_start``, so the thread whose own flag is set walks its band forward
     once with the eight per-lane counters in registers; each counter is read
     before the fragment's own increment (the exclusive prefix), and no lane's
-    counter is touched by any other band's walk. The caller owns the
-    ``max=15`` clamp; this returns the raw counts.
+    counter is touched by any other band's walk. There is no clamp on either
+    side any more: a rank is below its band's fragment count and the counters
+    are int32, so every one of them is representable, and the caller groups
+    them with a count-bounded radix rather than reserving four key bits
+    (``sheet_grouping.rank_key_base``). The former 16-layer ceiling, and the
+    ``sheet_layers`` truncation it recorded, are gone.
 
     Row 0 always starts a band, whether or not its flag is set -- the torch
     arm's cummax gives any leading run of clear flags band-first 0, which is
