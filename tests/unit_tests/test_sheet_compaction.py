@@ -1214,3 +1214,52 @@ def test_an_implausible_frame_table_warns_once_and_still_returns():
     finally:
         sh._IMPLAUSIBLE_REPORTED.discard("probe-site")
         sh._IMPLAUSIBLE_REPORTED.discard("other-site")
+
+
+@pytest.mark.parametrize("stats_kernel", [False, True])
+@pytest.mark.parametrize(
+    ("shade_split", "sample_depth"), [(False, False), (True, False), (True, True)]
+)
+def test_production_compaction_skips_diagnostics_without_changing_records(
+    monkeypatch, stats_kernel, shade_split, sample_depth
+):
+    from algan import SETTINGS
+    from algan.rendering.raytracing import sheets
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    coverage, merged, cam, pws = _coverage(
+        [
+            (0, 1.0, 0, 0.4, 15),
+            (0, 1.0001, 1, 0.6, 240),
+            (0, 2.0, 4, 1.0, MASK_ALL | MAT_OPAQUE),
+            (3, 1.0, -1, 0.7, MASK_ALL),
+        ],
+        tri_norm=torch.tensor([[[0.0, 0.0, 1.0] * 3] * 8]),
+    )
+    options = {
+        "time_start": 0,
+        "width": 4,
+        "height": 4,
+        "shade_split": shade_split,
+        "sample_depth": sample_depth,
+    }
+    with SETTINGS.raytracing.experimental.override(
+        sheet_band_stats_kernel=stats_kernel
+    ):
+        expected = compact_sheets(coverage, merged, cam, pws, **options)
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("production evaluated sheet diagnostics")
+
+        monkeypatch.setattr(sheets, "_sheet_group_counts", unexpected)
+        actual = compact_sheets(
+            coverage, merged, cam, pws, diagnostics=False, **options
+        )
+    diagnostic_keys = {"sheet_nfrag", "sheet_fused", "num_groups", "num_split_groups"}
+    assert set(actual) == set(expected) - diagnostic_keys
+    for name, value in actual.items():
+        if torch.is_tensor(value):
+            assert torch.equal(value, expected[name]), name
+        else:
+            assert value == expected[name], name

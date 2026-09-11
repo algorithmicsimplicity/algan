@@ -72,6 +72,7 @@ from algan.rendering.mps_compat import (
     band_class_groups,
     clamp_floor,
     cummax_values,
+    gather_exact,
     gather_packed_key,
     index_copy_rows,
     kernel_index,
@@ -1520,6 +1521,7 @@ def compact_sheets(
     shade_split=False,
     positioned_depth=True,
     sample_depth=False,
+    diagnostics=True,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -1528,6 +1530,11 @@ def compact_sheets(
     per-pixel CSR), ``merged`` the batch's merged scene, ``cam_origin`` /
     ``pixel_world_scale`` the per-frame camera rows the band rule's relative
     scale reads.
+
+    ``diagnostics`` defaults to True for inspection/parity callers. False
+    omits ``sheet_nfrag``, ``sheet_fused``, ``num_groups`` and
+    ``num_split_groups`` and skips their separable work. Rendering uses False;
+    truncation/correctness checks are always performed.
 
     ``shade_split`` (``sheet_shade_split``) adds a SHADING CLASS to the
     triangle group key, so a sheet never spans a hard shading discontinuity.
@@ -1633,6 +1640,8 @@ def compact_sheets(
         tensors (evaluated only when read), so the render path never pays
         their device syncs.
     """
+    # Diagnostic keys are omitted when diagnostics=False; correctness and
+    # truncation checks remain unconditional.
     if band_rule not in BAND_RULES:
         raise ValueError(f"unknown band rule {band_rule!r}; one of {BAND_RULES}")
     n = int(coverage["num_fragments"])
@@ -2233,20 +2242,22 @@ def compact_sheets(
         rep_orig = rep_orig.to(torch.int64)
         del cand_pos
 
-        nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
-        nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
+        if diagnostics:
+            nfrag = torch.zeros(nb, dtype=torch.int64, device=device)
+            nfrag.scatter_add_(0, band_id, torch.ones_like(band_id))
     # Split-group accounting (diagnostic): groups are triangle-only. Kept
     # device-side end to end -- the group tables are over-allocated to ``nb``
     # (group ids are < the true group count <= nb) and the two counters stay
     # 0-d tensors, evaluated only when something reads them -- because this
     # block used to cost three device syncs per compaction for numbers
     # nothing on the render path consumes.
-    metadata_ids = band_id if sheet_metadata_kernel else None
+    if diagnostics:
+        metadata_ids = band_id if sheet_metadata_kernel else None
+        num_tri_groups, num_split_groups = _sheet_group_counts(
+            new_group, metadata_ids, order, is_tri, first_sorted, nb
+        )
+        del metadata_ids
     del band_id
-    num_tri_groups, num_split_groups = _sheet_group_counts(
-        new_group, metadata_ids, order, is_tri, first_sorted, nb
-    )
-    del metadata_ids
     del new_group
     # Last read of the sorted stream: from here the function works only in
     # per-sheet arrays, so the per-fragment ones go now rather than at the
@@ -2292,11 +2303,10 @@ def compact_sheets(
             band_corr,
         )
 
-    # Two gathers of the PACKED key, so both take the split form under
-    # MPS-friendly mode (``gather_packed_key``): a full-width int64 gather on
-    # MPS keeps only ~25 significant bits, which would leave every sheet
-    # carrying the same depth.
-    sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
+    # Compose indices before gathering the packed payload, using the exact
+    # MPS integer paths for both. Ordinary MPS integer gathers can round the
+    # index or packed depth bits; no payload-sized key intermediate is needed.
+    sheet_key = gather_packed_key(frag_key, gather_exact(nearest_orig, final))
     sheet_pix = sheet_pix.index_select(0, final)
     rep_final = rep_orig.index_select(0, final)
 
@@ -2387,14 +2397,18 @@ def compact_sheets(
         "sheet_wgt": sheet_wgt,
         "sheet_wmsk": sheet_wmsk,
         "sheet_cap": frag_cap.index_select(0, rep_final),
-        "sheet_nfrag": nfrag.index_select(0, final),
-        "sheet_fused": fused.index_select(0, final),
         "num_sheets": nb,
-        "num_groups": num_tri_groups,
-        "num_split_groups": num_split_groups,
         "band_rule": band_rule,
         "band_c": float(band_c),
     }
+
+    if diagnostics:
+        out.update(
+            sheet_nfrag=nfrag.index_select(0, final),
+            sheet_fused=fused.index_select(0, final),
+            num_groups=num_tri_groups,
+            num_split_groups=num_split_groups,
+        )
 
     # CSR aligned with covered_idx: every covered pixel holds at least one
     # fragment, hence at least one sheet, so the two pixel sets coincide.

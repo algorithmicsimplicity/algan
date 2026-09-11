@@ -41,7 +41,7 @@ import torch
 
 from algan.environment import env_float
 from algan.rendering import fragment_capture
-from algan.rendering.mps_compat import clamp_floor, index_copy_rows
+from algan.rendering.mps_compat import clamp_floor
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -114,6 +114,10 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_composite,
     gloss_pyramid_level,
     gloss_scatter,
+)
+from algan.rendering.raytracing.shadow_queue import (
+    _gather_shadow_payload,
+    _scatter_shadow_visibility,
 )
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -579,6 +583,23 @@ def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
         return max(1, attempt_primary // 2)
     scaled = int(attempt_primary * pool * pool_retry_safety / slots_wanted)
     return max(1, min(scaled, attempt_primary - 1))
+
+
+def _shrink_sparse_memory_retry(attempt_primary, shared_pool_capacity, pool_ratio):
+    """Reduce both primary work and its pool after an arena allocation failure.
+
+    Overflow retries intentionally keep the pool so fewer primaries inherit
+    its spare slots. Memory retries cannot: that pool may be the allocation
+    preventing even one primary's scratch from fitting. Both the primary
+    resolve and secondary drain use this rule, after their one-pixel guard.
+    """
+    primary = max(1, int(attempt_primary) // 2)
+    if pool_ratio > 1:
+        shared_pool_capacity = max(primary, int(shared_pool_capacity) // 2)
+        pool = shared_pool_capacity
+    else:
+        pool = primary
+    return primary, shared_pool_capacity, pool
 
 
 def analytic_raster_route_active(
@@ -2806,13 +2827,25 @@ def raytrace_render_wavefront(
             )
 
             eps_self, eps_near = float(min_hit_distance), 0.0
+        payload = _gather_shadow_payload(
+            memory,
+            acc_idx,
+            ev_pos,
+            ev_snrm,
+            ev_fnrm,
+            ev_frame,
+            ev_msk,
+            ev_dp,
+            ev_toff,
+            with_terminator=term_mode == 1,
+        )
         raster_shadow_trace(
             num_events,
-            ev_pos.index_select(0, acc_idx),
-            ev_snrm.index_select(0, acc_idx),
-            ev_fnrm.index_select(0, acc_idx),
-            ev_frame.index_select(0, acc_idx),
-            ev_msk.index_select(0, acc_idx),
+            payload.position,
+            payload.smooth_normal,
+            payload.face_normal,
+            payload.frame,
+            payload.mask,
             t_bvh.blocks,
             t_bvh.node_miss,
             t_bvh.leaf_prim,
@@ -2843,8 +2876,8 @@ def raytrace_render_wavefront(
             1 if bvh_refit else 0,
             int(has_tri),
             int(has_bez),
-            ev_dp,
-            ev_toff.index_select(0, acc_idx) if term_mode == 1 else ev_toff,
+            payload.footprint,
+            payload.terminator,
             sec_aa,
             shadow_vis,
             int(shadow_flag),
@@ -2856,11 +2889,7 @@ def raytrace_render_wavefront(
             term_mode,
             1 if rt_settings.shadow_adaptive_taps else 0,
         )
-        filled = torch.ones(
-            (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device
-        )
-        filled[:, : 3 * int(num_lights)] = shadow_vis.view(num_events, -1)
-        index_copy_rows(vis_tab, acc_idx, filled)
+        _scatter_shadow_visibility(vis_tab, acc_idx, shadow_vis)
         return vis_tab
 
     def _drain_sparse_secondary(
@@ -3083,6 +3112,7 @@ def raytrace_render_wavefront(
             clear_persist=True,
             persist_floor=lambda: merged.get(ARENA_RETAINED_REVERSE_POINTER),
         ):
+            capture_fragments = fragment_capture.is_armed()
             coverage = prepare_sparse_raster_coverage(
                 merged,
                 tri_screen,
@@ -3103,12 +3133,13 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 layer_offset_triangles,
                 env_in_composite=env_active,
+                retain_fragments=capture_fragments,
             )
             # The GUI viewer's per-pixel inspector, when one is waiting for this
             # chunk. Off, it is a module-global read; on, it copies the coverage
             # record to the host, which has to happen HERE -- the arrays are
             # arena tensors and the enclosing ``memory.temp`` reclaims them.
-            if fragment_capture.is_armed():
+            if capture_fragments:
                 fragment_capture.capture(coverage, merged, time_start, width, height)
             t_val_sparse = _get_tonemap_t_val()
             # Display-referred coverage resolve (settings.aa_display_resolve).
@@ -3360,29 +3391,14 @@ def raytrace_render_wavefront(
                                 "covered pixel. Lower the resolution or "
                                 "transparency complexity."
                             ) from exc
-                        next_primary = max(1, attempt_primary // 2)
+                        next_primary, shared_pool_capacity, pool = (
+                            _shrink_sparse_memory_retry(
+                                attempt_primary, shared_pool_capacity, pool_ratio
+                            )
+                        )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
-                        # A splitting batch holds the pool fixed across the
-                        # OVERFLOW retry on purpose (the shrunken tile inherits
-                        # the spare slots), but the pool is also the tile's
-                        # dominant allocation -- so halving only the primaries
-                        # after a MEMORY failure re-attempts a state block of
-                        # very nearly the same size, fails identically, and
-                        # rides all the way down to the one-pixel diagnostic
-                        # without ever having freed anything. Halve the pool
-                        # with it, keeping the primaries' own slots (the shared
-                        # allocator starts at ``attempt_primary``); an
-                        # under-sized pool overflows, and the overflow retry
-                        # above is exact and terminating.
-                        if pool_ratio > 1:
-                            shared_pool_capacity = max(
-                                next_primary, shared_pool_capacity // 2
-                            )
-                            pool = shared_pool_capacity
-                        else:
-                            pool = attempt_primary
                         continue
 
                     # The resolve's own overflow, checked before the bounce
@@ -3440,7 +3456,11 @@ def raytrace_render_wavefront(
                                 "one covered pixel. Lower the resolution or "
                                 "transparency complexity."
                             ) from exc
-                        next_primary = max(1, attempt_primary // 2)
+                        next_primary, shared_pool_capacity, pool = (
+                            _shrink_sparse_memory_retry(
+                                attempt_primary, shared_pool_capacity, pool_ratio
+                            )
+                        )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary

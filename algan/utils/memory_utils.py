@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ctypes
 import gc
+import operator
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -1073,109 +1074,67 @@ class ManualMemory:
 
     def clone(self, x, **kwargs):
         new_x = self.get_tensor(x.shape, x.dtype, **kwargs)
-        new_x[:] = x
+        new_x.copy_(x)
         return new_x
 
     def cast(self, x, dtype, **kwargs):
         new_x = self.get_tensor(x.shape, dtype=dtype, **kwargs)
-        new_x[:] = x
+        new_x.copy_(x)
         return new_x
 
     def get_tensor(self, shape, dtype=torch.float, persist=False):
+        # Validate the entire shape before touching either allocation pointer.
+        # operator.index accepts integer scalars (including tensor dimensions),
+        # but does not silently truncate a float dimension.
+        shape = tuple(operator.index(extent) for extent in shape)
+        if any(extent < 0 for extent in shape):
+            raise ValueError(f"arena tensor dimensions must be nonnegative: {shape}")
         if not self.managed:
             return torch.empty(shape, dtype=dtype, device=self.data.device)
-        reverse = persist
 
-        def get_shape(shape):
-            shape = [int(_.item()) if hasattr(_, "item") else int(_) for _ in shape]
-            # Scalars have no last dimension to widen into bytes. Represent
-            # them as one element; callers still receive a scalar view below.
-            scalar = not shape
-            if scalar:
-                shape = [1]
-            element_size = dtype.itemsize
-            byte_shape = list(shape)
-            byte_shape[-1] *= element_size
-            return shape, byte_shape, element_size, scalar
-
-        logical_shape, byte_shape, num_bytes, scalar = get_shape(shape)
-
-        pointer = self.current_pointer if not reverse else self.current_reverse_pointer
-
-        def get_bap():
-            remainder = pointer % num_bytes
-            if not reverse:
-                byte_align_offset = (num_bytes - remainder) if (remainder > 0) else 0
-            else:
-                byte_align_offset = -remainder
-            return byte_align_offset
-
-        byte_align_offset = get_bap()
-
-        def get_numel():
-            # return np.prod(shape) +  byte_align_offset
-            nu = byte_shape[0]
-            for x in byte_shape[1:]:
-                nu = nu * x
-            if reverse:
-                nu = nu * -1
-            return nu
-
-        numel = get_numel()
-        pointer = pointer + byte_align_offset
-        new_pointer = pointer + numel
-
-        def error_check():
-            if (
-                (new_pointer < self.current_pointer)
-                if reverse
-                else (new_pointer > self.current_reverse_pointer)
-            ):
+        numel = 1
+        for extent in shape:
+            numel *= extent
+        itemsize = dtype.itemsize
+        payload_bytes = numel * itemsize
+        if persist:
+            end = self.current_reverse_pointer
+            end -= end % itemsize
+            start = end - payload_bytes
+            if start < self.current_pointer:
+                raise InsufficientMemoryException
+        else:
+            start = self.current_pointer
+            start += (-start) % itemsize
+            end = start + payload_bytes
+            if end > self.current_reverse_pointer:
                 raise InsufficientMemoryException
 
-        error_check()
-
-        def get_x():
-            if reverse:
-                x = self.data[new_pointer:pointer]
-            else:
-                x = self.data[pointer:new_pointer]
-            return x
-
-        def get_data():
-            x = get_x()
-            if self._poison >= 0:
-                x.fill_(self._poison)
-            if reverse:
-                self.current_reverse_pointer = new_pointer
-            else:
-                self.current_pointer = new_pointer
-            # old_max = self.max_pointer
-            self.max_pointer = max(
-                self.max_pointer,
-                self.current_pointer + (self.length - self.current_reverse_pointer),
+        # Construct the typed view (including scalar and empty shapes) before
+        # committing state. A failing dtype/view or poison fill must leave the
+        # pointers, high-water mark and allocation recorder untouched.
+        raw = self.data[start:end]
+        out = raw.view(dtype).view(shape)
+        if self._poison >= 0:
+            raw.fill_(self._poison)
+        if persist:
+            self.current_reverse_pointer = start
+        else:
+            self.current_pointer = end
+        self.max_pointer = max(
+            self.max_pointer,
+            self.current_pointer + self.length - self.current_reverse_pointer,
+        )
+        if self._recorder is not None:
+            self._recorder.note_alloc(
+                dtype,
+                persist,
+                numel,
+                itemsize,
+                self.current_pointer,
+                self.current_reverse_pointer,
             )
-            # if self.max_pointer > old_max:
-            #    LoggerManager.instance().log_message(f'Reached {self.max_pointer} bytes, {self.max_pointer / len(self)}%')
-            recorder = self._recorder
-            if recorder is not None:
-                numel = 1
-                for extent in logical_shape:
-                    numel *= extent
-                recorder.note_alloc(
-                    dtype,
-                    reverse,
-                    numel,
-                    num_bytes,
-                    self.current_pointer,
-                    self.current_reverse_pointer,
-                )
-            x = x.view(byte_shape).view(dtype).view(logical_shape)
-            if scalar:
-                x = x.view(())
-            return x
-
-        return get_data()
+        return out
 
     def reset(self):
         self.current_pointer = 0
