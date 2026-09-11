@@ -76,7 +76,11 @@ compiler arch and counts these mutually exclusive completed-call outcomes:
 - `quadrants_cache`: an actual successful
   `LaunchContextBufferCache.populate_launch_ctx_from_cache` return on the
   original path; eligibility alone is never counted as a hit.
-- `cold`: an original call that successfully recorded a new Algan plan.
+- `cold`: an original call that successfully recorded a new Algan plan. One
+  call can both record a plan and hit the compiler's context cache -- arguments
+  launched on the original path first (an off arm, a fallback) leave that cache
+  warm for them -- and it is counted `cold`, because a run that re-records plans
+  is the thing this accounting exists to expose.
 - `fallback`: another original call without a context-cache hit. `reasons`
   identifies disabled dispatch, unsupported arguments, failed plan recording,
   and other deliberate fallback conditions.

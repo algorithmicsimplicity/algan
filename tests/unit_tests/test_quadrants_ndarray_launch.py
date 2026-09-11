@@ -270,6 +270,37 @@ def test_telemetry_observes_actual_cache_hits_and_all_fallbacks(kernels):
     assert not fast.launch_report()["kernels"]
 
 
+def test_a_recorded_cold_plan_outranks_a_concurrent_original_cache_hit(kernels):
+    """A cold plan stays "cold" when the compiler's own context cache hits.
+
+    The same arguments launched on the original path first (a disabled arm, a
+    fallback) leave the compiler's context cache warm for them, so the first
+    fast attempt both records a plan and observes a real cache hit. Reporting
+    the hit would hide the plan: ``cold == 0`` is what the scene probe checks
+    to rule out a kernel that re-records a plan on every frame.
+    """
+    grid = kernels[4]
+    nd = array(np.zeros((2, 2)))
+    fast.set_telemetry_enabled(True)
+    fast.set_enabled(False)
+    grid(nd)  # original path, cache cold: fills it for these argument objects
+    grid(nd)  # a real context-cache hit, so the next one gets one too
+    fast.set_enabled(True)
+    grid(nd)  # records a plan AND hits that context cache
+    assert len(plans(grid)) == 1
+    report = fast.launch_report(reset=True)
+    assert report["totals"] == {
+        "fast": 0,
+        "quadrants_cache": 1,
+        "cold": 1,
+        "fallback": 1,
+        "error": 0,
+    }
+    grid(nd)
+    assert fast.launch_report()["totals"]["fast"] == 1
+    np.testing.assert_array_equal(nd.to_numpy(), [[0, 1], [10, 11]])
+
+
 def test_parallel_warm_launches_have_independent_contexts(kernels):
     rank = kernels[3]
     arrays = [array(np.zeros(16)) for _ in range(4)]

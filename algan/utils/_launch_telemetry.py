@@ -89,7 +89,16 @@ def original(kernel, reason):
     finally:
         stack.pop()
         outcome = event["outcome"]
-        if outcome != "error" and event["cache_hit"]:
+        # Only the unclassified original call is reclassified by the cache
+        # observation. A call the dispatcher already resolved -- "cold", it
+        # recorded a plan; "error", it raised -- keeps that outcome even when
+        # the compiler's own context cache happened to hit on the same call,
+        # which it does whenever these argument objects were launched before
+        # (an off arm, or a fallback, ahead of the first fast attempt). Letting
+        # the hit win there hid every cold plan behind "quadrants_cache", and
+        # `cold == 0` is exactly what the scene probe checks to rule out a
+        # kernel that re-records a plan on every frame.
+        if outcome == "fallback" and event["cache_hit"]:
             outcome = "quadrants_cache"
         _record(
             identity,
