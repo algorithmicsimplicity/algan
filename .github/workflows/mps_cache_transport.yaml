@@ -13,7 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip download --no-deps --only-binary=:all: ruff==0.12.4 -d wheels
+      - run: |
+          python -m pip download --no-deps --only-binary=:all: ruff==0.12.4 -d wheels
       - uses: actions/upload-artifact@v4
         with:
           name: mps-cache-dev-tools
