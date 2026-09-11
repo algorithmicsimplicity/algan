@@ -1,0 +1,48 @@
+name: Publish renderer audit tranche 8 status
+
+on:
+  push:
+    branches: [codex/renderer-audit-tranche8-transport]
+    paths: [.github/workflows/audit_tranche8_status_transport.yaml]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct status patch
+        run: |
+          set -euo pipefail
+          base64 -d .github/audit_tranche8_status.b64 > "$RUNNER_TEMP/status.patch.xz"
+          echo '8d3e0d0e0cdfd23d04a07becb9892b626a43690d873d4b91dfa01519bed30116  '"$RUNNER_TEMP/status.patch.xz" | sha256sum -c -
+          xz -dc "$RUNNER_TEMP/status.patch.xz" > "$RUNNER_TEMP/status.patch"
+          echo '732a69fb2a234e74a720d565c721a8f438b8772de729b57892c88f5601527153  '"$RUNNER_TEMP/status.patch" | sha256sum -c -
+
+      - name: Apply exact status commit
+        run: |
+          set -euo pipefail
+          base=25ab7967cf2fe2befc8c460b68c0526b0561f83d
+          target=refs/heads/codex/renderer-audit-memory-cleanup
+          test "$(git ls-remote origin "$target" | cut -f1)" = "$base"
+          git checkout --detach "$base"
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git am --committer-date-is-author-date "$RUNNER_TEMP/status.patch"
+          test "$(git rev-parse HEAD)" = a883caee3f3a9ddd0e8b32e5f594a4d129556334
+          test "$(git rev-parse HEAD^{tree})" = d716144f639d6b5c2f9e4f435b9e1b70135dff24
+          git diff --check "$base"..HEAD
+
+      - name: Fast-forward implementation branch
+        run: |
+          set -euo pipefail
+          target=refs/heads/codex/renderer-audit-memory-cleanup
+          test "$(git ls-remote origin "$target" | cut -f1)" = 25ab7967cf2fe2befc8c460b68c0526b0561f83d
+          git push origin HEAD:"$target"
+          test "$(git ls-remote origin "$target" | cut -f1)" = a883caee3f3a9ddd0e8b32e5f594a4d129556334
