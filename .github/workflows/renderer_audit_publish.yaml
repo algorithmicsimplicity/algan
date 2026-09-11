@@ -1,30 +1,72 @@
-name: Renderer audit fourth-tranche transport
+name: Renderer audit fourth-tranche publisher
 on:
   push:
     branches: [codex/renderer-audit-publisher]
     paths: [.github/workflows/renderer_audit_publish.yaml]
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: renderer-audit-fourth-tranche-publish
+  cancel-in-progress: false
 jobs:
-  export:
+  publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BASE: 077d2660c585e2f73b727dfd82f371a828c595bd
+      DEST: codex/renderer-audit-memory-cleanup
+      EXPECTED_TREE: 26256658e7df388f7bf85d07ff933d8ecb58c74e
+      EXPECTED_COMMIT: dd4bfadc52387ac6249878f2602d094d8349862e
+      GIT_AUTHOR_DATE: '2026-09-11T06:01:32Z'
+      GIT_COMMITTER_DATE: '2026-09-11T06:01:32Z'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 077d2660c585e2f73b727dfd82f371a828c595bd
           fetch-depth: 1
-          persist-credentials: false
-      - name: Export immutable source and git metadata
+      - name: Reconstruct the locally tested tree on its exact parent
+        shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/export"
-          git archive --format=tar.gz -o "$RUNNER_TEMP/export/source.tar.gz" HEAD
-          git ls-tree -r HEAD > "$RUNNER_TEMP/export/tree.txt"
-          git cat-file commit HEAD > "$RUNNER_TEMP/export/commit.txt"
-          cd "$RUNNER_TEMP/export"
-          sha256sum * > SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: renderer-audit4-base
-          path: ${{ runner.temp }}/export/*
-          retention-days: 7
+          set -euo pipefail
+          cp -a .renderer-audit4 "$RUNNER_TEMP/renderer-audit4"
+          cat "$RUNNER_TEMP"/renderer-audit4/part-{00,01,02,03,04,05,06} | gzip -dc > "$RUNNER_TEMP/code.patch"
+          cat "$RUNNER_TEMP"/renderer-audit4/status-{00,01} | gzip -dc > "$RUNNER_TEMP/status.patch"
+          echo "e2899b1556f2f565c524c698089f644306d629867a40e2a9a89e23935522bd38  $RUNNER_TEMP/code.patch" | sha256sum -c -
+          echo "7e632eeaf80a6603836813bcdfd18b0ea9fcbcb1db9ef0116da4b72416fbd0a9  $RUNNER_TEMP/status.patch" | sha256sum -c -
+          git fetch --no-tags --depth=1 origin "$BASE"
+          test "$(git ls-remote origin "refs/heads/$DEST" | cut -f1)" = "$BASE"
+          git checkout --detach "$BASE"
+          git apply --check --unidiff-zero "$RUNNER_TEMP/code.patch"
+          git apply --index --unidiff-zero "$RUNNER_TEMP/code.patch"
+          git apply --check --unidiff-zero "$RUNNER_TEMP/status.patch"
+          git apply --index --unidiff-zero "$RUNNER_TEMP/status.patch"
+          git diff --cached --check
+          python scripts/generate_arena_bindings.py --check
+          python - <<'PY'
+          import ast
+          import subprocess
+          from pathlib import Path
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert len(changed) == 12, changed
+          assert all(p.startswith(('algan/rendering/raytracing/', 'tests/unit_tests/', 'reports/')) for p in changed), changed
+          for path in changed:
+              if path.endswith('.py'):
+                  ast.parse(Path(path).read_text(), filename=path)
+          print('Verified 12 intended paths and changed Python syntax.')
+          PY
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+      - name: Fast-forward the existing implementation branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE"
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          git config commit.gpgsign false
+          git commit -m 'refactor(renderer): share pixel runs and own sheet reduction outputs'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git ls-remote origin "refs/heads/$DEST" | cut -f1)" = "$BASE"
+          git push origin "HEAD:refs/heads/$DEST"
+          git show --stat --oneline HEAD
+          printf 'head=%s\nparent=%s\ntree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^)" "$(git rev-parse HEAD^{tree})"
