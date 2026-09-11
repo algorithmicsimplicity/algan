@@ -5,6 +5,42 @@ from __future__ import annotations
 import torch
 
 
+def require_disjoint_output(output: torch.Tensor, *inputs: torch.Tensor):
+    """Reject overlapping byte ranges without reading device values.
+
+    Strided inputs use their bounding interval, conservatively rejecting an
+    output in a stride gap. Disjoint views of the same arena remain valid.
+    This helper checks overlap only; callers validate output shape and dtype.
+    """
+    if not output.numel():
+        return
+    out_start = output.data_ptr()
+    out_end = (
+        out_start
+        + (
+            1
+            + sum((n - 1) * stride for n, stride in zip(output.shape, output.stride()))
+        )
+        * output.element_size()
+    )
+    for source in inputs:
+        if not source.numel() or source.device != output.device:
+            continue
+        start = source.data_ptr()
+        end = (
+            start
+            + (
+                1
+                + sum(
+                    (n - 1) * stride for n, stride in zip(source.shape, source.stride())
+                )
+            )
+            * source.element_size()
+        )
+        if start < out_end and out_start < end:
+            raise ValueError("input and output must not overlap")
+
+
 def csr_offsets(counts: torch.Tensor, *, out: torch.Tensor | None = None):
     """Build integer CSR offsets including the terminal total.
 
@@ -33,13 +69,7 @@ def csr_offsets(counts: torch.Tensor, *, out: torch.Tensor | None = None):
         raise ValueError(
             "CSR output must be a contiguous integer vector of length n + 1 on the counts device"
         )
-    if n:
-        input_end = (
-            counts.data_ptr() + ((n - 1) * counts.stride(0) + 1) * counts.element_size()
-        )
-        output_end = out.data_ptr() + out.numel() * out.element_size()
-        if counts.data_ptr() < output_end and out.data_ptr() < input_end:
-            raise ValueError("CSR input and output must not overlap")
+    require_disjoint_output(out, counts)
     out[0] = 0
     torch.cumsum(counts, dim=0, dtype=out.dtype, out=out[1:])
     return out

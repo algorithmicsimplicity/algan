@@ -39,7 +39,11 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.scene_bounds import triangle_scene_bounds
 from algan.rendering.raytracing.shading_taichi import shadow_vis_slots
-from algan.rendering.raytracing.shadow_queue import _gather_shadow_payload
+from algan.rendering.raytracing.shadow_queue import (
+    ShadowTraceContext,
+    _gather_shadow_payload,
+)
+from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
 from algan.settings import SETTINGS
 from algan.utils.memory_utils import InsufficientMemoryException
 from algan.utils.torch_compile import compiled
@@ -68,7 +72,6 @@ from algan.rendering.raytracing.raster_taichi import (
     raster_bez_count,
     raster_bez_write,
     raster_chunk,
-    raster_shadow_trace,
     raster_tri_count,
     raster_tri_write,
 )
@@ -373,7 +376,7 @@ def _class_pairs(mask, x0, x1, y0, y1, f, device):
     rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
     if rep.numel() == 0:
         return None
-    base = torch.cumsum(nch, 0) - nch
+    base = csr_offsets(nch)[:-1]
     off = (torch.arange(rep.shape[0], device=device) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
@@ -1121,7 +1124,7 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None):
     rep = torch.repeat_interleave(torch.arange(idx.numel(), device=device), nch)
     if rep.numel() == 0:
         return None
-    base = torch.cumsum(nch, 0) - nch
+    base = csr_offsets(nch)[:-1]
     off = (torch.arange(rep.shape[0], device=device) - base[rep]) * raster_chunk
     rows = torch.stack(
         [
@@ -2275,11 +2278,12 @@ def prepare_sparse_raster_coverage(
         # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
         # Aggregation happens here, once, before any kernel: the resolve then
         # composites a few depth-sorted sheets per pixel instead of walking
-        # the raw fragment list. Intermediates are allocator-owned (like the
-        # torch sort scratch above); only the final sheet arrays persist
-        # unless a diagnostic caller requested retained raw fragments.
+        # the raw fragment list. Stage-local workspace uses forward scratch;
+        # long-lived reduction results and library workspace remain external.
+        # Only the final sheets persist unless diagnostics retain raw fragments.
         from algan.rendering.raytracing.sheets import compact_sheets
 
+        compaction_workspace = CompactionWorkspace(memory)
         stream = compact_sheets(
             {
                 "frag_key": frag_key,
@@ -2307,6 +2311,7 @@ def prepare_sparse_raster_coverage(
             sample_depth=bool(rt_settings.sheet_sample_depth),
             diagnostics=False,
             resolver_memory=memory,
+            workspace=compaction_workspace,
         )
         # The final gather writes resolver weights and the CSR straight into
         # persistent arena records. No allocator-owned final payload is copied.
@@ -2347,6 +2352,9 @@ def prepare_sparse_raster_coverage(
     # Native per-pixel and final walk permutations now use forward scratch.
     # Conservatively reserve both even when a sort falls back to PyTorch.
     discovery_bytes += (num_frags + sheet_data["num_sheets"]) * 8
+    # Stage scopes reuse their ranges; charge the largest overlapping scratch
+    # footprint, not the sum across every reduction in the compaction.
+    discovery_bytes += compaction_workspace.peak_bytes
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -2414,6 +2422,8 @@ def shade_sparse_raster_coverage(
     bez_bvh,
     layer_offset_triangles,
     max_bounces,
+    *,
+    shadow_context=None,
 ):
     """Resolve one compact covered-pixel slice and seed its continuations."""
     rs_ro, rs_rd = state.origin, state.direction
@@ -2541,6 +2551,15 @@ def shade_sparse_raster_coverage(
     term_on = term_mode == 1
     sided_on = 1 if rt_settings.shadow_sided_cull else 0
     if shadow_flag:
+        if shadow_context is None:
+            shadow_context = ShadowTraceContext(
+                merged,
+                light_pos,
+                light_col,
+                num_lights,
+                pixel_world_scale,
+                layer_offset_triangles,
+            )
         S = max(1, num_slice_sheets)
         sheet_accept = _arena_tensor(memory, (S,), torch.int32, 0)
         event_pos = _arena_tensor(memory, (S, 3), torch.float32)
@@ -2641,63 +2660,21 @@ def shade_sparse_raster_coverage(
             else:
                 ev_src_prim = dummy_i
                 eps_self, eps_near = float(min_hit_distance), 0.0
-            from algan.rendering.raytracing.refit_bvh import RefitBVH
-
-            raster_shadow_trace(
-                num_events,
-                payload.position,
-                payload.smooth_normal,
-                payload.face_normal,
-                payload.frame,
-                payload.mask,
-                t_bvh.blocks,
-                t_bvh.node_miss,
-                t_bvh.leaf_prim,
-                t_bvh.leaf_tspan,
-                int(t_bvh.first_leaf),
-                merged["tri_pos"],
-                merged["tri_colors"],
-                merged["tri_uvs"],
-                merged["tri_tex_meta"],
-                merged["textures"],
-                merged["tri_extra"],
-                int(merged["num_colored_triangles"]),
-                bez_bvh.blocks,
-                bez_bvh.node_miss,
-                bez_bvh.leaf_prim,
-                bez_bvh.leaf_tspan,
-                int(bez_bvh.first_leaf),
-                merged["circuit_meta"],
-                merged["circuit_colors"],
-                merged["circuit_border_colors"],
-                merged["edges_2d"],
-                merged["edge_accel"],
-                light_pos,
-                light_col,
-                int(num_lights),
-                pixel_world_scale,
-                float(layer_offset_triangles),
-                1 if isinstance(t_bvh, RefitBVH) else 0,
-                1 if int(merged.get("num_triangles", 0)) > 0 else 0,
-                1 if int(merged.get("num_circuits", 0)) > 0 else 0,
-                payload.footprint,
-                payload.terminator,
-                sec_aa,
+            shadow_context.trace(
+                payload,
+                t_bvh,
+                bez_bvh,
                 shadow_vis,
-                int(shadow_flag),
-                # Identity-aware rejection: the hit-side surface map, the
-                # per-event source triangle, the two scene-scaled floors, and
-                # the compile-time gate. With the toggle off the kernel never
-                # reads either array (1-element dummies keep the signature)
-                # and every acceptance test compiles to exactly the
-                # pre-identity predicate.
-                merged["tri_obj"] if identity_on else dummy_i,
-                ev_src_prim,
-                eps_self,
-                eps_near,
-                1 if identity_on else 0,
-                term_mode,
-                1 if rt_settings.shadow_adaptive_taps else 0,
+                samples=sec_aa,
+                shadow_mode=shadow_flag,
+                has_triangles=int(merged.get("num_triangles", 0)) > 0,
+                has_beziers=int(merged.get("num_circuits", 0)) > 0,
+                source_primitives=ev_src_prim,
+                identity_enabled=identity_on,
+                self_epsilon=eps_self,
+                near_epsilon=eps_near,
+                terminator_mode=term_mode,
+                adaptive_taps=rt_settings.shadow_adaptive_taps,
             )
         sheet_resolve_shade(
             *pre_args,

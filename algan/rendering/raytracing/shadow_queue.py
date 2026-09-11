@@ -1,7 +1,8 @@
-"""Shared shadow payload copies; event generation and tracing policy stay separate."""
+"""Shared shadow transport; event generation and sampling policies stay separate."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import torch
@@ -88,3 +89,101 @@ def _scatter_shadow_visibility(destination, indices, source):
             kernel_index(indices), source, destination, n, source.shape[1]
         )
     return destination
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowTraceContext:
+    """Scene/light bindings shared by primary and deferred shadow submissions.
+
+    This is a host record, never a kernel argument. BVHs are supplied at each
+    submission rather than captured here: a deferred build can replace the
+    batch's placeholder trees. Source identity, event order, sample footprints,
+    and the presence-specialization flags remain explicit caller policies.
+    """
+
+    scene: dict
+    light_position: torch.Tensor
+    light_color: torch.Tensor
+    num_lights: int
+    pixel_world_scale: torch.Tensor
+    layer_offset_triangles: float
+
+    def trace(
+        self,
+        payload,
+        triangle_bvh,
+        bezier_bvh,
+        visibility,
+        *,
+        samples,
+        shadow_mode,
+        has_triangles,
+        has_beziers,
+        source_primitives,
+        identity_enabled,
+        self_epsilon,
+        near_epsilon,
+        terminator_mode,
+        adaptive_taps,
+    ):
+        """Submit one compact event batch through the explicit packed-kernel ABI.
+
+        ``source_primitives`` is the caller's one-word dummy when identity is
+        disabled. Unused footprint/terminator fields likewise keep their
+        caller-owned placeholders. The caller owns every event/output buffer
+        and keeps them alive through this launch.
+        """
+        from algan.rendering.raytracing.raster_taichi import raster_shadow_trace
+        from algan.rendering.raytracing.refit_bvh import RefitBVH
+
+        scene = self.scene
+        raster_shadow_trace(
+            int(payload.frame.numel()),
+            payload.position,
+            payload.smooth_normal,
+            payload.face_normal,
+            payload.frame,
+            payload.mask,
+            triangle_bvh.blocks,
+            triangle_bvh.node_miss,
+            triangle_bvh.leaf_prim,
+            triangle_bvh.leaf_tspan,
+            int(triangle_bvh.first_leaf),
+            scene["tri_pos"],
+            scene["tri_colors"],
+            scene["tri_uvs"],
+            scene["tri_tex_meta"],
+            scene["textures"],
+            scene["tri_extra"],
+            int(scene["num_colored_triangles"]),
+            bezier_bvh.blocks,
+            bezier_bvh.node_miss,
+            bezier_bvh.leaf_prim,
+            bezier_bvh.leaf_tspan,
+            int(bezier_bvh.first_leaf),
+            scene["circuit_meta"],
+            scene["circuit_colors"],
+            scene["circuit_border_colors"],
+            scene["edges_2d"],
+            scene["edge_accel"],
+            self.light_position,
+            self.light_color,
+            int(self.num_lights),
+            self.pixel_world_scale,
+            float(self.layer_offset_triangles),
+            int(isinstance(triangle_bvh, RefitBVH)),
+            int(has_triangles),
+            int(has_beziers),
+            payload.footprint,
+            payload.terminator,
+            int(samples),
+            visibility,
+            int(shadow_mode),
+            scene["tri_obj"] if identity_enabled else source_primitives,
+            source_primitives,
+            float(self_epsilon),
+            float(near_epsilon),
+            int(identity_enabled),
+            int(terminator_mode),
+            int(adaptive_taps),
+        )

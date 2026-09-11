@@ -1091,8 +1091,14 @@ def rehome_deferred_bvhs_to_arena(merged, memory):
         if isinstance(merged.get(key), STBVH)
     }
     if not group:
+        merged["bvh_rehome_pending"] = False
         return
+    # Construction can finish before an arena copy runs out of room. Keep a
+    # separate publication state so a smaller tile retries the copy and rebinds
+    # its local tree references even though bvh_deferred is already false.
+    merged["bvh_rehome_pending"] = True
     merged.update(_copy_merged_scene_to_arena(group, memory, persist=True))
+    merged["bvh_rehome_pending"] = False
 
 
 def build_deferred_bvhs(merged, memory=None):

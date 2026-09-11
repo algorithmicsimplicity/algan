@@ -1,6 +1,6 @@
 # Renderer memory ownership: audit implementation
 
-This change starts the September 11, 2026 code audit against master
+These changes implement the September 11, 2026 code audit against master
 `f2073d718364617b35ed86028efefcd0ccda5606`. It changes ownership, copies and
 validation, not analytic coverage, material transport, depth ordering or the
 same-surface conflict-rank limit.
@@ -44,9 +44,9 @@ prevents capture inside `fragment_capture.capture`. Diagnostic callers of
 `compact_sheets(..., diagnostics=True)` also preserves its standalone diagnostic
 API. Production passes False, omitting `sheet_nfrag`, `sheet_fused`, `num_groups`
 and `num_split_groups`. The separate group-statistics scan and final diagnostic
-gathers do not run. Outputs of shared reductions that also support rendering
-are intentionally not redesigned in this first change. Truncation reporting
-remains unconditional. Final key gathering composes nearest-fragment indices
+gathers do not run. The shared native reductions specialize away unused fused
+lane-duplicate and fragment-count stores; their required union, area and
+reference statistics remain enabled. Truncation reporting remains unconditional. Final key gathering composes nearest-fragment indices
 first, using exact integer gathering on MPS, then gathers the packed key once.
 
 ## Integer count/scan/write
@@ -62,8 +62,11 @@ scan replaces concatenation, a full-array conversion, exclusive-prefix
 subtraction and a separate sum. One boundary readback supplies each write
 pass's range and the total. Candidate and fragment totals are checked before
 narrowing to int32 kernel indexing. The raw-fragment CSR is also written directly
-into its arena destination. Float prefix sums used by shell coverage are not
-changed. PyTorch may still allocate internal scan workspace.
+into its arena destination. Candidate expansion and native conflict-rank group
+counts use the same terminal-offset contract. Float shell-coverage prefixes
+retain their accumulation dtype and global scan/subtraction boundaries; they
+are not replaced by this integer helper. PyTorch may still allocate internal
+scan workspace.
 
 ## Shared shadow copies
 
@@ -75,9 +78,13 @@ by the corresponding specialized kernel arm. A named tuple records the payload
 layout. The enclosing tile/iteration temporary scope owns the gathered arrays
 until tracing completes.
 
-Source identity, emitter sampling, footprint generation, sorting policy and the
-explicit trace launch arguments remain at their existing call sites. The new
-copy kernel does not merge those policies. Deferred visibility is scattered
+A frozen `ShadowTraceContext` holds the scene/light launch context and owns one
+explicit trace launch. It receives the currently selected triangle and Bezier
+BVHs on every call, so a late build or an opaque-tree choice is not hidden by a
+cached placeholder. The concrete triangle tree determines the refit template.
+Source identity, emitter sampling, footprint generation, sorting policy and
+geometry-presence gates remain explicit caller decisions. Sharing the launch
+does not merge those policies. Deferred visibility is scattered
 directly into the already-initialized padded table; absent events and unused
 light slots remain one, without an intermediate all-lit `filled` tensor. These
 copies retain integer values as integers. MPS launch indices go through
@@ -108,10 +115,12 @@ CPU validation does not establish CUDA/Metal/AMD parity or a performance gain.
 Use the repository's GPU harnesses for those checks before drawing performance
 conclusions. No rendering baseline should be regenerated to hide a mismatch.
 
-Remaining audit work includes full sheet-compaction workspace/destination
-propagation, integer-versus-float render metadata separation, generated arena
-ABI definitions, resolved batch policy, broader lifetime regions and structural
-retry cleanup. Removing the conflict-rank ceiling is a separate behavior change.
+Remaining audit work includes the rest of sheet-compaction workspace/output
+propagation, shared run CSR with explicit invalidation, and broader lifetime
+regions that can release temporary reverse allocations beneath a retained BVH.
+Removing the conflict-rank ceiling is a separate behavior change. The typed
+metadata, generated ABI, prepared-batch policy and structured attempt cleanup
+are implemented in the tranches described below.
 
 
 ## Second tranche: typed render metadata
@@ -163,10 +172,10 @@ whole call. Both permutations are included conservatively in the discovery
 footprint estimate, even where a native sort falls back to PyTorch. The forward
 scope can be overwritten after return without damaging persistent sheet data.
 
-This is **not** a complete arena conversion of compaction: its other tensor
-expressions, reductions, and library sorting workspace remain allocator-owned.
-A future conversion needs short stage lifetimes rather than accumulating every
-old temporary at one bump pointer. The standalone sheet CSR now uses lower
+This is **not** a complete arena conversion of compaction. The third tranche
+adds short stage lifetimes for many reductions and temporary tables, but
+remaining tensor expressions, long-lived reduction results and library sorting
+workspace remain allocator-owned. The standalone sheet CSR now uses lower
 bounds independently of `sheet_metadata_kernel`, which controls diagnostic
 counting only; it no longer selects two unrelated algorithms together.
 
@@ -185,9 +194,86 @@ is deliberately not recomputed with host double-precision arithmetic.
 layout or placeholder aliases. The sparse accumulator index in integer column
 4 remains live. The classic tile loop now wraps allocation, drain, allocator
 readback and compositing in a `memory.temp(clear_persist=True)` attempt scope,
-so all exits restore both arena ends. The late-built BVH retention floor and
-manual sparse-loop lifetime handling remain unchanged. They need a separate
-lifetime-region refactor, not removal of the retained floor.
+so all exits restore both arena ends. The third tranche applies equivalent structured ownership to sparse attempts,
+with the additional retained-BVH contract described below. The retained floor
+itself remains necessary until lifetime regions are separated further.
 
 The complete, item-by-item branch checklist and current validation record are
 in `reports/renderer_code_audit_status.md` at the repository root.
+
+
+## Third tranche: staged compaction scratch
+
+`CompactionWorkspace` provides nested `stage()` scopes. Arena-backed scratch is
+allocated at the forward end and rewound on every exit, including exceptions;
+reverse-end resolver records are unaffected. Standalone diagnostic callers use
+the same helper with an ordinary-allocator fallback. The workspace retains no
+tensor references. Its `copy` always makes a distinct copy, even when source and
+destination dtypes match: shell-prefix scratch must not alias fragment coverage
+in the float32/MPS-friendly configuration.
+
+The converted scratch includes band accumulation, conflict-rank lane scans,
+rank-group counts/CSR, shell-ceiling reordered coverage and prefixes, band
+reference statistics, sibling membership/count arithmetic, lane first-owner
+and depth tables, and final lost-lane masks. Nested stages reuse storage after
+each consumer rather than retaining all arrays until compaction ends. A named
+`SheetStatistics` record owns the reduction results that cross stage boundaries;
+those results remain ordinary allocations. Explicit rank and lane-depth output
+destinations are checked for layout and conservative byte-range overlap before
+writing.
+
+Float64 accumulation still rounds only after its completed reduction; the
+float32 compatibility arm retains float32 accumulation. Shell-ceiling scans
+keep the old global prefix and exclusive-prefix subtraction boundaries. These
+changes do not fuse floating-point operations across earlier rounding points.
+The fixed rank clamp and its reporting are unchanged.
+
+`peak_bytes` is the maximum overlap of allocations made through that workspace,
+including alignment. Discovery adds it to the existing raw/final-record and
+permutation estimate. It does not sum disjoint stages or claim to measure total
+PyTorch, compiler, driver or device peak memory.
+
+## Third tranche: one prepared-batch execution policy
+
+`resolve_batch_policy` reads live settings and immutable scene facts once for a
+prepared batch. Frozen, tensor-free `BatchExecutionPolicy` and `WavefrontPolicy`
+records carry the primary route and fallback reasons, sample count, requested
+and effective AA, in-place versus supersampled frame scale, shadow capability,
+fragment/custom-scatter requirements, continuation/IOR state width, pool ratio,
+and core wavefront specialization decisions.
+
+Preflight attaches this policy to the prepared primitive batch. Frame sizing,
+capability validation, device upload dispatch and wavefront execution reuse it.
+The render loop clears it with the corresponding prepared/device scene; a new
+render resolves current settings again. In-place AA charges an output-resolution
+frame, rather than a supersampled frame that it never allocates. The render plan
+exposes route, effective AA and fallback reasons. Standalone low-level calls
+still resolve their own policy when none is supplied.
+
+BVH objects are not part of this policy: late publication can replace them.
+Defensive data/route consistency checks remain, and independent microkernel
+optimization gates still have their own readers. Concurrent mutation of settings
+inside a running batch is not a supported contract.
+
+## Third tranche: sparse attempts and deferred BVH publication
+
+Each sparse tile attempt scopes allocation, resolve, drain, allocator readback,
+and final compositing with `memory.temp(clear_persist=True, persist_floor=...)`.
+All retry, success, break and exceptional exits restore forward scratch and
+reverse temporary storage while retaining a batch BVH published during that
+attempt. Memory-failure retries still shrink both primary work and pool size;
+capacity-overflow retries retain their separate pool policy.
+
+Construction and arena publication are distinct states. If BVH construction
+succeeds but its arena copy fails, `bvh_deferred` is already false.
+`bvh_rehome_pending` keeps the publication obligation visible to the next retry.
+After successful copying, local tree references are rebound and the retained
+reverse floor is published. Copy failure leaves the constructed source trees
+available and the pending flag set; partial arena scratch is reclaimed by the
+attempt scope.
+
+Tests force a deferred eligibility false positive, then inject failures after
+construction, inside arena copying, and during resolve/drain/readback/compositing.
+They check retry output and poison reclaimed storage while verifying retained
+BVH bytes. This is not a claim that all batch/chunk/tile/iteration lifetimes are
+separate: a reverse retention floor can still keep intervening allocations alive.

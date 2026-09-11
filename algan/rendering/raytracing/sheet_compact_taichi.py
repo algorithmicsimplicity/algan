@@ -161,6 +161,7 @@ def sheet_band_reduce(
     sliver: ti.types.ndarray(),  # [nb] i32 PRE-ZEROED, or a [1] dummy
     want_sliver: ti.template(),  # compile-time: is `sliver` real?
     acc_t: ti.template(),  # compile-time: `area`'s element type
+    want_fused: ti.template(),  # compile-time: is `dup` a real diagnostic output?
 ):
     """One pass: per-band exact area, sample union, doubly-claimed lanes, sliver.
 
@@ -186,8 +187,9 @@ def sheet_band_reduce(
         word = msk[i]
         bits = word & mask_all
         shared = ti.atomic_or(union[b], bits) & bits
-        if shared != 0:
-            ti.atomic_or(dup[b], shared)
+        if ti.static(want_fused):
+            if shared != 0:
+                ti.atomic_or(dup[b], shared)
         ti.atomic_add(area[b], ti.cast(cov[i], acc_t))
         if ti.static(want_sliver):
             if (word & sliver_bit) != 0:
@@ -559,6 +561,7 @@ def band_stats_reduce(
     nfrag: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-ZEROED
     positioned: ti.template(),  # compile-time: sheet_positioned_depth
     idx_t: ti.template(),  # compile-time: the five OUT arrays' element type
+    want_count: ti.template(),  # compile-time: is `nfrag` a real diagnostic output?
 ):
     """One pass: the compaction's five per-band scatters, fused.
 
@@ -593,7 +596,8 @@ def band_stats_reduce(
                 ti.atomic_min(first_sorted_p[b], ti.cast(i, idx_t))
                 ti.atomic_min(min_pos_p[b], p)
         ti.atomic_max(cmax[b], cov[i])
-        ti.atomic_add(nfrag[b], ti.cast(1, idx_t))
+        if ti.static(want_count):
+            ti.atomic_add(nfrag[b], ti.cast(1, idx_t))
 
 
 @ti.kernel
