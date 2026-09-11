@@ -2368,8 +2368,8 @@ def prepare_sparse_raster_coverage(
     # it instead of over-committing.
     # 32 B/fragment of compact result (temporary unless raw records are
     # retained), plus 32 B of persistent sheet record +
-    # the sheet CSR. The torch-side sort and scatter intermediates are
-    # allocator-owned, like the fragment sort's.
+    # the sheet CSR. Explicit compaction workspace is added below; library
+    # workspace and remaining unstaged expressions still need external headroom.
     # frag_cap is an arena allocation like the other five (it carries the
     # per-pixel one-mesh coverage ceiling into compaction), so leaving it out
     # of the sum reported this scope 12.5% smaller than the arena it actually
@@ -2380,8 +2380,9 @@ def prepare_sparse_raster_coverage(
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
     # Per-pixel and final walk permutations use forward scratch on every arm.
-    # Packed/global sorts additionally charge their staged workspace below.
-    discovery_bytes += (num_frags + sheet_data["num_sheets"]) * 8
+    # Include up to seven alignment bytes per int64 permutation. Packed/global
+    # sorts additionally charge their staged workspace below.
+    discovery_bytes += (num_frags + sheet_data["num_sheets"]) * 8 + 2 * 7
     # Stage scopes reuse their ranges; charge the largest overlapping scratch
     # footprint, not the sum across every reduction in the compaction.
     discovery_bytes += compaction_workspace.peak_bytes

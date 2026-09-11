@@ -9,7 +9,8 @@ The second implementation is `60597722f0e472ede8a173251f54282694172371`.
 The third implementation is `077d2660c585e2f73b727dfd82f371a828c595bd`.
 The fourth implementation is `dd4bfadc52387ac6249878f2602d094d8349862e`.
 The fifth implementation is `234ac00663aa54a1837c4a2d8441fe52a224697c`.
-This document accompanies the sixth implementation, directly on that fifth
+The sixth implementation is `28b9736fa035826582f505f3e29d93fd0788a596`.
+This document accompanies the seventh implementation, directly on that sixth
 commit. Checked items describe code present on this branch, not a promise that
 all platforms or the full test suite have passed.
 
@@ -19,30 +20,35 @@ not finished. “Unchanged” means a contract was preserved, not newly implemen
 
 ## Summary of this update
 
-The sixth tranche gives sorted pixel/depth/coverage/mask payloads a named
-caller-owned destination and moves their production storage into compaction's
-forward workspace. Rank/class grouping accepts an exact caller-owned inverse;
-native rank grouping writes it directly, while PyTorch unique retains its
-internal temporary inverse and copies it into the destination. Dynamic group
-labels are still allocated by the grouping operation, then adopted into the
-production result stage. This is not a claim that unique's workspace vanished.
+The seventh tranche moves decoded fragment metadata, shading-class tables,
+primitive-split tables and rank-pooling maps into explicit destinations and
+nested forward-workspace stages. `FragmentMetadata` names the raw-stream facts;
+`gather_frame_table` shares exact frame/primitive lookup, widens indices before
+multiplication and preserves static/animated table wrapping. Sorted payloads and
+their consumers retain their earlier ownership contracts.
 
-Class grouping now has one implementation shared with the compatibility entry
-point. Packed-key builders widen int32 inputs before multiplication, rather
-than relying on an int64 destination to widen the operation. Its pair-sort path stages keys, permutation, boundaries and IDs without
-constructing a wide MPS key. A checked boundary-to-group-ID scan replaces the
-remaining repeated boolean-cast/scan/subtract expressions in sheet compaction.
-Final gathers use explicit destinations; the ordered band map is reused by
-sibling weighting and sample-depth classification, and an unused representative
-index gather is skipped. Mask flags and band-membership scratch are staged.
+Preprocessing now ends before conflict-rank grouping. Decoded pixels, frame
+indices, safe references and grouping keys are reclaimed together; a regression
+asserts actual reuse of the decoded-pixel address by the rank inverse. Raw
+shading classes are gathered immediately and discarded before primitive-gap
+processing. Pooling membership, full-union tests and area/union outputs are
+reclaimed before the second unique operation. The production pooling inverse
+and class/pool maps use caller storage; `RankPoolGroups` names the existing
+count/optional-inverse result without changing the no-pooling decision.
 
-An outer compaction workspace scope protects these new forward allocations on
-success and failure. Persistent sheet outputs still live in reverse storage;
-standalone diagnostics retain ordinary ownership. This bounds the new result
-storage by the entire compaction call, not each individual last consumer. It
-does not establish a reduction in total peak memory or warm time. Preprocessing
-metadata, rank-pooling maps and several expressions remain external. The
-conflict-rank ceiling, rendering mathematics and kernel ABI are unchanged.
+`SampleDepthMetadata` names sample masks, surface IDs and enforcer/subject
+eligibility. Classification and depth-competition scratch have their own stage,
+and production lose bits are ORed into already-owned mask outputs. Signed
+weights, negative zero, the float32 dust test, closed-shell rounding and all
+native/reference policy gates are preserved. Input and pairwise output aliases
+are rejected before mutation. Standalone callers retain ordinary-owned outputs.
+
+Discovery accounts for staged peak overlap and both direct sort permutations'
+alignment. This is not a measurement of total peak memory or warm time. Library
+unique/sort/scan workspace, closed-shell preprocessing temporaries, block float
+expressions and reference-path expressions still need external headroom. No
+kernel source or packed ABI changed, and the conflict-rank ceiling remains a
+separate, unimplemented behavior/capacity change.
 
 ## 1. Arena-binding cache layout validation — Complete
 
@@ -97,7 +103,15 @@ payload's allocator-to-arena copy.
 - [x] Gather final per-sheet payloads and sample depths into caller storage, reuse final band IDs, and skip the unused representative permutation when the persistent copy is its only consumer.
 - [x] Stage final mask-flag construction and sample-depth membership counts without changing signed sibling weights or any floating-point expression.
 - [x] Rewind compaction's workspace on all exits, including failures after sorted-payload, rank and class generation; preserve prior forward sentinels and reverse outputs.
-- [ ] Move remaining preprocessing metadata, rank-pooling maps and tensor expressions into explicit destinations or shorter stages. PyTorch unique still creates temporary inverse/key arrays; avoid describing their copies as elimination of library workspace.
+- [x] Add checked `FragmentMetadata` destinations and a shared exact frame/primitive gather, including packed depth bits and int32-to-int64 widening before address/key arithmetic.
+- [x] Give shading-class and primitive-gap rules caller outputs; stage their frame tables and gathers while preserving the existing blocked floating-point expressions.
+- [x] Reserve durable sort outputs before preprocessing scratch, gather raw shading classes immediately, and reclaim decoded metadata before rank grouping; test actual address reuse.
+- [x] Stage the initial band-ID scan, rank-pooling maps, full-union/membership flags and pooling keys; retain a caller-owned inverse and the no-pooling `None` contract.
+- [x] Reclaim pooling reductions before the second unique operation and transient class-split inputs before final reductions; keep production pool/class maps in caller storage.
+- [x] Add checked `SampleDepthMetadata` and a scoped final depth-competition stage; preserve signed-weight, negative-zero, dust-threshold and mask-bit policies, including aliased production mask outputs.
+- [x] Include worst-case alignment of both directly allocated int64 permutations in discovery accounting, separately from the staged workspace counter.
+- [x] Test failure unwinding after metadata, shading-class, primitive-gap, pooling and sample-depth generation, in addition to earlier sorted/rank/class failure sites.
+- [ ] Move remaining closed-shell preprocessing temporaries, block floating-point expressions and reference-path tensor expressions into explicit destinations or shorter stages. PyTorch unique still creates temporary inverse/key arrays; avoid describing their copies as elimination of library workspace.
 - [ ] Evaluate broader fused finalization only after preserving the current accumulation/rounding boundaries.
 
 `sheet_buffers.py` and `sheet_output_taichi.py` own persistent resolver output.
@@ -106,9 +120,13 @@ payload's allocator-to-arena copy.
 `sheet_order.py` owns stable-order composition scratch; `device_sort.py`
 accepts native destinations. `array_ops.gather_rows` and `array_copy_taichi.py`
 provide exact row-copy destinations. `sheet_fragments.py` names sorted payloads;
-`sheet_grouping.py` owns shared grouping and inverse destinations. Preprocessing
-metadata, rank-pooling maps, dynamic unique temporaries, remaining expressions
-and library sort/scan workspace still require external storage. The workspace counter is not a total-device peak-memory measurement.
+`sheet_grouping.py` owns shared grouping and inverse destinations.
+`sheet_preprocessing.py` names decoded-fragment and sample-depth metadata;
+`array_ops.gather_frame_table` owns exact scalar table lookup. Dynamic unique
+results, closed-shell preprocessing temporaries, remaining floating-point
+expressions and library sort/scan workspace still require external storage.
+Adopting a dynamic result into the arena does not eliminate its original
+allocation. The workspace counter is not a total-device peak-memory measurement.
 
 ## 4. Unused diagnostic work — Complete for the audited outputs
 
@@ -190,6 +208,7 @@ allocator's byte layout or reset semantics.
 - [x] `PixelRunCSR` names covered pixels, counts, offsets and fragment count for one immutable sorted stream, with explicit invalidation at membership changes.
 - [x] `BandComposite`, `BandReduction` and `SheetWeights` distinguish reduction results from scratch and final resolver records.
 - [x] `SortedFragments` names the sorted payload ownership contract; `RankGroups` names inverse IDs and parent/rank descriptors while preserving tuple unpacking.
+- [x] `FragmentMetadata`, `RankPoolGroups` and `SampleDepthMetadata` name decoded stream facts, optional pooling maps and depth-competition eligibility without changing per-kernel argument layouts.
 - [ ] Extend named context ownership beyond shadow submission.
 
 Integer ray-state column 4 remains the sparse accumulator index; it was not
@@ -266,6 +285,7 @@ temporaries now live in the arena.
 - [x] Restart/refill the discarded chunk and restore truncation/path-sample counters; accept no partial composites or discarded statistics.
 - [x] Roll back both arena ends after partial publication, allow one allocator-reclaim retry, and escalate exhausted clean-boundary capacity to prepared-batch recovery; do not retry non-memory errors.
 - [x] Test the actual publication pointers, discarded-background poisoning, one-time publication, later chunk splitting/reuse, and transactional bounded failures.
+- [x] End raw preprocessing before rank grouping, pool reductions before regrouping, and sample-depth scratch before persistent output copying; verify reuse, poisoning and injected-failure unwinding.
 
 The retained-floor mechanism still protects genuine batch tables and trees;
 this is not a redesign of `ManualMemory` as an arbitrary region allocator.
@@ -294,11 +314,72 @@ unbounded same-surface transparency was added by this branch.
 - [x] Document shared pixel-run invalidation and caller-owned result lifetimes, and correct earlier present-tense descriptions of external reduction output storage.
 - [x] Correct deferred-publication/retry comments and document clean-boundary restarts, exact gathers and stable-sort output lifetimes.
 - [x] Consolidate the compatibility class-group implementation and correct touched comments about external reduction/sorted-payload ownership.
+- [x] Document preprocessing/table/pooling/sample-depth destination contracts and correct touched comments about metadata lifetimes and discovery workspace accounting.
 - [ ] Continue removing obsolete comments and remaining unsupported-path compatibility plumbing only after proving the callers and diagnostic fixtures no longer require it.
 
 ## Validation
 
-### Sixth-tranche validation in this container
+### Seventh-tranche validation in this container
+
+- [x] Final focused regression suite: **855 passed, 28 skipped**, across
+  **32 distinct modules**. The three new feature modules contain **207 cases**
+  (110 preprocessing/table/sort-destination, 65 pooling and 32 sample-metadata
+  cases). The existing fragment-lifetime module adds ten parametrized cases
+  covering five additional failure sites. These 217 added cases are included
+  in the focused total, not additional unique coverage.
+- [x] Cover caller-owned/default outputs, native/reference gates, static and
+  animated tables, wrapped frame rows, empty/singleton/strided inputs, exact
+  large integers and packed depth bits, all-output validation before mutation,
+  input and pairwise output aliases, signed weights and negative zero, and
+  dust-threshold/mask policies. Tests exercise the MPS-friendly copy policy on
+  CPU and its exact allocating fallback; this is not Metal execution.
+- [x] Assert actual decoded-pixel storage reuse by rank grouping and poison
+  reclaimed pooling scratch before its second unique. Success and injected
+  failures after metadata, shading classes, primitive gaps, sorted payloads,
+  ranks, pooling, classes and sample-depth metadata restore forward pointers
+  and preserve earlier sentinels and reverse outputs.
+- [x] Final parent-versus-new compaction comparison: **256 configurations,
+  all bit-identical**, over 32 seeds with native/reference, diagnostic/persistent
+  and ordinary/MPS-friendly CPU policy arms. Fixtures cover one to three frames,
+  time offsets, static/animated surface tables, shell ceilings, shading splits,
+  positioned depth and sample-depth handling. Each process asserts its imported
+  source path; reclaimed forward storage is poisoned before serialization.
+  Parent and final new JSON files have SHA-256
+  `b6c2110fb3fde9b5111c035134cdda9c037fabaef8a46908e0d1509415f70032`.
+- [x] Decoded fast-render parity against unchanged `28b9736`: **45 frames,
+  704 x 396, 37,635,840 RGB values; maximum difference 0, differing values 0**.
+  Both decoded streams have SHA-256
+  `65def67ad219ec774d71a5d4457d89dab1ab08f190a04e9a8d32bc544da6616a`.
+- [x] Repository-wide Ruff 0.12.4 lint and formatting checks pass (**434 files**).
+  All **nine changed Python files** parse, and generated arena bindings and
+  `git diff --check` pass. No Taichi kernel source, packed ABI, rendering
+  baseline or pre-existing fast-test marker changed.
+- [ ] The canonical fast suite is **not fully green**: **608 passed, 1 failed,
+  4347 deselected**. A fresh unchanged parent produced **608 passed, 1 failed,
+  4130 deselected**. Both fail the same MathTex/dvisvgm compatibility baseline
+  at frame 4, maximum channel deviation 221. The exact parent/new video
+  comparison above isolates this mismatch from the implementation changes.
+- [ ] Full `pytest -q` was attempted and reached its **600-second limit
+  (exit 124)** without a final summary. Its last printed progress indicator was
+  **30%**. Three observed failures map to the TeX authoring examples at
+  `advanced_user_tutorials/text_and_math.rst:115`, `:190` and
+  `galleries/mob_gallery.rst:329`. Each was reproduced
+  independently on the unchanged parent and new code with the same missing
+  MathTex SVG groups and indexing errors (three failures in each isolated run).
+  Collection found 4,956 tests. This is not a full-suite pass or a completed
+  heavy-render comparison.
+- [ ] CUDA, Metal and AMD runtime validation, alternating warm performance and
+  actual total-device peak-memory measurements remain outstanding.
+
+The PR remains draft. Validation used Python 3.13.5, PyTorch 2.10.0+cpu and the
+supplied patched Quadrants runtime 1.3.0 in an editable CPU installation. The
+renderer probes and focused/fast runs disabled daemon handoff; the full attempt
+left `ALGAN_USE_DAEMON` unset to avoid the previously documented CLI expectation
+mismatch. Focused, fast and comparison counts overlap and must not be added
+as unique-test totals. Intermediate seventh-tranche results are superseded by
+these final results; earlier-tranche results below remain historical.
+
+### Sixth-tranche validation (historical; unchanged below)
 
 - [x] Final focused regression suite: **658 passed, 27 skipped**, across
   **26 distinct modules**. This includes **100 new grouping/fragment cases**
@@ -545,13 +626,14 @@ requirements.
 
 ## Recommended next implementation order
 
-1. Continue ownership propagation through preprocessing metadata, rank-pooling
-   maps and remaining tensor expressions. Shorten result lifetimes where feasible;
-   the new sorted-payload scope deliberately lasts through compaction, and
-   PyTorch unique still allocates its intermediate inverse/key arrays.
-2. Validate actual CUDA/Metal/AMD execution, including the native radix and
-   integer-copy destinations, and measure alternating warm time and real peak
-   memory before making performance claims.
+1. Continue ownership propagation through remaining closed-shell preprocessing,
+   block floating-point expressions, reference reductions/lose-mask expressions
+   and other unstaged scratch. Shorten durable sorted-payload/result lifetimes
+   where feasible without changing accumulation or rounding boundaries. PyTorch
+   unique and other library internals still allocate their own workspace.
+2. Validate actual CUDA/Metal/AMD execution, including native radix, exact integer
+   copies, frame-table destinations and staged masks. Measure alternating warm
+   time and actual total-device peak memory before making performance claims.
 3. Benchmark indexed shadow tracing and batched endpoint downloads before
    replacing the current gathering and host-offset-cache policies.
 4. Treat the conflict-rank ceiling as a separate semantic/capacity change with

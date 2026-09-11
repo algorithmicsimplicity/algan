@@ -23,6 +23,17 @@ class RankGroups(NamedTuple):
     rank: torch.Tensor
 
 
+class RankPoolGroups(NamedTuple):
+    """Compositing-group count and optional per-rank-band destination.
+
+    ``ids is None`` preserves the no-pooling path. A supplied destination is
+    unused in that case and its contents are unspecified.
+    """
+
+    count: int
+    ids: torch.Tensor | None
+
+
 def validate_inverse(out, *keys):
     """Check destination metadata and input aliases before grouping writes."""
     if not keys:

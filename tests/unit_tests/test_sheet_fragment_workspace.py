@@ -31,7 +31,8 @@ def _poison(memory):
 
 def _bits_equal(left, right):
     return torch.equal(
-        left.contiguous().view(torch.uint8), right.contiguous().view(torch.uint8)
+        left.clone(memory_format=torch.contiguous_format).view(torch.uint8),
+        right.clone(memory_format=torch.contiguous_format).view(torch.uint8),
     )
 
 
@@ -123,7 +124,20 @@ def test_sorted_fragment_validation_is_atomic(problem):
 
 
 @pytest.mark.parametrize("diagnostics", [False, True])
-@pytest.mark.parametrize("failure_site", [None, "sorted", "rank", "class"])
+@pytest.mark.parametrize(
+    "failure_site",
+    [
+        None,
+        "metadata",
+        "shade_values",
+        "prim_values",
+        "sorted",
+        "rank",
+        "pool",
+        "class",
+        "depth_values",
+    ],
+)
 def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failure_site):
     memory, ws = _workspace()
     normals = torch.tensor([[[0.0, 0.0, 1.0] * 3, [0.0, 1.0, 0.0] * 3] * 4])
@@ -143,7 +157,13 @@ def test_compaction_owns_whole_forward_lifetime(monkeypatch, diagnostics, failur
     memory.get_tensor((5,), torch.uint8).fill_(113)
     before = memory.get_pointers()
     if failure_site is not None:
+        monkeypatch.setattr(sheets, "sheet_rank_pool", True)
         name = {
+            "metadata": "fragment_metadata",
+            "shade_values": "_shade_class",
+            "prim_values": "_prim_split_after",
+            "pool": "_rank_pool_groups",
+            "depth_values": "sample_depth_metadata",
             "sorted": "gather_sorted_fragments",
             "rank": "_sheet_rank_groups",
             "class": "_sheet_class_groups",

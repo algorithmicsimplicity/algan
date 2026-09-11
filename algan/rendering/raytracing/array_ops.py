@@ -179,3 +179,49 @@ def group_ids_from_starts(starts: torch.Tensor, *, out=None):
     torch.cumsum(starts, 0, dtype=out.dtype, out=out)
     out.sub_(1)
     return out
+
+
+def gather_frame_table(
+    table, frames, columns, *, time_start=0, out=None, workspace=None
+):
+    """Gather scalar frame/primitive entries into an exact caller destination.
+
+    Frame rows wrap after adding ``time_start``, like the renderer's ``_rows``
+    convention. Columns must be valid nonnegative primitive indices. Bounds are
+    the caller's responsibility; metadata/aliases are checked before writes.
+    Flattening a strided table may require an ordinary-allocator copy. Library
+    indexing fallback storage is likewise not claimed as workspace-owned.
+    """
+    from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+
+    if (
+        table.ndim != 2
+        or table.shape[0] == 0
+        or frames.ndim != 1
+        or columns.shape != frames.shape
+        or frames.dtype not in (torch.int32, torch.int64)
+        or columns.dtype not in (torch.int32, torch.int64)
+        or frames.device != table.device
+        or columns.device != table.device
+    ):
+        raise ValueError("frame lookup needs a 2D table and matching integer vectors")
+    workspace = workspace or CompactionWorkspace(device=table.device)
+    if workspace.device != table.device:
+        raise ValueError("frame lookup workspace must share the table device")
+    time_start = int(time_start)
+    if out is None:
+        out = torch.empty(frames.shape, dtype=table.dtype, device=table.device)
+    require_tensor_outputs(
+        (out,),
+        ((frames.shape, table.dtype),),
+        device=table.device,
+        inputs=(table, frames, columns),
+    )
+    with workspace.stage():
+        # Widen before multiplication; an int64 destination alone does not widen
+        # arithmetic performed on int32 inputs. Reuse this index for every step.
+        index = workspace.copy(frames, torch.int64)
+        index.add_(time_start).remainder_(table.shape[0])
+        index.mul_(table.shape[1]).add_(columns)
+        gather_rows(table.reshape(-1), index, out=out)
+    return out

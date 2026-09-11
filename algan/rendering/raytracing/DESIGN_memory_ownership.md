@@ -179,8 +179,9 @@ This is **not** a complete arena conversion of compaction. The third tranche
 adds short stage lifetimes for many reductions and temporary tables. The fourth
 tranche moves band-composite, final band-reduction, reference-selection and
 sibling-weight results into caller-owned stages. The fifth and sixth tranches
-extend ownership to sorting, sorted payloads and grouping inverses as recorded
-below; remaining expressions and library workspace still need external
+extend ownership to sorting, sorted payloads and grouping inverses. The seventh
+adds preprocessing, rank-pooling maps and sample-depth metadata as described
+below. Remaining expressions and library workspace still need external
 headroom. The standalone sheet CSR uses lower
 bounds independently of `sheet_metadata_kernel`, which controls diagnostic
 counting only; it no longer selects two unrelated algorithms together.
@@ -480,8 +481,66 @@ their last Python `del`: they remain until their owning stage closes.
 
 The workspace's overlapping-byte counter automatically accounts for the new
 fields and adopted labels, including alignment. Discovery still conservatively
-charges direct sort permutations separately. Preprocessing metadata, rank-pooling
-maps, PyTorch unique intermediates, and compiler/library/driver workspace need
-external headroom. No total-device peak reduction or speedup follows merely from
+charges direct sort permutations separately. At this tranche, preprocessing
+metadata and rank-pooling maps still needed external storage; the seventh-tranche
+changes below supersede that ownership description. PyTorch unique intermediates
+and compiler/library/driver workspace continue to need external headroom. No total-device peak reduction or speedup follows merely from
 moving the result arrays into the arena. The rank ceiling and all kernel layouts
 are unchanged.
+
+
+## Seventh tranche: preprocessing, rank pooling and sample-depth metadata
+
+`sheet_preprocessing.FragmentMetadata` gives decoded pixels, exact float32 depth
+bits, chunk-relative frames, triangle flags, safe references and surface/facing
+keys checked caller-owned destinations. All field metadata and pairwise/input
+byte ranges are validated before any destination is written. Surface IDs are
+widened before multiplication; circuit fragments retain distinct negative keys.
+`array_ops.gather_frame_table` shares the wrapped frame/primitive lookup with an
+explicit destination and a short-lived int64 flattened index. It uses the exact
+row-copy policy already used by sorting, including the local MPS integer-copy
+arm and its allocating fallback. A strided table may still require a temporary
+flattening copy. Valid primitive indices remain the producer's responsibility;
+no device readback was added to check bounds.
+
+Compaction allocates the sorted payload, order and metadata consumers before a
+nested preprocessing stage. That stage owns decoded keys and reference maps.
+Raw shading classes are built only after sorting and released immediately after
+their gather; the per-frame class table is nested inside that lifetime. Group
+comparisons and primitive-split results have their own shorter stages. The
+primitive-depth-slope table is staged too, but its per-block floating-point
+expressions retain their original arithmetic and ordinary temporary ownership.
+The preprocessing region closes before conflict-rank grouping. A regression test
+checks that the rank inverse actually reuses the decoded pixel buffer's address,
+not just that a later Python reference was deleted. Sorted payloads, group flags
+and shared positions still last through their broader owning compaction stage.
+
+`RankPoolGroups` names the compositing-group count and optional inverse. A checked
+int64 output can own the inverse; `None` still means that no pooling took place,
+and a supplied but unused destination has unspecified contents. The parent map,
+full-union/area flags, per-fragment map and key are staged. The key survives a
+nested reduction stage, so area/union storage and membership flags are released
+before the second unique operation. Production uses explicit destinations for
+pooled/class maps and releases class-composition scratch before final reductions.
+PyTorch unique still allocates its own inverse before copying it to the caller;
+this is ownership propagation, not elimination of library workspace.
+
+`SampleDepthMetadata` names final sample masks, surface IDs and enforcer/subject
+flags. It preserves the float32 `(coverage - 1).abs()` dust check, nonnegative
+weight gate (including negative zero), full-mask rule, circuit exclusion and
+multi-sheet-band exemption. Lookup indices and intermediate predicates live in
+short scratch stages; all classification and depth-competition data is reclaimed
+after lose bits are applied. Production ORs those bits into existing mask
+storage; exact mask aliases are safe because OR is idempotent. Standalone output
+allocation behavior is retained. No coverage sum, shell prefix, threshold,
+conflict-rank ceiling or native kernel signature changed.
+
+The workspace counter includes these staged allocations and their alignment.
+Discovery also charges worst-case alignment for its two directly allocated
+int64 sort permutations. These estimates exclude compiler/library/driver
+storage and cannot establish total-device peak savings or faster warm renders.
+Closed-shell eligibility still creates dynamic ordinary-owned arrays before
+production adopts them, and several floating expressions remain unstaged.
+Runtime failures restore scratch pointers, not partially written caller results;
+callers discard those results on failure. Persistent reverse outputs and prior
+arena sentinels remain protected by the existing discovery/compaction scopes.
