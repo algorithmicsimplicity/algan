@@ -21,6 +21,7 @@ import runpy
 import statistics
 import sys
 import time
+from contextlib import chdir
 from pathlib import Path
 
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
@@ -189,6 +190,10 @@ def max_difference(left, right):
 
 
 def check_scene(name, path, output):
+    output = output.resolve()
+    scene_root = ROOT if path is None else path.parent
+    if scene_root.name == "scenes":
+        scene_root = scene_root.parent
     snapshot = SETTINGS.snapshot()
     old_enabled, old_verify = fast.ENABLED, fast.VERIFY
     try:
@@ -197,7 +202,9 @@ def check_scene(name, path, output):
             available_memory_override=arena_mib * 1024**2, torch_compile=False
         )
         SETTINGS.paths.set(cache_directory=str(output / "cache"))
-        with Scene() as scene:
+        # Match each suite's harness: media paths are relative to the suite,
+        # not to this benchmark's directory or the repository root.
+        with chdir(scene_root), Scene() as scene:
             load_scene(path)
             SETTINGS.raytracing.set(denoise=False)
             duration = max(float(scene._recorded_end_time_for_render()), 0.1)
@@ -223,6 +230,10 @@ def check_scene(name, path, output):
                 )
                 sync()
                 elapsed = time.perf_counter() - start
+                if path is not None and "path_traced" in path.parts:
+                    assert all(
+                        item.render_plan.backend == "path_tracer" for item in rendered
+                    ), "a path-traced scene silently selected a different renderer"
                 result = pixels([item.output_path for item in rendered])
                 bus = {k: mps_zero_copy.STATS[k] - before[k] for k in before}
                 left = sorted(mps_zero_copy.LEFT_ON_THE_BUS)
