@@ -1,9 +1,10 @@
 {
-  "_request": "renderer-audit-tranche8-depth-probe-1",
-  "command": "cp .github/audit_tranche8_validate.py .github/audit_tranche8_depthprobe.py \"$RUNNER_TEMP/\" && .venv/bin/python -u \"$RUNNER_TEMP/audit_tranche8_depthprobe.py\"",
+  "_request": "renderer-audit-tranche8-final-b2a73dea",
+  "command": "cp .github/audit_tranche8_validate.py \"$RUNNER_TEMP/audit_tranche8_validate.py\" && .venv/bin/python -u \"$RUNNER_TEMP/audit_tranche8_validate.py\"",
   "arms": ["mac-mps", "linux-cpu"],
   "env": {"ALGAN_USE_DAEMON": "0", "ALGAN_VIDEO_ENCODER": "software", "UV_NO_SYNC": "1"},
   "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 15
+  "timeout_minutes": 20,
+  "artifacts": "tranche8-validation.xml"
 }
