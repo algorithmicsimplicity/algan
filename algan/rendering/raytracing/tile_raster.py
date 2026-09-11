@@ -69,7 +69,7 @@ def tiled_specs(
 ):
     """Build two-level bins, then tile-clipped rows for the existing kernels.
 
-    Returns ``(specs, active_tile_ids, stats)``. Fine candidates are generated
+    Returns ``(specs, stats)``. Fine candidates are generated
     from coarse CSR lists, not by expanding every primitive's pixel bbox.
     Boundaries/straddlers and circuits remain ordinary coverage candidates;
     only a certified triangle may supply an early opaque bound.
@@ -80,9 +80,8 @@ def tiled_specs(
     nt, nb = int(merged.get("num_triangles", 0)), int(merged.get("num_circuits", 0))
     nr = _checked_size(frames * (nt + nb), "primitive records")
     stats = {"tile_candidates": 0, "tile_bbox_rejected": 0, "tile_occluded": 0}
-    empty = torch.empty(0, dtype=torch.int32, device=device)
     if nr == 0:
-        return [], empty, stats
+        return [], stats
     records = torch.empty((nr, 8), dtype=torch.int32, device=device)
     base = 0
     for kind, nprim, bounds in ((0, nb, bez_bounds), (1, nt, tri_bounds)):
@@ -110,7 +109,7 @@ def tiled_specs(
     co, nc = _prefix(cc, "coarse incidences")
     del cc
     if not nc:
-        return [], empty, stats
+        return [], stats
     cw = (width + kernels.COARSE_TILE - 1) // kernels.COARSE_TILE
     ch = (height + kernels.COARSE_TILE - 1) // kernels.COARSE_TILE
     _checked_size(frames * cw * ch, "coarse bin IDs")
@@ -145,15 +144,14 @@ def tiled_specs(
         width,
         height,
     )
-    # Only nonempty valid fine bins enter the sparse pixel owner map. Padded
-    # children at the frame's right/bottom have zero incidences and are absent.
-    active = (fc != 0).nonzero(as_tuple=True)[0]
-    active_tiles = torch.sort(gather_exact(fine_ids, active)).values
-    _checked_size(active_tiles.numel() * kernels.FINE_TILE**2, "pixel buckets")
-    del records, cr, coarse_ids, coarse_offsets, fc, fine_ids, active
+    # The sorted list of nonempty fine bins used to exist so the ordering pass
+    # could map a pixel to its tile's bucket by binary search. It orders by
+    # pixel id directly now (``tile_fragment_order``), so this -- a nonzero, a
+    # gather and a sort, one more host drain among them -- is gone with it.
+    del records, cr, coarse_ids, coarse_offsets, fc, fine_ids
     stats["tile_candidates"] = nfc
     if not nfc:
-        return [], empty, stats
+        return [], stats
     intervals = torch.empty((nfc, 2), dtype=torch.float32, device=device)
     flags = torch.empty(nfc, dtype=torch.int32, device=device)
     bound = torch.empty(nf, dtype=torch.float32, device=device)
@@ -231,7 +229,7 @@ def tiled_specs(
     del intervals, bound, opaque, fo, pc
     if not npairs:
         stats["tile_bbox_rejected"], stats["tile_occluded"] = counters.cpu().tolist()
-        return [], active_tiles, stats
+        return [], stats
     pairs = torch.empty((npairs, 8), dtype=torch.int32, device=device)
     classes = torch.empty(npairs, dtype=torch.int32, device=device)
     kernels.tile_pair_write(
@@ -265,55 +263,67 @@ def tiled_specs(
             # is what the geometry kernels' ndarray arguments require.
             specs.append((kind, ordered[start : start + count], opaque_class))
         start += count
-    return specs, active_tiles, stats
+    return specs, stats
 
 
-def tile_fragment_order(keys, refs, layer_offset, active_tiles, width, height):
-    """Build pixel CSR by scatter, then sort only within individual pixels.
+def _primary_sort_key(keys, refs, layer_offset):
+    """``(depth bin, descending layer)`` packed, the emission's own relation.
 
-    Only the covered PIXEL IDs are globally ordered. Fragment depth/layer
-    ordering uses the existing unbounded in-place run sorter, retaining exact
-    integer keys and original-index tie breaking regardless of atomic arrival.
+    Computed with the SAME Torch expression as the reference global sort, not a
+    subtly different reciprocal-multiply inside a new kernel. ``depth_bin`` is
+    already clamped into ``[0, 2**31)`` so the shift cannot reach the sign bit,
+    and ``layer`` is a non-negative primitive index plus a count.
     """
     from algan.rendering.raytracing.raster_pipeline import _primary_depth_key
     from algan.rendering.raytracing.raster_taichi import _BEZ_BORDER_BITS
 
-    n = _checked_size(keys.numel(), "fragments")
-    device = keys.device
-    if not n:
-        return torch.empty(0, dtype=torch.int64, device=device)
-    bucket_count = _checked_size(
-        active_tiles.numel() * kernels.FINE_TILE**2, "pixel buckets"
-    )
-    counts = torch.zeros(bucket_count, dtype=torch.int32, device=device)
-    kernels.fragment_bucket_counts(keys, active_tiles, counts, n, width, height)
-    buckets = kernel_index(counts.nonzero(as_tuple=True)[0])
-    pixels = torch.empty(buckets.numel(), dtype=torch.int32, device=device)
-    kernels.bucket_pixels(buckets, active_tiles, pixels, pixels.numel(), width, height)
-    pixel_order = torch.argsort(pixels, stable=True)
-    buckets = gather_exact(buckets, pixel_order)
-    per_pixel = gather_exact(counts, buckets.to(torch.int64))
-    offsets, total = _prefix(per_pixel, "fragment CSR")
-    if total != n:
-        raise RuntimeError("Tiled primary scatter did not account for every fragment")
-    starts = torch.empty(bucket_count, dtype=torch.int32, device=device)
-    kernels.bucket_starts(buckets, offsets, starts, buckets.numel())
-    counts.zero_()
-    order = torch.empty(n, dtype=torch.int32, device=device)
-    kernels.scatter_fragment_order(
-        keys, active_tiles, starts, counts, order, n, width, height
-    )
-    del pixels, buckets, counts, starts, pixel_order, per_pixel
-    # Compute bins with the SAME Torch expression as the reference global
-    # sort, not a subtly different reciprocal-multiply inside a new kernel.
     depth_bin = _primary_depth_key(keys) & 0xFFFFFFFF
     layer = torch.where(
         refs < 0,
         (-refs - 1).clamp_min(0) >> _BEZ_BORDER_BITS,
         refs + int(layer_offset),
     ).to(torch.int64)
-    sort_key = (depth_bin << 32) | (0x7FFFFFFF - layer)
-    kernels.primary_pixel_order(offsets, sort_key, order, offsets.numel() - 1)
+    return (depth_bin << 32) | (0x7FFFFFFF - layer)
+
+
+def tile_fragment_order(keys, refs, layer_offset):
+    """Order the fragment stream by ``(pixel, depth bin, -layer, emission)``.
+
+    One 32-bit sort of the PIXEL ids, then the existing unbounded run sorter
+    within each pixel's run -- the reference frontend's relation, reached with
+    a narrower global key than its ``(pixel << 32) | depth_bin``.
+
+    ``torch.sort`` hands back the permutation and the sorted keys together, so
+    the run boundaries are a positional comparison on an immutable array and
+    cost no gather. ``initialize=False``: ``order`` arrives as that
+    permutation, so ``_sort_run`` reads each fragment's key at its ORIGINAL
+    index and breaks ties on it, which is what makes the result independent of
+    everything upstream.
+
+    This replaced a per-tile pixel-bucket CSR -- a zeroed ``active_tiles x
+    FINE_TILE**2`` table, a binary search over the active tiles and an atomic
+    per fragment in each of two passes, a ``nonzero``, a second sort and three
+    gathers -- along with the active-tile list itself, which existed only to
+    be binary-searched.
+    """
+    from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
+
+    n = _checked_size(keys.numel(), "fragments")
+    device = keys.device
+    if not n:
+        return torch.empty(0, dtype=torch.int64, device=device)
+    # int32: a frame-window pixel ordinal is checked against that range when
+    # the window is sized, and a narrower key is a cheaper radix sort.
+    pixels = (keys >> 32).to(torch.int32)
+    run_key, order = torch.sort(pixels, stable=True)
+    del pixels
+    # int32 like the CSR order it replaces: ``_sort_run`` narrows every load
+    # anyway, and this halves what the sort's inner loop moves.
+    order = order.to(torch.int32)
+    sort_key = _primary_sort_key(keys, refs, layer_offset)
+    # ``depth`` is unused at ``depth_key=False``; the kernel still binds an
+    # ndarray for it, so it gets the key array rather than an allocation.
+    key_run_order(run_key, sort_key, sort_key, order, n, False, False)
     return order.to(torch.int64)
 
 

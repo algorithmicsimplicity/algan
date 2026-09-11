@@ -560,6 +560,21 @@ def install_pipeline_hooks():
         ("_gather_fragment_arrays", "raster:   - fragment gather"),
     ):
         _try_wrap(rpl, _attr, _label)
+    # The opt-in tiled frontend's two halves, which stand in for the two
+    # stages above it replaces: binning + proofs where ``_window_pairs``
+    # would be, and the per-pixel ordering where ``_exact_fragment_order``
+    # would be. Without them both read as the discovery stage's own time,
+    # which is exactly the attribution that three rounds of tuning needed and
+    # did not have. ``prepare_sparse_raster_coverage`` imports both inside the
+    # call, so wrapping the module attribute is what that import picks up.
+    import algan.rendering.raytracing.tile_raster as tile_mod
+
+    for _attr, _label in (
+        ("tiled_specs", "raster:   - tile binning"),
+        ("tile_fragment_order", "raster:   - tile fragment order"),
+        ("compact_interior_sheets", "raster:   - compact_sheets"),
+    ):
+        _try_wrap(tile_mod, _attr, _label)
     for _attr, _label in (
         ("compact_sheets", "raster:   - compact_sheets"),
         ("_lexsort", "raster:     - sheets lexsort"),

@@ -1753,7 +1753,6 @@ def prepare_sparse_raster_coverage(
 
     tile_frontend = bool(rt_settings.raster_tile_binning)
     simple_interiors = bool(rt_settings.raster_simple_interiors)
-    active_tile_ids = None
     tile_stats = {}
     if tile_frontend:
         from algan.rendering.raytracing.tile_raster import tiled_specs
@@ -1783,7 +1782,7 @@ def prepare_sparse_raster_coverage(
                 width,
                 memory,
             )
-        specs, active_tile_ids, tile_stats = tiled_specs(
+        specs, tile_stats = tiled_specs(
             merged,
             tri_screen,
             tri_bounds,
@@ -2147,14 +2146,7 @@ def prepare_sparse_raster_coverage(
         if tile_frontend:
             from algan.rendering.raytracing.tile_raster import tile_fragment_order
 
-            order = tile_fragment_order(
-                frag_key_u,
-                frag_ref_u,
-                layer_offset_triangles,
-                active_tile_ids,
-                int(width),
-                int(height),
-            )
+            order = tile_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         else:
             order = _exact_fragment_order(
                 frag_key_u, frag_ref_u, layer_offset_triangles

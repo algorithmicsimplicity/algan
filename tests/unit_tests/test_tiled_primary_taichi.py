@@ -32,13 +32,6 @@ def _keys(pixels, depths):
     return (pixels.to(torch.int64) << 32) | (depths.float().view(torch.int32).to(torch.int64) & 0xFFFFFFFF)
 
 
-def _active_tiles(pixels, width, height):
-    fr, local = pixels // (width * height), pixels % (width * height)
-    x, y = local % width, local // width
-    tw, th = (width + 15) // 16, (height + 15) // 16
-    return torch.unique(((fr * th + y // 16) * tw + x // 16).to(torch.int32), sorted=True)
-
-
 @ti.kernel
 def _proof_kernel(screen: ti.types.ndarray(), pos: ti.types.ndarray(), camera: ti.types.ndarray(),
                   rectangles: ti.types.ndarray(), result: ti.types.ndarray()):
@@ -130,7 +123,6 @@ def test_tiled_primary_order_matches_reference(lengths, wide):
     pixels = torch.repeat_interleave(torch.tensor([0, 51, 117, 899][:len(lengths)]), torch.tensor(lengths, dtype=torch.int64))
     if wide:
         pixels += 1 << 25
-    width, height = 67, 35
     # Repeated depth bins and mixed circuit/triangle tie identities.
     depths = torch.randint(1, 16, (n,), generator=gen).float() * 0.0001
     depths[::11] = 1e20  # saturated bins still order by signed layer
@@ -140,9 +132,8 @@ def test_tiled_primary_order_matches_reference(lengths, wide):
     shuffle = torch.randperm(n, generator=gen)
     keys, refs = _keys(pixels, depths)[shuffle], refs[shuffle]
     expected = _exact_fragment_order(keys, refs, 7)
-    tiles = _active_tiles(pixels, width, height)
-    keys, refs, tiles = _device(keys, refs, tiles)
-    actual = tiled.tile_fragment_order(keys, refs, 7, tiles, width, height)
+    keys, refs = _device(keys, refs)
+    actual = tiled.tile_fragment_order(keys, refs, 7)
     assert torch.equal(actual.cpu(), expected)
 
 
@@ -405,7 +396,7 @@ def test_opaque_rejection_requires_strict_material_proof(case):
     sp, pbx, pby = _device(torch.tensor([[0., 0., 1.]]), torch.tensor([[1., 0., 0.]]), torch.tensor([[0., 1., 0.]]))
     bounds = precompute_triangle_screen_bounds(merged, screen, camera, sp, pbx, pby, 8., 8., 16, memory)
     col_row = torch.zeros(1, dtype=torch.int32, device=screen.device)
-    specs, _, stats = tiled.tiled_specs(merged, screen, bounds, None, camera, col_row, 0, 1, 16, 16)
+    specs, stats = tiled.tiled_specs(merged, screen, bounds, None, camera, col_row, 0, 1, 16, 16)
     assert specs
     assert stats['tile_occluded'] == 0
 
@@ -500,7 +491,7 @@ def test_tile_rows_follow_the_projection_and_only_drop_uncovered_pixels():
     seen = {}
     for spans in (False, True):
         with SETTINGS.raytracing.experimental.override(raster_span_candidates=spans):
-            specs, _, _ = tiled.tiled_specs(merged, screen, bounds, None, camera,
+            specs, _ = tiled.tiled_specs(merged, screen, bounds, None, camera,
                                             col_row, 0, 1, 16, 16)
         assert specs
         seen[spans] = _candidate_pixels(specs)
