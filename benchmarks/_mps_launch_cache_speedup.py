@@ -36,6 +36,7 @@ import random
 import runpy
 import statistics
 import sys
+import threading
 import time
 from contextlib import chdir
 from pathlib import Path
@@ -73,6 +74,13 @@ class DispatchMeter:
     measures the same span in both arms. Uninstalled before any timed render:
     a ``perf_counter`` pair per launch is itself a few hundred nanoseconds,
     which is real next to the ~20 us this change is worth.
+
+    A render launches kernels from its batch-prep thread as well as the main
+    one, and ``total += delta`` is a read-modify-write that the GIL can
+    interleave, silently dropping launches. Each thread therefore accumulates
+    into its own two-slot list -- no other thread touches it, and no lock sits
+    in the path being measured -- and the slots are summed at ``__exit__``,
+    after the render's threads have finished.
     """
 
     def __init__(self):
@@ -84,15 +92,22 @@ class DispatchMeter:
     def __enter__(self):
         previous = self.kernel_cls.__call__
         self.previous = previous
-        meter = self
+        local = threading.local()
+        self._slots = slots = []
+        lock = threading.Lock()
 
         def metered(kernel, *args, **kwargs):
+            slot = getattr(local, "slot", None)
+            if slot is None:
+                slot = local.slot = [0.0, 0]
+                with lock:
+                    slots.append(slot)
             started = time.perf_counter()
             try:
                 return previous(kernel, *args, **kwargs)
             finally:
-                meter.seconds += time.perf_counter() - started
-                meter.launches += 1
+                slot[0] += time.perf_counter() - started
+                slot[1] += 1
 
         self.kernel_cls.__call__ = metered
         return self
@@ -100,6 +115,8 @@ class DispatchMeter:
     def __exit__(self, *exc):
         self.kernel_cls.__call__ = self.previous
         self.previous = None
+        self.seconds = sum(slot[0] for slot in self._slots)
+        self.launches = sum(slot[1] for slot in self._slots)
         return False
 
 
