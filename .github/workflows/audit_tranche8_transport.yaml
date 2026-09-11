@@ -72,3 +72,5 @@ jobs:
           name: renderer-audit-tranche8-publication
           path: ${{ runner.temp }}/publication.json
           retention-days: 7
+
+# Retry after correcting the staged payload checksum input.
