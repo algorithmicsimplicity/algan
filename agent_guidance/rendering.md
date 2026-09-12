@@ -129,6 +129,35 @@ Radiance, power fractions and `intensity` are untouched, which is why this fixes
 
 Two things worth knowing: the umbra legitimately *lifts* (a `k x k` centre grid spans only `(1 - 1/k)` of the rectangle, so `samples = 4` shadowed from an emitter half the authored size), and `max_shadow_lights` defaults to 16, with one slot per packed emitter row across all lights. Rows beyond the cap are still lit but lose deterministic shadow visibility; truncation counters and a once-per-render warning report this. Raising an area light's sample count alone does not raise the shadow cap.
 
+## The sheet compaction reads back two probes a chunk, not a dozen scalars
+
+Every `.item()`, `.tolist()`, `bool()` or `int()` on a device tensor drains
+the queue, and inside `compact_sheets` each one waited out whatever the
+fragment sort and the rank kernel had left queued -- measured with
+`benchmarks/performance/torch_profile_scene.py --scopes` at 2-30 ms a drain
+on a T4 (`reports/gpu_workloads_2026_09/REPORT.md` §5.2.1). The chain now asks
+its host-side questions in two batched readbacks: the **stream probe**
+(triangles present, frame span, largest surface id) before the sort, and
+the **rank probe** (deepest conflict rank, band count, any declared closed
+shell, any group mixing shading classes) after it. Everything else that used
+to sync is derived from those: `_rank_pool_groups` takes the band count
+instead of re-deriving it with a `unique_consecutive`, the shell ceiling
+keys its segments with the surface bound instead of an `amax`, the
+sample-depth block sizes its band table from counts the host holds, and
+`_sibling_weights`' torch arm no longer early-returns on `multi.any()` (its
+final `where`s already hand back the inputs bit for bit where nothing split).
+`prepare_sparse_raster_coverage` likewise reads the spec boundaries and the
+total in one transfer and gates the opaque truncation on the specs' own
+opacity flags. The two per-(frame, triangle) tables the compaction gathers
+from -- the shading class and the prim band rule's slope -- are built once
+per batch and cached on `merged` (`_shade_class_table`, `_prim_slope_table`).
+
+`tests/unit_tests/test_sheet_compaction.py::test_compaction_reads_back_a_bounded_number_of_scalars`
+pins the count on a stream that takes every branch; `benchmarks/_compaction_sync_check.py`
+renders that kind of scene on two checkouts and compares the frames exactly.
+Adding a scalar readback to the chain is a measurable regression on every
+GPU, so fold a new question into one of the probes.
+
 ## The soft-shadow fan is budgeted, and the budget is a light-row column
 
 The fixed fan above priced the graphics workload of

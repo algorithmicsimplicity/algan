@@ -1974,7 +1974,24 @@ def prepare_sparse_raster_coverage(
         )
         counts64 = counts_all.to(torch.int64)
         prefix = torch.cumsum(counts64, 0) - counts64
-        num_frags = int(counts64.sum().item())
+        # Where each spec's fragments start, and the total, read in ONE host
+        # transfer before the launch loop. This used to be an
+        # ``int(counts.sum().item())`` per spec *inside* the loop, i.e. up to
+        # four hard syncs that each made the host wait out the WRITE kernel it
+        # had just queued before it could queue the next one -- and then one
+        # more for the total ahead of the boundaries. ``prefix`` already holds
+        # every boundary: a spec's fragments run from ``prefix`` at its first
+        # pair to ``prefix`` at the next spec's first pair, and the total is
+        # the last pair's prefix plus its count.
+        _pair_starts = []
+        _at = 0
+        for _kind, _pairs, *_rest in count_parts:
+            _pair_starts.append(_at)
+            _at += int(_pairs.shape[0])
+        frag_bounds = torch.cat(
+            [prefix[_pair_starts], prefix[-1:] + counts64[-1:]]
+        ).tolist()
+        num_frags = int(frag_bounds[-1])
         if num_frags == 0:
             return None
         # Pre-truncation emitted-fragment count: this sizes the discovery
@@ -1993,20 +2010,14 @@ def prepare_sparse_raster_coverage(
         frag_cov_u = _arena_tensor(memory, (num_frags,), torch.float32, 1.0)
         frag_msk_u = _arena_tensor(memory, (num_frags,), torch.int32, AA_MASK_ALL)
         opaque_u = _arena_tensor(memory, (num_frags,), torch.bool, False)
-        # Where each spec's fragments start, read in ONE host transfer before
-        # the launch loop. This used to be an ``int(counts.sum().item())`` per
-        # spec *inside* the loop, i.e. up to four hard syncs that each made the
-        # host wait out the WRITE kernel it had just queued before it could
-        # queue the next one. ``prefix`` already holds every boundary: a spec's
-        # fragments run from ``prefix`` at its first pair to ``prefix`` at the
-        # next spec's first pair (``num_frags`` for the last).
-        _pair_starts = []
-        _at = 0
-        for _kind, _pairs, *_rest in count_parts:
-            _pair_starts.append(_at)
-            _at += int(_pairs.shape[0])
-        frag_bounds = prefix[_pair_starts].tolist()
-        frag_bounds.append(num_frags)
+        # Does any spec that emits fragments declare them opaque? Decides
+        # below whether the opaque-prefix truncation has anything to do --
+        # on the host, from the same bounds, where it used to be an
+        # ``opaque_s.any()`` readback over the sorted stream.
+        any_opaque_spec = any(
+            opaque and frag_bounds[i + 1] > frag_bounds[i]
+            for i, (_kind, _pairs, opaque, *_rest) in enumerate(count_parts)
+        )
 
         pair_cursor = 0
         for spec_index, (kind, pairs, opaque, _counts, accepts) in enumerate(
@@ -2141,7 +2152,13 @@ def prepare_sparse_raster_coverage(
         # every transparent/opaque record behind it.  Reproduce that relation
         # in sparse sorted space: each pixel keeps the prefix through its first
         # opaque event.  The sort uses the exact same depth-bin/layer keys.
-        if bool(opaque_s.any().item()):
+        #
+        # Gated on the host flag rather than on ``opaque_s.any()``: no opaque
+        # spec means no opaque fragment, and where a spec is opaque but every
+        # fragment of it turned out partial, the keep mask comes back all-true
+        # and the ``keep.sum()`` test below sees no truncation -- the same
+        # outcome the readback gated, one queue drain fewer on a 2-D stream.
+        if any_opaque_spec:
             keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
             truncated = int(keep.sum().item()) != num_frags
             keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None

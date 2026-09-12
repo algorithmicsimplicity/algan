@@ -1125,6 +1125,9 @@ def test_the_shading_class_table_is_blocked_without_changing_a_class():
 
     def classes(budget):
         old = sh._FRAME_TABLE_BUDGET
+        # The table is cached on ``merged`` for the batch; drop it so each
+        # budget really rebuilds it.
+        merged.pop(sh._SHADE_CLASS_TABLE_KEY, None)
         try:
             sh._FRAME_TABLE_BUDGET = budget
             return sh._shade_class(
@@ -1138,6 +1141,51 @@ def test_the_shading_class_table_is_blocked_without_changing_a_class():
     assert int(whole.max()) > 0, "the fixture classified nothing as flat"
     for budget in (num_tri * 4, num_tri * 2, 1):
         assert torch.equal(classes(budget), whole), f"budget {budget} moved a class"
+
+
+def test_the_shading_class_table_is_built_once_per_batch():
+    """The ``[F, N]`` class table is cached on ``merged`` and later chunks
+    gather from it: a second chunk's classes are exactly what a fresh build
+    over its own frames gives, and the cached table is what it reads (a
+    mutation of the merged normals after the first chunk is not seen).
+    """
+    from algan.rendering.raytracing import sheets as sh
+
+    torch.manual_seed(20260912)
+    num_frames, num_tri = 6, 5
+    normals = torch.randn(num_frames, num_tri, 9)
+    normals[0] = normals[0, :, :3].repeat(1, 3)
+    normals[4] = normals[4, :, :3].repeat(1, 3)
+    merged = {"tri_norm": normals, "tri_pos": torch.randn(num_frames, num_tri, 9)}
+    safe_ref = torch.arange(num_tri).repeat(2)
+    is_tri = torch.ones_like(safe_ref, dtype=torch.bool)
+    # Chunk A covers batch frames 0-1, chunk B frames 4-5 (time_start = 4).
+    frame_rel = torch.arange(2).repeat_interleave(num_tri)
+    a = sh._shade_class(merged, frame_rel, 0, safe_ref, is_tri, True, 2)
+    assert sh._SHADE_CLASS_TABLE_KEY in merged
+    assert merged[sh._SHADE_CLASS_TABLE_KEY].shape == (num_frames, num_tri)
+    fresh = {"tri_norm": normals.clone(), "tri_pos": merged["tri_pos"].clone()}
+    b_fresh = sh._shade_class(fresh, frame_rel, 4, safe_ref, is_tri, True, 2)
+    b_cached = sh._shade_class(merged, frame_rel, 4, safe_ref, is_tri, True, 2)
+    assert torch.equal(b_fresh, b_cached)
+    assert int(b_cached.max()) > 0
+    assert int(a.max()) > 0
+    # The cache, not the arrays, is what a later chunk reads.
+    merged["tri_norm"] = torch.randn(num_frames, num_tri, 9)
+    assert torch.equal(
+        sh._shade_class(merged, frame_rel, 4, safe_ref, is_tri, True, 2), b_cached
+    )
+
+
+def test_per_frame_table_rows_accept_broadcast_rows_only():
+    from algan.rendering.raytracing import sheets as sh
+
+    f6 = torch.zeros(6, 3)
+    f1 = torch.zeros(1, 3)
+    assert sh._batch_table_rows(f6, f6) == 6
+    assert sh._batch_table_rows(f6, f1) == 6
+    assert sh._batch_table_rows(f1, f1) == 1
+    assert sh._batch_table_rows(f6, torch.zeros(3, 3)) is None
 
 
 def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
@@ -1169,6 +1217,7 @@ def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
 
     def splits(budget):
         old = sh._FRAME_TABLE_BUDGET
+        merged.pop(sh._PRIM_SLOPE_TABLE_KEY, None)
         try:
             sh._FRAME_TABLE_BUDGET = budget
             return sh._prim_split_after(
@@ -1194,6 +1243,39 @@ def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
     for budget in (num_tri * 3, num_tri, 1):
         assert torch.equal(splits(budget), whole), f"budget {budget} moved a split"
 
+    # The slope table is cached on ``merged`` for the batch, keyed on the
+    # camera rows and projection table it was built from: a later chunk of
+    # the same batch (time_start = 2, frames 2-4) gathers from it and agrees
+    # with a fresh build; a different projection table rebuilds.
+    assert sh._PRIM_SLOPE_TABLE_KEY in merged
+    late_rel = torch.arange(3).repeat_interleave(per_frame)
+    late_n = 3 * per_frame
+    late_ref = torch.arange(per_frame).repeat(3) % num_tri
+    late_t = torch.rand(late_n) * 5.0 + 0.5
+    late_order = torch.argsort(late_t, stable=True)
+    late_args = (
+        cam_origin,
+        pixel_world_scale,
+        tri_screen,
+        late_rel,
+        2,
+        late_ref,
+        torch.ones(late_n, dtype=torch.bool),
+        late_t,
+        late_t.index_select(0, late_order),
+        late_order,
+        2.0,
+        3,
+    )
+    cached = sh._prim_split_after(merged, *late_args)
+    fresh = sh._prim_split_after({"tri_pos": merged["tri_pos"]}, *late_args)
+    assert torch.equal(cached, fresh)
+    table_before = merged[sh._PRIM_SLOPE_TABLE_KEY][2]
+    sh._prim_split_after(
+        merged, *((cam_origin, pixel_world_scale, tri_screen.clone()) + late_args[3:])
+    )
+    assert merged[sh._PRIM_SLOPE_TABLE_KEY][2] is not table_before
+
 
 def test_an_implausible_frame_table_warns_once_and_still_returns():
     from algan.errors import AlganWarning
@@ -1214,3 +1296,67 @@ def test_an_implausible_frame_table_warns_once_and_still_returns():
     finally:
         sh._IMPLAUSIBLE_REPORTED.discard("probe-site")
         sh._IMPLAUSIBLE_REPORTED.discard("other-site")
+
+
+def test_compaction_reads_back_a_bounded_number_of_scalars():
+    """The compaction's host readbacks are consolidated into two probes.
+
+    Every ``.item()`` / ``.tolist()`` / ``bool()`` / ``int()`` on a device
+    tensor drains the queue, and on a GPU each one waits out whatever the
+    sort and the rank kernel left behind (measured at 2-30 ms a drain on a
+    T4). A stream that takes EVERY branch -- closed shells at partial
+    opacity, mixed shading classes, sample depth -- must stay within: the
+    stream probe (triangles present, frames, surface bound), the rank probe
+    (deepest rank, band count, any closed shell, classes mixed), the sheet
+    count after the rank split, and the class split's exact mixed test,
+    which only runs because this stream mixes classes.
+    """
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x), 4: (z, z, z)})
+    frags = [
+        (0, 0.5, 4, 1.0, MASK_ALL),
+        (0, 1.001, 0, 0.5, 0b00001111),
+        (0, 1.002, 1, 0.5, 0b11110000),
+        (1, 1.0, 0, 0.5, 0b00111100),
+        (1, 1.0001, 1, 0.5, 0b00111100),
+        (2, 1.0, 5, 0.5, BACKFACE | 0b0111),
+        (2, 2.0, 6, 0.5, 0b0111),
+    ]
+    coverage, merged, cam, pws = _coverage(_opaque(frags), tri_norm=tn)
+    merged["tri_closed"] = torch.ones(1, 8)
+    counts = {"n": 0}
+    names = ("item", "tolist", "__bool__", "__int__", "__float__")
+    originals = {name: getattr(torch.Tensor, name) for name in names}
+
+    def counted(name):
+        original = originals[name]
+
+        def wrapper(self, *args, **kwargs):
+            counts["n"] += 1
+            return original(self, *args, **kwargs)
+
+        return wrapper
+
+    for name in names:
+        setattr(torch.Tensor, name, counted(name))
+    try:
+        out = compact_sheets(
+            coverage,
+            merged,
+            cam,
+            pws,
+            time_start=0,
+            width=4,
+            height=4,
+            band_rule="prim",
+            band_c=4.0,
+            shade_split=True,
+            positioned_depth=True,
+            sample_depth=True,
+        )
+    finally:
+        for name in names:
+            setattr(torch.Tensor, name, originals[name])
+    assert out["num_sheets"] >= 5
+    assert counts["n"] <= 4, f"{counts['n']} scalar readbacks in one compaction"
