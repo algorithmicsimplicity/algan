@@ -17,9 +17,9 @@ neither is "the ray tracer is slow".
 | --- | ---: | ---: | ---: | ---: |
 | explainer, warm | **1.75 s** / 60 fr = 29 ms/frame | **4.05 s** / 30 fr = 135 ms/frame | 9.62 s / 60 fr = 160 ms/frame | 18.52 s / 15 fr = 1.23 s/frame |
 | explainer, cold | 104 s | 85 s | 94 s | 53 s |
-| graphics, warm | **8.21 s** / 60 fr = 137 ms/frame (7.91 s in a second session) | **115.4 s** / 30 fr = 3.85 s/frame (109.3 s in a second session) | 130.5 s / 60 fr = 2.17 s/frame | did not finish: 15 cold frames were still rendering when the job's 60-minute timeout fired, 50 minutes in |
-| graphics, cold | 143 s | 231 s | 415 s | > 50 min |
-| graphics, warm, **shadows forced off** (`--no-shadows`) | | **25.2 s** | | |
+| graphics, warm | **8.21 s** / 60 fr = 137 ms/frame (7.91 s in a second session) | **115.4 s** / 30 fr = 3.85 s/frame (109.3 s in a second session) | 130.5 s / 60 fr = 2.17 s/frame | ~110 s/frame: a 2-frame diagnostic took 290 s cold, ~70 s of it compile (§6.4); the 15-frame job hit its 60-minute timeout |
+| graphics, cold | 143 s | 231 s | 415 s | 290 s for 2 frames |
+| graphics, **shadows forced off** (`--no-shadows`) | | **25.2 s** warm | | 134 s cold for 2 frames (~42 s/frame) |
 | T4 GPU utilization, warm (avg) | 11% / 32% | 17% / 46% | | |
 
 * **The graphics workload is bound by one kernel: shadow rays.**
@@ -534,11 +534,42 @@ out the queue. The UHD arm never completed: 15 cold frames had not finished
 50 minutes after the PREVIEW pass, so at UHD this scene is a multi-hour
 render on that runner, and §5.2 is the only lever that reaches it.
 
+### 6.4 Why the Mac's UHD graphics pass timed out: throughput, not a hang
+
+A follow-up job (`mac_mps_graphics_uhd_2f_diagnostic.log`) rendered a
+**2-frame** UHD clip of the same scene with PERF logging and line-mode
+progress on, once with shadows and once with `--no-shadows`, one cold run
+each:
+
+| arm | end-to-end (cold) | of which kernel compile (launch column) | per frame, compile removed |
+| --- | ---: | ---: | ---: |
+| shadows on | 290.4 s | ~68 s (`sheet_resolve_shade` 51.4, `wavefront_shade` 7.6, `raster_tri_*` 3.5, `raster_shadow_trace` 2.4, `wavefront_shadow_events` 2.4) | **~110 s** |
+| shadows off | 133.9 s | ~50 s (`sheet_resolve_shade` 36.6, `wavefront_shade` 9.2, `raster_tri_*` 3.6) | **~42 s** |
+
+So the 15-frame pass needed roughly 28 minutes of rendering plus compile
+after the 9-minute PREVIEW pass in the same job, which is the 60-minute
+limit -- and the PERF log shows the memory model splitting even the 2-frame
+batch ("Reducing the frame batch to fit memory: 1:4, 2:4"), so a 15-frame
+batch on the 7 GB box pays several rematerialize-and-re-project rounds on
+top. Nothing wedged; the log streams to the end and both arms exit 0.
+
+Where the 110 s a frame goes is the Metal profile of §6.3 at UHD scale:
+the **shadow-event build's own host time is 92 s of the 220 s** (bounces
+0-7, 8.5-19 s each -- torch ops on MPS issued one small dispatch at a time,
+each readback draining the queue), the `raster_shadow_trace` kernel itself
+18.6 s, `sheet_resolve_shade` 1.9 s of device time under 51 s of compile,
+the sparse resolve's own time 13.4 s, `compact_sheets` 26.5 s own and the
+fragment sort 11.0 s. Shadows cost ~68 s of the 110 s a frame (62%; the T4
+says 77%), and the rest is the compaction chain. Both arms of §5 that
+matter on the T4 (5.1, 5.2) are what would reach this box too, with the
+host-glue half of 5.1 -- fewer, larger dispatches in the shadow-event
+build -- mattering far more here than on CUDA.
+
 ## 7. What this round did not measure
 
 * A multi-batch clip of either new scene: the worker-thread ledger and the
   prefetch wait were exercised by the `nn_scene_*` reference steps (§6.2).
-* The graphics scene at UHD on the Mac (§6.3).
+* The graphics scene at UHD on the Mac beyond a 2-frame diagnostic (§6.4).
 * A physical Mac. The runner's virtualization tax is in every Mac launch
   and readback number; the Mac compaction share (56%) is directionally
   right and numerically inflated.
