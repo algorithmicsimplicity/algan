@@ -278,7 +278,9 @@ def main(argv=None):
         from algan.constants.math import GIGABYTES
         from algan.settings import SETTINGS
 
-        SETTINGS.computing.set(available_memory_override=args.memory_gb * GIGABYTES)
+        SETTINGS.computing.set(
+            available_memory_override=int(args.memory_gb * GIGABYTES)
+        )
     if args.scopes:
         install_scopes()
     seconds = args.frames / settings.frames_per_second
