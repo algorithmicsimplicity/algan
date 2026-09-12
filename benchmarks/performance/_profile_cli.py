@@ -62,6 +62,12 @@ def parse_args(argv=None, *, default_seconds):
         help="enable Taichi's per-kernel GPU profiler (re-inits the runtime)",
     )
     parser.add_argument("--tag", default=None, help="suffix for the report files")
+    parser.add_argument(
+        "--no-shadows",
+        action="store_true",
+        help="render with SETTINGS.raytracing.shadows off, whatever the scene "
+        "asks for -- the A/B arm that prices the shadow rays",
+    )
     args = parser.parse_args(argv)
     settings = getattr(algan, args.quality)
     if args.frames is not None:
@@ -85,11 +91,20 @@ def run(scene_func, name, *, default_seconds, argv=None):
         f"[bench] {name}: quality {args.quality} "
         f"({args.settings.resolution[0]}x{args.settings.resolution[1]} @ "
         f"{args.settings.frames_per_second} fps), {args.seconds:g}s = "
-        f"{args.num_frames} frames, {args.runs} run(s), tag {tag}",
+        f"{args.num_frames} frames, {args.runs} run(s), tag {tag}"
+        f"{' [shadows forced off]' if args.no_shadows else ''}",
         flush=True,
     )
+
+    def author():
+        scene_func(args.seconds)
+        if args.no_shadows:
+            # After the scene, so it wins over the scene's own setting; the
+            # switch is read live at render time.
+            algan.SETTINGS.raytracing.set(shadows=False)
+
     return profile_scene(
-        lambda: scene_func(args.seconds),
+        author,
         args.settings,
         tag,
         runs=args.runs,
