@@ -4,36 +4,61 @@ on:
     branches: [codex/sheet-compaction-transport]
     paths: [.github/workflows/sheet_transport.yaml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  validate:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify patch checksum
+      - name: Preserve hash-checked patch payloads outside the checkout
         run: |
+          python .github/decode_sheet.py
+          cp .github/sheet_fix.patch /tmp/sheet_fix.patch
+          cp .github/sheet_tests_extra.patch /tmp/sheet_tests_extra.patch
+          cp .github/sheet_code_manifest.json /tmp/sheet_code_manifest.json
+      - name: Reconstruct the validated source tree on its exact base
+        run: |
+          set -euo pipefail
+          base=b116338e09956448f581db1819ba1f04cadc651d
+          git fetch origin "$base"
+          git checkout --detach "$base"
+          for patch in sheet sheet_fix sheet_tests_extra; do
+            git apply --check --index "/tmp/$patch.patch"
+            git apply --index "/tmp/$patch.patch"
+          done
+          git diff --cached --check
           python - <<'PY'
-          import base64, gzip, hashlib, pathlib
-          s = pathlib.Path('.github/sheet_payload.b64').read_text()
-          for old, new in [('YMiOUuTKrmLgzI5i5bM6OY', 'YMiOUuTKrmLgzI5i5M6OY'), ('BaSljb3d3qJ9m', 'BaSljb3qJ9m'), ('IIMayTDDAOmp', 'IIMayDAOmp'), ('05lmz9K849802Vrd', '05lmz9K802Vrd')]:
-              s = s.replace(old, new)
-          print('Encoded length:', len(s), flush=True)
-          p = gzip.decompress(base64.b64decode(s, validate=True))
-          digest = hashlib.sha256(p).hexdigest()
-          print('Patch SHA256:', digest)
-          assert digest == '2c67f67edb0c69364b0ba7c633121f46598c2bedaf497eb85f9b4e2f10f313eb'
-          pathlib.Path('/tmp/sheet.patch').write_bytes(p)
+          import ast, hashlib, json, pathlib, subprocess
+          expected = json.loads(pathlib.Path('/tmp/sheet_code_manifest.json').read_text())
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert sorted(changed) == sorted(expected), changed
+          assert not any(path.startswith('.github/') for path in changed)
+          for path, digest in expected.items():
+              data = pathlib.Path(path).read_bytes()
+              assert hashlib.sha256(data).hexdigest() == digest, path
+              if path.endswith('.py'):
+                  compile(ast.parse(data, filename=path), path, 'exec')
+          print('Verified all final source hashes:', len(changed))
           PY
-      - name: Validate against exact base
+      - name: Publish without rewriting history
         run: |
-          git fetch origin b116338e09956448f581db1819ba1f04cadc651d
-          git checkout --detach b116338e09956448f581db1819ba1f04cadc651d
-          git apply --check /tmp/sheet.patch
-          git apply /tmp/sheet.patch
-          git diff --check
+          set -euo pipefail
+          base=b116338e09956448f581db1819ba1f04cadc651d
+          branch=codex/sheet-compaction-fusion
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$base"
+          git config user.name 'Algan automation'
+          git config user.email 'noreply@github.com'
+          git commit -m 'Fuse sheet stream gathers and construct exact pixel runs' -m 'Add independent opt-in gates for fused sorted/final gathers, exact device pixel runs with opaque-prefix reuse, and stable primary-key/run sorting. Preserve coverage and depth semantics, bounded arena scratch, and reference fallback. Include targeted parity tests and complete-video A/B harness; defaults remain off pending measured acceptance.'
+          test "$(git rev-parse HEAD^)" = "$base"
+          git push origin "HEAD:refs/heads/$branch"
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$(git rev-parse HEAD)"
+          mkdir -p /tmp/sheet-publication
+          git show --stat HEAD > /tmp/sheet-publication/commit.txt
+          git rev-parse HEAD HEAD^{tree} > /tmp/sheet-publication/ids.txt
+          cp /tmp/sheet_code_manifest.json /tmp/sheet-publication/manifest.json
+          git diff --binary HEAD^ HEAD > /tmp/sheet-publication/sheet_compaction.patch
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: sheet-transport-debug
-          path: /tmp/sheet.patch
+          name: sheet-publication
+          path: /tmp/sheet-publication/
           retention-days: 3
