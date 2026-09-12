@@ -1,0 +1,19 @@
+--- a/algan/rendering/raytracing/sheet_stream.py
++++ b/algan/rendering/raytracing/sheet_stream.py
+@@ -74,9 +74,13 @@
+         name: torch.empty((n, *src.shape[1:]), dtype=src.dtype, device=src.device)
+         for name, src in sources.items()
+     }
+-    # A dummy with matching device avoids binding None through a kernel.
+-    band_out = torch.empty(
+-        n if band is not None else 0, dtype=torch.int64, device=key.device
++    # Metal zero-copy cannot import a zero-byte buffer. Reuse an existing
++    # output when the template removes band writes, rather than allocating
++    # a dummy. No kernel is launched for an empty result.
++    band_out = (
++        torch.empty(n, dtype=torch.int64, device=key.device)
++        if band is not None
++        else out["sheet_pix"]
+     )
+     if n:
+         launch(
