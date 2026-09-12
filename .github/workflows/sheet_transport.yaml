@@ -1,0 +1,39 @@
+name: Sheet compaction transport
+on:
+  push:
+    branches: [codex/sheet-compaction-transport]
+    paths: [.github/workflows/sheet_transport.yaml]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify patch checksum
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, pathlib
+          s = pathlib.Path('.github/sheet_payload.b64').read_text()
+          for old, new in [('YMiOUuTKrmLgzI5i5bM6OY', 'YMiOUuTKrmLgzI5i5M6OY'), ('BaSljb3d3qJ9m', 'BaSljb3qJ9m'), ('IIMayTDDAOmp', 'IIMayDAOmp'), ('05lmz9K849802Vrd', '05lmz9K802Vrd')]:
+              s = s.replace(old, new)
+          print('Encoded length:', len(s), flush=True)
+          p = gzip.decompress(base64.b64decode(s, validate=True))
+          digest = hashlib.sha256(p).hexdigest()
+          print('Patch SHA256:', digest)
+          assert digest == '2c67f67edb0c69364b0ba7c633121f46598c2bedaf497eb85f9b4e2f10f313eb'
+          pathlib.Path('/tmp/sheet.patch').write_bytes(p)
+          PY
+      - name: Validate against exact base
+        run: |
+          git fetch origin b116338e09956448f581db1819ba1f04cadc651d
+          git checkout --detach b116338e09956448f581db1819ba1f04cadc651d
+          git apply --check /tmp/sheet.patch
+          git apply /tmp/sheet.patch
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sheet-transport-debug
+          path: /tmp/sheet.patch
+          retention-days: 3
