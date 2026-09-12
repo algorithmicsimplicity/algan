@@ -1,0 +1,47 @@
+name: Publish validated cache diagnostics
+on:
+  push:
+    branches: [codex/offline-cache-mac-probe]
+    paths: [.github/workflows/publish_cache_diagnostics.yaml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct the validated files on the exact production parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/gpu-run/cache-diagnostics.b64 /tmp/cache-diagnostics.b64
+          git fetch --depth=1 origin 40aab2d7b110d2988e3b8095ebdb745a0208e854
+          git checkout --detach 40aab2d7b110d2988e3b8095ebdb745a0208e854
+          python3 - <<'PY'
+          import base64, hashlib, json, subprocess, zlib
+          from pathlib import Path
+          payload = Path('/tmp/cache-diagnostics.b64').read_text().replace('P+e/dOn', 'P+9e/dOn')
+          assert hashlib.sha256(payload.encode()).hexdigest() == '75ed35d70f612d2478f20d0fffc24dc7f06c9bba2f2fe7edfcf74ccc200e8d1e'
+          bundle = json.loads(zlib.decompress(base64.b64decode(payload)))
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == bundle['base']
+          subprocess.run(['git', 'apply', '--check'], input=bundle['patch'], text=True, check=True)
+          subprocess.run(['git', 'apply'], input=bundle['patch'], text=True, check=True)
+          for name, wanted in bundle['sha256'].items():
+              assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == wanted, name
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          subprocess.run(['git', 'add', '--', *bundle['sha256']], check=True)
+          actual = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert set(actual) == set(bundle['sha256']), actual
+          print('Validated production files:', json.dumps(bundle['sha256'], sort_keys=True))
+          PY
+          python3 -m py_compile algan/utils/profiling_utils.py benchmarks/_taichi_source_key_check.py tests/unit_tests/test_profiler_cache_reporting.py tests/unit_tests/test_source_key_check_harness.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Report actual kernel-cache reuse and enforce cross-process cache checks'
+          test "$(git rev-parse HEAD^)" = 40aab2d7b110d2988e3b8095ebdb745a0208e854
+          git push origin HEAD:refs/heads/codex/offline-cache-diagnostics
+          test "$(git ls-remote origin refs/heads/codex/offline-cache-diagnostics | cut -f1)" = "$(git rev-parse HEAD)"
+          git show --stat --oneline HEAD
+          echo "Published commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          git push origin --delete codex/offline-cache-mac-probe
