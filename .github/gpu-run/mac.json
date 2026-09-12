@@ -1,9 +1,9 @@
 {
-  "_request": "shadow-ray-queue-20260912-03-graphics",
-  "command": ".venv/bin/python -c \"import base64,gzip,hashlib,pathlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path('.github/shadow_payload.'+str(i)).read_text() for i in range(4)))); assert hashlib.sha256(p).hexdigest() == 'a160a04887af1a961659aae6d2012fd9f36dd3c75c45745f99d25d3cfb02486b'; pathlib.Path('/tmp/algan-shadow.patch').write_bytes(p); q=gzip.decompress(base64.b64decode(''.join(pathlib.Path('.github/shadow_followup.'+str(i)).read_text() for i in range(2)))); assert hashlib.sha256(q).hexdigest() == '412bf66b3534f3aa9d7ea403ba9112b5051a3a29340839a2e33b96d7c740cf04'; pathlib.Path('/tmp/shadow-followup.patch').write_bytes(q)\" && git fetch origin 325ac0f2aeafd852fed932b10faf0bf93ecefba0 && git checkout --detach 325ac0f2aeafd852fed932b10faf0bf93ecefba0 && git apply --check /tmp/algan-shadow.patch && git apply /tmp/algan-shadow.patch && git apply --check /tmp/shadow-followup.patch && git apply /tmp/shadow-followup.patch && .venv/bin/python -m pytest -q tests/unit_tests/test_shadow_queue.py tests/unit_tests/test_arena_args.py tests/unit_tests/test_shadow_ray_budget.py && .venv/bin/python benchmarks/_shadow_queue_check.py --scene graphics --width 704 --height 396 --pairs 2 --queue-pairs 1 --sort-ab --atol 0.000002 --require-mps",
+  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
+  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
   "arms": ["mac-mps"],
-  "env": {"ALGAN_USE_DAEMON": "0", "ALGAN_SHADOW_RAY_PARALLEL": "1", "ALGAN_VIDEO_ENCODER": "software", "ALGAN_ANIMATION_DEVICE": "cpu", "PYTHONUNBUFFERED": "1"},
-  "latex": false,
+  "env": {},
+  "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 60
+  "timeout_minutes": 120
 }
