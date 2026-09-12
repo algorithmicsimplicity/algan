@@ -1581,7 +1581,10 @@ class Scene(RenderLoopMixin):
             broadcastable grids, not scalars: ``x`` is ``[1, width, 1]`` and ``y``
             is ``[height, 1, 1]``, both in ``[0, 1)`` with ``y = 0`` at the
             *bottom* of the frame, and ``time`` is ``[frames, 1, 1, 1]`` in
-            seconds. It must return either a resolution-free color or a tensor
+            seconds. Its channels are Algan's colour layout,
+            ``[R, G, B, glow, opacity]``, and a narrower color is widened the way
+            :class:`~.Color` widens one: three channels mean no glow and an opaque
+            background. It must return either a resolution-free color or a tensor
             broadcasting to ``[frames, height, width, channels]`` -- so build
             constants with ``x.new_tensor(...)`` (not ``torch.tensor``, which
             lands on the CPU) and keep the leading frame axis, e.g. by

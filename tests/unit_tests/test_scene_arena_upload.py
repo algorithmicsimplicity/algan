@@ -167,8 +167,9 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
     that has already been decoded, so it has to arrive in the same space --
     while the display-referred space copies the authored value through. What
     both arms check is the same: the copy casts straight into the reserved
-    destination, a nonzero frame offset selects the right rows, and a missing
-    channel is filled from the source's last one.
+    destination, a nonzero frame offset selects the right rows, and a channel
+    the background does not supply gets its own default rather than a copy of
+    the source's last one.
     """
     previous = rt_settings.linear_color_space
     rt_settings.set_linear_color_space(linear)
@@ -186,23 +187,27 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
             solid_out, torch.tensor([0.0, 0.5, 1.0]), 0, torch.device("cpu")
         )
         authored = [0.0, 0.5, 1.0]
+        # An RGB background reaches neither of the two channels the buffer
+        # keeps past colour, and neither of them is a colour: glow is 0 (blue
+        # there is what made a plain background bloom) and opacity is opaque.
+        unsupplied = [0.0, 255.0]
         if linear:
             # 0.5 decodes to 0.21404 -- the anchor anyone can look up.
             channels = [255 * _reference_to_linear(c) for c in authored]
-            expected_solid = torch.tensor(channels + channels[-1:] * 2)
+            expected_solid = torch.tensor(channels + unsupplied)
             assert torch.allclose(
                 solid_out, expected_solid.expand_as(solid_out), atol=1e-3
             )
         else:
             channels = [round(255 * c) for c in authored]
             expected_solid = torch.tensor(
-                channels + channels[-1:] * 2, dtype=torch.uint8
+                channels + [round(c) for c in unsupplied], dtype=torch.uint8
             )
             assert torch.equal(solid_out, expected_solid.expand_as(solid_out))
 
         # Animated/image backgrounds carry one padding row followed by flattened
         # frame/pixel rows. Exercise a nonzero frame offset, uint8 -> float32 copy,
-        # and missing-channel fill from the source's final channel.
+        # and the glow channel an RGB image does not supply.
         rows = torch.tensor(
             [
                 [99, 99, 99],  # leading padding row
@@ -222,13 +227,14 @@ def test_prefill_background_copies_and_casts_directly_into_arena(linear):
             """An image background is 8-bit sRGB like any other texture."""
             return 255 * _reference_to_linear(byte / 255.0) if linear else byte
 
-        # The fourth channel is the missing-channel fill, and it is a raw copy
-        # of the source's last channel in both spaces: it stands in for alpha,
-        # which is a coverage weight rather than a colour, so it is not decoded.
+        # The fourth channel is glow, in both spaces. An RGB image says nothing
+        # about glow, so it is zero: filled with the source's last channel it
+        # was the image's own blue, and bloom then blurred every pixel of the
+        # background at that strength.
         expected_animated = torch.tensor(
             [
-                [[*map(colour, (7, 8, 9)), 9], [*map(colour, (10, 11, 12)), 12]],
-                [[*map(colour, (13, 14, 15)), 15], [*map(colour, (16, 17, 18)), 18]],
+                [[*map(colour, (7, 8, 9)), 0], [*map(colour, (10, 11, 12)), 0]],
+                [[*map(colour, (13, 14, 15)), 0], [*map(colour, (16, 17, 18)), 0]],
             ],
             dtype=torch.float32,
         )
