@@ -1260,6 +1260,13 @@ def run_once(
     peak_reserved = (
         torch.cuda.max_memory_reserved() / 2**20 if torch.cuda.is_available() else 0.0
     )
+    if not torch.cuda.is_available() and torch.mps.is_available():
+        # MPS keeps no peak statistic; what it can say is what torch holds
+        # right after the render (allocated) and what the driver has mapped
+        # for it (reserved). Both used to print as 0 MB on every Metal run.
+        with suppress(Exception):
+            peak_alloc = torch.mps.current_allocated_memory() / 2**20
+            peak_reserved = torch.mps.driver_allocated_memory() / 2**20
     return {
         "total": total,
         "peak_alloc_mb": peak_alloc,
@@ -1543,7 +1550,7 @@ def format_run(res, index, total_runs=None):
     # Memory + scene geometry.
     w("")
     w(
-        f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB, "
+        f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB (MPS: allocated after render), "
         f"peak reserved {res['peak_reserved_mb']:.0f} MB"
     )
     for k, st in enumerate(res["scene_stats"]):
@@ -1579,7 +1586,18 @@ def format_header(static_specs=None, tools=None):
     w("=" * 78)
     w("Algan ray-tracing scene profile")
     w("=" * 78)
-    dev = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    # The device Algan actually resolved for rendering, not torch's CUDA
+    # probe: an MPS render used to print "device: cpu" here, which reads as
+    # a silent CPU fallback on exactly the harness where that is the failure
+    # mode to watch for.
+    try:
+        from algan.settings._startup import render_device
+
+        dev = str(render_device())
+    except Exception:
+        dev = "cpu"
+    if torch.cuda.is_available():
+        dev = f"{dev} ({torch.cuda.get_device_name(0)})"
     w(f"device: {dev}")
     if static_specs:
         w(
