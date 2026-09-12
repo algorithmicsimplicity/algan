@@ -1,9 +1,15 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "_request": "sheet-stream-individual-arms-2026-09-13-1",
+  "command": ".venv/bin/python -m pytest -q tests/unit_tests/test_sheet_stream.py && .venv/bin/python benchmarks/_sheet_stream_check.py --scene explainer --quality PREVIEW --frames 60 --pairs 2 --arms reference,fused,runs,sort --require-mps",
   "arms": ["mac-mps"],
-  "env": {},
-  "latex": true,
+  "env": {
+    "ALGAN_USE_DAEMON": "0",
+    "ALGAN_ANIMATION_DEVICE": "cpu",
+    "ALGAN_VIDEO_ENCODER": "software",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 45
 }
