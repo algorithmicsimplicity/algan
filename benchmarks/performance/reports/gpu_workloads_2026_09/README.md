@@ -52,6 +52,10 @@ sound.
   explainer UHD/PREVIEW and graphics UHD, the frame-hash parity check
   (`benchmarks/_compaction_sync_check.py`) and `_sheet_kernel_check.py` on
   the new commit.
+* `t4_runsort_<step>.log` -- the sixth session: the class split's
+  within-run grouping sort and the prim-slope cache's removal (`161d7c0`
+  against `979b101`) at explainer UHD and graphics UHD, plus the explainer
+  workload's own frame-hash parity check (REPORT.md §5.2.2).
 * `REPORT.md` -- the analysis and the ranked optimization targets.
 
 ## The profiler was fixed first

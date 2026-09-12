@@ -53,7 +53,7 @@ risk):
 | # | target | workload it helps | what it costs today | plausible gain |
 | --- | --- | --- | --- | --- |
 | 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 77% of graphics UHD (measured by the shadows-off arm), 37% at PREVIEW | **shipped: -19% UHD, -10% PREVIEW (§5.1.1)**; the rest is hard-light traversal, not ray count |
-| 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | **host side shipped (§5.2.1): `compact_sheets` -10% at UHD, -44% at PREVIEW, end-to-end unchanged on the T4** -- the remaining cost is device work (sort, gathers, class-group sort); the Mac is where the readback removal should pay |
+| 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | **shipped (§5.2.1-5.2.2): `compact_sheets` -22% at explainer UHD, -44% at PREVIEW, -5% on graphics; end-to-end inside the T4's noise** -- the rest is device work (fragment sort, gathers); the Mac is where the readback removal should pay |
 | 3 | scene preparation off the critical path: split the first batch so prefetch can overlap; GPU-side circuit sampling and PN dice | every short render at PREVIEW | 52% of explainer PREVIEW, 25% of graphics PREVIEW | 1.5-2x at PREVIEW |
 | 4 | fixed per-render overheads: the pre-render `gc.collect()`, the pageable frame copy, the encode tail | every render, most visible on short ones | 24% of explainer PREVIEW; 17% of explainer UHD | 0.3-0.7 s per render |
 | 5 | reflection-ray budget: roughness-aware use of the glossy prefilter instead of tracing, contribution cutoff | scenes with large glossy surfaces | 89% of UHD pixels spawn a bounce; traverse + shade + compaction of 222 M continuation rays = ~12% of graphics UHD | 1.1x on graphics UHD |
@@ -508,17 +508,45 @@ where every readback is a command-buffer commit and wait rather than a
 cheap stream sync, the same change is expected to be worth far more
 (§6.3: the chain there was 56% of the explainer's UHD render).
 
+#### 5.2.2 Measured: the class split's grouping sort inside each run (commit `979b101`)
+
+The first device-side cut from the list below: `_class_groups_by_run_sort`
+replaces the class split's `torch.unique` over `band * base + class` -- a
+global radix sort of one 64-bit key per fragment, paid wherever a chunk
+mixes flat-shaded classes -- with `key_run_order` inside each (pixel,
+surface, facing) run. Same numbering by construction (§5.2.1), and the
+explainer workload's own stream, which takes this path, renders identically
+on the T4 (`t4_runsort_parity_explainer.log`: 0 of 4 x 921,600 pixels
+differ). The same session also carries the prim-slope cache's removal.
+`161d7c0` against `979b101`, back to back (`t4_runsort_*.log`):
+
+| arm | warm end-to-end | `sparse discovery` incl. | `compact_sheets` incl. | `sheets prim split` |
+| --- | ---: | ---: | ---: | ---: |
+| explainer UHD, before | 4.18 s | 1.018 s | 0.608 s | 0.032 s |
+| explainer UHD, after | **3.84 s (-8%)** | 0.934 s (-8%) | **0.527 s (-13%)** | 0.025 s |
+| graphics UHD, before | 92.66 s | 8.095 s | 4.390 s | 0.251 s |
+| graphics UHD, after | 92.30 s | 7.833 s (-3%) | **4.137 s (-6%)** | 0.154 s |
+
+Against the pre-target checkout (`f158d32`, §5.2.1's "before" arms) the
+two commits together take `compact_sheets` from 0.676 s to 0.527 s at
+explainer UHD (**-22%**) and `sparse discovery` from 1.039 s to 0.934 s
+(-10%), from 4.364 s to 4.137 s (-5%) on the graphics scene; end to end the
+explainer's UHD render moved 3.99 -> 3.84 s and the graphics render
+90.25 -> 92.30 s -- both inside the session-to-session spread of the
+box, which is the honest reading of target #2 on the T4: a quarter off the
+chain, and the chain was a tenth of the render.
+
 What is left in the chain is device work, and the ranking within it is
 now known: the fragment sort (49 ms a chunk on graphics UHD, `torch.argsort`
 -- `ALGAN_DEVICE_RADIX_SORT` is off by default), the seventeen
 `index_select`s over the fragment stream in `compact_sheets` (34 ms; a
 fused sorted-view gather in the shape of `gather_fragment_arrays` would
-halve their traffic), the class split's `torch.unique` over
-`band * base + class` (13-25 ms a chunk when a chunk mixes classes; a
-segmented sort within band runs, as `pixel_group_order` already does for
-pixels, would replace the global sort), and the two `unique_consecutive`s
-over the pixel stream (a run-boundary kernel). Each is a kernel-side
-change with the parity harness above as its acceptance test.
+halve their traffic), and the two `unique_consecutive`s over the pixel
+stream (a run-boundary kernel). Each is a kernel-side change with the
+parity harness above as its acceptance test. And the measurement that
+should come first is the Mac's: every readback the chain lost was a
+command-buffer commit and wait there (§6.3), so the same two commits are
+expected to move that box's explainer UHD render by far more than the T4's.
 
 ### 5.3 Preparation off the critical path (PREVIEW: 1.5-2x)
 
