@@ -1,0 +1,52 @@
+--- a/tests/unit_tests/test_sheet_stream.py
++++ b/tests/unit_tests/test_sheet_stream.py
+@@ -199,6 +199,10 @@
+                 )
+             )
+         assert memory.get_pointers() == before
++    # Overwrite every freed scratch byte before inspecting returned records.
++    # This catches a final output accidentally aliasing the sorted arena stream.
++    with memory.temp():
++        memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).fill_(255)
+     for name, expected in results[0].items():
+         actual = results[1][name]
+         if isinstance(expected, torch.Tensor):
+@@ -215,3 +219,38 @@
+         assert getattr(settings, name) is True
+         setattr(SETTINGS.raytracing.experimental, name, False)
+         assert getattr(settings, name) is False
++
++
++def test_fragment_order_preserves_depth_bins_and_geometry_layers(device, monkeypatch):
++    from algan.rendering.raytracing import raster_pipeline as pipeline
++
++    monkeypatch.setattr(pipeline.device_sort, "radix_sort_available", lambda _: False)
++    generator = torch.Generator().manual_seed(147)
++    count = 513
++    pixels = torch.randint(0, 17, (count,), generator=generator, dtype=torch.int64)
++    depths = torch.randint(0, 20, (count,), generator=generator).float() + 0.25
++    depths *= pipeline.depth_tie_epsilon
++    # Deliberately shuffle depth within an equal bin: true depth must not
++    # displace the reference's geometry-layer tie breaker.
++    depths[::5] += 0.5 * pipeline.depth_tie_epsilon
++    key = (pixels << 32) | (depths.view(torch.int32).to(torch.int64) & 0xFFFFFFFF)
++    refs = torch.randint(-2048, 127, (count,), generator=generator, dtype=torch.int32)
++    key, refs = key.to(device), refs.to(device)
++    SETTINGS.raytracing.experimental.sheet_fragment_run_sort = False
++    expected = pipeline._exact_fragment_order(key, refs, 211)
++    SETTINGS.raytracing.experimental.sheet_fragment_run_sort = True
++    actual = pipeline._exact_fragment_order(key, refs, 211)
++    assert_exact(actual, expected)
++
++
++def test_kernel_gate_rejects_uninitialized_or_oversized_inputs(monkeypatch):
++    from types import SimpleNamespace
++
++    from algan.rendering import taichi_runtime
++
++    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: None)
++    assert not stream.stream_kernel_available(torch.empty(4))
++    monkeypatch.setattr(taichi_runtime, "_live_arch", lambda: object())
++    monkeypatch.setattr(taichi_runtime, "taichi_launch_is_local", lambda _: True)
++    # Exercise the integer capacity bound without allocating enormous tensors.
++    assert not stream.stream_kernel_available(SimpleNamespace(shape=(2**31,)))
