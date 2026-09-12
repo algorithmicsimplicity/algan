@@ -33,12 +33,25 @@ import numpy as np  # noqa: E402
 FRAMES = (0.0, 0.3, 0.6, 1.0)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _repo_root():
+    """The checkout this runs against: the script's own tree, or -- when a
+    copy of the script runs from elsewhere against another checkout, as the
+    Kaggle A/B steps do -- the working directory, which the runner sets to
+    the repository root.
+    """
+    own = os.path.dirname(HERE)
+    if os.path.isdir(os.path.join(own, "benchmarks", "performance")):
+        return own
+    return os.getcwd()
+
+
 #: A flat-shaded glTF mesh: one surface whose triangles carry many distinct
-#: face normals, which is what makes a (pixel, surface) group MIX shading
-#: classes and sends the class split through its grouping sort. The built-in
-#: solids do not: their triangles class as smooth.
+#: face normals -- the kind of geometry that makes a (pixel, surface) group
+#: MIX shading classes. (The built-in solids class as smooth.)
 MODEL = os.path.join(
-    os.path.dirname(HERE), "tests", "full_renders", "assets", "textured_icosphere.glb"
+    _repo_root(), "tests", "full_renders", "assets", "textured_icosphere.glb"
 )
 
 
@@ -95,7 +108,7 @@ def workload_scene(name):
     GPU. The graphics scene is NOT byte-stable across runs (split pixels), so
     it is not offered here.
     """
-    sys.path.insert(0, os.path.join(HERE, "performance"))
+    sys.path.insert(0, os.path.join(_repo_root(), "benchmarks", "performance"))
     module = __import__(f"{name}_scene")
     module.scene(1.0)
 
