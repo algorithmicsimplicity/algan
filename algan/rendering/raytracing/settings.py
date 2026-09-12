@@ -1893,6 +1893,12 @@ def set_raster_pair_flags(enabled):
 # allocator hand each one the block the previous stage just freed. This session
 # reached here from an out-of-memory failure on this very scene; 4 ms is not
 # worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
+# Opt-in until matched full-render measurements justify a backend default.
+sheet_fragment_run_sort = env_flag("ALGAN_SHEET_FRAGMENT_RUN_SORT", False)
+sheet_fused_stream = env_flag("ALGAN_SHEET_FUSED_STREAM", False)
+sheet_device_runs = env_flag("ALGAN_SHEET_DEVICE_RUNS", False)
+
+
 raster_fused_gather = env_flag("ALGAN_RASTER_FUSED_GATHER", False)
 
 

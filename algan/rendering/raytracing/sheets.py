@@ -1666,6 +1666,7 @@ def compact_sheets(
     shade_split=False,
     positioned_depth=True,
     sample_depth=False,
+    memory=None,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -1790,6 +1791,9 @@ def compact_sheets(
     frag_msk = coverage["frag_msk"][:n]
     frag_cap = coverage["frag_cap"][:n]
     device = frag_key.device
+    from algan.rendering.raytracing.sheet_stream import stream_kernel_available
+
+    fused_stream = rt_settings.sheet_fused_stream and stream_kernel_available(frag_key)
 
     pix = frag_key >> 32
     t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
@@ -1874,15 +1878,21 @@ def compact_sheets(
         coverage.get("run_offsets"),
         key_bounds=(num_frames * ppf, gkey_bound),
     )
-    pix_o = pix.index_select(0, order)
-    g_o = gkey.index_select(0, order)
-    t_o = t.index_select(0, order)
-    del pix, gkey
+    if fused_stream:
+        from algan.rendering.raytracing.sheet_stream import gather_group_stream
 
-    new_group = torch.ones(n, dtype=torch.bool, device=device)
-    if n > 1:
-        new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
-    del g_o
+        pix_o, t_o, cov_o, msk_o, new_group = gather_group_stream(
+            order, pix, gkey, t, frag_cov, frag_msk, memory=memory
+        )
+    else:
+        pix_o = pix.index_select(0, order)
+        g_o = gkey.index_select(0, order)
+        t_o = t.index_select(0, order)
+        new_group = torch.ones(n, dtype=torch.bool, device=device)
+        if n > 1:
+            new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
+        del g_o
+    del pix, gkey
 
     band_start = new_group.clone()
     if band_rule == "prim" and n > 1 and tri_present:
@@ -2063,8 +2073,9 @@ def compact_sheets(
         return None
 
     # ---- P2: segmented reduction over bands --------------------------------
-    cov_o = frag_cov.index_select(0, order)
-    msk_o = frag_msk.index_select(0, order)
+    if not fused_stream:
+        cov_o = frag_cov.index_select(0, order)
+        msk_o = frag_msk.index_select(0, order)
     pos_o = order  # original stream position of each sorted fragment
 
     # ---- The ceiling, applied ----------------------------------------------
@@ -2476,26 +2487,47 @@ def compact_sheets(
     # consumes (see ``_sibling_weights``). Where a band holds one sheet --
     # every band with ``shade_split`` off -- these ARE the sheet's own area
     # and mask, so the resolve reads exactly what it read before.
-    sheet_cov_final = sheet_cov.index_select(0, final)
-    sheet_msk_final = sheet_msk.index_select(0, final)
+    final_records = None
+    if fused_stream:
+        from algan.rendering.raytracing.sheet_stream import gather_sheet_records
+
+        final_records, sheet_band_final = gather_sheet_records(
+            final,
+            nearest_orig,
+            rep_orig,
+            frag_key,
+            frag_ref,
+            frag_ab,
+            frag_cap,
+            sheet_cov,
+            sheet_msk,
+            nfrag,
+            fused,
+            sheet_band,
+        )
+        sheet_cov_final = final_records["sheet_cov"]
+        sheet_msk_final = final_records["sheet_msk"]
+        sheet_key = final_records["sheet_key"]
+        sheet_pix = final_records["sheet_pix"]
+    else:
+        sheet_cov_final = sheet_cov.index_select(0, final)
+        sheet_msk_final = sheet_msk.index_select(0, final)
+        sheet_band_final = (
+            sheet_band.index_select(0, final) if sheet_band is not None else None
+        )
+        sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
+        sheet_pix = sheet_pix.index_select(0, final)
+        rep_final = rep_orig.index_select(0, final)
     sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
     if sheet_band is not None:
         sheet_wgt, sheet_wmsk = _sibling_weights(
-            sheet_band.index_select(0, final),
+            sheet_band_final,
             sheet_cov_final,
             sheet_msk_final,
             band_area,
             band_union,
             band_corr,
         )
-
-    # Two gathers of the PACKED key, so both take the split form under
-    # MPS-friendly mode (``gather_packed_key``): a full-width int64 gather on
-    # MPS keeps only ~25 significant bits, which would leave every sheet
-    # carrying the same depth.
-    sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
-    sheet_pix = sheet_pix.index_select(0, final)
-    rep_final = rep_orig.index_select(0, final)
 
     # ---- sheet_sample_depth: classify, floor, cede --------------------------
     # Everything here works on the FINAL-ordered per-sheet arrays; the lose
@@ -2504,7 +2536,11 @@ def compact_sheets(
     # runs and the outputs above are exactly what they were.
     if sample_depth:
         ppf = int(width) * int(height)
-        rep_ref = frag_ref.index_select(0, rep_final)
+        rep_ref = (
+            final_records["sheet_ref"]
+            if final_records is not None
+            else frag_ref.index_select(0, rep_final)
+        )
         is_tri_sheet = rep_ref >= 0
         low = sheet_msk_final & AA_MASK_ALL
         positioned_s = low != 0
@@ -2526,7 +2562,7 @@ def compact_sheets(
         # table height is a number the host already has -- it used to be an
         # ``amax`` readback here.
         if sheet_band is not None:
-            band_of_sheet = sheet_band.index_select(0, final)
+            band_of_sheet = sheet_band_final
             n_bands = n_group
         else:
             band_of_sheet = cid_band.index_select(0, final)
@@ -2584,15 +2620,25 @@ def compact_sheets(
     out = {
         "sheet_key": sheet_key,
         "sheet_pix": sheet_pix,
-        "sheet_ref": frag_ref.index_select(0, rep_final),
-        "sheet_ab": frag_ab.index_select(0, rep_final),
+        "sheet_ref": final_records["sheet_ref"]
+        if final_records is not None
+        else frag_ref.index_select(0, rep_final),
+        "sheet_ab": final_records["sheet_ab"]
+        if final_records is not None
+        else frag_ab.index_select(0, rep_final),
         "sheet_cov": sheet_cov_final,
         "sheet_msk": sheet_msk_final,
         "sheet_wgt": sheet_wgt,
         "sheet_wmsk": sheet_wmsk,
-        "sheet_cap": frag_cap.index_select(0, rep_final),
-        "sheet_nfrag": nfrag.index_select(0, final),
-        "sheet_fused": fused.index_select(0, final),
+        "sheet_cap": final_records["sheet_cap"]
+        if final_records is not None
+        else frag_cap.index_select(0, rep_final),
+        "sheet_nfrag": final_records["sheet_nfrag"]
+        if final_records is not None
+        else nfrag.index_select(0, final),
+        "sheet_fused": final_records["sheet_fused"]
+        if final_records is not None
+        else fused.index_select(0, final),
         "num_sheets": nb,
         "num_groups": num_tri_groups,
         "num_split_groups": num_split_groups,
