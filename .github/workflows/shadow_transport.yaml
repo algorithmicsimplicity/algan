@@ -1,0 +1,21 @@
+name: Shadow development transport
+on:
+  push:
+    branches: [codex/shadow-ray-transport-helper]
+    paths: [.github/workflows/shadow_transport.yaml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 325ac0f2aeafd852fed932b10faf0bf93ecefba0
+      - run: mkdir source && git archive HEAD | tar -x -C source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shadow-base-source
+          path: source/
+          include-hidden-files: true
+          retention-days: 3
