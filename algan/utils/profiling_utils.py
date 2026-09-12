@@ -120,6 +120,21 @@ class StageTimers:
         self.counts = defaultdict(int)
         self.device_sync_times = defaultdict(float)
         self.launch_times = defaultdict(float)
+        # The same two accumulators, split by which thread recorded them.
+        # ``times`` / ``exclusive_times`` sum over every thread, which is the
+        # right table to read a stage's cost from -- but the wrong number to
+        # subtract from the run's wall clock. With scene prefetch on, batch
+        # b+1's preparation runs on a worker thread WHILE batch b renders on
+        # the main thread, so summing both threads' exclusive time and
+        # subtracting it from one thread's wall clock double-counts the
+        # overlap, and the "(unaccounted ...)" line goes negative -- by 60%
+        # of the run on a prep-heavy PREVIEW render. Only the main thread's
+        # stages are in the wall clock's budget; the worker's are overlap, and
+        # the report prints them as such.
+        self.main_times = defaultdict(float)
+        self.main_exclusive_times = defaultdict(float)
+        self.worker_times = defaultdict(float)
+        self.worker_exclusive_times = defaultdict(float)
         # Work units processed per timed block, keyed by stage name like
         # ``times``. The wavefront bounce loop reports the active-ray count
         # entering each iteration here, which is what turns the per-iteration
@@ -148,22 +163,23 @@ class StageTimers:
             return
         tls.active.add(name)
         tls.stack_level += 1
+        # ``_sync_devices`` syncs on the main thread only: an unconditional
+        # sync here made every hooked prep call on the prefetch worker wait
+        # out the render thread's GPU queue, inflating prep wall ~50x (and
+        # perturbing the run it was measuring). The guard lives in the helper
+        # so every caller -- the kernel hooks included -- gets the same rule.
         _sync_devices()
         t0 = time.perf_counter()
         try:
             yield
         finally:
-            # Same main-thread guard as the entry sync: an unconditional sync
-            # here made every hooked prep call on the prefetch worker wait out
-            # the render thread's GPU queue, inflating prep wall ~50x (and
-            # perturbing the run it was measuring).
             _sync_devices()
             t3 = time.perf_counter()
             tls.stack_level -= 1
             t = t3 - t0
             tls.level_times[tls.stack_level] += t
-            self.times[name] += t
-            self.exclusive_times[name] += t - tls.level_times[tls.stack_level + 1]
+            excl = t - tls.level_times[tls.stack_level + 1]
+            self._record(name, t, excl)
             tls.level_times[tls.stack_level + 1] = 0
             self.counts[name] += 1
             if items is not None:
@@ -171,6 +187,21 @@ class StageTimers:
             # self.launch_times[name] += t1 - t0
             # self.device_sync_times[name] += t2 - t0
             tls.active.discard(name)
+
+    @staticmethod
+    def on_main_thread():
+        return threading.current_thread() is threading.main_thread()
+
+    def _record(self, name, incl, excl):
+        """Add one timed block to the all-thread and the per-thread tables."""
+        self.times[name] += incl
+        self.exclusive_times[name] += excl
+        if self.on_main_thread():
+            self.main_times[name] += incl
+            self.main_exclusive_times[name] += excl
+        else:
+            self.worker_times[name] += incl
+            self.worker_exclusive_times[name] += excl
 
     def charge_kernel_to_parent(self, dt):
         """Account ``dt`` to the enclosing stage as child (not own) time.
@@ -390,7 +421,10 @@ def _make_kernel_wrapper(orig, name):
         _sync_devices()
         t2 = time.perf_counter()
         dt = t2 - t0
-        TIMERS.times[label] += dt
+        # A kernel has no nested stages, so its exclusive time is its whole
+        # span; recording it through the same path as a stage is what keeps
+        # it on the right thread's side of the ledger.
+        TIMERS._record(label, dt, dt)
         TIMERS.counts[label] += 1
         TIMERS.launch_times[label] += t1 - t0
         TIMERS.device_sync_times[label] += t2 - t1
@@ -754,6 +788,15 @@ def install_pipeline_hooks():
     # several times per batch. All were previously unattributed.
     _try_wrap(
         RenderLoopMixin, "_prepared_batch_fits_render_arena", "arena preflight (batch)"
+    )
+    # The render thread's wait for the prefetch worker to hand over the next
+    # batch. This is THE number that says whether scene preparation is on the
+    # critical path: the worker's own stages above are overlapped with the
+    # render and cost nothing unless this wait is non-zero.
+    _try_wrap(
+        RenderLoopMixin,
+        "_await_prefetched_batch",
+        "wait for prefetched batch (render thread idle)",
     )
     _try_wrap(RenderLoopMixin, "_prepare_batch_on_worker", "overlap GPU prep (worker)")
     _try_wrap(
@@ -1224,6 +1267,10 @@ def run_once(
         "times": dict(TIMERS.times),
         "counts": dict(TIMERS.counts),
         "exclusive_times": dict(TIMERS.exclusive_times),
+        "main_times": dict(TIMERS.main_times),
+        "main_exclusive_times": dict(TIMERS.main_exclusive_times),
+        "worker_times": dict(TIMERS.worker_times),
+        "worker_exclusive_times": dict(TIMERS.worker_exclusive_times),
         "item_totals": dict(TIMERS.item_totals),
         "launches": list(TIMERS.kernel_launches),
         "scene_stats": [dict(b) for b in SCENE_STATS.get("batches", [])],
@@ -1334,7 +1381,199 @@ def _format_bounce_table(res):
     return "\n".join(out)
 
 
-def format_report(results, static_specs=None, tools=None, nvprof=None):
+def _stage_thread_tag(res, name):
+    """``main`` / ``worker`` / ``both`` -- which thread(s) recorded a stage.
+
+    Older result dicts (before the per-thread split) carry no thread tables;
+    they read as main-thread so the report degrades to what it printed then.
+    """
+    main = res.get("main_times", {}).get(name, 0.0)
+    worker = res.get("worker_times", {}).get(name, 0.0)
+    if "main_times" not in res:
+        return "main"
+    if worker and main:
+        return "both"
+    return "worker" if worker else "main"
+
+
+def render_thread_budget(res):
+    """Split a run's wall clock into (accounted on the render thread,
+    unaccounted, worker-thread exclusive time overlapped with it).
+
+    ``accounted`` sums the **main thread's** exclusive stage time only. The
+    worker's stages (scene prefetch: batch b+1's materialization and
+    geometry build while batch b renders) ran concurrently with the main
+    thread, so they are not in the wall clock's budget; adding them is what
+    used to drive the "(unaccounted ...)" line negative.
+    """
+    main_excl = res.get("main_exclusive_times")
+    if main_excl is None:  # pre-split result: every stage counted as main
+        main_excl = {
+            k: res["exclusive_times"].get(k, res["times"][k]) for k in res["times"]
+        }
+    accounted = sum(main_excl.values())
+    worker = sum(res.get("worker_exclusive_times", {}).values())
+    return accounted, res["total"] - accounted, worker
+
+
+def format_run(res, index, total_runs=None):
+    """The report section for one run: stage table, budget line, kernel GPU
+    table, throughput, telemetry and memory. ``format_report`` concatenates
+    these; ``profile_scene`` also prints each one the moment its run
+    finishes, so a job that is killed part-way still leaves the runs that
+    completed behind (the remote GPU harnesses reclaim jobs without warning,
+    and a profile that prints only at the end then yields nothing).
+    """
+    lines = []
+    w = lines.append
+    i = res.get("run_index", index)
+    w("")
+    w("-" * 78)
+    label = "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
+    w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
+    w("-" * 78)
+    w(
+        "incl is wall time, excl is time spent in function excluding "
+        "sub-processes of another tracked stage; thread is which thread "
+        "recorded it (worker = the scene-prefetch thread, overlapped with "
+        "the render thread and outside its budget)"
+    )
+    w(
+        f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}"
+        f"{'launch':>10}{'sync':>10}{'thread':>8}"
+    )
+    for k in res["times"]:
+        if k not in res["exclusive_times"]:
+            res["exclusive_times"][k] = res["times"][k]
+
+    for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
+        lt = res["launch_times"].get(name, 0)
+        ct = res["device_sync_times"].get(name, 0)
+        excl = res["exclusive_times"].get(name, secs)
+        w(
+            f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
+            f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
+            f"{100 * excl / res['total']:>8.1f}%"
+            f"{lt:>10.3f}{ct:>10.3f}{_stage_thread_tag(res, name):>8}"
+        )
+    # Sum *exclusive* times so nested stages aren't double-counted (e.g.
+    # Surface.get_render_primitives runs inside Scene._get_batch_of_primitives;
+    # kernels run inside "ray traced render total" and charge their span to
+    # it) -- and only the RENDER THREAD's, because the prefetch worker's
+    # stages overlap this thread's wall clock rather than adding to it.
+    accounted, unaccounted, worker = render_thread_budget(res)
+    w(
+        f"{'(unaccounted on the render thread: video encode, scene mgmt, ...)':<52}"
+        f"{'':>6}{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%"
+    )
+    if worker:
+        w(
+            f"{'(worker-thread prep, overlapped with the above)':<52}{'':>6}"
+            f"{worker:>10.3f}{100 * worker / res['total']:>8.1f}%"
+            "   excl; hidden behind the render unless the render thread waited"
+        )
+    if unaccounted < -0.05 * res["total"]:
+        w(
+            "  ** the render thread's accounted time exceeds its wall clock: a "
+            "stage is being double-counted (a nested stage or kernel not "
+            "charged to its parent) -- read the excl column with suspicion **"
+        )
+    bounce = _format_bounce_table(res)
+    if bounce:
+        w(bounce)
+
+    # Precise per-kernel GPU time from the Taichi profiler. ``% run`` is the
+    # kernel's GPU time as a fraction of the end-to-end run wall time (not of
+    # total GPU-kernel time), so it is comparable to the stage %'s above.
+    if res.get("kernel_gpu"):
+        run_ms = res["total"] * 1000.0
+        w("")
+        w(
+            "Taichi kernel GPU time (profiler; launch overhead excluded; "
+            "'recs' = serial + range-for sub-kernels):"
+        )
+        w(
+            f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'% run':>8}"
+            f"{'avg ms':>10}{'max ms':>10}"
+        )
+        for r in res["kernel_gpu"]:
+            pct = 100 * r["total_ms"] / run_ms if run_ms else 0.0
+            w(
+                f"  {r['name']:<40}{r['records']:>6}{r['total_ms']:>11.3f}"
+                f"{pct:>7.1f}%{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}"
+            )
+
+    # Ray throughput for the kernels we can size.
+    if res["launches"]:
+        w("")
+        w("trace kernel launches (wall time, incl. launch + sync overhead):")
+        for j, (kname, frames, rays, dt) in enumerate(res["launches"]):
+            note = " (incl. JIT compile)" if (i == 1 and j == 0) else ""
+            w(
+                f"  {kname}: {frames:>4} frames, {rays / 1e6:7.2f} M rays in "
+                f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s{note}"
+            )
+
+    # Live GPU telemetry -> throttling visibility.
+    tele = res.get("telemetry")
+    if tele:
+        w("")
+        w(f"GPU telemetry over render ({tele['n']} samples @ ~10 Hz, min/avg/max):")
+        w(
+            f"  utilization  {_fmt_clock_stat(tele['util'], '%')}   "
+            f"mem-util {_fmt_clock_stat(tele['mem_util'], '%')}"
+        )
+        w(
+            f"  SM clock     {_fmt_clock_stat(tele['sm_clock'])}   "
+            f"mem clock {_fmt_clock_stat(tele['mem_clock'])}"
+        )
+        if tele["temp"]:
+            w(
+                f"  temperature  {_fmt_clock_stat(tele['temp'], 'C')}   "
+                f"power {_fmt_clock_stat(tele['power'], 'W')}"
+            )
+        if tele["throttles"]:
+            w(
+                f"  ** THROTTLING observed: {', '.join(tele['throttles'])} "
+                f"(run-to-run timing is unreliable) **"
+            )
+        else:
+            w("  no clock throttling observed")
+
+    # Memory + scene geometry.
+    w("")
+    w(
+        f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB, "
+        f"peak reserved {res['peak_reserved_mb']:.0f} MB"
+    )
+    for k, st in enumerate(res["scene_stats"]):
+        w(
+            f"  batch {k}: merged tensors {st['total_tensor_mb']:.1f} MB, "
+            f"BVHs {st['total_bvh_mb']:.1f} MB "
+            f"(cuda after merge {st['cuda_allocated_after_merge_mb']:.0f} MB)"
+        )
+        counts = ", ".join(
+            f"{key}={val}"
+            for key, val in st["scalars"].items()
+            if key.startswith("num_")
+        )
+        if counts:
+            w(f"    counts: {counts}")
+        for bname, b in st["bvhs"].items():
+            w(
+                f"    {bname}: {b['instances']} instances, {b['nodes']} nodes, "
+                f"{b['leaves']} leaves, {b['mb']:.1f} MB"
+            )
+        # Largest few tensors.
+        big = sorted(st["tensors"].items(), key=lambda kv: -kv[1][1])[:6]
+        for tname, (shape, mb) in big:
+            if mb >= 0.05:
+                w(f"    {tname}: {shape} = {mb:.1f} MB")
+    w(f"  cProfile dump: {res['cprofile_path']}")
+    return "\n".join(lines)
+
+
+def format_header(static_specs=None, tools=None):
     lines = []
     w = lines.append
     w("=" * 78)
@@ -1362,146 +1601,14 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             f"  hooked kernels ({len(DISCOVERED_KERNELS)}): "
             + ", ".join(DISCOVERED_KERNELS)
         )
+    return "\n".join(lines)
 
+
+def format_report(results, static_specs=None, tools=None, nvprof=None):
+    lines = [format_header(static_specs=static_specs, tools=tools)]
+    w = lines.append
     for i, res in enumerate(results, 1):
-        w("")
-        w("-" * 78)
-        label = (
-            "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
-        )
-        w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
-        w("-" * 78)
-        w(
-            "incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage"
-        )
-        w(
-            f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}"
-            f"{'launch':10}{'sync':10}"
-        )
-        for k in res["times"]:
-            if k not in res["exclusive_times"]:
-                res["exclusive_times"][k] = res["times"][k]
-
-        # res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
-        #         if (k[:len(kp)] == kp or
-        #             k == 'wavefront_loop')])
-
-        for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
-            lt = res["launch_times"].get(name, 0)
-            ct = res["device_sync_times"].get(name, 0)
-            excl = res["exclusive_times"].get(name, secs)
-            w(
-                f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
-                f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
-                f"{100 * excl / res['total']:>8.1f}%"
-                f"{lt:>10.3f}{ct:>10.3f}"
-            )
-        # Sum *exclusive* times so nested stages aren't double-counted (e.g.
-        # Surface.get_render_primitives runs inside Scene._get_batch_of_primitives;
-        # kernels run inside "ray traced render total"). Kernels bypass the stack
-        # machinery, so their time is already inside the render stage's exclusive
-        # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
-
-        accounted = sum(
-            res["exclusive_times"].get(k, 0.0) for k in res["times"]
-        )  # if k[:len(kp)] != kp)
-        unaccounted = res["total"] - accounted
-        w(
-            f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
-            f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%"
-        )
-        bounce = _format_bounce_table(res)
-        if bounce:
-            w(bounce)
-
-        # Precise per-kernel GPU time from the Taichi profiler. ``% run`` is the
-        # kernel's GPU time as a fraction of the end-to-end run wall time (not of
-        # total GPU-kernel time), so it is comparable to the stage %'s above.
-        if res.get("kernel_gpu"):
-            run_ms = res["total"] * 1000.0
-            w("")
-            w(
-                "Taichi kernel GPU time (profiler; launch overhead excluded; "
-                "'recs' = serial + range-for sub-kernels):"
-            )
-            w(
-                f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'% run':>8}"
-                f"{'avg ms':>10}{'max ms':>10}"
-            )
-            for r in res["kernel_gpu"]:
-                pct = 100 * r["total_ms"] / run_ms if run_ms else 0.0
-                w(
-                    f"  {r['name']:<40}{r['records']:>6}{r['total_ms']:>11.3f}"
-                    f"{pct:>7.1f}%{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}"
-                )
-
-        # Ray throughput for the kernels we can size.
-        if res["launches"]:
-            w("")
-            w("trace kernel launches (wall time, incl. launch + sync overhead):")
-            for j, (kname, frames, rays, dt) in enumerate(res["launches"]):
-                note = " (incl. JIT compile)" if (i == 1 and j == 0) else ""
-                w(
-                    f"  {kname}: {frames:>4} frames, {rays / 1e6:7.2f} M rays in "
-                    f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s{note}"
-                )
-
-        # Live GPU telemetry -> throttling visibility.
-        tele = res.get("telemetry")
-        if tele:
-            w("")
-            w(f"GPU telemetry over render ({tele['n']} samples @ ~10 Hz, min/avg/max):")
-            w(
-                f"  utilization  {_fmt_clock_stat(tele['util'], '%')}   "
-                f"mem-util {_fmt_clock_stat(tele['mem_util'], '%')}"
-            )
-            w(
-                f"  SM clock     {_fmt_clock_stat(tele['sm_clock'])}   "
-                f"mem clock {_fmt_clock_stat(tele['mem_clock'])}"
-            )
-            if tele["temp"]:
-                w(
-                    f"  temperature  {_fmt_clock_stat(tele['temp'], 'C')}   "
-                    f"power {_fmt_clock_stat(tele['power'], 'W')}"
-                )
-            if tele["throttles"]:
-                w(
-                    f"  ** THROTTLING observed: {', '.join(tele['throttles'])} "
-                    f"(run-to-run timing is unreliable) **"
-                )
-            else:
-                w("  no clock throttling observed")
-
-        # Memory + scene geometry.
-        w("")
-        w(
-            f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB, "
-            f"peak reserved {res['peak_reserved_mb']:.0f} MB"
-        )
-        for k, st in enumerate(res["scene_stats"]):
-            w(
-                f"  batch {k}: merged tensors {st['total_tensor_mb']:.1f} MB, "
-                f"BVHs {st['total_bvh_mb']:.1f} MB "
-                f"(cuda after merge {st['cuda_allocated_after_merge_mb']:.0f} MB)"
-            )
-            counts = ", ".join(
-                f"{key}={val}"
-                for key, val in st["scalars"].items()
-                if key.startswith("num_")
-            )
-            if counts:
-                w(f"    counts: {counts}")
-            for bname, b in st["bvhs"].items():
-                w(
-                    f"    {bname}: {b['instances']} instances, {b['nodes']} nodes, "
-                    f"{b['leaves']} leaves, {b['mb']:.1f} MB"
-                )
-            # Largest few tensors.
-            big = sorted(st["tensors"].items(), key=lambda kv: -kv[1][1])[:6]
-            for tname, (shape, mb) in big:
-                if mb >= 0.05:
-                    w(f"    {tname}: {shape} = {mb:.1f} MB")
-        w(f"  cProfile dump: {res['cprofile_path']}")
+        w(format_run(res, i, len(results)))
 
     # Registers / occupancy from nvprof (or a hint if not run).
     w("")
@@ -1607,18 +1714,32 @@ def profile_scene(
     results = []
     for i in range(1, runs + 1):
         print(
-            f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) ====="
+            f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) =====",
+            flush=True,
         )
-        results.append(
-            run_once(
-                scene_func,
-                video_settings,
-                tag,
-                i,
-                telemetry=telemetry,
-                save_video_kwargs=save_video_kwargs,
-            )
+        res = run_once(
+            scene_func,
+            video_settings,
+            tag,
+            i,
+            telemetry=telemetry,
+            save_video_kwargs=save_video_kwargs,
         )
+        res["run_index"] = i
+        results.append(res)
+        # Each run's section goes out the moment it exists: the remote GPU
+        # harnesses reclaim a job without warning and keep nothing it had not
+        # printed, and a profile that reported only at the end lost four
+        # hour-long jobs in a row that way (`agent_guidance/gpu_harnesses.md`).
+        accounted, unaccounted, worker = render_thread_budget(res)
+        print(
+            f"[profile] {tag or 'scene'} RUN {i}: end-to-end {res['total']:.2f}s, "
+            f"render thread accounted {accounted:.2f}s + unaccounted "
+            f"{unaccounted:.2f}s, worker-thread prep overlapped {worker:.2f}s, "
+            f"peak alloc {res['peak_alloc_mb']:.0f} MB",
+            flush=True,
+        )
+        print(format_run(res, i, runs), flush=True)
 
     nvprof_results = None
     if nvprof:
@@ -1628,7 +1749,18 @@ def profile_scene(
     report = format_report(
         results, static_specs=static_specs, tools=tools, nvprof=nvprof_results
     )
-    print("\n" + report)
+    # The per-run sections were already printed as they completed; the
+    # console gets the header, a one-line-per-run recap and the footer, and
+    # the report file gets the whole thing.
+    print("\n" + format_header(static_specs=static_specs, tools=tools))
+    for res in results:
+        accounted, unaccounted, worker = render_thread_budget(res)
+        print(
+            f"RUN {res['run_index']}: end-to-end {res['total']:.2f}s "
+            f"(render thread: {accounted:.2f}s accounted, {unaccounted:.2f}s "
+            f"unaccounted; worker overlap {worker:.2f}s)"
+        )
+    print(report[report.rfind("-" * 78) :])
     if not nvprof_results and tools.get("nvprof"):
         print(nvprof_command_hint(sys.argv))
     if KERNEL_PROFILER:

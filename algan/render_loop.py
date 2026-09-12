@@ -2774,6 +2774,17 @@ class RenderLoopMixin:
             return False
         return threading.current_thread().name.startswith("algan-batch-prep")
 
+    @staticmethod
+    def _await_prefetched_batch(pending):
+        """Block until the prefetch worker hands over the next batch.
+
+        A method rather than an inline ``pending.result()`` so the profiler
+        can time it: it is the render thread's idle time waiting on scene
+        preparation, i.e. the part of prep that is on the critical path.
+        Everything the worker did that this does not wait for was free.
+        """
+        return pending.result()
+
     def _prepare_batch_on_worker(self, primitive_batch, render_state):
         """Run this batch's GPU projection + merge here on the prefetch worker,
         while the previous batch renders.
@@ -3282,7 +3293,9 @@ class RenderLoopMixin:
                         logger.debug(
                             f"Fetching batch {current_time_ind}:{pending_end_ind}."
                         )
-                        primitives, new_time_ind, render_state = pending.result()
+                        primitives, new_time_ind, render_state = (
+                            self._await_prefetched_batch(pending)
+                        )
                         pending = None
                     else:
                         drain_pending()
