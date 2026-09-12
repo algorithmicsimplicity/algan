@@ -52,7 +52,7 @@ risk):
 
 | # | target | workload it helps | what it costs today | plausible gain |
 | --- | --- | --- | --- | --- |
-| 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 77% of graphics UHD (measured by the shadows-off arm), 37% at PREVIEW | 2-3x on graphics UHD (the floor is 4.3x) |
+| 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 77% of graphics UHD (measured by the shadows-off arm), 37% at PREVIEW | **shipped: -19% UHD, -10% PREVIEW (§5.1.1)**; the rest is hard-light traversal, not ray count |
 | 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | 1.3x on 2-D UHD (T4), ~2x on Metal |
 | 3 | scene preparation off the critical path: split the first batch so prefetch can overlap; GPU-side circuit sampling and PN dice | every short render at PREVIEW | 52% of explainer PREVIEW, 25% of graphics PREVIEW | 1.5-2x at PREVIEW |
 | 4 | fixed per-render overheads: the pre-render `gc.collect()`, the pageable frame copy, the encode tail | every render, most visible on short ones | 24% of explainer PREVIEW; 17% of explainer UHD | 0.3-0.7 s per render |
@@ -329,6 +329,50 @@ Kill switches: `SETTINGS.raytracing.experimental.shadow_light_fan`,
 Validation: `benchmarks/_area_light_shadow_check.py` (the fan's acceptance
 harness) against the path tracer, and the shadows-off arm
 (`--no-shadows`, §6) as the floor.
+
+#### 5.1.1 Measured: the budget as shipped (commit `a63a33d`)
+
+Items 1 and 2 are implemented -- `SETTINGS.raytracing.experimental.shadow_ray_budget`
+(16 rays per light per primary event, stratified over an area light's
+cells and Cranley-Patterson rotated per event) and `shadow_bounce_rays`
+(one ray per soft row at a secondary hit); `ALGAN_SHADOW_RAY_BUDGET=0` is
+byte-identical to the pre-budget renderer (0 of 129,600 pixels differ
+against a pre-budget checkout, `benchmarks/_shadow_budget_check.py`).
+One T4 session, both arms of each pair back to back (`t4_budget_*.log`):
+
+| arm | warm end-to-end | `raster_shadow_trace` kernel | primary shadows (in `sparse resolve`) | secondary shadow stages |
+| --- | ---: | ---: | ---: | ---: |
+| graphics UHD, legacy fan | 117.1 s | 79.3 s | 45.9 s | 54.9 s |
+| graphics UHD, budget | **94.9 s (-19%)** | **57.2 s (-28%)** | 33.7 s (-27%) | 45.0 s (-18%) |
+| graphics PREVIEW, legacy fan | 8.27 s | 3.11 s | 1.65 s | 2.72 s |
+| graphics PREVIEW, budget | **7.43 s (-10%)** | **2.12 s (-32%)** | 1.17 s | 2.19 s |
+
+Picture: 0.44% of the check frame's pixels move, 59% of them by one level,
+the tail (up to 66) in the penumbrae and in the glossy sphere's reflection,
+as dither. The 4x zoom in the session shows no visible change.
+
+**Why -28% and not the -70% the ray count promised.** Two things the
+tables did not show before the arms were run:
+
+1. **The legacy fan was already small at secondary hits.** A deferred bounce
+   event carries a single covered sub-pixel position, and under analytic AA
+   the legacy fan skips every sample whose position is not covered -- so of
+   an area row's 8 rays only 2 were traced at a secondary hit, and a hard
+   light's 4 adaptive taps were 1. The budget takes those 2 to 1; half the
+   events were never paying 75 rays.
+2. **The hard lights dominate what is left.** A primary event now traces
+   about 18 area rays plus 6-12 for the three hard lights (2-4 sub-pixel taps
+   each), a secondary event 9 plus 3 -- and the shadow kernel lost only 28%
+   for a 2.6x cut in rays, which says the hard-light rays (the directional
+   at `ldist = 1e7`, and a point light near the camera, both crossing the
+   whole scene) cost far more per ray than the short area-light rays, and
+   that a warp's time is set by its slowest `(event, light)` thread.
+
+So the remaining shadow time is a **traversal** problem, not a count
+problem, and the next lever is item 5 (one thread per ray, light-major
+ordering so a warp traces 32 rays toward one light, the primary sort
+applied to the bounce passes), with the directional light's unbounded ray
+the first thing to measure on its own. Items 3-4 are second order now.
 
 ### 5.2 The compaction chain (explainer UHD: -25%; Mac: -50%)
 

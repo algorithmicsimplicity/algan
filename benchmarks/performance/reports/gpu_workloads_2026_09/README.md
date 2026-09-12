@@ -40,6 +40,9 @@ sound.
   per-kernel GPU profiler on; `t4_session2_<step>.log` -- the second
   session, which repeats the four profiles and adds the two `nn_scene`
   references and the shadows-off arm of the graphics UHD scene.
+* `t4_budget_<step>.log` -- the third session: the shadow-ray budget A/B
+  (`ALGAN_SHADOW_RAY_BUDGET=0` against the default) at UHD and PREVIEW, and
+  the check frame comparison.
 * `REPORT.md` -- the analysis and the ranked optimization targets.
 
 ## The profiler was fixed first
