@@ -129,6 +129,49 @@ Radiance, power fractions and `intensity` are untouched, which is why this fixes
 
 Two things worth knowing: the umbra legitimately *lifts* (a `k x k` centre grid spans only `(1 - 1/k)` of the rectangle, so `samples = 4` shadowed from an emitter half the authored size), and `max_shadow_lights` defaults to 16, with one slot per packed emitter row across all lights. Rows beyond the cap are still lit but lose deterministic shadow visibility; truncation counters and a once-per-render warning report this. Raising an area light's sample count alone does not raise the shadow cap.
 
+## The soft-shadow fan is budgeted, and the budget is a light-row column
+
+The fixed fan above priced the graphics workload of
+`benchmarks/performance/reports/gpu_workloads_2026_09` at 77% shadow rays: an
+area light with `samples = 4` is 16 rows x 8 rays = 128 shadow rays per shading
+event, at every bounce of a reflection chain. `SETTINGS.raytracing.experimental.shadow_ray_budget`
+(`ALGAN_SHADOW_RAY_BUDGET`, default 16) is the number of soft-shadow rays ONE
+light may spend per primary shading event: an area light's K cell rows split it
+(`ceil(budget / K)` each, stratified by cell -- one ray per cell at the
+defaults), a single-row soft light fires `min(SOFT_SHADOW_SAMPLES, budget)`.
+`shadow_bounce_rays` (`ALGAN_SHADOW_BOUNCE_RAYS`, default 1) caps every soft
+row's fan at a secondary hit, one seen through a reflection or refraction.
+
+Three things to know if you touch it.
+
+**A small fixed fan bands, so the budgeted fan is rotated per event.** The
+R2 sequence (rect) and golden-angle spiral (disk) are Cranley-Patterson
+rotated by two offsets hashed from the event's world position
+(`_shadow_fan_jitter`, `wavefront_kernels_taichi.py`): the penumbra dithers
+instead of stepping, the pattern is fixed to the surface (a still frame
+renders identically every time), and the legacy fan's arithmetic is untouched
+because its offsets are literal zeros. Under analytic AA a budgeted fan also
+keeps its count rather than being raised back to four sub-pixel taps, and it
+rotates through the event's *covered* sub-pixel positions
+(`_first_covered_position`) so a one-ray fan on a silhouette pixel still
+traces its ray.
+
+**The kernels never read the setting.** `scene_builder._soft_fan_sizes` packs
+each light row's two fan sizes into aux columns 13/14 (packed 16/17, the row
+is now 18 wide -- `LIGHT_AUX_COLS`), `raster_shadow_trace` takes a `secondary`
+launch argument that selects the column (0 from the sheet resolve's primary
+events, 1 from the drain loop), and `wavefront_shade`'s inline fan selects it
+from `bounces_left < max_bounces`. So flipping either setting needs no
+recompile and one process can render both arms.
+
+**Zero is byte-identical to the pre-budget renderer**: a zero column keeps the
+compile-time fan, unjittered, with the old sub-pixel rule.
+`benchmarks/_shadow_budget_check.py` is the A/B harness (kill switch against a
+pre-budget checkout; default budget against it for the visual delta) and
+`tests/unit_tests/test_shadow_ray_budget.py` pins the packing. The change is
+**visible**: `tests/full_renders/materials_and_lighting` (a `RectAreaLight` and
+a `shadow_angle` directional under shadows) needs a rebaseline at the default.
+
 The flag is read **host-side only** (`ALGAN_AREA_LIGHT_SOFT_SHADOWS` / `SETTINGS.raytracing.experimental.area_light_soft_shadows`): off, `_build_aux` packs zeros and the kernels take their existing path with no recompile and no per-arm process. `benchmarks/_area_light_shadow_check.py` is the acceptance harness; `tests/unit_tests/test_area_light_soft_shadow.py` is the guard, and its render arms exist to **compile both fans** — a host-side test cannot see a Taichi scoping error, which is how one shipped mid-review.
 
 ## Under the path tracer an area light is geometry

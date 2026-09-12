@@ -2688,6 +2688,8 @@ def shade_sparse_raster_coverage(
                 1 if identity_on else 0,
                 term_mode,
                 1 if rt_settings.shadow_adaptive_taps else 0,
+                # Primary hits: the soft fans take the full budget (column 16).
+                0,
             )
         sheet_resolve_shade(
             *pre_args,

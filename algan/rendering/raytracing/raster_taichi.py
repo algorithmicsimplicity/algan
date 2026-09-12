@@ -83,8 +83,11 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _LT_HEMISPHERE,
     _R2_SEQUENCE_A1,
     _R2_SEQUENCE_A2,
+    _TWO_PI,
+    _first_covered_position,
     _light_zero_radiance,
     _reserve_continuation_slot,
+    _shadow_fan_jitter,
     _tri_color_g,
     _tri_normal_g,
     _write_ior_stack,
@@ -2820,6 +2823,10 @@ def raster_shadow_trace_arena(
         # ``sec_aa`` a hard light's four taps are visited diagonal pair first
         # and the other two are skipped when that pair agrees exactly.
         adaptive_taps: ti.template(),
+        # Which of the light row's two budgeted fan sizes applies: 0 at a
+        # primary (sheet-resolved) hit, 1 at a secondary (bounce) hit. See
+        # rt_settings.shadow_ray_budget / shadow_bounce_rays.
+        secondary: ti.i32,
         arena_f32: ti.types.ndarray(),
         arena_i32: ti.types.ndarray(),
         aoff: ti.types.ndarray(),
@@ -2970,10 +2977,17 @@ def raster_shadow_trace_arena(
         radius = 0.0
         hu = 0.0
         hv = 0.0
+        fan_col = 0
         if light_col.shape[2] > 3:
             ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
             if light_col.shape[2] > 11:
                 radius = light_col[tl, li, 11]
+                # The row's budgeted soft fan (scene_builder._soft_fan_sizes):
+                # column 16 at a primary hit, 17 at a secondary one; 0 keeps
+                # the compile-time fan below, unjittered.
+                if light_col.shape[2] > 17:
+                    fan_col = ti.cast(
+                        light_col[tl, li, 16 + secondary] + 0.5, ti.i32)
                 # A rect-area row carries its CELL's half-extents along the
                 # emitter plane's own axes. The ltype guard is load-bearing,
                 # not defensive: columns 9/10 are a spot light's cone cosines
@@ -3013,6 +3027,8 @@ def raster_shadow_trace_arena(
             b2 = ti.math.vec3(0.0, 0.0, 0.0)
             if radius > 0.0:
                 ns = SOFT_SHADOW_SAMPLES
+                if fan_col > 0:
+                    ns = fan_col
                 if (hu > 0.0) or (hv > 0.0):
                     # Rect emitter: the fan samples INSIDE this row's own
                     # cell, in the light's own plane -- b1 is the packed right
@@ -3033,9 +3049,12 @@ def raster_shadow_trace_arena(
                     b2 = wi.cross(b1)
             if ti.static(sec_aa > 1):
                 # A hard light needs the sub-pixel positions to be separate
-                # rays; a soft one already has enough rays and just spreads
-                # its fan over them.
-                ns = ti.max(ns, 4)
+                # rays; a legacy soft fan already has enough rays and just
+                # spreads its fan over them. A BUDGETED soft fan keeps its
+                # count -- raising it back to four would undo the budget --
+                # and rotates through the covered positions below instead.
+                if fan_col == 0:
+                    ns = ti.max(ns, 4)
 
             occ_sum = ti.math.vec3(0.0)
             n_valid = 0.0
@@ -3053,6 +3072,22 @@ def raster_shadow_trace_arena(
                 if radius <= 0.0:
                     adaptive_fan = 1
             occ_first = ti.math.vec3(0.0)
+            # Budgeted fan (fan_col > 0): the per-event rotation that keeps a
+            # few rays from banding (rect: R2 offsets; disk: azimuth and
+            # radial stratum), and the first covered sub-pixel position the
+            # rotation through positions starts at. Legacy fans keep literal
+            # zeros here, so their arithmetic is unchanged.
+            ju = 0.0
+            jv = 0.0
+            r_j = 0.5
+            ang_j = 0.0
+            first_pos = 0
+            if fan_col > 0:
+                ju, jv = _shadow_fan_jitter(spos)
+                r_j = jv
+                ang_j = _TWO_PI * ju
+                if ti.static(sec_aa > 1):
+                    first_pos = _first_covered_position(event_msk[e])
             for sk in range(ns):
                 s = sk
                 if adaptive_fan == 1:
@@ -3062,8 +3097,17 @@ def raster_shadow_trace_arena(
                 ok = 1
                 sorg = sorigin
                 if ti.static(sec_aa > 1):
-                    sorg = _sub_pixel_origin(sorigin, dpx, dpy, s)
-                    if ((event_msk[e] >> (s & 3)) & 1) == 0:
+                    sp = s & 3
+                    if fan_col > 0:
+                        # A budgeted fan visits the covered sub-pixel
+                        # positions in turn rather than skipping the
+                        # uncovered ones: a one-ray fan on a silhouette
+                        # pixel must still trace its one ray.
+                        sp = (first_pos + s) & 3
+                        if ((event_msk[e] >> sp) & 1) == 0:
+                            sp = first_pos
+                    sorg = _sub_pixel_origin(sorigin, dpx, dpy, sp)
+                    if ((event_msk[e] >> sp) & 1) == 0:
                         ok = 0
                 off = ti.math.vec3(0.0, 0.0, 0.0)
                 if radius > 0.0:
@@ -3071,15 +3115,15 @@ def raster_shadow_trace_arena(
                         # R2 sequence across the cell: s = 0 is exactly the
                         # cell centre, so a one-sample fan degenerates to
                         # today's ray.
-                        u = 0.5 + _R2_SEQUENCE_A1 * s
-                        v = 0.5 + _R2_SEQUENCE_A2 * s
+                        u = 0.5 + _R2_SEQUENCE_A1 * s + ju
+                        v = 0.5 + _R2_SEQUENCE_A2 * s + jv
                         ru = 2.0 * (u - ti.floor(u)) - 1.0
                         rv = 2.0 * (v - ti.floor(v)) - 1.0
                         off = b1 * (hu * ru) + b2 * (hv * rv)
                     else:
-                        ang = _GOLDEN_ANGLE * s
+                        ang = _GOLDEN_ANGLE * s + ang_j
                         rr = radius * ti.sqrt(
-                            (ti.cast(s, ti.f32) + 0.5)
+                            (ti.cast(s, ti.f32) + r_j)
                             / ti.cast(ns, ti.f32))
                         off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
                     if ltype == _LT_DIRECTIONAL:
@@ -3195,7 +3239,7 @@ _RASTER_SHADOW_TRACE_PARAMS = (
     "layer_offset_triangles", "refit", "has_tri", "has_bez", "event_dp",
     "event_toff", "sec_aa", "shadow_vis", "shadow_anyhit", "tri_obj",
     "event_src_prim", "eps_self", "eps_near", "shadow_identity",
-    "shadow_term", "adaptive_taps",
+    "shadow_term", "adaptive_taps", "secondary",
 )
 
 _raster_shadow_trace_launch = arena_packed(

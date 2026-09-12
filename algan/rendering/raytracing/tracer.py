@@ -986,21 +986,24 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity, devic
     (type 6) to the packed lights, widening the color rows to 16 columns if
     they are still in the compact point-light packing.
     """
+    from algan.rendering.lights import LIGHT_AUX_COLS
+
+    width = 3 + LIGHT_AUX_COLS
     A, Bx, By, Bz = _env_sh_coeffs(env, intensity)
-    row = torch.zeros(16)
+    row = torch.zeros(width)
     row[0:3] = A
     row[3] = 6.0  # LIGHT_ENV_SH
     row[6:9] = Bx
     row[9:12] = By
     row[12:15] = Bz
     T = light_pos.shape[0] if num_lights > 0 else 1
-    row = row.view(1, 1, 16).expand(T, 1, 16).to(device)
+    row = row.view(1, 1, width).expand(T, 1, width).to(device)
     zero_pos = torch.zeros((T, 1, 3), device=device)
     if num_lights == 0:
         return zero_pos.contiguous(), row.contiguous(), 1
-    if light_col.shape[2] < 16:
+    if light_col.shape[2] < width:
         pad = torch.zeros(
-            (light_col.shape[0], light_col.shape[1], 16 - light_col.shape[2]),
+            (light_col.shape[0], light_col.shape[1], width - light_col.shape[2]),
             device=device,
         )
         light_col = torch.cat((light_col, pad), -1)
@@ -2855,6 +2858,10 @@ def raytrace_render_wavefront(
             1 if identity_on else 0,
             term_mode,
             1 if rt_settings.shadow_adaptive_taps else 0,
+            # Every event of the drain loop is a SECONDARY hit (iteration 1
+            # is the first bounce off the sheet-resolved primaries), so its
+            # soft fans take the bounce budget (light row column 17).
+            1,
         )
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device

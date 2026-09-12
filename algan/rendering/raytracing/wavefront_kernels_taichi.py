@@ -298,6 +298,61 @@ _R2_SEQUENCE_A1 = 0.7548776662466927
 _R2_SEQUENCE_A2 = 0.5698402909980532
 
 _PI = 3.141592653589793
+_TWO_PI = 6.283185307179586
+
+
+@ti.func
+def _shadow_fan_jitter(p):
+    """Two offsets in [0, 1) from the bits of a shading position.
+
+    The BUDGETED soft-shadow fan (rt_settings.shadow_ray_budget) fires a few
+    rays per light row instead of the fixed eight, and a few fixed samples
+    band: every event sees the emitter at the same few points, so the
+    penumbra takes a few discrete levels. A Cranley-Patterson rotation of the
+    fan by these offsets -- toroidal, so the sequence's uniformity is kept --
+    makes neighbouring events sample different points and the penumbra
+    dithers instead. The hash is of the event's WORLD position (an event
+    carries no pixel), so the pattern is fixed to the surface: a still frame
+    renders identically every time, and under a moving camera the grain
+    moves with the surface it lies on rather than with the screen.
+
+    An integer mix over the three coordinates' float bits (the multiply-xor
+    -shift shape of the path tracer's ``_pt_hash``); the two 16-bit halves of
+    the result are the offsets. Legacy fans never call this: their offsets
+    are literal zeros and their arithmetic is unchanged.
+    """
+    h = ti.bit_cast(p[0], ti.u32) * ti.u32(0x9E3779B1)
+    h = h ^ (ti.bit_cast(p[1], ti.u32) * ti.u32(0x85EBCA77))
+    h = h ^ (ti.bit_cast(p[2], ti.u32) * ti.u32(0xC2B2AE3D))
+    h = h ^ (h >> 15)
+    h = h * ti.u32(0x2C1B3C6D)
+    h = h ^ (h >> 12)
+    h = h * ti.u32(0x297A2D39)
+    h = h ^ (h >> 15)
+    ju = ti.cast(h & ti.u32(0xFFFF), ti.f32) * (1.0 / 65536.0)
+    jv = ti.cast(h >> 16, ti.f32) * (1.0 / 65536.0)
+    return ju, jv
+
+
+@ti.func
+def _first_covered_position(msk):
+    """Index (0-3) of the lowest set bit of a 4-bit sub-pixel coverage mask.
+
+    A budgeted fan with fewer than four rays cannot afford to skip the
+    uncovered sub-pixel positions the way the legacy fan does (a one-ray fan
+    on a silhouette pixel would then trace nothing and read as fully lit),
+    so it starts its rotation at the first covered one. An event always has
+    at least one covered position.
+    """
+    pos = 0
+    m = msk & 15
+    if (m & 1) == 0:
+        pos = 1
+        if (m & 2) == 0:
+            pos = 2
+            if (m & 4) == 0:
+                pos = 3
+    return pos
 
 # Deferred shadows (the ``deferred_shadows`` compile-time template of the
 # shade kernel; currently never enabled -- the tracer always passes 0, the
@@ -2825,10 +2880,27 @@ def wavefront_shade_arena(
                                     radius = 0.0
                                     hu = 0.0
                                     hv = 0.0
+                                    fan_col = 0
                                     if light_col.shape[2] > 3:
                                         ltype = ti.cast(
                                             light_col[tl, li, 3] + 0.5, ti.i32)
                                         radius = light_col[tl, li, 11]
+                                        # The row's budgeted soft fan
+                                        # (scene_builder._soft_fan_sizes):
+                                        # column 16 on a camera ray, 17 on a
+                                        # continuation (one that has spent a
+                                        # bounce); 0 keeps the compile-time
+                                        # fan below, unjittered.
+                                        if light_col.shape[2] > 17:
+                                            secondary = 0
+                                            if bounces_left < ti.cast(
+                                                    layer_offsets[6] + 0.5,
+                                                    ti.i32):
+                                                secondary = 1
+                                            fan_col = ti.cast(
+                                                light_col[tl, li,
+                                                          16 + secondary]
+                                                + 0.5, ti.i32)
                                         # A rect-area row carries its CELL's
                                         # half-extents along the emitter
                                         # plane's own axes. The ltype guard is
@@ -2881,8 +2953,21 @@ def wavefront_shade_arena(
                                         ns = 1
                                         b1 = ti.math.vec3(0.0, 0.0, 0.0)
                                         b2 = ti.math.vec3(0.0, 0.0, 0.0)
+                                        # Budgeted fan: its size from the
+                                        # light row, and the per-event
+                                        # rotation that keeps it from banding.
+                                        ju = 0.0
+                                        jv = 0.0
+                                        r_j = 0.5
+                                        ang_j = 0.0
                                         if radius > 0.0:
                                             ns = SOFT_SHADOW_SAMPLES
+                                            if fan_col > 0:
+                                                ns = fan_col
+                                                ju, jv = _shadow_fan_jitter(
+                                                    spos)
+                                                r_j = jv
+                                                ang_j = _TWO_PI * ju
                                             if (hu > 0.0) or (hv > 0.0):
                                                 # Rect emitter: the fan samples
                                                 # INSIDE this row's own cell, in
@@ -2935,9 +3020,9 @@ def wavefront_shade_arena(
                                                     # one-sample fan degenerates
                                                     # to today's ray.
                                                     u = 0.5 + _R2_SEQUENCE_A1 \
-                                                        * s
+                                                        * s + ju
                                                     v = 0.5 + _R2_SEQUENCE_A2 \
-                                                        * s
+                                                        * s + jv
                                                     ru = 2.0 * (u - ti.floor(u)) \
                                                         - 1.0
                                                     rv = 2.0 * (v - ti.floor(v)) \
@@ -2945,10 +3030,11 @@ def wavefront_shade_arena(
                                                     off = b1 * (hu * ru) \
                                                         + b2 * (hv * rv)
                                                 else:
-                                                    ang = _GOLDEN_ANGLE * s
+                                                    ang = _GOLDEN_ANGLE * s \
+                                                        + ang_j
                                                     rr = radius * ti.sqrt(
                                                         (ti.cast(s, ti.f32)
-                                                         + 0.5)
+                                                         + r_j)
                                                         / ti.cast(ns, ti.f32))
                                                     off = (ti.cos(ang) * b1
                                                            + ti.sin(ang) * b2) \

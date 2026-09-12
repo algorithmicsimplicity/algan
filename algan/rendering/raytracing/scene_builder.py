@@ -2507,6 +2507,46 @@ def _decode_material_block_colors(scene):
         mat[:, idx, start : start + width] = srgb_to_linear(block)
 
 
+def _soft_fan_sizes(aux, num_rows):
+    """The two soft-shadow fan sizes for one light row (aux columns 13/14).
+
+    ``aux`` is one row's ``[T, LIGHT_AUX_COLS]`` aux block and ``num_rows``
+    the number of packed rows the whole light expands to (``K`` for an area
+    light, 1 otherwise). Returns ``(primary, secondary)`` per frame, each 0
+    where the row is a hard light (no emitter extent) or the budget is off.
+
+    The budget is per LIGHT, so an area light's ``K`` cell rows split it
+    (``ceil(budget / K)``, at least 1 -- stratified by cell, which is the
+    point of keeping the rows); a single-row soft light spends
+    ``min(SOFT_SHADOW_SAMPLES, budget)``, never more than the fixed fan it
+    replaces. The secondary size is the primary capped by
+    ``shadow_bounce_rays`` (0 = uncapped). See ``rt_settings.shadow_ray_budget``.
+    """
+    from algan.settings._startup import _SOFT_SHADOW_SAMPLES
+
+    budget = int(rt_settings.shadow_ray_budget)
+    soft = aux[:, 8] > 0.0
+    zero = torch.zeros_like(aux[:, 8])
+    if budget <= 0 or not bool(soft.any()):
+        return zero, zero
+    is_area = (aux[:, 0] + 0.5).to(torch.int64) == _LIGHT_TYPE_AREA_SAMPLE
+    per_row_area = max(1, -(-budget // max(1, int(num_rows))))
+    per_row_single = max(1, min(int(_SOFT_SHADOW_SAMPLES), budget))
+    primary = torch.where(
+        is_area,
+        torch.full_like(zero, float(per_row_area)),
+        torch.full_like(zero, float(per_row_single)),
+    )
+    primary = torch.where(soft, primary, zero)
+    cap = int(rt_settings.shadow_bounce_rays)
+    secondary = primary.clamp(max=float(cap)) if cap > 0 else primary
+    return primary, secondary
+
+
+#: ``lights.py``'s area-sample light type id, as packed in aux column 0.
+_LIGHT_TYPE_AREA_SAMPLE = 5
+
+
 def _pack_lights(light_sources, num_frames, device):
     """Per-frame packed light rows for the deterministic tracer's fragment
     lighting: positions ``[T, L, 3]`` and color rows ``[T, L, C]``.
@@ -2515,13 +2555,20 @@ def _pack_lights(light_sources, num_frames, device):
     light is a plain point light -- keeping such scenes on the kernels'
     original point-light arithmetic. Any *extended* light (a non-point type,
     or falloff / soft-shadow parameters; see :mod:`algan.rendering.lights`)
-    widens every row to ``C == 16``::
+    widens every row to ``C == 18``::
 
         0:3  RGB radiance (intensity premultiplied)   9  cos outer (spot)
         3    light type id                            10 cos inner (spot)
         4    decay exponent                           11 shadow softness
         5    range (0 = infinite)                     12:15 ground RGB / SH
         6:9  direction                                15 power fraction (1/K)
+                                                      16 soft fan, primary hit
+                                                      17 soft fan, bounce hit
+
+    Columns 16/17 are the shadow-ray budget (``rt_settings.shadow_ray_budget``
+    / ``shadow_bounce_rays``) spent on this row: how many rays its soft-shadow
+    fan fires at a primary and at a secondary shading event. Zero means the
+    kernels' compile-time default fan with no jitter -- the pre-budget row.
 
     For ``ltype == 5`` (an area-sample row) columns 9/10 instead carry the
     emitter cell's half-extents, column 11 the cell's equal-area radius, and
@@ -2531,6 +2578,10 @@ def _pack_lights(light_sources, num_frames, device):
     Area lights arrive pre-expanded into K emitter sample rows (see
     ``Scene._materialize_render_state``), each occupying its own light slot.
     """
+    # Function-level: ``algan.rendering.lights`` is a Mob module and importing
+    # it at module scope from here closes a cycle through ``algan.scene``.
+    from algan.rendering.lights import LIGHT_AUX_COLS
+
     any_ext = any(
         getattr(light, "_render_aux", None) is not None
         for light in (light_sources or ())
@@ -2570,10 +2621,13 @@ def _pack_lights(light_sources, num_frames, device):
                 # Plain point light sharing a pack with extended lights:
                 # type 0 with a whole-light power fraction (col 12 -> packed
                 # col 15).
-                a = torch.zeros((c.shape[0], 13), dtype=torch.float32, device=device)
+                a = torch.zeros(
+                    (c.shape[0], LIGHT_AUX_COLS), dtype=torch.float32, device=device
+                )
                 a[:, 12] = 1.0
             else:
-                a = _expand_frames(aux[:, k].float(), num_frames)
+                a = _expand_frames(aux[:, k].float(), num_frames).clone()
+                a[:, 13], a[:, 14] = _soft_fan_sizes(a, num_samples)
             rows.append(torch.cat((c, a), -1))
     light_pos = torch.stack(positions, 1).to(device).contiguous()
     light_col = torch.stack(rows, 1).to(device).contiguous()
