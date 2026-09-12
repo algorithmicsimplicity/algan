@@ -1,9 +1,9 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
-  "arms": ["mac-mps"],
-  "env": {},
-  "latex": true,
+  "_request": "offline-cache-investigation-1",
+  "command": "export ALGAN_CACHE_DIR=\"$RUNNER_TEMP/algan-offline-cache-probe\"; .venv/bin/python benchmarks/_taichi_source_key_check.py --arms warm,on,verify; git fetch --depth=1 origin 325ac0f2aeafd852fed932b10faf0bf93ecefba0; for f in _profile_cli.py explainer_scene.py; do git show 325ac0f2aeafd852fed932b10faf0bf93ecefba0:benchmarks/performance/$f > benchmarks/performance/$f; done; for pass in 1 2; do echo CACHE_EXPLAINER_PASS=$pass; ALGAN_PROFILE_RUNS=1 ALGAN_LOG_TAICHI_COMPILES=1 .venv/bin/python benchmarks/performance/explainer_scene.py --quality PREVIEW --frames 2 --tag cache_explainer_$pass; done",
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "arms": ["mac-mps"],
+  "env": {"ALGAN_VIDEO_ENCODER": "software", "ALGAN_ANIMATION_DEVICE": "cpu", "ALGAN_AUTO_DAEMON": "0", "ALGAN_USE_DAEMON": "0"},
+  "latex": false,
+  "timeout_minutes": 40
 }
