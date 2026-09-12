@@ -50,7 +50,7 @@ Usage from a benchmark script::
 
 Env knobs (all optional):
     ALGAN_TI_KERNEL_PROFILER=0   disable the Taichi kernel profiler re-init
-    ALGAN_PROFILE_RUNS=N         number of render passes (default 2: cold+warm)
+    ALGAN_PROFILE_RUNS=N         number of render passes (default 2: first+repeat)
     ALGAN_PROFILE_TELEMETRY=0    disable the nvidia-smi live sampler
     ALGAN_PROFILE_NVPROF=1       auto-run nvprof for registers/occupancy
     ALGAN_UNDER_NVPROF=1         (set by the nvprof child) run one lean render
@@ -93,6 +93,7 @@ from algan.scene import Scene
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
 from algan.scene_manager import SceneManager
+from algan.settings._startup import render_device
 from algan.settings.video_settings import VideoSettings
 from algan.taichi_compat import ti
 from algan.utils.memory_utils import peak_allocated, reset_peak_floor
@@ -1201,7 +1202,10 @@ def run_once(
     output_directory=None,
 ):
     output_directory = os.fspath(output_directory or OUT_DIR)
+    from algan.utils import taichi_source_key
+
     SCENE_STATS.clear()
+    cache_before_authoring = dict(taichi_source_key.STATS)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
@@ -1215,6 +1219,7 @@ def run_once(
     authoring_started = time.perf_counter()
     scene_func()
     authoring_seconds = time.perf_counter() - authoring_started
+    cache_before_render = dict(taichi_source_key.STATS)
     scene_seconds = float(scene._recorded_end_time_for_render())
 
     # Reset AFTER authoring, because ``total`` below starts after authoring.
@@ -1250,6 +1255,7 @@ def run_once(
             )
         _sync_devices()
         total = time.perf_counter() - t0
+        cache_after_render = dict(taichi_source_key.STATS)
     finally:
         if profiler is not None:
             profiler.disable()
@@ -1278,6 +1284,11 @@ def run_once(
     return {
         "total": total,
         "authoring_seconds": authoring_seconds,
+        "source_key_cache": {
+            "skipped_reason": taichi_source_key.skipped_reason(),
+            "authoring": _counter_delta(cache_before_authoring, cache_before_render),
+            "render": _counter_delta(cache_before_render, cache_after_render),
+        },
         "scene_seconds": scene_seconds,
         "output_path": str(result.output_path),
         "peak_alloc_mb": peak_alloc,
@@ -1299,6 +1310,28 @@ def run_once(
 # ---------------------------------------------------------------------------
 # Report formatting
 # ---------------------------------------------------------------------------
+def _counter_delta(before, after):
+    """Read a pass's counters without resetting the process-wide cache ledger."""
+    return {name: value - before.get(name, 0) for name, value in after.items()}
+
+
+def _format_source_key_cache(cache):
+    """Describe source-index lookups, not presumed backend JIT compilations."""
+    if cache is None:
+        return "Source-key cache: not recorded."
+    if cache["skipped_reason"] is not None:
+        return f"Source-key cache unavailable: {cache['skipped_reason']}"
+    lines = ["Source-key cache (this pass only):"]
+    for phase in ("authoring", "render"):
+        stats = cache[phase]
+        lines.append(
+            f"  {phase}: {stats['hits']} hits, {stats['misses']} misses, "
+            f"{stats['poisoned']} uncacheable, {stats['verified']} verified; "
+            f"key computation {stats['key_seconds']:.3f}s"
+        )
+    return "\n".join(lines)
+
+
 def _fmt_clock_stat(s, unit="MHz"):
     return f"{s[0]:.0f}/{s[1]:.0f}/{s[2]:.0f} {unit}" if s else "n/a"
 
@@ -1401,7 +1434,10 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
     w("=" * 78)
     w("Algan ray-tracing scene profile")
     w("=" * 78)
-    dev = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    device = render_device()
+    dev = str(device)
+    if device.type == "cuda" and torch.cuda.is_available():
+        dev += f" ({torch.cuda.get_device_name(device)})"
     w(f"device: {dev}")
     if static_specs:
         w(
@@ -1424,13 +1460,19 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             + ", ".join(DISCOVERED_KERNELS)
         )
 
+    w("Pass order does not establish disk-cache state. A first pass can use cached kernels.")
+    w("Source-key counts cover new materializations, not already-resident kernels.")
+    w("Source-key misses rebuild the frontend; the compiler's backend cache may still hit.")
+    w("The launch column includes cache loading, frontend work and submission, not just JIT.")
+
     for i, res in enumerate(results, 1):
         w("")
         w("-" * 78)
         label = (
-            "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
+            "first pass in this process" if i == 1 else "repeat pass in this process"
         )
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
+        w(_format_source_key_cache(res.get("source_key_cache")))
         if "authoring_seconds" in res:
             w(
                 f"Authoring: {res['authoring_seconds']:.2f}s; "
@@ -1505,11 +1547,10 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         if res["launches"]:
             w("")
             w("trace kernel launches (wall time, incl. launch + sync overhead):")
-            for j, (kname, frames, rays, dt) in enumerate(res["launches"]):
-                note = " (incl. JIT compile)" if (i == 1 and j == 0) else ""
+            for kname, frames, rays, dt in res["launches"]:
                 w(
                     f"  {kname}: {frames:>4} frames, {rays / 1e6:7.2f} M rays in "
-                    f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s{note}"
+                    f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s"
                 )
 
         # Live GPU telemetry -> throttling visibility.
@@ -1649,6 +1690,9 @@ def profile_scene(
     list[dict] or None
         Per-pass render seconds (total), authoring_seconds, scene_seconds,
         output_path, stage times/counts, GPU telemetry and memory measurements.
+        source_key_cache records separate authoring/render lookup deltas;
+        a miss is not proof of backend JIT compilation. First-pass timing can
+        include cached kernel loading and framework warm-up.
         The nvprof child renders one lean pass and returns None.
 
     Raises
@@ -1717,7 +1761,7 @@ def profile_scene(
     results = []
     for i in range(1, runs + 1):
         print(
-            f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) ====="
+            f"\n===== profiling run {i}/{runs} ({'first pass' if i == 1 else 'repeat pass'}) ====="
         )
         results.append(
             run_once(
