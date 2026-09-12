@@ -110,6 +110,82 @@ given. A ``speech_source`` passed to the constructor is installed on every Scene
 audio manager, so narration is configured once rather than per scene -- see
 :doc:`audio_and_speech`.
 
+Validate authoring before rendering
+===================================
+
+Use :meth:`~algan.project.Project.validate` to author every selected scene and
+resolve its Speech timing without producing images or video:
+
+.. code-block:: python
+
+    report = project.validate()
+    for scene in report.scenes:
+        print(scene.name, scene.duration_seconds, scene.checkpoints)
+    print(report.duration_seconds)
+
+Validation skips scene save-frame and save-video calls. It still obtains audio
+from the configured speech source and writes project transcripts, so it can
+populate a speech cache and can fail on unavailable narration. The returned
+``transcript`` is unwrapped source text, suitable for comparison with the original
+script. Pretty-printed transcript files can wrap hyphenated words across lines.
+
+This is an authoring check: it does not run frame-dependent updaters, compile
+shaders, or prove visual correctness. Inspect selected checkpoints and motion
+clips afterwards. Use ``python video.py --validate`` for the CLI equivalent.
+
+Profile scenes and estimate an export
+=====================================
+
+:meth:`~algan.project.Project.profile` uses the existing
+``algan.utils.profiling_utils.profile_scene`` helper with the project's scene
+selection, narration source and output directories:
+
+.. code-block:: python
+
+    project.profile("intro", video_settings=HD)
+    estimate = project.estimate_render_time(["intro", "the_loss_surface"],
+                                            video_settings=HD)
+    print(estimate.estimated_seconds, estimate.range_seconds)
+
+Both calls render complete reference scenes twice by default. Select short
+representative scenes to limit cost. Profiling reports include authoring time,
+timeline evaluation, geometry preparation, kernel materialization
+(frontend/cache/JIT), rendering, post-processing and the encoder drain. Project
+profiling defaults to wall timers without enabling the GPU kernel profiler;
+pass ``kernel_profiler=True`` for GPU-only timings and runtime reinitialization.
+Reports and profile clips go under ``video_directory/profiling`` by default.
+
+The estimate authors the entire project to measure duration, then profiles only
+the selected references. It scales their weighted warm render rate and reports
+observed first-pass overhead separately. Its range uses the fastest and slowest
+sampled scene rates, not statistical confidence bounds. Unseen shaders, denser
+scenes, different devices, settings or encoders can invalidate the estimate.
+Authoring and concatenation are excluded. Pass the intended ``save_video_kwargs``
+when encoder settings differ from the defaults. Project profiling restores its
+temporary timing hooks when it finishes or fails, so later daemon jobs do not
+inherit stage-timer overhead. Calling ``profile_scene`` directly retains its
+existing persistent-instrumentation behavior for benchmark scripts.
+
+.. code-block:: bash
+
+    python video.py --profile intro --profile-runs 2 --video-settings HD
+    python video.py --estimate-render-time intro the_loss_surface --video-settings HD
+
+Diagnose cache permissions
+==========================
+
+``algan check`` reports resolved cache paths and tests writes with a temporary
+file, including text, speech, kernel and daemon directories. It also probes the
+output directory for the current working directory; a script's own destination
+can differ. Failed path checks produce a nonzero exit status.
+
+If Pango previously reported only ``error while writing to output stream``, the
+text-cache preflight now identifies the inaccessible directory. Set
+``SETTINGS.paths.cache_directory`` to a writable location, or set
+``ALGAN_CACHE_DIR`` before starting Python. Kernel cache and daemon home use
+``TI_OFFLINE_CACHE_FILE_PATH`` and ``ALGAN_HOME`` respectively. Run diagnostics
+under the same permissions and sandbox as the render.
+
 See Also
 ========
 

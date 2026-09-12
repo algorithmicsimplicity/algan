@@ -22,8 +22,8 @@ disabled so all visibility goes through the ray path, a Sphere/Cube/plane scene
 moves 11 of 419904 pixels by at most 1 channel value across the flag.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations``: it would turn the probe kernel's
+# ndarray annotations into strings, which Taichi cannot compile.
 import pytest
 import torch
 
@@ -38,6 +38,7 @@ def _hit_counts(origins):
     """
     from algan.rendering.raytracing import raytrace_kernels_taichi as k
     from algan.rendering.taichi_runtime import init_taichi
+    from algan.settings._startup import render_device
     from algan.taichi_compat import ti
 
     # Algan's own init, never a bare ``ti.init``: that is process-global and
@@ -45,18 +46,16 @@ def _hit_counts(origins):
     # reconfigure Taichi for everything compiled afterwards in this process
     # (see tests/unit_tests/test_taichi_runtime_config.py). Idempotent, so it
     # neither reinitializes nor discards kernels when Taichi is already up.
-    #
-    # Needed because ``ti.field`` below requires a live program, and nothing in
-    # this file brings one up: importing a kernel module does not (kernels are
-    # only registered at import). Without it the file passed only when some
-    # earlier test in the same session happened to initialize Taichi, and
-    # failed outright when run on its own.
     init_taichi()
 
-    n = origins.shape[0]
-    out = ti.field(ti.i32, shape=(n, 2))
-    src = ti.field(ti.f32, shape=(n, 3))
-    src.from_torch(origins.contiguous())
+    # Torch tensors rather than ``ti.field``, as everywhere in Algan. Quadrants
+    # builds a field's struct module only on the thread that ran ``ti.init``,
+    # and after the viewer tests that is the viewer's render thread: fields
+    # here tripped that assertion, and the unplaced fields they left behind
+    # then failed every later kernel launch in the session.
+    device = render_device()
+    src = origins.to(device=device, dtype=torch.float32).contiguous()
+    out = torch.zeros((src.shape[0], 2), dtype=torch.int32, device=device)
 
     # Two triangles sharing edge A-B, consistently wound (as a welded grid or an
     # oriented Polyhedron produces).
@@ -66,18 +65,21 @@ def _hit_counts(origins):
     d = ti.math.vec3(1.0, -1.0, 0.0)
 
     @ti.kernel
-    def probe():
-        for i in range(n):
-            ro = ti.math.vec3(src[i, 0], src[i, 1], src[i, 2])
+    def probe(
+        ray_origins: ti.types.ndarray(dtype=ti.f32, ndim=2),
+        hits: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    ):
+        for i in range(ray_origins.shape[0]):
+            ro = ti.math.vec3(ray_origins[i, 0], ray_origins[i, 1], ray_origins[i, 2])
             rd = ti.math.vec3(0.0, 0.0, -1.0)
             ok0, _u0, _v0, _t0 = k._tri_hit(ro, rd, a, b, c)
             # Neighbour traverses the shared edge the other way: B then A.
             ok1, _u1, _v1, _t1 = k._tri_hit(ro, rd, b, a, d)
-            out[i, 0] = ok0
-            out[i, 1] = ok1
+            hits[i, 0] = ok0
+            hits[i, 1] = ok1
 
-    probe()
-    return out.to_torch()
+    probe(src, out)
+    return out.cpu()
 
 
 def _watertight():

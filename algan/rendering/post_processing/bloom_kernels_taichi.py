@@ -86,10 +86,17 @@ def bloom_downsample_bilinear_aa_f32(
 @ti.kernel
 def bloom_upsample_bilinear_f32(
         input_tensor: ti.types.ndarray(dtype=ti.f32, ndim=4),
-        output: ti.types.ndarray(dtype=ti.f32, ndim=4)):
-    """align_corners=False bilinear upsample with border clamping."""
-    scale_y = input_tensor.shape[2] / output.shape[2]
-    scale_x = input_tensor.shape[3] / output.shape[3]
+        output: ti.types.ndarray(dtype=ti.f32, ndim=4),
+        scale_y: ti.f32,
+        scale_x: ti.f32):
+    """align_corners=False bilinear upsample with border clamping.
+
+    ``scale_y``/``scale_x`` are input over output size, divided on the host.
+    Under ``fast_math`` an in-kernel ``/`` is an approximate division: on CUDA
+    64/193 came back one ulp high, and every source coordinate carries that
+    error times its output index -- 2.4e-6 against PyTorch at the right edge
+    of a 193-wide frame.
+    """
     for batch, channel, y, x in output:
         source_y = (y + 0.5) * scale_y - 0.5
         source_x = (x + 0.5) * scale_x - 0.5

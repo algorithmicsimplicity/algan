@@ -1,4 +1,10 @@
-# Algan
+<p align="center">
+  <a href="https://algorithmicsimplicity.github.io/algan"><img src="docs/source/_static/algan-banner.png" alt="Algan" width="960" /></a>
+</p>
+
+<p align="center">
+  <a href="https://algorithmicsimplicity.github.io/algan">Watch the 16-second demo</a> &mdash; every frame of it, and the logo above, is rendered by Algan (<code>branding/</code>).
+</p>
 
 <p align="center">
   <strong>Full-featured 2D/3D programmatic animation engine for explanatory mathematics and technical videos.</strong>

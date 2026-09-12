@@ -18,7 +18,9 @@ See :doc:`shaders_and_materials` for the material catalogue.
 .. important::
 
     :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material` must be called **before** the Mob is spawned, and
-    reflection and refraction apply to 3-D objects only.
+    reflection applies to any geometry with a PBR material, flat text and
+    bezier shapes included: a mirror ``Text`` facing the camera reflects what is
+    behind the camera. Refraction needs a closed 3-D shape to bend through.
 
 Reflections
 ===========

@@ -113,14 +113,26 @@ most one queued re-run. There are three ways in:
 
   .. code-block:: bash
 
-      algan daemon render         # also: algan daemon ping, algan daemon quit
+      algan daemon render         # also: ping, cancel, quit
 
 * **``--watch``**, which polls the script and its sibling modules for changes.
 
-The socket also accepts ``cancel`` (with the state file's token), which raises
-``KeyboardInterrupt`` inside the running script -- the same thing Ctrl-C would
-have done had the script owned the terminal -- and ``run``, which is the handoff
-protocol the client uses and not something to drive by hand.
+Use ``algan daemon cancel`` to interrupt the active script. It reads the state
+file's token and raises ``KeyboardInterrupt`` in that script. An idle daemon
+reports that there is nothing to cancel. Queued scripts are retained; the reply
+acknowledges the request, not completed cleanup. Repeated cancel requests are
+coalesced so they do not interrupt worker cleanup.
+
+After an interruption, the daemon resets the compiler runtime as well as the
+Scene, once render workers have finished. This avoids reusing a partially
+initialized FieldsBuilder or kernel. The next render can pay a cache-load/startup
+cost. If cleanup fails, the daemon shuts down so a fresh process can serve the
+next request. For troubleshooting older versions, stop the idle daemon and run
+the affected scene with ``ALGAN_USE_DAEMON=0``. Do not clear caches as a routine
+cancellation step.
+
+The socket also accepts ``run``, the client handoff protocol, which should not
+be driven by hand.
 
 Stopping it
 ===========

@@ -71,6 +71,7 @@ def _ffmpeg_binary() -> tuple[str | None, str]:
 
 def _cmd_check(_args: argparse.Namespace) -> int:
     """Check system environment and dependencies."""
+    path_errors = False
     print("=== Algan Environment Health Check ===")
     print(f"Algan: {_version()}")
 
@@ -257,11 +258,54 @@ def _cmd_check(_args: argparse.Namespace) -> int:
         print("                directory, so a render lands beside your scene)")
         print(f"  cache:       {paths.cache_directory}")
         print(f"  daemon home: {_daemon_home()}")
+        from algan.rendering.taichi_runtime import _TAICHI_CACHE_DIRECTORY
+        from algan.utils.path_utils import _ensure_writable_directory
+
+        cache = Path(paths.cache_directory)
+        checks = [
+            (cache, "content cache", "Set ALGAN_CACHE_DIR before starting Python."),
+            (
+                cache / "manim" / "texts",
+                "Pango cache",
+                "Set ALGAN_CACHE_DIR before starting Python.",
+            ),
+            (
+                cache / "manim" / "Tex",
+                "LaTeX cache",
+                "Set ALGAN_CACHE_DIR before starting Python.",
+            ),
+            (
+                cache / "audio",
+                "speech cache",
+                "Set ALGAN_CACHE_DIR before starting Python.",
+            ),
+            (
+                _TAICHI_CACHE_DIRECTORY,
+                "kernel cache",
+                "Set TI_OFFLINE_CACHE_FILE_PATH before starting Python.",
+            ),
+            (_daemon_home(), "daemon home", "Set ALGAN_HOME before starting Python."),
+            (
+                Path.cwd() / paths.output_directory,
+                "output from this working directory",
+                "Set SETTINGS.paths.output_root/output_directory in your script.",
+            ),
+        ]
+        for path, purpose, remedy in checks:
+            try:
+                checked = _ensure_writable_directory(
+                    path, purpose=purpose, remedy=remedy
+                )
+                print(f"  [OK] writable {purpose}: {checked}")
+            except Exception as exc:
+                path_errors = True
+                print(f"  [ERROR] {exc}")
     except Exception as exc:  # noqa: BLE001 -- a health check must still finish
-        print(f"  [WARNING] could not resolve Algan's paths: {exc}")
+        path_errors = True
+        print(f"  [ERROR] could not check Algan's paths: {exc}")
 
     print("======================================")
-    return 0
+    return 1 if path_errors else 0
 
 
 def _daemon_home() -> str:
@@ -315,7 +359,7 @@ if __name__ == "__main__":
 #: ``algan daemon <verb>``: the trigger-socket line commands, which are what an
 #: editor keybinding pokes. Each needs the daemon's token, which is why they are
 #: subcommands rather than the raw socket one-liner they replace.
-DAEMON_TRIGGERS = ("render", "ping", "quit")
+DAEMON_TRIGGERS = ("render", "ping", "cancel", "quit")
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
@@ -370,7 +414,17 @@ def _trigger_daemon(verb: str) -> int:
     if reply.startswith("err:"):
         print(f"Daemon (pid {pid}) refused `{verb}`: {reply[4:].strip()}")
         return 1
-    if verb == "quit":
+    if verb == "cancel":
+        if reply == "idle":
+            print(f"Daemon (pid {pid}) is idle; nothing to cancel.")
+        elif reply == "ok":
+            print(
+                f"Cancellation requested for daemon (pid {pid}); cleanup may take a moment."
+            )
+        else:
+            print(f"Unexpected cancellation response: {reply or 'no reply'}")
+            return 1
+    elif verb == "quit":
         print(f"Daemon (pid {pid}) is stopping [{reply or 'no reply'}].")
     else:
         print(f"Daemon (pid {pid}) on port {port}: {reply or 'no reply'}")
@@ -575,7 +629,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Run or poke the warm render daemon",
         description="With no argument, run a daemon in this terminal. With a "
         "verb, send that trigger to the running one: `render` re-runs its last "
-        "script (bind an editor key to it), `ping` checks it is alive, `quit` "
+        "script (bind an editor key to it), `ping` checks it is alive, `cancel` "
+        "interrupts its active script (queued scripts are kept), `quit` "
         "stops it. Each carries the token from the daemon's state file.",
     )
     daemon_parser.add_argument(

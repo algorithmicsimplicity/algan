@@ -68,6 +68,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext, suppress
 
 import torch
@@ -92,6 +93,7 @@ from algan.scene import Scene
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
 from algan.scene_manager import SceneManager
+from algan.settings.video_settings import VideoSettings
 from algan.taichi_compat import ti
 from algan.utils.memory_utils import peak_allocated, reset_peak_floor
 
@@ -195,6 +197,7 @@ class StageTimers:
                 return orig(*args, **kwargs)
 
         wrapped._profiling_original = orig
+        _PIPELINE_HOOKS.append((obj, attr, inspect.getattr_static(obj, attr), wrapped))
         setattr(obj, attr, wrapped)
         return orig
 
@@ -205,6 +208,29 @@ SCENE_STATS = {}
 DISCOVERED_KERNELS = []
 # (module, attr, original) triples for uninstall.
 _KERNEL_HOOKS = []
+_PIPELINE_HOOKS = []
+
+
+@contextmanager
+def _temporary_instrumentation():
+    """Restore hooks installed here so later daemon jobs stay uninstrumented."""
+    global _HOOKS_INSTALLED, DISCOVERED_KERNELS
+    pipeline_start, kernel_start = len(_PIPELINE_HOOKS), len(_KERNEL_HOOKS)
+    installed, discovered = _HOOKS_INSTALLED, DISCOVERED_KERNELS
+    try:
+        yield
+    finally:
+        for obj, attr, original in reversed(_KERNEL_HOOKS[kernel_start:]):
+            current = getattr(obj, attr, None)
+            if getattr(current, "_profiling_original", None) is original:
+                setattr(obj, attr, original)
+        del _KERNEL_HOOKS[kernel_start:]
+        for obj, attr, original, wrapper in reversed(_PIPELINE_HOOKS[pipeline_start:]):
+            if inspect.getattr_static(obj, attr) is wrapper:
+                setattr(obj, attr, original)
+        del _PIPELINE_HOOKS[pipeline_start:]
+        _HOOKS_INSTALLED, DISCOVERED_KERNELS = installed, discovered
+
 
 # Inline-stage support for hot loops the pipeline hooks cannot reach (the
 # sheet route's bounce loop in tracer.py, whose phases all live inside one
@@ -382,6 +408,8 @@ def _make_kernel_wrapper(orig, name):
 
     def wrapper(*args, **kwargs):
         _sync_devices()
+        tls = TIMERS._thread_state()
+        children_before = tls.level_times[tls.stack_level]
         t0 = time.perf_counter()
         result = orig(*args, **kwargs)
         t1 = time.perf_counter()
@@ -390,7 +418,13 @@ def _make_kernel_wrapper(orig, name):
         _sync_devices()
         t2 = time.perf_counter()
         dt = t2 - t0
+        # A cold kernel can itself open a materialization stage. Re-parent
+        # that time under this kernel instead of charging it to the enclosing
+        # stage twice (once here and once by StageTimers.stage).
+        children = tls.level_times[tls.stack_level] - children_before
+        tls.level_times[tls.stack_level] -= children
         TIMERS.times[label] += dt
+        TIMERS.exclusive_times[label] += dt - children
         TIMERS.counts[label] += 1
         TIMERS.launch_times[label] += t1 - t0
         TIMERS.device_sync_times[label] += t2 - t1
@@ -508,6 +542,13 @@ def install_pipeline_hooks():
     """Wrap the (non-kernel) pipeline entry points with stage timers."""
     # Scene-side preparation (mob state evaluation + geometry generation).
     import algan.render_loop as rl
+    from algan.taichi_compat import submodule
+
+    _try_wrap(
+        submodule("lang.kernel_impl").Kernel,
+        "materialize",
+        "kernel materialization (frontend/cache/JIT)",
+    )
 
     _try_wrap(bzc, "build_render_primitives_batched", "build_render_primitives_batched")
     _try_wrap(Scene, "_get_batch_of_primitives", "Scene._get_batch_of_primitives")
@@ -696,6 +737,7 @@ def install_pipeline_hooks():
         merge_wrapper._profiling_original = orig_merge
         for mod in (scb, rtr, rtp):
             if getattr(mod, "_merge_scene", None) is orig_merge:
+                _PIPELINE_HOOKS.append((mod, "_merge_scene", orig_merge, merge_wrapper))
                 mod._merge_scene = merge_wrapper
 
     _try_wrap(stbvh_mod, "build_stbvh", "  - STBVH build (in merge)")
@@ -1150,8 +1192,15 @@ def run_nvprof_metrics(script_argv, timeout=1200):
 # A single profiled render pass
 # ---------------------------------------------------------------------------
 def run_once(
-    scene_func, settings, tag="", run_index=0, telemetry=True, save_video_kwargs=None
+    scene_func,
+    settings,
+    tag="",
+    run_index=0,
+    telemetry=True,
+    save_video_kwargs=None,
+    output_directory=None,
 ):
+    output_directory = os.fspath(output_directory or OUT_DIR)
     SCENE_STATS.clear()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -1163,7 +1212,10 @@ def run_once(
 
     scene = SceneManager.reset()
     scene.set_video_settings(settings)
+    authoring_started = time.perf_counter()
     scene_func()
+    authoring_seconds = time.perf_counter() - authoring_started
+    scene_seconds = float(scene._recorded_end_time_for_render())
 
     # Reset AFTER authoring, because ``total`` below starts after authoring.
     # Authoring hits the same hooked functions the render does -- it is where
@@ -1184,24 +1236,30 @@ def run_once(
     t0 = time.perf_counter()
     if profiler is not None:
         profiler.enable()
-    Scene.save_video(
-        os.path.join(OUT_DIR, f"profiling{tag}_run{run_index}.mp4"),
-        video_settings=settings,
-        # Each profiling run re-authors the scene from scratch.
-        reset=True,
-        **(save_video_kwargs or {}),
-    )
-    if profiler is not None:
-        profiler.disable()
-    _sync_devices()
-    total = time.perf_counter() - t0
-    if sampler is not None:
-        sampler.stop()
+    try:
+        options = dict(save_video_kwargs or {})
+        options.setdefault("reset", True)
+        result = Scene.save_video(
+            os.path.join(output_directory, f"profiling{tag}_run{run_index}.mp4"),
+            video_settings=settings,
+            **options,
+        )
+        if result.status != "rendered":
+            raise RuntimeError(
+                "Profiling needs a newly rendered video; output was skipped"
+            )
+        _sync_devices()
+        total = time.perf_counter() - t0
+    finally:
+        if profiler is not None:
+            profiler.disable()
+        if sampler is not None:
+            sampler.stop()
 
     dump_path = "disabled (set ALGAN_PROFILE_CPROFILE=1)"
     if profiler is not None:
         dump_path = os.path.join(
-            OUT_DIR, f"raytracing_cprofile{tag}_run{run_index}.txt"
+            output_directory, f"raytracing_cprofile{tag}_run{run_index}.txt"
         )
         try:
             with open(dump_path, "w") as f:
@@ -1219,6 +1277,9 @@ def run_once(
     )
     return {
         "total": total,
+        "authoring_seconds": authoring_seconds,
+        "scene_seconds": scene_seconds,
+        "output_path": str(result.output_path),
         "peak_alloc_mb": peak_alloc,
         "peak_reserved_mb": peak_reserved,
         "times": dict(TIMERS.times),
@@ -1370,6 +1431,11 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
         )
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
+        if "authoring_seconds" in res:
+            w(
+                f"Authoring: {res['authoring_seconds']:.2f}s; "
+                f"authored video duration: {res['scene_seconds']:.2f}s"
+            )
         w("-" * 78)
         w(
             "incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage"
@@ -1528,49 +1594,92 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
 # The one universal entry point
 # ---------------------------------------------------------------------------
 def profile_scene(
-    scene_func,
-    video_settings,
-    tag="",
-    runs=None,
-    kernel_profiler=None,
-    telemetry=None,
-    nvprof=None,
-    save_video_kwargs=None,
-):
-    """Profile ``scene_func`` end-to-end and write a report.
+    scene_func: Callable[[], object],
+    video_settings: VideoSettings,
+    tag: str = "",
+    runs: int | None = None,
+    kernel_profiler: bool | None = None,
+    telemetry: bool | None = None,
+    nvprof: bool | None = None,
+    save_video_kwargs: dict | None = None,
+    *,
+    output_directory: str | os.PathLike | None = None,
+) -> list[dict] | None:
+    """Profile scene authoring and render stages and write a timing report.
 
-    This is the single profiler to use when optimizing video-production time.
+    Renders complete passes, usually one first pass followed by a warm pass.
+    Stage times include timeline evaluation, geometry, kernel materialization
+    (frontend, cache loading and JIT), rendering, post-processing and encoder
+    drain. First-pass overhead can include compilation but is not a pure
+    compilation measurement. Instrumentation remains installed in this process.
 
     Parameters
     ----------
-    scene_func : callable
-        Builds the scene (spawns mobs, issues animations). Called after a fresh
-        ``SceneManager.reset()`` each run.
-    video_settings : VideoSettings
-        Passed straight to ``Scene.save_video`` (e.g. ``HD``).
-    tag : str
-        Suffix for the output mp4 / report / cProfile files.
-    runs : int
-        Render passes. Default 2 (env ``ALGAN_PROFILE_RUNS``): run 1 is cold
-        (Taichi JIT + cold GPU clocks), run 2 is warm/steady-state -- use the
-        warm numbers for optimization decisions.
-    kernel_profiler : bool | None
-        Enable Taichi's per-kernel GPU profiler (re-inits the runtime). Default
-        auto (env ``ALGAN_TI_KERNEL_PROFILER``, on).
-    telemetry : bool | None
-        Sample nvidia-smi telemetry during the render. Default auto (env
-        ``ALGAN_PROFILE_TELEMETRY``, on).
-    nvprof : bool | None
-        Re-run the script under nvprof for registers/occupancy (slow, opt-in).
-        Default auto (env ``ALGAN_PROFILE_NVPROF``, off).
-    save_video_kwargs : dict | None
-        Extra keyword arguments for ``Scene.save_video`` (``codec``,
-        ``ffmpeg_params``, ...). The encoder is part of what a run measures --
-        the ``video encode tail`` stage is the wait on it after the last frame
-        -- so on a box whose CPU is far slower than the target machine's, pass
-        a faster software preset (``ffmpeg_params=["-preset", "ultrafast"]``)
-        to keep the rest of the profile representative.
+    scene_func
+        Zero-argument function that authors the scene. Called after a fresh
+        SceneManager.reset() each pass; it should not export the scene itself.
+    video_settings
+        Settings used to author and render, for example HD.
+    tag
+        Filename suffix for videos and reports. Defaults to the empty string.
+    runs
+        Positive number of complete render passes. Defaults to None, reading
+        ALGAN_PROFILE_RUNS (2 when unset).
+    kernel_profiler
+        Enable GPU kernel timing, which reinitializes the compiler runtime.
+        Defaults to None, reading ALGAN_TI_KERNEL_PROFILER (True when unset).
+        False retains stage wall timing without requesting reinitialization.
+    telemetry
+        Sample NVIDIA telemetry during rendering. Defaults to None, reading
+        ALGAN_PROFILE_TELEMETRY (True when unset).
+    nvprof
+        Re-run the script under nvprof for registers and occupancy. Defaults
+        to None, reading ALGAN_PROFILE_NVPROF (False when unset).
+    save_video_kwargs
+        Options passed to Scene.save_video, such as codec and ffmpeg_params.
+        Defaults to None. Reset defaults to True because each pass re-authors
+        the scene. A skipped output cannot be measured and raises RuntimeError.
+    output_directory
+        Directory for profile videos, reports and optional cProfile dumps.
+        Defaults to None: videos/dumps use algan_outputs/profiling and the
+        report uses algan_profile_report_<tag>.txt in the working directory.
+
+    Returns
+    -------
+    list[dict] or None
+        Per-pass render seconds (total), authoring_seconds, scene_seconds,
+        output_path, stage times/counts, GPU telemetry and memory measurements.
+        The nvprof child renders one lean pass and returns None.
+
+    Raises
+    ------
+    ValueError
+        If runs is not a positive integer.
+    RuntimeError
+        If an output was skipped instead of rendered.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from algan import Scene, PREVIEW
+        from algan.utils.profiling_utils import profile_scene
+
+
+        def intro():
+            Scene.wait(1)
+
+
+        profile_scene(intro, PREVIEW, runs=2, output_directory="profiles")
     """
+    from pathlib import Path
+
+    if runs is None:
+        runs = env_int("ALGAN_PROFILE_RUNS", 2)
+    if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
+        raise ValueError("runs must be a positive integer")
+    output_dir = Path(output_directory or OUT_DIR).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
     # When launched as an nvprof child, do a single lean render (no re-init, no
     # telemetry, no nested nvprof) so nvprof profiles clean kernels.
     if under_nvprof():
@@ -1583,6 +1692,7 @@ def profile_scene(
             0,
             telemetry=False,
             save_video_kwargs=save_video_kwargs,
+            output_directory=output_dir,
         )
         return
 
@@ -1617,6 +1727,7 @@ def profile_scene(
                 i,
                 telemetry=telemetry,
                 save_video_kwargs=save_video_kwargs,
+                output_directory=output_dir,
             )
         )
 
@@ -1641,7 +1752,11 @@ def profile_scene(
         except Exception as e:
             print(f"(taichi kernel profiler info unavailable: {e})")
 
-    report_path = REPORT_PATH.replace(".txt", f"_{tag}.txt")
+    report_path = (
+        output_dir / f"algan_profile_report_{tag}.txt"
+        if output_directory is not None
+        else REPORT_PATH.replace(".txt", f"_{tag}.txt")
+    )
     try:
         with open(report_path, "w") as f:
             f.write(report)

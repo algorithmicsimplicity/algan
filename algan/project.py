@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import inspect
+import math
 import os
 import re
 import textwrap
+from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -21,6 +23,55 @@ from algan.settings.video_settings import _PRESETS_BY_NAME, VideoSettings
 
 logger = get_logger()
 _ACTIVE_PROJECT_RUN = ContextVar("algan_active_project_run", default=None)
+_SceneSelection = int | str | Iterable[int | str] | None
+
+
+@dataclass(frozen=True)
+class SceneValidation:
+    """Authored scene report: ID, name, seconds, checkpoint count and exact speech text."""
+
+    id: int
+    name: str
+    duration_seconds: float
+    checkpoints: int
+    transcript: str
+
+
+@dataclass(frozen=True)
+class ProjectValidation:
+    """Results from authoring selected scenes without producing images or videos."""
+
+    scenes: tuple[SceneValidation, ...]
+
+    @property
+    def duration_seconds(self) -> float:
+        """Total authored duration in seconds, including Speech holds."""
+        return sum(scene.duration_seconds for scene in self.scenes)
+
+
+@dataclass(frozen=True)
+class RenderEstimate:
+    """Sample-based export estimate, in seconds, excluding authoring and concatenation.
+
+    ``warm_seconds`` scales the samples' weighted warm render rate to the
+    project duration. ``cold_overhead_seconds`` sums observed first-pass excess
+    over warm passes; it includes cache, compilation and clock effects.
+    ``range_seconds`` applies the fastest/slowest sampled scene rates plus that
+    overhead, and is a workload range, not a statistical confidence interval.
+    Unseen shaders, scene density, settings and hardware can invalidate it.
+    ``profiles`` contains the underlying per-scene ``profile_scene`` results.
+    """
+
+    duration_seconds: float
+    warm_seconds: float
+    cold_overhead_seconds: float
+    range_seconds: tuple[float, float]
+    profiles: dict[str, list[dict]]
+
+    @property
+    def estimated_seconds(self) -> float:
+        """Warm export estimate plus observed startup overhead, in seconds."""
+        return self.warm_seconds + self.cold_overhead_seconds
 
 
 def _get_active_project_run():
@@ -84,7 +135,7 @@ class _ProjectScene:
 class _ProjectSceneRun:
     project: Project
     scene: _ProjectScene
-    mode: Literal["screenshots", "video"]
+    mode: Literal["screenshots", "video", "validate", "profile"]
     next_frame_index: int = 0
     frame_results: list = field(default_factory=list)
     allow_video_render: bool = False
@@ -423,6 +474,7 @@ class Project:
         frames=None,
         stop_early: bool = False,
         video_settings: VideoSettings | None = None,
+        **save_frame_kwargs,
     ):
         """Run save-frame calls for one, many, or all project scenes.
 
@@ -454,6 +506,7 @@ class Project:
             frames=frames,
             stop_early=stop_early,
             video_settings=video_settings,
+            **save_frame_kwargs,
         )
 
     def run_cli(self, argv=None) -> bool:
@@ -464,6 +517,9 @@ class Project:
 
             --render-screenshots [SCENE ...] [--frames PATTERN ...] [--stop-early]
             --render-video [SCENE ...]
+            --validate [SCENE ...]
+            --profile [SCENE ...] [--profile-runs N]
+            --estimate-render-time SCENE ... [--profile-runs N]
             --concatenate-videos
             --video-settings PRESET
             --help
@@ -495,6 +551,30 @@ class Project:
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         actions = parser.add_mutually_exclusive_group()
+        actions.add_argument(
+            "--validate",
+            nargs="*",
+            metavar="SCENE",
+            help="Author scenes and report narration timing without rendering.",
+        )
+        actions.add_argument(
+            "--profile",
+            nargs="*",
+            metavar="SCENE",
+            help="Render selected scenes with stage timing reports.",
+        )
+        actions.add_argument(
+            "--estimate-render-time",
+            nargs="+",
+            metavar="SCENE",
+            help="Profile these reference scenes and estimate full export time.",
+        )
+        parser.add_argument(
+            "--profile-runs",
+            type=int,
+            default=2,
+            help="Complete profiling passes per scene (default: 2).",
+        )
         actions.add_argument(
             "--render-screenshots",
             nargs="*",
@@ -545,6 +625,50 @@ class Project:
                 arguments.video_settings
             )
 
+        if any(
+            value is not None
+            for value in (
+                arguments.validate,
+                arguments.profile,
+                arguments.estimate_render_time,
+            )
+        ):
+            if arguments.frames or arguments.stop_early:
+                raise AlganConfigurationError(
+                    "--frames and --stop-early only apply to --render-screenshots"
+                )
+            if arguments.validate is not None:
+                report = self.validate(
+                    self._parse_cli_scene_selectors(arguments.validate), **shared
+                )
+                for scene in report.scenes:
+                    print(
+                        f"{scene.name}: {scene.duration_seconds:.2f}s, "
+                        f"{scene.checkpoints} checkpoints"
+                    )
+                print(
+                    f"Validated {len(report.scenes)} scenes; {report.duration_seconds:.2f}s total. "
+                    "No frames rendered."
+                )
+            elif arguments.profile is not None:
+                self.profile(
+                    self._parse_cli_scene_selectors(arguments.profile),
+                    runs=arguments.profile_runs,
+                    **shared,
+                )
+            else:
+                estimate = self.estimate_render_time(
+                    self._parse_cli_scene_selectors(arguments.estimate_render_time),
+                    runs=arguments.profile_runs,
+                    **shared,
+                )
+                print(
+                    f"Estimated export: {estimate.estimated_seconds:.1f}s; "
+                    f"sampled range {estimate.range_seconds[0]:.1f}-{estimate.range_seconds[1]:.1f}s. "
+                    f"Observed startup overhead: {estimate.cold_overhead_seconds:.1f}s. "
+                    "Excludes authoring and concatenation; unsampled effects may change the estimate."
+                )
+            return True
         if arguments.render_screenshots is not None:
             options = dict(shared)
             if arguments.frames:
@@ -574,6 +698,265 @@ class Project:
         return tuple(
             int(selector) if re.fullmatch(r"\d+", selector) else selector
             for selector in selectors
+        )
+
+    def validate(
+        self,
+        scenes: _SceneSelection = None,
+        *,
+        video_settings: VideoSettings | None = None,
+    ) -> ProjectValidation:
+        """Author scenes and resolve narration timing without rendering frames.
+
+        Scene save-frame and save-video calls are skipped. Speech still obtains
+        audio from the configured source, which can populate caches, and project
+        transcripts are updated. This checks authoring and timing; it does not
+        run frame updaters, compile shaders, or check visual output.
+
+        Parameters
+        ----------
+        scenes
+            Scene ID, name, prefixed name, or iterable mixing these forms.
+            Defaults to None, meaning every scene.
+        video_settings
+            Settings used while authoring, including screen layout. Defaults
+            to None, meaning the project's settings or SETTINGS.video.
+
+        Returns
+        -------
+        ProjectValidation
+            Per-scene ID, name, duration_seconds, checkpoints and unwrapped
+            transcript, plus total duration_seconds. Durations include holds.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If a scene selector or authored duration is invalid. Authoring and
+            speech-source errors propagate with the scene name attached.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene
+
+
+            def intro():
+                Scene.wait(2)
+
+
+            report = Project([intro]).validate()
+            print(report.duration_seconds)  # 2.0
+        """
+        from algan.scene import _note_render_requested
+
+        # An intentional author-only pass must not trigger the daemon's
+        # "script forgot to export" warning. Skipped exports count there too.
+        _note_render_requested()
+        return ProjectValidation(
+            tuple(
+                self._render(
+                    scenes,
+                    mode="validate",
+                    video_settings=video_settings,
+                )
+            )
+        )
+
+    def profile(
+        self,
+        scenes: _SceneSelection = None,
+        *,
+        video_settings: VideoSettings | None = None,
+        runs: int = 2,
+        **profile_kwargs,
+    ) -> dict[str, list[dict]]:
+        """Render selected scenes through the stage-by-stage scene profiler.
+
+        Each pass re-authors its scene with this project's speech source. Scene
+        checkpoints and manual exports are skipped. Profile videos and reports
+        go under the project's video directory in ``profiling`` by default.
+
+        Parameters
+        ----------
+        scenes
+            Scene ID, name, prefixed name, or iterable mixing these forms.
+            Defaults to None, meaning every scene; select short representative
+            scenes to limit profiling cost.
+        video_settings
+            Render and authoring settings. Defaults to None, meaning this
+            project's settings or SETTINGS.video.
+        runs
+            Number of complete render passes per scene. Defaults to 2, to
+            compare first-pass and warm timings. Must be a positive integer.
+        **profile_kwargs
+            Passed to ``algan.utils.profiling_utils.profile_scene``, including
+            ``kernel_profiler``, ``telemetry``, ``output_directory`` and
+            ``save_video_kwargs``. Kernel GPU profiling defaults to False here
+            to preserve the production runtime; stage wall timers stay enabled.
+            ``tag`` defaults to the stable scene stem.
+
+        Returns
+        -------
+        dict
+            Scene stems mapped to the profiler's per-pass result dictionaries.
+            These include render wall time (``total``), authoring_seconds,
+            scene_seconds, output_path and inclusive/exclusive stage times.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene
+
+
+            def intro():
+                Scene.wait(1)
+
+
+            profiles = Project([intro]).profile("intro", telemetry=False)
+        """
+        from algan.scene import Scene, SceneManager
+        from algan.utils.profiling_utils import (
+            _temporary_instrumentation,
+            profile_scene,
+        )
+
+        selected = self._selected_scenes(scenes)
+        effective = video_settings or self.video_settings or SETTINGS.video
+        profiles = {}
+        for project_scene in selected:
+
+            def author(project_scene=project_scene):
+                scene = Scene.current()
+                run = _ProjectSceneRun(self, project_scene, "profile")
+                scene._project_run = run
+                scene._suppress_automatic_transcript = True
+                scene.audio_manager.set_speech_source(self.speech_source)
+                token = _ACTIVE_PROJECT_RUN.set(run)
+                try:
+                    project_scene.function()
+                    self._sync_scene_transcript(
+                        project_scene, scene.audio_manager.video_transcript
+                    )
+                finally:
+                    _ACTIVE_PROJECT_RUN.reset(token)
+                run.allow_video_render = True
+
+            options = dict(profile_kwargs)
+            options.setdefault("kernel_profiler", False)
+            options.setdefault("output_directory", self.video_directory / "profiling")
+            options.setdefault("tag", project_scene.stem)
+            try:
+                with _temporary_instrumentation():
+                    profiles[project_scene.stem] = profile_scene(
+                        author,
+                        effective,
+                        runs=runs,
+                        **options,
+                    )
+            finally:
+                SceneManager.reset()
+        return profiles
+
+    def estimate_render_time(
+        self,
+        reference_scenes: _SceneSelection,
+        *,
+        video_settings: VideoSettings | None = None,
+        runs: int = 2,
+        **profile_kwargs,
+    ) -> RenderEstimate:
+        """Estimate full export time by profiling chosen representative scenes.
+
+        Author all scenes to measure duration, then render only the selected
+        reference scenes through :meth:`profile`. This is an explicit sampling
+        render, so choose short scenes representative of the project's effects.
+        Estimates assume the same quality, hardware, renderer and encoding.
+        The sampled range cannot bound costs of effects absent from the samples.
+
+        Parameters
+        ----------
+        reference_scenes
+            Scene ID, name, prefixed name, or iterable mixing these forms.
+            Required; None explicitly selects every scene as a reference.
+        video_settings
+            Settings used for validation and profiling. Defaults to None,
+            meaning the project's settings or SETTINGS.video.
+        runs
+            Complete passes per reference scene. Defaults to 2. At least two
+            are required to separate first-pass from warm timings.
+        **profile_kwargs
+            Passed to :meth:`profile`, including ``save_video_kwargs`` for
+            matching the intended encoder, and ``telemetry``.
+
+        Returns
+        -------
+        RenderEstimate
+            Project duration, warm_seconds, cold_overhead_seconds,
+            estimated_seconds, range_seconds and underlying profiles.
+            Times exclude authoring, validation, sampling and concatenation.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If runs is less than two or a reference has zero authored duration.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene
+
+
+            def intro():
+                Scene.wait(1)
+
+
+            estimate = Project([intro]).estimate_render_time("intro")
+            print(estimate.range_seconds)
+        """
+        if isinstance(runs, bool) or not isinstance(runs, int) or runs < 2:
+            raise AlganConfigurationError(
+                "Estimation needs at least two profiling runs"
+            )
+        selected = self._selected_scenes(reference_scenes)
+        if not selected:
+            raise AlganConfigurationError("Select at least one reference scene")
+        validation = self.validate(video_settings=video_settings)
+        by_id = {scene.id: scene for scene in validation.scenes}
+        if any(by_id[scene.id].duration_seconds <= 0 for scene in selected):
+            raise AlganConfigurationError(
+                "Reference scenes must have positive duration"
+            )
+        profiles = self.profile(
+            [s.id for s in selected],
+            video_settings=video_settings,
+            runs=runs,
+            **profile_kwargs,
+        )
+        rates, durations, warm_times = [], [], []
+        overhead = 0.0
+        for passes in profiles.values():
+            duration = passes[-1]["scene_seconds"]
+            warm = sum(p["total"] for p in passes[1:]) / (len(passes) - 1)
+            if duration <= 0 or any(
+                not math.isclose(p["scene_seconds"], duration) for p in passes
+            ):
+                raise AlganConfigurationError(
+                    "Reference duration changed between profiling passes"
+                )
+            rates.append(warm / duration)
+            durations.append(duration)
+            warm_times.append(warm)
+            overhead += max(0.0, passes[0]["total"] - warm)
+        total = validation.duration_seconds
+        return RenderEstimate(
+            total,
+            total * sum(warm_times) / sum(durations),
+            overhead,
+            (total * min(rates) + overhead, total * max(rates) + overhead),
+            profiles,
         )
 
     def render_video(
@@ -629,7 +1012,7 @@ class Project:
         self,
         scenes=None,
         *,
-        mode: Literal["screenshots", "video"],
+        mode: Literal["screenshots", "video", "validate"],
         video_settings: VideoSettings | None = None,
         overwrite: bool = True,
         frames=None,
@@ -667,8 +1050,16 @@ class Project:
                 active_scene.audio_manager.set_speech_source(self.speech_source)
                 run_token = _ACTIVE_PROJECT_RUN.set(run)
                 try:
-                    with suppress(_StopSceneEarly):
-                        project_scene.function()
+                    try:
+                        with suppress(_StopSceneEarly):
+                            project_scene.function()
+                    except Exception as exc:
+                        message = f"While authoring project scene {project_scene.stem}"
+                        if hasattr(exc, "add_note"):
+                            exc.add_note(message)
+                        else:  # Python 3.10 has no exception notes.
+                            logger.error(message)
+                        raise
                     matched_anywhere |= run.matched_patterns
                     if run.stopped_early:
                         # The scene never finished, so its transcript would be a
@@ -679,7 +1070,22 @@ class Project:
                             project_scene,
                             active_scene.audio_manager.video_transcript,
                         )
-                    if mode == "video":
+                    if mode == "validate":
+                        duration = float(active_scene._recorded_end_time_for_render())
+                        if not math.isfinite(duration) or duration < 0:
+                            raise AlganConfigurationError(
+                                f"Invalid duration for {project_scene.stem}: {duration}"
+                            )
+                        results.append(
+                            SceneValidation(
+                                project_scene.id,
+                                project_scene.stem,
+                                duration,
+                                run.next_frame_index,
+                                active_scene.audio_manager.video_transcript,
+                            )
+                        )
+                    elif mode == "video":
                         run.allow_video_render = True
                         try:
                             result = active_scene.save_video(
@@ -697,7 +1103,13 @@ class Project:
                     _ACTIVE_PROJECT_RUN.reset(run_token)
                     active_scene._project_run = None
                     active_scene._suppress_automatic_transcript = False
-            verb = "Stopped early in" if run.stopped_early else "Finished rendering"
+            verb = (
+                "Validated"
+                if mode == "validate"
+                else "Stopped early in"
+                if run.stopped_early
+                else "Finished rendering"
+            )
             logger.info(f"{verb} project scene {project_scene.stem} in {mode} mode")
 
         unmatched = tuple(

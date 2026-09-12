@@ -676,11 +676,21 @@ def taichi_launch_is_local(device):
     physical device -- a Vulkan program serving that same Apple GPU has no
     adoption of its own and takes the copy.
 
-    Widening this opens few paths on its own: most call sites carry a second
-    gate that is still closed on Metal (``ALGAN_REFIT_PACK_KERNEL``,
-    ``ALGAN_SHEET_PIXEL_SORT``, ``ALGAN_SHEET_METADATA_KERNEL``), and the PN
-    level searches are decided by ``pn_criterion_kernel_active`` instead, which
-    asks a different question and still answers no there.
+    Widening this opened two default-on kernel arms on an Apple GPU and left
+    the rest where they were. Every call site, with the gate it adds:
+
+    * ``sheets._local_sheet_sort`` (``ALGAN_SHEET_PIXEL_SORT``) and
+      ``sheets._sheet_rank_groups`` (``ALGAN_SHEET_RANK_GROUPS``) are on by
+      default and have no device gate of their own, so ``key_run_order``,
+      ``pixel_group_order`` and ``rank_groups`` run on Metal once the
+      zero-copy hook is installed.
+    * ``ALGAN_REFIT_PACK_KERNEL``, ``ALGAN_SHEET_METADATA_KERNEL`` and
+      ``ALGAN_DEVICE_RADIX_SORT`` ask this too, but are opt-in on every
+      device, so their kernels stay off on Metal unless asked for.
+    * The PN level searches are decided first by
+      ``pn_criterion_kernel_active``, which wants a CUDA render device or the
+      CPU arch and so still answers no there; this function only vets their
+      tensors afterwards (``primitives._criterion_tensors_are_local``).
 
     Phrased as a property of the pairing rather than as ``device.type ==
     "cuda"``, because those are not the same question either. A host tensor on
@@ -1154,6 +1164,24 @@ def _register_kernel_cache_flush():
     # the order the destructor path used to get for free.
     atexit.register(flush_kernel_cache)
     _FLUSH_REGISTERED = True
+
+
+def _reset_after_interruption():
+    """Discard possibly half-initialized compiler state after a cancelled job.
+
+    SceneManager.reset() cannot repair a FieldsBuilder or a kernel whose
+    materialization was interrupted. Only call after the render generator has
+    unwound and joined its prep worker. Unlike a cache flush this reset must
+    run even if initialization did not finish or no kernel was compiled.
+    """
+    global _ARCH_READY_FOR, _BUILT_A_SPECIALIZATION, _PRESSURE_RESET_PENDING
+    if render_is_active() or threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Cannot recover the compiler while a render is active")
+    ti.reset()
+    _ARCH_READY_FOR = None
+    _BUILT_A_SPECIALIZATION = False
+    _PRESSURE_RESET_PENDING = False
+    _forget_compiled_in_settings()
 
 
 def reset_quadrants_for_memory_pressure():

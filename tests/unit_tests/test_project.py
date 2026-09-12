@@ -16,6 +16,137 @@ class _SilentClip:
     duration = 0
 
 
+def test_validate_resolves_speech_and_suppresses_exports(monkeypatch, tmp_path):
+    class Narration:
+        duration = 3
+
+    def scene():
+        with Speech("A triple-nested function.", wait_at_end=0):
+            Scene.wait(1)
+        Scene.save_frame("midpoint")
+        Scene.save_video("ignored.mp4")
+        Scene.wait(2)
+
+    monkeypatch.setattr(
+        algan_utils,
+        "_render_scene_to_file",
+        lambda *a, **k: pytest.fail("validation exported video"),
+    )
+    monkeypatch.setattr(
+        Scene,
+        "_render_still",
+        lambda *a, **k: pytest.fail("validation rendered a frame"),
+    )
+    project = Project(
+        [scene],
+        speech_source=lambda _: Narration(),
+        transcript_line_length=10,
+        **_project_paths(tmp_path),
+    )
+    report = project.validate()
+    assert report.duration_seconds == pytest.approx(5)
+    assert report.scenes[0].checkpoints == 1
+    assert report.scenes[0].transcript.strip() == "A triple-nested function."
+    assert project.global_transcript_path.exists()
+
+
+def test_validate_propagates_authoring_error_with_scene_name(tmp_path):
+    def broken():
+        raise ValueError("missing asset")
+
+    with pytest.raises(ValueError, match="missing asset") as error:
+        Project([broken], **_project_paths(tmp_path)).validate()
+    if hasattr(error.value, "__notes__"):
+        assert "0_broken" in error.value.__notes__[0]
+
+
+def test_project_profile_uses_managed_speech_and_suppresses_manual_saves(
+    monkeypatch, tmp_path
+):
+    from algan.utils import profiling_utils
+
+    seen = []
+
+    def scene():
+        with Speech("exact words", wait_at_end=0):
+            pass
+        assert Scene.save_frame("ignored") == []
+        assert Scene.save_video("ignored.mp4").status == "skipped"
+
+    def fake_profile(author, settings, **options):
+        SceneManager.reset()
+        author()
+        active = Scene.current()
+        seen.append(
+            (
+                active.audio_manager.video_transcript,
+                active._project_run.allow_video_render,
+                options,
+            )
+        )
+        return [{"total": 5}]
+
+    monkeypatch.setattr(profiling_utils, "profile_scene", fake_profile)
+    project = Project(
+        [scene], speech_source=lambda _: _SilentClip(), **_project_paths(tmp_path)
+    )
+    assert project.profile(0) == {"0_scene": [{"total": 5}]}
+    assert seen[0][0].strip() == "exact words"
+    assert seen[0][1] is True
+    assert seen[0][2]["runs"] == 2
+    assert seen[0][2]["output_directory"] == project.video_directory / "profiling"
+
+
+def test_estimate_uses_weighted_warm_rate_and_separate_startup(monkeypatch, tmp_path):
+    def intro():
+        Scene.wait(2)
+
+    def dense():
+        Scene.wait(8)
+
+    def tail():
+        Scene.wait(10)
+
+    project = Project([intro, dense, tail], **_project_paths(tmp_path))
+
+    def profile(scenes, **kwargs):
+        assert scenes == [0, 1]
+        return {
+            "0_intro": [
+                {"total": 6, "scene_seconds": 2},
+                {"total": 2, "scene_seconds": 2},
+            ],
+            "1_dense": [
+                {"total": 20, "scene_seconds": 8},
+                {"total": 16, "scene_seconds": 8},
+            ],
+        }
+
+    monkeypatch.setattr(project, "profile", profile)
+    estimate = project.estimate_render_time([0, 1])
+    assert estimate.warm_seconds == 36
+    assert estimate.cold_overhead_seconds == 8
+    assert estimate.estimated_seconds == 44
+    assert estimate.range_seconds == (28, 48)
+
+
+@pytest.mark.parametrize("runs", [0, 1, True, 2.5])
+def test_estimate_rejects_insufficient_passes(tmp_path, runs):
+    with pytest.raises(AlganConfigurationError, match="at least two"):
+        Project([lambda: None], **_project_paths(tmp_path)).estimate_render_time(
+            0, runs=runs
+        )
+
+
+def test_validate_cli_prints_duration_without_rendering(tmp_path, capsys):
+    def intro():
+        Scene.wait(2)
+
+    project = Project([intro], **_project_paths(tmp_path))
+    assert project.run_cli(["--validate", "intro"])
+    assert "2.00s total" in capsys.readouterr().out
+
+
 @pytest.fixture(autouse=True)
 def reset_scene_manager():
     SceneManager.reset()

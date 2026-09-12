@@ -66,7 +66,7 @@ def _send(port, line):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("verb", ["render", "ping", "quit"])
+@pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
 def test_every_verb_needs_the_token(served, verb):
     events, state = served
     assert "bad token" in _send(state._payload["port"], verb)

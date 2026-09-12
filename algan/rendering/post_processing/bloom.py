@@ -315,7 +315,12 @@ def _upsample_bloom(input_tensor, output, memory):
     if input_tensor.dtype == output.dtype == torch.float32 and can_use_bloom_taichi(
         input_tensor.device
     ):
-        bloom_upsample_bilinear_f32(input_tensor, output)
+        bloom_upsample_bilinear_f32(
+            input_tensor,
+            output,
+            input_tensor.shape[-2] / output.shape[-2],
+            input_tensor.shape[-1] / output.shape[-1],
+        )
         return
 
     # CPU/mismatched-backend fallback: separable lerp with one arena scratch.

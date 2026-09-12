@@ -109,9 +109,15 @@ def make_manim_dir():
     """
     config = mn.config
     from algan.utils.manim_svg_cache import _configure_manim_dirs
+    from algan.utils.path_utils import _ensure_writable_directory
 
-    for tex_dir in _configure_manim_dirs(config):
-        tex_dir.mkdir(parents=True, exist_ok=True)
+    for tex_dir in _configure_manim_dirs(config, create=False):
+        _ensure_writable_directory(
+            tex_dir,
+            purpose="text/LaTeX cache",
+            remedy="Set SETTINGS.paths.cache_directory to a writable directory "
+            "or set ALGAN_CACHE_DIR before starting Python.",
+        )
 
 
 class Tex(Mob):

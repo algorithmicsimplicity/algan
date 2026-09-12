@@ -1,19 +1,12 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Placeholder sidebar wordmark (light theme).
-  Typographic stand-in, not final artwork: swap this file for the real Algan
-  mark. Keep the filename and the viewBox aspect ratio, or update
-  html_theme_options in docs/source/conf.py.
-
-  The colour is furo's light color-brand-primary (see conf.py). The text is a
-  live <text> element in a system font stack, so it renders without any web
-  font; real artwork should ship as outlined paths instead.
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96"
-     role="img" aria-label="Algan">
-  <title>Algan</title>
-  <text x="160" y="60" text-anchor="middle"
-        font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-        font-size="52" font-weight="700" letter-spacing="1.5" fill="#192bd0">algan</text>
-  <rect x="112" y="74" width="96" height="3" rx="1.5" fill="#192bd0" opacity="0.35"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="Algan">
+<title>Algan</title><defs><radialGradient id="sph" cx="0.36" cy="0.30" r="0.72"><stop offset="0" stop-color="#ffffff"/><stop offset="0.32" stop-color="#c6ccd6"/><stop offset="0.72" stop-color="#5d6472"/><stop offset="1" stop-color="#1e222b"/></radialGradient></defs>
+<g fill="#1c1f26" stroke="#1c1f26" stroke-width="5.7" stroke-linejoin="round">
+<path transform="translate(40.00,250.00) scale(0.139194,-0.139194)" d="M287 0H-48L384 1365H829L1253 0H839L566 970Z"/>
+<path transform="translate(208.70,250.00) scale(0.139194,-0.139194)" d="M498 1365V0H105V1365Z"/>
+<path transform="translate(292.64,250.00) scale(0.139194,-0.139194)" d="M1165 1248 1155 975 1136 976Q1082 979 1059 979Q966 979 947 942Q1061 848 1061 715Q1061 559 937.5 480.5Q814 402 602 402Q597 402 550 404Q506 406 504 406Q407 406 407 356Q407 312 493 309L820 295Q999 287 1082.5 195.0Q1166 103 1166 -20Q1166 -166 1041.5 -258.5Q917 -351 557 -351Q2 -351 2 -96Q2 43 149 98Q54 165 54 257Q54 407 249 483Q86 554 86 719Q86 870 218.0 954.0Q350 1038 580 1038Q685 1038 771 1017Q806 1256 1024 1256Q1074 1256 1165 1248ZM581 591Q697 591 697 714Q697 840 578 840Q460 840 460 712Q460 591 581 591ZM479 13Q457 14 435 14Q332 14 332 -50Q332 -109 410.5 -126.0Q489 -143 620 -143Q744 -143 779.5 -122.0Q815 -101 815 -64Q815 -38 799.0 -20.5Q783 -3 723 0Z"/>
+<path transform="translate(454.94,250.00) scale(0.139194,-0.139194)" d="M1130 0H750Q736 65 736 142Q628 -21 409 -21Q229 -21 139.5 71.0Q50 163 50 282Q50 443 196.5 542.5Q343 642 716 662V685Q716 752 685.5 774.0Q655 796 596 796Q458 796 442 685L78 719Q156 1038 609 1038Q732 1038 835.0 1013.5Q938 989 998.0 937.0Q1058 885 1078.5 827.0Q1099 769 1099 604V198Q1099 82 1130 0ZM716 476Q461 449 461 313Q461 221 562 221Q626 221 671.0 259.0Q716 297 716 427Z"/>
+<path transform="translate(622.11,250.00) scale(0.139194,-0.139194)" d="M1098 0H699V640Q699 719 674.5 741.0Q650 763 613 763Q504 763 504 611V0H105V1017H475V873Q557 1038 768 1038Q879 1038 955.5 995.5Q1032 953 1065.0 885.5Q1098 818 1098 651Z"/>
+</g>
+<path d="M74.75,162.98 L77.14,163.19 L79.53,163.82 L81.92,164.84 L84.31,166.21 L86.70,167.88 L89.09,169.78 L91.48,171.85 L93.87,174.00 L96.26,176.15 L98.65,178.22 L101.04,180.12 L103.43,181.79 L105.82,183.16 L108.21,184.18 L110.60,184.81 L112.99,185.02 L115.38,184.81 L117.77,184.18 L120.16,183.16 L122.55,181.79 L124.94,180.12 L127.33,178.22 L129.72,176.15 L132.11,174.00 L134.50,171.85 L136.89,169.78 L139.28,167.88 L141.67,166.21 L144.06,164.84 L146.45,163.82 L148.84,163.19 L151.23,162.98 L153.62,163.19 L156.01,163.82 L158.40,164.84 L160.79,166.21 L163.18,167.88 L165.57,169.78 L167.96,171.85 L170.35,174.00 L172.74,176.15 L175.13,178.22 L177.52,180.12 L179.91,181.79 L182.30,183.16 L184.69,184.18 L187.08,184.81 L189.47,185.02" fill="none" stroke="#3d8ef5" stroke-width="14.2" stroke-linecap="round" stroke-linejoin="round"/>
+<polygon points="983.8,80.6 1069.9,97.9 983.8,115.3 897.6,97.9" fill="#5b82ff"/><polygon points="897.6,97.9 983.8,115.3 983.8,255.7 897.6,238.3" fill="#2b52e6"/><polygon points="983.8,115.3 1069.9,97.9 1069.9,238.3 983.8,255.7" fill="#1b3aa8"/><ellipse cx="1097.8" cy="254.0" rx="76.0" ry="21.3" fill="#b98a1f"/><polygon points="1097.8,85.1 1021.8,254.0 1173.8,254.0" fill="#e0b23f"/><polygon points="1097.8,85.1 1086.4,258.3 1173.8,254.0" fill="#f6d474"/><circle cx="874.0" cy="171.3" r="84.4" fill="url(#sph)"/>
 </svg>

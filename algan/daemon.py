@@ -896,15 +896,17 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         if not secrets.compare_digest(str(token), self.server.state.token):
             self.wfile.write(b"err: bad token\n")
             return
-        if self.server.busy.is_set():
-            # do_run executes on the main thread, so this raises
-            # KeyboardInterrupt inside the running script -- the same thing
-            # Ctrl-C would have done had the script owned the terminal.
-            _say("cancel requested by a client")
-            _thread.interrupt_main()
-            self.wfile.write(b"ok\n")
-        else:
-            self.wfile.write(b"idle\n")
+        with self.server.cancel_lock:
+            if self.server.busy.is_set():
+                # Atomically check the active run and coalesce requests, so a
+                # late request cannot land in cleanup after busy was cleared.
+                if not self.server.cancel_pending:
+                    self.server.cancel_pending = True
+                    _say("cancel requested by a client")
+                    _thread.interrupt_main()
+                self.wfile.write(b"ok\n")
+            else:
+                self.wfile.write(b"idle\n")
 
 
 class _TriggerServer(socketserver.ThreadingTCPServer):
@@ -924,6 +926,11 @@ class _TriggerServer(socketserver.ThreadingTCPServer):
     """
 
     allow_reuse_address = sys.platform != "win32"
+
+    def __init__(self, *args, **kwargs):
+        self.cancel_lock = threading.Lock()
+        self.cancel_pending = False
+        super().__init__(*args, **kwargs)
 
 
 def _bind_trigger_socket(port, allow_fallback):
@@ -1188,9 +1195,14 @@ def main(argv=None):
     # the runtime of a run and True again by ``release_after_run``; a release
     # that failed leaves it False so the next run resets before it starts
     # rather than inheriting whatever the failure left behind.
-    clean = {"state": True}
+    clean = {"state": True, "interrupted": False}
 
     def reset_state():
+        if clean["interrupted"]:
+            from algan.rendering.taichi_runtime import _reset_after_interruption
+
+            _reset_after_interruption()
+            clean["interrupted"] = False
         evicted = sorted({n for d in script_dirs for n in _user_modules(d)})
         for name in evicted:
             sys.modules.pop(name, None)
@@ -1208,6 +1220,10 @@ def main(argv=None):
         same and means an idle daemon holds nothing but the warm process it
         exists to be.
         """
+        if server is not None and server.cancel_pending:
+            # A script may catch KeyboardInterrupt itself. A requested cancel
+            # still warrants recovery before another script uses the compiler.
+            clean["interrupted"] = True
         try:
             reset_state()
             _release_run_memory()
@@ -1215,6 +1231,12 @@ def main(argv=None):
         except BaseException:  # noqa: BLE001 -- tidying must not kill the daemon
             traceback.print_exc()
             clean["state"] = False
+            # Never hand another job a runtime that could not be recovered.
+            events.put(("quit", "runtime cleanup failed"))
+        finally:
+            if server is not None:
+                with server.cancel_lock:
+                    server.cancel_pending = False
 
     def execute(path, script_args, cwd, reason):
         """Run one script to completion. Returns its exit code."""
@@ -1254,6 +1276,7 @@ def main(argv=None):
             with contextlib.suppress(OSError):
                 os.chdir(cwd)
             renders_before = scene_module.renders_requested()
+            set_busy(True)
             runpy.run_path(path, run_name="__main__")
             scene_module.warn_if_nothing_rendered(path, renders_before)
             _say(f"run #{run_count} finished in {time.perf_counter() - started:.1f} s")
@@ -1265,7 +1288,8 @@ def main(argv=None):
             )
         except KeyboardInterrupt:
             code = 130
-            _say(f"run #{run_count} interrupted; state will be reset on the next run")
+            clean["interrupted"] = True
+            _say(f"run #{run_count} interrupted; recovering compiler state")
         except BaseException as exc:  # noqa: BLE001 -- must not kill the daemon
             code = 1
             _print_script_traceback(exc)
@@ -1275,6 +1299,7 @@ def main(argv=None):
                 "and re-trigger"
             )
         finally:
+            set_busy(False)
             sys.argv = old_argv
             with contextlib.suppress(OSError):
                 os.chdir(old_cwd)
@@ -1303,6 +1328,13 @@ def main(argv=None):
         events.put(("quit", "algan sources changed"))
         return True
 
+    def set_busy(value):
+        with server.cancel_lock if server is not None else contextlib.nullcontext():
+            if value:
+                busy.set()
+            else:
+                busy.clear()
+
     def do_local(reason):
         target = last["script"]
         if target is None:
@@ -1310,16 +1342,13 @@ def main(argv=None):
             return
         if stale_quit():
             return
-        busy.set()
         try:
             with _run_context(None):
                 execute(target, last["args"], last["cwd"], reason)
         finally:
-            busy.clear()
             release_after_run()
 
     def do_job(job):
-        busy.set()
         job.send(_dc.FRAME_START)
         last.update(script=job.script, args=job.argv, cwd=job.cwd)
         try:
@@ -1350,7 +1379,6 @@ def main(argv=None):
             # Standing down makes that self-healing instead of permanent.
             events.put(("quit", "the daemon failed outside a script"))
         finally:
-            busy.clear()
             # Release the client first: the tidy-up below is the daemon's own
             # housekeeping and the script has nothing left to wait for.
             job.finish(code)

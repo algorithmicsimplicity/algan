@@ -335,7 +335,7 @@ def test_stop_clears_a_dead_registration(home, capsys):
     assert "cleared its registration" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("verb", ["render", "ping", "quit"])
+@pytest.mark.parametrize("verb", ["render", "ping", "cancel", "quit"])
 def test_a_trigger_verb_is_sent_with_the_token(home, capsys, verb):
     """The raw-socket one-liner these replace could not carry a token."""
     daemon = _FakeDaemon()

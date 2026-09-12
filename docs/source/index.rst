@@ -2,6 +2,14 @@
 About Algan
 ===========
 
+.. raw:: html
+
+   <video autoplay muted loop playsinline controls
+          style="width: 100%; max-width: 960px; display: block; margin: 0 auto 1.5em auto; border-radius: 8px;"
+          poster="_static/algan-banner.png">
+     <source src="_static/algan-demo.mp4" type="video/mp4">
+   </video>
+
 Algan (ALGorithmic ANimation) is a Python library for making 2-D and 3-D
 animations. Algan is inspired by `Manim
 <https://docs.manim.community/en/stable/>`_, and aims to keep the same ease of use,

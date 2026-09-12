@@ -22,7 +22,9 @@ import importlib.util
 import json
 import platform
 import re
+import shutil
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -41,6 +43,27 @@ def _load(path: Path, name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _posix_bash():
+    r"""A bash that syntax-checks the script it is handed, or ``None``.
+
+    Never a bare ``"bash"`` on Windows: ``CreateProcess`` searches System32
+    before ``PATH``, and ``System32\bash.exe`` is the WSL launcher, which hands
+    the argument to a Linux shell that cannot resolve a Windows path. Git for
+    Windows ships a real bash beside ``git``.
+    """
+    if sys.platform != "win32":
+        return shutil.which("bash")
+    git = shutil.which("git")
+    if git is None:
+        return None
+    # git.exe lives in <root>\cmd, <root>\bin or <root>\mingw64\bin.
+    root = Path(git).resolve().parent.parent
+    for candidate in (root / "bin" / "bash.exe", root.parent / "bin" / "bash.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 @pytest.fixture(scope="module")
@@ -648,9 +671,13 @@ class TestWorkflowMatchesTheResolver:
         assert "2.34" in script
         assert "_dl_find_object" in script
 
+    def test_the_portable_llvm_builder_parses_as_bash(self):
+        bash = _posix_bash()
+        if bash is None:
+            pytest.skip("no POSIX bash on this machine to syntax-check it with")
         builder = REPO_ROOT / "scripts" / "gate" / "build_portable_quadrants_llvm.sh"
         syntax = subprocess.run(
-            ["bash", "-n", str(builder)],
+            [bash, "-n", str(builder)],
             capture_output=True,
             text=True,
         )
