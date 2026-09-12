@@ -1,0 +1,246 @@
+--- a/algan/rendering/raytracing/sheet_stream.py
++++ b/algan/rendering/raytracing/sheet_stream.py
+@@ -22,10 +22,10 @@
+     )
+ 
+ 
+-def _empty(shape, dtype, device, memory=None):
++def _empty(shape, dtype, device, memory=None, *, persist=False):
+     if memory is None:
+         return torch.empty(shape, dtype=dtype, device=device)
+-    return memory.get_tensor(shape, dtype)
++    return memory.get_tensor(shape, dtype, persist=persist)
+ 
+ 
+ def gather_group_stream(order, pixel, group, depth, cov, mask, *, memory=None):
+@@ -51,7 +51,8 @@
+ 
+ 
+ def gather_sheet_records(
+-    final, nearest, rep, key, ref, ab, cap, cov, mask, nfrag, fused, band
++    final, nearest, rep, key, ref, ab, cap, cov, mask, nfrag, fused, band,
++    *, memory=None, persist_output=False,
+ ):
+     """Gather final records directly; no sorted packed-key or representative temporary."""
+     from algan.rendering.raytracing.sheet_stream_taichi import (
+@@ -70,15 +71,19 @@
+         "sheet_nfrag": nfrag,
+         "sheet_fused": fused,
+     }
++    persistent = {"sheet_key", "sheet_ref", "sheet_ab", "sheet_cap"}
+     out = {
+-        name: torch.empty((n, *src.shape[1:]), dtype=src.dtype, device=src.device)
++        name: _empty(
++            (n, *src.shape[1:]), src.dtype, src.device, memory,
++            persist=persist_output and name in persistent,
++        )
+         for name, src in sources.items()
+     }
+     # Metal zero-copy cannot import a zero-byte buffer. Reuse an existing
+     # output when the template removes band writes, rather than allocating
+     # a dummy. No kernel is launched for an empty result.
+     band_out = (
+-        torch.empty(n, dtype=torch.int64, device=key.device)
++        _empty((n,), torch.int64, key.device, memory)
+         if band is not None
+         else out["sheet_pix"]
+     )
+--- a/algan/rendering/raytracing/sheets.py
++++ b/algan/rendering/raytracing/sheets.py
+@@ -1667,6 +1667,7 @@
+     positioned_depth=True,
+     sample_depth=False,
+     memory=None,
++    persist_output=False,
+ ):
+     """Compact one emission's fragment stream into its sheet stream.
+ 
+@@ -2504,6 +2505,8 @@
+             nfrag,
+             fused,
+             sheet_band,
++            memory=memory if persist_output else None,
++            persist_output=persist_output,
+         )
+         sheet_cov_final = final_records["sheet_cov"]
+         sheet_msk_final = final_records["sheet_msk"]
+@@ -2617,6 +2620,36 @@
+         sheet_msk_final = sheet_msk_final | lose_word
+         sheet_wmsk = sheet_wmsk | lose_word
+ 
++    # CSR aligned with covered_idx: every covered pixel holds at least one
++    # fragment, hence at least one sheet, so the two pixel sets coincide.
++    sheet_offsets = _sheet_offsets(coverage["covered_idx"][:num_covered], sheet_pix)
++
++    if persist_output:
++        if memory is None or final_records is None:
++            raise ValueError("persist_output requires fused records and an arena")
++        # Production consumes only these records.  Write the two post-gather
++        # compositing arrays and CSR once into the reverse arena, then let the
++        # enclosing temp scope reclaim every other per-sheet/per-fragment
++        # temporary.  This removes the seven copy kernels raster_pipeline used
++        # to launch after compaction.
++        p_wgt = memory.get_tensor(sheet_wgt.shape, sheet_wgt.dtype, persist=True)
++        p_wmsk = memory.get_tensor(sheet_wmsk.shape, sheet_wmsk.dtype, persist=True)
++        p_offsets = memory.get_tensor(sheet_offsets.shape, torch.int32, persist=True)
++        p_wgt.copy_(sheet_wgt)
++        p_wmsk.copy_(sheet_wmsk)
++        p_offsets.copy_(sheet_offsets.to(torch.int32))
++        return {
++            "sheet_key": final_records["sheet_key"],
++            "sheet_ref": final_records["sheet_ref"],
++            "sheet_ab": final_records["sheet_ab"],
++            "sheet_wgt": p_wgt,
++            "sheet_wmsk": p_wmsk,
++            "sheet_cap": final_records["sheet_cap"],
++            "sheet_offsets": p_offsets,
++            "num_sheets": nb,
++            "_arena_persistent": True,
++        }
++
+     out = {
+         "sheet_key": sheet_key,
+         "sheet_pix": sheet_pix,
+@@ -2644,11 +2677,6 @@
+         "num_split_groups": num_split_groups,
+         "band_rule": band_rule,
+         "band_c": float(band_c),
++        "sheet_offsets": sheet_offsets,
+     }
+-
+-    # CSR aligned with covered_idx: every covered pixel holds at least one
+-    # fragment, hence at least one sheet, so the two pixel sets coincide.
+-    out["sheet_offsets"] = _sheet_offsets(
+-        coverage["covered_idx"][:num_covered], sheet_pix
+-    )
+     return out
+--- a/algan/rendering/raytracing/raster_pipeline.py
++++ b/algan/rendering/raytracing/raster_pipeline.py
+@@ -2323,28 +2323,42 @@
+                 positioned_depth=bool(rt_settings.sheet_positioned_depth),
+                 sample_depth=bool(rt_settings.sheet_sample_depth),
+                 memory=memory,
++                persist_output=bool(rt_settings.sheet_fused_stream),
+             )
+         ns = int(stream["num_sheets"])
+-        sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+-        sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+-        sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+-        sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+-        sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+-        sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+-        sheet_offsets = _arena_tensor(
+-            memory, (num_covered + 1,), torch.int32, persist=True
+-        )
+-        sheet_key.copy_(stream["sheet_key"])
+-        sheet_ref.copy_(stream["sheet_ref"])
+-        sheet_ab.copy_(stream["sheet_ab"])
+-        # The resolve consumes the COMPOSITING weights, not the record: they
+-        # are the sheet's own area and union everywhere except inside a band
+-        # the shading-class split subdivided, where they carry §4.4's
+-        # additive sibling arithmetic (``sheets._sibling_weights``).
+-        sheet_cov.copy_(stream["sheet_wgt"])
+-        sheet_msk.copy_(stream["sheet_wmsk"])
+-        sheet_cap_t.copy_(stream["sheet_cap"])
+-        sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
++        if stream.get("_arena_persistent", False):
++            # The fused final-record kernel already wrote the production fields
++            # into reverse-arena storage while their source stream was live.
++            # Reuse those views directly instead of seven copy launches after
++            # the temp scope has ended.
++            sheet_key = stream["sheet_key"]
++            sheet_ref = stream["sheet_ref"]
++            sheet_ab = stream["sheet_ab"]
++            sheet_cov = stream["sheet_wgt"]
++            sheet_msk = stream["sheet_wmsk"]
++            sheet_cap_t = stream["sheet_cap"]
++            sheet_offsets = stream["sheet_offsets"]
++        else:
++            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
++            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
++            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
++            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
++            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
++            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
++            sheet_offsets = _arena_tensor(
++                memory, (num_covered + 1,), torch.int32, persist=True
++            )
++            sheet_key.copy_(stream["sheet_key"])
++            sheet_ref.copy_(stream["sheet_ref"])
++            sheet_ab.copy_(stream["sheet_ab"])
++            # The resolve consumes the COMPOSITING weights, not the record: they
++            # are the sheet's own area and union everywhere except inside a band
++            # the shading-class split subdivided, where they carry §4.4's
++            # additive sibling arithmetic (``sheets._sibling_weights``).
++            sheet_cov.copy_(stream["sheet_wgt"])
++            sheet_msk.copy_(stream["sheet_wmsk"])
++            sheet_cap_t.copy_(stream["sheet_cap"])
++            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+         stream = None
+         sheet_data = {
+             "sheet_key": sheet_key,
+--- a/tests/unit_tests/test_sheet_stream.py
++++ b/tests/unit_tests/test_sheet_stream.py
+@@ -211,6 +211,62 @@
+             assert actual == expected
+ 
+ 
++def test_persistent_production_outputs_survive_temp_scope(device):
++    from algan.rendering.raytracing.sheets import compact_sheets
++    from tests.unit_tests.test_sheet_compaction import _coverage
++
++    frags = [
++        (0, 1.0, 0, 0.25, 1),
++        (0, 1.001, 1, 0.25, 2),
++        (3, 1.0, 4, 0.5, 3),
++        (3, 1.001, 5, 0.5, 12),
++    ]
++    coverage, merged, cam, pws = _coverage(frags)
++    coverage = {
++        k: v.to(device) if isinstance(v, torch.Tensor) else v
++        for k, v in coverage.items()
++    }
++    merged = {k: v.to(device) for k, v in merged.items()}
++    SETTINGS.raytracing.experimental.sheet_fused_stream = True
++    reference = compact_sheets(
++        coverage, merged, cam.to(device), pws.to(device), 0, 8, 4
++    )
++    memory = ManualMemory(1.0, device=device, num_bytes=1 << 20)
++    before = memory.get_pointers()
++    with memory.temp():
++        actual = compact_sheets(
++            coverage,
++            merged,
++            cam.to(device),
++            pws.to(device),
++            0,
++            8,
++            4,
++            memory=memory,
++            persist_output=True,
++        )
++    after = memory.get_pointers()
++    assert after[0] == before[0]
++    assert after[1] < before[1]
++    assert actual["_arena_persistent"] is True
++
++    # Poison every reclaimed forward byte.  The production fields live at the
++    # reverse end and must remain intact after the compaction scratch is gone.
++    with memory.temp():
++        memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).fill_(255)
++    for name in (
++        "sheet_key",
++        "sheet_ref",
++        "sheet_ab",
++        "sheet_wgt",
++        "sheet_wmsk",
++        "sheet_cap",
++    ):
++        assert_exact(actual[name], reference[name])
++    assert_exact(actual["sheet_offsets"], reference["sheet_offsets"].to(torch.int32))
++    assert actual["num_sheets"] == reference["num_sheets"]
++
++
+ def test_live_switches():
+     from algan.rendering.raytracing import settings
+ 
