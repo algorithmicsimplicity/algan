@@ -1,0 +1,10 @@
+{
+  "algan/environment.py": "9fa4f45f6b05bfb50e3ba323cbdb39a8224b6c905c3264f4c3395dfec927643e",
+  "algan/rendering/raytracing/raster_pipeline.py": "a29a068547f8d94651f3e1471afea95ef7dfa88477bbb0b27a25c4a279ad2485",
+  "algan/rendering/raytracing/settings.py": "0b64b5a0b9ec5d2a03803bc4ebf47d4a84dc56d46b0f0e3acc1c69fab3d03050",
+  "algan/rendering/raytracing/sheet_stream.py": "77e469322e9a1b0c09ca0f47d84d705dea214418edca96ad8b1a3e5f79d8a94e",
+  "algan/rendering/raytracing/sheet_stream_taichi.py": "0d03fe111a90cb31ca24bc139e1616a4cc621c8affbbeadc979991dd6894c0c0",
+  "algan/rendering/raytracing/sheets.py": "c45c97f26e7d96d20e634e23d64cf9b57deed0b24bea233bc9f7cc25495d2c09",
+  "benchmarks/_sheet_stream_check.py": "ffe172fbf0df154545e53c8d91dd26cdf205932e21a3acc269521878dcccfca9",
+  "tests/unit_tests/test_sheet_stream.py": "fc46949339c671390f1575837e23af3f0da12e9eaffc4d4d3cfad7d8f76d24fb"
+}
