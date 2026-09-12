@@ -32,9 +32,13 @@ sound.
 ## Files
 
 * `mac_mps_explainer.log`, `mac_mps_graphics.log` -- the Mac runs' command
-  output (both profiled runs, per stage, per kernel launch).
-* `t4_*.log` -- the Kaggle session's per-step logs, with Taichi's per-kernel
-  GPU profiler on.
+  output (both profiled runs, per stage, per kernel launch). The graphics
+  job's UHD pass was cut by the 60-minute timeout before its cold run
+  finished.
+* `t4_<step>.log` -- the first Kaggle session's per-step logs, with Taichi's
+  per-kernel GPU profiler on; `t4_session2_<step>.log` -- the second
+  session, which repeats the four profiles and adds the two `nn_scene`
+  references and the shadows-off arm of the graphics UHD scene.
 * `REPORT.md` -- the analysis and the ranked optimization targets.
 
 ## The profiler was fixed first

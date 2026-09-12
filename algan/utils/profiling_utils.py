@@ -1549,8 +1549,13 @@ def format_run(res, index, total_runs=None):
 
     # Memory + scene geometry.
     w("")
+    mps_note = (
+        " (MPS: allocated after render)"
+        if not torch.cuda.is_available() and torch.mps.is_available()
+        else ""
+    )
     w(
-        f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB (MPS: allocated after render), "
+        f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB{mps_note}, "
         f"peak reserved {res['peak_reserved_mb']:.0f} MB"
     )
     for k, st in enumerate(res["scene_stats"]):

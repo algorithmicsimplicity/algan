@@ -17,8 +17,9 @@ neither is "the ray tracer is slow".
 | --- | ---: | ---: | ---: | ---: |
 | explainer, warm | **1.75 s** / 60 fr = 29 ms/frame | **4.05 s** / 30 fr = 135 ms/frame | 9.62 s / 60 fr = 160 ms/frame | 18.52 s / 15 fr = 1.23 s/frame |
 | explainer, cold | 104 s | 85 s | 94 s | 53 s |
-| graphics, warm | **8.21 s** / 60 fr = 137 ms/frame | **115.4 s** / 30 fr = 3.85 s/frame | (§6) | (§6) |
-| graphics, cold | 143 s | 231 s | | |
+| graphics, warm | **8.21 s** / 60 fr = 137 ms/frame (7.91 s in a second session) | **115.4 s** / 30 fr = 3.85 s/frame (109.3 s in a second session) | 130.5 s / 60 fr = 2.17 s/frame | did not finish: 15 cold frames were still rendering when the job's 60-minute timeout fired, 50 minutes in |
+| graphics, cold | 143 s | 231 s | 415 s | > 50 min |
+| graphics, warm, **shadows forced off** (`--no-shadows`) | | **25.2 s** | | |
 | T4 GPU utilization, warm (avg) | 11% / 32% | 17% / 46% | | |
 
 * **The graphics workload is bound by one kernel: shadow rays.**
@@ -28,6 +29,11 @@ neither is "the ray tracer is slow".
   `SOFT_SHADOW_SAMPLES = 8` fan, so every shading event pays **75 shadow rays
   (72 for the area light, 3 for the other lights) at every one of up to seven
   bounces**. All of Taichi's other kernels together are 15% of that render.
+  The A/B arm confirms the attribution: the same UHD clip with
+  `SETTINGS.raytracing.shadows` forced off renders in **25.2 s against
+  109.3 s** in the same session -- shadows are 77% of the render, and the
+  profiler's 67% for the trace kernel plus the shadow-event build's host
+  glue is that number.
 * **The explainer workload is bound by everything except kernels.** At
   PREVIEW on the T4 every Taichi kernel together is 0.03 s of a 1.75 s render
   (the GPU idles 89% of the time); the render is scene preparation (52%), a
@@ -46,7 +52,7 @@ risk):
 
 | # | target | workload it helps | what it costs today | plausible gain |
 | --- | --- | --- | --- | --- |
-| 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 67% of graphics UHD, 37% at PREVIEW | 2-3x on graphics UHD |
+| 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 77% of graphics UHD (measured by the shadows-off arm), 37% at PREVIEW | 2-3x on graphics UHD (the floor is 4.3x) |
 | 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | 1.3x on 2-D UHD (T4), ~2x on Metal |
 | 3 | scene preparation off the critical path: split the first batch so prefetch can overlap; GPU-side circuit sampling and PN dice | every short render at PREVIEW | 52% of explainer PREVIEW, 25% of graphics PREVIEW | 1.5-2x at PREVIEW |
 | 4 | fixed per-render overheads: the pre-render `gc.collect()`, the pageable frame copy, the encode tail | every render, most visible on short ones | 24% of explainer PREVIEW; 17% of explainer UHD | 0.3-0.7 s per render |
@@ -74,7 +80,7 @@ coverage emission it would replace (`raster_tri_count`/`raster_tri_write`,
   6-second PREVIEW or a 0.5-second UHD clip does today, so it is the right
   measurement for short renders; long clips (2+ batches) hide part of
   preparation behind the previous batch -- the `nn_scene_*` reference steps
-  in `t4_nn_*.log` are that case.
+  in `t4_session2_nn_*.log` are that case (§6.2).
 * The graphics scene's two warm runs produce different mp4 digests; the
   explainer's are identical. That is the documented split-pixel
   non-determinism of reflective geometry under analytic AA
@@ -88,7 +94,7 @@ coverage emission it would replace (`raster_tri_count`/`raster_tri_write`,
 Shares are of the warm end-to-end time. `own` is the stage's exclusive time
 (children and kernels subtracted).
 
-### 3.1 graphics, UHD, 30 frames: 115.4 s
+### 3.1 graphics, UHD, 30 frames: 115.4 s (109.3 s in the second session)
 
 | stage | s | share |
 | --- | ---: | ---: |
@@ -236,8 +242,8 @@ per render.
   "unaccounted" on every T4 row. It is the one unhooked item on the render
   thread; 24% of the explainer's PREVIEW render.
 * **The device-to-host copy** -- 0.68 s for 30 UHD frames on the T4 is
-  1.1 GB/s, a pageable synchronous `.cpu()`; PCIe on this box does 12 GB/s
-  pinned. It sits on the render thread between chunks.
+  1.1 GB/s, a pageable synchronous `.cpu()`; the card sits on PCIe 3.0 x16,
+  whose pinned transfers run an order of magnitude faster than that. It sits on the render thread between chunks.
 * **The encode tail** is small here (0.03-0.14 s) because `-preset ultrafast`
   keeps up; a default preset would not on these 2-4 vCPU boxes.
 
@@ -465,13 +471,74 @@ Compiler patches that could matter, in order:
 
 ## 6. Reference and A/B steps
 
-(Filled in from the second session of the same Kaggle notebook and the
-second Mac job; see the logs beside this file.)
+The second Kaggle session (`t4_session2_*.log`) re-ran the four profiles
+(1.74 / 3.98 / 7.91 / 109.3 s warm against 1.75 / 4.05 / 8.21 / 115.4 s --
+a 1-6% spread, UHD graphics the widest under `SwPowerCap`) and added
+three steps:
+
+### 6.1 graphics UHD with shadows forced off: 25.2 s
+
+| stage | s | share |
+| --- | ---: | ---: |
+| sparse discovery incl. (compaction own 2.8, fragment sort 1.1) | 8.0 | 31.6% |
+| `wavefront_traverse_events` kernel (593 launches) | 5.7 | 22.8% |
+| `wavefront_shade` kernel | 1.5 | 6.1% |
+| `raster_tri_write` kernel | 1.1 | 4.5% |
+| tile state allocation / `compact_ray_slots` / compact active | 1.1 / 0.9 / 1.0 | 12% |
+| preparation (`_get_batch_of_primitives` + preflight) | 2.1 | 8.5% |
+| device-to-host copy | 0.8 | 3.3% |
+| `sheet_resolve_shade` kernel | 0.8 | 3.1% |
+
+This is what the graphics workload costs once the shadow rays are gone:
+the compaction chain and the reflection traversal, in that order -- §5.2
+and §5.5. The two runs' digests differ (split pixels), as expected.
+
+### 6.2 The `nn_scene` references, and the worker-thread ledger
+
+`nn_scene_UHD.py` (30 frames, shadows off): **8.39 s** warm, in the
+7.8-8.5 s band `../mac_2026_09/DEVICE_SORT.md` recorded for it, so this
+session is comparable to the earlier ones. `nn_scene_PREVIEW.py` (50 frames,
+shadows on): **4.46 s** warm.
+
+Both are multi-batch clips (2 batches), which is what the profiler fix was
+for. The PREVIEW run's budget line now reads: render thread accounted
+3.83 s + unaccounted **0.38 s (8.6%)**; worker-thread prep overlapped
+1.05 s (23.5%); and the new `wait for prefetched batch` stage shows the
+render thread idled **0.25 s (5.6%)** waiting for the worker -- so a
+quarter of the second batch's preparation was on the critical path and the
+rest was hidden. The same table used to print the worker's 1.05 s inside
+the render thread's budget and an unaccounted line of about -0.7 s. At UHD
+the wait is 0.000 s: the first batch's 8 chunks render for longer than the
+second batch takes to prepare.
+
+### 6.3 Mac, graphics PREVIEW: 130.5 s warm (2.17 s a frame at 704x396)
+
+| stage | s | share |
+| --- | ---: | ---: |
+| sparse discovery incl. | 57.2 | 43.8% |
+| of which `compact_sheets` (own 20.9) | 30.2 | 23.2% |
+| of which window pairs / fragment sort / sibling weights | 6.9 / 4.9 / 3.1 | 11.4% |
+| bounce drain incl. | 39.7 | 30.4% |
+| of which `raster_shadow_trace` kernel (348 launches) | 20.2 | 15.5% |
+| of which shadow-event build, bounces 0-7, own | 21.2 | 16.2% |
+| sparse resolve incl. | 13.7 | 10.5% |
+| PN dice | 4.4 | 3.3% |
+| `memory reclaim (gc + cuda cache)` (42 calls) | 2.2 | 1.7% |
+
+The Metal arm inverts the T4's ranking: the torch-op compaction chain is
+first and the shadow kernel second, because the box's per-launch and
+per-readback costs are two orders of magnitude above the T4's
+(`../mac_2026_09/SHARED_QUEUE.md`). The shadow-event build's 21 s of *own*
+time is the same host glue that costs 2.9 s on the T4 -- readbacks waiting
+out the queue. The UHD arm never completed: 15 cold frames had not finished
+50 minutes after the PREVIEW pass, so at UHD this scene is a multi-hour
+render on that runner, and §5.2 is the only lever that reaches it.
 
 ## 7. What this round did not measure
 
-* A multi-batch clip on either scene: the worker-thread ledger (§`README.md`)
-  is exercised by the `nn_scene_*` reference steps only.
+* A multi-batch clip of either new scene: the worker-thread ledger and the
+  prefetch wait were exercised by the `nn_scene_*` reference steps (§6.2).
+* The graphics scene at UHD on the Mac (§6.3).
 * A physical Mac. The runner's virtualization tax is in every Mac launch
   and readback number; the Mac compaction share (56%) is directionally
   right and numerically inflated.
