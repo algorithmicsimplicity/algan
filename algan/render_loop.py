@@ -2774,14 +2774,18 @@ class RenderLoopMixin:
             return False
         return threading.current_thread().name.startswith("algan-batch-prep")
 
-    @staticmethod
-    def _await_prefetched_batch(pending):
+    def _await_prefetched_batch(self, pending):
         """Block until the prefetch worker hands over the next batch.
 
         A method rather than an inline ``pending.result()`` so the profiler
         can time it: it is the render thread's idle time waiting on scene
         preparation, i.e. the part of prep that is on the critical path.
         Everything the worker did that this does not wait for was free.
+
+        An ordinary method, not a ``staticmethod``: the profiler's hook
+        replaces the class attribute with a plain function, which a
+        staticmethod's bound call then hands ``self`` as well -- a profiled
+        multi-batch render died on the first prefetched batch that way.
         """
         return pending.result()
 
