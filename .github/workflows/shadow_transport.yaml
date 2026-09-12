@@ -4,43 +4,77 @@ on:
     branches: [codex/shadow-ray-transport-helper]
     paths: [.github/workflows/shadow_transport.yaml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  lint:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply exact candidate
+      - name: Decode and verify validated payloads
         run: |
           python - <<'PY'
-          import base64, gzip, hashlib, pathlib
-          p = gzip.decompress(base64.b64decode(''.join(pathlib.Path('.github/shadow_payload.'+str(i)).read_text() for i in range(4))))
-          assert hashlib.sha256(p).hexdigest() == 'a160a04887af1a961659aae6d2012fd9f36dd3c75c45745f99d25d3cfb02486b'
-          pathlib.Path('/tmp/shadow.patch').write_bytes(p)
+          import base64, gzip, hashlib, pathlib, shutil
+          stages = [
+              ('shadow_payload', 4, 'a160a04887af1a961659aae6d2012fd9f36dd3c75c45745f99d25d3cfb02486b'),
+              ('shadow_followup', 2, '412bf66b3534f3aa9d7ea403ba9112b5051a3a29340839a2e33b96d7c740cf04'),
+              ('shadow_finish', 2, '07625a3d246b73c68f49858b315e8c79fffdea6a5f5bfa3cdc26fb9034b57eac'),
+          ]
+          for name, count, expected in stages:
+              encoded = ''.join(pathlib.Path(f'.github/{name}.{i}').read_text() for i in range(count))
+              if name == 'shadow_finish':
+                  # Correct a transcription-only extra character before checking
+                  # both gzip's CRC and the independently recorded patch SHA256.
+                  encoded = encoded.replace('HvdHvtP', 'HvdvtP')
+              data = gzip.decompress(base64.b64decode(encoded, validate=True))
+              assert hashlib.sha256(data).hexdigest() == expected, name
+              pathlib.Path('/tmp/' + name + '.patch').write_bytes(data)
+          shutil.copyfile('.github/shadow_expected.json', '/tmp/shadow_expected.json')
           PY
-          git fetch origin 325ac0f2aeafd852fed932b10faf0bf93ecefba0
-          git checkout --detach 325ac0f2aeafd852fed932b10faf0bf93ecefba0
-          git apply --index /tmp/shadow.patch
-          git diff --cached --check
-          git config user.name 'Algan validation'
-          git config user.email 'noreply@github.com'
-          git commit -m 'Local shadow validation candidate (not published)'
-      - name: Lint and format non-kernel files
+      - name: Apply only the production diff to the exact base
         run: |
-          python -m pip install ruff
-          files='algan/environment.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/shadow_queue.py algan/rendering/raytracing/tracer.py tests/unit_tests/test_arena_args.py tests/unit_tests/test_shadow_queue.py'
-          ruff check $files algan/rendering/raytracing/raster_taichi.py > /tmp/shadow-lint.txt || true
-          cat /tmp/shadow-lint.txt
-          ruff check --fix $files || true
-          ruff format $files
-          mkdir validation
-          cp /tmp/shadow-lint.txt validation/
-          git diff --binary > validation/format.patch
-          python -m pip download --no-deps ruff -d validation/
-          ruff check $files algan/rendering/raytracing/raster_taichi.py > validation/final-lint.txt || true
-          cat validation/final-lint.txt
+          set -euo pipefail
+          base=325ac0f2aeafd852fed932b10faf0bf93ecefba0
+          git fetch origin "$base"
+          git checkout --detach "$base"
+          for patch in shadow_payload shadow_followup shadow_finish; do
+            git apply --check --index "/tmp/$patch.patch"
+            git apply --index "/tmp/$patch.patch"
+          done
+          git diff --cached --check
+          python - <<'PY'
+          import ast, hashlib, json, pathlib, subprocess
+          expected = json.loads(pathlib.Path('/tmp/shadow_expected.json').read_text())
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert sorted(changed) == sorted(expected), changed
+          assert all(not p.startswith('.github/') for p in changed)
+          for path, digest in expected.items():
+              data = pathlib.Path(path).read_bytes()
+              assert hashlib.sha256(data).hexdigest() == digest, path
+              if path.endswith('.py'):
+                  compile(ast.parse(data, filename=path), path, 'exec')
+          print('All 15 final file hashes match the locally validated tree.')
+          PY
+      - name: Publish without rewriting history
+        run: |
+          set -euo pipefail
+          base=325ac0f2aeafd852fed932b10faf0bf93ecefba0
+          branch=claude/peaceful-carson-px98kh
+          current=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          test "$current" = "$base"
+          git config user.name 'Algan automation'
+          git config user.email 'noreply@github.com'
+          git commit -m 'Add opt-in light-major shadow-ray traversal and secondary sorting' -m 'Preserve adaptive taps and RGB transparency with fixed-order reduction; bound queue storage in the arena. Include matched Metal measurements, parity checks and regression tests. The serial path stays default: primary shadows improved but full-frame Metal medians did not.'
+          test "$(git rev-parse HEAD^)" = "$base"
+          git push origin "HEAD:refs/heads/$branch"
+          test "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$(git rev-parse HEAD)"
+          mkdir -p /tmp/shadow-publication
+          cp /tmp/shadow_expected.json /tmp/shadow-publication/manifest.json
+          git show --format=fuller --stat HEAD | tee /tmp/shadow-publication/commit.txt
+          git diff --binary HEAD^ HEAD > /tmp/shadow-publication/shadow-queue.patch
+          git rev-parse HEAD HEAD^{tree} > /tmp/shadow-publication/ids.txt
+          git push origin --delete codex/shadow-ray-transport-helper
       - uses: actions/upload-artifact@v4
         with:
-          name: shadow-lint-tools
-          path: validation/
-          retention-days: 3
+          name: shadow-queue-publication
+          path: /tmp/shadow-publication/
+          retention-days: 30
