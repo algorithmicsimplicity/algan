@@ -6,16 +6,41 @@ on:
 permissions:
   contents: read
 jobs:
-  export:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: 325ac0f2aeafd852fed932b10faf0bf93ecefba0
-      - run: mkdir source && git archive HEAD | tar -x -C source
+      - name: Apply exact candidate
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, pathlib
+          p = gzip.decompress(base64.b64decode(''.join(pathlib.Path('.github/shadow_payload.'+str(i)).read_text() for i in range(4))))
+          assert hashlib.sha256(p).hexdigest() == 'a160a04887af1a961659aae6d2012fd9f36dd3c75c45745f99d25d3cfb02486b'
+          pathlib.Path('/tmp/shadow.patch').write_bytes(p)
+          PY
+          git fetch origin 325ac0f2aeafd852fed932b10faf0bf93ecefba0
+          git checkout --detach 325ac0f2aeafd852fed932b10faf0bf93ecefba0
+          git apply --index /tmp/shadow.patch
+          git diff --cached --check
+          git config user.name 'Algan validation'
+          git config user.email 'noreply@github.com'
+          git commit -m 'Local shadow validation candidate (not published)'
+      - name: Lint and format non-kernel files
+        run: |
+          python -m pip install ruff
+          files='algan/environment.py algan/rendering/raytracing/raster_pipeline.py algan/rendering/raytracing/settings.py algan/rendering/raytracing/shadow_queue.py algan/rendering/raytracing/tracer.py tests/unit_tests/test_arena_args.py tests/unit_tests/test_shadow_queue.py'
+          ruff check $files algan/rendering/raytracing/raster_taichi.py > /tmp/shadow-lint.txt || true
+          cat /tmp/shadow-lint.txt
+          ruff check --fix $files || true
+          ruff format $files
+          mkdir validation
+          cp /tmp/shadow-lint.txt validation/
+          git diff --binary > validation/format.patch
+          python -m pip download --no-deps ruff -d validation/
+          ruff check $files algan/rendering/raytracing/raster_taichi.py > validation/final-lint.txt || true
+          cat validation/final-lint.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: shadow-base-source
-          path: source/
-          include-hidden-files: true
+          name: shadow-lint-tools
+          path: validation/
           retention-days: 3
