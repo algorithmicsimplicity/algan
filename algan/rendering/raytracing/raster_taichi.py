@@ -3083,7 +3083,7 @@ def raster_shadow_trace_arena(
             ang_j = 0.0
             first_pos = 0
             if fan_col > 0:
-                ju, jv = _shadow_fan_jitter(spos)
+                ju, jv = _shadow_fan_jitter(spos, li)
                 r_j = jv
                 ang_j = _TWO_PI * ju
                 if ti.static(sec_aa > 1):

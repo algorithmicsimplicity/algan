@@ -302,8 +302,8 @@ _TWO_PI = 6.283185307179586
 
 
 @ti.func
-def _shadow_fan_jitter(p):
-    """Two offsets in [0, 1) from the bits of a shading position.
+def _shadow_fan_jitter(p, li):
+    """Two offsets in [0, 1) from the bits of a shading position and a light row.
 
     The BUDGETED soft-shadow fan (rt_settings.shadow_ray_budget) fires a few
     rays per light row instead of the fixed eight, and a few fixed samples
@@ -318,8 +318,12 @@ def _shadow_fan_jitter(p):
 
     An integer mix over the three coordinates' float bits (the multiply-xor
     -shift shape of the path tracer's ``_pt_hash``); the two 16-bit halves of
-    the result are the offsets. Legacy fans never call this: their offsets
-    are literal zeros and their arithmetic is unchanged.
+    the result are the offsets, then advanced along the R2 sequence by the
+    light row index ``li``: an area light's K cell rows share one event, and
+    without this every cell would sample the same relative point, a shifted
+    lattice rather than a low-discrepancy set over the rectangle. Legacy fans
+    never call this: their offsets are literal zeros and their arithmetic is
+    unchanged.
     """
     h = ti.bit_cast(p[0], ti.u32) * ti.u32(0x9E3779B1)
     h = h ^ (ti.bit_cast(p[1], ti.u32) * ti.u32(0x85EBCA77))
@@ -331,7 +335,9 @@ def _shadow_fan_jitter(p):
     h = h ^ (h >> 15)
     ju = ti.cast(h & ti.u32(0xFFFF), ti.f32) * (1.0 / 65536.0)
     jv = ti.cast(h >> 16, ti.f32) * (1.0 / 65536.0)
-    return ju, jv
+    ju = ju + _R2_SEQUENCE_A1 * ti.cast(li, ti.f32)
+    jv = jv + _R2_SEQUENCE_A2 * ti.cast(li, ti.f32)
+    return ju - ti.floor(ju), jv - ti.floor(jv)
 
 
 @ti.func
@@ -2965,7 +2971,7 @@ def wavefront_shade_arena(
                                             if fan_col > 0:
                                                 ns = fan_col
                                                 ju, jv = _shadow_fan_jitter(
-                                                    spos)
+                                                    spos, li)
                                                 r_j = jv
                                                 ang_j = _TWO_PI * ju
                                             if (hu > 0.0) or (hv > 0.0):
