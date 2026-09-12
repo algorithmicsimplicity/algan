@@ -53,7 +53,7 @@ risk):
 | # | target | workload it helps | what it costs today | plausible gain |
 | --- | --- | --- | --- | --- |
 | 1 | shadow-ray budget: one stratified fan per light per event, bounce-depth budget, cone/hemisphere culling | 3-D scenes with area or soft lights | 77% of graphics UHD (measured by the shadows-off arm), 37% at PREVIEW | **shipped: -19% UHD, -10% PREVIEW (§5.1.1)**; the rest is hard-light traversal, not ray count |
-| 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | 1.3x on 2-D UHD (T4), ~2x on Metal |
+| 2 | the sheet compaction's torch chain, fused into kernels and rid of its per-chunk readbacks | everything; dominant for 2-D at UHD, and on Metal | 26% of explainer UHD (T4), 56% (Mac); 7% of graphics UHD | **host side shipped (§5.2.1): `compact_sheets` -10% at UHD, -44% at PREVIEW, end-to-end unchanged on the T4** -- the remaining cost is device work (sort, gathers, class-group sort); the Mac is where the readback removal should pay |
 | 3 | scene preparation off the critical path: split the first batch so prefetch can overlap; GPU-side circuit sampling and PN dice | every short render at PREVIEW | 52% of explainer PREVIEW, 25% of graphics PREVIEW | 1.5-2x at PREVIEW |
 | 4 | fixed per-render overheads: the pre-render `gc.collect()`, the pageable frame copy, the encode tail | every render, most visible on short ones | 24% of explainer PREVIEW; 17% of explainer UHD | 0.3-0.7 s per render |
 | 5 | reflection-ray budget: roughness-aware use of the glossy prefilter instead of tracing, contribution cutoff | scenes with large glossy surfaces | 89% of UHD pixels spawn a bounce; traverse + shade + compaction of 222 M continuation rays = ~12% of graphics UHD | 1.1x on graphics UHD |
@@ -405,6 +405,120 @@ trees); `benchmarks/_sheet_kernel_check.py` and `_sheet_compact_breakdown.py`
 are the existing harnesses. On the Mac this is the whole game: the torch
 ops are 2.5x faster than its three CPU cores and every readback is a queue
 drain (`../mac_2026_09/SHARED_QUEUE.md`).
+
+#### 5.2.1 Measured: what the chain actually does on the T4, and the readbacks removed (commit `161d7c0`)
+
+The stage profiler says how long the chain takes; it cannot say what it
+does. `benchmarks/performance/torch_profile_scene.py --scopes` wraps every
+function of the chain in a `torch.profiler` scope and attributes each
+event to its innermost scope -- ops issued, host syncs, kernel launches,
+device time -- per call (`t4_scopes_*.log`; the profiler itself inflates
+the host side, so read these as shares, not as wall times). Per chunk, on
+the warm capture (4 chunks a render):
+
+| scope, per chunk | explainer UHD (3 frames/chunk) | graphics UHD (1.5 frames/chunk) |
+| --- | ---: | ---: |
+| `prepare_sparse_raster_coverage` inclusive | 46 ms | 324 ms |
+| of which `compact_sheets` inclusive | 34 ms | 182 ms |
+| torch ops issued in the chain | ~430 | ~440 |
+| host<->device syncs in the chain | 22 | 23 |
+| `cudaStreamSynchronize` wait, discovery own | 9.5 ms (4.6 syncs) | 129 ms (4 syncs) |
+| `cudaStreamSynchronize` wait, `compact_sheets` own + helpers | 15 ms | 138 ms |
+| device time attributed to torch ops in the chain | ~35 ms | ~250 ms |
+
+Three things the capture settles. **The chain is not launch-bound on the
+T4**: ~430 ops a chunk is 5-6 ms of issue time, and the device work the
+torch ops carry (the fragment sort, seventeen `index_select`s over the
+stream, the class-group `unique` sort, the shell-ceiling scan) is most of
+the chunk. **The syncs are where the host waits for that work**: each
+`.item()`/`bool()` drains the queue behind the fragment sort and the rank
+kernel, 1.6-30 ms a drain, and the scope that happens to ask first pays
+for everything queued before it (`rank pool` 4 ms, `class groups` 3.5 ms,
+`sibling weights` 5.4 ms a chunk at explainer UHD -- 32 / 24 / 39 ms on
+the graphics scene -- almost all of it `cudaStreamSynchronize`). Removing a
+sync therefore buys only the host issue time it lets overlap, not the GPU
+work behind it. **Two per-(frame, triangle) tables were rebuilt every
+chunk** (`shade class` 30 ops, `prim split` 28 ops a chunk) for values
+that are fixed per batch.
+
+What shipped (`161d7c0`, byte-identical -- `benchmarks/_compaction_sync_check.py`
+renders closed shells, mixed shading classes, translucent overlap,
+circuits and text on both checkouts: 0 of 4 x 921,600 pixels differ; the
+frame hashes on the T4 are in `t4_compaction_parity.log`):
+
+* `compact_sheets` asks its host-side questions in **two batched readbacks**
+  -- the stream probe it already had, and a rank probe (deepest conflict
+  rank, band count, any declared closed shell, any group mixing shading
+  classes) -- and derives the rest: `_rank_pool_groups` takes the band count
+  instead of re-deriving it with a `unique_consecutive`, the shell ceiling
+  keys its segments with the surface bound instead of an `amax`, the
+  sample-depth band table is sized from counts the host holds, and
+  `_sibling_weights`' torch arm no longer early-returns on `multi.any()`
+  (its final `where`s already return the inputs bit for bit where nothing
+  split). `prepare_sparse_raster_coverage` reads the spec boundaries and
+  the fragment total in one transfer and gates the opaque truncation on the
+  specs' own opacity flags. 22 syncs a chunk become 12 (the remaining ones:
+  the pair-expansion totals, the write-pass compaction's `nonzero`s, the
+  two `unique_consecutive`s over the pixel stream, the two probes, the
+  sheet count, and the class split's exact test on a mixed stream).
+  `test_compaction_reads_back_a_bounded_number_of_scalars` pins the count.
+* The shading-class table is built **once per batch** and cached on
+  `merged` (`_shade_class_table`), so a chunk gathers its rows instead of
+  recomputing them. The prim-slope table was cached the same way in the
+  first cut and **measured slower** (`sheets prim split` 0.152 -> 0.252 s
+  over the graphics render's 32 chunks, 0.017 -> 0.026 s over the
+  explainer's 8), so it stays per chunk; the class table's own saving was
+  0.104 -> 0.065 s and 0.024 -> 0.007 s on the same runs.
+* Where the class split does have to group, `_class_groups_by_run_sort`
+  sorts the (sub-band, class) key **inside each group run** with the pixel
+  sort's `key_run_order` kernel instead of `torch.unique` over the whole
+  stream -- the same group numbering by construction (sub-band ids are
+  parent-major and parents ascend along the stream), pinned against the
+  `unique` on rank-split streams by `test_class_groups_by_run_sort_match_the_global_unique`;
+  `ALGAN_SHEET_CLASS_RUN_SORT=0` restores the global sort. This landed after
+  the session below and is measured in §5.2.2.
+
+A/B on the T4 (`f158d32` against `161d7c0`, the readback consolidation and
+the class-table cache; one session, both arms back to back,
+`t4_compaction_*.log`; parity frames identical, `_sheet_kernel_check.py`
+bit-identical on the new commit):
+
+| arm | warm end-to-end | `sparse discovery` incl. | `compact_sheets` incl. | `sheets sibling weights` | `sheets shade class` | `sheets prim split` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| explainer UHD, before | 3.99 s | 1.039 s | 0.676 s | 0.063 s | 0.024 s | 0.017 s |
+| explainer UHD, after | 4.01 s | 0.985 s (-5%) | **0.608 s (-10%)** | 0.043 s | 0.007 s | 0.026 s |
+| explainer PREVIEW, before | 1.60 s | 0.156 s | 0.100 s | 0.004 s | 0.001 s | 0.002 s |
+| explainer PREVIEW, after | 1.59 s | 0.111 s (-29%) | **0.056 s (-44%)** | 0.004 s | 0.002 s | 0.002 s |
+| graphics UHD, before | 90.25 s | 8.058 s | 4.364 s | 0.384 s | 0.104 s | 0.152 s |
+| graphics UHD, after | 90.30 s | 7.970 s (-1%) | 4.327 s (-1%) | 0.380 s | 0.065 s | 0.252 s |
+
+**The chain got faster and the renders did not**, which is the finding.
+`compact_sheets` lost 10% at explainer UHD and 44% at PREVIEW, and the
+end-to-end times moved by less than the run-to-run spread (the `post-process`
+and `Scene._get_batch_of_primitives` rows swing by 0.1 s between arms).
+That is what the scope capture predicted: the readbacks were the host
+*waiting* for device work, not device work, so removing them shortens the
+stage they sat in and hands the same GPU time to whichever stage syncs
+next. The 26% the stage profiler charged to "sparse discovery" at UHD is
+therefore mostly the fragment sort, the compaction's gathers and the
+resolve's kernels queued behind the chain's syncs -- device time that has
+to be cut on the device. The host-side consolidation is still the right
+shape (it is what lets the device-side cuts show), and on the Mac runner,
+where every readback is a command-buffer commit and wait rather than a
+cheap stream sync, the same change is expected to be worth far more
+(§6.3: the chain there was 56% of the explainer's UHD render).
+
+What is left in the chain is device work, and the ranking within it is
+now known: the fragment sort (49 ms a chunk on graphics UHD, `torch.argsort`
+-- `ALGAN_DEVICE_RADIX_SORT` is off by default), the seventeen
+`index_select`s over the fragment stream in `compact_sheets` (34 ms; a
+fused sorted-view gather in the shape of `gather_fragment_arrays` would
+halve their traffic), the class split's `torch.unique` over
+`band * base + class` (13-25 ms a chunk when a chunk mixes classes; a
+segmented sort within band runs, as `pixel_group_order` already does for
+pixels, would replace the global sort), and the two `unique_consecutive`s
+over the pixel stream (a run-boundary kernel). Each is a kernel-side
+change with the parity harness above as its acceptance test.
 
 ### 5.3 Preparation off the critical path (PREVIEW: 1.5-2x)
 

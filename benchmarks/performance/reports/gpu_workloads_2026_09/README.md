@@ -43,6 +43,15 @@ sound.
 * `t4_budget_<step>.log` -- the third session: the shadow-ray budget A/B
   (`ALGAN_SHADOW_RAY_BUDGET=0` against the default) at UHD and PREVIEW, and
   the check frame comparison.
+* `t4_scopes_<step>.log` -- the fourth session: `torch_profile_scene.py
+  --scopes`, a `torch.profiler` capture of a warm render with the sparse
+  coverage chain wrapped in scopes (ops, syncs, launches and device time per
+  function per chunk; REPORT.md §5.2.1).
+* `t4_compaction_<step>.log` -- the fifth session: the compaction readback
+  consolidation A/B (commit `f158d32` against `161d7c0`, back to back) at
+  explainer UHD/PREVIEW and graphics UHD, the frame-hash parity check
+  (`benchmarks/_compaction_sync_check.py`) and `_sheet_kernel_check.py` on
+  the new commit.
 * `REPORT.md` -- the analysis and the ranked optimization targets.
 
 ## The profiler was fixed first

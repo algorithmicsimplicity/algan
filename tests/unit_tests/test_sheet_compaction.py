@@ -1217,7 +1217,6 @@ def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
 
     def splits(budget):
         old = sh._FRAME_TABLE_BUDGET
-        merged.pop(sh._PRIM_SLOPE_TABLE_KEY, None)
         try:
             sh._FRAME_TABLE_BUDGET = budget
             return sh._prim_split_after(
@@ -1242,39 +1241,6 @@ def test_the_prim_band_slope_table_is_blocked_without_changing_a_split():
     assert whole.shape == (n - 1,)
     for budget in (num_tri * 3, num_tri, 1):
         assert torch.equal(splits(budget), whole), f"budget {budget} moved a split"
-
-    # The slope table is cached on ``merged`` for the batch, keyed on the
-    # camera rows and projection table it was built from: a later chunk of
-    # the same batch (time_start = 2, frames 2-4) gathers from it and agrees
-    # with a fresh build; a different projection table rebuilds.
-    assert sh._PRIM_SLOPE_TABLE_KEY in merged
-    late_rel = torch.arange(3).repeat_interleave(per_frame)
-    late_n = 3 * per_frame
-    late_ref = torch.arange(per_frame).repeat(3) % num_tri
-    late_t = torch.rand(late_n) * 5.0 + 0.5
-    late_order = torch.argsort(late_t, stable=True)
-    late_args = (
-        cam_origin,
-        pixel_world_scale,
-        tri_screen,
-        late_rel,
-        2,
-        late_ref,
-        torch.ones(late_n, dtype=torch.bool),
-        late_t,
-        late_t.index_select(0, late_order),
-        late_order,
-        2.0,
-        3,
-    )
-    cached = sh._prim_split_after(merged, *late_args)
-    fresh = sh._prim_split_after({"tri_pos": merged["tri_pos"]}, *late_args)
-    assert torch.equal(cached, fresh)
-    table_before = merged[sh._PRIM_SLOPE_TABLE_KEY][2]
-    sh._prim_split_after(
-        merged, *((cam_origin, pixel_world_scale, tri_screen.clone()) + late_args[3:])
-    )
-    assert merged[sh._PRIM_SLOPE_TABLE_KEY][2] is not table_before
 
 
 def test_an_implausible_frame_table_warns_once_and_still_returns():
@@ -1308,8 +1274,10 @@ def test_compaction_reads_back_a_bounded_number_of_scalars():
     opacity, mixed shading classes, sample depth -- must stay within: the
     stream probe (triangles present, frames, surface bound), the rank probe
     (deepest rank, band count, any closed shell, classes mixed), the sheet
-    count after the rank split, and the class split's exact mixed test,
-    which only runs because this stream mixes classes.
+    count after the rank split, and -- only because this stream mixes
+    classes -- the class split's exact mixed test and its grouping's group
+    count (``_class_groups_by_run_sort``; the ``torch.unique`` it replaces
+    read the same count inside the op, where this counter cannot see it).
     """
     z = (0.0, 0.0, 1.0)
     x = (1.0, 0.0, 0.0)
@@ -1359,4 +1327,4 @@ def test_compaction_reads_back_a_bounded_number_of_scalars():
         for name in names:
             setattr(torch.Tensor, name, originals[name])
     assert out["num_sheets"] >= 5
-    assert counts["n"] <= 4, f"{counts['n']} scalar readbacks in one compaction"
+    assert counts["n"] <= 5, f"{counts['n']} scalar readbacks in one compaction"

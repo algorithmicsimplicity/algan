@@ -148,9 +148,13 @@ sample-depth block sizes its band table from counts the host holds, and
 final `where`s already hand back the inputs bit for bit where nothing split).
 `prepare_sparse_raster_coverage` likewise reads the spec boundaries and the
 total in one transfer and gates the opaque truncation on the specs' own
-opacity flags. The two per-(frame, triangle) tables the compaction gathers
-from -- the shading class and the prim band rule's slope -- are built once
-per batch and cached on `merged` (`_shade_class_table`, `_prim_slope_table`).
+opacity flags. The shading-class table the compaction gathers from is built
+once per batch and cached on `merged` (`_shade_class_table`); the prim band
+rule's slope table deliberately is not -- cached, it measured slower on the
+T4 (the comment at `_SHADE_CLASS_TABLE_KEY` has the numbers). Where the class
+split does have to group, `_class_groups_by_run_sort` sorts the (sub-band,
+class) key inside each group run with `key_run_order` instead of a global
+`torch.unique` sort (`ALGAN_SHEET_CLASS_RUN_SORT=0` restores it).
 
 `tests/unit_tests/test_sheet_compaction.py::test_compaction_reads_back_a_bounded_number_of_scalars`
 pins the count on a stream that takes every branch; `benchmarks/_compaction_sync_check.py`

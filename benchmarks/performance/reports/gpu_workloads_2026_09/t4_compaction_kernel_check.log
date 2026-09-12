@@ -1,0 +1,99 @@
+=== STEP kernel_check ===
+==============================================================================
+$ git checkout -q 161d7c0 && python benchmarks/_sheet_kernel_check.py
+  env ALGAN_VIDEO_ENCODER=software
+
+gather_fragment_arrays vs six index_selects
+[Quadrants] Starting on arch=cuda
+  ok    n=3661824 m=3290404
+  ok    n=1 m=1
+  ok    n=5000 m=0
+  ok    n=17 m=17
+
+_band_reduce / _popcount_lanes vs the torch passes they replace
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+  ok    4K shapes, random masks, sliver (fused bands: 937305)
+  ok    4K shapes, random masks, sliver: area reproducible over 4 kernel runs
+  ok    4K shapes, random masks, no sliver (fused bands: 937305)
+  ok    4K shapes, random masks, no sliver: area reproducible over 4 kernel runs
+  ok    one band, every lane shared, 4096 addends (fused bands: 1)
+  ok    one band, every lane shared, 4096 addends: area reproducible over 4 kernel runs
+  ok    partitioning masks (must not fuse) (fused bands: 0)
+  ok    partitioning masks (must not fuse): area reproducible over 4 kernel runs
+  ok    donors only (empty union, sliver set) (fused bands: 0)
+  ok    donors only (empty union, sliver set): area reproducible over 4 kernel runs
+
+_conflict_rank vs the eight-cumsum torch scan it replaced
+  ok    4K shapes, sparse bands (n=3661824, max rank 555)
+  ok    4K shapes, dense bands (n=3661824, max rank 73)
+  ok    one band, whole stream (n=100000, max rank 50221)
+  ok    saturated band, unclamped ranks 0..n-1 (n=100000, max rank 99999)
+  ok    saturated band clamps to exactly 15 at the caller
+  ok    every fragment its own band (n=100000, max rank 0)
+  ok    all-zero mask words (donors) (n=100000, max rank 0)
+  ok    shuffled permutation (n=100000, max rank 171)
+  ok    n == 1 (n=1, max rank 0)
+  ok    band_start[0] clear (leading run) (n=100000, max rank 132)
+  ok    leading run: row 0 rank 0, kernel arm reproducible
+
+_opaque_prefix_keep vs the torch first_opaque/keep chain it replaced
+  ok    4K shapes, ~20% opaque (kept 2230680 of 3661824)
+  ok    no opaque at all (kept 3661824 of 3661824)
+  ok    every fragment opaque (kept 755877 of 3661824)
+  ok    first fragment of each pixel opaque (kept 755877 of 3661824)
+  ok    last fragment of each pixel opaque (kept 3661824 of 3661824)
+  ok    single pixel holding the whole stream (kept 5 of 3661824)
+  ok    n == 4, two pixels (kept 4 of 4)
+
+_one_mesh_pixel_caps vs the torch one-mesh block it replaced
+  ok    4K shapes, mixed surfaces/facings/opacity (flagged fragments: 1614201)
+  ok    one surface everywhere (flagged fragments: 3128845)
+  ok    circuits only (no flags, sentinel caps) (flagged fragments: 3128845)
+  ok    every pixel a single fragment (flagged fragments: 3128845)
+  ok    all fragments back-facing (flagged fragments: 3128845)
+
+_lane_first_owners vs the eight-lane amin loop it replaced
+  ok    4K shapes, random bands/masks (inf entries: 3893811)
+  ok    half the band table unused (inf entries: 6425010)
+  ok    every fragment its own sheet (inf entries: 12512880)
+  ok    one sheet, every lane claimed by everything (inf entries: 0)
+  ok    donors only (no lane owned) (inf entries: 8)
+
+solid_shell_ceiling vs the torch post-sort segment clamp it replaced
+  ok    4K shapes, mixed segments/facings (2,370,740 segments)
+  ok    nothing closed (pass-through segments) (3,128,845 segments)
+  ok    one segment, whole stream (1 segments)
+  ok    zero and 1e-13 areas (1 segments)
+  ok    n == 1 (1 segments)
+
+band_stats_reduce/rep_orig vs the five scatters they replaced
+  ok    4K shapes, random bands positioned=True (bands 1,276,501/1,441,601)
+  ok    4K shapes, random bands positioned=False (bands 1,276,501/1,441,601)
+  ok    half the band table unused positioned=True (bands 711,402/1,441,601)
+  ok    one band, whole stream positioned=True (bands 1/1)
+  ok    every fragment its own band positioned=True (bands 3,128,845/3,128,845)
+  ok    n == 1 positioned=True (bands 1/1)
+
+pair_expand_count/write vs _class_pairs_flat's torch expression
+  ok    UHD-ish window [1x49307], ~45% candidates (rows out: 5,315,277; kernel launches 1/1)
+  ok    empty window (no candidates) (rows out: 0; kernel launches 1/0)
+  ok    one candidate, one chunk (area <= raster_chunk) (rows out: 23; kernel launches 1/1)
+  ok    every element a candidate (rows out: 384,000; kernel launches 1/1)
+  ok    sparse interleaved candidates (rows out: 192; kernel launches 1/1)
+
+rendered frames, all nine toggles ON vs all nine OFF
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_torch_0.png in 6.5 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_torch_1.png in 20.8 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_torch_2.png in 0.4 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_torch_3.png in 0.5 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_kernel_0.png in 0.3 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_kernel_1.png in 0.5 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_kernel_2.png in 0.4 s
+Finished rendering /kaggle/working/algan/benchmarks/algan_outputs/_sheet_kernel_kernel_3.png in 0.4 s
+  ok    frame 0  822e3a311bc34185
+  ok    frame 1  3d5c4a63f674a729
+  ok    frame 2  5c6726518b78644a
+  ok    frame 3  c93e58481518a001
+
+FAILURES: none -- bit-identical

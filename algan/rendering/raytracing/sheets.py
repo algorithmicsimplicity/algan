@@ -75,6 +75,7 @@ from algan.rendering.mps_compat import (
     gather_packed_key,
     index_copy_rows,
     kernel_index,
+    mps_friendly,
     reduction_index_dtype,
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
@@ -205,6 +206,19 @@ sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
 
 # Reuse established group IDs where another grouping cannot subdivide them.
 sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
+
+# Where the class split does have to group, sort the composite (sub-band,
+# class) key inside each (pixel, surface, facing) run -- ``key_run_order``,
+# the kernel the pixel sort already uses -- instead of ``torch.unique`` over
+# the whole stream, which is a global sort of one 64-bit key per fragment.
+# Measured on the T4 (``reports/gpu_workloads_2026_09/REPORT.md`` §5.2.1):
+# that sort was 13-25 ms a chunk on the graphics workload wherever a chunk
+# mixed flat-shaded classes. The group numbering is identical (sub-band ids
+# are parent-major and parents ascend along the stream, so the composite
+# ascends across runs once it ascends within each), so nothing downstream
+# moves; the torch arm stays as the A/B and serves MPS-friendly mode, whose
+# own ``band_class_groups`` never builds the composite.
+sheet_class_run_sort = env_flag("ALGAN_SHEET_CLASS_RUN_SORT", True)
 
 # Assign dense conflict-rank groups from per-band counts instead of sorting.
 # Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
@@ -616,7 +630,56 @@ def _sheet_class_groups(band_id, cls_eff, new_group, nb, mixed=None):
                 band_id,
                 torch.arange(nb, dtype=torch.int64, device=band_id.device),
             )
+    if (
+        sheet_class_run_sort
+        and band_id.numel()
+        and not mps_friendly()
+        and _local_sheet_sort(band_id)
+    ):
+        return _class_groups_by_run_sort(band_id, cls_eff, new_group)
     return band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+
+
+def _class_groups_by_run_sort(band_id, cls_eff, new_group):
+    """``band_class_groups`` by a sort inside each group run, not a global one.
+
+    Returns what ``torch.unique(band_id * base + cls_eff, sorted=True,
+    return_inverse=True)`` returns -- the group count, each fragment's dense
+    group id, each group's sub-band -- with the same numbering. The stream is
+    in (pixel, surface, facing) group order (``new_group`` flags the starts),
+    the rank split numbered its sub-bands parent-major with parents ascending
+    along the stream, and every class is below ``_SHADE_CLASS_BASE``, so the
+    composite key ascends from one group run to the next by construction and
+    only needs ordering WITHIN a run. ``key_run_order`` does that in place,
+    one thread per run, with the original index as its last key; the group
+    boundaries are then read off consecutive keys and numbered in stream
+    order, which is the sorted order.
+    """
+    from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
+
+    n = int(band_id.numel())
+    device = band_id.device
+    run = torch.cumsum(new_group.to(torch.int64), 0)
+    skey = band_id * _SHADE_CLASS_BASE + cls_eff
+    order = torch.empty(n, dtype=torch.int64, device=device)
+    # ``depth`` is unread with ``depth_key`` false; the key stands in for it.
+    key_run_order(run.contiguous(), skey.contiguous(), skey, order, n, True, False)
+    del run
+    skey_o = skey.index_select(0, order)
+    del skey
+    new = torch.ones(n, dtype=torch.bool, device=device)
+    if n > 1:
+        new[1:] = skey_o[1:] != skey_o[:-1]
+    gid = torch.cumsum(new.to(torch.int64), 0) - 1
+    del new
+    count = int(gid[-1]) + 1
+    inverse = torch.empty(n, dtype=torch.int64, device=device)
+    inverse.scatter_(0, order, gid)
+    # Every fragment of a group writes the same sub-band, so the scatter's
+    # write order is immaterial.
+    cid = torch.empty(count, dtype=torch.int64, device=device)
+    cid.scatter_(0, gid, skey_o // _SHADE_CLASS_BASE)
+    return count, inverse, cid
 
 
 def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
@@ -741,14 +804,19 @@ def _check_frame_table(where, num_frames, num_tri, n, frame_rel=None):
     )
 
 
-#: ``merged`` keys under which the two per-(frame, triangle) tables the
-#: compaction gathers from -- the shading class and the prim band rule's depth
-#: slope -- are cached for the batch. Both are pure functions of the batch's
-#: merged tables, so the first chunk builds them over every frame of the batch
-#: and later chunks gather their rows (``_batch_table_rows``). ``merged`` is one
-#: dict per batch, built fresh by the scene merge, so nothing outlives it.
+#: ``merged`` key under which the shading-class table the compaction gathers
+#: from is cached for the batch. It is a pure function of the batch's merged
+#: tables, so the first chunk builds it over every frame of the batch and later
+#: chunks gather their rows (``_batch_table_rows``). ``merged`` is one dict per
+#: batch, built fresh by the scene merge, so nothing outlives it.
+#:
+#: The prim band rule's depth-slope table (``_prim_split_after``) is NOT cached
+#: the same way, on measurement: built once per batch it cost MORE on the T4
+#: (+0.10 s over 32 chunks of the graphics workload at UHD, +9 ms over 8 of the
+#: explainer's) where the class table saved 39 / 17 ms -- the slope's per-chunk
+#: build is a handful of cheap passes over the triangle table, and a batch-wide
+#: [frames, triangles] float table gathered per chunk did not pay for itself.
 _SHADE_CLASS_TABLE_KEY = "_sheet_shade_class_table"
-_PRIM_SLOPE_TABLE_KEY = "_sheet_prim_slope_table"
 
 
 def _batch_table_rows(*arrays):
@@ -1095,49 +1163,16 @@ def _prim_split_after(
     _check_frame_table(
         "sheets._prim_split_after", num_frames, num_tri, t.numel(), frame_rel
     )
-    slope = _prim_slope_table(merged, cam_origin, tri_screen, num_frames, device)
-    slope_f = slope[_rows(slope, frame_rel, time_start), safe_ref]
-    del slope
-    pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
-    scale = torch.where(is_tri, slope_f + pws * t, torch.zeros_like(t))
-    del pws, slope_f
-    scale_o = scale.index_select(0, order)
-    del scale
-    thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
-    del scale_o
-    return (t_o[1:] - t_o[:-1]) > thr
-
-
-def _prim_slope_table(merged, cam_origin, tri_screen, num_frames, device):
-    """The ``[F, N]`` per-(frame, triangle) depth slope of the ``prim`` rule.
-
-    Cached on ``merged`` for the batch (``_PRIM_SLOPE_TABLE_KEY``) with the
-    ``cam_origin`` / ``tri_screen`` it was built from, when the merged arrays
-    let one table cover every batch frame (``_batch_table_rows``); otherwise
-    built over ``num_frames`` rows and not cached. Same construction as
-    ``_shade_class_table``: rows are the inputs' own rows, so a chunk gathers
-    exactly the values it used to compute.
-    """
-    tri_pos = merged["tri_pos"]
-    cached = merged.get(_PRIM_SLOPE_TABLE_KEY)
-    if cached is not None and cached[0] is cam_origin and cached[1] is tri_screen:
-        return cached[2]
-    inputs = [tri_pos, cam_origin]
-    if tri_screen is not None and tri_screen.shape[2] >= 10:
-        inputs.append(tri_screen)
-    batch_rows = _batch_table_rows(*inputs)
-    rows = batch_rows if batch_rows is not None else num_frames
-    num_tri = tri_pos.numel() // (tri_pos.shape[0] * 9)
     # Blocked over the frame axis for the reason ``_shade_class`` gives: the
     # table is one float per (frame, triangle), but the world positions and
     # screen bounds it is derived from are ``[block, N, 9]`` with several live
     # at once, and sizing those by the chunk's whole frame count is what asked
     # a Metal render for a single 6.45 GB buffer on the line below.
-    slope = torch.empty((rows, num_tri), dtype=tri_pos.dtype, device=device)
+    slope = torch.empty((num_frames, num_tri), dtype=tri_pos.dtype, device=device)
     block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
-    for f0 in range(0, rows, block):
-        f1 = min(rows, f0 + block)
-        frames = torch.arange(f0, f1, device=device)
+    for f0 in range(0, num_frames, block):
+        f1 = min(num_frames, f0 + block)
+        frames = torch.arange(f0, f1, device=device) + int(time_start)
         pos = tri_pos.index_select(0, frames % tri_pos.shape[0])  # [B, N, 9]
         ro = cam_origin.index_select(0, frames % cam_origin.shape[0]).view(
             f1 - f0, 1, 3
@@ -1169,9 +1204,16 @@ def _prim_slope_table(merged, cam_origin, tri_screen, num_frames, device):
         del ext
         slope[f0:f1] = block_slope
         del block_slope
-    if batch_rows is not None:
-        merged[_PRIM_SLOPE_TABLE_KEY] = (cam_origin, tri_screen, slope)
-    return slope
+    slope_f = slope[frame_rel, safe_ref]
+    del slope
+    pws = pixel_world_scale[_rows(pixel_world_scale, frame_rel, time_start)]
+    scale = torch.where(is_tri, slope_f + pws * t, torch.zeros_like(t))
+    del pws, slope_f
+    scale_o = scale.index_select(0, order)
+    del scale
+    thr = float(band_c) * (scale_o[1:] + scale_o[:-1])
+    del scale_o
+    return (t_o[1:] - t_o[:-1]) > thr
 
 
 def _band_composite(band_of_frag, nbands, cov_o, msk_o):
