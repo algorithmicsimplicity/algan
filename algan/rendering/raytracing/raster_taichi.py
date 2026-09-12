@@ -2795,6 +2795,363 @@ def _tri_shadow_normals(f, prim, a, b, rd,
 
 
 
+@ti.func
+def _shadow_fan_cell(
+        e, li,
+        event_pos: ti.template(),
+        event_snrm: ti.template(),
+        event_fnrm: ti.template(),
+        event_frame: ti.template(),
+        event_msk: ti.template(),
+        t_nodes: ti.template(),
+        t_node_miss: ti.template(),
+        t_leaf_prim: ti.template(),
+        t_leaf_tspan: ti.template(),
+        t_first_leaf,
+        tri_pos: ti.template(),
+        tri_colors: ti.template(),
+        tri_uvs: ti.template(),
+        tri_tex_meta: ti.template(),
+        textures: ti.template(),
+        tri_extra: ti.template(),
+        num_colored_triangles,
+        b_nodes: ti.template(),
+        b_node_miss: ti.template(),
+        b_leaf_prim: ti.template(),
+        b_leaf_tspan: ti.template(),
+        b_first_leaf,
+        circuit_meta: ti.template(),
+        circuit_colors: ti.template(),
+        circuit_border_colors: ti.template(),
+        edges_2d: ti.template(),
+        edge_accel: ti.template(),
+        light_pos: ti.template(),
+        light_col: ti.template(),
+        num_lights,
+        pixel_world_scale: ti.template(),
+        layer_offset_triangles,
+        refit: ti.template(),
+        has_tri: ti.template(),
+        has_bez: ti.template(),
+        event_dp: ti.template(),
+        event_toff: ti.template(),
+        sec_aa: ti.template(),
+        shadow_vis: ti.template(),
+        shadow_anyhit: ti.template(),
+        tri_obj: ti.template(),
+        event_src_prim: ti.template(),
+        eps_self,
+        eps_near,
+        shadow_identity: ti.template(),
+        shadow_term: ti.template(),
+        adaptive_taps: ti.template(),
+        secondary,
+        emit_queue: ti.template(), queue_data: ti.template(),
+        queue_valid: ti.template(), queue_base, queue_first, queue_events):
+    """Shared fan geometry for serial tracing and parallel queue emission.
+
+    Sampling, coverage masks, jitter, zero-radiance and horizon tests are kept
+    in one body. The parallel path changes traversal scheduling, not rays.
+    """
+    f = event_frame[e]
+    ff = ti.cast(f, ti.f32)
+    spos = ti.math.vec3(event_pos[e, 0], event_pos[e, 1], event_pos[e, 2])
+    snrm = ti.math.vec3(event_snrm[e, 0], event_snrm[e, 1],
+                        event_snrm[e, 2])
+    fnrm = ti.math.vec3(event_fnrm[e, 0], event_fnrm[e, 1],
+                        event_fnrm[e, 2])
+    # The face-normal lift every shadow origin keeps. With the
+    # shadow-terminator offset on (shadow_term == 1) the event build has
+    # also stored each event's Hanika displacement onto the smooth
+    # surface its vertex normals imply (_shadow_terminator_delta,
+    # RENDERER_WORK_QUEUE.md item 20); ``lifted`` records whether this
+    # origin GENUINELY moved (a flat facet's delta is exactly zero by
+    # construction -- _shadow_terminator_delta short-circuits a constant
+    # normal field), and is what licenses the horizon-cull relaxation in
+    # the sample loop below. shadow_term == 2 lifts nothing -- that
+    # diagnostic arm exists to show what relaxing alone does.
+    sorigin = spos + fnrm * (10.0 * min_hit_distance)
+    lifted = 0
+    if ti.static(shadow_term != 0):
+        if ti.static(shadow_term == 1):
+            dx = event_toff[e, 0]
+            dy = event_toff[e, 1]
+            dz = event_toff[e, 2]
+            if (dx != 0.0) or (dy != 0.0) or (dz != 0.0):
+                sorigin = sorigin + ti.math.vec3(dx, dy, dz)
+                lifted = 1
+        else:
+            lifted = 1
+    dpx = ti.math.vec3(0.0, 0.0, 0.0)
+    dpy = ti.math.vec3(0.0, 0.0, 0.0)
+    if ti.static(sec_aa > 1):
+        dpx = ti.math.vec3(event_dp[e, 0], event_dp[e, 1], event_dp[e, 2])
+        dpy = ti.math.vec3(event_dp[e, 3], event_dp[e, 4], event_dp[e, 5])
+    tl = f % light_pos.shape[0]
+    # The event's material pipeline id (packed above the 4-bit sub-pixel
+    # position mask at build time). In every built-in stage a zero-color
+    # light row (not yet spawned, or despawned) contributes nothing
+    # whatever its visibility -- every lit stage's terms carry the light
+    # color as a factor -- so such rows keep their all-lit default
+    # without tracing. Only user pipelines, which may read visibility
+    # arbitrarily, keep the exact fan for every light.
+    pid_e = event_msk[e] >> 8
+    src_sid = -1
+    src_prim = -1
+    if ti.static(shadow_identity != 0):
+        # The event's source triangle, and the mesh it belongs to. Both
+        # ride their own array rather than spare mask bits: a primitive
+        # index does not fit in the 16 bits that were free, and keeping
+        # ``event_msk`` untouched leaves the material pipeline id above
+        # bit 8 exactly as the resolve wrote it.
+        src_prim = ti.cast(event_src_prim[e], ti.i32)
+        if src_prim >= 0:
+            src_sid = ti.cast(
+                tri_obj[f % tri_obj.shape[0], src_prim], ti.i32)
+    fan_exact = 1
+    fan_geom = 0
+    if pid_e < _USER_PIPELINE_BASE:
+        fan_exact = 0
+        # Geometric zero-radiance culling is valid for EVERY built-in
+        # stage: each one's vis-multiplied terms carry lc, so a culled
+        # fan's all-lit default multiplies zero either way (see
+        # _light_zero_radiance).
+        fan_geom = 1
+    visibility = ti.math.vec3(1.0)
+    lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
+                      light_pos[tl, li, 2])
+    ltype = 0
+    radius = 0.0
+    hu = 0.0
+    hv = 0.0
+    fan_col = 0
+    if light_col.shape[2] > 3:
+        ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
+        if light_col.shape[2] > 11:
+            radius = light_col[tl, li, 11]
+            # The row's budgeted soft fan (scene_builder._soft_fan_sizes):
+            # column 16 at a primary hit, 17 at a secondary one; 0 keeps
+            # the compile-time fan below, unjittered.
+            if light_col.shape[2] > 17:
+                fan_col = ti.cast(
+                    light_col[tl, li, 16 + secondary] + 0.5, ti.i32)
+            # A rect-area row carries its CELL's half-extents along the
+            # emitter plane's own axes. The ltype guard is load-bearing,
+            # not defensive: columns 9/10 are a spot light's cone cosines
+            # there, and reading them unguarded would turn every spot
+            # light into a rect emitter.
+            if ltype == _LT_AREA_SAMPLE:
+                hu = light_col[tl, li, 9]
+                hv = light_col[tl, li, 10]
+    to_light = lp - spos
+    ldist = to_light.norm()
+    wi = ti.math.vec3(0.0, 0.0, 0.0)
+    valid = 0
+    if ltype == _LT_DIRECTIONAL:
+        wi = -ti.math.vec3(light_col[tl, li, 6],
+                           light_col[tl, li, 7],
+                           light_col[tl, li, 8])
+        ldist = 1e7
+        valid = 1
+    elif (ltype != _LT_AMBIENT) and (ltype != _LT_HEMISPHERE) \
+            and (ltype != _LT_ENV_SH) and (ldist > 1e-5):
+        wi = to_light / ldist
+        valid = 1
+    # A light past its range, a fragment outside a spot cone, an
+    # area sample's backface: exactly zero radiance here, so the
+    # fan's result multiplies zero. Skipping leaves the event's
+    # all-lit default, exactly like the zero-color skip below.
+    if (valid == 1) and (fan_geom == 1):
+        if _light_zero_radiance(light_col, tl, li, ltype, to_light,
+                                ldist) == 1:
+            valid = 0
+    if (valid == 1) and ((fan_exact == 1)
+                         or (light_col[tl, li, 0] != 0.0)
+                         or (light_col[tl, li, 1] != 0.0)
+                         or (light_col[tl, li, 2] != 0.0)):
+        ns = 1
+        b1 = ti.math.vec3(0.0, 0.0, 0.0)
+        b2 = ti.math.vec3(0.0, 0.0, 0.0)
+        if radius > 0.0:
+            ns = SOFT_SHADOW_SAMPLES
+            if fan_col > 0:
+                ns = fan_col
+            if (hu > 0.0) or (hv > 0.0):
+                # Rect emitter: the fan samples INSIDE this row's own
+                # cell, in the light's own plane -- b1 is the packed right
+                # axis and b2 the up axis recovered exactly as _rect_axes
+                # builds it. The offsets do not depend on wi, so a moving
+                # sub-pixel origin needs no basis rebuild.
+                b1 = ti.math.vec3(light_col[tl, li, 12],
+                                  light_col[tl, li, 13],
+                                  light_col[tl, li, 14])
+                b2 = ti.math.vec3(light_col[tl, li, 6],
+                                  light_col[tl, li, 7],
+                                  light_col[tl, li, 8]).cross(b1)
+            else:
+                aref = ti.math.vec3(1.0, 0.0, 0.0)
+                if ti.abs(wi[0]) > 0.9:
+                    aref = ti.math.vec3(0.0, 1.0, 0.0)
+                b1 = wi.cross(aref).normalized()
+                b2 = wi.cross(b1)
+        if ti.static(sec_aa > 1):
+            # A hard light needs the sub-pixel positions to be separate
+            # rays; a legacy soft fan already has enough rays and just
+            # spreads its fan over them. A BUDGETED soft fan keeps its
+            # count -- raising it back to four would undo the budget --
+            # and rotates through the covered positions below instead.
+            if fan_col == 0:
+                ns = ti.max(ns, 4)
+
+        occ_sum = ti.math.vec3(0.0)
+        n_valid = 0.0
+        # Adaptive taps (adaptive_taps, hard lights under sec_aa): the
+        # 2x2 sub-pixel positions are visited diagonal pair first (0, 3,
+        # then 2, 1). When both diagonal taps were traced and agree
+        # exactly -- the interior of a lit or of a shadowed region, which
+        # is nearly every event -- the other two are taken as equal and
+        # the fan is two rays instead of four. Only a pixel whose shadow
+        # edge leaves the diagonal pair agreeing while an off-diagonal
+        # tap differs changes: it keeps 0 or 1 where it had a quarter
+        # step. A soft light keeps its full golden-angle fan.
+        adaptive_fan = 0
+        if ti.static(sec_aa > 1 and adaptive_taps != 0):
+            if radius <= 0.0:
+                adaptive_fan = 1
+        occ_first = ti.math.vec3(0.0)
+        # Budgeted fan (fan_col > 0): the per-event rotation that keeps a
+        # few rays from banding (rect: R2 offsets; disk: azimuth and
+        # radial stratum), and the first covered sub-pixel position the
+        # rotation through positions starts at. Legacy fans keep literal
+        # zeros here, so their arithmetic is unchanged.
+        ju = 0.0
+        jv = 0.0
+        r_j = 0.5
+        ang_j = 0.0
+        first_pos = 0
+        if fan_col > 0:
+            ju, jv = _shadow_fan_jitter(spos, li)
+            r_j = jv
+            ang_j = _TWO_PI * ju
+            if ti.static(sec_aa > 1):
+                first_pos = _first_covered_position(event_msk[e])
+        for sk in range(ns):
+            s = sk
+            if adaptive_fan == 1:
+                s = (3 * sk) & 3
+            wis = wi
+            ldn = ldist
+            ok = 1
+            sorg = sorigin
+            if ti.static(sec_aa > 1):
+                sp = s & 3
+                if fan_col > 0:
+                    # A budgeted fan visits the covered sub-pixel
+                    # positions in turn rather than skipping the
+                    # uncovered ones: a one-ray fan on a silhouette
+                    # pixel must still trace its one ray.
+                    sp = (first_pos + s) & 3
+                    if ((event_msk[e] >> sp) & 1) == 0:
+                        sp = first_pos
+                sorg = _sub_pixel_origin(sorigin, dpx, dpy, sp)
+                if ((event_msk[e] >> sp) & 1) == 0:
+                    ok = 0
+            off = ti.math.vec3(0.0, 0.0, 0.0)
+            if radius > 0.0:
+                if (hu > 0.0) or (hv > 0.0):
+                    # R2 sequence across the cell: s = 0 is exactly the
+                    # cell centre, so a one-sample fan degenerates to
+                    # today's ray.
+                    u = 0.5 + _R2_SEQUENCE_A1 * s + ju
+                    v = 0.5 + _R2_SEQUENCE_A2 * s + jv
+                    ru = 2.0 * (u - ti.floor(u)) - 1.0
+                    rv = 2.0 * (v - ti.floor(v)) - 1.0
+                    off = b1 * (hu * ru) + b2 * (hv * rv)
+                else:
+                    ang = _GOLDEN_ANGLE * s + ang_j
+                    rr = radius * ti.sqrt(
+                        (ti.cast(s, ti.f32) + r_j)
+                        / ti.cast(ns, ti.f32))
+                    off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
+                if ltype == _LT_DIRECTIONAL:
+                    wis = (wi + off).normalized()
+            if ltype != _LT_DIRECTIONAL:
+                # Moving the origin over the pixel changes both the
+                # direction and finite distance to a point/spot/area
+                # emitter. Retaining the centre ray here makes the
+                # samples non-convergent and can trace past the light.
+                tls = lp + off - sorg
+                ldn = tls.norm()
+                if ldn > 1e-5:
+                    wis = tls / ldn
+                else:
+                    ok = 0
+            # Horizon cull. Today's guard is BOTH normals, and the face
+            # normal's > 1e-3 term is precisely what suppresses the
+            # terminator band today (a near-tangent ray strikes a
+            # neighbouring facet far from the origin: RENDERER_WORK_QUEUE.md
+            # item 20). Where this sample's origin GENUINELY moved onto
+            # the smooth surface its vertex normals imply (lifted == 1,
+            # shadow_term != 0), the face normal's horizon is not that
+            # surface's, so the fnrm term drops and only the shading
+            # normal's cull remains. A flat facet stores an exactly-zero
+            # delta and the gate-off path never lifts, so both keep the
+            # two-sided test EXACTLY as written first.
+            horizon_ok = (fnrm.dot(wis) > 1e-3) \
+                and (snrm.dot(wis) > 1e-4)
+            if ti.static(shadow_term != 0):
+                if lifted == 1:
+                    horizon_ok = snrm.dot(wis) > 1e-4
+            if (ok == 1) and horizon_ok:
+                if ti.static(emit_queue):
+                    r = queue_base + sk * queue_events + e - queue_first
+                    for k in ti.static(range(3)):
+                        queue_data[r, k] = sorg[k]
+                        queue_data[r, 3 + k] = wis[k]
+                    queue_data[r, 6] = ldn - 20.0 * min_hit_distance
+                    queue_valid[r] = 1 + adaptive_fan
+                else:
+                    n_valid += 1.0
+                    occ = _shadow_occluded(
+                        refit, shadow_anyhit, sorg, wis, f, ff,
+                        ldn - 20.0 * min_hit_distance,
+                        pixel_world_scale[
+                            f % pixel_world_scale.shape[0]], 0.0,
+                        layer_offset_triangles,
+                        has_tri, has_bez,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_colors, tri_uvs,
+                        tri_tex_meta, textures, tri_extra,
+                        num_colored_triangles,
+                        b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                        b_first_leaf, circuit_meta, circuit_colors,
+                        circuit_border_colors, edges_2d, edge_accel,
+                        src_sid, src_prim, eps_self, eps_near,
+                        tri_obj, shadow_identity)
+                    occ_sum += occ
+                    if adaptive_fan == 1:
+                        if sk == 0:
+                            occ_first = occ
+                        elif sk == 1:
+                            if (n_valid == 2.0) and (occ[0] == occ_first[0]) \
+                                    and (occ[1] == occ_first[1]) \
+                                    and (occ[2] == occ_first[2]):
+                                # Both diagonal taps traced and equal: the
+                                # remaining two are taken as the same.
+                                occ_sum += occ_sum
+                                n_valid += n_valid
+                                break
+        if n_valid > 0.0:
+            # Per-channel visibility; the soft-shadow fan still averages
+            # over the SCALAR sample count.
+            visibility = ti.math.vec3(1.0) - occ_sum / n_valid
+    if ti.static(not emit_queue):
+        # RGB payload: one (event, light) cell carries a triple, channel-last
+        # (see raster_pipeline's allocation).
+        for c in ti.static(range(3)):
+            shadow_vis[e, li, c] = visibility[c]
+
+
 @ti.kernel
 def raster_shadow_trace_arena(
         num_events: int,
@@ -2906,294 +3263,22 @@ def raster_shadow_trace_arena(
     for idx in range(num_events * num_lights):
         e = idx // num_lights
         li = idx - e * num_lights
-        f = event_frame[e]
-        ff = ti.cast(f, ti.f32)
-        spos = ti.math.vec3(event_pos[e, 0], event_pos[e, 1], event_pos[e, 2])
-        snrm = ti.math.vec3(event_snrm[e, 0], event_snrm[e, 1],
-                            event_snrm[e, 2])
-        fnrm = ti.math.vec3(event_fnrm[e, 0], event_fnrm[e, 1],
-                            event_fnrm[e, 2])
-        # The face-normal lift every shadow origin keeps. With the
-        # shadow-terminator offset on (shadow_term == 1) the event build has
-        # also stored each event's Hanika displacement onto the smooth
-        # surface its vertex normals imply (_shadow_terminator_delta,
-        # RENDERER_WORK_QUEUE.md item 20); ``lifted`` records whether this
-        # origin GENUINELY moved (a flat facet's delta is exactly zero by
-        # construction -- _shadow_terminator_delta short-circuits a constant
-        # normal field), and is what licenses the horizon-cull relaxation in
-        # the sample loop below. shadow_term == 2 lifts nothing -- that
-        # diagnostic arm exists to show what relaxing alone does.
-        sorigin = spos + fnrm * (10.0 * min_hit_distance)
-        lifted = 0
-        if ti.static(shadow_term != 0):
-            if ti.static(shadow_term == 1):
-                dx = event_toff[e, 0]
-                dy = event_toff[e, 1]
-                dz = event_toff[e, 2]
-                if (dx != 0.0) or (dy != 0.0) or (dz != 0.0):
-                    sorigin = sorigin + ti.math.vec3(dx, dy, dz)
-                    lifted = 1
-            else:
-                lifted = 1
-        dpx = ti.math.vec3(0.0, 0.0, 0.0)
-        dpy = ti.math.vec3(0.0, 0.0, 0.0)
-        if ti.static(sec_aa > 1):
-            dpx = ti.math.vec3(event_dp[e, 0], event_dp[e, 1], event_dp[e, 2])
-            dpy = ti.math.vec3(event_dp[e, 3], event_dp[e, 4], event_dp[e, 5])
-        tl = f % light_pos.shape[0]
-        # The event's material pipeline id (packed above the 4-bit sub-pixel
-        # position mask at build time). In every built-in stage a zero-color
-        # light row (not yet spawned, or despawned) contributes nothing
-        # whatever its visibility -- every lit stage's terms carry the light
-        # color as a factor -- so such rows keep their all-lit default
-        # without tracing. Only user pipelines, which may read visibility
-        # arbitrarily, keep the exact fan for every light.
-        pid_e = event_msk[e] >> 8
-        src_sid = -1
-        src_prim = -1
-        if ti.static(shadow_identity != 0):
-            # The event's source triangle, and the mesh it belongs to. Both
-            # ride their own array rather than spare mask bits: a primitive
-            # index does not fit in the 16 bits that were free, and keeping
-            # ``event_msk`` untouched leaves the material pipeline id above
-            # bit 8 exactly as the resolve wrote it.
-            src_prim = ti.cast(event_src_prim[e], ti.i32)
-            if src_prim >= 0:
-                src_sid = ti.cast(
-                    tri_obj[f % tri_obj.shape[0], src_prim], ti.i32)
-        fan_exact = 1
-        fan_geom = 0
-        if pid_e < _USER_PIPELINE_BASE:
-            fan_exact = 0
-            # Geometric zero-radiance culling is valid for EVERY built-in
-            # stage: each one's vis-multiplied terms carry lc, so a culled
-            # fan's all-lit default multiplies zero either way (see
-            # _light_zero_radiance).
-            fan_geom = 1
-        visibility = ti.math.vec3(1.0)
-        lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
-                          light_pos[tl, li, 2])
-        ltype = 0
-        radius = 0.0
-        hu = 0.0
-        hv = 0.0
-        fan_col = 0
-        if light_col.shape[2] > 3:
-            ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
-            if light_col.shape[2] > 11:
-                radius = light_col[tl, li, 11]
-                # The row's budgeted soft fan (scene_builder._soft_fan_sizes):
-                # column 16 at a primary hit, 17 at a secondary one; 0 keeps
-                # the compile-time fan below, unjittered.
-                if light_col.shape[2] > 17:
-                    fan_col = ti.cast(
-                        light_col[tl, li, 16 + secondary] + 0.5, ti.i32)
-                # A rect-area row carries its CELL's half-extents along the
-                # emitter plane's own axes. The ltype guard is load-bearing,
-                # not defensive: columns 9/10 are a spot light's cone cosines
-                # there, and reading them unguarded would turn every spot
-                # light into a rect emitter.
-                if ltype == _LT_AREA_SAMPLE:
-                    hu = light_col[tl, li, 9]
-                    hv = light_col[tl, li, 10]
-        to_light = lp - spos
-        ldist = to_light.norm()
-        wi = ti.math.vec3(0.0, 0.0, 0.0)
-        valid = 0
-        if ltype == _LT_DIRECTIONAL:
-            wi = -ti.math.vec3(light_col[tl, li, 6],
-                               light_col[tl, li, 7],
-                               light_col[tl, li, 8])
-            ldist = 1e7
-            valid = 1
-        elif (ltype != _LT_AMBIENT) and (ltype != _LT_HEMISPHERE) \
-                and (ltype != _LT_ENV_SH) and (ldist > 1e-5):
-            wi = to_light / ldist
-            valid = 1
-        # A light past its range, a fragment outside a spot cone, an
-        # area sample's backface: exactly zero radiance here, so the
-        # fan's result multiplies zero. Skipping leaves the event's
-        # all-lit default, exactly like the zero-color skip below.
-        if (valid == 1) and (fan_geom == 1):
-            if _light_zero_radiance(light_col, tl, li, ltype, to_light,
-                                    ldist) == 1:
-                valid = 0
-        if (valid == 1) and ((fan_exact == 1)
-                             or (light_col[tl, li, 0] != 0.0)
-                             or (light_col[tl, li, 1] != 0.0)
-                             or (light_col[tl, li, 2] != 0.0)):
-            ns = 1
-            b1 = ti.math.vec3(0.0, 0.0, 0.0)
-            b2 = ti.math.vec3(0.0, 0.0, 0.0)
-            if radius > 0.0:
-                ns = SOFT_SHADOW_SAMPLES
-                if fan_col > 0:
-                    ns = fan_col
-                if (hu > 0.0) or (hv > 0.0):
-                    # Rect emitter: the fan samples INSIDE this row's own
-                    # cell, in the light's own plane -- b1 is the packed right
-                    # axis and b2 the up axis recovered exactly as _rect_axes
-                    # builds it. The offsets do not depend on wi, so a moving
-                    # sub-pixel origin needs no basis rebuild.
-                    b1 = ti.math.vec3(light_col[tl, li, 12],
-                                      light_col[tl, li, 13],
-                                      light_col[tl, li, 14])
-                    b2 = ti.math.vec3(light_col[tl, li, 6],
-                                      light_col[tl, li, 7],
-                                      light_col[tl, li, 8]).cross(b1)
-                else:
-                    aref = ti.math.vec3(1.0, 0.0, 0.0)
-                    if ti.abs(wi[0]) > 0.9:
-                        aref = ti.math.vec3(0.0, 1.0, 0.0)
-                    b1 = wi.cross(aref).normalized()
-                    b2 = wi.cross(b1)
-            if ti.static(sec_aa > 1):
-                # A hard light needs the sub-pixel positions to be separate
-                # rays; a legacy soft fan already has enough rays and just
-                # spreads its fan over them. A BUDGETED soft fan keeps its
-                # count -- raising it back to four would undo the budget --
-                # and rotates through the covered positions below instead.
-                if fan_col == 0:
-                    ns = ti.max(ns, 4)
+        _shadow_fan_cell(
+            e, li,
+            event_pos, event_snrm, event_fnrm, event_frame,
+            event_msk, t_nodes, t_node_miss, t_leaf_prim,
+            t_leaf_tspan, t_first_leaf, tri_pos, tri_colors,
+            tri_uvs, tri_tex_meta, textures, tri_extra,
+            num_colored_triangles, b_nodes, b_node_miss, b_leaf_prim,
+            b_leaf_tspan, b_first_leaf, circuit_meta, circuit_colors,
+            circuit_border_colors, edges_2d, edge_accel, light_pos,
+            light_col, num_lights, pixel_world_scale, layer_offset_triangles,
+            refit, has_tri, has_bez, event_dp,
+            event_toff, sec_aa, shadow_vis, shadow_anyhit,
+            tri_obj, event_src_prim, eps_self, eps_near,
+            shadow_identity, shadow_term, adaptive_taps, secondary,
+            False, event_pos, event_msk, 0, 0, 0)
 
-            occ_sum = ti.math.vec3(0.0)
-            n_valid = 0.0
-            # Adaptive taps (adaptive_taps, hard lights under sec_aa): the
-            # 2x2 sub-pixel positions are visited diagonal pair first (0, 3,
-            # then 2, 1). When both diagonal taps were traced and agree
-            # exactly -- the interior of a lit or of a shadowed region, which
-            # is nearly every event -- the other two are taken as equal and
-            # the fan is two rays instead of four. Only a pixel whose shadow
-            # edge leaves the diagonal pair agreeing while an off-diagonal
-            # tap differs changes: it keeps 0 or 1 where it had a quarter
-            # step. A soft light keeps its full golden-angle fan.
-            adaptive_fan = 0
-            if ti.static(sec_aa > 1 and adaptive_taps != 0):
-                if radius <= 0.0:
-                    adaptive_fan = 1
-            occ_first = ti.math.vec3(0.0)
-            # Budgeted fan (fan_col > 0): the per-event rotation that keeps a
-            # few rays from banding (rect: R2 offsets; disk: azimuth and
-            # radial stratum), and the first covered sub-pixel position the
-            # rotation through positions starts at. Legacy fans keep literal
-            # zeros here, so their arithmetic is unchanged.
-            ju = 0.0
-            jv = 0.0
-            r_j = 0.5
-            ang_j = 0.0
-            first_pos = 0
-            if fan_col > 0:
-                ju, jv = _shadow_fan_jitter(spos, li)
-                r_j = jv
-                ang_j = _TWO_PI * ju
-                if ti.static(sec_aa > 1):
-                    first_pos = _first_covered_position(event_msk[e])
-            for sk in range(ns):
-                s = sk
-                if adaptive_fan == 1:
-                    s = (3 * sk) & 3
-                wis = wi
-                ldn = ldist
-                ok = 1
-                sorg = sorigin
-                if ti.static(sec_aa > 1):
-                    sp = s & 3
-                    if fan_col > 0:
-                        # A budgeted fan visits the covered sub-pixel
-                        # positions in turn rather than skipping the
-                        # uncovered ones: a one-ray fan on a silhouette
-                        # pixel must still trace its one ray.
-                        sp = (first_pos + s) & 3
-                        if ((event_msk[e] >> sp) & 1) == 0:
-                            sp = first_pos
-                    sorg = _sub_pixel_origin(sorigin, dpx, dpy, sp)
-                    if ((event_msk[e] >> sp) & 1) == 0:
-                        ok = 0
-                off = ti.math.vec3(0.0, 0.0, 0.0)
-                if radius > 0.0:
-                    if (hu > 0.0) or (hv > 0.0):
-                        # R2 sequence across the cell: s = 0 is exactly the
-                        # cell centre, so a one-sample fan degenerates to
-                        # today's ray.
-                        u = 0.5 + _R2_SEQUENCE_A1 * s + ju
-                        v = 0.5 + _R2_SEQUENCE_A2 * s + jv
-                        ru = 2.0 * (u - ti.floor(u)) - 1.0
-                        rv = 2.0 * (v - ti.floor(v)) - 1.0
-                        off = b1 * (hu * ru) + b2 * (hv * rv)
-                    else:
-                        ang = _GOLDEN_ANGLE * s + ang_j
-                        rr = radius * ti.sqrt(
-                            (ti.cast(s, ti.f32) + r_j)
-                            / ti.cast(ns, ti.f32))
-                        off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
-                    if ltype == _LT_DIRECTIONAL:
-                        wis = (wi + off).normalized()
-                if ltype != _LT_DIRECTIONAL:
-                    # Moving the origin over the pixel changes both the
-                    # direction and finite distance to a point/spot/area
-                    # emitter. Retaining the centre ray here makes the
-                    # samples non-convergent and can trace past the light.
-                    tls = lp + off - sorg
-                    ldn = tls.norm()
-                    if ldn > 1e-5:
-                        wis = tls / ldn
-                    else:
-                        ok = 0
-                # Horizon cull. Today's guard is BOTH normals, and the face
-                # normal's > 1e-3 term is precisely what suppresses the
-                # terminator band today (a near-tangent ray strikes a
-                # neighbouring facet far from the origin: RENDERER_WORK_QUEUE.md
-                # item 20). Where this sample's origin GENUINELY moved onto
-                # the smooth surface its vertex normals imply (lifted == 1,
-                # shadow_term != 0), the face normal's horizon is not that
-                # surface's, so the fnrm term drops and only the shading
-                # normal's cull remains. A flat facet stores an exactly-zero
-                # delta and the gate-off path never lifts, so both keep the
-                # two-sided test EXACTLY as written first.
-                horizon_ok = (fnrm.dot(wis) > 1e-3) \
-                    and (snrm.dot(wis) > 1e-4)
-                if ti.static(shadow_term != 0):
-                    if lifted == 1:
-                        horizon_ok = snrm.dot(wis) > 1e-4
-                if (ok == 1) and horizon_ok:
-                    n_valid += 1.0
-                    occ = _shadow_occluded(
-                        refit, shadow_anyhit, sorg, wis, f, ff,
-                        ldn - 20.0 * min_hit_distance,
-                        pixel_world_scale[
-                            f % pixel_world_scale.shape[0]], 0.0,
-                        layer_offset_triangles,
-                        has_tri, has_bez,
-                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                        t_first_leaf, tri_pos, tri_colors, tri_uvs,
-                        tri_tex_meta, textures, tri_extra,
-                        num_colored_triangles,
-                        b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                        b_first_leaf, circuit_meta, circuit_colors,
-                        circuit_border_colors, edges_2d, edge_accel,
-                        src_sid, src_prim, eps_self, eps_near,
-                        tri_obj, shadow_identity)
-                    occ_sum += occ
-                    if adaptive_fan == 1:
-                        if sk == 0:
-                            occ_first = occ
-                        elif sk == 1:
-                            if (n_valid == 2.0) and (occ[0] == occ_first[0]) \
-                                    and (occ[1] == occ_first[1]) \
-                                    and (occ[2] == occ_first[2]):
-                                # Both diagonal taps traced and equal: the
-                                # remaining two are taken as the same.
-                                occ_sum += occ_sum
-                                n_valid += n_valid
-                                break
-            if n_valid > 0.0:
-                # Per-channel visibility; the soft-shadow fan still averages
-                # over the SCALAR sample count.
-                visibility = ti.math.vec3(1.0) - occ_sum / n_valid
-        # RGB payload: one (event, light) cell carries a triple, channel-last
-        # (see raster_pipeline's allocation).
-        for c in ti.static(range(3)):
-            shadow_vis[e, li, c] = visibility[c]
 
 
 #: What ``raster_shadow_trace`` binds through the arena, in offset-table order:
@@ -3257,3 +3342,210 @@ def raster_shadow_trace(*args):
     return _raster_shadow_trace_launch(*args)
 
 
+
+
+@ti.kernel
+def shadow_queue_prepare(
+        num_events: int, event_first: int, num_lights: int,
+        event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
+        event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
+        event_msk: ti.types.ndarray(), event_dp: ti.types.ndarray(),
+        event_toff: ti.types.ndarray(), light_pos: ti.types.ndarray(),
+        light_col: ti.types.ndarray(), sec_aa: ti.template(),
+        shadow_term: ti.template(), adaptive_taps: ti.template(), secondary: int,
+        offsets: ti.types.ndarray(), sort_sources: ti.types.ndarray(),
+        num_triangles: int, queue_data: ti.types.ndarray(),
+        queue_valid: ti.types.ndarray(), keys: ti.types.ndarray(),
+        sort_rays: ti.template()):
+    """Emit bounded light-major sample planes; no traversal or readback."""
+    for cell in range(num_events * num_lights):
+        li = cell // num_events
+        local_e = cell % num_events
+        e = event_first + local_e
+        base = offsets[li] * num_events
+        ns = offsets[li + 1] - offsets[li]
+        for sk in range(ns):
+            queue_valid[base + sk * num_events + local_e] = 0
+        _shadow_fan_cell(
+            e, li,
+            event_pos, event_snrm, event_fnrm, event_frame,
+            event_msk, queue_data, queue_data, queue_data,
+            queue_data, 0, queue_data, queue_data,
+            queue_data, queue_data, queue_data, queue_data,
+            0, queue_data, queue_data, queue_data,
+            queue_data, 0, queue_data, queue_data,
+            queue_data, queue_data, queue_data, light_pos,
+            light_col, num_lights, queue_data, 0,
+            0, 0, 0, event_dp,
+            event_toff, sec_aa, queue_data, 0,
+            queue_data, queue_data, 0, 0,
+            0, shadow_term, adaptive_taps, secondary,
+            True, queue_data, queue_valid, base, event_first, num_events)
+        if ti.static(sort_rays):
+            src = ti.max(0, sort_sources[e] + 1)
+            for sk in range(ns):
+                r = base + sk * num_events + local_e
+                key = ti.i64(0x7fffffffffffffff)
+                if queue_valid[r] != 0:
+                    octant = ti.cast(queue_data[r, 3] >= 0.0, ti.i32) \
+                        | (ti.cast(queue_data[r, 4] >= 0.0, ti.i32) << 1) \
+                        | (ti.cast(queue_data[r, 5] >= 0.0, ti.i32) << 2)
+                    key = (ti.cast(li * 8 + octant, ti.i64)
+                           * (ti.cast(num_triangles, ti.i64) + 1) + src)
+                keys[r] = key
+
+
+@ti.kernel
+def shadow_queue_trace_arena(
+        num_events: int, event_first: int, num_rays: int,
+        event_frame: ti.types.ndarray(), event_src_prim: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_first_leaf: int, num_colored_triangles: int,
+        b_nodes: NODE_ARG, b_first_leaf: int, layer_offset_triangles: ti.f32,
+        refit: ti.template(), has_tri: ti.template(), has_bez: ti.template(),
+        shadow_anyhit: ti.template(), shadow_identity: ti.template(),
+        eps_self: ti.f32, eps_near: ti.f32,
+        layout: ti.types.ndarray(), queue_data: ti.types.ndarray(),
+        queue_valid: ti.types.ndarray(), order: ti.types.ndarray(),
+        occ_out: ti.types.ndarray(), sort_rays: ti.template(), phase: ti.template(),
+        arena_f32: ti.types.ndarray(), arena_i32: ti.types.ndarray(),
+        aoff: ti.types.ndarray(), ashp: ti.types.ndarray()):
+    """One traversal per worker, scattered back to immutable sample slots.
+
+    Phase zero handles soft fans and the hard fan's diagonal pair. Phase one
+    visits off-diagonal hard taps only when that pair did not terminate the
+    reference fan. Separate dispatches make those reads race-free.
+    """
+    t_node_miss = ti.static(ArenaView(arena_i32, aoff[0], (ashp[0],)))
+    t_leaf_prim = ti.static(ArenaView(arena_i32, aoff[1], (ashp[1],)))
+    t_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[2], (ashp[2],)))
+    tri_pos = ti.static(ArenaView(arena_f32, aoff[3], (ashp[3], ashp[4], ashp[5])))
+    tri_colors = ti.static(ArenaView(
+        arena_f32, aoff[4], (ashp[6], ashp[7], ashp[8], ashp[9])))
+    tri_uvs = ti.static(ArenaView(arena_f32, aoff[5], (ashp[10], ashp[11], ashp[12])))
+    tri_tex_meta = ti.static(ArenaView(arena_i32, aoff[6], (ashp[13], ashp[14])))
+    textures = ti.static(ArenaView(arena_f32, aoff[7], (ashp[15], ashp[16], ashp[17])))
+    tri_extra = ti.static(ArenaView(arena_f32, aoff[8], (ashp[18], ashp[19], ashp[20])))
+    b_node_miss = ti.static(ArenaView(arena_i32, aoff[9], (ashp[21],)))
+    b_leaf_prim = ti.static(ArenaView(arena_i32, aoff[10], (ashp[22],)))
+    b_leaf_tspan = ti.static(ArenaView(arena_i32, aoff[11], (ashp[23],)))
+    circuit_meta = ti.static(ArenaView(
+        arena_f32, aoff[12], (ashp[24], ashp[25], ashp[26])))
+    circuit_colors = ti.static(ArenaView(
+        arena_f32, aoff[13], (ashp[27], ashp[28], ashp[29], ashp[30])))
+    circuit_border_colors = ti.static(ArenaView(
+        arena_f32, aoff[14], (ashp[31], ashp[32], ashp[33], ashp[34])))
+    edges_2d = ti.static(ArenaView(arena_f32, aoff[15], (ashp[35], ashp[36], ashp[37])))
+    edge_accel = ti.static(ArenaView(arena_i32, aoff[16], (ashp[38],)))
+    # Keep the shared serial-shadow arena offset contract (including lights).
+    light_pos = ti.static(ArenaView(  # noqa: F841
+        arena_f32, aoff[17], (ashp[39], ashp[40], ashp[41])))
+    light_col = ti.static(ArenaView(  # noqa: F841
+        arena_f32, aoff[18], (ashp[42], ashp[43], ashp[44])))
+    pixel_world_scale = ti.static(ArenaView(arena_f32, aoff[19], (ashp[45],)))
+    tri_obj = ti.static(ArenaView(arena_i32, aoff[20], (ashp[46], ashp[47])))
+
+    for idx in range(num_rays):
+        r = idx
+        if ti.static(sort_rays):
+            r = ti.cast(order[idx], ti.i32)
+        flag = queue_valid[r]
+        slot = r // num_events
+        sk = layout[slot, 0]
+        first = layout[slot, 1] * num_events + r % num_events
+        trace = flag != 0
+        if ti.static(phase == 0):
+            if flag == 2 and sk >= 2:
+                trace = False
+        else:
+            trace = flag == 2 and sk >= 2
+            # Keep this guard structurally nested: the compiler need not
+            # short-circuit boolean operands. A one-slot fan has no second
+            # diagonal slot, even though it never enters this phase.
+            if trace:
+                if queue_valid[first] == 2 and queue_valid[first + num_events] == 2:
+                    same = True
+                    for k in ti.static(range(3)):
+                        if occ_out[first, k] != occ_out[first + num_events, k]:
+                            same = False
+                    if same:
+                        trace = False
+        if trace:
+            e = event_first + r % num_events
+            f = event_frame[e]
+            src_prim = -1
+            src_sid = -1
+            if ti.static(shadow_identity):
+                src_prim = event_src_prim[e]
+                if src_prim >= 0:
+                    src_sid = tri_obj[f % tri_obj.shape[0], src_prim]
+            origin = ti.math.vec3(queue_data[r, 0], queue_data[r, 1], queue_data[r, 2])
+            direction = ti.math.vec3(queue_data[r, 3], queue_data[r, 4], queue_data[r, 5])
+            occ = _shadow_occluded(
+                refit, shadow_anyhit, origin, direction, f, ti.cast(f, ti.f32),
+                queue_data[r, 6], pixel_world_scale[f % pixel_world_scale.shape[0]],
+                0.0, layer_offset_triangles, has_tri, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_uvs, tri_tex_meta, textures, tri_extra,
+                num_colored_triangles, b_nodes, b_node_miss, b_leaf_prim,
+                b_leaf_tspan, b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel, src_sid, src_prim,
+                eps_self, eps_near, tri_obj, shadow_identity)
+            for k in ti.static(range(3)):
+                occ_out[r, k] = occ[k]
+
+
+@ti.kernel
+def shadow_queue_reduce(
+        num_events: int, event_first: int, num_lights: int,
+        offsets: ti.types.ndarray(), queue_valid: ti.types.ndarray(),
+        occ_out: ti.types.ndarray(), shadow_vis: ti.types.ndarray()):
+    """Reference-order RGB reduction, including its adaptive early exit."""
+    for cell in range(num_events * num_lights):
+        li = cell // num_events
+        e = cell % num_events
+        base = offsets[li] * num_events + e
+        total = ti.math.vec3(0.0)
+        first = ti.math.vec3(0.0)
+        count = 0.0
+        for sk in range(offsets[li + 1] - offsets[li]):
+            r = base + sk * num_events
+            if queue_valid[r] != 0:
+                occ = ti.math.vec3(occ_out[r, 0], occ_out[r, 1], occ_out[r, 2])
+                total += occ
+                count += 1.0
+                if queue_valid[r] == 2:
+                    if sk == 0:
+                        first = occ
+                    elif sk == 1:
+                        if count == 2.0 and occ[0] == first[0] \
+                                and occ[1] == first[1] and occ[2] == first[2]:
+                            total += total
+                            count += count
+                            break
+        visibility = ti.math.vec3(1.0)
+        if count > 0.0:
+            visibility = ti.math.vec3(1.0) - total / count
+        for c in ti.static(range(3)):
+            shadow_vis[event_first + e, li, c] = visibility[c]
+
+
+_SHADOW_QUEUE_TRACE_ARENA = _RASTER_SHADOW_TRACE_ARENA
+_SHADOW_QUEUE_TRACE_PARAMS = (
+    "num_events", "event_first", "num_rays", "event_frame", "event_src_prim",
+    "t_nodes", "t_first_leaf", "num_colored_triangles", "b_nodes", "b_first_leaf",
+    "layer_offset_triangles", "refit", "has_tri", "has_bez", "shadow_anyhit",
+    "shadow_identity", "eps_self", "eps_near", "layout", "queue_data", "queue_valid",
+    "order", "occ_out", "sort_rays", "phase", "t_node_miss", "t_leaf_prim",
+    "t_leaf_tspan", "tri_pos", "tri_colors", "tri_uvs", "tri_tex_meta", "textures",
+    "tri_extra", "b_node_miss", "b_leaf_prim", "b_leaf_tspan", "circuit_meta",
+    "circuit_colors", "circuit_border_colors", "edges_2d", "edge_accel", "light_pos",
+    "light_col", "pixel_world_scale", "tri_obj",
+)
+_shadow_queue_trace_launch = arena_packed(
+    __name__, "shadow_queue_trace_arena",
+    _SHADOW_QUEUE_TRACE_PARAMS, _SHADOW_QUEUE_TRACE_ARENA)
+
+
+def shadow_queue_trace(*args):
+    """Launch the one-ray-per-worker traversal through the arena convention."""
+    return _shadow_queue_trace_launch(*args)

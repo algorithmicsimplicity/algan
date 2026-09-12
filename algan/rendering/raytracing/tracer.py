@@ -1579,6 +1579,11 @@ def render_batch_raytraced(
         ):
             light_pos = _arena_copy(memory, light_pos_host)
             light_col = _arena_copy(memory, light_col_host)
+            if samples <= 1 and rt_settings.shadow_ray_parallel:
+                # Keep the immutable host metadata, not a GPU readback per
+                # bounce. Arena-wide version counters also change on unrelated
+                # scratch writes and cannot identify a light-table mutation.
+                light_col._algan_shadow_fan_metadata = light_col_host
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
@@ -2715,7 +2720,7 @@ def raytrace_render_wavefront(
         from algan.rendering.raytracing.raster_pipeline import (
             _shadow_identity_epsilons,
         )
-        from algan.rendering.raytracing.raster_taichi import raster_shadow_trace
+        from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
 
         rows = na * kbuf
         term_mode = int(rt_settings.shadow_terminator_mode())
@@ -2809,6 +2814,14 @@ def raytrace_render_wavefront(
             )
 
             eps_self, eps_near = float(min_hit_distance), 0.0
+        sort_sources = None
+        if rt_settings.shadow_ray_parallel and rt_settings.shadow_secondary_sort:
+            # ev_accept rows are i * kbuf + q; hit_i stores [q, field, i].
+            # This is ONLY a sort key: ev_src remains -1 for acceptance parity.
+            sort_sources = (
+                hit_i[:, 0, :na].transpose(0, 1).reshape(-1).index_select(0, acc_idx)
+            )
+        raster_shadow_trace = make_shadow_tracer(memory, sort_sources)
         raster_shadow_trace(
             num_events,
             ev_pos.index_select(0, acc_idx),

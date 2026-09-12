@@ -64,7 +64,6 @@ from algan.rendering.raytracing.raster_taichi import (
     raster_bez_count,
     raster_bez_write,
     raster_chunk,
-    raster_shadow_trace,
     raster_tri_count,
     raster_tri_write,
 )
@@ -2649,7 +2648,9 @@ def shade_sparse_raster_coverage(
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
             from algan.rendering.raytracing.refit_bvh import RefitBVH
+            from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
 
+            raster_shadow_trace = make_shadow_tracer(memory)
             raster_shadow_trace(
                 num_events,
                 ev_pos,

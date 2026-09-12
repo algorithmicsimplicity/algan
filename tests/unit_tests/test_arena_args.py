@@ -49,6 +49,7 @@ CONVERTED = [
         "wavefront_traverse_events",
     ),
     ("algan.rendering.raytracing.raster_taichi", "raster_shadow_trace"),
+    ("algan.rendering.raytracing.raster_taichi", "shadow_queue_trace"),
     ("algan.rendering.raytracing.path_tracer_taichi", "pt_shade"),
 ]
 

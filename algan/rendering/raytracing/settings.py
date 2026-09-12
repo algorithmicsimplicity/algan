@@ -1474,6 +1474,11 @@ shadow_deferred_single_sample = env_flag("ALGAN_SHADOW_DEFERRED_SINGLE_SAMPLE", 
 # The sheet event-ID map carries the permutation back to visibility lookups.
 shadow_primary_sort = env_flag("ALGAN_SHADOW_PRIMARY_SORT", True)
 
+# Bounded light-major queue, one worker per shadow ray, fixed-order reduction.
+# Host dispatch gates: changing these never invalidates compiled settings.
+shadow_ray_parallel = env_flag("ALGAN_SHADOW_RAY_PARALLEL", False)
+shadow_secondary_sort = env_flag("ALGAN_SHADOW_SECONDARY_SORT", True)
+
 
 def set_shadow_ray_budget(rays):
     """Set the soft-shadow rays one light may spend per primary shading event

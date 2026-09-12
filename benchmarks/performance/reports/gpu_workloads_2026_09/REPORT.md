@@ -374,6 +374,16 @@ ordering so a warp traces 32 rays toward one light, the primary sort
 applied to the bounce passes), with the directional light's unbounded ray
 the first thing to measure on its own. Items 3-4 are second order now.
 
+#### 5.1.2 Ray-parallel traversal implemented and measured on Metal
+
+The one-worker-per-ray, light-major queue and secondary direction/source sort
+now exist behind `shadow_ray_parallel` (off by default). A matched Mac graphics
+frame showed a 40.7% reduction in primary-shadow queue time, but slower secondary
+queues and a 15.8% higher full-frame median. Final frame pixels matched exactly;
+visibility intermediates differed by at most 2.98e-7. This is not a demonstrated
+whole-render speedup or a CUDA result. See the
+[implementation, raw readings and validation record](../shadow_queue_2026_09/README.md).
+
 ### 5.2 The compaction chain (explainer UHD: -25%; Mac: -50%)
 
 The sorts-plus-scans design (`DESIGN_sheet_resolve.md` §2) was meant to run
