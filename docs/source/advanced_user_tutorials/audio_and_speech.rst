@@ -156,6 +156,33 @@ can run in parallel with a visual change inside a narration segment:
                 pass
             mob.become(Triangle(add_to_scene=False))
 
+Following the transcript in the viewer
+======================================
+
+Call ``Scene.view()`` after your ``Speech`` blocks to inspect their narration
+alongside the animation. The right-hand panel has **Fragments** and **Transcript**
+tabs. The transcript includes the text from every entered ``Speech`` block up to
+that call, in authoring order, with the original punctuation and spacing.
+
+During playback or seeking, the transcript scrolls to the current position and
+highlights the word being spoken. Clicking a timed word seeks to the first video
+frame at or after its narration starts. Arrow keys, Home and End switch tabs when
+a tab has keyboard focus; transcript words also work with Enter and Space.
+Silence between words or after a sentence has no highlighted word. Overlapping
+narration can highlight more than one word.
+
+Recorded narration from ``get_speech_generator_from_file`` uses its existing
+word alignment, including the padding at the beginning of each selected clip.
+The default text-to-speech engine and custom generators that return only an audio
+clip have no word alignment: their word timings are estimated across the clip's
+duration and labeled as estimates in the transcript panel. Opening the viewer
+does not run a new alignment model or synthesize speech again.
+
+The transcript is a snapshot. With ``block=False``, speech added afterwards is
+visible only in a new viewer. Non-speech ``Audio`` blocks are not transcript
+entries. Speech suppressed by a non-animated context remains readable but has no
+clickable word timings, because there is no corresponding sound on the timeline.
+
 See Also
 ========
 

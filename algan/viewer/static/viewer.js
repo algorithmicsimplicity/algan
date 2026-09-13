@@ -174,6 +174,7 @@ function updateReadouts() {
     ? state.frame / (state.totalFrames - 1) : 0;
   el("progress").style.width = `${fraction * 100}%`;
   el("playhead").style.left = `${fraction * 100}%`;
+  syncTranscript(time);
 }
 
 function setStatus(text, kind = "") {
@@ -231,6 +232,144 @@ async function seek(index) {
     }
   }
   refreshPixel();
+}
+
+/* ---------- transcript and inspector tabs ---------- */
+
+const transcriptState = {
+  loaded: false, loading: false, entries: [], prefixEnds: [],
+  active: new Set(), anchor: null, tab: "fragments",
+};
+
+function selectInspectorTab(name, focus = false) {
+  transcriptState.tab = name;
+  for (const tab of ["fragments", "transcript"]) {
+    const selected = tab === name;
+    el(`${tab}-tab`).setAttribute("aria-selected", String(selected));
+    el(`${tab}-tab`).tabIndex = selected ? 0 : -1;
+    el(`${tab}-panel`).hidden = !selected;
+  }
+  if (focus) el(`${name}-tab`).focus();
+  if (name === "transcript") syncTranscript(state.frame / state.fps, true);
+}
+
+for (const name of ["fragments", "transcript"]) {
+  el(`${name}-tab`).onclick = () => selectInspectorTab(name);
+  el(`${name}-tab`).onkeydown = (event) => {
+    let next;
+    if (event.key === "Home") next = "fragments";
+    else if (event.key === "End") next = "transcript";
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      next = name === "fragments" ? "transcript" : "fragments";
+    } else return;
+    event.preventDefault();
+    selectInspectorTab(next, true);
+  };
+}
+
+function renderTranscript(data) {
+  const container = el("transcript");
+  container.replaceChildren();
+  transcriptState.entries = [];
+  transcriptState.active.clear();
+  transcriptState.anchor = null;
+  let estimated = false;
+  for (const block of data.blocks) {
+    const paragraph = document.createElement("p");
+    estimated ||= block.timing === "estimated";
+    for (const word of block.words) {
+      paragraph.append(document.createTextNode(word.before));
+      if (Number.isFinite(word.start) && Number.isFinite(word.end)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "transcript-word";
+        button.textContent = word.text;
+        button.title = `${word.start.toFixed(3)}s` +
+          (block.timing === "estimated" ? " (estimated)" : "");
+        button.setAttribute("aria-label", `${word.text}: seek to ${button.title}`);
+        // A frame is an instant, not a time range. Rounding down could select
+        // the preceding spoken word, so choose the first frame at/after onset.
+        button.onclick = () => seek(Math.ceil(word.start * state.fps - 1e-8));
+        paragraph.append(button);
+        transcriptState.entries.push({ start: word.start, end: word.end, node: button });
+      } else {
+        paragraph.append(document.createTextNode(word.text));
+      }
+    }
+    paragraph.append(document.createTextNode(block.after));
+    container.append(paragraph);
+  }
+  if (!data.blocks.length) {
+    const message = document.createElement("p");
+    message.className = "empty";
+    message.textContent = "This scene has no Speech blocks.";
+    container.append(message);
+  }
+  el("transcript-note").textContent = "Click a word to seek to its narration." +
+    (estimated ? " Some word timings are estimated because the speech source has no alignment." : "");
+  // Authoring order is the reading order, not necessarily the time order (Sync
+  // and Lag can overlap). Keep a separate time index for playhead lookups.
+  transcriptState.entries.sort((a, b) => a.start - b.start);
+  let end = -Infinity;
+  transcriptState.prefixEnds = transcriptState.entries.map((entry) => {
+    end = Math.max(end, entry.end);
+    return end;
+  });
+  syncTranscript(state.frame / state.fps, true);
+}
+
+async function loadTranscript() {
+  if (transcriptState.loaded || transcriptState.loading) return;
+  transcriptState.loading = true;
+  try {
+    renderTranscript(await getJSON("/api/transcript"));
+    transcriptState.loaded = true;
+  } catch (err) {
+    el("transcript").textContent = `Could not load transcript: ${err.message}. Retrying…`;
+  } finally {
+    transcriptState.loading = false;
+  }
+}
+
+function syncTranscript(time, forceScroll = false) {
+  const { entries, prefixEnds } = transcriptState;
+  // Upper bound in O(log n), followed only by possibly overlapping intervals.
+  let lo = 0, hi = entries.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (entries[mid].start <= time) lo = mid + 1;
+    else hi = mid;
+  }
+  const active = new Set();
+  for (let i = lo - 1; i >= 0 && prefixEnds[i] > time; i--) {
+    if (entries[i].end > time) active.add(entries[i].node);
+  }
+  for (const node of transcriptState.active) {
+    if (!active.has(node)) {
+      node.classList.remove("current");
+      node.removeAttribute("aria-current");
+    }
+  }
+  for (const node of active) {
+    if (!transcriptState.active.has(node)) {
+      node.classList.add("current");
+      node.setAttribute("aria-current", "true");
+    }
+  }
+  transcriptState.active = active;
+  // Silence has no highlighted word, but retains the nearest transcript
+  // position. Overlapping narration highlights every word actually sounding.
+  const anchor = active.values().next().value || entries[Math.max(0, lo - 1)]?.node;
+  const moved = anchor !== transcriptState.anchor;
+  transcriptState.anchor = anchor;
+  if (!anchor || transcriptState.tab !== "transcript" || (!moved && !forceScroll)) return;
+  const container = el("transcript");
+  const viewport = container.getBoundingClientRect();
+  const word = anchor.getBoundingClientRect();
+  if (forceScroll || word.top < viewport.top || word.bottom > viewport.bottom) {
+    // Scroll only this window, never the hierarchy, stage, or whole document.
+    container.scrollTop += word.top - viewport.top - container.clientHeight * 0.35;
+  }
 }
 
 /* ---------- pixel inspection ---------- */
@@ -560,12 +699,12 @@ function scrubTo(event) {
 function adoptState(data) {
   state.fps = data.fps;
   state.totalFrames = data.total_frames;
-  state.duration = data.duration;
+  state.duration = data.runtime;
   state.width = data.width;
   state.height = data.height;
   el("meta").textContent =
     `${data.width}×${data.height} · ${data.fps} fps · `
-    + `${data.total_frames} frames · ${data.duration.toFixed(2)}s`;
+    + `${data.total_frames} frames · ${state.duration.toFixed(2)}s`;
   syncResolution(data);
 }
 
@@ -589,6 +728,7 @@ async function refreshState() {
     // the tree guards on its own flag, and a frame request already in flight
     // is shared rather than reissued.
     if (!el("tree").children.length) loadHierarchy();
+    loadTranscript();
     if (!state.drawn) showFrame(state.frame);
   } catch (err) {
     setStatus(err.message, "error");
@@ -633,7 +773,10 @@ stage.addEventListener("wheel", (event) => {
 
 // The fit scale depends on the stage's size, so it has to be recomputed when
 // the window changes shape.
-window.addEventListener("resize", applyZoom);
+window.addEventListener("resize", () => {
+  applyZoom();
+  syncTranscript(state.frame / state.fps, true);
+});
 
 el("show-components").onchange = () => {
   el("tree").innerHTML = "";
@@ -650,4 +793,5 @@ el("show-components").onchange = () => {
   refreshState();
   showFrame(0);
   loadHierarchy();
+  loadTranscript();
 })();

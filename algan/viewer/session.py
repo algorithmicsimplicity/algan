@@ -42,6 +42,7 @@ rather than by the rest of the video.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import threading
 import time
@@ -104,6 +105,10 @@ class ViewerSession:
         # geometry that no longer exists. A second ``Scene.view()`` call is the
         # way to see later additions.
         self.duration = float(scene._recorded_end_time_for_render())
+        # Resolve audio timing before starting the render worker, and never
+        # revisit the Scene from the transcript route. This is the narration
+        # authored up to this view() call, even when block=False is used.
+        self._transcript = scene.audio_manager._transcript_snapshot()
         # At least one frame: a scene authored but never advanced still has a
         # first frame to look at, and a zero-length scrubber is unusable.
         self.total_frames = max(1, round(self.duration * self.fps))
@@ -301,6 +306,10 @@ class ViewerSession:
             "resolution_name": self._current_option,
             "resolution_options": self.resolution_options(),
         }
+
+    def transcript(self):
+        """The launch-time narration snapshot; never waits on the renderer."""
+        return copy.deepcopy(self._transcript)
 
     def frame(self, index, timeout=120.0):
         """The PNG for a frame, rendering it first if it is not cached."""

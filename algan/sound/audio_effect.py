@@ -17,6 +17,7 @@ See :doc:`/advanced_user_tutorials/audio_and_speech`.
 
 from __future__ import annotations
 
+from algan.sound.transcript import _snapshot_transcript, _speech_cue
 from algan.utils.audio_utils import get_pyttsx_speech_generator
 
 
@@ -27,6 +28,7 @@ class AudioManager:
         self.scene = scene
         self.speech_generator = speech_generator
         self.video_transcript = ""
+        self._speech_cues = []
 
     def set_speech_source(self, speech_generator):
         self.speech_generator = speech_generator
@@ -35,6 +37,12 @@ class AudioManager:
     def append_script(self, script):
         self.video_transcript += script.strip(" ") + "\n\n"
         return self
+
+    def _record_speech(self, script, clip, start_time_func):
+        self._speech_cues.append(_speech_cue(script, clip, start_time_func))
+
+    def _transcript_snapshot(self):
+        return _snapshot_transcript(self._speech_cues)
 
     def get_speech(self, script):
         if self.speech_generator is None:

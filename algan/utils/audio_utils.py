@@ -7,6 +7,7 @@ from pathlib import Path
 import pyttsx3
 
 from algan.settings import SETTINGS
+from algan.sound.transcript import _normalized_words
 
 
 class Timer:
@@ -231,6 +232,8 @@ def align_large_audio_torchaudio_robust(
 
 
 def subfinder(mylist, pattern):
+    if not pattern:
+        return -1
     for i in range(len(mylist)):
         if mylist[i] == pattern[0] and mylist[i : i + len(pattern)] == pattern:
             return i
@@ -264,23 +267,14 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             for word, start, end in word_time_stamps:
                 f.write(f"{word},{start},{end}\n")
 
-    Counter()
-
     def generator(script):
-        script = script.replace("-", " ")
-        script_words = [strip_nonchars(_) for _ in script.split(" ")]
-        script_words = [_ for _ in script_words if len(_) > 0]
-
+        script_words = _normalized_words(script)
         script_start_ind = subfinder([_[0] for _ in word_time_stamps], script_words)
-
-        if (
-            script_start_ind < 0
-        ):  # script_words != [_[0] for _ in word_time_stamps[word_counter.count:word_counter.count+len(script_words)]]:
-            # raise AudioTranscriptMismatchError(f'Error, the following text was not found in the recorded '
-            #                                   f'transcript of the speech audio file:\n\n{script_words}')
+        if script_start_ind < 0:
             logger.warning(
-                f"Warning: the following text was not found in the recorded transcript of the speech"
-                f" audio file, and so this speech will be machine generated:\n\n{script_words}"
+                "The following text was not found in the recorded transcript; "
+                "this speech will be machine generated: %s",
+                script,
             )
             return get_pyttsx_speech_generator(script)
 
@@ -290,8 +284,15 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             dif = word_time_stamps[script_start_ind + len(script_words)][1] - audio_end
             audio_end += min(dif * 0.5, 0.5)
 
-        sub_ac = full_ac.subclipped(
-            max(audio_start - 0.05, 0), min(audio_end + 0.05, full_ac.duration)
+        clip_start = max(audio_start - 0.05, 0)
+        sub_ac = full_ac.subclipped(clip_start, min(audio_end + 0.05, full_ac.duration))
+        # Keep the aligner's data on the selected clip. Offsets are relative
+        # to its padded start, not the first word or the full recording.
+        sub_ac._algan_word_timings = tuple(
+            (word, start - clip_start, end - clip_start)
+            for word, start, end in word_time_stamps[
+                script_start_ind : script_start_ind + len(script_words)
+            ]
         )
         return sub_ac
 
