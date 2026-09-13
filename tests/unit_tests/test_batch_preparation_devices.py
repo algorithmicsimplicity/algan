@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -117,3 +118,110 @@ def test_get_frames_releases_arena_and_restores_background_on_error():
     assert scene.background_frame == "original"
     assert scene.memory is None
     assert allocated.data is None
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("ending", ["complete", "error", "close"])
+def test_render_reclaims_arena_before_deferred_pressure_reset(monkeypatch, ending):
+    """Render, GC and runtime teardown must agree on the arena's lifetime."""
+    import algan.render_loop as render_loop
+    from algan.rendering import taichi_runtime as runtime
+    from algan.utils import memory_utils
+
+    allocated = SimpleNamespace(data=object())
+    original_memory = SimpleNamespace(data=object())
+    frozen = False
+    calls = []
+
+    @contextmanager
+    def freeze_scene():
+        nonlocal frozen
+        frozen = True
+        try:
+            yield
+        finally:
+            frozen = False
+
+    class RenderScene(RenderLoopMixin):
+        def _get_frames_impl(self, *_args, **_kwargs):
+            self.memory = allocated
+            self.background_frame = "temporary"
+            runtime._PRESSURE_RESET_PENDING = True
+            try:
+                yield "frame"
+                if ending == "error":
+                    raise RuntimeError("boom")
+            finally:
+                calls.append("worker joined")
+
+    def reclaim(force_gc):
+        assert force_gc is False
+        assert not runtime.render_is_active()
+        assert not frozen
+        assert allocated.data is None
+        assert scene.memory is original_memory
+        assert scene.background_frame == "original"
+        calls.append("reclaim")
+
+    monkeypatch.setattr(render_loop, "ensure_taichi_for_render", lambda: None)
+    monkeypatch.setattr(render_loop, "scene_excluded_from_gc", freeze_scene)
+    monkeypatch.setattr(memory_utils, "release_torch_memory", reclaim)
+    monkeypatch.setattr(runtime, "_RENDER_JOBS_ACTIVE", 0)
+    monkeypatch.setattr(runtime, "_PRESSURE_RESET_PENDING", False)
+    scene = RenderScene.__new__(RenderScene)
+    scene.memory = original_memory
+    scene.background_frame = "original"
+    frames = scene.get_frames(0, 2, post_processes=())
+    assert next(frames) == "frame"
+    assert runtime.render_is_active()
+    assert allocated.data is not None
+    assert calls == []
+    if ending == "close":
+        frames.close()
+    elif ending == "error":
+        with pytest.raises(RuntimeError, match="boom"):
+            next(frames)
+    else:
+        assert list(frames) == []
+    assert calls == ["worker joined", "reclaim"]
+    assert not runtime._PRESSURE_RESET_PENDING
+
+
+@pytest.mark.fast
+def test_video_defers_pressure_cleanup_until_encoder_and_frame_locals_are_gone(
+    monkeypatch,
+):
+    import weakref
+
+    import algan.render_loop as render_loop
+    from algan.rendering import taichi_runtime as runtime
+    from algan.utils import memory_utils
+
+    calls = []
+    last_frame = None
+
+    class Frame:
+        pass
+
+    class VideoScene(RenderLoopMixin):
+        def _render_to_video_impl(self, *_args, **_kwargs):
+            nonlocal last_frame
+            frame = Frame()
+            last_frame = weakref.ref(frame)
+            with runtime.render_job_holding_the_arch():
+                runtime._PRESSURE_RESET_PENDING = True
+            assert calls == []
+            calls.append("encoder closed")
+
+    def reclaim(force_gc):
+        assert force_gc is False
+        assert last_frame() is None
+        assert not runtime.render_is_active()
+        calls.append("reclaim")
+
+    monkeypatch.setattr(render_loop, "ensure_taichi_for_render", lambda: None)
+    monkeypatch.setattr(memory_utils, "release_torch_memory", reclaim)
+    monkeypatch.setattr(runtime, "_RENDER_JOBS_ACTIVE", 0)
+    monkeypatch.setattr(runtime, "_PRESSURE_RESET_PENDING", False)
+    VideoScene.__new__(VideoScene)._render_to_video(None, None, None)
+    assert calls == ["encoder closed", "reclaim"]

@@ -587,6 +587,10 @@ def test_deferred_pressure_reset_runs_after_the_outer_render_if_still_pressured(
     monkeypatch.setattr(taichi_runtime, "_RENDER_JOBS_ACTIVE", 0)
     monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
     monkeypatch.setattr(memory_utils, "_host_memory_pressure", lambda: True)
+    monkeypatch.setattr(memory_utils, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(memory_utils.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(memory_utils.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(memory_utils.torch.mps, "is_available", lambda: False)
     monkeypatch.setattr(memory_utils, "_malloc_trim", lambda: calls.append("trim"))
     monkeypatch.setattr(
         taichi_runtime,
@@ -597,7 +601,7 @@ def test_deferred_pressure_reset_runs_after_the_outer_render_if_still_pressured(
     with taichi_runtime.render_job_holding_the_arch():
         assert taichi_runtime.render_is_active()
 
-    assert calls == ["reset", "trim"]
+    assert calls == ["gc", "trim", "reset", "trim"]
     assert taichi_runtime._PRESSURE_RESET_PENDING is False
 
 
@@ -609,6 +613,9 @@ def test_deferred_pressure_reset_is_dropped_if_pressure_clears(monkeypatch):
     monkeypatch.setattr(taichi_runtime, "_RENDER_JOBS_ACTIVE", 0)
     monkeypatch.setattr(taichi_runtime, "_PRESSURE_RESET_PENDING", True)
     monkeypatch.setattr(memory_utils, "_host_memory_pressure", lambda: False)
+    monkeypatch.setattr(memory_utils, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(memory_utils.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(memory_utils.torch.mps, "is_available", lambda: False)
     monkeypatch.setattr(memory_utils, "_malloc_trim", lambda: calls.append("trim"))
     monkeypatch.setattr(
         taichi_runtime,
@@ -644,3 +651,57 @@ def test_quadrants_pressure_reset_is_declined_on_the_metal_arch(monkeypatch):
     assert taichi_runtime.reset_quadrants_for_memory_pressure() is False
     assert calls == []
     assert taichi_runtime._PRESSURE_RESET_PENDING is False
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize(
+    ("compiled", "physical_gib", "commit_gib", "expect_reset"),
+    [
+        (False, 2, 10, False),  # cache-only, ordinary 15% host pressure
+        (True, 2, 10, True),  # fresh compiler IR remains reclaimable
+        (False, 1.2, 10, True),  # at the 7.5% physical floor
+        (False, 2, 4.8, True),  # at the 15% commit floor
+        (False, 2, 0, True),  # no commit capacity
+        (False, None, None, True),  # unavailable Windows telemetry
+    ],
+)
+def test_cached_cuda_reset_retains_memory_pressure_fallbacks(
+    monkeypatch,
+    compiled,
+    physical_gib,
+    commit_gib,
+    expect_reset,
+):
+    from types import SimpleNamespace
+
+    from algan.rendering import taichi_runtime as runtime
+    from algan.utils import memory_utils
+
+    gib = 1 << 30
+    calls = []
+    monkeypatch.setattr(runtime, "BACKEND", "quadrants")
+    monkeypatch.setattr(runtime, "_already_initialized", lambda: True)
+    monkeypatch.setattr(runtime, "_live_arch", lambda: ti.cuda)
+    monkeypatch.setattr(runtime, "render_is_active", lambda: False)
+    monkeypatch.setattr(runtime, "_BUILT_A_SPECIALIZATION", compiled)
+    monkeypatch.setattr(runtime, "_ARCH_READY_FOR", None)
+    monkeypatch.setattr(runtime, "_PRESSURE_RESET_PENDING", False)
+    monkeypatch.setattr(runtime, "_forget_compiled_in_settings", lambda: None)
+    monkeypatch.setattr(runtime.ti, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(
+        memory_utils,
+        "_windows_memory_status",
+        lambda: None
+        if physical_gib is None
+        else SimpleNamespace(
+            physical_total=16 * gib,
+            physical_available=int(physical_gib * gib),
+            commit_limit=32 * gib,
+            commit_available=int(commit_gib * gib),
+        ),
+    )
+
+    assert runtime.reset_quadrants_for_memory_pressure() is expect_reset
+    assert calls == (["reset"] if expect_reset else [])
+    if not expect_reset:
+        assert runtime._BUILT_A_SPECIALIZATION is compiled

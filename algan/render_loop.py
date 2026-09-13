@@ -3058,13 +3058,11 @@ class RenderLoopMixin:
         close the generator before consuming every frame.
         """
         _check_post_processes(post_processes)
-        # The one place Taichi's arch is chosen. Every path that produces a
-        # frame comes through here, and nothing below is allowed to launch a
-        # kernel before it: a render device changed since the last job needs a
-        # different arch, and a kernel materialized against the old one would
-        # stage every argument through the wrong device (see
-        # ``taichi_arch_is_cpu``). Free when the arch already matches, which is
-        # every render that did not change the device.
+        # Every frame-producing path validates the arch before launching a
+        # kernel: a render device changed since the last job needs a different
+        # arch, or arguments would stage through the wrong device. Video jobs
+        # also hold the arch through encoding and already made this selection;
+        # this idempotent check covers direct frame-generator callers too.
         ensure_taichi_for_render()
         original_background = self.background_frame
         original_memory = self.memory
@@ -3073,7 +3071,7 @@ class RenderLoopMixin:
         # second save_video reports its own render rather than inheriting the
         # first one's totals and its already-spent warnings.
         reset_truncations()
-        try:
+        with torch.no_grad(), render_job_holding_the_arch():
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
             # ``no_grad`` rather than ``inference_mode``: a render that leaves
@@ -3084,24 +3082,25 @@ class RenderLoopMixin:
             # the per-batch reclaim only ever needs to find the cycles this
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
-            with (
-                torch.no_grad(),
-                scene_excluded_from_gc(),
-                render_job_holding_the_arch(),
-            ):
-                yield from self._get_frames_impl(
-                    start_time_ind,
-                    end_time_ind,
-                    background=background,
-                    post_processes=post_processes,
-                    manual_memory=manual_memory,
-                )
-        finally:
-            self.background_frame = original_background
-            render_memory = self.memory
-            if render_memory is not None and render_memory is not original_memory:
-                render_memory.data = None
-            self.memory = original_memory
+            try:
+                with scene_excluded_from_gc():
+                    yield from self._get_frames_impl(
+                        start_time_ind,
+                        end_time_ind,
+                        background=background,
+                        post_processes=post_processes,
+                        manual_memory=manual_memory,
+                    )
+            finally:
+                # Release the arena before the arch scope considers a deferred
+                # compiler reset. WDDM charges GPU allocations against host
+                # commit too; its freed storage must be reclaimable before the
+                # runtime decides whether to throw away warm kernels.
+                self.background_frame = original_background
+                render_memory = self.memory
+                if render_memory is not None and render_memory is not original_memory:
+                    render_memory.data = None
+                self.memory = original_memory
 
     def _get_frames_impl(
         self,
@@ -3730,6 +3729,32 @@ class RenderLoopMixin:
         finished yet -- and render again. See
         :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
         """
+        ensure_taichi_for_render()
+        # The encoder still owns queued CPU frames after get_frames exits.
+        # Keep deferred compiler reclamation outside the complete video job:
+        # the implementation drains the writer, restores the timeline, and
+        # releases its last frame locals before this outer arch scope exits.
+        with render_job_holding_the_arch():
+            return self._render_to_video_impl(
+                file_writer,
+                file_path,
+                file_path_out,
+                post_processes=post_processes,
+                background=background,
+                despawn_camera_and_lights=despawn_camera_and_lights,
+                preserve_authoring_state=preserve_authoring_state,
+            )
+
+    def _render_to_video_impl(
+        self,
+        file_writer,
+        file_path,
+        file_path_out,
+        post_processes=(bloom_filter,),
+        background=None,
+        despawn_camera_and_lights=True,
+        preserve_authoring_state=False,
+    ):
         with torch.no_grad():
             previous_scene_times = (
                 [list(pair) for pair in self.scene_times]

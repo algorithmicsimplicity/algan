@@ -1072,10 +1072,10 @@ def ensure_taichi_for_render():
 _ARCH_READY_FOR = None
 
 
-#: How many render jobs are between :func:`ensure_taichi_for_render` and their
-#: last frame. A counter rather than a flag: ``save_frame`` inside a
-#: ``save_video`` post-process, or a nested preview, would otherwise clear it
-#: early.
+#: How many nested render scopes hold the runtime. Frame generators own a
+#: scope; videos additionally hold one through encoder cleanup. A counter
+#: rather than a flag also covers ``save_frame`` inside a ``save_video``
+#: post-process and nested previews without releasing the arch early.
 _RENDER_JOBS_ACTIVE = 0
 
 #: A host-pressure reclaim asked to reset Quadrants while a render still held
@@ -1121,21 +1121,17 @@ def render_job_holding_the_arch():
             # ``release_torch_memory`` can discover host pressure while this
             # job is still in a kernel-safe scope. Resetting there would race
             # the batch-prep worker, so it records a request instead. The
-            # outermost job is now clear of every kernel launch; re-check the
-            # pressure before paying the cold-start cost, because a concurrent
-            # process may have exited in the meantime.
+            # outermost job is now clear of every kernel launch and has dropped
+            # its arena. Reclaim that newly freed storage before re-checking
+            # host pressure: CUDA's caching allocator can otherwise retain it
+            # (including WDDM's host backing) and provoke an unnecessary reset.
             if _PRESSURE_RESET_PENDING:
                 _PRESSURE_RESET_PENDING = False
-                from algan.utils.memory_utils import (
-                    _host_memory_pressure,
-                    _malloc_trim,
-                )
+                from algan.utils.memory_utils import release_torch_memory
 
-                if _host_memory_pressure() and reset_quadrants_for_memory_pressure():
-                    # ``ti.reset`` releases the Program, but glibc may keep
-                    # its freed LLVM/JIT pages mapped. This is still Linux-
-                    # only because ``_malloc_trim`` is itself platform-gated.
-                    _malloc_trim()
+                # This retains the ordinary pressure gates and reset fallback,
+                # but now collection can also see the unfrozen scene graph.
+                release_torch_memory(force_gc=False)
 
 
 def render_is_active():
@@ -1188,13 +1184,20 @@ def reset_quadrants_for_memory_pressure():
     """Drop the live Quadrants Program/JIT state as a host-memory last resort.
 
     Called only after :func:`algan.utils.memory_utils.release_torch_memory` has
-    observed real host/cgroup pressure and, on Linux, already tried
-    ``malloc_trim(0)``. Resetting is deliberately more conservative than a cache
+    observed real host/cgroup pressure and already tried native heap reclamation
+    (``malloc_trim(0)`` on Linux, ``HeapOptimizeResources`` on Windows).
+    Resetting is deliberately more conservative than a cache
     flush: it is Quadrants-only and main-thread-only. If a render still holds
     the arch, the request is deferred until the outermost job exits and pressure
     is measured again; resetting immediately could race a worker-side launch.
     The next guarded kernel launch or render starts a fresh Program and reloads
     compiled kernels from the offline cache.
+
+    On Windows CUDA, a Program restored entirely from cache is retained while
+    :func:`algan.utils.memory_utils._cached_cuda_program_has_headroom` confirms
+    physical and commit reserves. Ordinary pressure still collects garbage and
+    returns free CUDA/native cache pages. Fresh compilation and tighter memory
+    conditions retain the reset: see the GTX 1050 pressure probe in benchmarks.
 
     **Never on the Metal arch.** On a unified-memory Mac the host figure this
     reacts to is depressed by the GPU pool the render itself holds -- torch's
@@ -1225,6 +1228,16 @@ def reset_quadrants_for_memory_pressure():
         return False
     if threading.current_thread() is not threading.main_thread():
         return False
+    if _live_arch() == ti.cuda and not _BUILT_A_SPECIALIZATION:
+        from algan.utils.memory_utils import _cached_cuda_program_has_headroom
+
+        # A Windows CUDA Program restored entirely from the source-key cache
+        # has no freshly compiled IR to reclaim. Avoid repeatedly discarding
+        # it for ordinary physical pressure while commit capacity is ample.
+        # New compilation, severe physical/commit pressure, missing telemetry
+        # and every other platform retain the existing reset fallback.
+        if _cached_cuda_program_has_headroom():
+            return False
     started = time.perf_counter()
     try:
         ti.reset()

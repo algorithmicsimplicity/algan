@@ -356,7 +356,29 @@ def _host_memory_pressure(
 
 
 def _malloc_trim():
-    """Ask glibc to return free heap pages to the OS. Linux only, best-effort."""
+    """Return unused native heap pages without discarding live JIT state."""
+    if sys.platform == "win32":
+        # HeapOptimizeResources decommits unused low-fragmentation heap caches.
+        # NULL selects this process's heaps; live allocations are untouched.
+        # Unlike trimming a process working set, this releases unused commit
+        # rather than paging out memory that the next render still needs.
+        # https://learn.microsoft.com/windows/win32/api/heapapi/nf-heapapi-heapsetinformation
+        try:
+            optimize = ctypes.windll.kernel32.HeapSetInformation
+            optimize.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+            ]
+            optimize.restype = ctypes.c_int
+            # HEAP_OPTIMIZE_RESOURCES_INFORMATION: DWORD Version=1, Flags=0.
+            information = (ctypes.c_uint32 * 2)(1, 0)
+            return bool(
+                optimize(None, 3, ctypes.byref(information), ctypes.sizeof(information))
+            )
+        except (AttributeError, OSError):
+            return False
     if not sys.platform.startswith("linux"):
         return False
     try:
@@ -374,6 +396,61 @@ def _reset_quadrants_runtime_for_memory_pressure():
     from algan.rendering.taichi_runtime import reset_quadrants_for_memory_pressure
 
     return reset_quadrants_for_memory_pressure()
+
+
+class _WindowsMemoryStatus(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_uint32),
+        ("load", ctypes.c_uint32),
+        ("physical_total", ctypes.c_uint64),
+        ("physical_available", ctypes.c_uint64),
+        ("commit_limit", ctypes.c_uint64),
+        ("commit_available", ctypes.c_uint64),
+        ("virtual_total", ctypes.c_uint64),
+        ("virtual_available", ctypes.c_uint64),
+        ("extended_available", ctypes.c_uint64),
+    ]
+
+
+def _windows_memory_status():
+    """Physical RAM and process commit headroom, or None if unavailable."""
+    if sys.platform != "win32":
+        return None
+    try:
+        status = _WindowsMemoryStatus()
+        status.length = ctypes.sizeof(status)
+        query = ctypes.windll.kernel32.GlobalMemoryStatusEx
+        query.argtypes = [ctypes.POINTER(_WindowsMemoryStatus)]
+        query.restype = ctypes.c_int
+        if query(ctypes.byref(status)):
+            return status
+    except (AttributeError, OSError):
+        pass
+    return None
+
+
+def _cached_cuda_program_has_headroom():
+    """Keep a cache-only Windows CUDA Program under ordinary host pressure.
+
+    Reloading compiled CUDA kernels holds little reclaimable compiler IR, but
+    discarding their Program costs every kernel another first launch. Keep it
+    through the normal 15% physical-pressure cleanup, provided physical RAM
+    stays above half that threshold (and 1 GiB) and commit headroom stays above
+    15% (and 1 GiB). Missing telemetry never suppresses a reset. Other systems
+    keep their existing policy, especially Linux's hard cgroup boundary.
+    """
+    status = _windows_memory_status()
+    if status is None or status.physical_total <= 0 or status.commit_limit <= 0:
+        return False
+    physical_floor = max(
+        1 << 30,
+        status.physical_total * _HOST_AVAILABLE_MEMORY_FRACTION / 2,
+    )
+    commit_floor = max(1 << 30, status.commit_limit * _HOST_AVAILABLE_MEMORY_FRACTION)
+    return (
+        status.physical_available > physical_floor
+        and status.commit_available > commit_floor
+    )
 
 
 #: Reclaimable torch cache below which a steady-state ``release_torch_memory`` call is
@@ -416,12 +493,14 @@ def release_torch_memory(force_gc=True):
     memory, so it raises the pressure that triggers the next reclaim.
 
     Host/native reclamation is more destructive and therefore has its own real
-    pressure gate. Under host/cgroup pressure Linux first calls ``malloc_trim(0)``
-    to return glibc-retained free pages without losing JIT state. Pressure is
-    measured again; only if it remains does the default Quadrants backend reset
-    its live runtime, and never while a render is active. A successful reset is
-    followed by one more Linux trim because the freed LLVM/JIT allocations can
-    otherwise remain in glibc's arenas. A reset discards the in-process compiled
+    pressure gate. Under host/cgroup pressure Linux calls ``malloc_trim(0)``
+    and Windows uses ``HeapOptimizeResources`` to return unused native heap
+    pages without losing JIT state. Persistent pressure can then reset the
+    default Quadrants backend, and never while a render is active. Cache-only
+    Windows CUDA Programs retain their kernels when physical and commit
+    reserves permit (:func:`_cached_cuda_program_has_headroom`). A reset is
+    followed by one more trim because the freed LLVM/JIT allocations can
+    otherwise remain in the native allocator. It discards in-process compiled
     specializations, which the next render reloads from the offline cache, so
     this is an OOM-avoidance last resort rather than routine cleanup.
     ``force_gc`` does *not* force either native step.
@@ -465,8 +544,8 @@ def release_torch_memory(force_gc=True):
 
     # CPU/native allocations live outside torch's device caches. Only pay the
     # expensive process-wide reclamation when host capacity is genuinely tight.
-    # On Linux, glibc commonly keeps hundreds of MiB of already-freed LLVM/torch
-    # pages mapped; trim those first because it preserves every compiled kernel.
+    # Native heaps can keep hundreds of MiB of already-freed LLVM/torch pages
+    # committed; trim those first because it preserves every compiled kernel.
     # If the enclosing host/cgroup is *still* pressured afterwards, sacrifice
     # Quadrants' live JIT Program too. The runtime helper refuses while a render
     # is active or from a non-main thread, so this can never reset under a kernel
@@ -474,8 +553,8 @@ def release_torch_memory(force_gc=True):
     if host_pressured:
         _malloc_trim()
         if _host_memory_pressure() and _reset_quadrants_runtime_for_memory_pressure():
-            # ``ti.reset()`` can hand large LLVM/JIT allocations back to
-            # glibc without immediately unmapping them. If the reset happens
+            # ``ti.reset()`` can hand large LLVM/JIT allocations back to the
+            # native heap without immediately decommitting them. If it happens
             # synchronously, trim once more so the memory it just freed is
             # visible to the enclosing cgroup before this call returns. A
             # reset deferred until render exit performs the same final trim

@@ -2046,6 +2046,26 @@ def test_the_scene_camera_light_and_group_surface_answers_to_its_public_names():
         )
 
 
+@pytest.mark.parametrize(
+    ("tight_axis", "xs", "ys"),
+    [
+        (None, [-5.5, 0.0, 5.5, -5.5, 0.0], [2.625] * 3 + [-2.625] * 2),
+        (0, [-4.5, 0.5, 5.0, -4.5, 0.5], [2.625] * 3 + [-2.625] * 2),
+        (1, [-5.5, 0.0, 5.5, -5.5, 0.0], [2.625] * 3 + [-1.625] * 2),
+    ],
+)
+def test_grid_layout_uses_member_dimensions_before_any_moves(tight_axis, xs, ys):
+    with algan.Scene():
+        group = algan.Group([algan.Square(size=i) for i in range(1, 6)])
+        with algan.Off():
+            group.arrange_in_grid(
+                2, row_buffer=0.5, column_buffer=0.25, tight_axis=tight_axis
+            )
+        centers = torch.cat([mob.get_center().reshape(-1, 3) for mob in group])
+        expected = torch.tensor(list(zip(xs, ys, [0.0] * 5)), dtype=centers.dtype)
+        torch.testing.assert_close(centers, expected, atol=1e-6, rtol=0)
+
+
 def test_bezier_curve_reads_color_as_its_stroke_and_refuses_to_be_filled():
     """``BezierCurveCubic`` is the unfilled circuit, so ``color`` is the stroke.
 

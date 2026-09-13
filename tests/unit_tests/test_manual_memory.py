@@ -341,7 +341,7 @@ def test_a_cpu_render_is_sized_against_the_machine_not_a_flat_2gb(monkeypatch):
     assert cs._default_cpu_memory() == 2 * cs.GIGABYTES
 
 
-def test_malloc_trim_is_linux_only(monkeypatch):
+def test_native_heap_trim_skips_unsupported_platforms(monkeypatch):
     from algan.utils import memory_utils as mu
 
     calls = []
@@ -350,6 +350,75 @@ def test_malloc_trim_is_linux_only(monkeypatch):
 
     assert mu._malloc_trim() is False
     assert calls == [], "malloc_trim must never be looked up off Linux"
+
+
+@pytest.mark.parametrize("succeeds", [False, True])
+def test_windows_heap_trim_optimizes_unused_pages_in_all_process_heaps(
+    monkeypatch, succeeds
+):
+    from algan.utils import memory_utils as mu
+
+    calls = []
+
+    def optimize(heap, information_class, information, size):
+        fields = mu.ctypes.cast(information, mu.ctypes.POINTER(mu.ctypes.c_uint32))
+        calls.append((heap, information_class, fields[0], fields[1], size))
+        return int(succeeds)
+
+    monkeypatch.setattr(mu.sys, "platform", "win32")
+    monkeypatch.setattr(
+        mu.ctypes,
+        "windll",
+        types.SimpleNamespace(
+            kernel32=types.SimpleNamespace(HeapSetInformation=optimize)
+        ),
+        raising=False,
+    )
+    assert mu._malloc_trim() is succeeds
+    assert calls == [(None, 3, 1, 0, 8)]
+    assert optimize.restype is mu.ctypes.c_int
+
+
+def test_windows_heap_trim_is_best_effort(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(mu.sys, "platform", "win32")
+    monkeypatch.setattr(mu.ctypes, "windll", types.SimpleNamespace(), raising=False)
+    assert mu._malloc_trim() is False
+
+
+def test_windows_memory_status_uses_full_64_bit_structure(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    def query(pointer):
+        status = mu.ctypes.cast(
+            pointer, mu.ctypes.POINTER(mu._WindowsMemoryStatus)
+        ).contents
+        assert status.length == 64
+        status.physical_total = 16 << 30
+        status.physical_available = 2 << 30
+        status.commit_limit = 32 << 30
+        status.commit_available = 10 << 30
+        return 1
+
+    monkeypatch.setattr(mu.sys, "platform", "win32")
+    monkeypatch.setattr(
+        mu.ctypes,
+        "windll",
+        types.SimpleNamespace(
+            kernel32=types.SimpleNamespace(GlobalMemoryStatusEx=query)
+        ),
+        raising=False,
+    )
+    assert mu._cached_cuda_program_has_headroom()
+
+
+@pytest.mark.parametrize("status", [None, types.SimpleNamespace(physical_total=0)])
+def test_cached_cuda_reset_requires_valid_windows_telemetry(monkeypatch, status):
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(mu, "_windows_memory_status", lambda: status)
+    assert not mu._cached_cuda_program_has_headroom()
 
 
 def test_host_memory_pressure_honors_a_finite_cgroup_before_host_ram(monkeypatch):

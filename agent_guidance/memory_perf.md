@@ -36,6 +36,38 @@ The merge and projection build *outside* the arena in pool headroom, so the mode
 
 `ManualMemory.scope()` / the allocation recorder are **diagnostics only** — they do not participate in batch sizing. Use them to attribute arena usage per stage when investigating; do not add scopes expecting them to affect a render's memory budget.
 
+## Host pressure and warm CUDA programs
+
+Render teardown drops the arena and unfreezes the scene before the outermost
+arch scope handles a deferred host-pressure reset. That scope first repeats
+the ordinary pressure-gated reclamation, so newly freed CUDA cache blocks can
+be returned before deciding whether to discard Quadrants. The prep worker is
+joined before any of this, including on errors and generator close.
+Video jobs additionally hold the outer arch scope through encoder draining
+and timeline restoration, so their last CPU frame buffers have been released
+before the reset decision.
+
+Native heap reclamation uses glibc `malloc_trim(0)` on Linux and Windows
+`HeapSetInformation(HeapOptimizeResources)` on unused process heap caches.
+Neither discards live compiler state. A successful reset is followed by
+another trim to return the allocations the compiler just freed.
+
+On Windows CUDA, a Program restored entirely from the source-key cache has
+much less reclaimable compiler IR than one that ran the compiler frontend.
+Ordinary host pressure (15% available physical RAM) still triggers garbage
+collection and CUDA/native cache reclamation. A cache-only Program is retained
+while `GlobalMemoryStatusEx` reports both physical memory above 7.5% of RAM
+(and 1 GiB) and available commit above 15% of the commit limit (and 1 GiB).
+New compilation, lower headroom, or unavailable telemetry retains the reset
+fallback. This exception does not apply to Linux/cgroups or CPU rendering.
+It changes the destructive reset decision, not arena sizing or OOM retries.
+
+`benchmarks/performance/pressure_reset_probe.py` records reset counts, process
+memory, host/commit headroom, and teardown ordering on the real graphics scene.
+Its `--sequence legacy,legacy,current,current,current,legacy,legacy` option
+loads only the old cleanup functions from the specified `--baseline-ref` for
+an in-process comparison with identical rendering settings.
+
 ## Performance and renderer validation
 
 For performance changes:

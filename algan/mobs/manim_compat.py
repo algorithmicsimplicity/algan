@@ -553,35 +553,73 @@ class ManimCompatMob(ManimMob):
         )
         return self._animate_to_manim(source, before_source=before)
 
-    def move(self, displacement, arc_angle=None, recursive=True, **kwargs):
-        """Move by a displacement, applying it as a Manim ``shift``.
+    def move(
+        self,
+        displacement: torch.Tensor,
+        arc_angle: float | torch.Tensor | None = None,
+        recursive: bool = True,
+        **kwargs,
+    ) -> Mob:
+        """Translate the Mob by a displacement in world space.
 
-        Algan's generic implementation moves to ``self.location + displacement``,
-        but a compatibility Mob's location is the center of the backing
-        Mobject's *own* points, which is not the composite's center whenever it
-        also has submobjects (an :class:`Arrow`'s tip, for example).  Shifting
-        the backing geometry instead keeps the travelled displacement exact for
-        every Mob, and is what the relative-placement helpers
-        (:meth:`~.Mob.move_to_screen_edge`, :meth:`~.Mob.move_next_to`, ...) are built
-        on.
+        Animation
+        ---------
+        Recorded over the current context's runtime (1 second by default).
+        Call before spawning, or inside ``Off()``, to place the Mob instantly.
+
+        Parameters
+        ----------
+        displacement
+            Displacement in world units, shape ``(*, 3)``.
+        arc_angle
+            Signed arc sweep in degrees. Defaults to ``None`` for a straight
+            path; otherwise the displacement joins the arc's endpoints.
+        recursive
+            Whether descendants move with this Mob. Defaults to True.
+        **kwargs
+            Additional movement options; none by default. Curved moves accept
+            ``arc_normal`` to choose the arc's plane.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Examples
+        --------
+        .. algan:: CompatMoveExample
+
+            from algan import *
+
+            axes = Axes().spawn()
+            axes.move(RIGHT * 2)
+            Scene.save_video()
         """
         displacement = cast_to_tensor(displacement)
-        if arc_angle is not None or not recursive or kwargs:
-            # Curved paths and non-recursive moves have no Manim equivalent.
-            # Let Algan record the motion, then derive the backing geometry from
-            # the resulting rows rather than trying to mirror the operation.
-            target = self.location + displacement
-            if arc_angle is None:
-                self.set_location(target, recursive=recursive, **kwargs)
-            else:
-                # ``_move_along_arc``, not ``move_to``: this class overrides
-                # ``move_to`` with Manim's signature.
-                self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
-            self._sync_manim_from_algan()
-            return self
-        before, source = self._prepare_manim_edit()
-        source.shift(to_manim(displacement))
-        return self._animate_to_manim(source, before_source=before)
+        if (
+            arc_angle is None
+            and recursive
+            and not kwargs
+            and len(self.manim_mobject.points)
+            and self.manim_mobject.submobjects
+        ):
+            # Point-bearing composites (notably Arrow's shaft and tip) are
+            # re-anchored by the Manim conversion. Keep that arithmetic at
+            # their joins: a native translation can move a UHD seam pixel
+            # outside the render parity tolerance even at the same pose.
+            before, source = self._prepare_manim_edit()
+            source.shift(to_manim(displacement))
+            return self._animate_to_manim(source, before_source=before)
+        target = self.location + displacement
+        # Write a displacement to the existing hierarchy; rebuilding it through
+        # Manim shift -> become needlessly morphs every unchanged attribute.
+        # Do not call the compatibility move_to: its target is the composite's
+        # center, which can differ from this Mob's location (e.g. Arrow's shaft).
+        # Delegated queries synchronize the backing Manim geometry lazily, as
+        # they already do for native rotations and parent-driven translations.
+        if arc_angle is None:
+            return self.set_location(target, recursive=recursive, **kwargs)
+        return self._move_along_arc(target, arc_angle, recursive=recursive, **kwargs)
 
     def scale(self, scale_factor, **kwargs):
         before, source = self._prepare_manim_edit()
