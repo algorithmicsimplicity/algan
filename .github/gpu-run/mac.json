@@ -1,7 +1,7 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "_request": "sheet-fused-persistent-graphics-2026-09-13-2",
-  "command": "git fetch origin codex/sheet-compaction-fusion-v2 && git show origin/codex/sheet-compaction-fusion-v2:.github/sheet_persist.patch > /tmp/sheet_persist.patch && git checkout --detach 687ab5e5ef029dc7df4fb70f6d4ba2f4100e9885 && git apply --check /tmp/sheet_persist.patch && git apply /tmp/sheet_persist.patch && .venv/bin/python -m pytest -q tests/unit_tests/test_sheet_stream.py && .venv/bin/python benchmarks/_sheet_stream_check.py --scene graphics --quality PREVIEW --frames 12 --pairs 2 --arms reference,fused --require-mps",
+  "_request": "sheet-fused-persistent-graphics-short-2026-09-13-1",
+  "command": "git fetch origin codex/sheet-compaction-fusion-v2 && git show origin/codex/sheet-compaction-fusion-v2:.github/sheet_persist.patch > /tmp/sheet_persist.patch && git checkout --detach 687ab5e5ef029dc7df4fb70f6d4ba2f4100e9885 && git apply --check /tmp/sheet_persist.patch && git apply /tmp/sheet_persist.patch && .venv/bin/python benchmarks/_sheet_stream_check.py --scene graphics --quality PREVIEW --frames 1 --pairs 3 --arms reference,fused --require-mps",
   "arms": ["mac-mps"],
   "env": {
     "ALGAN_USE_DAEMON": "0",
@@ -11,5 +11,5 @@
   },
   "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 45
+  "timeout_minutes": 30
 }
