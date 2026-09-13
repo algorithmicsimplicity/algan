@@ -10,7 +10,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download pinned formatter for offline local validation
-        run: python -m pip download --no-deps --only-binary=:all: --dest tooling ruff==0.12.4
+        run: |
+          python -m pip download --no-deps --only-binary=:all: --dest tooling ruff==0.12.4
       - uses: actions/upload-artifact@v4
         with:
           name: tranche1-ruff-tooling
