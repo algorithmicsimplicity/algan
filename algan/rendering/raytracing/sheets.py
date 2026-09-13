@@ -75,6 +75,7 @@ from algan.rendering.mps_compat import (
     gather_packed_key,
     index_copy_rows,
     kernel_index,
+    mps_friendly,
     reduction_index_dtype,
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
@@ -205,6 +206,19 @@ sheet_metadata_kernel = env_flag("ALGAN_SHEET_METADATA_KERNEL", False)
 
 # Reuse established group IDs where another grouping cannot subdivide them.
 sheet_group_reuse = env_flag("ALGAN_SHEET_GROUP_REUSE", True)
+
+# Where the class split does have to group, sort the composite (sub-band,
+# class) key inside each (pixel, surface, facing) run -- ``key_run_order``,
+# the kernel the pixel sort already uses -- instead of ``torch.unique`` over
+# the whole stream, which is a global sort of one 64-bit key per fragment.
+# Measured on the T4 (``reports/gpu_workloads_2026_09/REPORT.md`` §5.2.1):
+# that sort was 13-25 ms a chunk on the graphics workload wherever a chunk
+# mixed flat-shaded classes. The group numbering is identical (sub-band ids
+# are parent-major and parents ascend along the stream, so the composite
+# ascends across runs once it ascends within each), so nothing downstream
+# moves; the torch arm stays as the A/B and serves MPS-friendly mode, whose
+# own ``band_class_groups`` never builds the composite.
+sheet_class_run_sort = env_flag("ALGAN_SHEET_CLASS_RUN_SORT", True)
 
 # Assign dense conflict-rank groups from per-band counts instead of sorting.
 # Captured UHD input: 15.64 -> 3.29 ms, 120.15 -> 41.45 MiB temporary memory.
@@ -545,13 +559,17 @@ def _unique_sorted_ids(keys):
     return torch.unique(keys, sorted=True, return_inverse=True)
 
 
-def _sheet_rank_groups(parent, rank):
+def _sheet_rank_groups(parent, rank, parents=None):
     """Group ordered dense parent IDs and their clamped conflict ranks.
 
     Conflict ranks contain every value from zero to their maximum in each
     parent: each fragment increases a claimed lane's count by one, so the
     running maximum cannot jump over a rank. Ranks may decrease within a
     parent; consecutive unique would therefore be incorrect here.
+
+    ``parents`` is ``int(parent[-1]) + 1`` when the caller already holds it
+    (``compact_sheets`` reads it off one shared readback); left ``None`` the
+    kernel arm reads it itself.
 
     The kernel arm is asked for wherever a launch stages nothing, which since
     ``taichi_launch_is_local`` learned about the Metal adoption includes an
@@ -571,7 +589,8 @@ def _sheet_rank_groups(parent, rank):
     ):
         from algan.rendering.raytracing.sheet_rank_groups_taichi import rank_groups
 
-        parents = int(parent[-1]) + 1
+        if parents is None:
+            parents = int(parent[-1]) + 1
         counts = torch.zeros(parents, dtype=torch.int32, device=parent.device)
         counts.scatter_reduce_(0, parent, rank, reduce="amax", include_self=True)
         counts.add_(1)
@@ -588,21 +607,79 @@ def _sheet_rank_groups(parent, rank):
     return groups, cid_band, keys - cid_band * 16
 
 
-def _sheet_class_groups(band_id, cls_eff, new_group, nb):
-    """Reuse dense sub-band IDs when each original group has a uniform class."""
+def _sheet_class_groups(band_id, cls_eff, new_group, nb, mixed=None):
+    """Reuse dense sub-band IDs when each original group has a uniform class.
+
+    ``mixed`` is the caller's answer to "does any group hold two UNMASKED
+    classes?" when it already has one (``compact_sheets`` reads it off a
+    shared readback). ``False`` settles it: a class uniform within every
+    group is uniform within every sub-band, masked or not, so the reuse path
+    is exact and the split-masked test below need not run. ``True`` or
+    ``None`` asks that test, which is what always ran here.
+    """
     if sheet_group_reuse and cls_eff.device.type in ("cpu", "cuda"):
         # Rank/depth sub-bands never cross an original (pixel, surface, facing)
         # group. Uniform classes in that larger group therefore cannot split
         # any sub-band. This sufficient check permits false negatives only:
         # mixed classes retain the full grouping algorithm below.
-        mixed = (cls_eff[1:] != cls_eff[:-1]) & ~new_group[1:]
-        if not bool(mixed.any()):
+        if mixed is not False:
+            mixed = bool(((cls_eff[1:] != cls_eff[:-1]) & ~new_group[1:]).any())
+        if not mixed:
             return (
                 nb,
                 band_id,
                 torch.arange(nb, dtype=torch.int64, device=band_id.device),
             )
+    if (
+        sheet_class_run_sort
+        and band_id.numel()
+        and not mps_friendly()
+        and _local_sheet_sort(band_id)
+    ):
+        return _class_groups_by_run_sort(band_id, cls_eff, new_group)
     return band_class_groups(band_id, cls_eff, _SHADE_CLASS_BASE)
+
+
+def _class_groups_by_run_sort(band_id, cls_eff, new_group):
+    """``band_class_groups`` by a sort inside each group run, not a global one.
+
+    Returns what ``torch.unique(band_id * base + cls_eff, sorted=True,
+    return_inverse=True)`` returns -- the group count, each fragment's dense
+    group id, each group's sub-band -- with the same numbering. The stream is
+    in (pixel, surface, facing) group order (``new_group`` flags the starts),
+    the rank split numbered its sub-bands parent-major with parents ascending
+    along the stream, and every class is below ``_SHADE_CLASS_BASE``, so the
+    composite key ascends from one group run to the next by construction and
+    only needs ordering WITHIN a run. ``key_run_order`` does that in place,
+    one thread per run, with the original index as its last key; the group
+    boundaries are then read off consecutive keys and numbered in stream
+    order, which is the sorted order.
+    """
+    from algan.rendering.raytracing.sheet_sort_taichi import key_run_order
+
+    n = int(band_id.numel())
+    device = band_id.device
+    run = torch.cumsum(new_group.to(torch.int64), 0)
+    skey = band_id * _SHADE_CLASS_BASE + cls_eff
+    order = torch.empty(n, dtype=torch.int64, device=device)
+    # ``depth`` is unread with ``depth_key`` false; the key stands in for it.
+    key_run_order(run.contiguous(), skey.contiguous(), skey, order, n, True, False)
+    del run
+    skey_o = skey.index_select(0, order)
+    del skey
+    new = torch.ones(n, dtype=torch.bool, device=device)
+    if n > 1:
+        new[1:] = skey_o[1:] != skey_o[:-1]
+    gid = torch.cumsum(new.to(torch.int64), 0) - 1
+    del new
+    count = int(gid[-1]) + 1
+    inverse = torch.empty(n, dtype=torch.int64, device=device)
+    inverse.scatter_(0, order, gid)
+    # Every fragment of a group writes the same sub-band, so the scatter's
+    # write order is immaterial.
+    cid = torch.empty(count, dtype=torch.int64, device=device)
+    cid.scatter_(0, gid, skey_o // _SHADE_CLASS_BASE)
+    return count, inverse, cid
 
 
 def _sheet_group_counts(new_group, band_id, order, is_tri, first_sorted, nb):
@@ -727,45 +804,59 @@ def _check_frame_table(where, num_frames, num_tri, n, frame_rel=None):
     )
 
 
-def _shade_class(
-    merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
-):
-    """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
+#: ``merged`` key under which the shading-class table the compaction gathers
+#: from is cached for the batch. It is a pure function of the batch's merged
+#: tables, so the first chunk builds it over every frame of the batch and later
+#: chunks gather their rows (``_batch_table_rows``). ``merged`` is one dict per
+#: batch, built fresh by the scene merge, so nothing outlives it.
+#:
+#: The prim band rule's depth-slope table (``_prim_split_after``) is NOT cached
+#: the same way, on measurement: built once per batch it cost MORE on the T4
+#: (+0.10 s over 32 chunks of the graphics workload at UHD, +9 ms over 8 of the
+#: explainer's) where the class table saved 39 / 17 ms -- the slope's per-chunk
+#: build is a handful of cheap passes over the triangle table, and a batch-wide
+#: [frames, triangles] float table gathered per chunk did not pay for itself.
+_SHADE_CLASS_TABLE_KEY = "_sheet_shade_class_table"
 
-    Returns int64 in ``[0, _SHADE_CLASS_BASE)``: 0 for smooth-shaded
-    triangles (and anything the rule cannot classify), ``1 + packed quantized
-    unit face normal`` for flat-shaded ones. The flat test mirrors the shade
-    kernel's ``_triangle_normal`` exactly: a triangle shades FLAT when its
-    three vertex normals are equal (declared flat) or all degenerate (the
-    kernel then substitutes the geometric cross-product normal).
 
-    The class is a property of the (frame, triangle), not of the fragment, so
-    it is computed once per (frame, triangle) -- a ``[F, N]`` table, F the
-    frames of this chunk and N the merged triangles -- and gathered per
-    fragment. The arithmetic per entry is exactly what the per-fragment
-    version did on the same values, so the classes are bit-identical; what
-    changes is that a 4K frame's millions of fragments no longer each
-    re-derive their triangle's face normal (measured 0.29 s -> a few ms per
-    compaction on the nn benchmark).
+def _batch_table_rows(*arrays):
+    """How many rows a per-(frame, triangle) table built from ``arrays`` needs.
 
-    ``tri_present`` is ``bool(is_tri.any())`` when the caller already has it;
-    ``num_frames`` is the chunk's frame count (``frame_rel.amax() + 1``),
-    likewise passed in when the caller has already paid that sync.
+    A merged per-frame array has either one row per batch frame or a single
+    broadcast row for time-invariant data (``_rows`` reads it modulo its
+    height). A table over the batch is exact when every input is one of those
+    two heights -- row ``f`` then combines row ``f`` of each per-frame input
+    with row 0 of each broadcast one, which is exactly what ``_rows`` selects
+    for frame ``f``. Returns the height, or ``None`` when the inputs disagree
+    in some other way, and the caller builds its table per chunk as before.
     """
-    n = safe_ref.numel()
-    device = safe_ref.device
-    tri_norm = merged.get("tri_norm")
-    tri_pos = merged.get("tri_pos")
-    if tri_present is None:
-        tri_present = bool(is_tri.any())
-    if tri_norm is None or tri_pos is None or not tri_present:
-        return torch.zeros(n, dtype=torch.int64, device=device)
-    if num_frames is None:
-        num_frames = int(frame_rel.amax()) + 1 if n else 1
+    heights = {int(a.shape[0]) for a in arrays}
+    tall = max(heights)
+    if heights <= {1, tall}:
+        return tall
+    return None
+
+
+def _shade_class_table(merged, num_frames, device):
+    """The ``[F, N]`` int64 shading-class table over frames ``0..F-1``.
+
+    Cached on ``merged`` for the batch (``_SHADE_CLASS_TABLE_KEY``) when it can
+    cover every batch frame (``_batch_table_rows``); otherwise built over the
+    ``num_frames`` rows asked for and not cached. Rows are the merged arrays'
+    own rows -- ``frames % shape[0]`` for each, the same selection ``_rows``
+    makes per fragment -- so the class a chunk gathers is the class the
+    per-chunk build gave it, bit for bit.
+    """
+    tri_norm = merged["tri_norm"]
+    tri_pos = merged["tri_pos"]
+    cached = merged.get(_SHADE_CLASS_TABLE_KEY)
+    if cached is not None:
+        return cached
+    batch_rows = _batch_table_rows(tri_norm, tri_pos)
+    rows = batch_rows if batch_rows is not None else num_frames
     num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
-    _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
     zero = torch.zeros((), dtype=torch.int64, device=device)
-    table = torch.empty((num_frames, num_tri), dtype=torch.int64, device=device)
+    table = torch.empty((rows, num_tri), dtype=torch.int64, device=device)
     # The table itself is one int64 per (frame, triangle) and is small; its
     # INTERMEDIATES are [block, N, 3, 3] floats and there are half a dozen of
     # them live at once, so the frame axis is walked in blocks. A one-frame
@@ -774,9 +865,9 @@ def _shade_class(
     # its whole frame count, which is how a Metal render at PREVIEW came to ask
     # for a single 6.45 GB buffer here.
     block = max(1, _FRAME_TABLE_BUDGET // max(1, num_tri))
-    for f0 in range(0, num_frames, block):
-        f1 = min(num_frames, f0 + block)
-        frames = torch.arange(f0, f1, device=device) + int(time_start)
+    for f0 in range(0, rows, block):
+        f1 = min(rows, f0 + block)
+        frames = torch.arange(f0, f1, device=device)
         nrm = tri_norm.index_select(0, frames % tri_norm.shape[0]).reshape(
             f1 - f0, -1, 3, 3
         )
@@ -806,7 +897,54 @@ def _shade_class(
         )
         packed = (q[..., 0] << 16) | (q[..., 1] << 8) | q[..., 2]
         table[f0:f1] = torch.where(declared_flat | geometric_flat, packed + 1, zero)
-    cls = table[frame_rel, safe_ref]
+    if batch_rows is not None:
+        merged[_SHADE_CLASS_TABLE_KEY] = table
+    return table
+
+
+def _shade_class(
+    merged, frame_rel, time_start, safe_ref, is_tri, tri_present=None, num_frames=None
+):
+    """Per-fragment shading class for ``shade_split`` (see ``compact_sheets``).
+
+    Returns int64 in ``[0, _SHADE_CLASS_BASE)``: 0 for smooth-shaded
+    triangles (and anything the rule cannot classify), ``1 + packed quantized
+    unit face normal`` for flat-shaded ones. The flat test mirrors the shade
+    kernel's ``_triangle_normal`` exactly: a triangle shades FLAT when its
+    three vertex normals are equal (declared flat) or all degenerate (the
+    kernel then substitutes the geometric cross-product normal).
+
+    The class is a property of the (frame, triangle), not of the fragment, so
+    it is computed once per (frame, triangle) -- a ``[F, N]`` table, F the
+    frames of the BATCH and N the merged triangles, built by the first chunk
+    and cached on ``merged`` (``_shade_class_table``) -- and gathered per
+    fragment. The arithmetic per entry is exactly what the per-fragment
+    version did on the same values, so the classes are bit-identical; what
+    changes is that a 4K frame's millions of fragments no longer each
+    re-derive their triangle's face normal (measured 0.29 s -> a few ms per
+    compaction on the nn benchmark), and that a batch's later chunks no
+    longer rebuild the table at all (some sixty torch ops a chunk at UHD,
+    where a chunk is one frame).
+
+    ``tri_present`` is ``bool(is_tri.any())`` when the caller already has it;
+    ``num_frames`` is the chunk's frame count (``frame_rel.amax() + 1``),
+    likewise passed in when the caller has already paid that sync.
+    """
+    n = safe_ref.numel()
+    device = safe_ref.device
+    tri_norm = merged.get("tri_norm")
+    tri_pos = merged.get("tri_pos")
+    if tri_present is None:
+        tri_present = bool(is_tri.any())
+    if tri_norm is None or tri_pos is None or not tri_present:
+        return torch.zeros(n, dtype=torch.int64, device=device)
+    if num_frames is None:
+        num_frames = int(frame_rel.amax()) + 1 if n else 1
+    num_tri = tri_norm.numel() // (tri_norm.shape[0] * 9)
+    _check_frame_table("sheets._shade_class", num_frames, num_tri, n, frame_rel)
+    table = _shade_class_table(merged, num_frames, device)
+    zero = torch.zeros((), dtype=torch.int64, device=device)
+    cls = table[_rows(table, frame_rel, time_start), safe_ref]
     return torch.where(is_tri, cls, zero)
 
 
@@ -1119,7 +1257,7 @@ def _band_composite(band_of_frag, nbands, cov_o, msk_o):
     return area, union, corr, split
 
 
-def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
+def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb, parents):
     """Which conflict-rank sub-bands composite as §4.4 siblings of one band.
 
     Returns ``(n_group, group_of_cid)``: the compositing-group count and, per
@@ -1138,18 +1276,22 @@ def _rank_pool_groups(cid_band, rank_of_cid, band_of_frag, cov_o, msk_o, nb):
     and it is skipped outright on a stream where no band was rank-split at all
     (``n_pool == nb``) -- 43,065 bands and 180 splits on the frame this was
     measured on, so it is the split streams that pay.
+
+    ``parents`` is the pre-rank band count. ``cid_band`` -- the parent of each
+    sub-band, from ``_sheet_rank_groups`` -- is a nondecreasing run over the
+    DENSE parent ids ``0..parents-1``, every one of them present (a band's
+    first fragment has rank 0, so every parent owns a rank-0 sub-band), so it
+    already is the pool index a reduction output needs, and its distinct
+    count is ``parents``. Both used to be recomputed here with a
+    ``unique_consecutive`` -- one host sync per chunk to learn a number the
+    caller had.
     """
-    # ``cid_band`` is the pre-rank band of each sub-band, in the ORIGINAL band
-    # numbering; compact it so it can index a reduction output.
-    # cid_band comes from sorted unique (band * 16 + rank) keys, so integer
-    # division preserves its order, including repeated bands and missing IDs.
-    uniq_pre, pool_of_cid = _unique_sorted_ids(cid_band)
-    n_pool = int(uniq_pre.numel())
-    del uniq_pre
+    n_pool = int(parents)
     if n_pool == nb:
         # Every band holds exactly one sub-band: nothing to pool, and no
         # reduction pass to pay for.
         return nb, None
+    pool_of_cid = cid_band
     pool_of_frag = pool_of_cid.index_select(0, band_of_frag)
     area, union, _fused, _sliver = _band_reduce(
         pool_of_frag, msk_o, cov_o, n_pool, want_sliver=False
@@ -1283,8 +1425,12 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
         0, sheet_band
     )
     del whole
-    if not bool(multi.any()):
-        return cov, msk
+    # No early return on ``multi.any()``: the two ``where``s at the end hand
+    # back ``cov`` / ``msk`` bit for bit wherever ``multi`` is clear, so a
+    # stream with no split band gets exactly what the early return gave it,
+    # for a dozen small per-sheet ops instead of a host sync that drained the
+    # whole queue behind it (measured 7.5 ms a chunk at UHD on a T4, 75 ms on
+    # the graphics workload).
 
     acc = accumulate_dtype()
     area_g = band_area.index_select(0, sheet_band).to(acc)
@@ -1520,6 +1666,8 @@ def compact_sheets(
     shade_split=False,
     positioned_depth=True,
     sample_depth=False,
+    memory=None,
+    persist_output=False,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -1644,6 +1792,9 @@ def compact_sheets(
     frag_msk = coverage["frag_msk"][:n]
     frag_cap = coverage["frag_cap"][:n]
     device = frag_key.device
+    from algan.rendering.raytracing.sheet_stream import stream_kernel_available
+
+    fused_stream = rt_settings.sheet_fused_stream and stream_kernel_available(frag_key)
 
     pix = frag_key >> 32
     t = (frag_key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
@@ -1702,12 +1853,16 @@ def compact_sheets(
         # Frames this chunk's fragments span: the per-(frame, triangle) tables
         # below are built for exactly these rows.
         num_frames = int(probe[1]) + 1
+        # The largest surface id in the batch: bounds ``gkey`` below and keys
+        # the closed-shell ceiling's (pixel, surface) segments further down.
+        surface_bound = int(probe[2])
         # ``gkey`` is ``sid * 2 + facing`` for a triangle and ``-(position + 2)``
         # for a bezier fragment, so this bounds both of its ends.
-        gkey_bound = max(2 * int(probe[2]) + 2, n + 2)
+        gkey_bound = max(2 * surface_bound + 2, n + 2)
     else:
         tri_present = False
         num_frames = 1
+        surface_bound = 0
         gkey_bound = 1
 
     cls = None
@@ -1724,15 +1879,21 @@ def compact_sheets(
         coverage.get("run_offsets"),
         key_bounds=(num_frames * ppf, gkey_bound),
     )
-    pix_o = pix.index_select(0, order)
-    g_o = gkey.index_select(0, order)
-    t_o = t.index_select(0, order)
-    del pix, gkey
+    if fused_stream:
+        from algan.rendering.raytracing.sheet_stream import gather_group_stream
 
-    new_group = torch.ones(n, dtype=torch.bool, device=device)
-    if n > 1:
-        new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
-    del g_o
+        pix_o, t_o, cov_o, msk_o, new_group = gather_group_stream(
+            order, pix, gkey, t, frag_cov, frag_msk, memory=memory
+        )
+    else:
+        pix_o = pix.index_select(0, order)
+        g_o = gkey.index_select(0, order)
+        t_o = t.index_select(0, order)
+        new_group = torch.ones(n, dtype=torch.bool, device=device)
+        if n > 1:
+            new_group[1:] = (pix_o[1:] != pix_o[:-1]) | (g_o[1:] != g_o[:-1])
+        del g_o
+    del pix, gkey
 
     band_start = new_group.clone()
     if band_rule == "prim" and n > 1 and tri_present:
@@ -1795,6 +1956,7 @@ def compact_sheets(
     # accumulate, float32 round) because the cap feeds a threshold.
     closed_s = None
     shell_sid = shell_back = None
+    closed_flag = None
     tri_closed_arr = merged.get("tri_closed") if rt_settings.solid_shell_alpha else None
     if tri_closed_arr is not None and tri_present:
         closed_flag = (
@@ -1804,23 +1966,21 @@ def compact_sheets(
             > 0.5
         ) & is_tri
         del tri_closed_arr
-        if bool(closed_flag.any()):
-            closed_s = closed_flag.index_select(0, order)
-            # The compaction frees ``sid`` / ``facing`` and their sorted copies
-            # long before the clamp runs, so carry the two per-fragment facts
-            # it needs -- which surface, which shell -- through with it. Only
-            # scenes with something declared pay for these.
-            shell_sid = (
-                tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref]
-                .to(torch.int64)
-                .index_select(0, order)
-            )
-            shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
-        del closed_flag
-    # ``t_o`` (the sorted exact depths) stays live past this point: the
-    # sheet_sample_depth block below reads it to find each sheet's nearest
-    # owner per sample. It is one [n] f32 array, freed at that block.
-    del frame_rel, safe_ref, t
+    # Whether any group holds two shading classes decides how the class split
+    # groups its sheets (``_sheet_class_groups``). Asked here, on the SORTED
+    # classes, so the answer rides the readback below instead of draining the
+    # queue on its own further down: a class uniform within every (pixel,
+    # surface, facing) group is uniform within every sub-band of it, which is
+    # the property the reuse path needs, so a "no" here is final; a "yes" is
+    # re-asked on the split-masked classes there, exactly as before.
+    cls_o = None
+    cls_mixed = None
+    if shade_split:
+        cls_o = cls.index_select(0, order)
+        cls = None
+        if tri_present and n > 1:
+            cls_mixed = ((cls_o[1:] != cls_o[:-1]) & ~new_group[1:]).any()
+    del t
 
     band_id = torch.cumsum(band_start.to(torch.int64), 0) - 1
 
@@ -1848,16 +2008,61 @@ def compact_sheets(
     # reduction before grouping (which also needs a host-visible count), and
     # the [n] comparison that counts the fragments is only
     # materialised in the case that is about to be reported.
+    #
+    # Four host-side answers, one readback (the same shape as the probe
+    # above): the deepest rank, the band count (``_sheet_rank_groups`` and
+    # ``_rank_pool_groups`` both need it on the host), whether any fragment
+    # is a declared closed shell, and whether any group mixes shading
+    # classes. Each used to be its own ``int()``/``bool()`` at its point of
+    # use -- four queue drains a chunk, each waiting out whatever the sort
+    # and the rank kernel had left queued -- for values that are all fixed
+    # once ``rank`` is.
+    zero_i64 = torch.zeros((), dtype=torch.int64, device=device)
+    any_closed = False
     if n:
-        deepest = int(rank.amax())
+        probe = torch.stack(
+            [
+                rank.amax().to(torch.int64),
+                band_id[-1],
+                closed_flag.any().to(torch.int64)
+                if closed_flag is not None
+                else zero_i64,
+                cls_mixed.to(torch.int64) if cls_mixed is not None else zero_i64,
+            ]
+        ).tolist()
+        deepest = int(probe[0])
+        parents = int(probe[1]) + 1
+        any_closed = bool(probe[2])
+        if cls_mixed is not None:
+            cls_mixed = bool(probe[3])
         if deepest > SHEET_RANK_LIMIT:
             record_truncation(
                 "sheet_layers",
                 int((rank > SHEET_RANK_LIMIT).sum()),
                 cap=SHEET_RANK_LIMIT + 1,
             )
+    else:
+        parents = 0
+    del zero_i64
+    if any_closed:
+        closed_s = closed_flag.index_select(0, order)
+        # The compaction frees ``sid`` / ``facing`` and their sorted copies
+        # long before the clamp runs, so carry the two per-fragment facts
+        # it needs -- which surface, which shell -- through with it. Only
+        # scenes with something declared pay for these.
+        shell_sid = (
+            tri_obj[_rows(tri_obj, frame_rel, time_start), safe_ref]
+            .to(torch.int64)
+            .index_select(0, order)
+        )
+        shell_back = ((frag_msk & AA_BACKFACE_BIT) != 0).index_select(0, order)
+    del closed_flag
+    # ``t_o`` (the sorted exact depths) stays live past this point: the
+    # sheet_sample_depth block below reads it to find each sheet's nearest
+    # owner per sample. It is one [n] f32 array, freed at that block.
+    del frame_rel, safe_ref
     rank.clamp_(max=SHEET_RANK_LIMIT)
-    band_id, cid_band, rank_of_cid = _sheet_rank_groups(band_id, rank)
+    band_id, cid_band, rank_of_cid = _sheet_rank_groups(band_id, rank, parents=parents)
     del rank
     nb = int(cid_band.numel())
     # Band identity for sheet_sample_depth's multi-sheet-band exemption: a
@@ -1869,8 +2074,9 @@ def compact_sheets(
         return None
 
     # ---- P2: segmented reduction over bands --------------------------------
-    cov_o = frag_cov.index_select(0, order)
-    msk_o = frag_msk.index_select(0, order)
+    if not fused_stream:
+        cov_o = frag_cov.index_select(0, order)
+        msk_o = frag_msk.index_select(0, order)
     pos_o = order  # original stream position of each sorted fragment
 
     # ---- The ceiling, applied ----------------------------------------------
@@ -1886,8 +2092,11 @@ def compact_sheets(
     # neither spends nor consumes allowance.
     if closed_s is not None:
         # Strictly greater than any surface id, so ``pix * K + sid`` cannot
-        # collide across pixels (one amax sync, in the branch that needs it).
-        K = int(shell_sid.amax().item()) + 2
+        # collide across pixels. The batch's largest surface id came back
+        # with the first readback above; any K above every present sid
+        # orders the keys identically (they are only ever compared), so this
+        # replaces an amax sync with no change to the segments.
+        K = surface_bound + 2
         key = torch.where(closed_s, pix_o * K + shell_sid, -(positions + 1))
         del shell_sid
         # Stable within a key -- but the stream's own within-segment order is
@@ -2016,7 +2225,7 @@ def compact_sheets(
     n_group, group_of_cid = nb, None
     if sheet_rank_pool and nb:
         n_group, group_of_cid = _rank_pool_groups(
-            cid_band, rank_of_cid, band_id, cov_o, msk_o, nb
+            cid_band, rank_of_cid, band_id, cov_o, msk_o, nb, parents
         )
     del rank_of_cid
     if shade_split:
@@ -2026,15 +2235,15 @@ def compact_sheets(
         band_area, band_union, band_corr, band_split = _band_composite(
             band_of_frag, n_group, cov_o, msk_o
         )
-        cls_o = cls.index_select(0, order)
-        cls = None
         cls_eff = torch.where(
             band_split.index_select(0, band_of_frag), cls_o, torch.zeros_like(cls_o)
         )
         del cls_o, band_split, band_of_frag
         # Keyed by the SUB-BAND, not by the compositing group: pooling must not
         # merge two sub-bands into one sheet, only make them claim as one band.
-        nb, band_id, sheet_cid = _sheet_class_groups(band_id, cls_eff, new_group, nb)
+        nb, band_id, sheet_cid = _sheet_class_groups(
+            band_id, cls_eff, new_group, nb, mixed=cls_mixed
+        )
         del cls_eff
         sheet_band = (
             sheet_cid
@@ -2279,26 +2488,49 @@ def compact_sheets(
     # consumes (see ``_sibling_weights``). Where a band holds one sheet --
     # every band with ``shade_split`` off -- these ARE the sheet's own area
     # and mask, so the resolve reads exactly what it read before.
-    sheet_cov_final = sheet_cov.index_select(0, final)
-    sheet_msk_final = sheet_msk.index_select(0, final)
+    final_records = None
+    if fused_stream:
+        from algan.rendering.raytracing.sheet_stream import gather_sheet_records
+
+        final_records, sheet_band_final = gather_sheet_records(
+            final,
+            nearest_orig,
+            rep_orig,
+            frag_key,
+            frag_ref,
+            frag_ab,
+            frag_cap,
+            sheet_cov,
+            sheet_msk,
+            nfrag,
+            fused,
+            sheet_band,
+            memory=memory if persist_output else None,
+            persist_output=persist_output,
+        )
+        sheet_cov_final = final_records["sheet_cov"]
+        sheet_msk_final = final_records["sheet_msk"]
+        sheet_key = final_records["sheet_key"]
+        sheet_pix = final_records["sheet_pix"]
+    else:
+        sheet_cov_final = sheet_cov.index_select(0, final)
+        sheet_msk_final = sheet_msk.index_select(0, final)
+        sheet_band_final = (
+            sheet_band.index_select(0, final) if sheet_band is not None else None
+        )
+        sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
+        sheet_pix = sheet_pix.index_select(0, final)
+        rep_final = rep_orig.index_select(0, final)
     sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
     if sheet_band is not None:
         sheet_wgt, sheet_wmsk = _sibling_weights(
-            sheet_band.index_select(0, final),
+            sheet_band_final,
             sheet_cov_final,
             sheet_msk_final,
             band_area,
             band_union,
             band_corr,
         )
-
-    # Two gathers of the PACKED key, so both take the split form under
-    # MPS-friendly mode (``gather_packed_key``): a full-width int64 gather on
-    # MPS keeps only ~25 significant bits, which would leave every sheet
-    # carrying the same depth.
-    sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
-    sheet_pix = sheet_pix.index_select(0, final)
-    rep_final = rep_orig.index_select(0, final)
 
     # ---- sheet_sample_depth: classify, floor, cede --------------------------
     # Everything here works on the FINAL-ordered per-sheet arrays; the lose
@@ -2307,7 +2539,11 @@ def compact_sheets(
     # runs and the outputs above are exactly what they were.
     if sample_depth:
         ppf = int(width) * int(height)
-        rep_ref = frag_ref.index_select(0, rep_final)
+        rep_ref = (
+            final_records["sheet_ref"]
+            if final_records is not None
+            else frag_ref.index_select(0, rep_final)
+        )
         is_tri_sheet = rep_ref >= 0
         low = sheet_msk_final & AA_MASK_ALL
         positioned_s = low != 0
@@ -2322,11 +2558,18 @@ def compact_sheets(
         # band-pooled arithmetic whose single occlusion write ignores slots,
         # so gating a sibling would over-occlude. Its sheets are neither
         # subjects nor enforcers.
+        # ``band_of_sheet`` is dense: ``sheet_band`` is a compositing-group
+        # id (``group_of_cid`` is an inverse over every sub-band, and every
+        # sub-band has a sheet) or a sub-band id, both ``0..n_group-1`` with
+        # every value present; ``cid_band`` is the dense parent id. So the
+        # table height is a number the host already has -- it used to be an
+        # ``amax`` readback here.
         if sheet_band is not None:
-            band_of_sheet = sheet_band.index_select(0, final)
+            band_of_sheet = sheet_band_final
+            n_bands = n_group
         else:
             band_of_sheet = cid_band.index_select(0, final)
-        n_bands = int(band_of_sheet.max().item()) + 1
+            n_bands = parents
         members = torch.zeros(n_bands, dtype=torch.int64, device=device)
         members.scatter_add_(
             0, band_of_sheet, torch.ones(nb, dtype=torch.int64, device=device)
@@ -2377,28 +2620,63 @@ def compact_sheets(
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
 
+    # CSR aligned with covered_idx: every covered pixel holds at least one
+    # fragment, hence at least one sheet, so the two pixel sets coincide.
+    sheet_offsets = _sheet_offsets(coverage["covered_idx"][:num_covered], sheet_pix)
+
+    if persist_output:
+        if memory is None or final_records is None:
+            raise ValueError("persist_output requires fused records and an arena")
+        # Production consumes only these records.  Write the two post-gather
+        # compositing arrays and CSR once into the reverse arena, then let the
+        # enclosing temp scope reclaim every other per-sheet/per-fragment
+        # temporary.  This removes the seven copy kernels raster_pipeline used
+        # to launch after compaction.
+        p_wgt = memory.get_tensor(sheet_wgt.shape, sheet_wgt.dtype, persist=True)
+        p_wmsk = memory.get_tensor(sheet_wmsk.shape, sheet_wmsk.dtype, persist=True)
+        p_offsets = memory.get_tensor(sheet_offsets.shape, torch.int32, persist=True)
+        p_wgt.copy_(sheet_wgt)
+        p_wmsk.copy_(sheet_wmsk)
+        p_offsets.copy_(sheet_offsets.to(torch.int32))
+        return {
+            "sheet_key": final_records["sheet_key"],
+            "sheet_ref": final_records["sheet_ref"],
+            "sheet_ab": final_records["sheet_ab"],
+            "sheet_wgt": p_wgt,
+            "sheet_wmsk": p_wmsk,
+            "sheet_cap": final_records["sheet_cap"],
+            "sheet_offsets": p_offsets,
+            "num_sheets": nb,
+            "_arena_persistent": True,
+        }
+
     out = {
         "sheet_key": sheet_key,
         "sheet_pix": sheet_pix,
-        "sheet_ref": frag_ref.index_select(0, rep_final),
-        "sheet_ab": frag_ab.index_select(0, rep_final),
+        "sheet_ref": final_records["sheet_ref"]
+        if final_records is not None
+        else frag_ref.index_select(0, rep_final),
+        "sheet_ab": final_records["sheet_ab"]
+        if final_records is not None
+        else frag_ab.index_select(0, rep_final),
         "sheet_cov": sheet_cov_final,
         "sheet_msk": sheet_msk_final,
         "sheet_wgt": sheet_wgt,
         "sheet_wmsk": sheet_wmsk,
-        "sheet_cap": frag_cap.index_select(0, rep_final),
-        "sheet_nfrag": nfrag.index_select(0, final),
-        "sheet_fused": fused.index_select(0, final),
+        "sheet_cap": final_records["sheet_cap"]
+        if final_records is not None
+        else frag_cap.index_select(0, rep_final),
+        "sheet_nfrag": final_records["sheet_nfrag"]
+        if final_records is not None
+        else nfrag.index_select(0, final),
+        "sheet_fused": final_records["sheet_fused"]
+        if final_records is not None
+        else fused.index_select(0, final),
         "num_sheets": nb,
         "num_groups": num_tri_groups,
         "num_split_groups": num_split_groups,
         "band_rule": band_rule,
         "band_c": float(band_c),
+        "sheet_offsets": sheet_offsets,
     }
-
-    # CSR aligned with covered_idx: every covered pixel holds at least one
-    # fragment, hence at least one sheet, so the two pixel sets coincide.
-    out["sheet_offsets"] = _sheet_offsets(
-        coverage["covered_idx"][:num_covered], sheet_pix
-    )
     return out

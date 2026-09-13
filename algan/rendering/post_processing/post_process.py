@@ -477,4 +477,22 @@ def _frames_to_host(frame_out):
     of a strided host-side re-read of everything that just arrived. Identical
     bytes either way -- a flip only reorders whole rows.
     """
-    return frame_out.flip(-3).cpu()
+    flipped = frame_out.flip(-3)
+    if (
+        flipped.device.type == "cuda"
+        and SETTINGS.raytracing.pinned_frame_readback
+        and flipped.numel() * flipped.element_size() <= 256 * 1024 * 1024
+    ):
+        # Each returned batch owns its buffer: the bounded video queue may still
+        # be encoding it after the next render reuses the device arena. Bound
+        # individual pinned allocations; unusually large batches stay pageable.
+        try:
+            host = torch.empty_like(flipped, device="cpu", pin_memory=True)
+        except RuntimeError:
+            # A host may be unable to lock more pages even though ordinary CPU
+            # storage is available. Pinning is optional; retain normal readback.
+            return flipped.cpu()
+        host.copy_(flipped, non_blocking=True)
+        torch.cuda.current_stream(flipped.device).synchronize()
+        return host
+    return flipped.cpu()

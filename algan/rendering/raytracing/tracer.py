@@ -986,21 +986,24 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity, devic
     (type 6) to the packed lights, widening the color rows to 16 columns if
     they are still in the compact point-light packing.
     """
+    from algan.rendering.lights import LIGHT_AUX_COLS
+
+    width = 3 + LIGHT_AUX_COLS
     A, Bx, By, Bz = _env_sh_coeffs(env, intensity)
-    row = torch.zeros(16)
+    row = torch.zeros(width)
     row[0:3] = A
     row[3] = 6.0  # LIGHT_ENV_SH
     row[6:9] = Bx
     row[9:12] = By
     row[12:15] = Bz
     T = light_pos.shape[0] if num_lights > 0 else 1
-    row = row.view(1, 1, 16).expand(T, 1, 16).to(device)
+    row = row.view(1, 1, width).expand(T, 1, width).to(device)
     zero_pos = torch.zeros((T, 1, 3), device=device)
     if num_lights == 0:
         return zero_pos.contiguous(), row.contiguous(), 1
-    if light_col.shape[2] < 16:
+    if light_col.shape[2] < width:
         pad = torch.zeros(
-            (light_col.shape[0], light_col.shape[1], 16 - light_col.shape[2]),
+            (light_col.shape[0], light_col.shape[1], width - light_col.shape[2]),
             device=device,
         )
         light_col = torch.cat((light_col, pad), -1)
@@ -1576,6 +1579,11 @@ def render_batch_raytraced(
         ):
             light_pos = _arena_copy(memory, light_pos_host)
             light_col = _arena_copy(memory, light_col_host)
+            if samples <= 1 and rt_settings.shadow_ray_parallel:
+                # Keep the immutable host metadata, not a GPU readback per
+                # bounce. Arena-wide version counters also change on unrelated
+                # scratch writes and cannot identify a light-table mutation.
+                light_col._algan_shadow_fan_metadata = light_col_host
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
@@ -2712,7 +2720,7 @@ def raytrace_render_wavefront(
         from algan.rendering.raytracing.raster_pipeline import (
             _shadow_identity_epsilons,
         )
-        from algan.rendering.raytracing.raster_taichi import raster_shadow_trace
+        from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
 
         rows = na * kbuf
         term_mode = int(rt_settings.shadow_terminator_mode())
@@ -2806,6 +2814,14 @@ def raytrace_render_wavefront(
             )
 
             eps_self, eps_near = float(min_hit_distance), 0.0
+        sort_sources = None
+        if rt_settings.shadow_ray_parallel and rt_settings.shadow_secondary_sort:
+            # ev_accept rows are i * kbuf + q; hit_i stores [q, field, i].
+            # This is ONLY a sort key: ev_src remains -1 for acceptance parity.
+            sort_sources = (
+                hit_i[:, 0, :na].transpose(0, 1).reshape(-1).index_select(0, acc_idx)
+            )
+        raster_shadow_trace = make_shadow_tracer(memory, sort_sources)
         raster_shadow_trace(
             num_events,
             ev_pos.index_select(0, acc_idx),
@@ -2855,6 +2871,11 @@ def raytrace_render_wavefront(
             1 if identity_on else 0,
             term_mode,
             1 if rt_settings.shadow_adaptive_taps else 0,
+            # Every event of the drain loop is a SECONDARY hit (iteration 1
+            # is the first bounce off the sheet-resolved primaries), so its
+            # soft fans take the bounce budget (light row column 17).
+            1,
+            bool(rt_settings.shadow_light_major and ev_pos.device.type == "cuda"),
         )
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device

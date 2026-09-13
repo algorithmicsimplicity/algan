@@ -68,7 +68,7 @@ LIGHT_ENV_SH = 6.0
 
 # Number of aux columns following the RGB color in a packed light row
 # (packed row width 16 = 3 color + 13 aux).
-LIGHT_AUX_COLS = 13
+LIGHT_AUX_COLS = 15
 
 
 def _finite_number(
@@ -238,7 +238,7 @@ class Light(Mob):
         return result
 
     def _is_extended(self):
-        """Whether this light needs the extended (16-column) packed row.
+        """Whether this light needs the extended (18-column) packed row.
         Plain point lights return False and keep the compact legacy packing
         (which keeps the no-new-features render byte-identical).
         """
@@ -290,6 +290,10 @@ class Light(Mob):
               ground row is decoded to linear light here, then scaled by
               per-frame opacity x intensity downstream at materialization
         12    power fraction of this row (1/K for area samples, else 1)
+        13    soft-shadow fan size at a primary hit (0 = the compile-time
+              default fan); written by the scene builder from the shadow ray
+              budget, see ``scene_builder._pack_lights``
+        14    soft-shadow fan size at a secondary (bounce) hit, likewise
         ====  ==========================================================
 
         Parameters
@@ -300,7 +304,7 @@ class Light(Mob):
         Returns
         -------
         torch.Tensor
-            Aux columns 3..15 of the packed light row, shape ``[T, K, 13]``.
+            Aux columns 3..17 of the packed light row, shape ``[T, K, 15]``.
         """
         return self._blank_aux(location)
 
@@ -357,7 +361,7 @@ class PointLight(Light):
         Returns
         -------
         torch.Tensor
-            Aux columns for the packed light row, shape ``[T, K, 13]``.
+            Aux columns for the packed light row, shape ``[T, K, 15]``.
         """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay
@@ -442,7 +446,7 @@ class DirectionalLight(_TargetedLight):
         Returns
         -------
         torch.Tensor
-            Aux columns for the packed light row, shape ``[T, K, 13]``.
+            Aux columns for the packed light row, shape ``[T, K, 15]``.
         """
         aux = self._blank_aux(location)
         aux[..., 3:6] = self._directions(location).unsqueeze(-2)
@@ -500,7 +504,7 @@ class HemisphereLight(Light):
         Returns
         -------
         torch.Tensor
-            Aux columns for the packed light row, shape ``[T, K, 13]``.
+            Aux columns for the packed light row, shape ``[T, K, 15]``.
         """
         aux = self._blank_aux(location)
         aux[..., 3:6] = F.normalize(self.sky_direction, p=2, dim=-1)
@@ -585,7 +589,7 @@ class SpotLight(_TargetedLight):
         Returns
         -------
         torch.Tensor
-            Aux columns for the packed light row, shape ``[T, K, 13]``.
+            Aux columns for the packed light row, shape ``[T, K, 15]``.
         """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay
@@ -777,7 +781,7 @@ class RectAreaLight(_TargetedLight):
         Returns
         -------
         torch.Tensor
-            Aux columns for the packed light row, shape ``[T, K, 13]``.
+            Aux columns for the packed light row, shape ``[T, K, 15]``.
         """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay

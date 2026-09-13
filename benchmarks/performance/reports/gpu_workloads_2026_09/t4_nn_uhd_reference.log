@@ -1,0 +1,78 @@
+=== STEP nn_uhd_reference ===
+==============================================================================
+$ python benchmarks/performance/nn_scene_UHD.py
+  env ALGAN_VIDEO_ENCODER=software
+[profiling] hooked 64 Taichi kernels (247 ti.funcs are inlined and not separately timed)
+
+===== profiling run 1/2 (cold) =====
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/profiling/profilingnn_UHD_run1.mp4
+[Quadrants] Starting on arch=cuda
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Exception in thread Thread-3 (write_frames_from_queue):
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.12/threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "/kaggle/working/algan/algan/render_loop.py", line 293, in write_frames_from_queue
+    file_writer.write_frame(frame.numpy())
+  File "/usr/local/lib/python3.12/dist-packages/moviepy/video/io/ffmpeg_writer.py", line 169, in write_frame
+    self.proc.stdin.write(img_array.tobytes())
+ValueError: write to closed file
+Traceback (most recent call last):
+  File "/kaggle/working/algan/benchmarks/performance/nn_scene_UHD.py", line 34, in <module>
+    profile_scene(
+  File "/kaggle/working/algan/algan/utils/profiling_utils.py", line 1720, in profile_scene
+    res = run_once(
+          ^^^^^^^^^
+  File "/kaggle/working/algan/algan/utils/profiling_utils.py", line 1230, in run_once
+    Scene.save_video(
+  File "/kaggle/working/algan/algan/scene.py", line 104, in call_on_active_scene
+    return function(scene, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/algan/algan/scene.py", line 1776, in save_video
+    return _render_scene_to_file(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/kaggle/working/algan/algan/utils/algan_utils.py", line 543, in _render_scene_to_file
+    scene._render_to_video(
+  File "/kaggle/working/algan/algan/render_loop.py", line 3792, in _render_to_video
+    for frame_batch in self.get_frames(
+                       ^^^^^^^^^^^^^^^^
+  File "/kaggle/working/algan/algan/render_loop.py", line 3088, in get_frames
+    yield from self._get_frames_impl(
+  File "/kaggle/working/algan/algan/render_loop.py", line 3297, in _get_frames_impl
+    self._await_prefetched_batch(pending)
+  File "/kaggle/working/algan/algan/utils/profiling_utils.py", line 226, in wrapped
+    return orig(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+TypeError: RenderLoopMixin._await_prefetched_batch() takes 1 positional argument but 2 were given
+--- step nn_uhd_reference: failed (rc=1) in 119.1s
+
+==============================================================================
+summary
+==============================================================================
+    OK     155.0s  explainer_preview
+    OK     119.1s  explainer_uhd
+    OK     184.7s  graphics_preview
+    OK     380.4s  graphics_uhd
+FAILED     119.1s  nn_uhd_reference
+sha256  7f4d277ba6baf2c6  algan_outputs/profiling/profilingexplainer_PREVIEW_run1.mp4
+sha256  7f4d277ba6baf2c6  algan_outputs/profiling/profilingexplainer_PREVIEW_run2.mp4
+sha256  e9b5c4e053f335d8  algan_outputs/profiling/profilingexplainer_UHD_run1.mp4
+sha256  e9b5c4e053f335d8  algan_outputs/profiling/profilingexplainer_UHD_run2.mp4
+sha256  1c89fa9cd213360c  algan_outputs/profiling/profilinggraphics_PREVIEW_run1.mp4
+sha256  70149ab26e6d01f6  algan_outputs/profiling/profilinggraphics_PREVIEW_run2.mp4
+sha256  5aca48e5ce083ab2  algan_outputs/profiling/profilinggraphics_UHD_run1.mp4
+sha256  5d8f7d1ca755f9b5  algan_outputs/profiling/profilinggraphics_UHD_run2.mp4
+RESULTS {"tag":"gpu-workloads-1","device":"cuda","branch":"claude/peaceful-carson-px98kh","commit":"921997b408cc844c77fac9a005bddf4443a8cc12","steps":[{"name":"explainer_preview","command":"python benchmarks/performance/explainer_scene.py --quality PREVIEW --seconds 6 --kernel-profiler","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":154.99,"log":"/kaggle/working/out/gpu-workloads-1/explainer_preview.log"},{"name":"explainer_uhd","command":"python benchmarks/performance/explainer_scene.py --quality UHD --seconds 0.5 --kernel-profiler","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":119.09,"log":"/kaggle/working/out/gpu-workloads-1/explainer_uhd.log"},{"name":"graphics_preview","command":"python benchmarks/performance/graphics_scene.py --quality PREVIEW --seconds 6 --kernel-profiler","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":184.71,"log":"/kaggle/working/out/gpu-workloads-1/graphics_preview.log"},{"name":"graphics_uhd","command":"python benchmarks/performance/graphics_scene.py --quality UHD --seconds 0.5 --kernel-profiler","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":380.41,"log":"/kaggle/working/out/gpu-workloads-1/graphics_uhd.log"},{"name":"nn_uhd_reference","command":"python benchmarks/performance/nn_scene_UHD.py","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"failed","returncode":1,"seconds":119.14,"log":"/kaggle/working/out/gpu-workloads-1/nn_uhd_reference.log"}],"sha256":{"algan_outputs/profiling/profilingexplainer_PREVIEW_run1.mp4":"7f4d277ba6baf2c6","algan_outputs/profiling/profilingexplainer_PREVIEW_run2.mp4":"7f4d277ba6baf2c6","algan_outputs/profiling/profilingexplainer_UHD_run1.mp4":"e9b5c4e053f335d8","algan_outputs/profiling/profilingexplainer_UHD_run2.mp4":"e9b5c4e053f335d8","algan_outputs/profiling/profilinggraphics_PREVIEW_run1.mp4":"1c89fa9cd213360c","algan_outputs/profiling/profilinggraphics_PREVIEW_run2.mp4":"70149ab26e6d01f6","algan_outputs/profiling/profilinggraphics_UHD_run1.mp4":"5aca48e5ce083ab2","algan_outputs/profiling/profilinggraphics_UHD_run2.mp4":"5d8f7d1ca755f9b5"}}
+FAILED steps: ['nn_uhd_reference']
+runner exit code: 1
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __script__.ipynb to html
+[NbConvertApp] Writing 285456 bytes to __results__.html

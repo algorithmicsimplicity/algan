@@ -64,7 +64,6 @@ from algan.rendering.raytracing.raster_taichi import (
     raster_bez_count,
     raster_bez_write,
     raster_chunk,
-    raster_shadow_trace,
     raster_tri_count,
     raster_tri_write,
 )
@@ -1231,6 +1230,14 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
     del is_bez, bez_code, bez_layer, tri_layer
 
+    from algan.rendering.raytracing.sheet_stream import (
+        fragment_run_order,
+        stream_kernel_available,
+    )
+
+    if rt_settings.sheet_fragment_run_sort and stream_kernel_available(frag_key):
+        return fragment_run_order(_primary_depth_key(frag_key), layer)
+
     order = _exact_fragment_order_on_device(frag_key, layer)
     if order is not None:
         return order
@@ -1974,7 +1981,24 @@ def prepare_sparse_raster_coverage(
         )
         counts64 = counts_all.to(torch.int64)
         prefix = torch.cumsum(counts64, 0) - counts64
-        num_frags = int(counts64.sum().item())
+        # Where each spec's fragments start, and the total, read in ONE host
+        # transfer before the launch loop. This used to be an
+        # ``int(counts.sum().item())`` per spec *inside* the loop, i.e. up to
+        # four hard syncs that each made the host wait out the WRITE kernel it
+        # had just queued before it could queue the next one -- and then one
+        # more for the total ahead of the boundaries. ``prefix`` already holds
+        # every boundary: a spec's fragments run from ``prefix`` at its first
+        # pair to ``prefix`` at the next spec's first pair, and the total is
+        # the last pair's prefix plus its count.
+        _pair_starts = []
+        _at = 0
+        for _kind, _pairs, *_rest in count_parts:
+            _pair_starts.append(_at)
+            _at += int(_pairs.shape[0])
+        frag_bounds = torch.cat(
+            [prefix[_pair_starts], prefix[-1:] + counts64[-1:]]
+        ).tolist()
+        num_frags = int(frag_bounds[-1])
         if num_frags == 0:
             return None
         # Pre-truncation emitted-fragment count: this sizes the discovery
@@ -1993,20 +2017,14 @@ def prepare_sparse_raster_coverage(
         frag_cov_u = _arena_tensor(memory, (num_frags,), torch.float32, 1.0)
         frag_msk_u = _arena_tensor(memory, (num_frags,), torch.int32, AA_MASK_ALL)
         opaque_u = _arena_tensor(memory, (num_frags,), torch.bool, False)
-        # Where each spec's fragments start, read in ONE host transfer before
-        # the launch loop. This used to be an ``int(counts.sum().item())`` per
-        # spec *inside* the loop, i.e. up to four hard syncs that each made the
-        # host wait out the WRITE kernel it had just queued before it could
-        # queue the next one. ``prefix`` already holds every boundary: a spec's
-        # fragments run from ``prefix`` at its first pair to ``prefix`` at the
-        # next spec's first pair (``num_frags`` for the last).
-        _pair_starts = []
-        _at = 0
-        for _kind, _pairs, *_rest in count_parts:
-            _pair_starts.append(_at)
-            _at += int(_pairs.shape[0])
-        frag_bounds = prefix[_pair_starts].tolist()
-        frag_bounds.append(num_frags)
+        # Does any spec that emits fragments declare them opaque? Decides
+        # below whether the opaque-prefix truncation has anything to do --
+        # on the host, from the same bounds, where it used to be an
+        # ``opaque_s.any()`` readback over the sorted stream.
+        any_opaque_spec = any(
+            opaque and frag_bounds[i + 1] > frag_bounds[i]
+            for i, (_kind, _pairs, opaque, *_rest) in enumerate(count_parts)
+        )
 
         pair_cursor = 0
         for spec_index, (kind, pairs, opaque, _counts, accepts) in enumerate(
@@ -2134,18 +2152,43 @@ def prepare_sparse_raster_coverage(
                 )
             else:
                 opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
-        pix_s = key_s >> 32
-        covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
+        from algan.rendering.raytracing.sheet_stream import (
+            pixel_runs,
+            stream_kernel_available,
+            truncate_pixel_runs,
+        )
+
+        device_runs = rt_settings.sheet_device_runs and stream_kernel_available(key_s)
+        pixel_offsets = None
+        if device_runs:
+            covered, counts, pixel_offsets = pixel_runs(key_s, memory=memory)
+        else:
+            pix_s = key_s >> 32
+            covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
+        # No later consumer needs this decoded per-fragment pixel array.
+        pix_s = None
 
         # The dense z-buffer retained only the nearest opaque hit and discarded
         # every transparent/opaque record behind it.  Reproduce that relation
         # in sparse sorted space: each pixel keeps the prefix through its first
         # opaque event.  The sort uses the exact same depth-bin/layer keys.
-        if bool(opaque_s.any().item()):
-            keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
-            truncated = int(keep.sum().item()) != num_frags
-            keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
-            del keep
+        #
+        # Gated on the host flag rather than on ``opaque_s.any()``: no opaque
+        # spec means no opaque fragment, and where a spec is opaque but every
+        # fragment of it turned out partial, the keep mask comes back all-true
+        # and the ``keep.sum()`` test below sees no truncation -- the same
+        # outcome the readback gated, one queue drain fewer on a 2-D stream.
+        if any_opaque_spec:
+            if device_runs:
+                keep_idx, counts, pixel_offsets = truncate_pixel_runs(
+                    opaque_s, pixel_offsets
+                )
+                truncated = keep_idx is not None
+            else:
+                keep = _opaque_prefix_keep(opaque_s, counts, num_frags)
+                truncated = int(keep.sum().item()) != num_frags
+                keep_idx = keep.nonzero(as_tuple=True)[0] if truncated else None
+                del keep
             if truncated:
                 # One at a time, and NOT through _gather_fragment_arrays: each
                 # rebinding frees the array it replaces, which is worth more
@@ -2158,8 +2201,11 @@ def prepare_sparse_raster_coverage(
                 msk_s = msk_s.index_select(0, keep_idx)
                 mat_opaque_s = mat_opaque_s.index_select(0, keep_idx)
                 del keep_idx
-                pix_s = key_s >> 32
-                covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
+                if not device_runs:
+                    pix_s = key_s >> 32
+                    covered, counts = torch.unique_consecutive(
+                        pix_s, return_counts=True
+                    )
                 num_frags = int(key_s.shape[0])
 
         # -- ONE-MESH PIXELS (DESIGN_mesh_identity.md ss6.6) -----------------
@@ -2231,7 +2277,11 @@ def prepare_sparse_raster_coverage(
         frag_msk.copy_(msk_s)
         frag_cap.copy_(cap_s)
         covered_idx.copy_(covered.to(torch.int32))
-        run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+        if device_runs:
+            run_offsets.copy_(pixel_offsets)
+        else:
+            run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+        del pixel_offsets
         # Everything above now lives in the arena. The sheet compaction below
         # is this function's memory peak, so the host copies are released
         # before it starts rather than at the return.
@@ -2245,53 +2295,70 @@ def prepare_sparse_raster_coverage(
         # torch sort scratch above); only the final sheet arrays persist.
         from algan.rendering.raytracing.sheets import compact_sheets
 
-        stream = compact_sheets(
-            {
-                "frag_key": frag_key,
-                "frag_ref": frag_ref,
-                "frag_ab": frag_ab,
-                "frag_cov": frag_cov,
-                "frag_msk": frag_msk,
-                "frag_cap": frag_cap,
-                "covered_idx": covered_idx,
-                "run_offsets": run_offsets,
-                "num_fragments": num_frags,
-                "num_covered": num_covered,
-            },
-            merged,
-            cam_origin,
-            pixel_world_scale,
-            int(time_start),
-            int(width),
-            int(height),
-            band_rule="prim",
-            band_c=2.0,
-            tri_screen=tri_screen,
-            shade_split=bool(rt_settings.sheet_shade_split),
-            positioned_depth=bool(rt_settings.sheet_positioned_depth),
-            sample_depth=bool(rt_settings.sheet_sample_depth),
-        )
+        # Fused sorted fields are temporary; returned sheet records own their storage.
+        with memory.temp():
+            stream = compact_sheets(
+                {
+                    "frag_key": frag_key,
+                    "frag_ref": frag_ref,
+                    "frag_ab": frag_ab,
+                    "frag_cov": frag_cov,
+                    "frag_msk": frag_msk,
+                    "frag_cap": frag_cap,
+                    "covered_idx": covered_idx,
+                    "run_offsets": run_offsets,
+                    "num_fragments": num_frags,
+                    "num_covered": num_covered,
+                },
+                merged,
+                cam_origin,
+                pixel_world_scale,
+                int(time_start),
+                int(width),
+                int(height),
+                band_rule="prim",
+                band_c=2.0,
+                tri_screen=tri_screen,
+                shade_split=bool(rt_settings.sheet_shade_split),
+                positioned_depth=bool(rt_settings.sheet_positioned_depth),
+                sample_depth=bool(rt_settings.sheet_sample_depth),
+                memory=memory,
+                persist_output=bool(rt_settings.sheet_fused_stream),
+            )
         ns = int(stream["num_sheets"])
-        sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
-        sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
-        sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_offsets = _arena_tensor(
-            memory, (num_covered + 1,), torch.int32, persist=True
-        )
-        sheet_key.copy_(stream["sheet_key"])
-        sheet_ref.copy_(stream["sheet_ref"])
-        sheet_ab.copy_(stream["sheet_ab"])
-        # The resolve consumes the COMPOSITING weights, not the record: they
-        # are the sheet's own area and union everywhere except inside a band
-        # the shading-class split subdivided, where they carry §4.4's
-        # additive sibling arithmetic (``sheets._sibling_weights``).
-        sheet_cov.copy_(stream["sheet_wgt"])
-        sheet_msk.copy_(stream["sheet_wmsk"])
-        sheet_cap_t.copy_(stream["sheet_cap"])
-        sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+        if stream.get("_arena_persistent", False):
+            # The fused final-record kernel already wrote the production fields
+            # into reverse-arena storage while their source stream was live.
+            # Reuse those views directly instead of seven copy launches after
+            # the temp scope has ended.
+            sheet_key = stream["sheet_key"]
+            sheet_ref = stream["sheet_ref"]
+            sheet_ab = stream["sheet_ab"]
+            sheet_cov = stream["sheet_wgt"]
+            sheet_msk = stream["sheet_wmsk"]
+            sheet_cap_t = stream["sheet_cap"]
+            sheet_offsets = stream["sheet_offsets"]
+        else:
+            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_offsets = _arena_tensor(
+                memory, (num_covered + 1,), torch.int32, persist=True
+            )
+            sheet_key.copy_(stream["sheet_key"])
+            sheet_ref.copy_(stream["sheet_ref"])
+            sheet_ab.copy_(stream["sheet_ab"])
+            # The resolve consumes the COMPOSITING weights, not the record: they
+            # are the sheet's own area and union everywhere except inside a band
+            # the shading-class split subdivided, where they carry §4.4's
+            # additive sibling arithmetic (``sheets._sibling_weights``).
+            sheet_cov.copy_(stream["sheet_wgt"])
+            sheet_msk.copy_(stream["sheet_wmsk"])
+            sheet_cap_t.copy_(stream["sheet_cap"])
+            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
         stream = None
         sheet_data = {
             "sheet_key": sheet_key,
@@ -2336,6 +2403,13 @@ def prepare_sparse_raster_coverage(
     per_frag = 32
     discovery_bytes = discovery_frags * 29 + num_frags * per_frag + num_covered * 8
     discovery_bytes += sheet_data["num_sheets"] * 32 + (num_covered + 1) * 4
+    # New scratch is observed by ManualMemory's peak model too. Keep this
+    # explicit reserve conservative: the scan and sorted-stream scratch have
+    # disjoint lifetimes, and final records are copied after scratch is freed.
+    if rt_settings.sheet_device_runs:
+        discovery_bytes += 8 * discovery_frags
+    if rt_settings.sheet_fused_stream:
+        discovery_bytes += 21 * num_frags + 8  # dtype alignment
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -2632,7 +2706,9 @@ def shade_sparse_raster_coverage(
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
             from algan.rendering.raytracing.refit_bvh import RefitBVH
+            from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
 
+            raster_shadow_trace = make_shadow_tracer(memory)
             raster_shadow_trace(
                 num_events,
                 ev_pos,
@@ -2688,6 +2764,9 @@ def shade_sparse_raster_coverage(
                 1 if identity_on else 0,
                 term_mode,
                 1 if rt_settings.shadow_adaptive_taps else 0,
+                # Primary hits: the soft fans take the full budget (column 16).
+                0,
+                bool(rt_settings.shadow_light_major and ev_pos.device.type == "cuda"),
             )
         sheet_resolve_shade(
             *pre_args,

@@ -18,7 +18,7 @@ from algan import (
     Scene,
     Square,
 )
-from algan.rendering.raytracing import raster_pipeline, raster_taichi
+from algan.rendering.raytracing import raster_taichi, shadow_queue
 from algan.rendering.raytracing.tracer import _deferred_shadow_sample_count
 from algan.scene_manager import SceneManager
 
@@ -39,7 +39,8 @@ def test_only_compact_hard_lights_collapse(enabled, columns, samples):
 def test_zero_footprint_visibility_matches_every_original_sample(
     tmp_path, monkeypatch, radius
 ):
-    original = raster_pipeline.raster_shadow_trace
+    original = raster_taichi.raster_shadow_trace
+    original_make = shadow_queue.make_shadow_tracer
     params = raster_taichi._RASTER_SHADOW_TRACE_PARAMS
     checks = []
     saw_attenuation = []
@@ -74,15 +75,26 @@ def test_zero_footprint_visibility_matches_every_original_sample(
                     ), "soft-light fixture must demonstrate why the mask is retained"
                 saw_attenuation.append(bool(((expected > 0) & (expected < 1)).any()))
                 checks.append(adaptive)
-        return original(*inputs)
 
-    monkeypatch.setattr(raster_pipeline, "raster_shadow_trace", checked)
+    def checked_make(memory, sort_sources=None):
+        launch = original_make(memory, sort_sources)
+
+        def trace(*inputs):
+            checked(*inputs)
+            return launch(*inputs)
+
+        return trace
+
+    monkeypatch.setattr(shadow_queue, "make_shadow_tracer", checked_make)
     SceneManager.reset()
     try:
         with SETTINGS.override():
             SETTINGS.raytracing.shadows = True
             SETTINGS.raytracing.experimental.analytic_aa_secondary_samples = 4
             SETTINGS.raytracing.experimental.shadow_deferred_single_sample = True
+            # This regression concerns the legacy mask-filtered fan. Budgeted
+            # fans rotate through covered positions and need a different fixture.
+            SETTINGS.raytracing.experimental.shadow_ray_budget = 0
             quality = SMOKE_TEST.set(resolution=(32, 32))
             with Scene(video_settings=quality) as scene:
                 with Off():

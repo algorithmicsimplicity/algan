@@ -1,0 +1,51 @@
+From https://github.com/algorithmicsimplicity/algan
+ * branch              325ac0f2aeafd852fed932b10faf0bf93ecefba0 -> FETCH_HEAD
+HEAD is now at 325ac0f2 Report: the class run-sort measured on the T4 (compact_sheets -13% at explainer UHD, -22% with the readback consolidation)
+[Quadrants] version 1.3.0, llvm 22.1.0, commit ab9a58ab, osx, python 3.11.9
+....................................                                     [100%]
+36 passed in 9.16s
+SHADOW_QUEUE {"event": "metadata", "device": "mps", "compiler": "(1, 3, 0)", "resolution": [704, 396], "scene": "graphics"}
+[Quadrants] Starting on arch=metal
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+SHADOW_QUEUE {"event": "queue", "secondary": false, "events": 87907, "median_seconds": {"serial": 0.03897910449998676, "parallel": 0.023121292000013227}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 66337, "median_seconds": {"serial": 0.02091656250001961, "parallel": 0.05694106200002125}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 44893, "median_seconds": {"serial": 0.01558508300001904, "parallel": 0.03634397849992865}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 24011, "median_seconds": {"serial": 0.00955870849998064, "parallel": 0.02406614599999557}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 15135, "median_seconds": {"serial": 0.008162625000011303, "parallel": 0.019156417000033343}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 8226, "median_seconds": {"serial": 0.0071952495000573435, "parallel": 0.01332547900000236}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 4034, "median_seconds": {"serial": 0.004480250000028718, "parallel": 0.009633833000009417}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 2566, "median_seconds": {"serial": 0.0033451454999635644, "parallel": 0.006919604000017898}}
+SHADOW_QUEUE {"event": "queue", "secondary": true, "events": 1900, "median_seconds": {"serial": 0.005285520500024177, "parallel": 0.006610104000003503}}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parity.png in 152.7 s
+SHADOW_QUEUE {"event": "parity", "calls": 9, "primary": 1, "secondary": 8, "max_abs": 2.980232238769531e-07, "scalar_values": 6120216, "differing_values": 5808, "visibility_atol": 2e-06}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/serial.png in 4.2 s
+SHADOW_QUEUE {"event": "render", "arm": "serial", "warm": false, "seconds": 7.1989239590000125}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel_unsorted.png in 3.1 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel_unsorted", "warm": false, "seconds": 5.290267917000051}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel.png in 3.3 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel", "warm": false, "seconds": 5.38960320800004}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/serial.png in 3.8 s
+SHADOW_QUEUE {"event": "render", "arm": "serial", "warm": true, "seconds": 6.0623720829999}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel_unsorted.png in 4.2 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel_unsorted", "warm": true, "seconds": 7.163635167000052}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel.png in 3.4 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel", "warm": true, "seconds": 5.875374582999939}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel.png in 3.1 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel", "warm": true, "seconds": 5.096452834000047}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel_unsorted.png in 2.8 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel_unsorted", "warm": true, "seconds": 4.445290292000095}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/serial.png in 2.6 s
+SHADOW_QUEUE {"event": "render", "arm": "serial", "warm": true, "seconds": 4.0764661250000245}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/serial.png in 2.9 s
+SHADOW_QUEUE {"event": "render", "arm": "serial", "warm": true, "seconds": 4.327822167000022}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel_unsorted.png in 3.4 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel_unsorted", "warm": true, "seconds": 6.833387208999966}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel.png in 3.1 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel", "warm": true, "seconds": 5.386597917000017}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel.png in 3.8 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel", "warm": true, "seconds": 5.704152666999903}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/parallel_unsorted.png in 4.0 s
+SHADOW_QUEUE {"event": "render", "arm": "parallel_unsorted", "warm": true, "seconds": 6.33965729199997}
+Finished rendering /Users/runner/work/algan/algan/algan_outputs/shadow_queue/graphics/serial.png in 3.3 s
+SHADOW_QUEUE {"event": "render", "arm": "serial", "warm": true, "seconds": 5.2529779589999634}
+SHADOW_QUEUE {"event": "summary", "scene": "graphics", "device": "mps", "resolution": [704, 396], "parity": {"calls": 9, "primary": 1, "secondary": 8, "max_abs": 2.980232238769531e-07, "scalar_values": 6120216, "differing_values": 5808, "visibility_atol": 2e-06}, "seconds": {"serial": [6.0623720829999, 4.0764661250000245, 4.327822167000022, 5.2529779589999634], "parallel_unsorted": [7.163635167000052, 4.445290292000095, 6.833387208999966, 6.33965729199997], "parallel": [5.875374582999939, 5.096452834000047, 5.386597917000017, 5.704152666999903]}, "median_seconds": {"serial": 4.790400062999993, "parallel_unsorted": 6.586522250499968, "parallel": 5.54537529199996}, "matched_queue_seconds": {"serial": [0.03897910449998676, 0.02091656250001961, 0.01558508300001904, 0.00955870849998064, 0.008162625000011303, 0.0071952495000573435, 0.004480250000028718, 0.0033451454999635644, 0.005285520500024177], "parallel": [0.023121292000013227, 0.05694106200002125, 0.03634397849992865, 0.02406614599999557, 0.019156417000033343, 0.01332547900000236, 0.009633833000009417, 0.006919604000017898, 0.006610104000003503]}, "max_frame_channel_difference": {"parallel_unsorted": 0, "parallel": 0}, "parallel_over_serial": 1.1576017073879135}

@@ -1,0 +1,611 @@
+=== STEP explainer_preview ===
+==============================================================================
+$ python benchmarks/performance/torch_profile_scene.py explainer --quality PREVIEW --frames 60 --scopes --rows 30 --scope-rows 22
+  env ALGAN_VIDEO_ENCODER=software
+[tp] warm-up render: explainer PREVIEW 60 frames
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/torch_profile/explainer_warm.mp4
+[Quadrants] Starting on arch=cuda
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Rendering 6/60 frames (10%)
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+Rendering 12/60 frames (20%)
+Rendering 18/60 frames (30%)
+Rendering 24/60 frames (40%)
+Rendering 30/60 frames (50%)
+Rendering 36/60 frames (60%)
+Rendering 42/60 frames (70%)
+Rendering 48/60 frames (80%)
+Rendering 54/60 frames (90%)
+Rendering 60/60 frames (100%)
+Finished rendering /kaggle/working/algan/algan_outputs/torch_profile/explainer_warm.mp4 in 11.1 s
+[tp] profiled render
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:217: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+Encoding video with libx264
+Began rendering /kaggle/working/algan/algan_outputs/torch_profile/explainer_prof.mp4
+Rendering 6/60 frames (10%)
+Rendering 12/60 frames (20%)
+Rendering 18/60 frames (30%)
+Rendering 24/60 frames (40%)
+Rendering 30/60 frames (50%)
+Rendering 36/60 frames (60%)
+Rendering 42/60 frames (70%)
+Rendering 48/60 frames (80%)
+Rendering 54/60 frames (90%)
+Rendering 60/60 frames (100%)
+Finished rendering /kaggle/working/algan/algan_outputs/torch_profile/explainer_prof.mp4 in 1.5 s
+[tp] profiled render took 1.48s wall
+================ BY CUDA TIME ================
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                                  Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                    S:sparse discovery         0.00%       0.000us         0.00%       0.000us       0.000us      82.769ms        37.79%      82.769ms      41.384ms             2  
+                                                           aten::copy_         5.82%     185.189ms         8.41%     267.509ms       3.244us      52.122ms        23.80%      52.155ms       0.632us         82467  
+                                                              aten::to         1.60%      50.920ms        11.38%     361.939ms       5.789us       0.000us         0.00%      46.735ms       0.747us         62523  
+                                                        aten::_to_copy         3.59%     114.200ms         9.78%     311.019ms       7.578us       0.000us         0.00%      46.735ms       1.139us         41043  
+                                                      S:compact_sheets         0.00%       0.000us         0.00%       0.000us       0.000us      44.995ms        20.54%      44.995ms      22.498ms             2  
+                                      Memcpy DtoH (Device -> Pageable)         0.00%       0.000us         0.00%       0.000us       0.000us      40.147ms        18.33%      40.147ms       1.181ms            34  
+                                                    S:sparse discovery         0.26%       8.163ms         3.16%     100.659ms      33.553ms       0.000us         0.00%      38.547ms      12.849ms             3  
+                                                      S:compact_sheets         0.15%       4.653ms         1.44%      45.821ms      22.910ms       0.000us         0.00%      27.575ms      13.787ms             2  
+                                                           aten::fill_         0.75%      23.969ms         1.02%      32.443ms       1.404us      21.132ms         9.65%      21.132ms       0.914us         23110  
+                                                      aten::unique_dim         0.01%     214.273us         0.54%      17.028ms       8.514ms      16.440ms         7.51%      16.453ms       8.227ms             2  
+                                                       S:raster tables         0.00%       0.000us         0.00%       0.000us       0.000us      14.681ms         6.70%      14.681ms      14.681ms             1  
+void at_cuda_detail::cub::DeviceMergeSortBlockSortKernel<at_cuda_de...         0.00%       0.000us         0.00%       0.000us       0.000us      14.145ms         6.46%      14.145ms       7.072ms             2  
+                                                        S:window pairs         0.00%       0.000us         0.00%       0.000us       0.000us      12.156ms         5.55%      12.156ms       4.052ms             3  
+                                                           aten::zero_         0.09%       2.736ms         0.28%       8.761ms       2.738us       0.000us         0.00%      12.086ms       3.777us          3200  
+                                                    aten::index_select         0.69%      22.101ms         1.15%      36.513ms      15.917us     398.104us         0.18%      11.471ms       5.000us          2294  
+                                                          aten::gather         0.15%       4.832ms         0.28%       8.917ms      21.283us      11.369ms         5.19%      11.369ms      27.133us           419  
+                                                           aten::index         1.69%      53.719ms         2.65%      84.354ms      25.075us       9.849ms         4.50%      10.405ms       3.093us          3364  
+void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_...         0.00%       0.000us         0.00%       0.000us       0.000us       9.728ms         4.44%       9.728ms     126.332us            77  
+                                                         aten::argsort         0.01%     327.156us         0.43%      13.562ms     125.573us       0.000us         0.00%       9.717ms      89.975us           108  
+                                                            aten::sort         0.15%       4.881ms         0.45%      14.316ms      91.770us       8.930ms         4.08%       9.717ms      62.291us           156  
+                                                      S:sparse resolve         0.00%       0.000us         0.00%       0.000us       0.000us       8.614ms         3.93%       8.614ms       4.307ms             2  
+void at_cuda_detail::cub::DeviceRadixSortOnesweepKernel<at_cuda_det...         0.00%       0.000us         0.00%       0.000us       0.000us       7.606ms         3.47%       7.606ms     135.826us            56  
+                                                    S:class pairs flat         0.00%       0.000us         0.00%       0.000us       0.000us       6.628ms         3.03%       6.628ms       1.105ms             6  
+                                                       S:fragment sort         0.00%       0.000us         0.00%       0.000us       0.000us       6.587ms         3.01%       6.587ms       3.294ms             2  
+void at::native::index_elementwise_kernel<128, 4, at::native::gpu_i...         0.00%       0.000us         0.00%       0.000us       0.000us       6.163ms         2.81%       6.163ms       6.765us           911  
+                                                             aten::sub         2.64%      83.891ms         3.64%     115.708ms       5.720us       6.033ms         2.75%       6.033ms       0.298us         20228  
+void at::native::unrolled_elementwise_kernel<at::native::FillFuncto...         0.00%       0.000us         0.00%       0.000us       0.000us       5.825ms         2.66%       5.825ms      46.975us           124  
+                            raster_bez_write_c108_0_kernel_1_range_for         0.00%       0.000us         0.00%       0.000us       0.000us       5.529ms         2.52%       5.529ms       1.382ms             4  
+                            raster_bez_count_c106_0_kernel_1_range_for         0.00%       0.000us         0.00%       0.000us       0.000us       5.144ms         2.35%       5.144ms       1.286ms             4  
+                                                       S:fragment sort         0.02%     742.060us         0.11%       3.382ms       1.691ms       0.000us         0.00%       4.891ms       2.446ms             2  
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 3.181s
+Self CUDA time total: 219.044ms
+
+================ BY CPU SELF TIME =============
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                                  Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                             aten::mul         6.21%     197.542ms        11.16%     354.830ms       8.164us       4.308ms         1.97%       4.308ms       0.099us         43462  
+                                                           aten::slice         5.92%     188.174ms         7.26%     230.898ms       3.440us       0.000us         0.00%       0.000us       0.000us         67121  
+                                                           aten::copy_         5.82%     185.189ms         8.41%     267.509ms       3.244us      52.122ms        23.80%      52.155ms       0.632us         82467  
+                                                      aten::as_strided         3.92%     124.765ms         3.92%     124.765ms       0.640us       0.000us         0.00%       0.000us       0.000us        194837  
+                                                        aten::_to_copy         3.59%     114.200ms         9.78%     311.019ms       7.578us       0.000us         0.00%      46.735ms       1.139us         41043  
+                                                      cudaLaunchKernel         3.40%     108.241ms         3.49%     111.012ms       7.551us       0.000us         0.00%       1.920us       0.000us         14701  
+                                                          aten::select         3.38%     107.502ms         4.25%     135.280ms       2.992us       0.000us         0.00%       0.000us       0.000us         45209  
+                                                            aten::view         2.75%      87.493ms         2.75%      87.493ms       1.901us       0.000us         0.00%       0.000us       0.000us         46021  
+                                                   aten::empty_strided         2.69%      85.686ms         2.71%      86.328ms       1.429us       0.000us         0.00%       0.000us       0.000us         60426  
+                                                             aten::sub         2.64%      83.891ms         3.64%     115.708ms       5.720us       6.033ms         2.75%       6.033ms       0.298us         20228  
+                                              aten::linalg_vector_norm         2.25%      71.413ms         2.39%      76.169ms       7.181us     471.511us         0.22%     471.511us       0.044us         10607  
+                                                 cudaStreamSynchronize         2.24%      71.100ms         2.24%      71.100ms      86.182us       0.000us         0.00%       0.000us       0.000us           825  
+                                                       cudaMemcpyAsync         2.07%      65.790ms         2.07%      65.790ms      55.008us       0.000us         0.00%       0.000us       0.000us          1196  
+                                                             aten::add         2.04%      64.913ms         2.41%      76.715ms       4.301us       4.413ms         2.01%       4.413ms       0.247us         17836  
+                                                           aten::empty         2.02%      64.127ms         2.06%      65.532ms       1.485us       0.000us         0.00%       0.000us       0.000us         44129  
+                                                             aten::abs         1.91%      60.833ms         3.23%     102.808ms       6.877us     280.987us         0.13%     561.974us       0.038us         14950  
+                                                       aten::unsqueeze         1.87%      59.572ms         2.33%      74.153ms       3.219us       0.000us         0.00%       0.000us       0.000us         23034  
+                                                           aten::clone         1.80%      57.380ms         4.59%     146.052ms       7.713us       0.000us         0.00%     608.758us       0.032us         18935  
+                                                           aten::index         1.69%      53.719ms         2.65%      84.354ms      25.075us       9.849ms         4.50%      10.405ms       3.093us          3364  
+                                                          aten::expand         1.60%      50.939ms         2.06%      65.394ms       2.866us       0.000us         0.00%       0.000us       0.000us         22814  
+                                                              aten::to         1.60%      50.920ms        11.38%     361.939ms       5.789us       0.000us         0.00%      46.735ms       0.747us         62523  
+                                                          aten::arange         1.59%      50.663ms         3.45%     109.851ms       7.310us     522.674us         0.24%       1.045ms       0.070us         15028  
+                                                              aten::ne         1.39%      44.328ms         2.84%      90.199ms      14.579us     953.032us         0.44%     953.032us       0.154us          6187  
+                                                             aten::all         1.31%      41.813ms         1.80%      57.218ms       8.991us     750.355us         0.34%     751.603us       0.118us          6364  
+                                                             aten::div         1.21%      38.334ms         1.36%      43.326ms       5.608us       1.997ms         0.91%       1.997ms       0.259us          7726  
+                                                             aten::cat         1.19%      37.847ms         1.39%      44.338ms       9.601us       1.783ms         0.81%       1.783ms       0.386us          4618  
+                                                            aten::amax         1.16%      36.759ms         1.37%      43.463ms       7.115us       1.805ms         0.82%       1.805ms       0.295us          6109  
+                                                            aten::amin         1.14%      36.138ms         1.33%      42.166ms       6.960us     364.441us         0.17%     364.441us       0.060us          6058  
+                                                              cudaFree         1.09%      34.595ms         1.09%      34.595ms       1.116ms       0.000us         0.00%       0.000us       0.000us            31  
+                                                        aten::isfinite         1.09%      34.521ms         6.59%     209.572ms      34.935us       0.000us         0.00%      89.277us       0.015us          5999  
+----------------------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 3.181s
+Self CUDA time total: 219.044ms
+
+================ SYNC CENSUS =================
+  aten::item                                                   count   14136  cpu total      66.3 ms  (  0.6% of self cpu)
+  aten::_local_scalar_dense                                    count   14136  cpu total      46.6 ms  (  0.4% of self cpu)
+  Memcpy HtoD (Pageable -> Device)                             count    1061  cpu total       0.0 ms  (  0.0% of self cpu)
+  cudaStreamSynchronize                                        count     825  cpu total      71.1 ms  (  2.2% of self cpu)
+  aten::nonzero                                                count     675  cpu total      27.7 ms  (  0.3% of self cpu)
+  Memcpy DtoH (Device -> Pinned)                               count     521  cpu total       0.0 ms  (  0.0% of self cpu)
+  aten::sort                                                   count     156  cpu total      14.3 ms  (  0.2% of self cpu)
+  aten::argsort                                                count     108  cpu total      13.6 ms  (  0.0% of self cpu)
+  aten::_unique2                                               count      64  cpu total       6.3 ms  (  0.0% of self cpu)
+  aten::nonzero_numpy                                          count      47  cpu total      13.7 ms  (  0.0% of self cpu)
+  Memcpy DtoH (Device -> Pageable)                             count      34  cpu total       0.0 ms  (  0.0% of self cpu)
+  aten::unique_consecutive                                     count       7  cpu total       9.5 ms  (  0.0% of self cpu)
+  cudaDeviceSynchronize                                        count       4  cpu total       0.1 ms  (  0.0% of self cpu)
+  device-side records: 18546
+/kaggle/working/algan/benchmarks/performance/torch_profile_scene.py:166: FutureWarning: `self_cuda_time_total` is deprecated. Use `self_device_time_total` instead.
+  return getattr(e, "self_device_time_total", None) or getattr(
+================ BY SCOPE (innermost attribution) ==========
+  scope                         calls   incl ms  ms/call   self ms   dev ms     ops ops/call  syncs  launch
+  raster tables                     2      15.0     7.48       9.8      1.5     571    285.5     12     278
+  tile alloc read                   4       0.2     0.05       0.1      0.0       6      1.5      2       0
+  sparse discovery                  5     100.7    20.13      31.8      4.1     410     82.0     52     188
+    window pairs                    9      18.3     2.04      10.4      0.2     135     15.0      0      96
+    class pairs flat               12       9.5     0.79       5.0      0.1      94      7.8     12      64
+    fragment sort                   4       3.4     0.85       2.6      4.9      44     11.0      0      72
+    fragment gather                 4       0.7     0.19       0.6      0.8      12      3.0      0      12
+    opaque prefix keep              4       0.7     0.16       0.2      0.2      10      2.5      0      10
+    one-mesh caps                   4       1.7     0.43       0.7      0.6      30      7.5      0      34
+    compact_sheets                  4      45.8    11.46      21.5     15.7     351     87.8     14     297
+      shade class                   4       1.8     0.46       1.2      0.5      61     15.2      0      45
+      pixel group order             4       0.4     0.11       0.1      0.0       2      0.5      0       4
+      prim split                    2       1.5     0.74       1.0      1.1      56     28.0      0      43
+      conflict rank                 4       0.4     0.10       0.1      0.0       4      1.0      0       4
+      rank groups                   4       1.1     0.27       0.6      0.3      22      5.5      8      14
+      rank pool                     4       5.3     1.32       4.9      1.1      12      3.0      9      24
+      band composite                4       2.0     0.50       1.2      0.6      32      8.0      0      34
+      class groups                  4       3.7     0.92       3.4      2.8      21      5.2      7      29
+      band reduce                  10       2.1     0.21       0.9      0.6      30      3.0      0      40
+      lane first owners             4       1.1     0.28       0.6      0.2       6      1.5      0      12
+      group counts                  4       1.3     0.32       1.0      1.2      30      7.5      0      36
+      walk order                    4       0.4     0.11       0.1      0.0       2      0.5      0       4
+      sibling weights               4       4.7     1.18       4.1      2.8      70     17.5      4      56
+      sheet offsets                 4       0.9     0.21       0.6      0.8      18      4.5      0      16
+  sparse resolve                    4       6.4     1.60       4.4      2.7     104     26.0      8      10
+  (outside every scope)             0       0.0     0.00    3074.1    560.5  486593 486593.0  16187   14901
+
+---- raster tables: top ops by self CPU (2 calls) ----
+  cudaLaunchKernel                                     272 ( 136.0/call)      2.4 ms (    9.0 us each)  dev     0.0 ms
+  aten::alias                                          172 (  86.0/call)      0.4 ms (    2.6 us each)  dev     0.0 ms
+  ## Call CompiledFxGraph fgbnjejs2aktmbgh2xf45mop       1 (   0.5/call)      0.4 ms (  378.4 us each)  dev     0.0 ms
+  aten::mul                                             27 (  13.5/call)      0.4 ms (   13.0 us each)  dev     0.2 ms
+  aten::remainder                                       17 (   8.5/call)      0.3 ms (   20.5 us each)  dev     0.0 ms
+  aten::bitwise_and                                     23 (  11.5/call)      0.3 ms (   14.0 us each)  dev     0.0 ms
+  aten::index_select                                    23 (  11.5/call)      0.3 ms (   13.9 us each)  dev     0.1 ms
+  aten::sub                                             15 (   7.5/call)      0.3 ms (   17.1 us each)  dev     0.1 ms
+  aten::empty                                           54 (  27.0/call)      0.2 ms (    4.6 us each)  dev     0.0 ms
+  aten::sum                                             10 (   5.0/call)      0.2 ms (   22.4 us each)  dev     0.1 ms
+  cudaMemcpyAsync                                       11 (   5.5/call)      0.2 ms (   19.9 us each)  dev     0.0 ms
+  aten::where                                           17 (   8.5/call)      0.2 ms (   12.7 us each)  dev     0.1 ms
+  aten::resize_                                         48 (  24.0/call)      0.2 ms (    4.2 us each)  dev     0.0 ms
+  aten::gather                                          17 (   8.5/call)      0.2 ms (   10.9 us each)  dev     0.1 ms
+  aten::cat                                             11 (   5.5/call)      0.2 ms (   15.9 us each)  dev     0.1 ms
+  aten::add                                             14 (   7.0/call)      0.2 ms (   12.5 us each)  dev     0.1 ms
+  aten::any                                              8 (   4.0/call)      0.2 ms (   21.4 us each)  dev     0.1 ms
+  aten::as_strided                                     200 ( 100.0/call)      0.2 ms (    0.8 us each)  dev     0.0 ms
+  aten::unsqueeze                                       75 (  37.5/call)      0.2 ms (    2.0 us each)  dev     0.0 ms
+  aten::amax                                             8 (   4.0/call)      0.2 ms (   18.8 us each)  dev     0.1 ms
+  aten::amin                                             7 (   3.5/call)      0.1 ms (   19.2 us each)  dev     0.1 ms
+  aten::copy_                                           13 (   6.5/call)      0.1 ms (   10.2 us each)  dev     0.1 ms
+---- tile alloc read: top ops by self CPU (4 calls) ----
+  cudaMemcpyAsync                                        2 (   0.5/call)      0.0 ms (   19.1 us each)  dev     0.0 ms
+  aten::copy_                                            2 (   0.5/call)      0.0 ms (   11.2 us each)  dev     0.0 ms
+  aten::_to_copy                                         2 (   0.5/call)      0.0 ms (    5.8 us each)  dev     0.0 ms
+  aten::empty_strided                                    2 (   0.5/call)      0.0 ms (    4.2 us each)  dev     0.0 ms
+  cudaStreamSynchronize                                  2 (   0.5/call)      0.0 ms (    3.4 us each)  dev     0.0 ms
+  aten::to                                               2 (   0.5/call)      0.0 ms (    1.6 us each)  dev     0.0 ms
+  aten::resolve_conj                                     2 (   0.5/call)      0.0 ms (    0.6 us each)  dev     0.0 ms
+  aten::resolve_neg                                      2 (   0.5/call)      0.0 ms (    0.2 us each)  dev     0.0 ms
+---- sparse discovery: top ops by self CPU (5 calls) ----
+  cudaStreamSynchronize                                 22 (   4.4/call)     14.4 ms (  652.7 us each)  dev     0.0 ms
+  S:compact_sheets                                       2 (   0.4/call)      4.7 ms ( 2326.3 us each)  dev     0.0 ms
+  S:window pairs                                         6 (   1.2/call)      3.0 ms (  494.1 us each)  dev     0.0 ms
+  cudaLaunchKernel                                     164 (  32.8/call)      1.6 ms (    9.6 us each)  dev     0.0 ms
+  S:one-mesh caps                                        2 (   0.4/call)      1.0 ms (  494.5 us each)  dev     0.0 ms
+  S:fragment sort                                        2 (   0.4/call)      0.7 ms (  371.0 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                       50 (  10.0/call)      0.5 ms (   11.0 us each)  dev     0.0 ms
+  aten::nonzero                                          8 (   1.6/call)      0.5 ms (   63.7 us each)  dev     0.2 ms
+  S:opaque prefix keep                                   2 (   0.4/call)      0.4 ms (  217.8 us each)  dev     0.0 ms
+  aten::index_select                                    30 (   6.0/call)      0.4 ms (   13.9 us each)  dev     0.0 ms
+  aten::view                                           200 (  40.0/call)      0.4 ms (    2.1 us each)  dev     0.0 ms
+  aten::copy_                                           54 (  10.8/call)      0.4 ms (    7.2 us each)  dev     1.4 ms
+  aten::gather                                          30 (   6.0/call)      0.3 ms (   11.6 us each)  dev     1.2 ms
+  aten::slice                                           67 (  13.4/call)      0.3 ms (    4.8 us each)  dev     0.0 ms
+  aten::fill_                                           25 (   5.0/call)      0.3 ms (   12.5 us each)  dev     0.1 ms
+  aten::empty                                           54 (  10.8/call)      0.2 ms (    4.3 us each)  dev     0.0 ms
+  cuLaunchKernel                                        24 (   4.8/call)      0.2 ms (    9.4 us each)  dev     0.0 ms
+  aten::resize_                                         52 (  10.4/call)      0.2 ms (    3.8 us each)  dev     0.0 ms
+  S:fragment gather                                      2 (   0.4/call)      0.2 ms (   93.9 us each)  dev     0.0 ms
+  aten::empty_strided                                   24 (   4.8/call)      0.2 ms (    7.4 us each)  dev     0.0 ms
+  aten::as_strided                                     181 (  36.2/call)      0.2 ms (    0.9 us each)  dev     0.0 ms
+  aten::unique_consecutive                               4 (   0.8/call)      0.1 ms (   34.6 us each)  dev     0.3 ms
+---- window pairs: top ops by self CPU (9 calls) ----
+  S:class pairs flat                                     6 (   0.7/call)      4.5 ms (  754.9 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      96 (  10.7/call)      1.9 ms (   20.3 us each)  dev     0.0 ms
+  aten::empty                                           24 (   2.7/call)      0.3 ms (   12.6 us each)  dev     0.0 ms
+  aten::index_select                                     9 (   1.0/call)      0.3 ms (   31.6 us each)  dev     0.0 ms
+  aten::sub                                             12 (   1.3/call)      0.3 ms (   23.7 us each)  dev     0.0 ms
+  aten::bitwise_and                                     12 (   1.3/call)      0.2 ms (   20.4 us each)  dev     0.0 ms
+  aten::select                                          33 (   3.7/call)      0.2 ms (    6.5 us each)  dev     0.0 ms
+  aten::copy_                                           12 (   1.3/call)      0.2 ms (   17.2 us each)  dev     0.0 ms
+  aten::empty_strided                                   12 (   1.3/call)      0.2 ms (   15.7 us each)  dev     0.0 ms
+  aten::where                                            6 (   0.7/call)      0.2 ms (   30.7 us each)  dev     0.0 ms
+  aten::add                                              6 (   0.7/call)      0.2 ms (   29.4 us each)  dev     0.0 ms
+  aten::clamp                                            6 (   0.7/call)      0.2 ms (   28.8 us each)  dev     0.0 ms
+  aten::resize_                                         18 (   2.0/call)      0.2 ms (    9.5 us each)  dev     0.0 ms
+  aten::floor_divide                                     6 (   0.7/call)      0.2 ms (   27.1 us each)  dev     0.0 ms
+  aten::gather                                           6 (   0.7/call)      0.1 ms (   23.8 us each)  dev     0.0 ms
+  aten::_to_copy                                        12 (   1.3/call)      0.1 ms (   11.2 us each)  dev     0.0 ms
+  aten::mul                                              6 (   0.7/call)      0.1 ms (   20.8 us each)  dev     0.0 ms
+  aten::clamp_                                           6 (   0.7/call)      0.1 ms (   19.8 us each)  dev     0.0 ms
+  aten::remainder                                        3 (   0.3/call)      0.1 ms (   38.9 us each)  dev     0.0 ms
+  aten::as_strided                                      51 (   5.7/call)      0.1 ms (    2.2 us each)  dev     0.0 ms
+  aten::ge                                               3 (   0.3/call)      0.1 ms (   33.9 us each)  dev     0.0 ms
+  aten::arange                                           6 (   0.7/call)      0.1 ms (   13.5 us each)  dev     0.0 ms
+---- class pairs flat: top ops by self CPU (12 calls) ----
+  aten::empty                                           28 (   2.3/call)      2.3 ms (   83.9 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      40 (   3.3/call)      0.6 ms (   14.1 us each)  dev     0.0 ms
+  aten::cumsum                                           6 (   0.5/call)      0.4 ms (   61.2 us each)  dev     0.0 ms
+  cuLaunchKernel                                        24 (   2.0/call)      0.3 ms (   11.8 us each)  dev     0.0 ms
+  aten::copy_                                           12 (   1.0/call)      0.2 ms (   16.1 us each)  dev     0.0 ms
+  aten::sum                                              6 (   0.5/call)      0.2 ms (   31.6 us each)  dev     0.0 ms
+  aten::view                                            30 (   2.5/call)      0.2 ms (    5.6 us each)  dev     0.0 ms
+  aten::reshape                                         30 (   2.5/call)      0.1 ms (    4.9 us each)  dev     0.0 ms
+  aten::sub                                              6 (   0.5/call)      0.1 ms (   23.1 us each)  dev     0.0 ms
+  aten::clone                                           12 (   1.0/call)      0.1 ms (    7.1 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        6 (   0.5/call)      0.1 ms (   13.6 us each)  dev     0.0 ms
+  aten::_local_scalar_dense                              6 (   0.5/call)      0.1 ms (   12.4 us each)  dev     0.0 ms
+  cudaStreamSynchronize                                  6 (   0.5/call)      0.1 ms (   11.3 us each)  dev     0.0 ms
+  aten::_reshape_alias                                  12 (   1.0/call)      0.1 ms (    4.8 us each)  dev     0.0 ms
+  aten::fill_                                            4 (   0.3/call)      0.0 ms (   12.0 us each)  dev     0.0 ms
+  aten::empty_like                                      12 (   1.0/call)      0.0 ms (    3.2 us each)  dev     0.0 ms
+  aten::contiguous                                      12 (   1.0/call)      0.0 ms (    2.6 us each)  dev     0.0 ms
+  aten::zeros                                            4 (   0.3/call)      0.0 ms (    7.1 us each)  dev     0.0 ms
+  aten::zero_                                            4 (   0.3/call)      0.0 ms (    5.0 us each)  dev     0.0 ms
+  aten::item                                             6 (   0.5/call)      0.0 ms (    3.2 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       6 (   0.5/call)      0.0 ms (    2.9 us each)  dev     0.0 ms
+  aten::as_strided                                       6 (   0.5/call)      0.0 ms (    2.5 us each)  dev     0.0 ms
+---- fragment sort: top ops by self CPU (4 calls) ----
+  cudaLaunchKernel                                      72 (  18.0/call)      0.7 ms (   10.0 us each)  dev     0.0 ms
+  aten::sort                                             4 (   1.0/call)      0.3 ms (   68.9 us each)  dev     3.1 ms
+  cudaMemsetAsync                                       32 (   8.0/call)      0.2 ms (    6.8 us each)  dev     0.0 ms
+  aten::__rshift__                                       4 (   1.0/call)      0.1 ms (   36.2 us each)  dev     0.2 ms
+  aten::bitwise_and                                      2 (   0.5/call)      0.1 ms (   59.5 us each)  dev     0.1 ms
+  aten::lt                                               2 (   0.5/call)      0.1 ms (   47.3 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        4 (   1.0/call)      0.1 ms (   22.3 us each)  dev     0.0 ms
+  aten::copy_                                            8 (   2.0/call)      0.1 ms (   11.0 us each)  dev     0.3 ms
+  aten::empty                                           12 (   3.0/call)      0.1 ms (    7.2 us each)  dev     0.0 ms
+  aten::index_select                                     4 (   1.0/call)      0.1 ms (   21.4 us each)  dev     0.0 ms
+  aten::gather                                           4 (   1.0/call)      0.1 ms (   15.9 us each)  dev     0.4 ms
+  aten::div                                              2 (   0.5/call)      0.1 ms (   29.5 us each)  dev     0.1 ms
+  aten::clamp_min                                        2 (   0.5/call)      0.1 ms (   28.1 us each)  dev     0.1 ms
+  aten::neg                                              2 (   0.5/call)      0.1 ms (   25.9 us each)  dev     0.1 ms
+  aten::sub                                              2 (   0.5/call)      0.1 ms (   25.4 us each)  dev     0.1 ms
+  aten::add                                              2 (   0.5/call)      0.0 ms (   23.3 us each)  dev     0.1 ms
+  aten::empty_strided                                    4 (   1.0/call)      0.0 ms (   10.8 us each)  dev     0.0 ms
+  aten::floor                                            2 (   0.5/call)      0.0 ms (   20.7 us each)  dev     0.1 ms
+  aten::where                                            2 (   0.5/call)      0.0 ms (   19.9 us each)  dev     0.1 ms
+  aten::__lshift__                                       2 (   0.5/call)      0.0 ms (   18.2 us each)  dev     0.1 ms
+  aten::clamp_                                           2 (   0.5/call)      0.0 ms (   16.7 us each)  dev     0.1 ms
+  aten::resize_                                          6 (   1.5/call)      0.0 ms (    5.3 us each)  dev     0.0 ms
+---- fragment gather: top ops by self CPU (4 calls) ----
+  aten::index_select                                    12 (   3.0/call)      0.1 ms (   11.9 us each)  dev     0.0 ms
+  aten::gather                                          12 (   3.0/call)      0.1 ms (    9.5 us each)  dev     0.8 ms
+  cudaLaunchKernel                                      12 (   3.0/call)      0.1 ms (    8.6 us each)  dev     0.0 ms
+  aten::resize_                                         12 (   3.0/call)      0.1 ms (    7.6 us each)  dev     0.0 ms
+  aten::empty                                           12 (   3.0/call)      0.1 ms (    4.8 us each)  dev     0.0 ms
+  aten::as_strided                                      36 (   9.0/call)      0.0 ms (    0.5 us each)  dev     0.0 ms
+  aten::expand                                          12 (   3.0/call)      0.0 ms (    1.5 us each)  dev     0.0 ms
+  aten::view                                            12 (   3.0/call)      0.0 ms (    1.1 us each)  dev     0.0 ms
+---- opaque prefix keep: top ops by self CPU (4 calls) ----
+  aten::cumsum                                           2 (   0.5/call)      0.1 ms (   40.7 us each)  dev     0.1 ms
+  cudaLaunchKernel                                       6 (   1.5/call)      0.0 ms (    7.6 us each)  dev     0.0 ms
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    8.4 us each)  dev     0.0 ms
+  aten::sub                                              2 (   0.5/call)      0.0 ms (   15.2 us each)  dev     0.1 ms
+  aten::view                                             4 (   1.0/call)      0.0 ms (    3.6 us each)  dev     0.0 ms
+  aten::empty                                            2 (   0.5/call)      0.0 ms (    5.7 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       2 (   0.5/call)      0.0 ms (    1.4 us each)  dev     0.0 ms
+  cudaPeekAtLastError                                    8 (   2.0/call)      0.0 ms (    0.1 us each)  dev     0.0 ms
+  cudaDeviceGetAttribute                                 2 (   0.5/call)      0.0 ms (    0.6 us each)  dev     0.0 ms
+  aten::to                                               2 (   0.5/call)      0.0 ms (    0.4 us each)  dev     0.0 ms
+---- one-mesh caps: top ops by self CPU (4 calls) ----
+  cudaLaunchKernel                                      26 (   6.5/call)      0.2 ms (    7.8 us each)  dev     0.0 ms
+  aten::cumsum                                           2 (   0.5/call)      0.1 ms (   30.9 us each)  dev     0.1 ms
+  cuLaunchKernel                                         8 (   2.0/call)      0.1 ms (    7.5 us each)  dev     0.0 ms
+  aten::eq                                               2 (   0.5/call)      0.0 ms (   22.0 us each)  dev     0.0 ms
+  aten::fill_                                            8 (   2.0/call)      0.0 ms (    5.3 us each)  dev     0.1 ms
+  aten::empty                                            8 (   2.0/call)      0.0 ms (    5.2 us each)  dev     0.0 ms
+  aten::ge                                               2 (   0.5/call)      0.0 ms (   17.3 us each)  dev     0.0 ms
+  aten::sub                                              2 (   0.5/call)      0.0 ms (   14.6 us each)  dev     0.1 ms
+  aten::maximum                                          2 (   0.5/call)      0.0 ms (   13.2 us each)  dev     0.1 ms
+  aten::bitwise_and                                      2 (   0.5/call)      0.0 ms (   13.0 us each)  dev     0.0 ms
+  aten::clamp_max_                                       2 (   0.5/call)      0.0 ms (   12.5 us each)  dev     0.1 ms
+  aten::empty_strided                                    4 (   1.0/call)      0.0 ms (    5.8 us each)  dev     0.0 ms
+  aten::copy_                                            2 (   0.5/call)      0.0 ms (    8.7 us each)  dev     0.1 ms
+  aten::full                                             4 (   1.0/call)      0.0 ms (    4.0 us each)  dev     0.0 ms
+  aten::view                                             4 (   1.0/call)      0.0 ms (    3.5 us each)  dev     0.0 ms
+  aten::_to_copy                                         2 (   0.5/call)      0.0 ms (    6.0 us each)  dev     0.0 ms
+  aten::zeros                                            4 (   1.0/call)      0.0 ms (    2.7 us each)  dev     0.0 ms
+  aten::zero_                                            4 (   1.0/call)      0.0 ms (    2.3 us each)  dev     0.0 ms
+  aten::__and__                                          2 (   0.5/call)      0.0 ms (    2.3 us each)  dev     0.0 ms
+  aten::to                                               4 (   1.0/call)      0.0 ms (    1.0 us each)  dev     0.0 ms
+  aten::empty_like                                       2 (   0.5/call)      0.0 ms (    1.8 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       2 (   0.5/call)      0.0 ms (    1.3 us each)  dev     0.0 ms
+---- compact_sheets: top ops by self CPU (4 calls) ----
+  cudaStreamSynchronize                                  8 (   2.0/call)      4.8 ms (  605.5 us each)  dev     0.0 ms
+  cudaLaunchKernel                                     281 (  70.2/call)      2.2 ms (    7.7 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                       13 (   3.2/call)      1.7 ms (  129.1 us each)  dev     0.0 ms
+  aten::index_select                                    61 (  15.2/call)      0.8 ms (   12.5 us each)  dev     0.0 ms
+  cudaMalloc                                             3 (   0.8/call)      0.7 ms (  221.7 us each)  dev     0.0 ms
+  aten::gather                                          61 (  15.2/call)      0.6 ms (   10.7 us each)  dev     6.3 ms
+  S:sibling weights                                      2 (   0.5/call)      0.6 ms (  304.6 us each)  dev     0.0 ms
+  S:shade class                                          2 (   0.5/call)      0.6 ms (  291.6 us each)  dev     0.0 ms
+  S:lane first owners                                    2 (   0.5/call)      0.5 ms (  273.4 us each)  dev     0.0 ms
+  S:rank groups                                          2 (   0.5/call)      0.5 ms (  258.0 us each)  dev     0.0 ms
+  aten::empty                                          106 (  26.5/call)      0.5 ms (    4.3 us each)  dev     0.0 ms
+  S:band composite                                       2 (   0.5/call)      0.4 ms (  223.7 us each)  dev     0.0 ms
+  aten::bitwise_and                                     33 (   8.2/call)      0.4 ms (   13.5 us each)  dev     0.5 ms
+  S:band reduce                                          2 (   0.5/call)      0.4 ms (  216.1 us each)  dev     0.0 ms
+  S:prim split                                           1 (   0.2/call)      0.4 ms (  431.8 us each)  dev     0.0 ms
+  S:pixel group order                                    2 (   0.5/call)      0.4 ms (  191.1 us each)  dev     0.0 ms
+  S:walk order                                           2 (   0.5/call)      0.4 ms (  188.9 us each)  dev     0.0 ms
+  S:conflict rank                                        2 (   0.5/call)      0.3 ms (  158.8 us each)  dev     0.0 ms
+  S:group counts                                         2 (   0.5/call)      0.3 ms (  141.7 us each)  dev     0.0 ms
+  S:class groups                                         2 (   0.5/call)      0.3 ms (  134.9 us each)  dev     0.0 ms
+  aten::resize_                                         76 (  19.0/call)      0.3 ms (    3.5 us each)  dev     0.0 ms
+  S:rank pool                                            2 (   0.5/call)      0.3 ms (  131.1 us each)  dev     0.0 ms
+---- shade class: top ops by self CPU (4 calls) ----
+  cudaLaunchKernel                                      45 (  11.2/call)      0.4 ms (    8.2 us each)  dev     0.0 ms
+  aten::empty                                           13 (   3.2/call)      0.1 ms (    4.7 us each)  dev     0.0 ms
+  aten::sub                                              4 (   1.0/call)      0.0 ms (   12.3 us each)  dev     0.0 ms
+  aten::amax                                             3 (   0.8/call)      0.0 ms (   15.3 us each)  dev     0.0 ms
+  aten::where                                            3 (   0.8/call)      0.0 ms (   15.2 us each)  dev     0.1 ms
+  aten::linalg_vector_norm                               2 (   0.5/call)      0.0 ms (   20.2 us each)  dev     0.0 ms
+  aten::bitwise_or                                       3 (   0.8/call)      0.0 ms (   11.9 us each)  dev     0.0 ms
+  aten::add                                              3 (   0.8/call)      0.0 ms (   11.7 us each)  dev     0.0 ms
+  aten::resize_                                          8 (   2.0/call)      0.0 ms (    3.6 us each)  dev     0.0 ms
+  aten::clamp_min                                        2 (   0.5/call)      0.0 ms (   14.4 us each)  dev     0.0 ms
+  aten::remainder                                        2 (   0.5/call)      0.0 ms (   14.1 us each)  dev     0.0 ms
+  aten::index_select                                     2 (   0.5/call)      0.0 ms (   14.1 us each)  dev     0.0 ms
+  aten::abs                                              4 (   1.0/call)      0.0 ms (    6.8 us each)  dev     0.0 ms
+  aten::div                                              2 (   0.5/call)      0.0 ms (   13.0 us each)  dev     0.0 ms
+  aten::zeros                                            2 (   0.5/call)      0.0 ms (   12.7 us each)  dev     0.0 ms
+  aten::select                                           8 (   2.0/call)      0.0 ms (    3.1 us each)  dev     0.0 ms
+  aten::__lshift__                                       2 (   0.5/call)      0.0 ms (   12.2 us each)  dev     0.0 ms
+  aten::as_strided                                      27 (   6.8/call)      0.0 ms (    0.8 us each)  dev     0.0 ms
+  aten::gather                                           2 (   0.5/call)      0.0 ms (   11.1 us each)  dev     0.0 ms
+  aten::lt                                               2 (   0.5/call)      0.0 ms (   11.0 us each)  dev     0.0 ms
+  aten::index                                            1 (   0.2/call)      0.0 ms (   19.3 us each)  dev     0.1 ms
+  aten::fill_                                            2 (   0.5/call)      0.0 ms (    8.7 us each)  dev     0.0 ms
+---- pixel group order: top ops by self CPU (4 calls) ----
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    8.5 us each)  dev     0.0 ms
+  aten::empty_strided                                    2 (   0.5/call)      0.0 ms (   10.2 us each)  dev     0.0 ms
+  aten::empty_like                                       2 (   0.5/call)      0.0 ms (    2.6 us each)  dev     0.0 ms
+---- prim split: top ops by self CPU (2 calls) ----
+  cudaLaunchKernel                                      43 (  21.5/call)      0.3 ms (    7.0 us each)  dev     0.0 ms
+  aten::sub                                              7 (   3.5/call)      0.1 ms (   11.5 us each)  dev     0.1 ms
+  aten::index_select                                     4 (   2.0/call)      0.1 ms (   16.4 us each)  dev     0.0 ms
+  aten::remainder                                        4 (   2.0/call)      0.1 ms (   13.5 us each)  dev     0.1 ms
+  aten::add                                              4 (   2.0/call)      0.0 ms (   11.3 us each)  dev     0.2 ms
+  aten::linalg_vector_norm                               3 (   1.5/call)      0.0 ms (   14.9 us each)  dev     0.0 ms
+  aten::gather                                           4 (   2.0/call)      0.0 ms (   10.1 us each)  dev     0.2 ms
+  aten::index                                            2 (   1.0/call)      0.0 ms (   16.4 us each)  dev     0.2 ms
+  aten::empty                                            8 (   4.0/call)      0.0 ms (    3.9 us each)  dev     0.0 ms
+  aten::amax                                             2 (   1.0/call)      0.0 ms (   14.7 us each)  dev     0.0 ms
+  aten::slice                                            9 (   4.5/call)      0.0 ms (    3.2 us each)  dev     0.0 ms
+  aten::gt                                               2 (   1.0/call)      0.0 ms (   13.6 us each)  dev     0.1 ms
+  aten::amin                                             2 (   1.0/call)      0.0 ms (   12.8 us each)  dev     0.0 ms
+  aten::maximum                                          3 (   1.5/call)      0.0 ms (    8.3 us each)  dev     0.0 ms
+  aten::mul                                              2 (   1.0/call)      0.0 ms (   11.5 us each)  dev     0.1 ms
+  aten::where                                            2 (   1.0/call)      0.0 ms (   11.5 us each)  dev     0.1 ms
+  aten::resize_                                          7 (   3.5/call)      0.0 ms (    3.3 us each)  dev     0.0 ms
+  aten::as_strided                                      31 (  15.5/call)      0.0 ms (    0.7 us each)  dev     0.0 ms
+  aten::minimum                                          2 (   1.0/call)      0.0 ms (   10.2 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        1 (   0.5/call)      0.0 ms (   13.6 us each)  dev     0.0 ms
+  aten::view                                             8 (   4.0/call)      0.0 ms (    1.5 us each)  dev     0.0 ms
+  aten::div                                              1 (   0.5/call)      0.0 ms (   10.8 us each)  dev     0.0 ms
+---- conflict rank: top ops by self CPU (4 calls) ----
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (   12.3 us each)  dev     0.0 ms
+  aten::empty                                            2 (   0.5/call)      0.0 ms (    6.5 us each)  dev     0.0 ms
+  aten::view                                             2 (   0.5/call)      0.0 ms (    3.2 us each)  dev     0.0 ms
+---- rank groups: top ops by self CPU (4 calls) ----
+  cudaStreamSynchronize                                  4 (   1.0/call)      0.1 ms (   27.8 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      10 (   2.5/call)      0.1 ms (    8.1 us each)  dev     0.0 ms
+  aten::cumsum                                           2 (   0.5/call)      0.1 ms (   29.0 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        4 (   1.0/call)      0.1 ms (   14.0 us each)  dev     0.0 ms
+  aten::scatter_reduce_                                  2 (   0.5/call)      0.0 ms (   18.9 us each)  dev     0.1 ms
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    8.4 us each)  dev     0.0 ms
+  aten::_local_scalar_dense                              4 (   1.0/call)      0.0 ms (    6.9 us each)  dev     0.0 ms
+  aten::empty                                            4 (   1.0/call)      0.0 ms (    6.4 us each)  dev     0.0 ms
+  aten::select                                           4 (   1.0/call)      0.0 ms (    6.1 us each)  dev     0.0 ms
+  aten::add_                                             2 (   0.5/call)      0.0 ms (   11.9 us each)  dev     0.0 ms
+  aten::empty_strided                                    4 (   1.0/call)      0.0 ms (    5.3 us each)  dev     0.0 ms
+  aten::fill_                                            2 (   0.5/call)      0.0 ms (    8.0 us each)  dev     0.0 ms
+  aten::as_strided                                       8 (   2.0/call)      0.0 ms (    1.0 us each)  dev     0.0 ms
+  aten::zeros                                            2 (   0.5/call)      0.0 ms (    3.8 us each)  dev     0.0 ms
+  aten::empty_like                                       4 (   1.0/call)      0.0 ms (    1.7 us each)  dev     0.0 ms
+  aten::item                                             4 (   1.0/call)      0.0 ms (    1.6 us each)  dev     0.0 ms
+  aten::zero_                                            2 (   0.5/call)      0.0 ms (    3.1 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       2 (   0.5/call)      0.0 ms (    2.1 us each)  dev     0.0 ms
+  cudaDeviceGetAttribute                                 2 (   0.5/call)      0.0 ms (    0.7 us each)  dev     0.0 ms
+  cudaPeekAtLastError                                    8 (   2.0/call)      0.0 ms (    0.1 us each)  dev     0.0 ms
+  aten::to                                               2 (   0.5/call)      0.0 ms (    0.5 us each)  dev     0.0 ms
+---- rank pool: top ops by self CPU (4 calls) ----
+  cudaStreamSynchronize                                  3 (   0.8/call)      3.9 ms ( 1288.2 us each)  dev     0.0 ms
+  S:band reduce                                          1 (   0.2/call)      0.3 ms (  267.8 us each)  dev     0.0 ms
+  aten::unique_consecutive                               3 (   0.8/call)      0.2 ms (   59.4 us each)  dev     0.4 ms
+  cudaLaunchKernel                                      24 (   6.0/call)      0.2 ms (    7.4 us each)  dev     0.0 ms
+  aten::empty                                           18 (   4.5/call)      0.1 ms (    4.3 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        3 (   0.8/call)      0.0 ms (   10.0 us each)  dev     0.0 ms
+  aten::index_select                                     2 (   0.5/call)      0.0 ms (   14.7 us each)  dev     0.0 ms
+  aten::bitwise_and                                      1 (   0.2/call)      0.0 ms (   28.1 us each)  dev     0.0 ms
+  aten::expand                                           2 (   0.5/call)      0.0 ms (   13.7 us each)  dev     0.0 ms
+  aten::gather                                           2 (   0.5/call)      0.0 ms (   12.7 us each)  dev     0.2 ms
+  aten::_local_scalar_dense                              3 (   0.8/call)      0.0 ms (    7.3 us each)  dev     0.0 ms
+  aten::eq                                               1 (   0.2/call)      0.0 ms (   15.0 us each)  dev     0.0 ms
+  aten::resize_                                          6 (   1.5/call)      0.0 ms (    2.2 us each)  dev     0.0 ms
+  aten::where                                            1 (   0.2/call)      0.0 ms (   12.6 us each)  dev     0.1 ms
+  aten::le                                               1 (   0.2/call)      0.0 ms (   12.3 us each)  dev     0.0 ms
+  aten::add                                              1 (   0.2/call)      0.0 ms (   12.0 us each)  dev     0.1 ms
+  aten::mul                                              1 (   0.2/call)      0.0 ms (   11.3 us each)  dev     0.1 ms
+  aten::item                                             3 (   0.8/call)      0.0 ms (    2.3 us each)  dev     0.0 ms
+  aten::fill_                                            1 (   0.2/call)      0.0 ms (    6.6 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       3 (   0.8/call)      0.0 ms (    2.2 us each)  dev     0.0 ms
+  aten::empty_strided                                    1 (   0.2/call)      0.0 ms (    6.1 us each)  dev     0.0 ms
+  aten::as_strided                                       6 (   1.5/call)      0.0 ms (    0.8 us each)  dev     0.0 ms
+---- band composite: top ops by self CPU (4 calls) ----
+  S:band reduce                                          2 (   0.5/call)      0.5 ms (  264.9 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      30 (   7.5/call)      0.2 ms (    6.7 us each)  dev     0.0 ms
+  aten::eq                                               4 (   1.0/call)      0.0 ms (   12.4 us each)  dev     0.1 ms
+  aten::clamp                                            2 (   0.5/call)      0.0 ms (   21.6 us each)  dev     0.0 ms
+  aten::where                                            4 (   1.0/call)      0.0 ms (    9.8 us each)  dev     0.1 ms
+  aten::empty                                            8 (   2.0/call)      0.0 ms (    4.3 us each)  dev     0.0 ms
+  aten::abs                                              4 (   1.0/call)      0.0 ms (    7.1 us each)  dev     0.0 ms
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    6.9 us each)  dev     0.0 ms
+  aten::le                                               2 (   0.5/call)      0.0 ms (   12.5 us each)  dev     0.0 ms
+  aten::clamp_min                                        2 (   0.5/call)      0.0 ms (   12.4 us each)  dev     0.0 ms
+  aten::sub                                              2 (   0.5/call)      0.0 ms (   12.3 us each)  dev     0.0 ms
+  aten::ne                                               2 (   0.5/call)      0.0 ms (   11.4 us each)  dev     0.0 ms
+  aten::mul                                              2 (   0.5/call)      0.0 ms (   11.3 us each)  dev     0.0 ms
+  aten::bitwise_and                                      2 (   0.5/call)      0.0 ms (   11.3 us each)  dev     0.0 ms
+  aten::div                                              2 (   0.5/call)      0.0 ms (   10.8 us each)  dev     0.1 ms
+  aten::empty_strided                                    4 (   1.0/call)      0.0 ms (    5.2 us each)  dev     0.0 ms
+  aten::resize_                                          6 (   1.5/call)      0.0 ms (    3.3 us each)  dev     0.0 ms
+  aten::copy_                                            2 (   0.5/call)      0.0 ms (    7.9 us each)  dev     0.0 ms
+  aten::fill_                                            2 (   0.5/call)      0.0 ms (    5.3 us each)  dev     0.0 ms
+  aten::_to_copy                                         2 (   0.5/call)      0.0 ms (    4.8 us each)  dev     0.0 ms
+  aten::rsub                                             2 (   0.5/call)      0.0 ms (    4.4 us each)  dev     0.0 ms
+  aten::ones_like                                        2 (   0.5/call)      0.0 ms (    3.2 us each)  dev     0.0 ms
+---- class groups: top ops by self CPU (4 calls) ----
+  cudaStreamSynchronize                                  3 (   0.8/call)      2.5 ms (  835.7 us each)  dev     0.0 ms
+  cudaMalloc                                             1 (   0.2/call)      0.2 ms (  214.5 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      29 (   7.2/call)      0.2 ms (    6.6 us each)  dev     0.0 ms
+  aten::_unique2                                         1 (   0.2/call)      0.1 ms (  111.5 us each)  dev     2.3 ms
+  cudaMemsetAsync                                       11 (   2.8/call)      0.1 ms (    5.5 us each)  dev     0.0 ms
+  aten::empty                                           10 (   2.5/call)      0.0 ms (    4.6 us each)  dev     0.0 ms
+  aten::any                                              2 (   0.5/call)      0.0 ms (   18.0 us each)  dev     0.0 ms
+  aten::ne                                               2 (   0.5/call)      0.0 ms (   17.7 us each)  dev     0.1 ms
+  cudaMemcpyAsync                                        3 (   0.8/call)      0.0 ms (    9.8 us each)  dev     0.0 ms
+  aten::bitwise_not                                      2 (   0.5/call)      0.0 ms (   12.9 us each)  dev     0.0 ms
+  aten::_local_scalar_dense                              3 (   0.8/call)      0.0 ms (    7.6 us each)  dev     0.0 ms
+  aten::slice                                            6 (   1.5/call)      0.0 ms (    3.7 us each)  dev     0.0 ms
+  aten::bitwise_and                                      2 (   0.5/call)      0.0 ms (   10.4 us each)  dev     0.0 ms
+  aten::arange                                           4 (   1.0/call)      0.0 ms (    4.9 us each)  dev     0.1 ms
+  aten::floor_divide                                     1 (   0.2/call)      0.0 ms (   16.1 us each)  dev     0.1 ms
+  aten::mul                                              1 (   0.2/call)      0.0 ms (   14.8 us each)  dev     0.1 ms
+  aten::add                                              1 (   0.2/call)      0.0 ms (   10.4 us each)  dev     0.1 ms
+  aten::resize_                                          3 (   0.8/call)      0.0 ms (    3.1 us each)  dev     0.0 ms
+  aten::item                                             3 (   0.8/call)      0.0 ms (    2.1 us each)  dev     0.0 ms
+  aten::as_strided                                       8 (   2.0/call)      0.0 ms (    0.7 us each)  dev     0.0 ms
+  aten::is_nonzero                                       2 (   0.5/call)      0.0 ms (    1.8 us each)  dev     0.0 ms
+  aten::__and__                                          2 (   0.5/call)      0.0 ms (    1.6 us each)  dev     0.0 ms
+---- band reduce: top ops by self CPU (10 calls) ----
+  cudaLaunchKernel                                      30 (   3.0/call)      0.3 ms (    8.7 us each)  dev     0.0 ms
+  aten::ne                                               5 (   0.5/call)      0.1 ms (   23.9 us each)  dev     0.1 ms
+  aten::empty                                           20 (   2.0/call)      0.1 ms (    5.5 us each)  dev     0.0 ms
+  aten::fill_                                           20 (   2.0/call)      0.1 ms (    5.2 us each)  dev     0.3 ms
+  cuLaunchKernel                                        10 (   1.0/call)      0.1 ms (    7.0 us each)  dev     0.0 ms
+  aten::copy_                                            5 (   0.5/call)      0.0 ms (    9.5 us each)  dev     0.2 ms
+  aten::zeros                                           20 (   2.0/call)      0.0 ms (    2.3 us each)  dev     0.0 ms
+  aten::zero_                                           20 (   2.0/call)      0.0 ms (    2.2 us each)  dev     0.0 ms
+  aten::_to_copy                                         5 (   0.5/call)      0.0 ms (    6.7 us each)  dev     0.0 ms
+  aten::empty_strided                                    5 (   0.5/call)      0.0 ms (    5.9 us each)  dev     0.0 ms
+  aten::to                                               5 (   0.5/call)      0.0 ms (    1.8 us each)  dev     0.0 ms
+---- lane first owners: top ops by self CPU (4 calls) ----
+  cudaMalloc                                             2 (   0.5/call)      0.4 ms (  178.6 us each)  dev     0.0 ms
+  aten::empty                                            6 (   1.5/call)      0.1 ms (   11.0 us each)  dev     0.0 ms
+  cuLaunchKernel                                         8 (   2.0/call)      0.1 ms (    7.2 us each)  dev     0.0 ms
+  cudaLaunchKernel                                       4 (   1.0/call)      0.0 ms (    9.8 us each)  dev     0.0 ms
+  aten::fill_                                            4 (   1.0/call)      0.0 ms (    6.9 us each)  dev     0.2 ms
+  aten::full                                             4 (   1.0/call)      0.0 ms (    3.9 us each)  dev     0.0 ms
+  cudaStreamIsCapturing                                  2 (   0.5/call)      0.0 ms (    1.1 us each)  dev     0.0 ms
+---- group counts: top ops by self CPU (4 calls) ----
+  cudaLaunchKernel                                      36 (   9.0/call)      0.3 ms (    7.4 us each)  dev     0.0 ms
+  aten::cumsum                                           2 (   0.5/call)      0.1 ms (   40.3 us each)  dev     0.1 ms
+  aten::sum                                              4 (   1.0/call)      0.1 ms (   18.5 us each)  dev     0.1 ms
+  aten::index_select                                     6 (   1.5/call)      0.1 ms (   11.0 us each)  dev     0.0 ms
+  aten::copy_                                            6 (   1.5/call)      0.1 ms (    8.8 us each)  dev     0.2 ms
+  aten::gather                                           6 (   1.5/call)      0.1 ms (    8.5 us each)  dev     0.3 ms
+  aten::empty_strided                                    8 (   2.0/call)      0.1 ms (    6.3 us each)  dev     0.0 ms
+  aten::empty                                           10 (   2.5/call)      0.0 ms (    3.8 us each)  dev     0.0 ms
+  aten::scatter_add_                                     2 (   0.5/call)      0.0 ms (   16.2 us each)  dev     0.2 ms
+  aten::fill_                                            6 (   1.5/call)      0.0 ms (    5.0 us each)  dev     0.1 ms
+  aten::gt                                               2 (   0.5/call)      0.0 ms (   14.6 us each)  dev     0.0 ms
+  aten::sub                                              2 (   0.5/call)      0.0 ms (   14.3 us each)  dev     0.1 ms
+  aten::scatter_                                         2 (   0.5/call)      0.0 ms (   14.1 us each)  dev     0.1 ms
+  aten::_to_copy                                         6 (   1.5/call)      0.0 ms (    4.3 us each)  dev     0.0 ms
+  aten::bitwise_and                                      2 (   0.5/call)      0.0 ms (   11.5 us each)  dev     0.0 ms
+  aten::resize_                                          6 (   1.5/call)      0.0 ms (    3.5 us each)  dev     0.0 ms
+  aten::as_strided                                      30 (   7.5/call)      0.0 ms (    0.5 us each)  dev     0.0 ms
+  aten::ones_like                                        2 (   0.5/call)      0.0 ms (    6.5 us each)  dev     0.0 ms
+  cudaMemsetAsync                                        2 (   0.5/call)      0.0 ms (    6.0 us each)  dev     0.0 ms
+  aten::zeros                                            4 (   1.0/call)      0.0 ms (    3.0 us each)  dev     0.0 ms
+  aten::zero_                                            4 (   1.0/call)      0.0 ms (    2.5 us each)  dev     0.0 ms
+  aten::expand                                           6 (   1.5/call)      0.0 ms (    1.6 us each)  dev     0.0 ms
+---- walk order: top ops by self CPU (4 calls) ----
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    8.0 us each)  dev     0.0 ms
+  aten::empty_strided                                    2 (   0.5/call)      0.0 ms (    8.2 us each)  dev     0.0 ms
+  aten::empty_like                                       2 (   0.5/call)      0.0 ms (    2.4 us each)  dev     0.0 ms
+---- sibling weights: top ops by self CPU (4 calls) ----
+  cudaStreamSynchronize                                  2 (   0.5/call)      2.6 ms ( 1283.2 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      54 (  13.5/call)      0.4 ms (    7.3 us each)  dev     0.0 ms
+  aten::index_select                                     7 (   1.8/call)      0.1 ms (   13.9 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        5 (   1.2/call)      0.1 ms (   13.9 us each)  dev     0.0 ms
+  aten::copy_                                           10 (   2.5/call)      0.1 ms (    6.9 us each)  dev     0.5 ms
+  aten::empty                                           17 (   4.2/call)      0.1 ms (    4.0 us each)  dev     0.0 ms
+  aten::gather                                           7 (   1.8/call)      0.1 ms (    9.1 us each)  dev     0.4 ms
+  aten::bitwise_and                                      5 (   1.2/call)      0.1 ms (   12.7 us each)  dev     0.1 ms
+  aten::empty_strided                                   11 (   2.8/call)      0.1 ms (    5.6 us each)  dev     0.0 ms
+  aten::clamp_min                                        2 (   0.5/call)      0.1 ms (   28.7 us each)  dev     0.1 ms
+  aten::eq                                               4 (   1.0/call)      0.1 ms (   13.4 us each)  dev     0.1 ms
+  aten::scatter_add_                                     4 (   1.0/call)      0.1 ms (   13.3 us each)  dev     0.3 ms
+  aten::fill_                                            9 (   2.2/call)      0.0 ms (    4.5 us each)  dev     0.2 ms
+  aten::where                                            4 (   1.0/call)      0.0 ms (    9.8 us each)  dev     0.3 ms
+  aten::resize_                                         11 (   2.8/call)      0.0 ms (    3.4 us each)  dev     0.0 ms
+  aten::any                                              2 (   0.5/call)      0.0 ms (   17.2 us each)  dev     0.0 ms
+  aten::slice                                            9 (   2.2/call)      0.0 ms (    3.7 us each)  dev     0.0 ms
+  aten::div                                              2 (   0.5/call)      0.0 ms (   16.3 us each)  dev     0.2 ms
+  aten::_to_copy                                         7 (   1.8/call)      0.0 ms (    4.4 us each)  dev     0.0 ms
+  aten::gt                                               2 (   0.5/call)      0.0 ms (   12.1 us each)  dev     0.1 ms
+  aten::as_strided                                      40 (  10.0/call)      0.0 ms (    0.6 us each)  dev     0.0 ms
+  aten::ne                                               2 (   0.5/call)      0.0 ms (   11.4 us each)  dev     0.1 ms
+---- sheet offsets: top ops by self CPU (4 calls) ----
+  cudaMalloc                                             1 (   0.2/call)      0.2 ms (  158.0 us each)  dev     0.0 ms
+  cudaLaunchKernel                                      16 (   4.0/call)      0.1 ms (    7.1 us each)  dev     0.0 ms
+  aten::cumsum                                           2 (   0.5/call)      0.1 ms (   43.6 us each)  dev     0.1 ms
+  aten::copy_                                            4 (   1.0/call)      0.0 ms (    9.1 us each)  dev     0.1 ms
+  aten::empty_strided                                    6 (   1.5/call)      0.0 ms (    5.9 us each)  dev     0.0 ms
+  cudaMemcpyAsync                                        2 (   0.5/call)      0.0 ms (   16.0 us each)  dev     0.0 ms
+  aten::scatter_add_                                     2 (   0.5/call)      0.0 ms (   14.4 us each)  dev     0.2 ms
+  aten::fill_                                            6 (   1.5/call)      0.0 ms (    4.6 us each)  dev     0.1 ms
+  aten::searchsorted                                     2 (   0.5/call)      0.0 ms (   10.9 us each)  dev     0.3 ms
+  aten::empty                                            4 (   1.0/call)      0.0 ms (    4.3 us each)  dev     0.0 ms
+  aten::slice                                            2 (   0.5/call)      0.0 ms (    6.6 us each)  dev     0.0 ms
+  aten::_to_copy                                         2 (   0.5/call)      0.0 ms (    4.8 us each)  dev     0.0 ms
+  aten::zero_                                            4 (   1.0/call)      0.0 ms (    2.3 us each)  dev     0.0 ms
+  aten::resize_                                          2 (   0.5/call)      0.0 ms (    3.5 us each)  dev     0.0 ms
+  aten::zeros                                            2 (   0.5/call)      0.0 ms (    2.9 us each)  dev     0.0 ms
+  aten::empty_like                                       4 (   1.0/call)      0.0 ms (    1.4 us each)  dev     0.0 ms
+  aten::as_strided                                       6 (   1.5/call)      0.0 ms (    0.9 us each)  dev     0.0 ms
+  aten::zeros_like                                       2 (   0.5/call)      0.0 ms (    2.7 us each)  dev     0.0 ms
+  aten::to                                               4 (   1.0/call)      0.0 ms (    1.1 us each)  dev     0.0 ms
+  aten::ones_like                                        2 (   0.5/call)      0.0 ms (    2.2 us each)  dev     0.0 ms
+  cudaOccupancyMaxActiveBlocksPerMultiprocessorWit       2 (   0.5/call)      0.0 ms (    1.7 us each)  dev     0.0 ms
+  cudaDeviceGetAttribute                                 2 (   0.5/call)      0.0 ms (    0.8 us each)  dev     0.0 ms
+---- sparse resolve: top ops by self CPU (4 calls) ----
+  cudaMemcpyAsync                                        4 (   1.0/call)      3.7 ms (  924.3 us each)  dev     0.0 ms
+  cudaLaunchKernel                                       6 (   1.5/call)      0.1 ms (   18.2 us each)  dev     0.0 ms
+  aten::slice                                           32 (   8.0/call)      0.1 ms (    3.3 us each)  dev     0.0 ms
+  aten::view                                            36 (   9.0/call)      0.1 ms (    2.2 us each)  dev     0.0 ms
+  aten::empty_strided                                    4 (   1.0/call)      0.1 ms (   16.5 us each)  dev     0.0 ms
+  aten::empty                                            8 (   2.0/call)      0.0 ms (    6.1 us each)  dev     0.0 ms
+  aten::copy_                                            4 (   1.0/call)      0.0 ms (   10.9 us each)  dev     2.7 ms
+  cuLaunchKernel                                         4 (   1.0/call)      0.0 ms (    9.9 us each)  dev     0.0 ms
+  aten::sub                                              2 (   0.5/call)      0.0 ms (   19.1 us each)  dev     0.0 ms
+  aten::fill_                                            4 (   1.0/call)      0.0 ms (    9.4 us each)  dev     0.0 ms
+  aten::as_strided                                      36 (   9.0/call)      0.0 ms (    0.7 us each)  dev     0.0 ms
+  aten::_to_copy                                         4 (   1.0/call)      0.0 ms (    6.0 us each)  dev     0.0 ms
+  cudaStreamSynchronize                                  4 (   1.0/call)      0.0 ms (    5.3 us each)  dev     0.0 ms
+  aten::select                                           4 (   1.0/call)      0.0 ms (    4.6 us each)  dev     0.0 ms
+  aten::set_                                             6 (   1.5/call)      0.0 ms (    2.6 us each)  dev     0.0 ms
+  aten::to                                               4 (   1.0/call)      0.0 ms (    2.0 us each)  dev     0.0 ms
+  aten::item                                             4 (   1.0/call)      0.0 ms (    1.3 us each)  dev     0.0 ms
+  aten::detach_                                          2 (   0.5/call)      0.0 ms (    1.6 us each)  dev     0.0 ms
+  aten::_local_scalar_dense                              4 (   1.0/call)      0.0 ms (    0.7 us each)  dev     0.0 ms
+  detach_                                                2 (   0.5/call)      0.0 ms (    1.4 us each)  dev     0.0 ms
+  aten::lift_fresh                                       2 (   0.5/call)      0.0 ms (    0.4 us each)  dev     0.0 ms

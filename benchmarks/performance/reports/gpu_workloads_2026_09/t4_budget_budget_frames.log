@@ -1,0 +1,46 @@
+=== STEP budget_frames ===
+==============================================================================
+$ python benchmarks/_shadow_budget_check.py algan_outputs/shadow_budget/budget16 && ALGAN_SHADOW_RAY_BUDGET=0 python benchmarks/_shadow_budget_check.py algan_outputs/shadow_budget/legacy && python benchmarks/_shadow_budget_check.py --compare algan_outputs/shadow_budget/legacy algan_outputs/shadow_budget/budget16
+  env ALGAN_VIDEO_ENCODER=software
+[Quadrants] Starting on arch=cuda
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/shadow_budget/budget16.png in 125.1 s
+wrote algan_outputs/shadow_budget/budget16.png / .npy (270, 480, 3)
+[Quadrants] Starting on arch=cuda
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/shadow_budget/legacy.png in 42.9 s
+wrote algan_outputs/shadow_budget/legacy.png / .npy (270, 480, 3)
+pixels differing: 564 of 129600 (0.44%); max |d| = 66, mean |d| over differing = 2.71
+  |d| histogram (max over channels): {1: 333, 2: 65, 3: 53, 4: 21, 5: 10, 6: 4, 7: 3, 8: 6, 9: 2, 10: 8, 11: 5, 12: 3, 13: 5, 14: 6, 15: 1, 16: 2, 17: 1, 18: 1, 19: 3, 20: 2, 21: 3, 22: 5, 23: 2, 24: 6, 25: 1, 26: 1, 27: 2, 31: 1, 33: 1, 36: 1, 37: 1, 48: 1, 49: 1, 50: 1, 52: 1, 56: 1, 66: 1}
+--- step budget_frames: failed (rc=1) in 202.1s
+
+==============================================================================
+summary
+==============================================================================
+    OK     384.5s  graphics_uhd_budget
+    OK     379.0s  graphics_uhd_legacy
+    OK     164.8s  graphics_preview_budget
+    OK     162.6s  graphics_preview_legacy
+FAILED     202.1s  budget_frames
+sha256  3e959c75f30f4a03  algan_outputs/profiling/profilinggraphics_PREVIEW_budget_run1.mp4
+sha256  33cb23d90885a559  algan_outputs/profiling/profilinggraphics_PREVIEW_budget_run2.mp4
+sha256  03b5eb101e570ddf  algan_outputs/profiling/profilinggraphics_PREVIEW_legacy_run1.mp4
+sha256  298a802f45e3bb8d  algan_outputs/profiling/profilinggraphics_PREVIEW_legacy_run2.mp4
+sha256  9fe13191ad509907  algan_outputs/profiling/profilinggraphics_UHD_budget_run1.mp4
+sha256  fc5206c55b1cb6a3  algan_outputs/profiling/profilinggraphics_UHD_budget_run2.mp4
+sha256  97efc6c5f2cab0a7  algan_outputs/profiling/profilinggraphics_UHD_legacy_run1.mp4
+sha256  6f1d4ff972362228  algan_outputs/profiling/profilinggraphics_UHD_legacy_run2.mp4
+sha256  bc2d77dc8251a460  algan_outputs/shadow_budget/budget16.png
+sha256  2819654cc9930cbe  algan_outputs/shadow_budget/legacy.png
+RESULTS {"tag":"shadow-budget-1","device":"cuda","branch":"claude/peaceful-carson-px98kh","commit":"a63a33d13d8cbb748251da629bea45c4a5fd69ae","steps":[{"name":"graphics_uhd_budget","command":"python benchmarks/performance/graphics_scene.py --quality UHD --seconds 0.5 --kernel-profiler --tag graphics_UHD_budget","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":384.49,"log":"/kaggle/working/out/shadow-budget-1/graphics_uhd_budget.log"},{"name":"graphics_uhd_legacy","command":"ALGAN_SHADOW_RAY_BUDGET=0 python benchmarks/performance/graphics_scene.py --quality UHD --seconds 0.5 --kernel-profiler --tag graphics_UHD_legacy","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":378.99,"log":"/kaggle/working/out/shadow-budget-1/graphics_uhd_legacy.log"},{"name":"graphics_preview_budget","command":"python benchmarks/performance/graphics_scene.py --quality PREVIEW --seconds 6 --kernel-profiler --tag graphics_PREVIEW_budget","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":164.81,"log":"/kaggle/working/out/shadow-budget-1/graphics_preview_budget.log"},{"name":"graphics_preview_legacy","command":"ALGAN_SHADOW_RAY_BUDGET=0 python benchmarks/performance/graphics_scene.py --quality PREVIEW --seconds 6 --kernel-profiler --tag graphics_PREVIEW_legacy","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"ok","returncode":0,"seconds":162.59,"log":"/kaggle/working/out/shadow-budget-1/graphics_preview_legacy.log"},{"name":"budget_frames","command":"python benchmarks/_shadow_budget_check.py algan_outputs/shadow_budget/budget16 && ALGAN_SHADOW_RAY_BUDGET=0 python benchmarks/_shadow_budget_check.py algan_outputs/shadow_budget/legacy && python benchmarks/_shadow_budget_check.py --compare algan_outputs/shadow_budget/legacy algan_outputs/shadow_budget/budget16","env":{"ALGAN_VIDEO_ENCODER":"software"},"status":"failed","returncode":1,"seconds":202.14,"log":"/kaggle/working/out/shadow-budget-1/budget_frames.log"}],"sha256":{"algan_outputs/profiling/profilinggraphics_PREVIEW_budget_run1.mp4":"3e959c75f30f4a03","algan_outputs/profiling/profilinggraphics_PREVIEW_budget_run2.mp4":"33cb23d90885a559","algan_outputs/profiling/profilinggraphics_PREVIEW_legacy_run1.mp4":"03b5eb101e570ddf","algan_outputs/profiling/profilinggraphics_PREVIEW_legacy_run2.mp4":"298a802f45e3bb8d","algan_outputs/profiling/profilinggraphics_UHD_budget_run1.mp4":"9fe13191ad509907","algan_outputs/profiling/profilinggraphics_UHD_budget_run2.mp4":"fc5206c55b1cb6a3","algan_outputs/profiling/profilinggraphics_UHD_legacy_run1.mp4":"97efc6c5f2cab0a7","algan_outputs/profiling/profilinggraphics_UHD_legacy_run2.mp4":"6f1d4ff972362228","algan_outputs/shadow_budget/budget16.png":"bc2d77dc8251a460","algan_outputs/shadow_budget/legacy.png":"2819654cc9930cbe"}}
+FAILED steps: ['budget_frames']
+runner exit code: 1
+/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\|'
+  cells[i][c] = re.sub('\\\\\|', '|', cell)
+/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\_'
+  text = re.sub(r'_', '\_', text) # Escape underscores in display text
+[NbConvertApp] Converting notebook __script__.ipynb to html
+[NbConvertApp] Writing 286794 bytes to __results__.html

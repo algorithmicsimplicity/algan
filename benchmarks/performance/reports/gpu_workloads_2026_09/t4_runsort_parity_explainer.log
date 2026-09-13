@@ -1,0 +1,32 @@
+=== STEP parity_explainer ===
+==============================================================================
+$ cp benchmarks/_compaction_sync_check.py /kaggle/working/_csc.py && git checkout -q 161d7c0 && python /kaggle/working/_csc.py algan_outputs/parity2/before --scene explainer && git checkout -q 979b101 && python /kaggle/working/_csc.py algan_outputs/parity2/after --scene explainer && python /kaggle/working/_csc.py --compare algan_outputs/parity2/before algan_outputs/parity2/after
+  env ALGAN_VIDEO_ENCODER=software
+[Quadrants] Starting on arch=cuda
+Preparing render kernels. If this is the first render on this machine (or after an update), compiling the GPU kernels can take several minutes. Compiled kernels are cached, so subsequent renders start immediately.
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/before/frame_0.0.png in 2.9 s
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/before/frame_0.3.png in 101.6 s
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/before/frame_0.6.png in 1.0 s
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/before/frame_1.0.png in 0.9 s
+frame 0 t=0.00  sha256 dd5e1e02f8aed206  (720, 1280, 3)
+frame 1 t=0.30  sha256 6d9675f542df5127  (720, 1280, 3)
+frame 2 t=0.60  sha256 bd4affe38a1203f6  (720, 1280, 3)
+frame 3 t=1.00  sha256 e36cc48991a5961c  (720, 1280, 3)
+[Quadrants] Starting on arch=cuda
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/after/frame_0.0.png in 1.4 s
+/usr/local/lib/python3.12/dist-packages/quadrants/_test_tools/warnings_helper.py:11: UserWarning: cannot create weak reference to 'quadrants._lib.core.quadrants_python.DataTypeCxx' object. Template mapper caching disabled.
+  warnings.warn(message)
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/after/frame_0.3.png in 29.4 s
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/after/frame_0.6.png in 0.9 s
+Finished rendering /kaggle/working/algan/algan_outputs/parity2/after/frame_1.0.png in 0.8 s
+frame 0 t=0.00  sha256 dd5e1e02f8aed206  (720, 1280, 3)
+frame 1 t=0.30  sha256 6d9675f542df5127  (720, 1280, 3)
+frame 2 t=0.60  sha256 bd4affe38a1203f6  (720, 1280, 3)
+frame 3 t=1.00  sha256 e36cc48991a5961c  (720, 1280, 3)
+frame 0: differing pixels        0 / 921600   max channel deviation 0
+frame 1: differing pixels        0 / 921600   max channel deviation 0
+frame 2: differing pixels        0 / 921600   max channel deviation 0
+frame 3: differing pixels        0 / 921600   max channel deviation 0
+IDENTICAL

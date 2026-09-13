@@ -1433,6 +1433,37 @@ shadow_identity_reject = env_flag("ALGAN_SHADOW_IDENTITY_REJECT", True)
 # it had a quarter step, on a set of pixels too sparse to see.
 # ALGAN_SHADOW_ADAPTIVE_TAPS=0 restores the full fan.
 shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
+
+# The soft-shadow RAY BUDGET (raster_shadow_trace and wavefront_shade's inline
+# fan). Without it every soft light row fires the compile-time
+# SOFT_SHADOW_SAMPLES fan (8) at every shading event: a RectAreaLight with
+# ``samples=4`` is 16 rows, so 128 shadow rays per event, and the graphics
+# workload profile of benchmarks/performance/reports/gpu_workloads_2026_09
+# measured that kernel at 67% of a UHD render (77% by the shadows-off arm).
+#
+# ``shadow_ray_budget`` is the number of shadow rays ONE soft light may spend
+# per shading event at a primary hit. An area light's K cell rows share it
+# (``ceil(budget / K)`` rays each, stratified by cell -- so K=16 and the
+# default 16 is one ray per cell); a single-row soft light (a point/spot with
+# ``shadow_radius``, a directional with ``shadow_angle``) fires
+# ``min(SOFT_SHADOW_SAMPLES, budget)``. To keep a small fan from banding, the
+# budgeted fan is Cranley-Patterson rotated per shading event from a hash of
+# the event's world position: the penumbra dithers rather than steps, and the
+# pattern is fixed to the surface, so a still frame renders identically every
+# time. ``0`` restores the fixed unjittered fan byte for byte.
+#
+# ``shadow_bounce_rays`` caps every soft row's fan at a SECONDARY hit -- one
+# seen through a reflection or refraction, whose shadow arrives attenuated by
+# the surface's Fresnel weight and, on a glossy surface, prefiltered. In the
+# graphics workload half of all shadow events were secondary. ``0`` gives
+# secondary hits the primary budget.
+#
+# Both are read host-side only: the scene builder packs each light row's two
+# fan sizes into the row (aux columns 13/14, packed 16/17), and the kernels
+# read those, so flipping either needs no recompile and one process can render
+# both arms. ALGAN_SHADOW_RAY_BUDGET / ALGAN_SHADOW_BOUNCE_RAYS.
+shadow_ray_budget = max(0, env_int("ALGAN_SHADOW_RAY_BUDGET", 16))
+shadow_bounce_rays = max(0, env_int("ALGAN_SHADOW_BOUNCE_RAYS", 1))
 # Deferred bounce events expose only sample zero and have zero footprints.
 # Hard point lights can use the existing one-sample trace kernel and avoid
 # the full-sized zero offset buffer. Extended lights retain the masked fan.
@@ -1442,6 +1473,37 @@ shadow_deferred_single_sample = env_flag("ALGAN_SHADOW_DEFERRED_SINGLE_SAMPLE", 
 # Group primary shadow events by source primitive before their existing gathers.
 # The sheet event-ID map carries the permutation back to visibility lookups.
 shadow_primary_sort = env_flag("ALGAN_SHADOW_PRIMARY_SORT", True)
+
+# Launch adjacent events for the same light in adjacent lanes. Each cell keeps
+# its exact serial sample/reduction order; only scheduling changes. Host sites
+# gate this to CUDA, and the template argument keeps live A/B variants separate.
+shadow_light_major = env_flag("ALGAN_SHADOW_LIGHT_MAJOR", False)
+
+# A completed CUDA frame batch can copy directly into page-locked host storage.
+# The copy still completes before get_frames yields; the caller owns the result.
+pinned_frame_readback = env_flag("ALGAN_PINNED_FRAME_READBACK", False)
+
+# Bounded light-major queue, one worker per shadow ray, fixed-order reduction.
+# Host dispatch gates: changing these never invalidates compiled settings.
+shadow_ray_parallel = env_flag("ALGAN_SHADOW_RAY_PARALLEL", False)
+shadow_secondary_sort = env_flag("ALGAN_SHADOW_SECONDARY_SORT", True)
+
+
+def set_shadow_ray_budget(rays):
+    """Set the soft-shadow rays one light may spend per primary shading event
+    (see ``shadow_ray_budget``); 0 restores the fixed fan. Takes effect at the
+    next render batch.
+    """
+    global shadow_ray_budget
+    shadow_ray_budget = max(0, int(rays))
+
+
+def set_shadow_bounce_rays(rays):
+    """Cap a soft row's fan at secondary hits (see ``shadow_bounce_rays``);
+    0 lifts the cap. Takes effect at the next render batch.
+    """
+    global shadow_bounce_rays
+    shadow_bounce_rays = max(0, int(rays))
 
 
 def set_shadow_adaptive_taps(enabled):
@@ -1840,6 +1902,12 @@ def set_raster_pair_flags(enabled):
 # allocator hand each one the block the previous stage just freed. This session
 # reached here from an out-of-memory failure on this very scene; 4 ms is not
 # worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
+# Opt-in until matched full-render measurements justify a backend default.
+sheet_fragment_run_sort = env_flag("ALGAN_SHEET_FRAGMENT_RUN_SORT", False)
+sheet_fused_stream = env_flag("ALGAN_SHEET_FUSED_STREAM", False)
+sheet_device_runs = env_flag("ALGAN_SHEET_DEVICE_RUNS", False)
+
+
 raster_fused_gather = env_flag("ALGAN_RASTER_FUSED_GATHER", False)
 
 
@@ -3520,8 +3588,11 @@ def set_fragment_shading(enabled):
 # COST, documented rather than hidden: a row with a non-zero emitter extent
 # fires SOFT_SHADOW_SAMPLES (default 8) shadow rays instead of 1 -- the same
 # rule a PointLight with a non-zero ``shadow_radius`` already obeys. An area
-# light has K rows, so its shadow cost goes from K rays to K * 8.
-# ``samples`` stays the user's dial for both quality and cost.
+# light has K rows, so its shadow cost goes from K rays to K * 8 -- UNLESS
+# ``shadow_ray_budget`` (below) is on, which it is by default: then the K
+# rows split a per-light budget and the fan is rotated per event so the few
+# rays dither rather than band. ``samples`` stays the user's dial for the
+# emitter's radiance sampling; the budget is the dial for its shadow cost.
 #
 # The deferred-shadow prepass that would have needed these columns has been
 # removed (it measured slower than inline shadows and was never launched); the
