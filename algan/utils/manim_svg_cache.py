@@ -64,10 +64,15 @@ _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
 
 # Marks a recipe as ``(_RECIPE_TAG, nodes, groups)``. Recipes without it predate
 # the group map and are re-parsed when the running manim needs one. Bump the
-# suffix whenever the payload layout changes so old entries are re-parsed
-# instead of misread -- the cache key is content-addressed, not version-keyed,
-# so a manim upgrade otherwise reads a recipe written by the previous version.
-_RECIPE_TAG = "algan-manim-svg-recipe-v2"
+# suffix whenever the payload layout or parse semantics change so old entries
+# are re-parsed instead of misread -- the cache key is content-addressed, not
+# version-keyed, so a manim upgrade otherwise reads a recipe written by the
+# previous version.
+# v3 invalidates recipes written before vendored Manim learned to preserve SVG
+# ``<image>`` elements (color emoji). Those recipes can contain the vector
+# letters while permanently omitting the raster glyph even though the source
+# SVG on disk is now parseable correctly.
+_RECIPE_TAG = "algan-manim-svg-recipe-v3"
 
 # Process-local memo of already-loaded recipes, keyed by the stable hash. This
 # replaces Manim's SVG_HASH_TO_MOB_MAP for the patched path: a cache hit rebuilds
@@ -118,7 +123,8 @@ def _svg_content_id(file_name) -> str:
     For manim's own generated SVGs -- Tex and Pango text -- the basename is
     already a content hash, and hashing the SVG bytes instead would key on
     dvisvgm's exact version and output ordering, breaking the cross-machine
-    sharing this cache is built for. So those keep the basename.
+    sharing this cache is built for. Tex therefore keeps the basename; Pango
+    text adds only the ManimPango version because Manim's text hash omits it.
 
     Every other SVG -- one the user drew -- is keyed on its **contents**.
     Keying a user file on its basename meant that editing ``logo.svg`` and
@@ -131,6 +137,18 @@ def _svg_content_id(file_name) -> str:
         return "None"
     path = Path(file_name)
     if _manim_generated_svg_basename_is_content_addressed(path):
+        # Pango's own filename hash excludes the text backend version. Include
+        # it here too: even when the versioned generated filename makes Manim
+        # regenerate the SVG, this parsed-geometry cache must not replay a recipe
+        # produced by the previous backend. Tex/dvisvgm filenames remain
+        # version-independent exactly as before.
+        try:
+            from manim import config
+
+            if path.parent.resolve() == Path(config.get_dir("text_dir")).resolve():
+                return f"pango-{_manimpango_cache_version()}:{path.name}"
+        except Exception:  # noqa: BLE001 - falling back to the basename is safe
+            pass
         return path.name
 
     # ``file_name`` is whatever the caller passed; manim only resolves it later,
@@ -424,6 +442,7 @@ def _redirect_manim_dirs() -> None:
     from manim.utils import tex_file_writing
 
     _configure_manim_dirs(config, create=False)
+    _version_pango_text_hashes()
 
     # Manim's Text path creates ``text_dir`` with mkdir(parents=True), but its
     # Tex path (``generate_tex_file``) uses a *single-level* mkdir, which
@@ -446,6 +465,52 @@ def _redirect_manim_dirs() -> None:
 
         generate_tex_file_with_dir._algan_ensures_tex_dir = True
         tex_file_writing.generate_tex_file = generate_tex_file_with_dir
+
+
+def _manimpango_cache_version() -> str:
+    """Version tag for Manim's generated Pango SVG cache.
+
+    Manim's own ``Text._text2hash`` identifies the authored string and style,
+    but not the renderer that turned them into SVG. That makes a cached SVG
+    survive a ManimPango upgrade even when the renderer's output changes (for
+    example, a backend gaining color-emoji ``<image>`` support). The tag is
+    folded into both the generated filename and parsed-geometry cache identity
+    so such upgrades regenerate and reparse the SVG.
+    """
+    try:
+        import manimpango
+
+        version = str(getattr(manimpango, "__version__", "unknown"))
+    except Exception:  # noqa: BLE001 - cache names must never break text import
+        version = "unknown"
+    # A digest avoids making assumptions about what a third-party distribution
+    # permits in its local-version spelling while remaining stable per version.
+    return hashlib.sha256(version.encode()).hexdigest()[:12]
+
+
+def _version_pango_text_hashes() -> None:
+    """Include the ManimPango backend version in generated SVG filenames.
+
+    Upstream Manim hashes the authored text and style but not ManimPango itself.
+    If that backend changes its SVG output, the old file would otherwise be
+    returned without calling the new renderer at all. Keep the public cache
+    directory stable and version the content-addressed filename instead.
+    """
+    from manim.mobject.text import text_mobject
+
+    for cls in (text_mobject.Text, text_mobject.MarkupText):
+        original = cls._text2hash
+        if getattr(original, "_algan_pango_versioned", False):
+            continue
+
+        @wraps(original)
+        def versioned_hash(self, color, _original=original):
+            authored_hash = _original(self, color)
+            payload = f"{authored_hash}|pango-{_manimpango_cache_version()}"
+            return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+        versioned_hash._algan_pango_versioned = True
+        cls._text2hash = versioned_hash
 
 
 def _configure_manim_dirs(config, *, create: bool = True) -> tuple[Path, Path]:

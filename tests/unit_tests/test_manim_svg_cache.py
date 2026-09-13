@@ -78,6 +78,17 @@ def test_rebuild_restores_the_group_map_onto_the_rebuilt_glyphs():
     ]
 
 
+def test_manimpango_version_changes_generated_text_cache_namespace(monkeypatch):
+    import manimpango
+
+    monkeypatch.setattr(manimpango, "__version__", "emoji-backend-v1")
+    first = svg_cache._manimpango_cache_version()
+    monkeypatch.setattr(manimpango, "__version__", "emoji-backend-v2")
+    second = svg_cache._manimpango_cache_version()
+
+    assert first != second
+
+
 def test_recipes_round_trip_without_a_group_map():
     """Manim < 0.21 has no ``id_to_vgroup_dict``; the recipe just omits it."""
     source, _ = _container_with_groups()
@@ -91,6 +102,19 @@ def test_recipes_round_trip_without_a_group_map():
 
     assert len(target.submobjects) == 3
     assert not hasattr(target, "id_to_vgroup_dict")
+
+
+def test_pre_emoji_recipe_tag_is_reparsed():
+    """v2 recipes can predate SVG ``<image>`` support and must be discarded."""
+    source, _ = _container_with_groups()
+    current = svg_cache._extract(source)
+    old = ("algan-manim-svg-recipe-v2", current[1], current[2])
+
+    nodes, groups = svg_cache._parse_recipe(old)
+
+    assert groups is None
+    assert nodes == old
+    assert svg_cache._RECIPE_TAG == "algan-manim-svg-recipe-v3"
 
 
 def test_untagged_recipes_are_reparsed_when_the_group_map_is_needed():
@@ -109,6 +133,66 @@ def test_untagged_recipes_are_reparsed_when_the_group_map_is_needed():
     tagged = svg_cache._extract(source)
     assert tagged[0] == svg_cache._RECIPE_TAG
     assert svg_cache._parse_recipe(tagged)[1] is not None
+
+
+def test_pango_backend_upgrade_regenerates_svg_and_emoji_image(monkeypatch, tmp_path):
+    """A ManimPango upgrade must not replay SVG/geometry from the old backend.
+
+    Color emoji are raster glyphs in Cairo's SVG output. Algan's vendored
+    ``SVGMobject`` turns the resulting ``<image>`` into an ``ImageMobject``,
+    which :class:`algan.Text` then converts to an ``ImageMob``. This simulates
+    upgrading from a backend that dropped that image to one that emits it while
+    keeping the authored text identical.
+    """
+    import manimpango
+
+    png = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFUlEQVR4nGP8f4LhPwMD"
+        "AwMTAxQAACuXAsoUVo9TAAAAAElFTkSuQmCC"
+    )
+    old_cache = SETTINGS.paths.cache_directory
+    saved_memo = dict(svg_cache._MEM_CACHE)
+    svg_cache._MEM_CACHE.clear()
+    calls = []
+
+    def fake_text2svg(*args, **kwargs):
+        del kwargs
+        output = pathlib.Path(args[4])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        version = manimpango.__version__
+        calls.append(version)
+        image = ""
+        if version == "emoji-fixed":
+            image = (
+                '<image x="18" y="0" width="12" height="12" '
+                f'href="data:image/png;base64,{png}"/>'
+            )
+        output.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="16" '
+            'viewBox="0 0 48 16">'
+            '<path d="M0 12 L5 0 L10 12 Z" fill="#fff"/>'
+            f"{image}"
+            '<path d="M36 0 L46 0 L46 12 L36 12 Z" fill="#fff"/>'
+            "</svg>"
+        )
+        return str(output)
+
+    try:
+        SETTINGS.paths.set(cache_directory=str(tmp_path))
+        monkeypatch.setattr(manimpango, "text2svg", fake_text2svg)
+
+        monkeypatch.setattr(manimpango, "__version__", "emoji-broken")
+        broken = algan.Text("A😀B")
+        assert broken.image_mobs == []
+
+        monkeypatch.setattr(manimpango, "__version__", "emoji-fixed")
+        fixed = algan.Text("A😀B")
+        assert len(fixed.image_mobs) == 1
+        assert calls == ["emoji-broken", "emoji-fixed"]
+    finally:
+        SETTINGS.paths.set(cache_directory=old_cache)
+        svg_cache._MEM_CACHE.clear()
+        svg_cache._MEM_CACHE.update(saved_memo)
 
 
 def test_tex_survives_a_cache_hit(isolated_svg_cache):
@@ -194,8 +278,8 @@ def test_a_missing_svg_raises_rather_than_replaying_a_stale_entry(
         mn.SVGMobject("logo.svg")
 
 
-def test_manim_generated_svgs_stay_keyed_on_their_content_addressed_basename():
-    """Tex output must not be keyed on the SVG bytes.
+def test_manim_generated_svgs_stay_content_addressed_without_hashing_svg_bytes():
+    """Generated SVG output must not be keyed on the SVG bytes.
 
     dvisvgm's output carries its version and emits in its own order, so hashing
     it would key the cache to the machine that produced it -- exactly the
@@ -211,14 +295,17 @@ def test_manim_generated_svgs_stay_keyed_on_their_content_addressed_basename():
     finally:
         tex_svg.unlink()
 
-    # Pango text output is named by ``_text2hash`` and lives in ``text_dir``,
-    # so it takes the same fast path.
+    # Pango text output is named by ``_text2hash`` too, but that hash omits the
+    # backend version. Keep the fast basename path while namespacing it by the
+    # ManimPango version so renderer upgrades cannot replay stale geometry.
     text_dir = pathlib.Path(mn.config.get_dir("text_dir"))
     text_dir.mkdir(parents=True, exist_ok=True)
     text_svg = text_dir / "fedcba9876543210.svg"
     text_svg.write_text(_SQUARE_SVG)
     try:
-        assert svg_cache._svg_content_id(text_svg) == "fedcba9876543210.svg"
+        assert svg_cache._svg_content_id(text_svg) == (
+            f"pango-{svg_cache._manimpango_cache_version()}:fedcba9876543210.svg"
+        )
     finally:
         text_svg.unlink()
 
