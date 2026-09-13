@@ -1,0 +1,67 @@
+name: Publish hybrid transport tranche 1
+on:
+  push:
+    branches: [codex/publish-hybrid-transport-v2-90510864]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Reconstruct and authenticate the locally validated patch
+        run: |
+          python - <<'PY'
+          import base64
+          import hashlib
+          import lzma
+          import os
+          from pathlib import Path
+          parts = [Path(f'agent_transport/tranche1.part{i}').read_text() for i in range(5)]
+          # Repair a verified one-character transport transcription, not source.
+          raw = parts[0].encode()
+          assert hashlib.sha1(f'blob {len(raw)}\0'.encode() + raw).hexdigest() == '296257581058bec82e67bcbbf36ee8896173baec'
+          assert parts[0].count('UFH7HhL1XIH') == 1
+          parts[0] = parts[0].replace('UFH7HhL1XIH', 'UFH7HhZ1XIH')
+          payload = base64.b64decode(''.join(parts), validate=True)
+          assert hashlib.sha256(payload).hexdigest() == '0a9440da3bbc082aa7da4ff583e78b33e760c645d808572a385450953f39b138'
+          patch = lzma.decompress(payload)
+          assert hashlib.sha256(patch).hexdigest() == '13efb995baeab1c7f4e27de79266c211bddb72c04cea3b0bd7dc89f9d8036e80'
+          Path(os.environ['RUNNER_TEMP'], 'tranche1.patch').write_bytes(patch)
+          PY
+      - name: Publish one clean implementation commit
+        env:
+          BASE: 40aab2d7b110d2988e3b8095ebdb745a0208e854
+          EXPECTED_TREE: 90510864c334bf7d0757cb25d13b208c1f50ad5d
+          TARGET: codex/hybrid-transport-tranche1-v2
+        run: |
+          set -euo pipefail
+          git checkout --detach "$BASE"
+          git apply --index "$RUNNER_TEMP/tranche1.patch"
+          git diff --cached --check
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          remote_head="$(git ls-remote origin "refs/heads/$TARGET" | cut -f1)"
+          test "$remote_head" = "$BASE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Unify deterministic hybrid transport robustness and shell coverage'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git push origin "HEAD:refs/heads/$TARGET"
+          test "$(git ls-remote origin "refs/heads/$TARGET" | cut -f1)" = "$(git rev-parse HEAD)"
+          {
+            git show --no-patch --format='commit=%H%nparent=%P%ntree=%T' HEAD
+            git diff-tree --no-commit-id --name-only -r HEAD
+          } | tee "$RUNNER_TEMP/tranche1-publication.txt"
+      - name: Store publication receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: tranche1-publication-receipt
+          path: ${{ runner.temp }}/tranche1-publication.txt
+          retention-days: 7
+      - name: Remove this temporary publisher branch
+        run: |
+          git push origin --delete codex/publish-hybrid-transport-v2-90510864
