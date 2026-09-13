@@ -54,10 +54,9 @@ from algan.settings import SETTINGS
 # call sites must pass. Pinned so a future signature reorder breaks HERE,
 # loudly, instead of silently un-gating the kernel.
 _WEIGHT_FLOOR_EXIT_ARG_INDEX = 47
-# 70 since the per-batch ``vis_lights`` slot count joined the list directly
-# after the gate (the shadow-visibility payload sizing) and the one-sided
-# shadow cull's ``sided_cull`` template joined it after ``shadow_term``.
-_EXPECTED_SHADE_ARGS = 70
+# 71 after appending the per-batch ``tri_shell`` table. The existing
+# visibility and one-sided shadow-cull templates retain their positions.
+_EXPECTED_SHADE_ARGS = 71
 
 
 @pytest.mark.fast

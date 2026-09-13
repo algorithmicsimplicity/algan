@@ -59,7 +59,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     max_shadow_lights,
     max_surfaces_per_ray,
     min_alpha,
-    min_hit_distance,
     min_weight,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -80,6 +79,12 @@ from algan.rendering.raytracing.texture_mips_taichi import (
     _mip_lod,
     _mip_table,
     _triangle_uv_footprint,
+)
+from algan.rendering.raytracing.transport_taichi import (
+    _dielectric_schlick,
+    _offset_ray_origin,
+    _shadow_tmax,
+    _transmission_normal,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.taichi_compat import ti
@@ -104,9 +109,41 @@ SCA_WIDTH_PLAIN = 7
 SCA_WIDTH_NESTED = _SCA_IOR_BASE + IOR_STACK_DEPTH        # 12
 
 
-def sca_width(nested_ior):
-    """rs_sca row width for a nested-IOR gate value (plain Python)."""
+# Packed as exact nonnegative f32 integers, not float bit patterns: all 24
+# bits survive copies on CPU/CUDA/Metal without NaNs or denormal flushing.
+_SHELL_BITS_PER_WORD = 24
+_SCA_SHELL_BASE = SCA_WIDTH_NESTED
+
+
+def sca_width(nested_ior, shell_count=0):
+    """Scalar state width including a batch-sized, uncapped shell bitset."""
+    if shell_count:
+        return _SCA_SHELL_BASE + (int(shell_count) + _SHELL_BITS_PER_WORD - 1) // _SHELL_BITS_PER_WORD
     return SCA_WIDTH_NESTED if nested_ior else SCA_WIDTH_PLAIN
+
+
+@ti.func
+def _reset_shell_segment(rs_sca: ti.template(), r):
+    """Every actual scatter starts a new straight segment; coverage does not."""
+    for c in range(_SCA_SHELL_BASE, rs_sca.shape[1]):
+        rs_sca[r, c] = 0.0
+
+
+@ti.func
+def _shell_exit(rs_sca: ti.template(), r, shell_id):
+    """Toggle an identity, returning whether this is its paired crossing.
+
+    IDs and row width are derived from the same batch table. There is no
+    nesting cap: the arena/tile planner pays for all identities up front.
+    """
+    suppressed = False
+    if shell_id >= 0:
+        column = _SCA_SHELL_BASE + shell_id // _SHELL_BITS_PER_WORD
+        bit = ti.u32(1) << (shell_id % _SHELL_BITS_PER_WORD)
+        word = ti.cast(rs_sca[r, column], ti.u32)
+        suppressed = (word & bit) != 0
+        rs_sca[r, column] = ti.cast(word ^ bit, ti.f32)
+    return suppressed
 
 
 @ti.kernel
@@ -829,15 +866,15 @@ def _tri_normal_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
 def _refract_ray(rd, n_out, ior):
     """Direction of the transmitted ray for incident unit direction ``rd``
     crossing a surface with outward unit normal ``n_out`` and index of
-    refraction ``ior`` (relative to air). Snell's law, with the air<->medium
+    refraction ratio ``ior = n_inside / n_outside``. Snell's law, with the
     side chosen from the sign of ``rd . n_out`` (entering when the ray opposes
     the outward normal, exiting otherwise). On total internal reflection the
     ray is mirror-reflected instead, so it always continues sensibly.
     """
     cosi = rd.dot(n_out)
     n = n_out
-    eta = 1.0 / ior          # entering: air (1) -> medium (ior)
-    if cosi > 0.0:           # exiting: medium (ior) -> air (1)
+    eta = 1.0 / ior          # entering: outside -> inside
+    if cosi >= 0.0:          # exiting: inside -> outside (including tangent)
         n = -n_out
         eta = ior
     # ``n`` now opposes ``rd``; cos of the incidence angle is non-negative.
@@ -977,7 +1014,7 @@ def _offset_transmitted_origin(hit_point, out_dir, face_n, shade_n):
     n = n.normalized()
     if n.dot(out_dir) < 0.0:
         n = -n
-    return hit_point + (n + out_dir) * (10.0 * min_hit_distance)
+    return _offset_ray_origin(hit_point, n + out_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -1189,88 +1226,30 @@ def _material_env_brdf(rd, normal, metalness, packed_ior, albedo, roughness):
 
 @ti.func
 def _material_reflectance(rd, normal, metalness, packed_ior, albedo,
-                          transmission):
-    """Per-channel (vec3) Schlick reflectance of a Three.js-style material,
-    plus the scalar dielectric pass fraction that gates transmission.
+                          transmission, relative_ior=0.0):
+    """Colored material reflectance and the dielectric transmission allowance.
 
-    ``metalness < 0`` is the internal sentinel for legacy/unlit materials that
-    have no PBR specular lobe.  ``packed_ior`` is an unsigned magnitude (abs
-    guards any legacy sign packing).  An IOR at or below 1 means the medium is
-    index-matched with the surrounding air: there is no dielectric interface,
-    so the dielectric lobe vanishes entirely.  Schlick's form cannot express
-    that limit itself -- any f0 still reflects fully at grazing -- so it is an
-    explicit gate rather than an f0 of zero.
+    ``relative_ior`` overrides the material/air ratio with n_inside/n_outside.
+    It must be computed before weighting either continuation, not only before
+    Snell bending. Zero retains the legacy material/air interpretation, where
+    an absolute IOR at or below one denotes an index-matched material.
 
-    Transport is full-color: the metal lobe's F0 is the surface ``albedo``
-    (conductor tint, whitening to 1 at grazing -- same model as the Monte
-    Carlo megakernel's colored throughput), the dielectric lobe stays
-    achromatic.  A white metal reduces exactly to the old scalar lobe (R = 1).
-    Blending the two lobes after Schlick is algebraically identical to
-    blending f0 first (R is linear in f0).
-
-    **Which side of the interface the ray is on matters, and only for a
-    transmissive material.**  Schlick's approximation is written for a ray
-    arriving from the *thin* side; a ray already inside the glass reflects far
-    more than the same incident angle suggests, and past the critical angle it
-    reflects everything.  KHR_materials_volume states the three cases
-    normatively: entering, evaluate Schlick at the incident angle; leaving
-    without total internal reflection, evaluate it at the angle on the AIR side
-    (Snell's partner of the incident one); leaving beyond the critical angle,
-    ``F = 1``.  For glass (ior 1.5, critical angle 41.8 deg) an internal ray at
-    40 deg has a true reflectance of 0.245, which the air-side Schlick
-    reproduces to three digits and the inside-angle one puts at 0.041 -- so
-    without this the light leaving a solid is split six-to-one the wrong way,
-    and at total internal reflection it leaks through a surface that should be
-    a perfect mirror.
-
-    ``transmission`` gates that side test, deliberately.  The renderer does not
-    track which medium a ray is in, so "the ray is on the far side of the
-    surface" is inferred from the sign of ``rd . normal`` -- sound for a closed
-    transmissive solid, wrong for a back-facing hit on an ordinary opaque
-    surface (an open mesh seen from behind), which is not inside anything.
-    Gating on transmission keeps every non-transmissive material bit-for-bit
-    on the path it took before.
-
-    Returns ``(R, diel_pass)``.  ``diel_pass = (1-m) * (1-r_diel)`` is the
-    fraction of incident light that enters the dielectric interior -- the
-    only share that can transmit.  It must NOT be derived from ``1 - R``: a
-    colored metal has ``R < 1`` in its absorbed channels, and that absorbed
-    share would then leak through transmissive surfaces as if dielectric
-    (with scalar transport ``m = 1`` forced ``R = 1``, which hid this).
-    Total internal reflection arrives here as ``r_diel = 1``, hence
-    ``diel_pass = 0``: the transmitted branch is given no energy at all rather
-    than being handed the mirror direction with the transmitted weight (which
-    also tinted a perfectly achromatic Fresnel reflection by the glass color).
+    Metal absorption never leaks into transmission: ``diel_pass`` is
+    (1-metalness)*(1-dielectric_reflectance), not 1-R. Negative metalness is
+    the unlit/legacy sentinel and has no specular lobe.
     """
     result = ti.math.vec3(0.0, 0.0, 0.0)
     diel_pass = 1.0
     if metalness >= 0.0:
         m = ti.math.clamp(metalness, 0.0, 1.0)
-        ior = ti.abs(packed_ior)
+        ratio = ti.max(ti.abs(packed_ior), 1.0)
+        if relative_ior > 0.0:
+            ratio = relative_ior
         n = normal.normalized()
-        cos_n = rd.dot(n)  # signed: < 0 arriving from outside, > 0 leaving
+        cos_n = rd.dot(n)
         cosi = ti.math.clamp(ti.abs(cos_n), 0.0, 1.0)
         tail = ti.pow(1.0 - cosi, 5.0)
-        r_diel = 0.0
-        if ior > 1.0 + 1e-4:
-            r0 = (1.0 - ior) / (1.0 + ior)
-            dielectric_f0 = r0 * r0
-            # The cosine Schlick is evaluated at, and whether there is one at
-            # all. Unchanged (the incident cosine, no TIR) for everything that
-            # does not transmit and for every ray arriving from outside.
-            cos_s = cosi
-            total_internal = False
-            if (transmission > 1e-4) and (cos_n > 0.0):
-                sin2_t = ior * ior * (1.0 - cosi * cosi)
-                if sin2_t > 1.0:
-                    total_internal = True
-                else:
-                    cos_s = ti.sqrt(1.0 - sin2_t)
-            if total_internal:
-                r_diel = 1.0
-            else:
-                tail_s = ti.pow(1.0 - cos_s, 5.0)
-                r_diel = dielectric_f0 + (1.0 - dielectric_f0) * tail_s
+        r_diel = _dielectric_schlick(cos_n, ratio, transmission)
         f0_metal = ti.math.clamp(albedo, 0.0, 1.0)
         r_metal = f0_metal + (1.0 - f0_metal) * tail
         result = r_diel * (1.0 - m) + m * r_metal
@@ -1447,7 +1426,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         trans_w = trans_energy * tint
         if (refl_max > min_alpha) and (refl_max >= cover_pass):
             refl_dir, nref = _reflect_frame(rd, normal, face_n)
-            refl_orig = hit_point + nref * (10.0 * min_hit_distance)
+            refl_orig = _offset_ray_origin(hit_point, nref)
             refl_w = refl_energy
         else:
             pass_w = cover3
@@ -1457,13 +1436,13 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         # which spends no bounce) along with the coverage-miss. Only the
         # reflection needs a ray of its own, so it takes the split slot.
         trans_dir, nref = _reflect_frame(rd, normal, face_n)
-        trans_orig = hit_point + nref * (10.0 * min_hit_distance)
+        trans_orig = _offset_ray_origin(hit_point, nref)
         trans_w = refl_energy
         pass_w = cover3 + trans_energy * tint
     elif split_refl or ((refl_max > min_alpha)
                         and (refl_max >= cover_pass)):
         rdir, nref = _reflect_frame(rd, normal, face_n)
-        rorig = hit_point + nref * (10.0 * min_hit_distance)
+        rorig = _offset_ray_origin(hit_point, nref)
         if split_refl:
             # Reflection into the split slot; the pass-through stays the
             # primary ray. It continues the depth-layer walk (no bounce
@@ -2494,6 +2473,7 @@ def wavefront_shade_arena(
     # (``cam_pos``): depth-style shading measures from the CAMERA, and a
     # bounced ray's own origin is not it.
     cam_origin = ti.static(ArenaView(arena_f32, aoff[25], (ashp[56], ashp[57])))
+    tri_shell = ti.static(ArenaView(arena_i32, aoff[26], (ashp[58], ashp[59])))
     pixels_per_frame = width * height
     # Unpack the layer offset (packed into one ndarray to stay within the
     # 64-arg ceiling); the body below references this name unchanged.
@@ -2643,6 +2623,13 @@ def wavefront_shade_arena(
                     layer_prev = hit_layer
                     continue
                 seam_t = t_hit if edge_hit == 1 else -1e30
+
+                if htype == 1:
+                    shell_id = tri_shell[f % tri_shell.shape[0], prim % tri_shell.shape[1]]
+                    if _shell_exit(rs_sca, r, shell_id):
+                        t_prev = t_hit
+                        layer_prev = hit_layer
+                        continue
 
                 color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                 alpha = 0.0
@@ -2794,7 +2781,7 @@ def wavefront_shade_arena(
                             # constant normal field) to license the
                             # horizon-cull relaxation in the sample loop
                             # below. RENDERER_WORK_QUEUE.md item 20.
-                            sorigin = spos + fnrm * (10.0 * min_hit_distance)
+                            sorigin = _offset_ray_origin(spos, fnrm)
                             lifted = 0
                             if ti.static(shadow_term != 0):
                                 if ti.static(shadow_term == 1):
@@ -2988,8 +2975,7 @@ def wavefront_shade_arena(
                                                 occ_sum += _shadow_occluded(
                                                     refit, shadows,
                                                     sorigin, wis, f, ff,
-                                                    ldn - 20.0
-                                                    * min_hit_distance,
+                                                    _shadow_tmax(sorigin, wis, ldn),
                                                     pixel_size_per_t, base_dist,
                                                     layer_offset_triangles,
                                                     has_tri, has_bez,
@@ -3115,8 +3101,17 @@ def wavefront_shade_arena(
                         if htype != 1:
                             geo_normal = normal
 
+                    # One interface ratio/normal for both energy and direction.
+                    # Computing this only at the Snell call is too late: an
+                    # air-based TIR test may already have erased transmission.
+                    entering = rd.dot(geo_normal) < 0.0
+                    rel = ior
+                    interface_n = normal
+                    if (T > 1e-4) and (htype == 1):
+                        rel = _relative_ior(rs_sca, r, ior, entering, ior_stack)
+                        interface_n = _transmission_normal(rd, normal, geo_normal)
                     R, diel_pass = _material_reflectance(
-                        rd, normal, reflectivity, ior, albedo3, T)
+                        rd, interface_n, reflectivity, ior, albedo3, T, rel)
                     # This route never spreads a continuation over the GGX
                     # lobe (the glossy fan lives in the raster resolve), so
                     # the mirror ray keeps only the share of the lobe it can
@@ -3180,7 +3175,7 @@ def wavefront_shade_arena(
                     is_pane = False
                     if ti.static(refraction != 0):
                         if (T > 1e-4) and (bounces_left > 0) \
-                                and (ior > 1.0 + 1e-4):
+                                and ((ior > 1.0 + 1e-4) or (ti.abs(rel - 1.0) > 1e-4)):
                             if htype == 1:
                                 is_glass = True
                             else:
@@ -3262,10 +3257,7 @@ def wavefront_shade_arena(
                                 # interpolated normal tips past the silhouette
                                 # at grazing angles (see _relative_ior). Exact
                                 # 0 counts as exiting.
-                                entering = rd.dot(geo_normal) < 0.0
-                                rel = _relative_ior(rs_sca, r, ior, entering,
-                                                    ior_stack)
-                                rdt = _refract_ray(rd, normal, rel)
+                                rdt = _refract_ray(rd, interface_n, rel)
                                 hp = ro + t_hit * rd
                                 rorig = _offset_transmitted_origin(
                                     hp, rdt, geo_normal, normal)
@@ -3294,6 +3286,7 @@ def wavefront_shade_arena(
                                 # off).
                                 _write_ior_stack(rs_sca, r, c, ior, entering,
                                                  True, ior_stack)
+                                _reset_shell_segment(rs_sca, c)
                         # Primary carries the heavier of reflection /
                         # coverage-miss; the lighter one takes a pool slot, so
                         # all three continuations are traced. At full coverage
@@ -3302,7 +3295,7 @@ def wavefront_shade_arena(
                                 and (refl_max >= cover_pass):
                             hit_point = ro + t_hit * rd
                             rd, nref = _reflect_frame(rd, normal, geo_normal)
-                            ro = hit_point + nref * (10.0 * min_hit_distance)
+                            ro = _offset_ray_origin(hit_point, nref)
                             weight *= refl_energy
                             base_dist += t_hit
                             t_prev = 0.0
@@ -3330,10 +3323,9 @@ def wavefront_shade_arena(
                                     rdr, nref = _reflect_frame(rd, normal,
                                                                geo_normal)
                                     hp = ro + t_hit * rd
+                                    rorig = _offset_ray_origin(hp, nref)
                                     for k in ti.static(range(3)):
-                                        rs_ro[c, k] = (
-                                            hp[k] + nref[k]
-                                            * (10.0 * min_hit_distance))
+                                        rs_ro[c, k] = rorig[k]
                                         rs_rd[c, k] = rdr[k]
                                     for k in ti.static(range(4)):
                                         rs_acc[c, k] = 0.0
@@ -3355,6 +3347,7 @@ def wavefront_shade_arena(
                                     # in: copy the parent stack verbatim.
                                     _write_ior_stack(rs_sca, r, c, ior, False,
                                                      False, ior_stack)
+                                    _reset_shell_segment(rs_sca, c)
                             weight *= cover_pass
                             t_prev = t_hit
                             layer_prev = hit_layer
@@ -3371,9 +3364,9 @@ def wavefront_shade_arena(
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
                                 hp = ro + t_hit * rd
+                                rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
-                                    rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * min_hit_distance))
+                                    rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3394,6 +3387,7 @@ def wavefront_shade_arena(
                                 # Pane reflection: same medium, stack copied.
                                 _write_ior_stack(rs_sca, r, c, ior, False,
                                                  False, ior_stack)
+                                _reset_shell_segment(rs_sca, c)
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -3407,9 +3401,9 @@ def wavefront_shade_arena(
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
                                 hp = ro + t_hit * rd
+                                rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
-                                    rs_ro[c, k] = (hp[k] + nref[k]
-                                                   * (10.0 * min_hit_distance))
+                                    rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -3431,6 +3425,7 @@ def wavefront_shade_arena(
                                 # copied.
                                 _write_ior_stack(rs_sca, r, c, ior, False,
                                                  False, ior_stack)
+                                _reset_shell_segment(rs_sca, c)
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -3440,7 +3435,7 @@ def wavefront_shade_arena(
                           and (refl_max >= cover_pass)):
                         hit_point = ro + t_hit * rd
                         rd, nref = _reflect_frame(rd, normal, geo_normal)
-                        ro = hit_point + nref * (10.0 * min_hit_distance)
+                        ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
                         base_dist += t_hit
                         t_prev = 0.0
@@ -3596,6 +3591,7 @@ def wavefront_shade_arena(
                                 # API work (TODO.md, later design work).
                                 _write_ior_stack(rs_sca, r, c, s_ior, False,
                                                  False, ior_stack)
+                                _reset_shell_segment(rs_sca, c)
                     refl_w_max = ti.max(refl_w[0],
                                         ti.max(refl_w[1], refl_w[2]))
                     if (refl_w_max > 0.0) and (bounces_left > 0):
@@ -3644,12 +3640,14 @@ def wavefront_shade_arena(
                     ti.atomic_add(rs_alloc[ALLOC_TRUNC_SURFACES], 1)
                 done = True
 
+            if bounced:
+                _reset_shell_segment(rs_sca, r)
             for k in ti.static(range(3)):
                 rs_ro[r, k] = ro[k]
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
-            # Columns 7+ (the nested-IOR stack) are deliberately NOT rewritten:
+            # The nested-IOR stack columns are deliberately NOT rewritten:
             # a ray that continues as its own reflection / pass-through stays
             # in the medium it was in, so its stack survives untouched. That is
             # only sound because every slot's stack columns are zeroed once per
@@ -3749,6 +3747,7 @@ _WAVEFRONT_SHADE_ARENA = (
     ("light_pos", "f32", 3),
     ("light_col", "f32", 3),
     ("cam_origin", "f32", 2),
+    ("tri_shell", "i32", 2),
 )
 
 #: The argument list every launch site passes. Unchanged by the
@@ -3767,7 +3766,7 @@ _WAVEFRONT_SHADE_PARAMS = (
     "first_iter", "compact", "weight_floor_exit", "vis_lights", "tri_mat_id",
     "tri_mat", "light_pos", "light_col", "num_lights", "time_start", "width", "height",
     "ray_offset", "rs_ro", "rs_rd", "rs_acc", "rs_sca", "rs_int", "hit_f",
-    "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin",
+    "hit_i", "rs_pix", "pix_accum", "rs_alloc", "rs_vis", "cam_origin", "tri_shell",
 )
 
 _wavefront_shade_launch = arena_packed(

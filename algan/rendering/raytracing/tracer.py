@@ -115,6 +115,8 @@ from algan.rendering.raytracing.glossy_prefilter_taichi import (
     gloss_pyramid_level,
     gloss_scatter,
 )
+from algan.rendering.raytracing.shadow_dispatch import _select_shadow_mode
+from algan.rendering.raytracing.shell_alpha import _build_closed_shell_table
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _SCA_IOR_DEPTH,
@@ -736,7 +738,7 @@ def _wavefront_state_coefficients(state_sca_width=SCA_WIDTH_PLAIN):
 
     The measured constants describe the classic ``SCA_WIDTH_PLAIN`` layout, so
     a wider row is charged its difference per pool slot. The width is the
-    BATCH's (``sca_width(ior_stack_flag)``), not the nested-IOR setting's:
+    BATCH's (``sca_width(ior_stack_flag, shell_count)``), not the nested-IOR setting's:
     ``ior_stack_flag`` is the setting AND ``refraction_flag``, and the two part
     company for any batch the flag leaves clear. Charging the setting instead
     -- which is what this did while the nested-IOR gate was off by default,
@@ -750,10 +752,8 @@ def _wavefront_state_coefficients(state_sca_width=SCA_WIDTH_PLAIN):
     }
     extra_columns = int(state_sca_width) - SCA_WIDTH_PLAIN
     if extra_columns > 0:
-        # Nested-IOR media stack (DESIGN_mesh_identity_open.md §H): rs_sca rows
-        # grow to SCA_WIDTH_NESTED f32 columns per slot in a refracting batch
-        # (the depth counter plus IOR_STACK_DEPTH entries), so tile sizing must
-        # charge them or every auto tile overruns the arena it was fitted to.
+        # Charge both the nested-IOR columns and the batch-sized closed-shell
+        # bitset. Every split-pool slot owns a complete scalar-state row.
         coefficients["pool"] += extra_columns * torch.float32.itemsize
     return coefficients
 
@@ -1437,37 +1437,9 @@ def render_batch_raytraced(
         or env_map is not None
     ) and samples <= 1
     frag_flag = 1 if det_frag else 0
-    shadow_flag = 1 if det_shadows else 0
-    # Opaque any-hit shadow early-out (compile-time mode of the shadow
-    # query; see rt_settings.shadow_anyhit): 2 = any-hit pre-pass over the
-    # opaque-flagged leaves with the ordered march as fallback; 3 = any-hit
-    # only, valid when the batch provably contains no translucent geometry
-    # (every visible primitive carries the opaque leaf flag, so a miss proves
-    # the ray lit). Uncertain texture alpha keeps the fallback: such
-    # primitives are not opaque-flagged, and their shadow attenuation only
-    # the march can evaluate. 4 = gather-march: the ordered peel rebuilt on
-    # the kbuf gather, valid for any batch (the drain evaluates translucent
-    # attenuation exactly like the march), so it needs no translucent gate.
-    if shadow_flag and rt_settings.shadow_anyhit:
-        if rt_settings.shadow_anyhit == "gather":
-            shadow_flag = 4
-        elif merged.get("has_transmissive", True):
-            # Both any-hit modes ask "is anything there", and answer full
-            # occlusion when something is. That was equivalent to the march
-            # while a covered surface always blocked; it is not once a
-            # transmissive one passes light instead (see
-            # ``raytrace_kernels_taichi._shadow_pass_through``) -- a glass
-            # ball is alpha 1, so it does not even read as translucent below.
-            # Such a batch keeps the ordered march, which evaluates the
-            # attenuation exactly.
-            shadow_flag = 1
-        else:
-            batch_has_translucent = (
-                merged.get("tri_has_translucent", True)
-                or merged.get("bez_has_translucent", True)
-                or merged.get("has_uncertain_texture_alpha", True)
-            )
-            shadow_flag = 2 if batch_has_translucent else 3
+    # Auto uses any-hit only when every shadow blocker is proven opaque.
+    # Mixed/uncertain batches retain the ordered march, not a second traversal.
+    shadow_flag = _select_shadow_mode(det_shadows, rt_settings.shadow_anyhit, merged)
     # THE SHEET ROUTE (DESIGN_sheet_resolve.md): decided ONCE here so the
     # frame-buffer prefill in render_chunk, the sparse-route gate and the
     # emission's compaction all answer the same question (the host/kernel
@@ -2406,7 +2378,9 @@ def raytrace_render_wavefront(
     # wavefront_kernels_taichi, so a bare ``sca_width`` inside this function is
     # the FUNCTION, not a width (that mistake allocated ray state with a
     # function object as its column count).
-    state_sca_width = sca_width(ior_stack_flag)
+    with memory.scope("closed_shell_table"):
+        tri_shell, shell_count = _build_closed_shell_table(memory, merged)
+    state_sca_width = sca_width(ior_stack_flag, shell_count)
     i32 = torch.int32
     f32 = torch.float32
     max_iters = max_surfaces_per_ray + max_bounces * 2 + 4
@@ -2441,6 +2415,9 @@ def raytrace_render_wavefront(
         if (
             rt_settings.wf_mem_trim
             and merged.get("mem_trim_active")
+            # The trimmed geometry has its own primitive permutation. Keep
+            # shell IDs on the untrimmed path until that table is remapped too.
+            and shell_count == 0
             and shadow_flag == 0
             and len(frag_scatters) == 0
             and refraction_flag == 0
@@ -3055,6 +3032,7 @@ def raytrace_render_wavefront(
                         rs_alloc,
                         rs_vis_arg,
                         cam_origin,
+                        tri_shell,
                     )
             active = compactor.select(
                 rs_int,
@@ -3730,6 +3708,7 @@ def raytrace_render_wavefront(
                     rs_alloc,
                     rs_vis,
                     cam_origin,
+                    tri_shell,
                 )
             active = compactor.select(
                 rs_int,

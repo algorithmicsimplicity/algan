@@ -1298,43 +1298,27 @@ def set_merge_dedup_time(enabled):
 # blocker past max_surfaces_per_ray peels); the any-hit's answer is the
 # physically correct one in both.
 #
-# QUALIFIED 2026-08-26, and deliberately NOT the default. Correctness: all
-# three modes are byte-identical on both purpose-built corner scenes (each
-# proven to reach its case) and on materials_and_lighting, on a CPU box and
-# on a Tesla T4 (benchmarks/_shadow_anyhit_check.py; the structural round in
-# DESIGN_optimization_targets.md). Performance is why the default stays off:
-# on the nn UHD benchmark (a batch with translucent geometry, so mode 2)
-# the flip measured 29.5 s -> 34.2 s end to end -- raster_shadow_trace
-# 3.8 -> 6.6 s because the deferred any-hit pre-pass pays a second full
-# traversal on the miss-dominated rays, and wavefront_shade 6.3 -> 8.2 s
-# from the wider mode-2 kernel variant -- while the shadowed static-gallery
-# scene measured neutral. Flip it per render for translucent-stack or
-# proven-all-opaque (mode 3) scenes; a smarter default would engage the
-# any-hit only where mode 3 applies. ALGAN_SHADOW_ANYHIT=1 opts in.
-#
-# ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
-# ordered shadow peel rebuilt on the kbuf gather (_collect_hits), so a
-# k-surface translucent stack costs ceil((k+1)/kbuf) traversals instead of
-# k+1 while all-opaque rays stay at one. Valid for any batch (the drain
-# evaluates translucent attenuation exactly like the march); shares the
-# march's output up to the seam-merge corner the camera peel also has.
-shadow_anyhit = (
-    "gather"
-    if env_str("ALGAN_SHADOW_ANYHIT", "0").strip().lower() == "gather"
-    else env_flag("ALGAN_SHADOW_ANYHIT", False)
-)
+# Auto selects opaque-only any-hit when the batch proves there is no
+# transmission, translucent geometry or uncertain texture alpha. Otherwise it
+# retains the ordered march. The explicit True mode also allows a mixed-scene
+# prepass, which historically lost on the translucent UHD benchmark; it is
+# deliberately not used by auto. False forces the ordered reference march.
+# "gather" selects the experimental k-buffer gather-march for any batch.
+shadow_anyhit = env_str("ALGAN_SHADOW_ANYHIT", "auto").strip().lower()
+if shadow_anyhit not in ("auto", "gather"):
+    shadow_anyhit = env_flag("ALGAN_SHADOW_ANYHIT", False)
 
 
 def set_shadow_anyhit(enabled):
-    """Select the shadow-query early-out mode (see ``shadow_anyhit``).
+    """Select shadow traversal for the next batch.
 
-    ``True`` enables the opaque any-hit walks, the string ``"gather"`` the
-    kbuf gather-march, ``False`` the classic ordered march. Takes effect at
-    the next render batch.
+    The default "auto" enables any-hit only for provably opaque batches.
+    True also enables the mixed opaque prepass, "gather" selects the k-buffer
+    march, and False forces the ordered reference march.
     """
     global shadow_anyhit
-    if isinstance(enabled, str) and enabled.strip().lower() == "gather":
-        shadow_anyhit = "gather"
+    if isinstance(enabled, str) and enabled.strip().lower() in ("auto", "gather"):
+        shadow_anyhit = enabled.strip().lower()
     else:
         shadow_anyhit = bool(enabled)
 
@@ -2668,36 +2652,15 @@ analytic_aa_one_mesh = env_flag("ALGAN_ANALYTIC_AA_ONE_MESH", True)
 # all 2-D shapes), and transmissive materials, whose declaration folds away at
 # pack time because refraction visits both shells as physical transport.
 #
-# KNOWN LIMIT, and it is a CROSS-ROUTE one. This rule lives in the sheet
-# compaction, which feeds the resolve that serves PRIMARY visibility.
-# Reflection and refraction continuations leave that resolve through
-# ``_spawn_pool_ray`` into the classic wavefront bounce loop, and
-# ``wavefront_shade`` composites every hit it drains with no ceiling of any
-# kind -- it does not even receive ``tri_obj``, so it holds no surface identity
-# to key one on (the comment at wavefront_kernels_taichi.py says so in as many
-# words). A half-transparent solid therefore composites at its authored opacity
-# when the camera looks at it directly, and at the old doubled opacity in a
-# MIRROR's image of it. The same gap applies to any batch the sheet route
-# rejects and the classic wavefront serves instead
-# (``analytic_raster_route_active``). Measured before this rule existed, the
-# two primary routes agreed: sphere 0.55 delivered 0.679 on the sheet route
-# and 0.677 on the wavefront one, so what the fallback still does is exactly
-# the old behaviour rather than some third thing. Closing either needs
-# surface identity plumbed into ray or path state, which is a wider change
-# than this one and is not attempted here.
-#
-# The path tracer (``samples_per_pixel > 1``) DID plumb that identity into
-# path state: its camera segment carries a four-slot ring of entered shell
-# ids (``pt_shade``; per-triangle ids from the merged ``tri_obj`` /
-# ``tri_closed`` pair, gated on this same flag), suppressing the exit
-# crossing of each entry/exit pair -- the per-ray limit of this rule's
-# coverage ceiling, agreeing with it pixel-for-pixel on flat interiors. Its
-# post-scatter segments keep the mirror-image gap above, deliberately
-# matching the deterministic wavefront's bounce loop.
-#
-# OFF restores today's behaviour exactly: the ceiling lives entirely in the
-# compaction, gated on this flag read at batch time, so no pixel, sheet or
-# kernel variant changes.
+# Deterministic continuations and the classic primary fallback carry a dense,
+# batch-sized shell bitset. The first crossing of an identity composites;
+# its paired crossing does not. Coverage pass-through keeps the state, while
+# every actual reflection/refraction starts an empty straight segment. There
+# is no fixed shell-count cap: the arena tile planner charges the entire bitset
+# for every ray slot. The sheet primary's exact-area ceiling above is unchanged.
+# The path tracer uses the same paired-crossing semantics for camera and
+# post-scatter segments, but retains its own bounded ring and overflow counter.
+# OFF disables both deterministic pairing and the primary coverage ceiling.
 solid_shell_alpha = env_flag("ALGAN_SOLID_SHELL_ALPHA", True)
 
 # Deliver the DIRECT LIGHTS' share of the reflected specular lobe, which the

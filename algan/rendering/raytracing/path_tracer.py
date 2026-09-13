@@ -134,6 +134,7 @@ from algan.rendering.raytracing.shading_taichi import (
     max_shadow_lights,
     shadow_vis_slots,
 )
+from algan.rendering.raytracing.shadow_dispatch import _provably_opaque_shadow_batch
 from algan.rendering.raytracing.truncation import (
     record_path_samples,
     record_truncation,
@@ -1218,15 +1219,12 @@ def path_trace_render(
     # both keep the march. With shadows off the query is compiled out
     # entirely, so the mode is pinned at 1 to avoid a second kernel variant.
     shadow_mode = 1
-    if int(shadows) and rt_settings.pt_shadow_anyhit:
-        provably_opaque = not (
-            merged.get("has_transmissive", True)
-            or merged.get("tri_has_translucent", True)
-            or merged.get("bez_has_translucent", True)
-            or merged.get("has_uncertain_texture_alpha", True)
-        )
-        if provably_opaque:
-            shadow_mode = 3
+    if (
+        int(shadows)
+        and rt_settings.pt_shadow_anyhit
+        and _provably_opaque_shadow_batch(merged)
+    ):
+        shadow_mode = 3
     # Closest-hit traversal: with every visible primitive opaque, a path's
     # peel ends at its first crossing (there is no pass-through), so the
     # k-buffer's remaining slots are filled and drained for nothing. The

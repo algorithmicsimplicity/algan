@@ -105,7 +105,17 @@ The sheet compaction now caps a shell's cumulative exact coverage per (pixel, su
 
 Closedness is computed rather than asserted — a partial-sweep `Sphere` is open, `Cone`/`Cylinder` need caps *and* a full sweep, and `Polyhedron` takes it from the closed-orientable-manifold proof `orient_faces_outward` already performs.
 
-**The deterministic rule reaches primary visibility only**: its mirror image still doubles. The path tracer now pairs crossings on every straight segment with its fixed shell ring, clearing it at each actual scatter; reflected opacity therefore composites once, while glass still evaluates each refractive interface. `benchmarks/_opacity_alpha_check.py` is the acceptance harness and `ALGAN_SOLID_SHELL_ALPHA=0` restores the old behaviour byte-identically.
+The deterministic wavefront now pairs crossings on every straight segment, including reflections and classic primary rays. `shell_alpha.py` turns the merged `tri_obj`/`tri_closed` metadata into dense IDs; a batch-sized bitset in `rs_sca` retains those IDs across hit-buffer drains. Every actual scatter clears it; ordinary coverage pass-through does not. Each f32 word stores 24 exact integer bits (not float bit patterns), so the representation does not rely on NaNs or subnormal preservation. `sca_width(nested_ior, shell_count)` prices all words into every ray slot and the tile planner; there is no fixed shell nesting cap. The memory-trim permutation is disabled for these batches until its shell-ID mapping is implemented. Physical transmission is excluded by `tri_closed` at packing, so glass still evaluates both interfaces.
+
+The path tracer has the same segment-local pairing rule but retains its own bounded ring and overflow counter. `ALGAN_SOLID_SHELL_ALPHA=0` disables pairing and the sheet primary's exact-area ceiling. `tests/unit_tests/test_hybrid_transport.py` covers mirror opacity on both deterministic front ends, re-entry, more than four overlapping shells, and state memory accounting; `benchmarks/_opacity_alpha_check.py` checks primary opacity.
+
+## Shared interface and ray-spawn arithmetic
+
+`transport_taichi.py` owns the scale-aware origin and shadow-endpoint offsets used by both renderers. Reflection keeps the outgoing geometric-side convention; transmission adds its existing forward guard. These offsets do not replace traversal minimum-hit tolerances or constitute an intersection error-bound proof.
+
+For deterministic built-in glass, compute `_relative_ior` before the Fresnel/continuation weights, not only at the Snell call. `_material_reflectance` takes an optional inside/outside ratio (including values below one). Both weight and direction use the same outward normal, falling back to the geometric normal when a shading normal disagrees about the interface side. Equal-index nested interfaces still cross the medium stack. Custom scatter's existing fixed signature and nested-medium limitations are unchanged.
+
+`shadow_anyhit` defaults to `"auto"`: `shadow_dispatch.py` selects opaque-only any-hit only when all four merged opacity facts prove it safe. Missing facts, physical transmission, translucent triangles/circuits, and uncertain texture alpha retain the ordered march. `False` selects the reference march, explicit `True` retains the experimental mixed prepass, and `"gather"` retains gather-march. The path tracer shares the opacity proof but keeps its own enable switch.
 
 ## The working colour space is linear
 
