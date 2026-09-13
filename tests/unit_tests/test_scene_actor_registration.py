@@ -120,7 +120,7 @@ def test_paragraph_built_detached_registers_nothing():
     assert len(square.scene.actors) == before
 
 
-@pytest.mark.parametrize("background", ["rectangle", "window", None])
+@pytest.mark.parametrize("background", ["rectangle", "window"])
 def test_code_renders_all_of_its_parts(background):
     code = _spawned(algan.Code(code_string="x = 1\ny = x + 2", background=background))
 

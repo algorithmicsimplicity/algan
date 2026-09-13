@@ -110,7 +110,6 @@ _NATIVE: frozenset[str] = frozenset(
     {
         "Arrow3D",
         "Circle",
-        "Code",
         "Cone",
         "ConvexHull3D",
         "Cube",
