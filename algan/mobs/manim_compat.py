@@ -596,6 +596,20 @@ class ManimCompatMob(ManimMob):
             Scene.save_video()
         """
         displacement = cast_to_tensor(displacement)
+        if (
+            arc_angle is None
+            and recursive
+            and not kwargs
+            and len(self.manim_mobject.points)
+            and self.manim_mobject.submobjects
+        ):
+            # Point-bearing composites (notably Arrow's shaft and tip) are
+            # re-anchored by the Manim conversion. Keep that arithmetic at
+            # their joins: a native translation can move a UHD seam pixel
+            # outside the render parity tolerance even at the same pose.
+            before, source = self._prepare_manim_edit()
+            source.shift(to_manim(displacement))
+            return self._animate_to_manim(source, before_source=before)
         target = self.location + displacement
         # Write a displacement to the existing hierarchy; rebuilding it through
         # Manim shift -> become needlessly morphs every unchanged attribute.

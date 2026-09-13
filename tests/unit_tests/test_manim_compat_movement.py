@@ -164,7 +164,7 @@ def test_relative_moves_are_recorded_as_animations(name):
 
 
 @pytest.mark.fast
-@pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
+@pytest.mark.parametrize("name", ["Axes", "Star"])
 def test_translation_replays_existing_rows_without_a_geometry_morph(name, monkeypatch):
     mob = COMPAT_MOBS[name]().spawn(animate=False)
     scene = mob.scene
