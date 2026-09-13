@@ -211,6 +211,62 @@ def test_complete_sheet_compaction_parity(device, shade_split, sample_depth):
             assert actual == expected
 
 
+def test_persistent_production_outputs_survive_temp_scope(device):
+    from algan.rendering.raytracing.sheets import compact_sheets
+    from tests.unit_tests.test_sheet_compaction import _coverage
+
+    frags = [
+        (0, 1.0, 0, 0.25, 1),
+        (0, 1.001, 1, 0.25, 2),
+        (3, 1.0, 4, 0.5, 3),
+        (3, 1.001, 5, 0.5, 12),
+    ]
+    coverage, merged, cam, pws = _coverage(frags)
+    coverage = {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        for k, v in coverage.items()
+    }
+    merged = {k: v.to(device) for k, v in merged.items()}
+    SETTINGS.raytracing.experimental.sheet_fused_stream = True
+    reference = compact_sheets(
+        coverage, merged, cam.to(device), pws.to(device), 0, 8, 4
+    )
+    memory = ManualMemory(1.0, device=device, num_bytes=1 << 20)
+    before = memory.get_pointers()
+    with memory.temp():
+        actual = compact_sheets(
+            coverage,
+            merged,
+            cam.to(device),
+            pws.to(device),
+            0,
+            8,
+            4,
+            memory=memory,
+            persist_output=True,
+        )
+    after = memory.get_pointers()
+    assert after[0] == before[0]
+    assert after[1] < before[1]
+    assert actual["_arena_persistent"] is True
+
+    # Poison every reclaimed forward byte.  The production fields live at the
+    # reverse end and must remain intact after the compaction scratch is gone.
+    with memory.temp():
+        memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).fill_(255)
+    for name in (
+        "sheet_key",
+        "sheet_ref",
+        "sheet_ab",
+        "sheet_wgt",
+        "sheet_wmsk",
+        "sheet_cap",
+    ):
+        assert_exact(actual[name], reference[name])
+    assert_exact(actual["sheet_offsets"], reference["sheet_offsets"].to(torch.int32))
+    assert actual["num_sheets"] == reference["num_sheets"]
+
+
 def test_live_switches():
     from algan.rendering.raytracing import settings
 

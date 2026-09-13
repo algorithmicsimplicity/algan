@@ -1667,6 +1667,7 @@ def compact_sheets(
     positioned_depth=True,
     sample_depth=False,
     memory=None,
+    persist_output=False,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -2504,6 +2505,8 @@ def compact_sheets(
             nfrag,
             fused,
             sheet_band,
+            memory=memory if persist_output else None,
+            persist_output=persist_output,
         )
         sheet_cov_final = final_records["sheet_cov"]
         sheet_msk_final = final_records["sheet_msk"]
@@ -2617,6 +2620,36 @@ def compact_sheets(
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
 
+    # CSR aligned with covered_idx: every covered pixel holds at least one
+    # fragment, hence at least one sheet, so the two pixel sets coincide.
+    sheet_offsets = _sheet_offsets(coverage["covered_idx"][:num_covered], sheet_pix)
+
+    if persist_output:
+        if memory is None or final_records is None:
+            raise ValueError("persist_output requires fused records and an arena")
+        # Production consumes only these records.  Write the two post-gather
+        # compositing arrays and CSR once into the reverse arena, then let the
+        # enclosing temp scope reclaim every other per-sheet/per-fragment
+        # temporary.  This removes the seven copy kernels raster_pipeline used
+        # to launch after compaction.
+        p_wgt = memory.get_tensor(sheet_wgt.shape, sheet_wgt.dtype, persist=True)
+        p_wmsk = memory.get_tensor(sheet_wmsk.shape, sheet_wmsk.dtype, persist=True)
+        p_offsets = memory.get_tensor(sheet_offsets.shape, torch.int32, persist=True)
+        p_wgt.copy_(sheet_wgt)
+        p_wmsk.copy_(sheet_wmsk)
+        p_offsets.copy_(sheet_offsets.to(torch.int32))
+        return {
+            "sheet_key": final_records["sheet_key"],
+            "sheet_ref": final_records["sheet_ref"],
+            "sheet_ab": final_records["sheet_ab"],
+            "sheet_wgt": p_wgt,
+            "sheet_wmsk": p_wmsk,
+            "sheet_cap": final_records["sheet_cap"],
+            "sheet_offsets": p_offsets,
+            "num_sheets": nb,
+            "_arena_persistent": True,
+        }
+
     out = {
         "sheet_key": sheet_key,
         "sheet_pix": sheet_pix,
@@ -2644,11 +2677,6 @@ def compact_sheets(
         "num_split_groups": num_split_groups,
         "band_rule": band_rule,
         "band_c": float(band_c),
+        "sheet_offsets": sheet_offsets,
     }
-
-    # CSR aligned with covered_idx: every covered pixel holds at least one
-    # fragment, hence at least one sheet, so the two pixel sets coincide.
-    out["sheet_offsets"] = _sheet_offsets(
-        coverage["covered_idx"][:num_covered], sheet_pix
-    )
     return out

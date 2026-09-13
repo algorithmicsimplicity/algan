@@ -22,10 +22,10 @@ def stream_kernel_available(tensor):
     )
 
 
-def _empty(shape, dtype, device, memory=None):
+def _empty(shape, dtype, device, memory=None, *, persist=False):
     if memory is None:
         return torch.empty(shape, dtype=dtype, device=device)
-    return memory.get_tensor(shape, dtype)
+    return memory.get_tensor(shape, dtype, persist=persist)
 
 
 def gather_group_stream(order, pixel, group, depth, cov, mask, *, memory=None):
@@ -51,7 +51,8 @@ def gather_group_stream(order, pixel, group, depth, cov, mask, *, memory=None):
 
 
 def gather_sheet_records(
-    final, nearest, rep, key, ref, ab, cap, cov, mask, nfrag, fused, band
+    final, nearest, rep, key, ref, ab, cap, cov, mask, nfrag, fused, band,
+    *, memory=None, persist_output=False,
 ):
     """Gather final records directly; no sorted packed-key or representative temporary."""
     from algan.rendering.raytracing.sheet_stream_taichi import (
@@ -70,15 +71,19 @@ def gather_sheet_records(
         "sheet_nfrag": nfrag,
         "sheet_fused": fused,
     }
+    persistent = {"sheet_key", "sheet_ref", "sheet_ab", "sheet_cap"}
     out = {
-        name: torch.empty((n, *src.shape[1:]), dtype=src.dtype, device=src.device)
+        name: _empty(
+            (n, *src.shape[1:]), src.dtype, src.device, memory,
+            persist=persist_output and name in persistent,
+        )
         for name, src in sources.items()
     }
     # Metal zero-copy cannot import a zero-byte buffer. Reuse an existing
     # output when the template removes band writes, rather than allocating
     # a dummy. No kernel is launched for an empty result.
     band_out = (
-        torch.empty(n, dtype=torch.int64, device=key.device)
+        _empty((n,), torch.int64, key.device, memory)
         if band is not None
         else out["sheet_pix"]
     )

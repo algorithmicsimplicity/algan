@@ -2323,28 +2323,42 @@ def prepare_sparse_raster_coverage(
                 positioned_depth=bool(rt_settings.sheet_positioned_depth),
                 sample_depth=bool(rt_settings.sheet_sample_depth),
                 memory=memory,
+                persist_output=bool(rt_settings.sheet_fused_stream),
             )
         ns = int(stream["num_sheets"])
-        sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
-        sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
-        sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-        sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-        sheet_offsets = _arena_tensor(
-            memory, (num_covered + 1,), torch.int32, persist=True
-        )
-        sheet_key.copy_(stream["sheet_key"])
-        sheet_ref.copy_(stream["sheet_ref"])
-        sheet_ab.copy_(stream["sheet_ab"])
-        # The resolve consumes the COMPOSITING weights, not the record: they
-        # are the sheet's own area and union everywhere except inside a band
-        # the shading-class split subdivided, where they carry §4.4's
-        # additive sibling arithmetic (``sheets._sibling_weights``).
-        sheet_cov.copy_(stream["sheet_wgt"])
-        sheet_msk.copy_(stream["sheet_wmsk"])
-        sheet_cap_t.copy_(stream["sheet_cap"])
-        sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+        if stream.get("_arena_persistent", False):
+            # The fused final-record kernel already wrote the production fields
+            # into reverse-arena storage while their source stream was live.
+            # Reuse those views directly instead of seven copy launches after
+            # the temp scope has ended.
+            sheet_key = stream["sheet_key"]
+            sheet_ref = stream["sheet_ref"]
+            sheet_ab = stream["sheet_ab"]
+            sheet_cov = stream["sheet_wgt"]
+            sheet_msk = stream["sheet_wmsk"]
+            sheet_cap_t = stream["sheet_cap"]
+            sheet_offsets = stream["sheet_offsets"]
+        else:
+            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+            sheet_offsets = _arena_tensor(
+                memory, (num_covered + 1,), torch.int32, persist=True
+            )
+            sheet_key.copy_(stream["sheet_key"])
+            sheet_ref.copy_(stream["sheet_ref"])
+            sheet_ab.copy_(stream["sheet_ab"])
+            # The resolve consumes the COMPOSITING weights, not the record: they
+            # are the sheet's own area and union everywhere except inside a band
+            # the shading-class split subdivided, where they carry §4.4's
+            # additive sibling arithmetic (``sheets._sibling_weights``).
+            sheet_cov.copy_(stream["sheet_wgt"])
+            sheet_msk.copy_(stream["sheet_wmsk"])
+            sheet_cap_t.copy_(stream["sheet_cap"])
+            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
         stream = None
         sheet_data = {
             "sheet_key": sheet_key,
