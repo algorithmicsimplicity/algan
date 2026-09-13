@@ -10,9 +10,8 @@ that boundary used to make every relative-placement helper raise:
   submobjects -- an :class:`~.Arrow` carries its tip as a submobject, so its
   location sits behind its visible center.
 
-The second is why displacements have to reach Manim as a ``shift`` rather than as
-an absolute ``move_to`` target: only then does the Mob travel exactly as far as
-the caller asked.
+The second is why displacements must translate the existing hierarchy rather
+than reach the compatibility ``move_to`` as an absolute location target.
 """
 
 import math
@@ -162,6 +161,29 @@ def test_relative_moves_are_recorded_as_animations(name):
     # Halfway through it must be in transit, not already parked at the target.
     travelled = float((center_at(0.5) - start)[1])
     assert 0 < travelled < float(displacement[1])
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
+def test_translation_replays_existing_rows_without_a_geometry_morph(name, monkeypatch):
+    mob = COMPAT_MOBS[name]().spawn(animate=False)
+    scene = mob.scene
+    start = _center(mob).clone()
+    descendants = tuple(mob.get_descendants())
+
+    def unexpected_morph(*args, **kwargs):
+        raise AssertionError("Translation must not rebuild the hierarchy")
+
+    monkeypatch.setattr(mob, "_animate_to_manim", unexpected_morph)
+    displacement = RIGHT * 1.25 + UP * 0.75
+    with Sync(runtime=2, easing=easings.linear):
+        mob.move(displacement)
+    assert tuple(mob.get_descendants()) == descendants
+    for time in (0.0, 0.5, 1.0, 2.0):
+        scene.timeline_manager.set_state_to_times(torch.tensor([time]))
+        expected = start + displacement * (time / 2)
+        torch.testing.assert_close(_center(mob), expected, atol=2e-5, rtol=0)
+        torch.testing.assert_close(_backing_center(mob), expected, atol=2e-5, rtol=0)
 
 
 @pytest.mark.parametrize("name", sorted(COMPAT_MOBS))

@@ -35,6 +35,66 @@ def isolated_svg_cache(tmp_path):
         svg_cache._MEM_CACHE.update(saved)
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"text": "affine η 0.25", "font_size": 24},
+        {
+            "text": "affine\n0.25",
+            "font_size": 32,
+            "disable_ligatures": True,
+            "color_map": {"affine": algan.RED},
+            "weight": "BOLD",
+            "stroke_width": 1,
+        },
+        {"text": "gradient", "gradient": (algan.BLUE, algan.YELLOW)},
+    ],
+)
+def test_native_pango_text_matches_uncached_on_cold_memory_and_disk_hits(
+    isolated_svg_cache, monkeypatch, options
+):
+    if not hasattr(mn, "Text"):
+        pytest.skip("Pango is unavailable")
+
+    def snapshot():
+        with algan.Scene():
+            text = algan.Text(**options)
+            values = [len(text.character_mobs)]
+            for glyph in text.character_mobs:
+                values.extend(
+                    t.detach().clone()
+                    for t in (
+                        glyph.control_points.location,
+                        glyph.color,
+                        glyph.stroke_color,
+                        glyph.stroke_width,
+                        glyph.opacity,
+                    )
+                )
+            # Mutation of one instance must not poison the reusable recipe.
+            with algan.Off():
+                text.move(algan.RIGHT).scale(2)
+                text.color = algan.GREEN
+            return values
+
+    original = mn.SVGMobject.init_svg_mobject
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            mn.SVGMobject,
+            "init_svg_mobject",
+            lambda self, use_svg_cache: original(self, False),
+        )
+        expected = snapshot()
+    for stage in ("cold", "memory", "disk"):
+        if stage == "disk":
+            svg_cache._MEM_CACHE.clear()
+        actual = snapshot()
+        assert svg_cache._MEM_CACHE, "Native Text must use the SVG recipe cache"
+        assert actual[0] == expected[0]
+        for got, want in zip(actual[1:], expected[1:]):
+            torch.testing.assert_close(got, want, atol=0, rtol=0, msg=stage)
+
+
 def _container_with_groups():
     """A stand-in SVGMobject: three glyphs and a group map referencing them.
 

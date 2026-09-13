@@ -572,23 +572,19 @@ class Group(Mob):
             num_cols += 1
         row_direction = _layout_direction("row_direction", row_direction)
         column_direction = _layout_direction("column_direction", column_direction)
-        buf_dist1 = [
-            max([m.get_length_in_direction(row_direction) for m in self.children])
-            + row_buffer
-            for _ in range(num_cols)
+        # Dimensions do not change until the moves below. Query each member
+        # once per direction, including when tight cells reuse those lengths.
+        row_lengths = [m.get_length_in_direction(row_direction) for m in self.children]
+        column_lengths = [
+            m.get_length_in_direction(column_direction) for m in self.children
         ]
-        buf_dist2 = [
-            max([m.get_length_in_direction(column_direction) for m in self.children])
-            + column_buffer
-            for _ in range(num_rows)
-        ]
+        buf_dist1 = [max(row_lengths) + row_buffer for _ in range(num_cols)]
+        buf_dist2 = [max(column_lengths) + column_buffer for _ in range(num_rows)]
         if tight_axis is not None:
             if tight_axis == 0:
                 buf_dist1 = [
                     max(
-                        self.children[i + j * num_cols].get_length_in_direction(
-                            row_direction
-                        )
+                        row_lengths[i + j * num_cols]
                         for j in range(num_rows)
                         if i + j * num_cols < len(self.children)
                     )
@@ -598,9 +594,7 @@ class Group(Mob):
             elif tight_axis == 1:
                 buf_dist2 = [
                     max(
-                        self.children[i + j * num_cols].get_length_in_direction(
-                            column_direction
-                        )
+                        column_lengths[i + j * num_cols]
                         for i in range(num_cols)
                         if i + j * num_cols < len(self.children)
                     )

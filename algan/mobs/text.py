@@ -303,7 +303,9 @@ class Tex(Mob):
             t = mn.Text(
                 delimiter.join(self.tex_strings),
                 font_size=base_font_size,
-                **(pango_kwargs or {}),
+                # Pango defaults this off. Use Algan's existing content-keyed
+                # SVG recipe cache, just as MathTex does, for repeated labels.
+                **{"use_svg_cache": True, **(pango_kwargs or {})},
             )
 
         def maybe_flip(submob):
