@@ -1,0 +1,208 @@
+{
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce GTX 1050",
+  "torch": "2.7.1+cu128",
+  "scene": "explainer",
+  "frames": 30,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "arms": [
+    "reference",
+    "pinned",
+    "fused"
+  ],
+  "compiler": [
+    [
+      "quadrants",
+      "1.3.1.dev0+gab9a58ab5.d20260905"
+    ]
+  ],
+  "measurements": [
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 83.25605869999708,
+      "author_seconds": 10.504842900001677,
+      "render_seconds": 72.7512157999954,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": false,
+      "seconds": 69.09124679999513,
+      "author_seconds": 8.239992299997539,
+      "render_seconds": 60.851254499997594,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": false,
+      "seconds": 84.72114069999952,
+      "author_seconds": 7.1525206999940565,
+      "render_seconds": 77.56862000000547,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 33.06972669999959,
+      "author_seconds": 8.734998100000666,
+      "render_seconds": 24.334728599998925,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": false,
+      "seconds": 31.72008829999686,
+      "author_seconds": 7.817410900002869,
+      "render_seconds": 23.90267739999399,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": false,
+      "seconds": 15.775413000003027,
+      "author_seconds": 7.4639585000040825,
+      "render_seconds": 8.311454499998945,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 15.1237628999952,
+      "author_seconds": 7.209060099994531,
+      "render_seconds": 7.9147028000006685,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": true,
+      "seconds": 19.942817999995896,
+      "author_seconds": 11.161334999997052,
+      "render_seconds": 8.781482999998843,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": true,
+      "seconds": 15.911528700002236,
+      "author_seconds": 7.33582110000134,
+      "render_seconds": 8.575707600000896,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": true,
+      "seconds": 16.928030399998534,
+      "author_seconds": 8.517946200001461,
+      "render_seconds": 8.410084199997073,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": true,
+      "seconds": 16.74510540000483,
+      "author_seconds": 7.739921100001084,
+      "render_seconds": 9.005184300003748,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 17.695924300001934,
+      "author_seconds": 7.792597799998475,
+      "render_seconds": 9.903326500003459,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 21.588147800001025,
+      "author_seconds": 10.33995010000217,
+      "render_seconds": 11.248197699998855,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": true,
+      "seconds": 16.919013599996106,
+      "author_seconds": 7.867693000000145,
+      "render_seconds": 9.051320599995961,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": true,
+      "seconds": 19.971525699998892,
+      "author_seconds": 9.977185100004135,
+      "render_seconds": 9.994340599994757,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "fused",
+      "warm": true,
+      "seconds": 19.020486900000833,
+      "author_seconds": 10.10032200000569,
+      "render_seconds": 8.920164899995143,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\fused.mp4"
+    },
+    {
+      "arm": "pinned",
+      "warm": true,
+      "seconds": 17.601222499994037,
+      "author_seconds": 8.597690999995393,
+      "render_seconds": 9.003531499998644,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\pinned.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 18.88267939999787,
+      "author_seconds": 9.839126899998519,
+      "render_seconds": 9.04355249999935,
+      "authored_duration": 0.5,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_readback\\explainer_UHD_30\\reference.mp4"
+    }
+  ],
+  "medians": {
+    "reference": 18.2893018499999,
+    "pinned": 17.26011804999507,
+    "fused": 17.974258649999683
+  },
+  "means": {
+    "reference": 18.322628599999007,
+    "pinned": 17.802039874997718,
+    "fused": 17.957892925000124
+  },
+  "parity": {
+    "pinned": {
+      "frames": 30,
+      "max_channel_difference": 0,
+      "differing_channels": 0
+    },
+    "fused": {
+      "frames": 30,
+      "max_channel_difference": 0,
+      "differing_channels": 0
+    }
+  }
+}

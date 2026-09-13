@@ -1,0 +1,215 @@
+[
+  {
+    "harness": "SHADOW_QUEUE",
+    "event": "summary",
+    "scene": "graphics",
+    "device": "cuda",
+    "resolution": [
+      704,
+      396
+    ],
+    "parity": {
+      "calls": 9,
+      "primary": 1,
+      "secondary": 8,
+      "max_abs": 0,
+      "scalar_values": 6073032,
+      "differing_values": 0,
+      "visibility_atol": 0.000002
+    },
+    "seconds": {
+      "serial": [
+        5.2010005230000615,
+        5.049026928999979,
+        5.199586952999994,
+        5.011223682999912
+      ],
+      "parallel_unsorted": [
+        4.98826137399999,
+        5.337100074999967,
+        5.062439054000038,
+        5.219798063000098
+      ],
+      "parallel": [
+        5.219563597999922,
+        5.0327229509999825,
+        5.300332320000052,
+        5.061339990000079
+      ]
+    },
+    "median_seconds": {
+      "serial": 5.124306940999986,
+      "parallel_unsorted": 5.141118558500068,
+      "parallel": 5.1404517940000005
+    },
+    "matched_queue_seconds": {
+      "serial": [
+        0.010232284499977595,
+        0.004689732499969068,
+        0.004031049999980496,
+        0.0024443789999963883,
+        0.0019891895000228033,
+        0.001361106500041842,
+        0.0010753459999932602,
+        0.0009551744999498624,
+        0.0008559990000094331
+      ],
+      "parallel": [
+        0.00860924400001295,
+        0.006025051499989331,
+        0.004682341000034285,
+        0.0029824095000208217,
+        0.0025124350000282902,
+        0.0017891260000055809,
+        0.0016392120000432442,
+        0.001404382999965037,
+        0.001423468499979208
+      ]
+    },
+    "max_frame_channel_difference": {
+      "parallel_unsorted": 0,
+      "parallel": 0
+    },
+    "parallel_over_serial": 1.0031506412839633
+  },
+  {
+    "harness": "SHEET_STREAM",
+    "event": "summary",
+    "device": "cuda",
+    "compiler": "(1, 3, 0)",
+    "scene": "explainer",
+    "quality": "UHD",
+    "frames": 30,
+    "resolution": [
+      3840,
+      2160
+    ],
+    "arms": [
+      "reference",
+      "fused"
+    ],
+    "encoding": "libx264 lossless",
+    "seconds": {
+      "reference": [
+        7.39739699200004,
+        7.3910439669998595,
+        7.262630687999945,
+        7.21021139100003
+      ],
+      "fused": [
+        7.169576521999943,
+        7.242386987999907,
+        7.202222326000083,
+        7.250396755000111
+      ]
+    },
+    "median_seconds": {
+      "reference": 7.326837327499902,
+      "fused": 7.222304656999995
+    },
+    "parity": {
+      "fused": {
+        "frames": 30,
+        "max_channel_difference": 0,
+        "differing_channels": 0
+      }
+    },
+    "readings": [
+      {
+        "event": "render",
+        "arm": "reference",
+        "warm": false,
+        "seconds": 101.45188992800013,
+        "engaged": {},
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/reference.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "fused",
+        "warm": false,
+        "seconds": 7.698312198000167,
+        "engaged": {
+          "gather_group_stream": 8,
+          "gather_sheet_records": 8
+        },
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/fused.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "reference",
+        "warm": true,
+        "seconds": 7.39739699200004,
+        "engaged": {},
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/reference.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "fused",
+        "warm": true,
+        "seconds": 7.169576521999943,
+        "engaged": {
+          "gather_group_stream": 8,
+          "gather_sheet_records": 8
+        },
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/fused.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "fused",
+        "warm": true,
+        "seconds": 7.242386987999907,
+        "engaged": {
+          "gather_group_stream": 8,
+          "gather_sheet_records": 8
+        },
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/fused.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "reference",
+        "warm": true,
+        "seconds": 7.3910439669998595,
+        "engaged": {},
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/reference.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "reference",
+        "warm": true,
+        "seconds": 7.262630687999945,
+        "engaged": {},
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/reference.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "fused",
+        "warm": true,
+        "seconds": 7.202222326000083,
+        "engaged": {
+          "gather_group_stream": 8,
+          "gather_sheet_records": 8
+        },
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/fused.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "fused",
+        "warm": true,
+        "seconds": 7.250396755000111,
+        "engaged": {
+          "gather_group_stream": 8,
+          "gather_sheet_records": 8
+        },
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/fused.mp4"
+      },
+      {
+        "event": "render",
+        "arm": "reference",
+        "warm": true,
+        "seconds": 7.21021139100003,
+        "engaged": {},
+        "output": "/kaggle/working/algan/algan_outputs/sheet_stream/explainer_UHD_30/reference.mp4"
+      }
+    ]
+  }
+]

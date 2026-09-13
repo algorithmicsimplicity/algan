@@ -1,0 +1,14 @@
+{
+  "command": ".venv/Scripts/python.exe -m pytest -q --fast",
+  "passed": 607,
+  "deselected": 3806,
+  "warnings": 2,
+  "seconds": 185.79,
+  "fast_budget_seconds": 75,
+  "full_suite_run": false,
+  "local_code_commit": "6e08c982",
+  "kaggle_code_commit": "3ed3fdb2453c9a248e8c3d163efcca9f18b61425",
+  "ruff": "passed",
+  "diff_check": "passed",
+  "pixel_channel_tolerance": 2
+}

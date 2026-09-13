@@ -1,0 +1,61 @@
+{
+  "gpu": "NVIDIA GeForce GTX 1050",
+  "scene": "soft",
+  "resolution": [
+    256,
+    144
+  ],
+  "budget": 0,
+  "queues": [
+    {
+      "secondary": false,
+      "events": 4948,
+      "lights": 5,
+      "visibility_scalars": 74220,
+      "differing_values": 0,
+      "device_ms": {
+        "reference": [
+          5.901311948895454,
+          5.720064237713814,
+          5.6156159192323685,
+          5.641216121613979
+        ],
+        "coherent": [
+          7.777279928326607,
+          7.643136098980904,
+          7.685120012611151,
+          7.738368108868599
+        ]
+      },
+      "median_device_ms": {
+        "reference": 5.680640179663897,
+        "coherent": 7.711744060739875
+      }
+    },
+    {
+      "secondary": true,
+      "events": 243,
+      "lights": 5,
+      "visibility_scalars": 3645,
+      "differing_values": 0,
+      "device_ms": {
+        "reference": [
+          0.7946240119636059,
+          0.8079359941184521,
+          0.7884799735620618,
+          0.7874560253694654
+        ],
+        "coherent": [
+          0.8028160147368908,
+          0.805887971073389,
+          0.8232960253953934,
+          0.8007999993860722
+        ]
+      },
+      "median_device_ms": {
+        "reference": 0.7915519927628338,
+        "coherent": 0.8043519929051399
+      }
+    }
+  ]
+}

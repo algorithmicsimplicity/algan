@@ -1,0 +1,166 @@
+{
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce GTX 1050",
+  "torch": "2.7.1+cu128",
+  "scene": "graphics",
+  "frames": 12,
+  "resolution": [
+    1280,
+    720
+  ],
+  "arms": [
+    "reference",
+    "coherent"
+  ],
+  "compiler": [
+    [
+      "quadrants",
+      "1.3.1.dev0+gab9a58ab5.d20260905"
+    ]
+  ],
+  "measurements": [
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 75.37351630000194,
+      "author_seconds": 20.0965956,
+      "render_seconds": 55.27692070000194,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": false,
+      "seconds": 29.663071399998444,
+      "author_seconds": 7.647980000001553,
+      "render_seconds": 22.01509139999689,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 35.842976899999485,
+      "author_seconds": 6.95451850000245,
+      "render_seconds": 28.888458399997035,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": false,
+      "seconds": 69.66076410000096,
+      "author_seconds": 14.345866399999068,
+      "render_seconds": 55.31489770000189,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 75.8557368000038,
+      "author_seconds": 10.654778500000248,
+      "render_seconds": 65.20095830000355,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": true,
+      "seconds": 31.93855749999784,
+      "author_seconds": 7.097349899995606,
+      "render_seconds": 24.841207600002235,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": true,
+      "seconds": 82.42903790000128,
+      "author_seconds": 20.624556399998255,
+      "render_seconds": 61.80448150000302,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 40.64465360000031,
+      "author_seconds": 7.215783899999224,
+      "render_seconds": 33.42886970000109,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 70.12178770000173,
+      "author_seconds": 14.187872700000298,
+      "render_seconds": 55.933915000001434,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": true,
+      "seconds": 41.62431490000017,
+      "author_seconds": 13.611980900001072,
+      "render_seconds": 28.0123339999991,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": true,
+      "seconds": 63.72389149999799,
+      "author_seconds": 9.687337900002603,
+      "render_seconds": 54.036553599995386,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\coherent.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 77.26417429999856,
+      "author_seconds": 8.116485300000932,
+      "render_seconds": 69.14768899999763,
+      "authored_duration": 0.7360000000000001,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_md\\graphics_MD_12\\reference.mp4"
+    }
+  ],
+  "medians": {
+    "reference": 72.98876225000276,
+    "coherent": 52.67410319999908
+  },
+  "means": {
+    "reference": 65.9715881000011,
+    "coherent": 54.92895044999932
+  },
+  "author_seconds": {
+    "reference": {
+      "median": 9.38563190000059,
+      "mean": 10.043730100000175
+    },
+    "coherent": {
+      "median": 11.649659400001838,
+      "mean": 12.755306274999384
+    }
+  },
+  "render_seconds": {
+    "reference": {
+      "median": 60.56743665000249,
+      "mean": 55.927858000000924
+    },
+    "coherent": {
+      "median": 41.02444379999724,
+      "mean": 42.173644174999936
+    }
+  },
+  "parity": {
+    "coherent": {
+      "frames": 22,
+      "max_channel_difference": 0,
+      "differing_channels": 0
+    }
+  }
+}

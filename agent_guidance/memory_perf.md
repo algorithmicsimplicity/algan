@@ -66,6 +66,24 @@ The shadowed UHD benchmark improved 7.6% in warm instrumented A/B means, with
 all 30 raw frames byte-identical and essentially unchanged peak GPU allocation.
 Set `SETTINGS.raytracing.experimental.shadow_primary_sort = False` for A/B checks.
 
+CUDA shadow fans use light-major lane scheduling for queues with at least
+16,384 events and multiple lights (`shadow_light_major`). Each event/light
+cell retains its exact serial sample and reduction order; small queues and
+other devices keep event-major scheduling. The graphics UHD workload on T4
+improved from 88.36 to 69.59 s in warm alternating render medians, with decoded
+channel differences within two. `benchmarks/performance/shadow_schedule_ab.py`
+checks identical live primary/secondary queues and records device times.
+
+Completed CUDA frames use owned pinned host storage (`pinned_frame_readback`)
+for transfers up to 256 MiB per batch. The current CUDA stream is synchronized
+before the tensor is returned, so this does not change the writer's readiness
+or ownership contract. Larger batches, other devices, and pinning allocation
+failures use pageable storage. T4 explainer UHD render medians improved from
+3.40 to 2.84 s with identical pixels. Both switches have `ALGAN_` environment
+equivalents and live controls under `SETTINGS.raytracing.experimental`.
+Full measurements and compiler/device details are in
+`benchmarks/performance/reports/cuda_workloads_2026_09/`.
+
 CUDA sheet compaction assigns conflict-rank groups with prefix counts
 (`sheet_rank_groups`) instead of globally sorting `(parent * 16 + rank)`.
 This relies on dense, ordered parents and ranks containing every integer from

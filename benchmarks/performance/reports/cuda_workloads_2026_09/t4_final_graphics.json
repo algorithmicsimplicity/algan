@@ -1,0 +1,130 @@
+{
+  "device": "cuda",
+  "gpu": "Tesla T4",
+  "torch": "2.10.0+cu128",
+  "scene": "graphics",
+  "frames": 12,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "arms": [
+    "reference",
+    "default"
+  ],
+  "compiler": [
+    [
+      "algan-quadrants",
+      "1.3.0.post2"
+    ]
+  ],
+  "measurements": [
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 176.77042764000004,
+      "author_seconds": 14.428899459999968,
+      "render_seconds": 162.34152818000007,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/reference.mp4"
+    },
+    {
+      "arm": "default",
+      "warm": false,
+      "seconds": 32.443996459000005,
+      "author_seconds": 3.959407685999963,
+      "render_seconds": 28.48458877300004,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/default.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 37.05971539400002,
+      "author_seconds": 3.939136643000097,
+      "render_seconds": 33.120578750999925,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/reference.mp4"
+    },
+    {
+      "arm": "default",
+      "warm": false,
+      "seconds": 29.154197976999967,
+      "author_seconds": 3.9760397009999906,
+      "render_seconds": 25.178158275999976,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/default.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 36.83579836800004,
+      "author_seconds": 4.031483234000007,
+      "render_seconds": 32.804315134000035,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/reference.mp4"
+    },
+    {
+      "arm": "default",
+      "warm": true,
+      "seconds": 29.48713573300006,
+      "author_seconds": 3.977571463000004,
+      "render_seconds": 25.509564270000055,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/default.mp4"
+    },
+    {
+      "arm": "default",
+      "warm": true,
+      "seconds": 29.46648681800002,
+      "author_seconds": 4.004481059,
+      "render_seconds": 25.46200575900002,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/default.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": true,
+      "seconds": 36.656402233999984,
+      "author_seconds": 3.891613882999991,
+      "render_seconds": 32.76478835099999,
+      "authored_duration": 0.36800000000000005,
+      "output": "/kaggle/working/algan/algan_outputs/t4_final/graphics_UHD_12/reference.mp4"
+    }
+  ],
+  "medians": {
+    "reference": 36.74610030100001,
+    "default": 29.47681127550004
+  },
+  "means": {
+    "reference": 36.74610030100001,
+    "default": 29.47681127550004
+  },
+  "author_seconds": {
+    "reference": {
+      "median": 3.9615485584999988,
+      "mean": 3.9615485584999988
+    },
+    "default": {
+      "median": 3.991026261000002,
+      "mean": 3.991026261000002
+    }
+  },
+  "render_seconds": {
+    "reference": {
+      "median": 32.784551742500014,
+      "mean": 32.784551742500014
+    },
+    "default": {
+      "median": 25.48578501450004,
+      "mean": 25.48578501450004
+    }
+  },
+  "parity": {
+    "default": {
+      "frames": 22,
+      "max_channel_difference": 2,
+      "differing_channels": 27
+    }
+  }
+}

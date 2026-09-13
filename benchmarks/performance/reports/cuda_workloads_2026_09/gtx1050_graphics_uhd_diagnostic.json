@@ -1,0 +1,59 @@
+{
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce GTX 1050",
+  "torch": "2.7.1+cu128",
+  "scene": "graphics",
+  "frames": 12,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "arms": [
+    "reference",
+    "coherent"
+  ],
+  "compiler": [
+    [
+      "quadrants",
+      "1.3.1.dev0+gab9a58ab5.d20260905"
+    ]
+  ],
+  "measurements": [
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 607.7664517000012,
+      "author_seconds": 16.321938499997486,
+      "render_seconds": 591.4445132000037,
+      "authored_duration": 0.36800000000000005,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_uhd\\graphics_UHD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": false,
+      "seconds": 358.0909384999977,
+      "author_seconds": 8.218611500000407,
+      "render_seconds": 349.8723269999973,
+      "authored_duration": 0.36800000000000005,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_uhd\\graphics_UHD_12\\coherent.mp4"
+    },
+    {
+      "arm": "reference",
+      "warm": false,
+      "seconds": 417.0372692999954,
+      "author_seconds": 7.972240600000077,
+      "render_seconds": 409.0650286999953,
+      "authored_duration": 0.36800000000000005,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_uhd\\graphics_UHD_12\\reference.mp4"
+    },
+    {
+      "arm": "coherent",
+      "warm": false,
+      "seconds": 330.2458181999973,
+      "author_seconds": 10.751264999998966,
+      "render_seconds": 319.49455319999834,
+      "authored_duration": 0.36800000000000005,
+      "output": "D:\\algan\\algan_outputs\\gtx1050_schedule_uhd\\graphics_UHD_12\\coherent.mp4"
+    }
+  ]
+}
