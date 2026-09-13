@@ -93,6 +93,33 @@ By default, the Scene's AudioManager uses Algan's pyttsx3 speech generator. Each
 When a video contains audio, ``save_video`` writes that transcript beside the
 video as ``<video_stem>_script.txt``.
 
+Following the transcript in the viewer
+======================================
+
+Open :meth:`Scene.view() <algan.scene.Scene.view>` and select **Transcript** in
+its right-hand panel. **Fragments** returns to the existing pixel, fragment and
+attribute inspector; switching tabs preserves both panels.
+
+The transcript includes every ``Speech`` script recorded before that viewer
+was opened, in authoring order, with the original spelling and whitespace.
+Later additions require opening a new viewer. Playback, timeline clicks and
+manual time/frame jumps highlight the words at the playhead and scroll the
+transcript to keep that passage visible. Clicking a word pauses playback and
+seeks to the first available video frame at or after its narration begins.
+During pauses, no word is highlighted; overlapping narration can highlight
+more than one word. The transcript scrolls independently of the video and
+hierarchy.
+
+Recorded narration produced by ``get_speech_generator_from_file`` retains its
+word alignment, including the padding around each trimmed clip. Timings follow
+the audio effect's actual Scene offset, not the animation's stretched runtime
+or ``wait_at_end`` pause. A custom generator can supply word timestamps as
+shown below. Sources without usable word alignment, including the default
+pyttsx3 generator, use **estimated** word timings distributed over the clip's
+duration; the viewer explicitly labels these estimates. Text with no playable
+audio remains visible without seek links. Opening the viewer does not synthesize
+speech or run a new alignment job.
+
 Using recorded narration
 ========================
 
@@ -141,6 +168,37 @@ MoviePy audio clip:
 
 The generator is Scene-local. Two Scenes can use different voices or recorded
 sources in the same process without interfering with one another.
+
+Supplying word timings from a custom generator
+---------------------------------------------
+
+Optionally attach ``algan_word_timestamps`` to the returned clip. It is a
+sequence of ``(word, start, end)`` triples, with finite times in **seconds
+relative to the returned clip's start**, not the original recording or the
+Scene. Keep the entries in spoken order and inside the clip's duration. Each
+interval is start-inclusive and end-exclusive. The displayed transcript keeps
+the script's spelling and punctuation rather than the alignment's normalized
+spelling.
+
+.. algan-doc-check: skip -- needs a prepared_segment.wav asset
+
+.. code-block:: python
+
+    from moviepy import AudioFileClip
+
+    def speech_generator(script):
+        # This prepared clip narrates "Hello, world!" and is at least 1.1 s long.
+        clip = AudioFileClip("prepared_segment.wav")
+        clip.algan_word_timestamps = (
+            ("Hello", 0.10, 0.45),
+            ("world", 0.60, 1.10),
+        )
+        return clip
+
+Word sequences that do not match the script, or malformed/out-of-range timing
+metadata, fall back to the explicitly labeled estimates rather than shifting
+subsequent words to incorrect timestamps. A generator that trims or changes the
+speed of a clip must adjust its timestamps to match that returned clip.
 
 Composing narration and sound effects
 =====================================

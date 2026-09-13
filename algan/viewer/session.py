@@ -59,6 +59,7 @@ from algan.settings.video_settings import (
     THUMBNAIL,
     UHD,
 )
+from algan.sound.transcript import snapshot_transcript
 from algan.viewer import hierarchy
 from algan.viewer.pixels import PixelRecord
 
@@ -104,6 +105,9 @@ class ViewerSession:
         # geometry that no longer exists. A second ``Scene.view()`` call is the
         # way to see later additions.
         self.duration = float(scene._recorded_end_time_for_render())
+        self._transcript = snapshot_transcript(
+            scene.audio_manager._speech_blocks, self.duration
+        )
         # At least one frame: a scene authored but never advanced still has a
         # first frame to look at, and a zero-length scrubber is unusable.
         self.total_frames = max(1, round(self.duration * self.fps))
@@ -139,6 +143,10 @@ class ViewerSession:
             target=self._run, name="algan-viewer-render", daemon=True
         )
         self._worker.start()
+
+    def transcript(self):
+        """The opening-time snapshot; reading it never waits for a render."""
+        return self._transcript
 
     # -- settings ---------------------------------------------------------
 
