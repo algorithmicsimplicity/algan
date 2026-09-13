@@ -16,6 +16,18 @@ _SCRATCH_LIMIT = 64 * 1024 * 1024
 _SORT_MIN_RAYS = 8192
 
 
+def _use_light_major(events, lights, device):
+    # T4 matched-queue measurements: large queues improve 12-27%, whereas
+    # tiny queues are launch-bound and can regress. One light cannot benefit
+    # from grouping lanes by emitter. This gate allocates and reads back nothing.
+    return bool(
+        rt_settings.shadow_light_major
+        and device.type == "cuda"
+        and events >= 16384
+        and lights > 1
+    )
+
+
 def _fan_layout(light_col, num_lights, sec_aa, secondary):
     """Read small light metadata once per packed table, not once per bounce.
 

@@ -2720,7 +2720,10 @@ def raytrace_render_wavefront(
         from algan.rendering.raytracing.raster_pipeline import (
             _shadow_identity_epsilons,
         )
-        from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
+        from algan.rendering.raytracing.shadow_queue import (
+            _use_light_major,
+            make_shadow_tracer,
+        )
 
         rows = na * kbuf
         term_mode = int(rt_settings.shadow_terminator_mode())
@@ -2875,7 +2878,7 @@ def raytrace_render_wavefront(
             # is the first bounce off the sheet-resolved primaries), so its
             # soft fans take the bounce budget (light row column 17).
             1,
-            bool(rt_settings.shadow_light_major and ev_pos.device.type == "cuda"),
+            _use_light_major(num_events, num_lights, ev_pos.device),
         )
         filled = torch.ones(
             (num_events, 3 * vis_lights), dtype=f32, device=vis_tab.device

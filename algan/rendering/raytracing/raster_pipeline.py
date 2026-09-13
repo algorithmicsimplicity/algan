@@ -2706,7 +2706,10 @@ def shade_sparse_raster_coverage(
             ev_dp = event_dp.index_select(0, acc_idx) if sec_aa > 1 else event_dp
             ev_toff = event_toff.index_select(0, acc_idx) if term_on else event_toff
             from algan.rendering.raytracing.refit_bvh import RefitBVH
-            from algan.rendering.raytracing.shadow_queue import make_shadow_tracer
+            from algan.rendering.raytracing.shadow_queue import (
+                _use_light_major,
+                make_shadow_tracer,
+            )
 
             raster_shadow_trace = make_shadow_tracer(memory)
             raster_shadow_trace(
@@ -2766,7 +2769,7 @@ def shade_sparse_raster_coverage(
                 1 if rt_settings.shadow_adaptive_taps else 0,
                 # Primary hits: the soft fans take the full budget (column 16).
                 0,
-                bool(rt_settings.shadow_light_major and ev_pos.device.type == "cuda"),
+                _use_light_major(num_events, num_lights, ev_pos.device),
             )
         sheet_resolve_shade(
             *pre_args,

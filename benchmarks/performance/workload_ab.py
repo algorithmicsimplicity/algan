@@ -35,6 +35,7 @@ ARMS = {
     "combined": (True, True, False, True),
     "parallel": (False, False, True, False),
     "pinned": (False, False, False, True),
+    "default": (True, False, False, True),
 }
 
 

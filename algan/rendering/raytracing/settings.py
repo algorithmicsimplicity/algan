@@ -1476,12 +1476,15 @@ shadow_primary_sort = env_flag("ALGAN_SHADOW_PRIMARY_SORT", True)
 
 # Launch adjacent events for the same light in adjacent lanes. Each cell keeps
 # its exact serial sample/reduction order; only scheduling changes. Host sites
-# gate this to CUDA, and the template argument keeps live A/B variants separate.
-shadow_light_major = env_flag("ALGAN_SHADOW_LIGHT_MAJOR", False)
+# gate this to CUDA queues with at least 16,384 events and multiple lights.
+# The template argument keeps live A/B variants separate. T4 graphics UHD:
+# 88.36 -> 69.59 s warm render median with unchanged sample counts.
+shadow_light_major = env_flag("ALGAN_SHADOW_LIGHT_MAJOR", True)
 
 # A completed CUDA frame batch can copy directly into page-locked host storage.
 # The copy still completes before get_frames yields; the caller owns the result.
-pinned_frame_readback = env_flag("ALGAN_PINNED_FRAME_READBACK", False)
+# T4 explainer UHD: 3.40 -> 2.84 s warm render median; pixel-identical.
+pinned_frame_readback = env_flag("ALGAN_PINNED_FRAME_READBACK", True)
 
 # Bounded light-major queue, one worker per shadow ray, fixed-order reduction.
 # Host dispatch gates: changing these never invalidates compiled settings.

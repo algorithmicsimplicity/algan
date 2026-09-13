@@ -64,7 +64,11 @@ def ripple(uv):
 
 
 def scene(seconds: float):
-    """Record the graphics clip; ``seconds`` is its whole authored length."""
+    """Record the graphics clip using ``seconds`` as its storyboard time scale.
+
+    The two final actor sequences extend the authored duration to 1.84 times
+    this value. Keep that timing for comparisons with the original workload.
+    """
     SETTINGS.raytracing.set(shadows=True)
     Scene.set_background(DARKER_GRAY)
     Scene.set_environment_map(ENV_MAP, intensity=0.8, ambient=True)
@@ -203,8 +207,8 @@ def scene(seconds: float):
         model.rotate(360, UP)
         torus.rotate(180, RIGHT)
         skyline.rotate(35, UP, about=IN * 4.6)
-    # Recorded in parallel with the block above: it opens at the same
-    # authoring time because Sync advanced the clock only once.
+    # These sequences start after the Sync block and extend the clip. Retain
+    # the original storyboard timing so historical workload comparisons match.
     with Seq(runtime=remaining * 0.5, easing=easings.ease_in_out_sine):
         glass.move(UP * 0.9)
         glass.move(DOWN * 0.9)
