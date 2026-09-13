@@ -137,6 +137,21 @@ def main():
         data["means"] = {
             name: statistics.mean(values) for name, values in times.items()
         }
+        for field in ("author_seconds", "render_seconds"):
+            data[field] = {
+                name: {
+                    "median": statistics.median(values),
+                    "mean": statistics.mean(values),
+                }
+                for name in names
+                if (
+                    values := [
+                        item[field]
+                        for item in data["measurements"]
+                        if item["warm"] and item["arm"] == name
+                    ]
+                )
+            }
         data["parity"] = {
             name: compare_videos(out / "reference.mp4", out / f"{name}.mp4")
             for name in names
