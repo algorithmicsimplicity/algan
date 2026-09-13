@@ -31,7 +31,6 @@ from __future__ import annotations
 import inspect
 import math
 import sys
-import time
 from collections.abc import Callable, Sequence
 from functools import wraps
 from pathlib import Path
@@ -1316,7 +1315,19 @@ class Scene(RenderLoopMixin):
         Unlike :meth:`save_video` this never modifies the Scene: nothing is
         despawned, the timeline is left as authored, and any temporary video
         settings or background are restored before returning. Call it as often
-        as you like while building a scene.
+        as you like while building a scene. Multiple timestamps share
+        memory-bounded render batches; frames between them are not rendered.
+
+        During :meth:`Project.render_screenshots <algan.project.Project.render_screenshots>`,
+        calls are collected instead. The project authors the scene first, then
+        renders its collected checkpoints in compatible batches. Paths, render
+        options and each call's authoring cursor are captured when called.
+
+        Animation
+        ---------
+        Does not record an animation or advance the authoring cursor. Outside
+        a project screenshot pass, rendering and file writing finish before
+        returning. Mobs must be spawned to appear in the requested frames.
 
         Parameters
         ----------
@@ -1358,10 +1369,18 @@ class Scene(RenderLoopMixin):
         Returns
         -------
         RenderResult or list of RenderResult
-            One result per still, with ``status`` (``"rendered"`` or
-            ``"skipped"``), ``output_path`` and ``walltime_seconds``. A list is
-            returned only when ``at`` is a sequence, matching the shape of the
-            input.
+            One result per still, with ``status`` (``"rendered"``, ``"skipped"``
+            or ``"deferred"``), ``output_path`` and ``walltime_seconds``. A list
+            is returned only when ``at`` is a sequence, in the input's order.
+            Batched wall time is shared evenly among the rendered files.
+            Inside a project screenshot pass, the result is ``"deferred"``;
+            the project's return value contains the completed results.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If a timestamp is invalid, output format is unsupported, or render
+            settings or post-processing passes are invalid.
 
         Examples
         --------
@@ -1389,7 +1408,6 @@ class Scene(RenderLoopMixin):
         # Import lazily to avoid the Scene/algan_utils import cycle during
         # package initialization while sharing video output's exact resolver.
         from algan.utils.algan_utils import (
-            RenderResult,
             _check_container_is_supported,
             _resolve_output_destination,
         )
@@ -1408,62 +1426,31 @@ class Scene(RenderLoopMixin):
             ]
             returns_list = True
 
-        previous_settings = self.video_settings
-        previous_background = (
-            self.background_frame,
-            self.background,
-            self.background_is_set,
-        )
-        previous_explicit = getattr(self, "_video_settings_explicit", False)
-        results = []
-        try:
-            resolved_settings = self._resolve_video_settings(video_settings)
-            if resolved_settings is not self.video_settings:
-                self.set_video_settings(resolved_settings)
-            if background is not None:
-                self.set_background(background)
-            # Rendering resolves replay windows against the timings as they
-            # stand. Mid-authoring those are not final -- an enclosing context
-            # with a runtime rescales its block when it exits -- so the
-            # resolution is restored rather than left on the timeline for the
-            # next render to reuse.
-            with self.timeline_manager.preserving_authoring_state(
-                preserve_replay_resolution=self.animation_manager.context.prev_context
-                is not None
-            ):
-                for target, time_stamp in targets:
-                    if target.exists() and not overwrite:
-                        results.append(RenderResult("skipped", target))
-                        continue
-                    started = time.perf_counter()
-                    self._render_still(target, time_stamp, post_processes)
-                    walltime = time.perf_counter() - started
-                    logger.info("Finished rendering %s in %.1f s", target, walltime)
-                    # The same plan ``save_video`` reports, and for the same
-                    # reason: it is how a script reads back which renderer ran,
-                    # what it could not honor, and what it truncated. The field
-                    # was documented on ``RenderResult`` from the start but only
-                    # ever filled by the video path.
-                    results.append(
-                        RenderResult(
-                            "rendered",
-                            target,
-                            walltime,
-                            getattr(self, "last_render_plan", None),
-                        )
-                    )
-        finally:
-            # set_video_settings restores every derived cache (dimensions,
-            # fps, frame size, pixel count), not merely the settings reference.
-            if self.video_settings is not previous_settings:
-                self.set_video_settings(previous_settings, _explicit=previous_explicit)
-            self._video_settings_explicit = previous_explicit
-            (
-                self.background_frame,
-                self.background,
-                self.background_is_set,
-            ) = previous_background
+        from algan._still_frames import _StillBatch
 
+        if not targets:
+            return []
+        if project_run is not None:
+            options = project_run.frame_options
+            overwrite = overwrite and options.get("overwrite", True)
+            if background is None:
+                background = options.get("background")
+            if post_processes is None:
+                post_processes = options.get("post_processes")
+        batch = _StillBatch.capture(
+            self,
+            targets,
+            video_settings,
+            background,
+            post_processes,
+            overwrite,
+            deferred=project_run is not None,
+        )
+        if project_run is None:
+            results = batch.render()
+        else:
+            results = batch.deferred_results()
+            project_run.queue_frames(batch)
         result = results if returns_list else results[0]
         if project_run is not None:
             project_run.record_frame_results(result)

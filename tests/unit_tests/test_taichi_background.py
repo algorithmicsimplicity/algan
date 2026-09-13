@@ -186,3 +186,28 @@ def test_an_rgb_callable_background_does_not_glow(callback_kind):
 
     assert result[..., :3].flatten().tolist() == [64, 128, 191] * 2
     assert result[..., 3].flatten().tolist() == [0, 0]
+
+
+@pytest.mark.parametrize("kind", ["torch", "taichi"])
+def test_sparse_background_uses_selected_times_even_at_an_offset(kind):
+    def callback(x, y, time):
+        return torch.cat(
+            torch.broadcast_tensors(x, y, time, torch.ones_like(time)), dim=-1
+        )
+
+    deferred = _prepare_background_for_chunk(
+        _coordinate_background if kind == "taichi" else callback,
+        screen_width=3,
+        screen_height=2,
+        anti_alias_level=1,
+        current_ind=0,
+        new_ind=4,
+        frames_per_second=10,
+        frame_indices=(1, 3, 7, 9),
+        device=torch.device("cpu"),
+    )
+    result = torch.empty((2, 6, 4), dtype=torch.uint8)
+    _prefill_background(result, deferred, frame_offset=1, device=result.device)
+    # The third component encodes time directly (linear colour disabled by
+    # the suite default): sparse indices 3 and 7, not offset positions 1 and 2.
+    assert result[:, 0, 2].tolist() == [77, 179]

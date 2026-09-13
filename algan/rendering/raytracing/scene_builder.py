@@ -86,6 +86,7 @@ class _DeferredBackground:
         "frames_per_second",
         "device",
         "is_taichi_func",
+        "frame_indices",
     )
 
     def __init__(
@@ -97,6 +98,7 @@ class _DeferredBackground:
         first_frame,
         frames_per_second,
         device,
+        frame_indices=None,
     ):
         self.callback = callback
         self.width = int(width)
@@ -106,6 +108,7 @@ class _DeferredBackground:
         self.frames_per_second = float(frames_per_second)
         self.device = torch.device(device)
         self.is_taichi_func = is_compiler_func(callback)
+        self.frame_indices = frame_indices
 
 
 def _projected_scene_device(primitives):
@@ -2693,6 +2696,14 @@ def _prefill_deferred_background(out, background, frame_offset):
             frame_offset,
             background.frames_per_second,
             decode,
+            torch.tensor(
+                background.frame_indices
+                if background.frame_indices is not None
+                else (0,),
+                device=device,
+                dtype=torch.int64,
+            ),
+            background.frame_indices is not None,
         )
         return
 
@@ -2704,15 +2715,22 @@ def _prefill_deferred_background(out, background, frame_offset):
     k_ = 1  # out.shape[0]
     for local_frame in range(0, out.shape[0], k_):
         k = min(k_, out.shape[0] - local_frame)
-        time = (
-            torch.arange(
+        if background.frame_indices is None:
+            indices = torch.arange(
                 background.first_frame + frame_offset + local_frame,
                 background.first_frame + frame_offset + local_frame + k,
                 device=device,
                 dtype=torch.float32,
-            ).view(k, 1, 1, 1)
-            / background.frames_per_second
-        )
+            )
+        else:
+            indices = torch.tensor(
+                background.frame_indices[
+                    frame_offset + local_frame : frame_offset + local_frame + k
+                ],
+                device=device,
+                dtype=torch.float32,
+            )
+        time = indices.view(k, 1, 1, 1) / background.frames_per_second
         frame = background.callback(x, y, time)
         if not torch.is_tensor(frame):
             frame = torch.as_tensor(frame, device=device)

@@ -666,3 +666,30 @@ def test_render_failure_after_emitting_frames_resumes_instead_of_giving_up(
     assert rendered_windows[0] == (0, 8)
     assert rendered_windows[1][0] == 4
     assert sum(len(frame) for frame in frames) == 8
+
+
+def test_sparse_preflight_retries_preserve_selection_without_gap_frames(monkeypatch):
+    rendered_durations = []
+    scene = _make_preflight_scene(
+        monkeypatch,
+        lambda duration, _strict: duration <= 2,
+        rendered_durations,
+    )
+    original_fetch = scene._get_batch_of_primitives
+    selections = []
+
+    def fetch(start, end, actors, memory, *, frame_indices):
+        selections.append(tuple(frame_indices[start:end]))
+        return original_fetch(start, end, actors, memory)
+
+    monkeypatch.setattr(scene, "_get_batch_of_primitives", fetch)
+    indices = (2, 100, 101, 1000, 9000)
+    frames = list(
+        scene.get_frames(
+            0, 5, frame_indices=indices, post_processes=(), manual_memory=False
+        )
+    )
+    assert sum(len(batch) for batch in frames) == 5
+    assert all(duration <= 2 for duration in rendered_durations)
+    assert all(value in indices for selection in selections for value in selection)
+    assert selections[0] == indices
