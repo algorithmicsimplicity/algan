@@ -19,7 +19,7 @@ const state = {
   zoom: 1, epoch: 0, resolutionName: null, resolutionKeys: "",
   pixelRequest: 0, attributeRequest: 0,
   sceneId: null, sceneVersion: null, sceneKeys: "", generation: 0,
-  switching: false,
+  switching: false, sceneReady: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -107,6 +107,7 @@ function frameImage(index) {
 /* ---------- drawing ---------- */
 
 async function showFrame(index, { redrawOnly = false } = {}) {
+  if (!state.sceneReady) return false;
   index = Math.max(0, Math.min(index, state.totalFrames - 1));
   state.frame = index;
   const epoch = state.epoch;
@@ -199,7 +200,7 @@ function setStatus(text, kind = "") {
 /* ---------- playback ---------- */
 
 function play() {
-  if (state.playing || state.switching) return;
+  if (!state.sceneReady || state.playing || state.switching) return;
   state.playing = true;
   el("play").textContent = "Stop";
   state.playStartedAt = performance.now();
@@ -232,7 +233,7 @@ async function tick() {
 }
 
 async function seek(index) {
-  if (state.switching) return;
+  if (!state.sceneReady || state.switching) return;
   const generation = state.generation;
   stop();
   index = Math.max(0, Math.min(Math.round(index), state.totalFrames - 1));
@@ -285,7 +286,7 @@ function showPixelColour(x, y) {
 }
 
 async function inspect(x, y) {
-  if (state.switching) return;
+  if (!state.sceneReady || state.switching) return;
   const generation = state.generation;
   state.pixel = { x, y };
   showPixelColour(x, y);
@@ -449,6 +450,7 @@ async function selectNode(node, element) {
 }
 
 async function showAttributes() {
+  if (!state.sceneReady) return;
   const generation = state.generation;
   const target = el("attrs");
   const selected = state.selected;
@@ -498,6 +500,7 @@ async function showAttributes() {
 let hierarchyPending = null;
 
 async function loadHierarchy() {
+  if (!state.sceneReady) return;
   const generation = state.generation;
   if (hierarchyPending === generation) return;
   hierarchyPending = generation;
@@ -517,6 +520,7 @@ let transcriptLoaded = false;
 let transcriptPending = null;
 
 async function loadTranscript() {
+  if (!state.sceneReady) return;
   const generation = state.generation;
   if (transcriptLoaded || transcriptPending === generation) return;
   transcriptPending = generation;
@@ -573,13 +577,16 @@ function syncScenes(data) {
   for (const button of tabs.children) {
     const selected = Number(button.dataset.scene) === data.scene_id;
     button.setAttribute("aria-selected", String(selected));
-    button.tabIndex = selected ? 0 : -1;
+    // No tab is auto-selected. Keep the first one keyboard reachable anyway.
+    button.tabIndex = selected || (data.scene_id === null && button === tabs.children[0]) ? 0 : -1;
   }
-  el("scene-panel").setAttribute("aria-labelledby", `scene-tab-${data.scene_id}`);
+  if (data.scene_id === null) el("scene-panel").removeAttribute("aria-labelledby");
+  else el("scene-panel").setAttribute("aria-labelledby", `scene-tab-${data.scene_id}`);
 }
 
 function clearScene() {
   stop();
+  state.sceneReady = false;
   state.generation++;
   state.images.clear();
   state.drawn = false;
@@ -612,13 +619,15 @@ function clearScene() {
 }
 
 async function changeScene(id) {
-  if (state.switching || id === state.sceneId) return;
+  if (state.switching || (state.sceneReady && id === state.sceneId)) return;
   state.switching = true;
   clearScene();
   el("scene-panel").inert = true;
   el("scene-panel").setAttribute("aria-busy", "true");
   for (const button of el("scene-tabs").children) button.disabled = true;
-  setStatus("switching scene…", "busy");
+  el("scene-placeholder").hidden = false;
+  el("scene-placeholder").textContent = "Loading selected scene…";
+  setStatus("loading scene…", "busy");
   try {
     const response = await fetch(api(`/api/scene?id=${encodeURIComponent(id)}`), { method: "POST" });
     if (!response.ok) throw new Error((await response.json()).error || response.statusText);
@@ -626,20 +635,25 @@ async function changeScene(id) {
     setStatus("rendering…", "busy");
   } catch (err) {
     setStatus(err.message, "error");
+    el("scene-placeholder").textContent = err.message;
   } finally {
     state.switching = false;
-    el("scene-panel").inert = false;
+    el("scene-panel").inert = !state.sceneReady;
     el("scene-panel").removeAttribute("aria-busy");
     for (const button of el("scene-tabs").children) {
       button.disabled = false;
       // Disabling the focused button during the handoff removes focus in real
       // browsers. Restore it so the next arrow key still navigates scene tabs.
-      if (Number(button.dataset.scene) === state.sceneId) button.focus();
+      if (Number(button.dataset.scene) === (state.sceneReady ? state.sceneId : id)) button.focus();
     }
-    // The next state poll also recovers a lost selection response.
-    loadHierarchy();
-    loadTranscript();
-    showFrame(state.frame);
+    // A failed/lost POST must not issue requests for the discarded scene.
+    // The next catalogue poll recovers a lost selection response without
+    // retrying the authoring call.
+    if (state.sceneReady) {
+      loadHierarchy();
+      loadTranscript();
+      showFrame(state.frame);
+    }
   }
 }
 
@@ -666,7 +680,7 @@ function syncResolution(data) {
 }
 
 async function changeResolution(name) {
-  if (state.switching) return;
+  if (!state.sceneReady || state.switching) return;
   const generation = state.generation;
   const select = el("resolution");
   select.disabled = true;
@@ -719,13 +733,28 @@ function scrubTo(event) {
 }
 
 function adoptState(data) {
-  if (data.scene_version !== undefined && data.scene_version !== state.sceneVersion) {
+  if (data.scene_version !== undefined && (data.scene_version !== state.sceneVersion
+      || data.scene_id !== state.sceneId)) {
     state.sceneVersion = data.scene_version;
     state.sceneId = data.scene_id;
     clearScene();
-    state.epoch = data.epoch;
+    state.epoch = data.epoch ?? 0;
   }
   syncScenes(data);
+  state.sceneReady = !data.scenes || data.scene_id !== null;
+  el("scene-panel").inert = !state.sceneReady || state.switching;
+  el("scene-placeholder").hidden = state.sceneReady;
+  if (!state.sceneReady) {
+    const loading = data.loading_scene_id !== null && data.loading_scene_id !== undefined;
+    const name = data.scenes.find(scene => scene.id === data.loading_scene_id)?.name;
+    const message = data.error || (loading
+      ? `Loading ${name}…` : "Select a scene tab to begin.");
+    el("scene-placeholder").textContent = message;
+    el("meta").textContent = "";
+    el("transcript-status").textContent = "Select a scene tab to view its transcript.";
+    setStatus(data.error || (loading ? "loading scene…" : ""), data.error ? "error" : "busy");
+    return;
+  }
   state.fps = data.fps;
   state.totalFrames = data.total_frames;
   state.duration = data.runtime ?? data.duration ?? 0;
@@ -744,7 +773,7 @@ async function refreshState() {
   try {
     const data = await getJSON("/api/state");
     if (state.switching || generation !== state.generation) return;
-    if (data.epoch !== state.epoch) {
+    if (data.epoch !== undefined && data.epoch !== state.epoch) {
       // Something else changed the resolution (another tab, a restart): drop
       // frames of the old size rather than drawing them at the new one.
       state.epoch = data.epoch;
@@ -752,6 +781,7 @@ async function refreshState() {
       state.drawn = false;
     }
     adoptState(data);
+    if (!state.sceneReady) return;
     const covered = data.cached.reduce((sum, [a, b]) => sum + (b - a + 1), 0);
     el("cached").style.width =
       `${(covered / Math.max(1, data.total_frames)) * 100}%`;

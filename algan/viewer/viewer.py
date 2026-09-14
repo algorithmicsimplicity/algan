@@ -103,9 +103,9 @@ def _view(
 
 
 def _view_project(
-    scenes, video_settings=None, *, port=0, open_browser=True, block=True
+    scenes, load_scene, video_settings=None, *, port=0, open_browser=True, block=True
 ):
-    session = ProjectViewerSession(scenes, video_settings)
+    session = ProjectViewerSession(scenes, load_scene, video_settings)
     return _launch(session, port=port, open_browser=open_browser, block=block)
 
 

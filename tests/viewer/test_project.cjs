@@ -129,3 +129,90 @@ test("a completed switch restores focus to the selected scene tab", async () => 
   c.requests[0].reply(scene(2, 1)); await switching;
   assert.equal(focused, tabs.children[1]);
 });
+
+function catalogue(overrides = {}) {
+  return { scenes: scene().scenes, scene_id: null, scene_version: 0,
+    loading_scene_id: null, error: null, ...overrides };
+}
+
+test("catalogue startup and polling never request scene data or images", async () => {
+  const c = client();
+  for (let poll = 0; poll < 3; poll++) {
+    const request = c.run("refreshState()");
+    assert.equal(c.requests.length, poll + 1);
+    assert.match(c.requests[poll].url, /^\/api\/state\?/);
+    c.requests[poll].reply(catalogue()); await request;
+  }
+  assert.equal(c.images.length, 0);
+  assert.equal(c.run("state.sceneReady"), false);
+  assert.equal(c.elements.get("scene-panel").inert, true);
+  assert.match(c.elements.get("scene-placeholder").textContent, /Select a scene tab/);
+  const tabs = c.elements.get("scene-tabs").children;
+  assert.equal(tabs[0].attributes["aria-selected"], "false");
+  assert.equal(tabs[1].attributes["aria-selected"], "false");
+  assert.equal(tabs[0].tabIndex, 0);
+  assert.equal(tabs[1].tabIndex, -1);
+  assert.equal(c.elements.get("scene-panel").attributes["aria-labelledby"], undefined);
+  for (const call of ["play()", "seek(0)", "showFrame(0)", "inspect(0,0)",
+      "loadHierarchy()", "loadTranscript()", "showAttributes()", "changeResolution('HD')"]) {
+    await c.run(call);
+  }
+  assert.equal(c.requests.length, 3);
+  assert.equal(c.images.length, 0);
+});
+
+test("the first selected tab may be any scene, not necessarily the first", async () => {
+  const c = client(); adopt(c, catalogue());
+  const switching = c.elements.get("scene-tabs").children[1].onclick();
+  assert.equal(c.requests.length, 1);
+  assert.match(c.requests[0].url, /scene\?id=2/);
+  assert.equal(c.images.length, 0);
+  c.requests[0].reply(scene(2, 1)); await switching;
+  assert.equal(c.run("state.sceneReady"), true);
+  assert.equal(c.elements.get("scene-placeholder").hidden, true);
+  assert.match(c.images[0].src, /&s=1$/);
+});
+
+test("polling an authoring scene waits without requesting its contents", async () => {
+  const c = client(); adopt(c, catalogue());
+  const poll = c.run("refreshState()");
+  c.requests[0].reply(catalogue({scene_version: 1, loading_scene_id: 2})); await poll;
+  assert.match(c.elements.get("scene-placeholder").textContent, /Loading 2_outro/);
+  assert.equal(c.requests.length, 1);
+  assert.equal(c.images.length, 0);
+  const completed = c.run("refreshState()");
+  // The version was already advertised during authoring; scene_id changes now.
+  c.requests[1].reply(scene(2, 1)); await completed;
+  assert.equal(c.run("state.sceneId"), 2);
+  assert.equal(c.run("state.sceneReady"), true);
+  assert.match(c.images[0].src, /&s=1$/);
+});
+
+test("a failed selection leaves tabs usable without automatic authoring retries", async () => {
+  const c = client(); adopt(c, scene());
+  const switching = c.run("changeScene(2)");
+  c.requests[0].reject(new Error("Could not load 2_outro")); await switching;
+  assert.equal(c.requests.length, 1);
+  assert.equal(c.images.length, 0);
+  assert.equal(c.elements.get("scene-panel").inert, true);
+  assert.equal(c.elements.get("scene-tabs").children[1].disabled, false);
+  const poll = c.run("refreshState()");
+  c.requests[1].reply(catalogue({scene_version: 1, error: "Could not load 2_outro"})); await poll;
+  assert.equal(c.requests.length, 2);
+  assert.match(c.elements.get("scene-placeholder").textContent, /Could not load/);
+  const retry = c.run("changeScene(2)");
+  assert.match(c.requests[2].url, /scene\?id=2/);
+  c.requests[2].reply(scene(2, 2)); await retry;
+  assert.equal(c.run("state.sceneReady"), true);
+});
+
+test("a scene lost after an authoring failure can be selected again", async () => {
+  const c = client(); adopt(c, scene());
+  const switching = c.run("changeScene(2)");
+  c.requests[0].reject(new Error("authoring failed")); await switching;
+  // The old id is still known until the next poll; it must not block its tab.
+  const back = c.run("changeScene(0)");
+  assert.match(c.requests[1].url, /scene\?id=0/);
+  c.requests[1].reply(scene(0, 2)); await back;
+  assert.equal(c.run("state.sceneReady"), true);
+});

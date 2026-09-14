@@ -101,14 +101,21 @@ def project_viewer(fresh_scene, tmp_path, fake_frames):
 
 def test_project_view_authors_once_and_exports_nothing(project_viewer):
     project, handle, calls = project_viewer
-    assert calls == ["intro", "outro"]
+    assert calls == []
+    assert handle.session.state()["scene_id"] is None
+    assert handle.session._authored == {}
+    for scene_id, expected in [
+        (1, ["outro"]),
+        (1, ["outro"]),
+        (0, ["outro", "intro"]),
+        (1, ["outro", "intro"]),
+    ]:
+        get(handle, f"/api/scene?id={scene_id}", method="POST")
+        assert calls == expected
     assert not project.global_transcript_path.exists()
     assert not project.file_path.exists()
     assert not project.screenshot_directory.exists()
     assert _get_active_project_run() is None
-    for scene_id in (1, 0, 1):
-        get(handle, f"/api/scene?id={scene_id}", method="POST")
-    assert calls == ["intro", "outro"]
 
 
 def test_tabs_keep_stable_ids_names_and_scene_fps(project_viewer):
@@ -118,7 +125,9 @@ def test_tabs_keep_stable_ids_names_and_scene_fps(project_viewer):
         {"id": 0, "name": "0_intro"},
         {"id": 1, "name": "1_outro"},
     ]
-    assert first["scene_id"] == 0
+    assert first["scene_id"] is None
+    assert "fps" not in first
+    first = get(handle, "/api/scene?id=0", method="POST")
     assert first["fps"] == 4
     assert first["runtime"] == pytest.approx(1)
     assert first["resolution_name"] == "PREVIEW"
@@ -147,7 +156,7 @@ def test_frames_hierarchy_and_transcript_belong_to_selected_scene(project_viewer
 
 def test_stale_scene_requests_are_rejected_even_after_returning(project_viewer):
     _, handle, _ = project_viewer
-    first = get(handle, "/api/state")
+    first = get(handle, "/api/scene?id=0", method="POST")
     get(handle, "/api/scene?id=1", method="POST")
     get(handle, "/api/scene?id=0", method="POST")
     for path, method in [
@@ -163,6 +172,7 @@ def test_stale_scene_requests_are_rejected_even_after_returning(project_viewer):
 
 def test_invalid_and_repeated_selections_do_not_replace_worker(project_viewer):
     _, handle, _ = project_viewer
+    get(handle, "/api/scene?id=0", method="POST")
     original = handle.session.session_for_request()
     state = get(handle, "/api/state")
     same = get(handle, "/api/scene?id=0", method="POST")
@@ -182,11 +192,12 @@ def test_selection_requires_session_token(project_viewer):
     with pytest.raises(urllib.error.HTTPError) as error:
         urllib.request.urlopen(request, timeout=10)
     assert error.value.code == 403
-    assert handle.session.state()["scene_id"] == 0
+    assert handle.session.state()["scene_id"] is None
 
 
 def test_selection_closes_previous_worker_and_handle_closes_last(project_viewer):
     _, handle, _ = project_viewer
+    get(handle, "/api/scene?id=0", method="POST")
     old = handle.session.session_for_request()
     worker = old._worker
     get(handle, "/api/scene?id=1", method="POST")
@@ -212,6 +223,8 @@ def test_scene_subset_and_explicit_settings(fresh_scene, tmp_path, fake_frames):
     ) as handle:
         state = get(handle, "/api/state")
         assert state["scenes"] == [{"id": 1, "name": "1_outro"}]
+        assert state["scene_id"] is None
+        state = get(handle, "/api/scene?id=1", method="POST")
         assert state["scene_id"] == 1
         assert state["total_frames"] == 1
         assert state["fps"] == TINY.frames_per_second
@@ -222,31 +235,56 @@ def test_scene_subset_and_explicit_settings(fresh_scene, tmp_path, fake_frames):
         project.view("missing")
 
 
-def test_authoring_failure_restores_context_and_never_launches(
-    monkeypatch, fresh_scene, tmp_path
+def test_authoring_failure_restores_context_and_can_be_retried(
+    fresh_scene, tmp_path, fake_frames
 ):
-    import algan.viewer.viewer as launch
-
     before = SceneManager.instance().scene_stack
+    calls = []
 
     def broken():
+        calls.append("broken")
         raise ValueError("author failed")
 
-    monkeypatch.setattr(
-        launch, "_view_project", lambda *a, **k: pytest.fail("launched")
+    def good():
+        calls.append("good")
+        Square().spawn(animate=False)
+
+    project = Project(
+        [broken, good], video_settings=TINY, file_path=tmp_path / "out.mp4"
     )
-    with pytest.raises(ValueError, match="author failed") as error:
-        Project([broken], file_path=tmp_path / "out.mp4").view()
+    with project.view(open_browser=False, block=False) as handle:
+        assert calls == []
+        for expected in (["broken"], ["broken", "broken"]):
+            with pytest.raises(RuntimeError, match="0_broken.*author failed") as error:
+                handle.session.select_scene(0)
+            assert calls == expected
+            assert SceneManager.instance().scene_stack == before
+            assert _get_active_project_run() is None
+            if hasattr(error.value.__cause__, "__notes__"):
+                assert "0_broken" in error.value.__cause__.__notes__[0]
+            for _ in range(2):
+                state = get(handle, "/api/state")
+                assert state["scene_id"] is None
+                assert state["loading_scene_id"] is None
+                assert "0_broken" in state["error"]
+            assert calls == expected  # polling cannot retry authoring
+        get(handle, "/api/scene?id=1", method="POST")
+        assert calls == ["broken", "broken", "good"]
+        with pytest.raises(urllib.error.HTTPError) as error:
+            get(handle, "/api/scene?id=0", method="POST")
+        assert error.value.code == 500
+        assert "0_broken" in json.load(error.value)["error"]
+        assert handle.session.state()["scene_id"] is None
+        get(handle, "/api/scene?id=1", method="POST")
+        assert calls == ["broken", "broken", "good", "broken"]
     assert SceneManager.instance().scene_stack == before
-    assert _get_active_project_run() is None
-    if hasattr(error.value, "__notes__"):
-        assert "0_broken" in error.value.__notes__[0]
 
 
 def test_project_render_settings_are_snapshotted_per_scene(
     monkeypatch, fresh_scene, tmp_path
 ):
     seen = []
+    before = SETTINGS.raytracing.shadows
 
     def intro():
         SETTINGS.raytracing.shadows = False
@@ -267,16 +305,18 @@ def test_project_render_settings_are_snapshotted_per_scene(
     monkeypatch.setattr(ViewerSession, "_render_range", render)
     project = Project([intro, outro], file_path=tmp_path / "out.mp4")
     with project.view(video_settings=TINY, block=False, open_browser=False) as handle:
+        get(handle, "/api/scene?id=0", method="POST")
         get(handle, "/frame/0.png", raw=True)
         get(handle, "/api/scene?id=1", method="POST")
         get(handle, "/frame/0.png", raw=True)
     assert ("Square", False) in seen
     assert ("Circle", True) in seen
-    assert SETTINGS.raytracing.shadows is True
+    assert SETTINGS.raytracing.shadows is before
 
 
 def test_handoff_waits_for_inflight_scene_access(project_viewer):
-    _, handle, _ = project_viewer
+    _, handle, calls = project_viewer
+    get(handle, "/api/scene?id=0", method="POST")
     previous = handle.session.session_for_request()
     entered = threading.Event()
     release = threading.Event()
@@ -297,6 +337,7 @@ def test_handoff_waits_for_inflight_scene_access(project_viewer):
         switcher = pool.submit(switch_scene)
         try:
             assert not switched.wait(0.05)
+            assert calls == ["intro"]  # no authoring over the old renderer
         finally:
             release.set()
         holder.result(timeout=5)
@@ -352,6 +393,7 @@ def test_real_project_frames_survive_scene_switch_and_return(fresh_scene, tmp_pa
             ) as response:
                 return Image.open(io.BytesIO(response.read())).convert("RGB")
 
+        get(handle, "/api/scene?id=0", method="POST")
         first = frame()
         get(handle, "/api/scene?id=1", method="POST")
         second = frame()
@@ -361,3 +403,129 @@ def test_real_project_frames_survive_scene_switch_and_return(fresh_scene, tmp_pa
     assert all(
         high <= 2 for low, high in ImageChops.difference(first, repeated).getextrema()
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/hierarchy", "GET"),
+        ("/api/transcript", "GET"),
+        ("/api/children?node=0", "GET"),
+        ("/api/attrs?node=0", "GET"),
+        ("/api/fragments?frame=0&x=0&y=0", "GET"),
+        ("/api/prefetch?frame=0", "GET"),
+        ("/frame/0.png", "GET"),
+        ("/api/resolution?name=HD", "POST"),
+    ],
+)
+def test_scene_requests_before_selection_never_author(project_viewer, path, method):
+    _, handle, calls = project_viewer
+    with pytest.raises(urllib.error.HTTPError) as error:
+        get(handle, path, method=method)
+    assert error.value.code == 400
+    assert "Select a scene tab" in json.load(error.value)["error"]
+    assert calls == []
+    assert handle.session._authored == {}
+
+
+def test_open_poll_invalid_selection_and_close_do_not_construct_scenes(
+    monkeypatch, fresh_scene, tmp_path
+):
+    def unused():
+        pytest.fail("unselected authoring ran")
+
+    project = Project([unused], file_path=tmp_path / "out.mp4")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("opening the viewer constructed a Scene or render worker")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Scene, "__init__", forbidden)
+        patch.setattr(ViewerSession, "__init__", forbidden)
+        with project.view(open_browser=False, block=False) as handle:
+            for _ in range(3):
+                assert get(handle, "/api/state")["scene_id"] is None
+            assert b"scene-tabs" in get(handle, "/", raw=True)
+            for selector in ("99", "-1", "bad"):
+                with pytest.raises(urllib.error.HTTPError):
+                    get(handle, f"/api/scene?id={selector}", method="POST")
+            assert handle.session._authored == {}
+        assert handle.session._load_scene is None
+
+
+def test_catalogue_remains_responsive_during_lazy_authoring(
+    fresh_scene, tmp_path, fake_frames
+):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow():
+        calls.append("slow")
+        entered.set()
+        assert release.wait(10)
+        Square().spawn(animate=False)
+
+    def unused():
+        pytest.fail("unselected authoring ran")
+
+    project = Project(
+        [unused, slow], video_settings=TINY, file_path=tmp_path / "out.mp4"
+    )
+    with project.view(open_browser=False, block=False) as handle:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(handle.session.select_scene, 1)
+            assert entered.wait(5)
+            try:
+                state = get(handle, "/api/state")
+                assert state["scene_id"] is None
+                assert state["loading_scene_id"] == 1
+                with pytest.raises(urllib.error.HTTPError) as error:
+                    get(handle, "/api/hierarchy")
+                assert error.value.code == 400
+                repeated = pool.submit(handle.session.select_scene, 1)
+                assert calls == ["slow"]
+            finally:
+                release.set()
+            assert first.result(timeout=5)["scene_id"] == 1
+            assert repeated.result(timeout=5)["scene_id"] == 1
+        assert calls == ["slow"]
+        assert list(handle.session._authored) == [1]
+        assert handle.session.state()["loading_scene_id"] is None
+
+
+def test_lazy_authoring_defaults_are_independent_of_tab_order(
+    fresh_scene, tmp_path, fake_frames
+):
+    defaults = SETTINGS.raytracing.shadows
+    seen = []
+
+    def changes_settings():
+        SETTINGS.raytracing.shadows = not defaults
+        Square().spawn(animate=False)
+
+    def reads_defaults():
+        seen.append((SETTINGS.raytracing.shadows, Scene.current().video_settings.fps))
+        Circle().spawn(animate=False)
+
+    settings = type(TINY)(**TINY.to_dict())
+    project = Project(
+        [reads_defaults, changes_settings],
+        video_settings=settings,
+        file_path=tmp_path / "out.mp4",
+    )
+    with project.view(open_browser=False, block=False) as handle:
+        settings.set(frames_per_second=12)
+        get(handle, "/api/scene?id=1", method="POST")
+        get(handle, "/api/scene?id=0", method="POST")
+        get(handle, "/api/scene?id=1", method="POST")
+    assert seen == [(defaults, TINY.fps)]
+    assert SETTINGS.raytracing.shadows is defaults
+
+
+def test_closing_unselected_viewer_rejects_later_selection(project_viewer):
+    _, handle, calls = project_viewer
+    handle.stop()
+    with pytest.raises(ValueError, match="closed"):
+        handle.session.select_scene(0)
+    assert calls == []

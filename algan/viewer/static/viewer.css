@@ -44,6 +44,8 @@ header {
 .scene-tabs [aria-selected="true"] { color: var(--accent); border-color: var(--accent); }
 .scene-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+.scene-placeholder { margin: 0; padding: 16px; text-align: center; color: var(--dim); }
+
 main {
   flex: 1;
   display: grid;

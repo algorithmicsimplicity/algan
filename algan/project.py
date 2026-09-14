@@ -499,8 +499,10 @@ class Project:
     ) -> ViewerHandle:
         """Open the project in an interactive viewer with one tab per scene.
 
-        Author each selected scene once, then open a single viewer. Tabs use
-        the project's prefixed scene names and project order. Clicking a tab
+        Open with no scene selected or loaded. Tabs use the project's prefixed
+        scene names and project order. Clicking a tab authors only that scene
+        on its first visit, then displays it. Subsequent visits reuse its
+        recording without running its authoring code again. Selecting a tab
         stops playback and starts that scene at time zero, with its own frame
         rate, hierarchy, attributes, pixel inspector and synchronized transcript.
         Only the selected scene renders; switching releases the previous
@@ -508,7 +510,7 @@ class Project:
 
         Animation
         ---------
-        Runs the selected scene functions before opening the viewer. Their
+        Does not run any scene function until its tab is selected. That scene's
         animations and Speech blocks are recorded normally; mobs must still be
         spawned to appear. Embedded save-frame, save-video and Scene.view calls
         are skipped. No images, videos or transcript files are exported, though
@@ -519,7 +521,8 @@ class Project:
         ----------
         scenes
             Scene ID, name, prefixed name, or iterable mixing these forms.
-            Defaults to None, meaning every scene, in project order.
+            Defaults to None, offering a tab for every scene, in project order.
+            This chooses which tabs appear, not which scenes are loaded.
         video_settings
             Settings used for authoring and viewing. Defaults to None, meaning
             author with the project's settings or SETTINGS.video, then preview
@@ -543,8 +546,9 @@ class Project:
         Raises
         ------
         AlganConfigurationError
-            If the selection is empty, a selector is invalid, or a scene has an
-            invalid duration. Authoring exceptions identify the failing scene.
+            If the tab selection is empty or a selector is invalid. Authoring
+            failures and invalid scene durations are reported in the viewer
+            when that scene's tab is selected; other tabs remain usable.
 
         See Also
         --------
@@ -577,11 +581,28 @@ class Project:
         if not selected:
             raise AlganConfigurationError("Project.view needs at least one scene")
         _note_render_requested()
-        authored = self._render(
-            [scene.id for scene in selected], mode="view", video_settings=video_settings
-        )
+        # Capture defaults without constructing a Scene. Tab order must not
+        # make one scene inherit another's render settings during authoring.
+        author_settings = (
+            video_settings or self.video_settings or SETTINGS.video
+        ).as_preset()
+        raytracing = SETTINGS.raytracing.to_dict()
+
+        def load_scene(scene_id):
+            previous = SETTINGS.raytracing.to_dict()
+            try:
+                SETTINGS.raytracing._restore(raytracing)
+                authored = self._render(
+                    scene_id, mode="view", video_settings=author_settings
+                )
+                _, _, scene, settings = authored[0]
+                return scene, settings
+            finally:
+                SETTINGS.raytracing._restore(previous)
+
         return _view_project(
-            authored,
+            [(scene.id, scene.stem) for scene in selected],
+            load_scene,
             video_settings,
             port=port,
             open_browser=open_browser,
