@@ -4,19 +4,107 @@ on:
     branches: [codex/project-view-lazy-publish-20260914]
     paths: [.github/workflows/project_view_lazy_publish.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      PYTHONFAULTHANDLER: '1'
+      BASE: 6e45730da77acd84523945809b542556e3d8fa34
+      TARGET: codex/project-scene-viewer
     steps:
-      - name: Recover patch transport
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Recover and verify exact patch; detach from helper branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/lazy-artifact"
-          gh api repos/algorithmicsimplicity/algan/git/blobs/0a811c6d98b3883750bab4c1569ea19de13f99df --jq .content | base64 --decode > "$RUNNER_TEMP/lazy-artifact/patch.gz"
-      - uses: actions/upload-artifact@v4
+          gh api repos/algorithmicsimplicity/algan/git/blobs/0a811c6d98b3883750bab4c1569ea19de13f99df --jq .content > "$RUNNER_TEMP/transport.b64"
+          python - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          text = ''.join((root / 'transport.b64').read_text().split())
+          assert text[6224:6226] == '6+'
+          text = text[:6224] + '+6' + text[6226:]
+          patch = gzip.decompress(base64.b64decode(text))
+          assert hashlib.sha256(patch).hexdigest() == 'edc3c05b16f00fdc737c7f4fed52048c4e71c56dd0d6124a92ef09432c963720'
+          (root / 'lazy.patch').write_bytes(patch)
+          PY
+          git fetch origin "$BASE"
+          git checkout --detach "$BASE"
+          git apply --check "$RUNNER_TEMP/lazy.patch"
+          git apply "$RUNNER_TEMP/lazy.patch"
+          git diff --check
+          git diff --name-only > "$RUNNER_TEMP/lazy-artifact/changed-files.txt"
+      - uses: actions/setup-python@v5
         with:
-          name: lazy-patch-transport
+          python-version: '3.11'
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libpango1.0-dev libcairo2-dev pkg-config ffmpeg texlive-latex-base texlive-latex-extra texlive-fonts-recommended latexmk dvisvgm
+      - uses: ./.github/actions/install-uv
+      - name: Install locked Python environment
+        run: |
+          uv venv
+          uv sync --locked --all-extras --dev
+      - name: Format and lint changed Python files
+        run: |
+          files='algan/project.py algan/viewer/project.py algan/viewer/viewer.py tests/unit_tests/test_project_viewer.py'
+          uvx ruff@0.12.4 check --fix $files
+          uvx ruff@0.12.4 format $files
+          uvx ruff@0.12.4 check --no-fix $files
+          uvx ruff@0.12.4 format --check $files
+          .venv/bin/python -m py_compile $files
+          git diff --check
+      - name: JavaScript viewer regression tests
+        run: node --test tests/viewer/test_*.cjs 2>&1 | tee "$RUNNER_TEMP/lazy-artifact/javascript.log"
+      - name: Project and viewer integration tests
+        run: |
+          .venv/bin/python -m pytest -q tests/unit_tests/test_project_viewer.py tests/unit_tests/test_project.py tests/unit_tests/test_viewer_client.py tests/unit_tests/test_viewer_transcript.py tests/unit_tests/test_viewer_server.py tests/unit_tests/test_viewer_fragments.py 2>&1 | tee "$RUNNER_TEMP/lazy-artifact/targeted.log"
+      - name: Fast integration suite
+        run: .venv/bin/python -m pytest -q --fast 2>&1 | tee "$RUNNER_TEMP/lazy-artifact/fast.log"
+      - name: Portable unit and render suite
+        run: .venv/bin/python -m pytest -q tests/unit_tests tests/fast 2>&1 | tee "$RUNNER_TEMP/lazy-artifact/portable.log"
+      - name: Publish clean implementation commit to existing PR branch
+        run: |
+          test "$(git rev-parse HEAD)" = "$BASE"
+          test "$(git ls-remote origin "refs/heads/$TARGET" | cut -f1)" = "$BASE"
+          git diff --check
+          git diff --binary > "$RUNNER_TEMP/lazy-artifact/lazy-authoring.patch"
+          git config user.name OpenAI
+          git config user.email noreply@openai.com
+          git add --pathspec-from-file="$RUNNER_TEMP/lazy-artifact/changed-files.txt"
+          git commit -m 'Defer Project.view authoring until explicit scene tab selection'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push origin "HEAD:refs/heads/$TARGET"
+          git rev-parse HEAD > "$RUNNER_TEMP/lazy-artifact/commit.txt"
+          git fetch origin cde11fc824b78ef0284e8182da30f95ede799d83
+          git diff --binary cde11fc824b78ef0284e8182da30f95ede799d83 HEAD > "$RUNNER_TEMP/lazy-artifact/Algan_Project_View_Lazy.patch"
+      - name: Package final source and validation evidence
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          dest = Path(os.environ['RUNNER_TEMP']) / 'lazy-artifact'
+          manifest = dest / 'changed-files.txt'
+          if manifest.exists():
+              names = manifest.read_text().splitlines()
+              checksums = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in names}
+              (dest / 'checksums.json').write_text(json.dumps(checksums, indent=2))
+              with zipfile.ZipFile(dest / 'changed-source.zip', 'w', zipfile.ZIP_DEFLATED) as out:
+                  for name in names:
+                      out.write(name, name)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: project-view-lazy-validation
           path: ${{ runner.temp }}/lazy-artifact
-          retention-days: 2
+          retention-days: 7
