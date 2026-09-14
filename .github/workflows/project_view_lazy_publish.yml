@@ -1,0 +1,22 @@
+name: Lazy project viewer validation
+on:
+  push:
+    branches: [codex/project-view-lazy-publish-20260914]
+    paths: [.github/workflows/project_view_lazy_publish.yml]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recover patch transport
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/lazy-artifact"
+          gh api repos/algorithmicsimplicity/algan/git/blobs/0a811c6d98b3883750bab4c1569ea19de13f99df --jq .content | base64 --decode > "$RUNNER_TEMP/lazy-artifact/patch.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lazy-patch-transport
+          path: ${{ runner.temp }}/lazy-artifact
+          retention-days: 2
