@@ -24,6 +24,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from queue import Queue
 from types import SimpleNamespace
 
@@ -504,6 +505,65 @@ def _check_post_processes(post_processes):
                 f"partial(bloom_filter, glow_spread=0.015). Pass () for no "
                 f"post-processing."
             )
+
+
+def _framewise_post_process(process):
+    """Adapt a still-image pass to preserve one callback per output frame.
+
+    Sparse still rendering may put several requested timestamps in one render
+    batch. ``Scene.save_frame`` historically rendered each still independently,
+    so user passes observed a one-frame batch on every invocation. Keep that
+    extension-point contract without giving up sparse batching of the expensive
+    scene render. Built-in bloom remains batch-native.
+    """
+    base = process.func if isinstance(process, partial) else process
+    if base is bloom_filter:
+        return process
+
+    def framewise(frames, memory):
+        if frames.shape[0] <= 1:
+            return process(frames, memory=memory)
+
+        output = None
+        expected_shape = None
+        expected_dtype = None
+        stable_pointers = None
+        for index in range(frames.shape[0]):
+            try:
+                produced = process(frames[index : index + 1], memory=memory)
+                if produced.ndim == 0 or produced.shape[0] == 0:
+                    raise RuntimeError("A still-frame post-process produced no frames")
+                # Match the old one-still path: if a custom pass unexpectedly
+                # returns several frames, the still writer keeps the last one.
+                produced = produced[-1:]
+                if output is None:
+                    expected_shape = tuple(produced.shape[1:])
+                    expected_dtype = produced.dtype
+                    output = memory.get_tensor(
+                        (frames.shape[0], *expected_shape), expected_dtype
+                    )
+                    stable_pointers = memory.get_pointers()
+                elif (
+                    tuple(produced.shape[1:]) != expected_shape
+                    or produced.dtype != expected_dtype
+                ):
+                    raise AlganConfigurationError(
+                        "A post-process used by save_frame(at=[...]) must return "
+                        "the same per-frame shape and dtype for every still."
+                    )
+                output[index : index + 1].copy_(produced)
+            finally:
+                if stable_pointers is not None:
+                    # Reclaim this callback's temporary arena allocations while
+                    # retaining the aggregate output for the next pipeline pass.
+                    memory.set_pointers(stable_pointers)
+        return output
+
+    return framewise
+
+
+def _framewise_post_processes(post_processes):
+    return tuple(_framewise_post_process(process) for process in post_processes)
 
 
 class RenderLoopMixin:
@@ -3104,6 +3164,7 @@ class RenderLoopMixin:
         manual_memory=True,
         *,
         frame_indices=None,
+        _post_process_per_frame=False,
     ):
         """Yield frames and always release per-render state on exit.
 
@@ -3138,6 +3199,8 @@ class RenderLoopMixin:
             if start_time_ind == end_time_ind:
                 return
         _check_post_processes(post_processes)
+        if _post_process_per_frame and post_processes:
+            post_processes = _framewise_post_processes(post_processes)
         # The one place Taichi's arch is chosen. Every path that produces a
         # frame comes through here, and nothing below is allowed to launch a
         # kernel before it: a render device changed since the last job needs a

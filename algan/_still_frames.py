@@ -213,47 +213,74 @@ class _StillBatch:
                 target.resolved_time(), target.given
             )
             by_frame[index].append(position)
-        indices = sorted(by_frame)
-        if not indices:
+        if not by_frame:
             return results
+
+        # A custom post-process may be stateful or have side effects. One
+        # requested still must therefore remain one callback occurrence even
+        # when two timestamps quantize to the same frame index. Distinct frame
+        # indices still share each sparse render job; duplicate occurrences spill
+        # into a later job. With no explicit passes, duplicate frames are safely
+        # rendered once and reused.
+        render_groups = []
+        if self.post_processes:
+            pending = {index: list(positions) for index, positions in by_frame.items()}
+            while pending:
+                group = {}
+                for index in sorted(pending):
+                    group[index] = [pending[index].pop(0)]
+                    if not pending[index]:
+                        del pending[index]
+                render_groups.append(group)
+        else:
+            render_groups.append(by_frame)
 
         extra = (
             {}
             if self.post_processes is None
             else {"post_processes": self.post_processes}
         )
-        # Keep the one-frame route's established get_frames contract. Multiple
-        # frames share one job, even when their timeline indices are far apart.
-        if len(indices) == 1:
-            frames = self.scene.get_frames(indices[0], indices[0] + 1, **extra)
-        else:
-            frames = self.scene.get_frames(
-                0, len(indices), frame_indices=indices, **extra
-            )
+        if self.post_processes:
+            extra["_post_process_per_frame"] = True
         started = time.perf_counter()
-        emitted = 0
         rendered = []
         last_write = {}
-        with torch.no_grad(), closing(frames):
-            for batch in frames:
-                for frame in batch:
-                    if emitted >= len(indices):
-                        raise RuntimeError("More frames were produced than requested")
-                    positions = by_frame[indices[emitted]]
-                    image = Image.fromarray(frame.contiguous().numpy())
-                    for position in positions:
-                        target = self.targets[position]
-                        # Sorting times must not reverse last-write-wins when
-                        # different requests intentionally share a destination.
-                        if position > last_write.get(target.path, -1):
-                            image.save(str(target.path))
-                            last_write[target.path] = position
-                        rendered.append(
-                            (position, getattr(self.scene, "last_render_plan", None))
-                        )
-                    emitted += 1
-        if emitted != len(indices):
-            raise RuntimeError("Not all requested still frames were produced")
+        for group in render_groups:
+            indices = sorted(group)
+            # Keep the one-frame route's established get_frames contract. Multiple
+            # frames share one job, even when their timeline indices are far apart.
+            if len(indices) == 1:
+                frames = self.scene.get_frames(indices[0], indices[0] + 1, **extra)
+            else:
+                frames = self.scene.get_frames(
+                    0, len(indices), frame_indices=indices, **extra
+                )
+            emitted = 0
+            with torch.no_grad(), closing(frames):
+                for batch in frames:
+                    for frame in batch:
+                        if emitted >= len(indices):
+                            raise RuntimeError(
+                                "More frames were produced than requested"
+                            )
+                        positions = group[indices[emitted]]
+                        image = Image.fromarray(frame.contiguous().numpy())
+                        for position in positions:
+                            target = self.targets[position]
+                            # Sorting times must not reverse last-write-wins when
+                            # different requests intentionally share a destination.
+                            if position > last_write.get(target.path, -1):
+                                image.save(str(target.path))
+                                last_write[target.path] = position
+                            rendered.append(
+                                (
+                                    position,
+                                    getattr(self.scene, "last_render_plan", None),
+                                )
+                            )
+                        emitted += 1
+            if emitted != len(indices):
+                raise RuntimeError("Not all requested still frames were produced")
         # A shared render has no independent per-file duration. Attribute its
         # wall time evenly, so summing result times still gives the job's cost.
         walltime = (time.perf_counter() - started) / len(rendered)
