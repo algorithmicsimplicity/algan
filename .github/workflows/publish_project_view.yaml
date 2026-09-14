@@ -44,6 +44,7 @@ jobs:
       - name: Format and lint the changed Python files
         run: |
           FILES="algan/project.py algan/scene.py algan/viewer/project.py algan/viewer/server.py algan/viewer/session.py algan/viewer/viewer.py tests/unit_tests/test_project_viewer.py tests/unit_tests/test_viewer_client.py"
+          uvx ruff@0.12.4 check --select PT018 --fix --unsafe-fixes tests/unit_tests/test_project_viewer.py
           uvx ruff@0.12.4 check --fix $FILES
           uvx ruff@0.12.4 format $FILES
           uvx ruff@0.12.4 check --no-fix $FILES
@@ -82,7 +83,7 @@ jobs:
         run: |
           mkdir -p /tmp/project-view-results
           git diff cde11fc824b78ef0284e8182da30f95ede799d83 --binary -- AGENTS.md agent_guidance/api_settings.md algan/project.py algan/scene.py algan/viewer docs/source/advanced_user_tutorials/multi_scene_projects.rst tests/unit_tests/test_project_viewer.py tests/unit_tests/test_viewer_client.py tests/viewer/test_project.cjs > /tmp/project-view-results/project-view-formatted.patch
-          find "$HOME/.cache/uv" -type f -name ruff -executable -print -quit | xargs -r -I{} cp '{}' /tmp/project-view-results/ruff
+          find "${UV_CACHE_DIR:-$HOME/.cache/uv}" -type f -name ruff -executable -print -quit | xargs -r -I{} cp '{}' /tmp/project-view-results/ruff
       - uses: actions/upload-artifact@v4
         if: always()
         with:
