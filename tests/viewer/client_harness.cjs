@@ -13,6 +13,30 @@ function client() {
   const images = [];
   const draws = [];
   const requests = [];
+  const audioContexts = [];
+  const animationFrames = [];
+  const listeners = new Map();
+  let now = 0;
+  class AudioContext {
+    constructor() {
+      this.destination = {};
+      this.sources = [];
+      this.resumes = 0;
+      audioContexts.push(this);
+    }
+    get currentTime() { return now / 1000; }
+    resume() { this.resumes++; return Promise.resolve(); }
+    decodeAudioData(data) { return Promise.resolve(data); }
+    createBufferSource() {
+      const source = {
+        connect() {}, disconnect() { this.disconnected = true; },
+        start(when, offset) { this.offset = offset; this.started = true; },
+        stop() { this.stopped = true; },
+      };
+      this.sources.push(source);
+      return source;
+    }
+  }
   function element() {
     return {
       style: {}, children: [], width: 32, height: 32,
@@ -53,15 +77,22 @@ function client() {
     },
     fetch(url) {
       return new Promise((resolve, reject) => {
-        requests.push({ url, reject, reply(data) { resolve({ ok: true, json: async () => data }); } });
+        requests.push({ url, reject,
+          reply(data) { resolve({ ok: true, json: async () => data }); },
+          replyAudio(data) { resolve({ ok: true, arrayBuffer: async () => data }); },
+        });
       });
     },
-    window: { addEventListener() {} }, location: { search: "" }, URLSearchParams,
-    performance: { now() { return 0; } }, requestAnimationFrame() {}, setTimeout,
+    window: { AudioContext, addEventListener(name, listener) { listeners.set(name, listener); } },
+    location: { search: "" }, URLSearchParams,
+    performance: { now() { return now; } },
+    requestAnimationFrame(callback) { animationFrames.push(callback); }, setTimeout,
   };
   const context = vm.createContext(sandbox);
   const transcriptFilename = path.join(__dirname, "../../algan/viewer/static/transcript.js");
   vm.runInContext(fs.readFileSync(transcriptFilename, "utf8"), context, { filename: transcriptFilename });
+  const audioFilename = path.join(__dirname, "../../algan/viewer/static/audio.js");
+  vm.runInContext(fs.readFileSync(audioFilename, "utf8"), context, { filename: audioFilename });
   const filename = path.join(__dirname, "../../algan/viewer/static/viewer.js");
   const source = fs.readFileSync(filename, "utf8");
   const bootstrap = source.indexOf("(function start() {");
@@ -69,7 +100,9 @@ function client() {
   vm.runInContext(source.slice(0, bootstrap), context, { filename });
   const run = (code) => vm.runInContext(code, context);
   run("state.sceneReady = true; state.totalFrames = 10; renderFragments = (data) => { el('fragments').innerHTML = data.label; };");
-  return { run, elements, images, draws, requests };
+  return { run, elements, images, draws, requests, audioContexts, animationFrames, listeners,
+    advance(seconds) { now += seconds * 1000; },
+  };
 }
 
 module.exports = { client };
