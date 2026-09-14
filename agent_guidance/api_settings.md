@@ -320,3 +320,17 @@ Inside the scene function, a selected call returns `RenderResult` objects with
 project returns completed `"rendered"`/`"skipped"` results after rendering.
 Authoring failures discard that scene's queue. `stop_early=True` still stops at
 the last requested checkpoint, then renders the collected requests.
+
+### Project viewer
+
+`Project.view(scenes=None, *, video_settings=None, port=0, open_browser=True,
+block=True)` authors selected scenes in project order, suppressing embedded
+saves and viewers. Unlike validation, it does not synchronize transcript files.
+It returns the same `ViewerHandle` lifecycle as `Scene.view`.
+
+The project session retains authored scenes and per-scene raytracing settings,
+but only one `ViewerSession` renders at a time. Switching closes/drains the old
+worker and materialized reads before starting the next one, dropping its frame
+cache. Scene-scoped requests carry a monotonically increasing selection version;
+old requests are rejected even after returning to the same scene. The browser
+also invalidates pending frames, tree loads, transcript loads and inspections.

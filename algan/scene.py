@@ -70,6 +70,7 @@ logger = get_logger()
 
 if TYPE_CHECKING:  # algan_utils imports Scene, so only for annotations.
     from algan.utils.algan_utils import RenderResult
+    from algan.viewer.viewer import ViewerHandle
 
 
 class active_scene_method:
@@ -1464,7 +1465,7 @@ class Scene(RenderLoopMixin):
         port: int = 0,
         open_browser: bool = True,
         block: bool = True,
-    ):
+    ) -> ViewerHandle | None:
         """Open this Scene in the interactive viewer.
 
         Starts a small web server on this machine and points a browser at it.
@@ -1483,8 +1484,8 @@ class Scene(RenderLoopMixin):
         (``block=False``), open a new viewer to see the additions rather than
         expecting this one to grow.
 
-        There is no module-level ``view``: the viewer is reached from the Scene
-        and nowhere else, because the bare name is too general to spend on a
+        There is no module-level ``view``: use a Scene or :meth:`Project.view`
+        for a tabbed project viewer. The bare name is too general to spend on a
         namespace that ``from algan import *`` empties into a user's own.
 
         Parameters
@@ -1509,8 +1510,9 @@ class Scene(RenderLoopMixin):
 
         Returns
         -------
-        ViewerHandle
-            The running viewer. It carries the ``url`` being served and a
+        ViewerHandle or None
+            None during a managed Project run, which suppresses nested viewers.
+            Otherwise, the running viewer. It carries the ``url`` being served and a
             ``stop()`` that shuts it down, and works as a context manager.
 
         Animation
@@ -1533,6 +1535,10 @@ class Scene(RenderLoopMixin):
             handle.stop()
         """
         _note_render_requested()
+        from algan.project import _get_active_project_run
+
+        if self._project_run is not None or _get_active_project_run() is not None:
+            return None
         from algan.viewer import _view
 
         return _view(

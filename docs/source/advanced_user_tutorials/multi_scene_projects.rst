@@ -40,6 +40,47 @@ stems combine the two: ``0_intro``, ``1_the_loss_surface``, ``2_outro``. Because
 identifier comes from the position rather than from render order, rendering any
 subset produces exactly the names rendering the whole project would.
 
+Viewing the project interactively
+==================================
+
+:meth:`~algan.project.Project.view` opens one interactive viewer with a scene-tab
+bar across the top:
+
+.. code-block:: python
+
+    project.view()                         # all scenes in project order
+    project.view([0, "outro"])              # only the selected scenes
+    project.view(video_settings=HD)         # explicit authoring/viewing quality
+
+Each tab uses the stable prefixed name, such as ``0_intro``. Selecting a tab stops
+playback and opens that scene at time zero. The frame rate, timeline, hierarchy,
+attributes, fragment inspector and synchronized Speech transcript all belong to
+the selected scene. Scene tabs also support the arrow, Home and End keys.
+
+The selected scene functions run once before the viewer opens. Their embedded
+``Scene.save_frame()``, ``Scene.save_video()`` and ``Scene.view()`` calls are
+suppressed, so the preview exports no images, videos or transcript files. Speech
+still obtains its audio and may populate its normal cache. The original scene
+recordings remain available while the viewer is open; switching tabs does not
+run their functions again.
+
+Only the active scene has a render worker and frame cache. Switching waits for
+any in-flight render or inspection to finish before starting the next scene;
+returning to a tab renders its frames again. Without an explicit
+``video_settings`` override, authoring uses the project's settings (or
+``SETTINGS.video``) and viewing uses PREVIEW resolution at each scene's own frame
+rate. The resolution picker changes the active scene's preview only.
+
+Like :meth:`~algan.scene.Scene.view`, this serves until Ctrl-C by default. For a
+REPL or test, keep the returned handle and close it when finished:
+
+.. code-block:: python
+
+    handle = project.view(open_browser=False, block=False)
+    print(handle.url)
+    # Open that URL in a browser.
+    handle.stop()
+
 Rendering
 =========
 

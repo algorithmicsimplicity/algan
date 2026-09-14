@@ -94,8 +94,9 @@ MAX_CACHED_PIXELS = 256
 class ViewerSession:
     """A Scene, rendered on demand for a browser to page through."""
 
-    def __init__(self, scene, video_settings=None):
+    def __init__(self, scene, video_settings=None, *, raytracing=None):
         self.scene = scene
+        self._raytracing = raytracing
         self._options, self._current_option = self._build_options(scene, video_settings)
         self.video_settings = self._options[self._current_option][1]
         self.fps = int(self.video_settings.frames_per_second)
@@ -262,7 +263,21 @@ class ViewerSession:
                 self._scene_demand -= 1
                 self._scene_free.notify_all()
         try:
-            yield
+            if self._closed:
+                raise RuntimeError("The viewer session is closed")
+            if self._raytracing is None:
+                yield
+            else:
+                from algan.scene_manager import SceneManager
+                from algan.settings import SETTINGS
+
+                previous = SETTINGS.raytracing.to_dict()
+                try:
+                    SETTINGS.raytracing._restore(self._raytracing)
+                    with SceneManager.instance().activating(self.scene):
+                        yield
+                finally:
+                    SETTINGS.raytracing._restore(previous)
         finally:
             self._scene_lock.release()
 
@@ -326,6 +341,8 @@ class ViewerSession:
         self._work.set()
         with self._lock:
             while True:
+                if self._closed:
+                    raise RuntimeError("The viewer session is closed")
                 png = self._cache.get(index)
                 if png is not None:
                     return png
@@ -406,6 +423,8 @@ class ViewerSession:
         deadline = time.monotonic() + float(wait)
         with self._lock:
             while True:
+                if self._closed:
+                    raise RuntimeError("The viewer session is closed")
                 done = self._pixels.get(key)
                 if done is not None:
                     return done
@@ -666,6 +685,13 @@ class ViewerSession:
         worker = self._worker
         if worker is not None and worker.is_alive():
             worker.join(timeout)
+            if worker.is_alive():
+                raise TimeoutError("The viewer render worker has not stopped")
+        # Materialized reads and pixel captures have their own request threads.
+        # Drain the current holder; queued requests see _closed inside _scene
+        # and cannot begin another render after this barrier.
+        with self._scene_lock:
+            pass
         self._worker = None
 
 
