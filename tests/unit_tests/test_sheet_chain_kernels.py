@@ -229,6 +229,7 @@ def test_band_stats_kernels_match_the_five_scatters(positioned, wide_kernel_arms
         nf,
         bool(positioned),
         ti.i64,
+        True,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
@@ -276,6 +277,7 @@ def test_band_stats_leaves_unused_band_rows_at_sentinel(wide_kernel_arms):
         nf,
         True,
         ti.i64,
+        True,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(

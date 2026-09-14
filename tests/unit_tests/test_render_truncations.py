@@ -1,16 +1,15 @@
-"""The instrument on the render path's four silent truncations.
+"""Render truncation reporting, including the retired sheet-layer ceiling.
 
-``RENDERER_WORK_QUEUE.md`` item 1. Each of the four ceilings degrades the image
-when it binds and used to say nothing at all, so what is under test here is
-that they now *report*: a WARNING naming the ceiling, and a count on the
-``RenderPlan`` a script can assert on.
+``RENDERER_WORK_QUEUE.md`` item 1 added warnings and RenderPlan counts for
+image-degrading ceilings. Active ceilings still report; the legacy sheet_layers
+field and warning formatter remain readable after removal of the rank clamp.
 
-The four are not equally reachable, and the tests say so rather than pretending
-otherwise:
+The cases are not equally reachable:
 
-* ``shadow_lights`` and ``sheet_layers`` are exercised by a real render of a
-  scene built to exceed them, which is the acceptance criterion the queue item
-  states.
+* ``shadow_lights`` is exercised by a real render that exceeds its cap.
+* A real same-surface stack now verifies ranks above 15 survive compaction and
+  no sheet-layer truncation is reported. Recorder-only cases retain coverage
+  for reading/reporting historical or explicitly recorded sheet-layer counts.
 * ``surfaces_per_ray`` needs 257 surfaces stacked in one pixel, each thin
   enough that the ray's throughput has not already fallen under ``min_weight``
   by the 256th. That is a real render but a slow one, so it is checked here at
@@ -39,8 +38,8 @@ from algan.constants.color import BLUE
 from algan.logging.logger import PERF
 from algan.mobs.shapes_3d import Polyhedron
 from algan.rendering.lights import PointLight
+from algan.rendering.raytracing import sheets
 from algan.rendering.raytracing.shading_taichi import max_shadow_lights
-from algan.rendering.raytracing.sheets import SHEET_RANK_LIMIT
 from algan.rendering.raytracing.tracer import (
     ALLOC_NEXT,
     ALLOC_TRUNC_SURFACES,
@@ -394,7 +393,8 @@ def _stacked_faces(copies):
     A ``Polyhedron`` declares all of its faces as ONE surface, and 1e-4 keeps
     them inside a single depth band, so every pixel they share sees ``copies``
     overlapping layers of the same surface -- which is what the conflict rank
-    counts and what its four bits of the sheet key cannot hold past 16.
+    counts. Count-bounded group IDs must retain every crossing, including ranks
+    above the former four-bit ceiling.
     """
     vertices, faces = [], []
     for i in range(copies):
@@ -405,10 +405,20 @@ def _stacked_faces(copies):
     return vertices, faces
 
 
-def test_a_stack_of_overlapping_faces_reports_the_sheet_layer_ceiling(
-    tmp_path, algan_logs
+def test_a_stack_of_overlapping_faces_preserves_ranks_above_sixteen(
+    tmp_path, algan_logs, monkeypatch
 ):
-    copies = SHEET_RANK_LIMIT + 9
+    copies = 24
+    deepest = []
+    original = sheets._sheet_rank_groups
+
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if result.rank.numel():
+            deepest.append(int(result.rank.max()))
+        return result
+
+    monkeypatch.setattr(sheets, "_sheet_rank_groups", capture)
     SceneManager.reset()
     try:
         with Scene(video_settings=SMOKE_TEST) as scene:
@@ -424,8 +434,10 @@ def test_a_stack_of_overlapping_faces_reports_the_sheet_layer_ceiling(
     finally:
         SceneManager.reset()
 
-    assert result.render_plan.truncations.sheet_layers > 0
-    assert any(
+    assert deepest
+    assert max(deepest) >= copies - 1
+    assert result.render_plan.truncations.sheet_layers == 0
+    assert not any(
         record.levelno == logging.WARNING and "overlapped" in record.message
         for record in algan_logs.records
     ), [r.message for r in algan_logs.records]

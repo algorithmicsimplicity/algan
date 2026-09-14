@@ -156,7 +156,9 @@ def _end_bit(keys) -> int:
     return _END_BITS[keys.dtype]
 
 
-def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
+def stable_argsort(
+    keys, *, perm=None, keys_are_permuted=False, out=None, workspace=None
+):
     """``torch.argsort(keys, stable=True)``, on the device, as an int32 order.
 
     ``perm`` composes this sort with one that already ran, which is how an LSD
@@ -172,12 +174,19 @@ def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
       significant pass of an LSD chain, with no torch gather between the
       passes.
 
-    Returns None where the kernel does not apply, so a caller can fall through
-    to its torch arm without asking :func:`radix_sort_available` twice.
+    ``out`` may supply the contiguous int32 destination. It must be disjoint
+    from the input keys and permutation. ``workspace`` supplies short-lived
+    sort buffers; the default result always lives outside its scratch stage.
+    Index values remain the caller's responsibility, without device readback.
+
+    Returns None where the kernel does not apply, without writing the output,
+    so a caller can fall through to its torch arm.
     """
     if not radix_sort_available(keys):
         return None
     n = int(keys.numel())
+    if keys.shape != (n,):
+        raise ValueError("sort keys must be a one-dimensional vector")
     if perm is not None and int(perm.numel()) != n:
         # The kernel subscripts one array by the other with no bound of its
         # own, so a mismatch is an out-of-range read rather than an error.
@@ -185,6 +194,12 @@ def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
             f"perm has {int(perm.numel())} entries for {n} keys; a composed "
             "sort permutes the same stream it orders"
         )
+    if perm is not None and (
+        perm.shape != (n,)
+        or perm.dtype not in (torch.int32, torch.int64)
+        or perm.device != keys.device
+    ):
+        raise ValueError("perm must be an integer vector on the keys device")
     if perm is None:
         mode = 0
     elif keys_are_permuted:
@@ -192,40 +207,55 @@ def stable_argsort(keys, *, perm=None, keys_are_permuted=False):
     else:
         mode = 2
     device = keys.device
-    values = torch.empty(n, dtype=torch.int32, device=device)
+    from algan.rendering.raytracing.array_ops import require_tensor_outputs
+    from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+
+    workspace = workspace or CompactionWorkspace(device=device)
+    if workspace.device != device:
+        raise ValueError("sort workspace and keys must share a device")
+    values = torch.empty(n, dtype=torch.int32, device=device) if out is None else out
+    require_tensor_outputs(
+        (values,),
+        (((n,), torch.int32),),
+        device=device,
+        inputs=(keys,) if perm is None else (keys, perm),
+    )
     # With nothing to compose, the argument the kernel never reads aliases the
     # output rather than costing an allocation and a specialization of its own.
-    perm = values if perm is None else perm.to(torch.int32).contiguous()
-
     from algan.rendering.raytracing.radix_sort_taichi import argsort_pairs
     from algan.taichi_compat import ti
 
     depth = _scan_depth(n)
     scratch_slots = int(ti.algorithms.sort_scratch_slots(n, depth))
-    work_keys = torch.empty(n, dtype=keys.dtype, device=device)
-    tmp_keys = torch.empty(n, dtype=keys.dtype, device=device)
-    tmp_values = torch.empty(n, dtype=torch.int32, device=device)
-    scratch = torch.empty(scratch_slots, dtype=torch.int32, device=device)
-    count_buf = torch.empty((), dtype=torch.int32, device=device)
-    argsort_pairs(
-        keys,
-        perm,
-        work_keys,
-        tmp_keys,
-        values,
-        tmp_values,
-        scratch,
-        count_buf,
-        n,
-        _key_dtype(keys),
-        _end_bit(keys),
-        depth,
-        mode,
-    )
+    with workspace.stage():
+        if perm is None:
+            perm = values
+        elif perm.dtype != torch.int32 or not perm.is_contiguous():
+            perm = workspace.copy(perm, torch.int32)
+        work_keys = workspace.tensor((n,), keys.dtype)
+        tmp_keys = workspace.tensor((n,), keys.dtype)
+        tmp_values = workspace.tensor((n,), torch.int32)
+        scratch = workspace.tensor((scratch_slots,), torch.int32)
+        count_buf = workspace.tensor((), torch.int32)
+        argsort_pairs(
+            keys,
+            perm,
+            work_keys,
+            tmp_keys,
+            values,
+            tmp_values,
+            scratch,
+            count_buf,
+            n,
+            _key_dtype(keys),
+            _end_bit(keys),
+            depth,
+            mode,
+        )
     return values
 
 
-def stable_lexsort(*keys):
+def stable_lexsort(*keys, out=None, workspace=None):
     """The stable order of ``keys`` in priority order, or None for the torch arm.
 
     The same composition ``sheets._lexsort`` does -- least significant key
@@ -239,7 +269,27 @@ def stable_lexsort(*keys):
     """
     if not keys or not all(radix_sort_available(key) for key in keys):
         return None
-    order = None
-    for key in reversed(keys):
-        order = stable_argsort(key, perm=order)
-    return order
+    from algan.rendering.raytracing.array_ops import require_tensor_outputs
+    from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+
+    n, device = keys[0].numel(), keys[0].device
+    if any(key.shape != (n,) or key.device != device for key in keys):
+        raise ValueError("sort keys must be equal-length vectors on one device")
+    workspace = workspace or CompactionWorkspace(device=device)
+    if workspace.device != device:
+        raise ValueError("sort workspace and keys must share a device")
+    result = torch.empty(n, dtype=torch.int32, device=device) if out is None else out
+    require_tensor_outputs(
+        (result,), (((n,), torch.int32),), device=device, inputs=keys
+    )
+    with workspace.stage():
+        other = workspace.tensor((n,), torch.int32) if len(keys) > 1 else result
+        order = None
+        destination = result
+        for key in reversed(keys):
+            stable_argsort(key, perm=order, out=destination, workspace=workspace)
+            order = destination
+            destination = other if destination is result else result
+        if order is not result:
+            result.copy_(order)
+    return result

@@ -2276,8 +2276,8 @@ def set_sheet_sample_depth_kernel(enabled):
 # Bit-identical, and trivially so: both arms are integer and visit the stream
 # in the SAME order -- the kernel's serial band walk reads fragments exactly
 # as the cumsums do -- so unlike sheet_mask_kernel above it needs no
-# order-independence argument at all. The max=15 clamp stays in
-# compact_sheets in both arms.
+# order-independence argument at all. Neither arm clamps: compact_sheets
+# retains every rank and groups them with a count-bounded radix.
 sheet_rank_kernel = env_flag("ALGAN_SHEET_RANK_KERNEL", True)
 
 

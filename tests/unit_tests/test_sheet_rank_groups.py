@@ -26,7 +26,7 @@ def ranks_for_masks(bands):
         counts = [0] * 8
         for mask in masks:
             claimed = [lane for lane in range(8) if mask & (1 << lane)]
-            ranks.append(min(15, max((counts[lane] for lane in claimed), default=0)))
+            ranks.append(max((counts[lane] for lane in claimed), default=0))
             parent.append(p)
             for lane in claimed:
                 counts[lane] += 1
@@ -34,7 +34,7 @@ def ranks_for_masks(bands):
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-@pytest.mark.parametrize("case", ["empty", "single", "drops", "clamp", "random"])
+@pytest.mark.parametrize("case", ["empty", "single", "drops", "deep", "random"])
 def test_rank_groups_match_global_unique(device, case, monkeypatch):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA unavailable")
@@ -54,7 +54,7 @@ def test_rank_groups_match_global_unique(device, case, monkeypatch):
         "empty": [],
         "single": [[0], [255], [1 << 12]],
         "drops": [[1, 1, 2, 0, 1, 2, 4, 4], [255, 1, 0, 128, 255]],
-        "clamp": [[1] * 40 + [2, 0, 2] + [255] * 40, [0] * 23],
+        "deep": [[1] * 40 + [2, 0, 2] + [255] * 40, [0] * 23],
         "random": [
             [rng.randrange(65536) for _ in range(rng.randrange(1, 80))]
             for _ in range(129)
@@ -63,14 +63,24 @@ def test_rank_groups_match_global_unique(device, case, monkeypatch):
     parents, ranks = ranks_for_masks(bands)
     parent = torch.tensor(parents, dtype=torch.int64, device=device)
     rank = torch.tensor(ranks, dtype=torch.int32, device=device)
-    expected_keys, expected_groups = torch.unique(
-        parent * 16 + rank, sorted=True, return_inverse=True
+    pairs = list(zip(parents, ranks))
+    labels = sorted(set(pairs))
+    ids = {pair: i for i, pair in enumerate(labels)}
+    expected_groups = torch.tensor(
+        [ids[pair] for pair in pairs], dtype=torch.int64, device=device
+    )
+    expected_parents = torch.tensor(
+        [pair[0] for pair in labels], dtype=torch.int64, device=device
+    )
+    expected_ranks = torch.tensor(
+        [pair[1] for pair in labels], dtype=torch.int64, device=device
     )
     for enabled in (False, True):
         with SETTINGS.raytracing.experimental.override(sheet_rank_groups=enabled):
             groups, cid_band, rank_of_cid = _sheet_rank_groups(parent, rank)
         assert torch.equal(groups, expected_groups)
-        assert torch.equal(cid_band * 16 + rank_of_cid, expected_keys)
+        assert torch.equal(cid_band, expected_parents)
+        assert torch.equal(rank_of_cid, expected_ranks)
         assert groups.dtype == cid_band.dtype == rank_of_cid.dtype == torch.int64
     local = taichi_launch_is_local(torch.device(device))
     assert len(calls) == int(local and bool(parents))

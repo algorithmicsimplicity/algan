@@ -1164,7 +1164,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
         from algan.rendering.raytracing.tracer import (
-            effective_anti_alias_level,
+            resolve_batch_policy,
         )
 
         # Prefetch defers projection to this render thread when it runs on the
@@ -1334,17 +1334,20 @@ class RenderLoopMixin:
             light._render_aux = aux
             lights.append(light)
 
-        aa = effective_anti_alias_level(
-            merged_host,
-            self.video_settings.supersampling,
-            light_sources=lights,
-            environment_map=env_map,
-            near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
-            far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
-            transparent_background=transparent_background,
-        )
-        render_height = self.num_pixels_screen_height * aa
-        render_width = self.num_pixels_screen_width * aa
+        policy = getattr(primitive_batch[0], "_rt_batch_policy", None)
+        if policy is None:
+            policy = resolve_batch_policy(
+                merged_host,
+                self.video_settings.supersampling,
+                light_sources=lights,
+                environment_map=env_map,
+                near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
+                far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
+                transparent_background=transparent_background,
+            )
+            primitive_batch[0]._rt_batch_policy = policy
+        render_height = self.num_pixels_screen_height * policy.frame_scale
+        render_width = self.num_pixels_screen_width * policy.frame_scale
         render_channels = 5 if transparent_background else 4
         # Linear-HDR buffer: the composite writes linear HDR here and post
         # tonemaps last, so bloom runs on unclamped HDR. dtype from
@@ -1353,7 +1356,7 @@ class RenderLoopMixin:
         frame_dtype = (
             hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
         )
-        samples = max(1, int(rt_settings.samples_per_pixel))
+        samples = policy.samples_per_pixel
         # What one frame costs on top of the scene is *measured*, not modelled.
         # Until this job has rendered a chunk there is nothing to measure, so
         # the preflight arbitrates on the scene alone -- which is the exact
@@ -1430,7 +1433,7 @@ class RenderLoopMixin:
                 need_bytes / 1e6,
                 bytes_remaining / 1e6,
                 margin / 1e6,
-                aa,
+                policy.effective_aa,
                 render_width,
                 render_height,
                 merged_host.get("num_triangles", 0),
@@ -1649,27 +1652,31 @@ class RenderLoopMixin:
                 is_post_process_tonemap_enabled,
             )
             from algan.rendering.raytracing.tracer import (
-                effective_anti_alias_level,
+                resolve_batch_policy,
             )
 
-            aa = effective_anti_alias_level(
-                merged_host,
-                self.video_settings.supersampling,
-                light_sources=render_lights,
-                environment_map=env_map,
-                near_clip=float(getattr(camera, "near", 0.0) or 0.0),
-                far_clip=float(getattr(camera, "far", 0.0) or 0.0),
-                transparent_background=transparent_background,
-            )
-            render_height = self.num_pixels_screen_height * aa
-            render_width = self.num_pixels_screen_width * aa
+            policy = getattr(primitive_batch[0], "_rt_batch_policy", None)
+            if policy is None:
+                policy = resolve_batch_policy(
+                    merged_host,
+                    self.video_settings.supersampling,
+                    light_sources=render_lights,
+                    environment_map=env_map,
+                    near_clip=float(getattr(camera, "near", 0.0) or 0.0),
+                    far_clip=float(getattr(camera, "far", 0.0) or 0.0),
+                    transparent_background=transparent_background,
+                )
+                primitive_batch[0]._rt_batch_policy = policy
+            aa = policy.effective_aa
+            render_height = self.num_pixels_screen_height * policy.frame_scale
+            render_width = self.num_pixels_screen_width * policy.frame_scale
             render_channels = 5 if transparent_background else 4
             # Linear-HDR buffer (hdr_frame_dtype: f32 default, opt-in f16) --
             # see the matching note in the deterministic render path.
             frame_dtype = (
                 hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
             )
-            samples = max(1, int(rt_settings.samples_per_pixel))
+            samples = policy.samples_per_pixel
             # Batches whose peak lies on the same line share a fit. Nothing
             # here describes *what* gets allocated -- only what would put a
             # batch on a different line.
@@ -3556,6 +3563,7 @@ class RenderLoopMixin:
                         )
                         if primitives:
                             primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_batch_policy = None
                             primitives[0]._rt_prepared_host_scene = None
                             primitives[0]._rt_merged_scene = None
                         del primitives, planned_prefix
@@ -3600,6 +3608,7 @@ class RenderLoopMixin:
                         )
                         if primitives:
                             primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_batch_policy = None
                             primitives[0]._rt_prepared_host_scene = None
                             primitives[0]._rt_merged_scene = None
                         del primitives
@@ -3620,6 +3629,7 @@ class RenderLoopMixin:
                             # without emitting speculative frames.
                             if primitives:
                                 primitives[0]._rt_device_scene = None
+                                primitives[0]._rt_batch_policy = None
                                 primitives[0]._rt_prepared_host_scene = None
                                 primitives[0]._rt_merged_scene = None
                             del primitives
@@ -3744,6 +3754,7 @@ class RenderLoopMixin:
                             drain_pending()
                             if primitives:
                                 primitives[0]._rt_device_scene = None
+                                primitives[0]._rt_batch_policy = None
                                 primitives[0]._rt_prepared_host_scene = None
                                 primitives[0]._rt_merged_scene = None
                             del primitives
@@ -3777,6 +3788,7 @@ class RenderLoopMixin:
                         # arena into the next render/reset.
                         if primitives:
                             primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_batch_policy = None
                             primitives[0]._rt_prepared_host_scene = None
                             primitives[0]._rt_merged_scene = None
                         del primitives

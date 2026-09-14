@@ -1214,3 +1214,187 @@ def test_an_implausible_frame_table_warns_once_and_still_returns():
     finally:
         sh._IMPLAUSIBLE_REPORTED.discard("probe-site")
         sh._IMPLAUSIBLE_REPORTED.discard("other-site")
+
+
+@pytest.mark.parametrize("stats_kernel", [False, True])
+@pytest.mark.parametrize(
+    ("shade_split", "sample_depth"), [(False, False), (True, False), (True, True)]
+)
+def test_production_compaction_skips_diagnostics_without_changing_records(
+    monkeypatch, stats_kernel, shade_split, sample_depth
+):
+    from algan import SETTINGS
+    from algan.rendering.raytracing import sheets
+    from algan.rendering.taichi_runtime import init_taichi
+
+    init_taichi()
+    coverage, merged, cam, pws = _coverage(
+        [
+            (0, 1.0, 0, 0.4, 15),
+            (0, 1.0001, 1, 0.6, 240),
+            (0, 2.0, 4, 1.0, MASK_ALL | MAT_OPAQUE),
+            (3, 1.0, -1, 0.7, MASK_ALL),
+        ],
+        tri_norm=torch.tensor([[[0.0, 0.0, 1.0] * 3] * 8]),
+    )
+    options = {
+        "time_start": 0,
+        "width": 4,
+        "height": 4,
+        "shade_split": shade_split,
+        "sample_depth": sample_depth,
+    }
+    with SETTINGS.raytracing.experimental.override(
+        sheet_band_stats_kernel=stats_kernel
+    ):
+        expected = compact_sheets(coverage, merged, cam, pws, **options)
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("production evaluated sheet diagnostics")
+
+        monkeypatch.setattr(sheets, "_sheet_group_counts", unexpected)
+        actual = compact_sheets(
+            coverage, merged, cam, pws, diagnostics=False, **options
+        )
+    diagnostic_keys = {"sheet_nfrag", "sheet_fused", "num_groups", "num_split_groups"}
+    assert set(actual) == set(expected) - diagnostic_keys
+    for name, value in actual.items():
+        if torch.is_tensor(value):
+            assert torch.equal(value, expected[name]), name
+        else:
+            assert value == expected[name], name
+
+
+@pytest.mark.parametrize("shade_split", [False, True])
+@pytest.mark.parametrize("sample_depth", [False, True])
+@pytest.mark.parametrize("closed_shell", [False, True])
+def test_resolver_arena_output_matches_diagnostic_record(
+    shade_split, sample_depth, closed_shell
+):
+    from algan import SETTINGS
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.utils.memory_utils import ManualMemory
+
+    init_taichi()
+    device = SETTINGS.computing.render_device
+    frags = [
+        (0, 1.0, 0, 0.3, 0x0F | MAT_OPAQUE),
+        (0, 1.001, 1, 0.7, 0xF0 | MAT_OPAQUE),
+        (0, 1.1, 2, 1.0, MASK_ALL | BACKFACE),
+        (3, 1.0, 0, 0.4, 0x03),
+        (3, 1.1, 4, 0.6, 0xFC),
+    ]
+    normals = torch.tensor([[[0.0, 0.0, 1.0] * 3, [0.0, 1.0, 0.0] * 3] * 4])
+    coverage, merged, cam, pws = _coverage(frags, tri_norm=normals)
+    if closed_shell:
+        merged["tri_closed"] = torch.ones_like(merged["tri_obj"])
+    coverage = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in coverage.items()
+    }
+    merged = {k: v.to(device) if torch.is_tensor(v) else v for k, v in merged.items()}
+    kwargs = {"shade_split": shade_split, "sample_depth": sample_depth}
+    expected = compact_sheets(
+        coverage, merged, cam.to(device), pws.to(device), 0, 4, 4, **kwargs
+    )
+    memory = ManualMemory(0, device=device, num_bytes=1 << 20)
+    memory._poison = 255
+    with memory.temp():
+        actual = compact_sheets(
+            coverage,
+            merged,
+            cam.to(device),
+            pws.to(device),
+            0,
+            4,
+            4,
+            **kwargs,
+            diagnostics=False,
+            resolver_memory=memory,
+        )
+    assert memory.current_pointer == 0
+    memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).zero_()
+    renamed = {"sheet_cov": "sheet_wgt", "sheet_msk": "sheet_wmsk"}
+    for name, value in actual._asdict().items():
+        assert torch.equal(value.cpu(), expected[renamed.get(name, name)].cpu()), name
+    assert actual.num_sheets == expected["num_sheets"]
+
+
+@pytest.mark.parametrize("failure_site", ["band", "statistics", "final_copy"])
+def test_caller_owned_compaction_stages_unwind_on_failure(monkeypatch, failure_site):
+    from algan import SETTINGS
+    from algan.rendering.raytracing import sheet_buffers, sheets
+    from algan.rendering.raytracing.sheet_workspace import CompactionWorkspace
+    from algan.rendering.taichi_runtime import init_taichi
+    from algan.utils.memory_utils import ManualMemory
+
+    init_taichi()
+    device = SETTINGS.computing.render_device
+    coverage, merged, cam, pws = _coverage(
+        [(0, 1.0, 0, 0.4, 15), (0, 1.001, 1, 0.6, 240), (3, 1.0, 4, 0.5, 255)],
+        tri_norm=torch.tensor([[[0.0, 0.0, 1.0] * 3] * 8]),
+    )
+    coverage = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in coverage.items()
+    }
+    merged = {k: v.to(device) if torch.is_tensor(v) else v for k, v in merged.items()}
+    memory = ManualMemory(0, device=device, num_bytes=1 << 20)
+    ws = CompactionWorkspace(memory)
+    sentinel = memory.get_tensor((7,), torch.int32, persist=True).fill_(173)
+    before = memory.get_pointers()
+    reached = []
+
+    def fail_after_reduction(original):
+        def wrapped(*args, **kwargs):
+            result = original(*args, **kwargs)
+            out = kwargs.get("out")
+            assert out is not None
+            assert ws._depth >= 1
+            for value in out:
+                if value is not None:
+                    assert (
+                        value.untyped_storage()._cdata
+                        == memory.data.untyped_storage()._cdata
+                    )
+            reached.append(True)
+            raise RuntimeError("injected compaction output failure")
+
+        return wrapped
+
+    if failure_site == "band":
+        monkeypatch.setattr(
+            sheets, "_band_composite", fail_after_reduction(sheets._band_composite)
+        )
+    elif failure_site == "statistics":
+        monkeypatch.setattr(
+            sheets, "sheet_statistics", fail_after_reduction(sheets.sheet_statistics)
+        )
+    else:
+
+        def fail_final_copy(*args, **kwargs):
+            assert ws._depth >= 3
+            reached.append(True)
+            raise RuntimeError("injected compaction output failure")
+
+        monkeypatch.setattr(sheet_buffers, "finish_sheet_buffers", fail_final_copy)
+
+    with memory.temp():
+        with pytest.raises(RuntimeError, match="injected compaction output failure"):
+            compact_sheets(
+                coverage,
+                merged,
+                cam.to(device),
+                pws.to(device),
+                0,
+                4,
+                4,
+                shade_split=True,
+                diagnostics=False,
+                resolver_memory=memory,
+                workspace=ws,
+            )
+        assert ws._depth == 0
+        assert ws._live_bytes == 0
+    assert reached == [True]
+    assert memory.get_pointers() == before
+    memory.get_tensor((memory.get_num_bytes_remaining(),), torch.uint8).fill_(241)
+    assert sentinel.tolist() == [173] * 7

@@ -787,6 +787,7 @@ def band_stats_case(label, band, msk, pos_o, cov, nb, positioned):
         nf,
         bool(positioned),
         ti.i64,
+        True,
     )
     rp = torch.full((nb,), n, dtype=torch.int64, device=dev)
     band_stats_rep_orig(

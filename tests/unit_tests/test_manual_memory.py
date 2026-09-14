@@ -160,6 +160,9 @@ def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
     monkeypatch.setattr(torch.mps, "is_available", lambda: True)
     monkeypatch.setattr(torch.mps, "empty_cache", lambda: None)
     monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda *a, **k: False)
+    # Host pressure independently triggers this reclaim, even for an idle GPU.
+    # The steady-state fixture must not depend on the machine running pytest.
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: False)
 
     mu.release_torch_memory(force_gc=False)
     assert cleared == [], "a steady-state reclaim dropped the import cache"
@@ -430,3 +433,97 @@ def test_force_gc_does_not_force_native_pressure_cleanup(monkeypatch):
 
     mu.release_torch_memory(force_gc=True)
     assert events == ["gc"]
+
+
+@pytest.mark.parametrize("persist", [False, True])
+@pytest.mark.parametrize("shape", [(), (0,), (2, 0, 3), (1,), (2, 3)])
+def test_scalar_empty_and_multidimensional_allocations(shape, persist):
+    memory = _arena(num_bytes=129)
+    memory.get_tensor((3,), torch.uint8)
+    value = memory.get_tensor(shape, torch.float32, persist=persist)
+    assert value.shape == shape
+    assert value.dtype == torch.float32
+    assert value.untyped_storage()._cdata == memory.data.untyped_storage()._cdata
+    assert memory.current_pointer <= memory.current_reverse_pointer
+    assert (
+        memory.max_pointer
+        == memory.current_pointer + len(memory) - memory.current_reverse_pointer
+    )
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_scalar_clone_and_cast_copy_directly_into_arena(persist):
+    memory = _arena()
+    value = torch.tensor(3.25)
+    clone = memory.clone(value, persist=persist)
+    cast = memory.cast(value, torch.float64, persist=persist)
+    assert clone.shape == cast.shape == ()
+    assert clone.item() == cast.item() == value.item()
+    assert clone.untyped_storage()._cdata == memory.data.untyped_storage()._cdata
+    assert cast.untyped_storage()._cdata == memory.data.untyped_storage()._cdata
+    value.fill_(9)
+    assert clone.item() == cast.item() == 3.25
+
+
+@pytest.mark.parametrize("persist", [False, True])
+@pytest.mark.parametrize(
+    ("shape", "error"),
+    [((-1,), ValueError), ((0, -1), ValueError), ((1.5,), TypeError)],
+)
+def test_invalid_shape_does_not_change_allocation_state(shape, error, persist):
+    memory = _arena()
+    memory.get_tensor((3,), torch.uint8)
+    before = memory.get_pointers(), memory.max_pointer
+    with pytest.raises(error):
+        memory.get_tensor(shape, persist=persist)
+    assert (memory.get_pointers(), memory.max_pointer) == before
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_view_construction_failure_does_not_change_allocation_state(
+    monkeypatch, persist
+):
+    memory = _arena()
+    memory.get_tensor((3,), torch.uint8)
+    before = memory.get_pointers(), memory.max_pointer
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected view failure")
+
+    monkeypatch.setattr(torch.Tensor, "view", fail)
+    with pytest.raises(RuntimeError, match="injected view failure"):
+        memory.get_tensor((3,), persist=persist)
+    assert (memory.get_pointers(), memory.max_pointer) == before
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_dtype_alignment_exhaustion_keeps_state(persist):
+    memory = _arena(num_bytes=7)
+    memory.get_tensor((3,), torch.uint8)
+    before = memory.get_pointers(), memory.max_pointer
+    with pytest.raises(InsufficientMemoryException):
+        memory.get_tensor((1,), torch.float32, persist=persist)
+    assert (memory.get_pointers(), memory.max_pointer) == before
+
+
+def test_host_pressure_reclaims_mps_imports_without_gpu_pressure(monkeypatch):
+    from algan.rendering import mps_zero_copy
+    from algan.utils import memory_utils as mu
+
+    events = []
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: True)
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: None)
+    monkeypatch.setattr(
+        mu, "_reset_quadrants_runtime_for_memory_pressure", lambda: False
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(
+        mps_zero_copy, "clear_import_cache", lambda: events.append("imports")
+    )
+    monkeypatch.setattr(torch.mps, "empty_cache", lambda: events.append("cache"))
+
+    mu.release_torch_memory(force_gc=False)
+    assert events == ["gc", "imports", "cache"]

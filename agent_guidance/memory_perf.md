@@ -67,7 +67,10 @@ all 30 raw frames byte-identical and essentially unchanged peak GPU allocation.
 Set `SETTINGS.raytracing.experimental.shadow_primary_sort = False` for A/B checks.
 
 CUDA sheet compaction assigns conflict-rank groups with prefix counts
-(`sheet_rank_groups`) instead of globally sorting `(parent * 16 + rank)`.
+(`sheet_rank_groups`) instead of globally sorting packed parent/rank keys.
+The original measurement below used a four-bit rank field; current grouping
+uses count-bounded packing or separate MPS-friendly integer keys, with no
+fixed per-parent rank clamp.
 This relies on dense, ordered parents and ranks containing every integer from
 zero to the parent's maximum: a fragment increments each claimed sample lane
 by one. Ranks can decrease, so consecutive unique is not valid here. Outputs

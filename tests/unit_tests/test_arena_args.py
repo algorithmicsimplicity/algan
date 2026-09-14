@@ -357,11 +357,11 @@ def test_pack_rejects_the_wrong_rank():
         pack((("a", "f32", 3), ("b", "i32", 1)), (a, b))
 
 
-def test_pack_caches_the_tables_on_pointers_and_shapes_only():
+def test_pack_caches_the_tables_on_pointers_and_layout():
     """The second pack of one tensor set reuses its tables; nothing else does.
 
     The tables are a pure function of every bound tensor's pointer, storage,
-    dtype and shape, and the cache is keyed on exactly those integers -- never
+    dtype, shape and strides, and the cache is keyed on exactly those integers -- never
     on a tensor -- so it can neither serve a stale layout nor keep an arena
     alive. A slice one element over, a re-allocated arena, and a spec of
     another rank each miss; the miss re-validates, which is why the wrong-rank
@@ -447,3 +447,19 @@ def test_the_wrapper_rejects_a_call_of_the_wrong_length():
     )
     with pytest.raises(ArenaBindingError, match="takes 2 arguments, got 1"):
         launch(1)
+
+
+def test_pack_revalidates_same_pointer_and_shape_with_different_strides():
+    from algan.rendering.raytracing import arena_args_taichi as mod
+
+    mod.clear_pack_cache()
+    square = torch.arange(9, dtype=torch.float32).view(3, 3)
+    spec = (("square", "f32", 2),)
+    first = pack(spec, (square,))
+    transposed = square.t()
+    assert square.data_ptr() == transposed.data_ptr()
+    assert square.shape == transposed.shape
+    with pytest.raises(ArenaBindingError, match="not contiguous"):
+        pack(spec, (transposed,))
+    assert len(mod._table_cache) == 1
+    assert torch.equal(pack(spec, (square,))[-1], first[-1])

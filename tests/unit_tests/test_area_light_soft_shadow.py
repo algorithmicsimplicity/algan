@@ -282,26 +282,26 @@ def test_soft_shadow_fans_compile_and_render_one_frame(
     Each arm forces one fan:
 
     * ``analytic_aa=False`` vetoes the sheet route in
-      ``analytic_raster_route_active`` (the single host-side route decision),
+      ``resolve_batch_policy`` (the single host-side route decision),
       so the batch falls back to the classic wavefront tracer and compiles
       the inline fan in ``wavefront_shade``;
     * the default sheet arm compiles ``raster_shadow_trace``'s fan via the
       sheet resolve's mode-1 event build.
 
-    The spy on ``analytic_raster_route_active`` pins which decision was
+    The spy on ``resolve_batch_policy`` pins which decision was
     actually made, so a future routing change cannot silently empty an arm
     of its purpose while staying green.
     """
     expected_route_active = analytic_aa
     decisions = []
-    real_decision = tracer.analytic_raster_route_active
+    real_decision = tracer.resolve_batch_policy
 
     def _spy(*args, **kwargs):
         active = real_decision(*args, **kwargs)
-        decisions.append(active)
+        decisions.append(active.analytic_raster)
         return active
 
-    monkeypatch.setattr(tracer, "analytic_raster_route_active", _spy)
+    monkeypatch.setattr(tracer, "resolve_batch_policy", _spy)
 
     # Shadows on engages both fans' soft-emitter path (an area row carries a
     # non-zero radius); analytic_aa selects which fan resolves the frame.

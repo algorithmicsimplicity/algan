@@ -161,6 +161,7 @@ def sheet_band_reduce(
     sliver: ti.types.ndarray(),  # [nb] i32 PRE-ZEROED, or a [1] dummy
     want_sliver: ti.template(),  # compile-time: is `sliver` real?
     acc_t: ti.template(),  # compile-time: `area`'s element type
+    want_fused: ti.template(),  # compile-time: is `dup` a real diagnostic output?
 ):
     """One pass: per-band exact area, sample union, doubly-claimed lanes, sliver.
 
@@ -186,8 +187,9 @@ def sheet_band_reduce(
         word = msk[i]
         bits = word & mask_all
         shared = ti.atomic_or(union[b], bits) & bits
-        if shared != 0:
-            ti.atomic_or(dup[b], shared)
+        if ti.static(want_fused):
+            if shared != 0:
+                ti.atomic_or(dup[b], shared)
         ti.atomic_add(area[b], ti.cast(cov[i], acc_t))
         if ti.static(want_sliver):
             if (word & sliver_bit) != 0:
@@ -228,8 +230,12 @@ def sheet_conflict_rank(
     ``band_start``, so the thread whose own flag is set walks its band forward
     once with the eight per-lane counters in registers; each counter is read
     before the fragment's own increment (the exclusive prefix), and no lane's
-    counter is touched by any other band's walk. The caller owns the
-    ``max=15`` clamp; this returns the raw counts.
+    counter is touched by any other band's walk. There is no clamp on either
+    side any more: a rank is below its band's fragment count and the counters
+    are int32, so every one of them is representable, and the caller groups
+    them with a count-bounded radix rather than reserving four key bits
+    (``sheet_grouping.rank_key_base``). The former 16-layer ceiling, and the
+    ``sheet_layers`` truncation it recorded, are gone.
 
     Row 0 always starts a band, whether or not its flag is set -- the torch
     arm's cummax gives any leading run of clear flags band-first 0, which is
@@ -559,6 +565,7 @@ def band_stats_reduce(
     nfrag: ti.types.ndarray(),  # [nb] `idx_t` OUT, PRE-ZEROED
     positioned: ti.template(),  # compile-time: sheet_positioned_depth
     idx_t: ti.template(),  # compile-time: the five OUT arrays' element type
+    want_count: ti.template(),  # compile-time: is `nfrag` a real diagnostic output?
 ):
     """One pass: the compaction's five per-band scatters, fused.
 
@@ -593,7 +600,8 @@ def band_stats_reduce(
                 ti.atomic_min(first_sorted_p[b], ti.cast(i, idx_t))
                 ti.atomic_min(min_pos_p[b], p)
         ti.atomic_max(cmax[b], cov[i])
-        ti.atomic_add(nfrag[b], ti.cast(1, idx_t))
+        if ti.static(want_count):
+            ti.atomic_add(nfrag[b], ti.cast(1, idx_t))
 
 
 @ti.kernel

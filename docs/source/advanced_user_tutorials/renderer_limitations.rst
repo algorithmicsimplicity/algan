@@ -986,10 +986,12 @@ Hard limits
        (:ref:`limits-truncation`). The path tracer has no cap: it samples
        lights instead of summing them, authored-appearance materials
        included, and does not warn.
-   * - Overlapping layers of one surface in one pixel
-     - 16
-     - Further layers merge into the last, and attenuate once between them
-       instead of once each. **Warns** (:ref:`limits-truncation`).
+   * - Overlapping layers of one surface in one pixel (sheet renderer)
+     - No fixed per-surface layer cap
+     - Conflict ranks are retained within the fragment index capacity and
+       available memory. An unrepresentable fragment count raises rather than
+       merging excess layers. Independent ray-walk surface limits still apply
+       to routes that use those walks.
    * - Nested translucent closed-shell solids along one path-traced camera ray
      - 4
      - The surplus shell attenuates once per crossing instead of once per
@@ -1036,7 +1038,7 @@ time a render reaches it.
 Reading back what a render truncated
 ------------------------------------
 
-Three of the ceilings above degrade the image rather than raising, and a render
+The active truncation ceilings above degrade the image rather than raising, and a render
 that reaches one says so once, at ``WARNING``, naming the ceiling and what it
 cost. They are warnings rather than the renderer's usual ``PERF`` budget
 messages because they change the picture: a batch split or a ray-pool retry is
@@ -1051,14 +1053,16 @@ check without reading logs::
 
     assert not truncations, truncations.as_dict()
 
-:class:`~.TruncationCounts` has one field per ceiling --
-``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
-``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``. The
+:class:`~.TruncationCounts` reports ``surfaces_per_ray``, ``shadow_lights``,
+``dropped_continuations``, ``closed_shell_ring``, ``medium_stack`` and
+``medium_query``, plus ``total``. The legacy ``sheet_layers`` field is retained
+for compatibility with earlier reports; the sheet renderer no longer clamps
+conflict ranks to 15 and does not emit this event. The
 counts are cumulative over the whole render, except ``shadow_lights``, which is
 a property of the scene rather than a tally of events and reports the worst
 batch.
 
-Every counter is unconditional, so **a zero is a measurement**: it says the
+Every active counter is unconditional, so **a zero is a measurement**: it says the
 ceiling was watched and never reached, not that nothing was looking.
 ``dropped_continuations`` in particular should always read zero on the shipped
 renderer -- every path that can lose a continuation ray retries its tile
