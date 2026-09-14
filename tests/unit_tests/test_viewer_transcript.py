@@ -93,9 +93,20 @@ def test_resolution_change_stays_lazy_and_drops_stale_worker_plan(
     monkeypatch.setattr(session, "_stand_aside", change_resolution)
     try:
         assert not session._work.is_set()
+        session.prefetch(0)
+        session._work.clear()  # The worker consumed the wake-up.
         assert session._render_next() is False
         assert rendered == []
+        assert not session._work.is_set()
+
+        # Even if the worker loops after the resolution request has already
+        # completed, it may not start the new size speculatively.
+        monkeypatch.setattr(session, "_stand_aside", lambda: None)
+        assert session._render_next() is False
+        assert rendered == []
+
         session.prefetch(0)
+        assert session._requested_generation == session._generation
         assert session._work.is_set()
     finally:
         session.close()

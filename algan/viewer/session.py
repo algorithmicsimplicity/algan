@@ -124,6 +124,10 @@ class ViewerSession:
         self._order: list[int] = []
         self._wanted = 0
         self._generation = 0
+        # The generation most recently requested by frame()/prefetch(). A
+        # resolution change bumps _generation without updating this marker,
+        # which makes the worker stop until new browser demand arrives.
+        self._requested_generation: int | None = None
         self._error: str | None = None
         self._frame_ready = threading.Condition(self._lock)
         self._scene_free = threading.Condition(self._lock)
@@ -337,6 +341,7 @@ class ViewerSession:
             # move, would abandon its chunk before finishing a single frame.
             self._wanted = index
             self._generation += 1
+            self._requested_generation = self._generation
         self._work.set()
         with self._lock:
             while True:
@@ -357,6 +362,7 @@ class ViewerSession:
         with self._lock:
             self._wanted = max(0, min(int(index), self.total_frames - 1))
             self._generation += 1
+            self._requested_generation = self._generation
         self._work.set()
 
     def time_of(self, index):
@@ -565,6 +571,12 @@ class ViewerSession:
     def _render_next(self):
         """Render one chunk from where the page is looking. False when idle."""
         with self._lock:
+            # A resolution change invalidates the currently requested render
+            # generation without waking the worker. If an already-awake worker
+            # reaches this point after that change, it must become idle rather
+            # than speculatively starting the new resolution on its own.
+            if self._requested_generation != self._generation:
+                return False
             start = self._next_gap()
             if start is None:
                 return False
