@@ -51,8 +51,21 @@ def gather_group_stream(order, pixel, group, depth, cov, mask, *, memory=None):
 
 
 def gather_sheet_records(
-    final, nearest, rep, key, ref, ab, cap, cov, mask, nfrag, fused, band,
-    *, memory=None, persist_output=False,
+    final,
+    nearest,
+    rep,
+    key,
+    ref,
+    ab,
+    cap,
+    cov,
+    mask,
+    nfrag,
+    fused,
+    band,
+    *,
+    memory=None,
+    persist_output=False,
 ):
     """Gather final records directly; no sorted packed-key or representative temporary."""
     from algan.rendering.raytracing.sheet_stream_taichi import (
@@ -74,7 +87,10 @@ def gather_sheet_records(
     persistent = {"sheet_key", "sheet_ref", "sheet_ab", "sheet_cap"}
     out = {
         name: _empty(
-            (n, *src.shape[1:]), src.dtype, src.device, memory,
+            (n, *src.shape[1:]),
+            src.dtype,
+            src.device,
+            memory,
             persist=persist_output and name in persistent,
         )
         for name, src in sources.items()

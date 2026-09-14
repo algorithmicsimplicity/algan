@@ -25,7 +25,6 @@ See :doc:`/advanced_user_tutorials/text_and_math`.
 
 from __future__ import annotations
 
-
 import torch.nn.functional as F
 
 from algan.settings._startup import _ANIMATION_DEVICE

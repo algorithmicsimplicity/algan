@@ -55,9 +55,9 @@ def test_area_rows_and_panel_have_the_same_physical_normalization(samples):
 def test_area_quad_geometry_uses_the_complete_aux_layout(samples, frames):
     """Shadow-budget columns must not change geometry, frame axes or radiance."""
     light = RectAreaLight(width=2, height=3, samples=samples)
-    location = torch.tensor(
-        [[0.0, 0.0, 4.0], [1.0, 0.5, 5.0], [-0.5, 1.0, 6.0]]
-    )[:frames]
+    location = torch.tensor([[0.0, 0.0, 4.0], [1.0, 0.5, 5.0], [-0.5, 1.0, 6.0]])[
+        :frames
+    ]
     aux = light._build_aux(location)
     count = light._num_samples()
     assert aux.shape == (frames, count, LIGHT_AUX_COLS)
