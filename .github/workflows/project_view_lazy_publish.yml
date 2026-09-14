@@ -51,7 +51,14 @@ jobs:
           text = path.read_text()
           old = '@pytest.mark.parametrize("path, method", ['
           assert text.count(old) == 1
-          path.write_text(text.replace(old, '@pytest.mark.parametrize(("path", "method"), ['))
+          text = text.replace(old, '@pytest.mark.parametrize(("path", "method"), [')
+          start = text.index('    monkeypatch.setattr(Scene, "__init__", forbidden)')
+          end = text.index('\n\ndef test_catalogue_remains_responsive_during_lazy_authoring', start)
+          body = text[start:end].replace('monkeypatch.setattr(', 'patch.setattr(')
+          text = (text[:start] + '    with monkeypatch.context() as patch:\n'
+                  + '\n'.join('    ' + line if line else line for line in body.splitlines())
+                  + '\n' + text[end:])
+          path.write_text(text)
           PY
           git diff --check
           git diff --name-only > "$RUNNER_TEMP/lazy-artifact/changed-files.txt"
