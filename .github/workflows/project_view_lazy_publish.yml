@@ -5,7 +5,6 @@ on:
     paths: [.github/workflows/project_view_lazy_publish.yml]
 permissions:
   contents: write
-  actions: write
 defaults:
   run:
     shell: bash
@@ -22,10 +21,6 @@ jobs:
       BASE: 6e45730da77acd84523945809b542556e3d8fa34
       TARGET: codex/project-scene-viewer
     steps:
-      - name: Stop superseded validation run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api -X POST repos/algorithmicsimplicity/algan/actions/runs/34804573425/cancel || true
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -50,6 +45,14 @@ jobs:
           git checkout --detach "$BASE"
           git apply --check "$RUNNER_TEMP/lazy.patch"
           git apply "$RUNNER_TEMP/lazy.patch"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/unit_tests/test_project_viewer.py')
+          text = path.read_text()
+          old = '@pytest.mark.parametrize("path, method", ['
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, '@pytest.mark.parametrize(("path", "method"), ['))
+          PY
           git diff --check
           git diff --name-only > "$RUNNER_TEMP/lazy-artifact/changed-files.txt"
       - uses: actions/setup-python@v5
@@ -67,10 +70,11 @@ jobs:
       - name: Format and lint changed Python files
         run: |
           files='algan/project.py algan/viewer/project.py algan/viewer/viewer.py tests/unit_tests/test_project_viewer.py'
-          uvx ruff@0.12.4 check --fix $files
-          uvx ruff@0.12.4 format $files
-          uvx ruff@0.12.4 check --no-fix $files
-          uvx ruff@0.12.4 format --check $files
+          .venv/bin/ruff format $files
+          .venv/bin/ruff check --fix $files
+          .venv/bin/ruff format $files
+          .venv/bin/ruff check --no-fix $files
+          .venv/bin/ruff format --check $files
           .venv/bin/python -m py_compile $files
           git diff --check
       - name: JavaScript viewer regression tests
