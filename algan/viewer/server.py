@@ -12,6 +12,7 @@ Routes:
 ``GET /static/<name>``              its script and stylesheet
 ``GET /api/state``                  runtime, frame rate, size, what is cached
 ``GET /frame/<n>.png``              one rendered frame, rendering it if need be
+``GET /audio.wav``                  the snapshotted Scene audio mix
 ``GET /api/transcript``             authored speech and scene-relative word times
 ``GET /api/hierarchy``              the Scene's root nodes
 ``GET /api/children?node=``         one node's children
@@ -139,6 +140,11 @@ class _Handler(BaseHTTPRequestHandler):
             if route.startswith("/frame/") and route.endswith(".png"):
                 index = int(route[len("/frame/") : -len(".png")])
                 return self._png(session.frame(index))
+            if route == "/audio.wav":
+                data = session.audio()
+                if data is None:
+                    return self._error(HTTPStatus.NOT_FOUND, "This scene has no audio")
+                return self._send(HTTPStatus.OK, data, "audio/wav")
             if route == "/api/transcript":
                 return self._json(session.transcript())
             if route == "/api/hierarchy":

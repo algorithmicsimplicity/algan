@@ -61,6 +61,7 @@ from algan.settings.video_settings import (
 )
 from algan.sound.transcript import snapshot_transcript
 from algan.viewer import hierarchy
+from algan.viewer.audio import SceneAudio
 from algan.viewer.pixels import PixelRecord
 
 #: How many frames one render call produces. A render call has real fixed cost
@@ -109,6 +110,12 @@ class ViewerSession:
         self._transcript = snapshot_transcript(
             scene.audio_manager._speech_blocks, self.duration
         )
+        opened_on = (
+            video_settings if video_settings is not None else scene.video_settings
+        )
+        self._audio = SceneAudio(
+            scene.effects, self.duration, opened_on.audio_sample_rate
+        )
         # At least one frame: a scene authored but never advanced still has a
         # first frame to look at, and a zero-length scrubber is unusable.
         self.total_frames = max(1, round(self.duration * self.fps))
@@ -148,6 +155,10 @@ class ViewerSession:
     def transcript(self):
         """The opening-time snapshot; reading it never waits for a render."""
         return self._transcript
+
+    def audio(self):
+        """The opening-time mix; independent of render resolution and locks."""
+        return self._audio.wav()
 
     # -- settings ---------------------------------------------------------
 
@@ -311,6 +322,7 @@ class ViewerSession:
             error = self._error
         return {
             "runtime": self.duration,
+            "has_audio": self._audio.available,
             "fps": self.fps,
             "total_frames": self.total_frames,
             "width": self.width,
@@ -675,6 +687,7 @@ class ViewerSession:
         nowhere near here.
         """
         self._closed = True
+        self._audio.close()
         self._work.set()
         with self._lock:
             # A worker parked in ``_stand_aside`` is not waiting on ``_work``,

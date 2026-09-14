@@ -93,6 +93,22 @@ By default, the Scene's AudioManager uses Algan's pyttsx3 speech generator. Each
 When a video contains audio, ``save_video`` writes that transcript beside the
 video as ``<video_stem>_script.txt``.
 
+Listening in the interactive viewer
+-----------------------------------
+
+``Scene.view()`` plays the scene's existing ``Speech`` and ``Audio`` clips when
+**Play** is pressed. Clips retain their recorded start times, overlap as they do
+in the video, and include silent gaps. No extra option is required. **Stop**
+pauses the sound; timeline clicks and transcript-word clicks seek silently, and
+pressing **Play** resumes from the new position. Playback pauses both sound and
+picture while waiting for an unrendered frame.
+
+The mix is snapshotted when the viewer opens and prepared in memory on first
+playback, without writing an audio file or synthesizing speech again. Later
+authoring requires a new viewer. Scenes without audio keep their silent playback.
+The same controls work in ``Project.view()``: changing tabs stops the previous
+scene's sound, and unselected scenes are not loaded to prepare audio.
+
 Following the transcript in the viewer
 ======================================
 

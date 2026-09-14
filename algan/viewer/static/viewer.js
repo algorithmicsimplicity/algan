@@ -12,7 +12,7 @@ const state = {
   frame: 0, playing: false, selected: null, drawn: false,
   pixel: { x: 0, y: 0 },
   images: new Map(),
-  playStartedAt: 0, playStartedFrame: 0,
+  playStartedAt: 0, playStartedFrame: 0, playRequest: 0, hasAudio: false,
   // Zoom is 1 = fit the stage. It is presentation only: the canvas keeps the
   // render's own pixel grid, so an inspected pixel is the same pixel however
   // far in you are.
@@ -21,6 +21,8 @@ const state = {
   sceneId: null, sceneVersion: null, sceneKeys: "", generation: 0,
   switching: false, sceneReady: false,
 };
+
+const audio = new ViewerAudio();
 
 const el = (id) => document.getElementById(id);
 const canvas = el("frame");
@@ -85,7 +87,7 @@ function frameImage(index) {
   if (state.images.has(index)) return state.images.get(index);
   const promise = new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
+    image.onload = () => { promise.ready = true; resolve(image); };
     image.onerror = () => {
       // A request from a discarded resolution may finish after its replacement.
       if (state.images.get(index) === promise) state.images.delete(index);
@@ -106,16 +108,19 @@ function frameImage(index) {
 
 /* ---------- drawing ---------- */
 
-async function showFrame(index, { redrawOnly = false } = {}) {
+async function showFrame(index, { redrawOnly = false, playbackRequest = null } = {}) {
   if (!state.sceneReady) return false;
   index = Math.max(0, Math.min(index, state.totalFrames - 1));
   state.frame = index;
   const epoch = state.epoch;
   const generation = state.generation;
+  const current = () => state.frame === index && state.epoch === epoch
+    && state.generation === generation
+    && (playbackRequest === null || playbackCurrent(playbackRequest));
   updateReadouts();
   try {
     const image = await frameImage(index);
-    if (state.frame !== index || state.epoch !== epoch || state.generation !== generation) return true;
+    if (!current()) return true;
     if (canvas.width !== image.width || canvas.height !== image.height) {
       canvas.width = image.width;
       canvas.height = image.height;
@@ -126,7 +131,7 @@ async function showFrame(index, { redrawOnly = false } = {}) {
     setStatus("");
     return true;
   } catch (err) {
-    if (state.frame !== index || state.epoch !== epoch || state.generation !== generation) return true;
+    if (!current()) return true;
     if (!redrawOnly) setStatus("rendering…", "busy");
     return false;
   }
@@ -199,37 +204,92 @@ function setStatus(text, kind = "") {
 
 /* ---------- playback ---------- */
 
-function play() {
+function playbackCurrent(request) {
+  return state.playing && request === state.playRequest;
+}
+
+function startClock(seconds) {
+  state.playStartedAt = performance.now();
+  state.playStartedFrame = seconds * state.fps;
+  if (state.hasAudio) audio.start(seconds);
+}
+
+function playbackTime() {
+  return state.hasAudio ? audio.time() : state.playStartedFrame / state.fps
+    + (performance.now() - state.playStartedAt) / 1000;
+}
+
+// Decode a small look-ahead, not the whole scene. Playback normally finds the
+// next picture ready, rather than stopping audio for every HTTP/image decode.
+function warmFrames() {
+  for (let index = state.frame + 1; index < Math.min(state.frame + 5, state.totalFrames); index++) {
+    frameImage(index).catch(() => {});
+  }
+}
+
+async function playbackFrame(index, request) {
+  while (playbackCurrent(request)) {
+    if (await showFrame(index, { playbackRequest: request })) return true;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function play() {
   if (!state.sceneReady || state.playing || state.switching) return;
   state.playing = true;
+  const request = ++state.playRequest;
   el("play").textContent = "Stop";
-  state.playStartedAt = performance.now();
-  state.playStartedFrame = state.frame >= state.totalFrames - 1 ? 0 : state.frame;
-  requestAnimationFrame(tick);
+  const first = state.frame >= state.totalFrames - 1 ? 0 : state.frame;
+  setStatus(state.hasAudio ? "preparing audio…" : "rendering…", "busy");
+  try {
+    // Audio permission is requested on the click, not after an awaited render.
+    const prepared = state.hasAudio ? audio.prepare(api("/audio.wav")) : Promise.resolve();
+    await Promise.all([prepared, playbackFrame(first, request)]);
+    if (!playbackCurrent(request)) return;
+    startClock(first / state.fps);
+    setStatus("");
+    warmFrames();
+    requestAnimationFrame(() => tick(request));
+  } catch (err) {
+    if (!playbackCurrent(request)) return;
+    stop();
+    setStatus(`Playback unavailable: ${err.message}`, "error");
+  }
 }
 
 function stop() {
   state.playing = false;
+  state.playRequest++;
+  audio.pause();
   el("play").textContent = "Play";
 }
 
-async function tick() {
-  if (!state.playing) return;
-  const generation = state.generation;
-  const elapsed = (performance.now() - state.playStartedAt) / 1000;
-  const target = state.playStartedFrame + Math.floor(elapsed * state.fps);
-  if (target >= state.totalFrames) { stop(); await showFrame(state.totalFrames - 1); return; }
-  if (target !== state.frame) {
-    const drawn = await showFrame(target);
-    if (!state.playing || generation !== state.generation) return;
-    if (!drawn) {
-      // The frame is not rendered yet. Hold the clock where it is so playback
-      // resumes from here instead of skipping the frames spent waiting.
-      state.playStartedAt = performance.now();
-      state.playStartedFrame = target;
-    }
+async function tick(request = state.playRequest) {
+  if (!playbackCurrent(request)) return;
+  const seconds = playbackTime();
+  // Keep the final picture until the actual scene end, including the last
+  // fraction of a frame's audio when duration * fps is not an integer.
+  if (seconds >= (state.duration || state.totalFrames / state.fps)) {
+    stop();
+    await showFrame(state.totalFrames - 1);
+    return;
   }
-  requestAnimationFrame(tick);
+  const target = Math.min(Math.floor(seconds * state.fps), state.totalFrames - 1);
+  if (target !== state.frame || !state.drawn) {
+    const waiting = !state.images.get(target)?.ready;
+    if (waiting) {
+      audio.pause();
+      setStatus("rendering…", "busy");
+    }
+    await playbackFrame(target, request);
+    if (!playbackCurrent(request)) return;
+    // Pause BEFORE the slow request. Resetting only after it completes would
+    // let the narration run ahead of the picture during the entire render.
+    if (waiting) startClock(seconds);
+  }
+  warmFrames();
+  requestAnimationFrame(() => tick(request));
 }
 
 async function seek(index) {
@@ -586,6 +646,8 @@ function syncScenes(data) {
 
 function clearScene() {
   stop();
+  audio.reset();
+  state.hasAudio = false;
   state.sceneReady = false;
   state.generation++;
   state.images.clear();
@@ -681,6 +743,7 @@ function syncResolution(data) {
 
 async function changeResolution(name) {
   if (!state.sceneReady || state.switching) return;
+  stop();
   const generation = state.generation;
   const select = el("resolution");
   select.disabled = true;
@@ -755,6 +818,7 @@ function adoptState(data) {
     setStatus(data.error || (loading ? "loading scene…" : ""), data.error ? "error" : "busy");
     return;
   }
+  state.hasAudio = Boolean(data.has_audio);
   state.fps = data.fps;
   state.totalFrames = data.total_frames;
   state.duration = data.runtime ?? data.duration ?? 0;
@@ -776,6 +840,7 @@ async function refreshState() {
     if (data.epoch !== undefined && data.epoch !== state.epoch) {
       // Something else changed the resolution (another tab, a restart): drop
       // frames of the old size rather than drawing them at the new one.
+      stop();
       state.epoch = data.epoch;
       state.images.clear();
       state.drawn = false;
@@ -837,6 +902,7 @@ stage.addEventListener("wheel", (event) => {
 // The fit scale depends on the stage's size, so it has to be recomputed when
 // the window changes shape.
 window.addEventListener("resize", applyZoom);
+window.addEventListener("pagehide", stop);
 
 el("show-components").onchange = () => {
   el("tree").innerHTML = "";
