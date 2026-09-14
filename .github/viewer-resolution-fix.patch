@@ -1,0 +1,104 @@
+diff --git a/algan/viewer/server.py b/algan/viewer/server.py
+index 0407513..07c3b2b 100644
+--- a/algan/viewer/server.py
++++ b/algan/viewer/server.py
+@@ -215,8 +215,8 @@ class _Handler(BaseHTTPRequestHandler):
+                 return self._error(HTTPStatus.NOT_FOUND, "no such scene")
+             return self._json(payload)
+         if url.path == "/api/resolution":
+-            # POST, not GET: this one throws away every rendered frame and
+-            # starts the video again at another size.
++            # POST, not GET: this one throws away every rendered frame at the
++            # old size; the next frame request renders lazily at the new one.
+             try:
+                 name = _one(parse_qs(url.query), "name")
+                 payload = self._request_session(parse_qs(url.query)).set_resolution(
+diff --git a/algan/viewer/session.py b/algan/viewer/session.py
+index a8fb1b2..06eae43 100644
+--- a/algan/viewer/session.py
++++ b/algan/viewer/session.py
+@@ -139,7 +139,6 @@ class ViewerSession:
+         self._epoch = 0
+         self._work = threading.Event()
+         self._closed = False
+-        self._work.set()
+         self._worker = threading.Thread(
+             target=self._run, name="algan-viewer-render", daemon=True
+         )
+@@ -204,14 +203,15 @@ class ViewerSession:
+         return rows
+ 
+     def set_resolution(self, name):
+-        """Re-render everything at another of the offered resolutions.
++        """Switch to another offered resolution and invalidate cached output.
+ 
+         Returns the new state, or ``None`` if there is no such option.
+ 
+         Takes the Scene lock, so it waits out the batch in flight rather than
+         swapping the size under a render that has already read it. Everything
+         cached is then wrong by definition and goes: the frames, and the pixel
+-        inspections whose coordinates were in the old frame's grid.
++        inspections whose coordinates were in the old frame's grid. Rendering
++        stays lazy; the next frame or prefetch request wakes the worker.
+         """
+         key = str(name).upper()
+         entry = self._options.get(key)
+@@ -240,7 +240,6 @@ class ViewerSession:
+                 self._generation += 1
+                 self._frame_ready.notify_all()
+                 self._pixel_ready.notify_all()
+-        self._work.set()
+         return self.state()
+ 
+     # -- scene access -----------------------------------------------------
+@@ -581,6 +580,14 @@ class ViewerSession:
+         if self._closed:
+             return False
+         with self._scene():
++            # ``start`` and ``generation`` were chosen before standing aside.
++            # A queued resolution change or seek can run while we wait for the
++            # Scene and invalidate that work. Re-check only after owning the
++            # Scene: otherwise the worker launches one stale render before
++            # ``_render_range`` gets a chance to notice the generation change.
++            with self._lock:
++                if self._closed or self._generation != generation:
++                    return False
+             self._render_range(
+                 start, end, store=True, generation=generation, yielding=True
+             )
+diff --git a/tests/unit_tests/test_viewer_transcript.py b/tests/unit_tests/test_viewer_transcript.py
+index 1b2d707..21953e0 100644
+--- a/tests/unit_tests/test_viewer_transcript.py
++++ b/tests/unit_tests/test_viewer_transcript.py
+@@ -71,3 +71,31 @@ def test_empty_scene_serves_an_empty_transcript_and_the_tab_assets(
+             handle.url_for("/static/transcript.js"), timeout=3
+         ) as response:
+             assert b"class TranscriptView" in response.read()
++
++
++def test_resolution_change_stays_lazy_and_drops_stale_worker_plan(
++    fresh_scene, monkeypatch
++):
++    """A size switch cannot launch work selected before the switch."""
++    monkeypatch.setattr(ViewerSession, "_run", lambda self: None)
++    session = ViewerSession(Scene.current(), PREVIEW.set(resolution=(48, 27)))
++    rendered = []
++
++    def render(*args, **kwargs):
++        rendered.append((args, kwargs))
++
++    def change_resolution():
++        state = session.set_resolution("SMOKE_TEST")
++        assert state["resolution"] == [32, 32]
++        assert not session._work.is_set()
++
++    monkeypatch.setattr(session, "_render_range", render)
++    monkeypatch.setattr(session, "_stand_aside", change_resolution)
++    try:
++        assert not session._work.is_set()
++        assert session._render_next() is False
++        assert rendered == []
++        session.prefetch(0)
++        assert session._work.is_set()
++    finally:
++        session.close()
