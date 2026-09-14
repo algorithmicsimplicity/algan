@@ -25,6 +25,11 @@ const canvas = el("frame");
 const stage = el("stage");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
+// The player remains the single clock: transcript seeking uses the same path
+// as the scrubber, and highlighting follows the marker even during rendering.
+const transcriptView = new TranscriptView((seconds) =>
+  seek(Math.ceil(seconds * state.fps - 1e-7)));
+
 /* ---------- server ---------- */
 
 /* This viewer session's key to its own API.
@@ -174,6 +179,7 @@ function updateReadouts() {
     ? state.frame / (state.totalFrames - 1) : 0;
   el("progress").style.width = `${fraction * 100}%`;
   el("playhead").style.left = `${fraction * 100}%`;
+  transcriptView.update(time);
 }
 
 function setStatus(text, kind = "") {
@@ -485,6 +491,24 @@ async function loadHierarchy() {
   }
 }
 
+let transcriptLoaded = false;
+let transcriptPending = false;
+
+async function loadTranscript() {
+  if (transcriptLoaded || transcriptPending) return;
+  transcriptPending = true;
+  try {
+    const data = await getJSON("/api/transcript");
+    transcriptView.setData(data);
+    transcriptLoaded = true;
+    transcriptView.update(state.frame / state.fps, true);
+  } catch (err) {
+    el("transcript-status").textContent = `Transcript unavailable; retrying… ${err.message}`;
+  } finally {
+    transcriptPending = false;
+  }
+}
+
 /* ---------- resolution ---------- */
 
 /* Rebuild the picker only when the offered set actually changes, so the
@@ -567,6 +591,7 @@ function adoptState(data) {
     `${data.width}×${data.height} · ${data.fps} fps · `
     + `${data.total_frames} frames · ${data.duration.toFixed(2)}s`;
   syncResolution(data);
+  updateReadouts();
 }
 
 async function refreshState() {
@@ -589,6 +614,7 @@ async function refreshState() {
     // the tree guards on its own flag, and a frame request already in flight
     // is shared rather than reissued.
     if (!el("tree").children.length) loadHierarchy();
+    if (!transcriptLoaded) loadTranscript();
     if (!state.drawn) showFrame(state.frame);
   } catch (err) {
     setStatus(err.message, "error");
@@ -650,4 +676,5 @@ el("show-components").onchange = () => {
   refreshState();
   showFrame(0);
   loadHierarchy();
+  loadTranscript();
 })();

@@ -1259,15 +1259,17 @@ class Audio(AnimationContext):
         kwargs["runtime"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
         self.audio_clip = audio_clip
+        self._audio_effect = None
 
     def __enter__(self):
         context = super().__enter__()
-        if self.prev_context.runtime_per_part > 0 and (
-            self.prev_context.runtime is None or self.prev_context.runtime > 0
+        if (
+            not self.ignored
+            and self.prev_context.runtime_per_part > 0
+            and (self.prev_context.runtime is None or self.prev_context.runtime > 0)
         ):
-            self.animation_manager.scene.add_effect(
-                AudioEffect(self.audio_clip, self.get_current_time())
-            )
+            self._audio_effect = AudioEffect(self.audio_clip, self.get_current_time())
+            self.animation_manager.scene.add_effect(self._audio_effect)
         return context
 
 
@@ -1308,6 +1310,13 @@ class Speech(Audio):
         super().__init__(
             audio_manager.get_speech(transcript), wait_at_end=wait_at_end, **kwargs
         )
+        self._speech_block = audio_manager._record_speech(transcript, self.audio_clip)
+
+    def __enter__(self):
+        context = super().__enter__()
+        if self._audio_effect is not None:
+            self._speech_block.start_time_func = self._audio_effect.start_time_func
+        return context
 
 
 class SlideShow(Seq):

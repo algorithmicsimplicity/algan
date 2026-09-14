@@ -268,10 +268,14 @@ def get_speech_generator_from_file(audio_file, transcript_file):
 
     def generator(script):
         script = script.replace("-", " ")
-        script_words = [strip_nonchars(_) for _ in script.split(" ")]
+        script_words = [strip_nonchars(_) for _ in script.split()]
         script_words = [_ for _ in script_words if len(_) > 0]
 
-        script_start_ind = subfinder([_[0] for _ in word_time_stamps], script_words)
+        script_start_ind = (
+            subfinder([_[0] for _ in word_time_stamps], script_words)
+            if script_words
+            else -1
+        )
 
         if (
             script_start_ind < 0
@@ -290,8 +294,15 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             dif = word_time_stamps[script_start_ind + len(script_words)][1] - audio_end
             audio_end += min(dif * 0.5, 0.5)
 
-        sub_ac = full_ac.subclipped(
-            max(audio_start - 0.05, 0), min(audio_end + 0.05, full_ac.duration)
+        clip_start = max(audio_start - 0.05, 0)
+        sub_ac = full_ac.subclipped(clip_start, min(audio_end + 0.05, full_ac.duration))
+        # Keep alignment relative to the padded subclip, not the source file.
+        # Speech later adds the effect's resolved Scene offset for the viewer.
+        sub_ac.algan_word_timestamps = tuple(
+            (word, start - clip_start, end - clip_start)
+            for word, start, end in word_time_stamps[
+                script_start_ind : script_start_ind + len(script_words)
+            ]
         )
         return sub_ac
 
