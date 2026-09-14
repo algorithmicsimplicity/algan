@@ -73,6 +73,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _USER_PIPELINE_BASE,
     _orient_hit_normals_sided,
 )
+from algan.rendering.raytracing.transport_taichi import _offset_ray_origin, _shadow_tmax
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _GOLDEN_ANGLE,
@@ -85,6 +86,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _R2_SEQUENCE_A2,
     _light_zero_radiance,
     _reserve_continuation_slot,
+    _reset_shell_segment,
     _tri_color_g,
     _tri_normal_g,
     _write_ior_stack,
@@ -2678,10 +2680,10 @@ def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
     that lies on neither the triangle nor, in general, the surface: it is the
     centre ray advanced to a distance measured along a different ray. On a
     closed mesh that lands it up to a facet-depth INSIDE the geometry, past the
-    shared edge and below the neighbouring facet, and the fixed
-    ``10 * min_hit_distance`` normal offset applied to every secondary origin is
-    far too small to escape. The continuation then re-hits the surface it just
-    left, at grazing incidence where Fresnel goes to one, and the pixel gets a
+    shared edge and below the neighbouring facet. A numerical origin offset
+    cannot repair a hit point reconstructed on the wrong surface. The
+    continuation then re-hits the surface it just left, at grazing incidence
+    where Fresnel goes to one, and the pixel gets a
     bright desaturated spike -- speckle scattered over every smooth-shaded mesh
     with a reflective material.
 
@@ -2753,6 +2755,7 @@ def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
         rs_sca[c, 6] = wt[2]
         _write_ior_stack(rs_sca, r, c, medium_ior, entering, refracting,
                          ior_stack)
+        _reset_shell_segment(rs_sca, c)
         rs_int[c, 0] = bounces_left
         rs_int[c, 1] = processed
         rs_int[c, 2] = _ACTIVE
@@ -2916,7 +2919,7 @@ def raster_shadow_trace_arena(
         # normal field), and is what licenses the horizon-cull relaxation in
         # the sample loop below. shadow_term == 2 lifts nothing -- that
         # diagnostic arm exists to show what relaxing alone does.
-        sorigin = spos + fnrm * (10.0 * min_hit_distance)
+        sorigin = _offset_ray_origin(spos, fnrm)
         lifted = 0
         if ti.static(shadow_term != 0):
             if ti.static(shadow_term == 1):
@@ -3115,7 +3118,7 @@ def raster_shadow_trace_arena(
                     n_valid += 1.0
                     occ = _shadow_occluded(
                         refit, shadow_anyhit, sorg, wis, f, ff,
-                        ldn - 20.0 * min_hit_distance,
+                        _shadow_tmax(sorg, wis, ldn),
                         pixel_world_scale[
                             f % pixel_world_scale.shape[0]], 0.0,
                         layer_offset_triangles,

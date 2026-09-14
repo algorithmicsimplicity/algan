@@ -246,6 +246,12 @@ from algan.rendering.raytracing.shading_taichi import (
     light_vis_index,
 )
 from algan.rendering.raytracing.texture_mips_taichi import _triangle_uv_footprint
+from algan.rendering.raytracing.transport_taichi import (
+    _offset_ray_origin as _pt_offset_ray_origin,
+)
+from algan.rendering.raytracing.transport_taichi import (
+    _shadow_tmax as _pt_shadow_tmax,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _DONE,
@@ -665,64 +671,6 @@ def _pt_rng_seeded(path_seed: ti.u32, sample_index: ti.i32,
     h = _pt_hash_combine(h, ti.cast(salt_a, ti.u32))
     h = _pt_hash_combine(h, ti.cast(salt_b, ti.u32))
     return ti.cast(h >> 8, ti.f32) * (1.0 / 16777216.0)
-
-
-# Self-intersection offsetting (Wachter & Binder, "A Fast and Robust Method
-# for Avoiding Self-Intersection", Ray Tracing Gems 2019 ch. 6). The constants
-# are theirs: below ``_OFS_ORIGIN`` in magnitude a coordinate is offset by an
-# absolute ``_OFS_FLOAT`` (float spacing near zero is finer than any useful
-# world epsilon), above it by ``_OFS_INT`` ULPs, which scales with the point's
-# own magnitude exactly as the representable spacing does.
-_OFS_ORIGIN = 1.0 / 32.0
-_OFS_FLOAT = 1.0 / 65536.0
-_OFS_INT = 256.0
-
-
-@ti.func
-def _pt_offset_ray_origin(p, n):
-    """Move hit point ``p`` off the surface along ``n`` by a SCALE-AWARE
-    epsilon, and return the spawn origin.
-
-    The fixed ``10 * min_hit_distance`` (1e-3 world units) this replaces was
-    wrong in both directions: acne on a scene authored at large coordinates,
-    where 1e-3 is below the float spacing of the hit point, and light leaking
-    through thin geometry on one authored at small coordinates, where 1e-3 is
-    a visible distance. Offsetting in INTEGER float space instead ties the
-    step to the representable spacing at ``p``, so it is the smallest step
-    that provably changes the coordinate whatever the scene's scale.
-
-    ``n`` points to the side the ray leaves from; each call site keeps its own
-    convention (the geometric normal flipped toward the outgoing direction,
-    or the ray direction itself for a zero-thickness pane).
-    """
-    out = ti.math.vec3(0.0, 0.0, 0.0)
-    for k in ti.static(range(3)):
-        off_i = ti.cast(_OFS_INT * n[k], ti.i32)
-        if p[k] < 0.0:
-            off_i = -off_i
-        p_i = ti.bit_cast(ti.bit_cast(p[k], ti.i32) + off_i, ti.f32)
-        if ti.abs(p[k]) < _OFS_ORIGIN:
-            out[k] = p[k] + _OFS_FLOAT * n[k]
-        else:
-            out[k] = p_i
-    return out
-
-
-@ti.func
-def _pt_shadow_tmax(sorigin, wi, ldist):
-    """Shadow-ray max distance: the emitter end pulled back by the SAME
-    scale-aware offset ``_pt_offset_ray_origin`` applies at the surface end,
-    so a light sitting on geometry is not occluded by its own emitter and the
-    pull-back scales with the scene the way the spawn offset does (it was a
-    fixed ``20 * min_hit_distance``).
-
-    The pull-back is measured as a difference of two nearby points, so it
-    stays exact even when ``ldist`` is the 1e7 sentinel a directional row or
-    an environment sample carries.
-    """
-    lp = sorigin + wi * ldist
-    back = (lp - _pt_offset_ray_origin(lp, -wi)).dot(wi)
-    return ldist - ti.max(back, 0.0)
 
 
 @ti.func
