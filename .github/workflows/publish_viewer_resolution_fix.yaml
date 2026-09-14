@@ -1,0 +1,45 @@
+name: Publish viewer resolution fix
+
+on:
+  push:
+    branches:
+      - codex/ci-area-light-publisher
+    paths:
+      - .github/workflows/publish_viewer_resolution_fix.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish verified patch to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=b2b6d9c6c39fa7ab144e5b4e8068a25ee44b18db
+          target=codex/fix-ci-area-light-layout
+          cp .github/viewer-resolution-fix.patch /tmp/viewer-resolution-fix.patch
+          remote=$(git ls-remote origin "refs/heads/$target" | cut -f1)
+          test "$remote" = "$base"
+          git fetch --depth=1 origin "$base"
+          git checkout --detach "$base"
+          git apply --check /tmp/viewer-resolution-fix.patch
+          git apply /tmp/viewer-resolution-fix.patch
+          git diff --check
+          python -m py_compile \
+            algan/viewer/session.py \
+            algan/viewer/server.py \
+            tests/unit_tests/test_viewer_transcript.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            algan/viewer/session.py \
+            algan/viewer/server.py \
+            tests/unit_tests/test_viewer_transcript.py
+          git commit -m "Keep viewer resolution changes lazy and cancel stale work"
+          git push origin "HEAD:refs/heads/$target"
