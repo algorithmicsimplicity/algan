@@ -1,0 +1,94 @@
+diff --git a/algan/viewer/static/viewer.js b/algan/viewer/static/viewer.js
+index 61ef322..495300d 100644
+--- a/algan/viewer/static/viewer.js
++++ b/algan/viewer/static/viewer.js
+@@ -630,7 +630,12 @@ async function changeScene(id) {
+     state.switching = false;
+     el("scene-panel").inert = false;
+     el("scene-panel").removeAttribute("aria-busy");
+-    for (const button of el("scene-tabs").children) button.disabled = false;
++    for (const button of el("scene-tabs").children) {
++      button.disabled = false;
++      // Disabling the focused button during the handoff removes focus in real
++      // browsers. Restore it so the next arrow key still navigates scene tabs.
++      if (Number(button.dataset.scene) === state.sceneId) button.focus();
++    }
+     // The next state poll also recovers a lost selection response.
+     loadHierarchy();
+     loadTranscript();
+diff --git a/tests/unit_tests/test_project_viewer.py b/tests/unit_tests/test_project_viewer.py
+index 16c4fca..8bbc84b 100644
+--- a/tests/unit_tests/test_project_viewer.py
++++ b/tests/unit_tests/test_project_viewer.py
+@@ -68,7 +68,7 @@ def project_viewer(fresh_scene, tmp_path, fake_frames):
+         calls.append("intro")
+         Square().spawn(animate=False)
+         with Speech("First scene.", wait_at_end=0):
+-            pass
++            Scene.wait(1)
+         assert Scene.save_frame("ignored") == []
+         assert Scene.save_video("ignored").status == "skipped"
+         assert Scene.view() is None
+@@ -78,7 +78,7 @@ def project_viewer(fresh_scene, tmp_path, fake_frames):
+         Scene.set_video_settings(TINY.set(frames_per_second=8))
+         Circle().spawn(animate=False)
+         with Speech("Second scene.", wait_at_end=0):
+-            pass
++            Scene.wait(1)
+         Scene.wait(1)
+ 
+     project = Project(
+@@ -330,3 +330,34 @@ def test_failed_server_bind_cleans_up_worker(monkeypatch, fresh_scene):
+         Scene.view(TINY, open_browser=False, block=False)
+     assert sessions[0]._closed
+     assert sessions[0]._worker is None
++
++
++def test_real_project_frames_survive_scene_switch_and_return(fresh_scene, tmp_path):
++    from PIL import ImageChops
++
++    def intro():
++        Square().spawn(animate=False)
++        Scene.wait(0.25)
++
++    def outro():
++        Circle().spawn(animate=False)
++        Scene.wait(0.25)
++
++    project = Project([intro, outro], file_path=tmp_path / "out.mp4")
++    with project.view(video_settings=TINY, block=False, open_browser=False) as handle:
++        # A cold compiler can take longer than ordinary HTTP test requests.
++        def frame():
++            with urllib.request.urlopen(
++                handle.url_for("/frame/0.png"), timeout=300
++            ) as response:
++                return Image.open(io.BytesIO(response.read())).convert("RGB")
++
++        first = frame()
++        get(handle, "/api/scene?id=1", method="POST")
++        second = frame()
++        get(handle, "/api/scene?id=0", method="POST")
++        repeated = frame()
++    assert ImageChops.difference(first, second).getbbox() is not None
++    assert all(
++        high <= 2 for low, high in ImageChops.difference(first, repeated).getextrema()
++    )
+diff --git a/tests/viewer/test_project.cjs b/tests/viewer/test_project.cjs
+index 067290b..ed1f6d9 100644
+--- a/tests/viewer/test_project.cjs
++++ b/tests/viewer/test_project.cjs
+@@ -118,3 +118,14 @@ test("single-scene viewer requests remain unscoped and need no project catalog",
+   assert.equal(c.run("state.sceneVersion"), null);
+   assert.doesNotMatch(c.run("api('/api/hierarchy')"), /&s=/);
+ });
++
++
++test("a completed switch restores focus to the selected scene tab", async () => {
++  const c = client(); adopt(c);
++  const tabs = c.elements.get("scene-tabs");
++  let focused = null;
++  for (const button of tabs.children) button.focus = () => { focused = button; };
++  const switching = c.run("changeScene(2)");
++  c.requests[0].reply(scene(2, 1)); await switching;
++  assert.equal(focused, tabs.children[1]);
++});

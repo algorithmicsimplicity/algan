@@ -23,6 +23,7 @@ jobs:
         run: |
           mkdir -p /tmp/project-view-results
           cp _project_view_patch.b64 /tmp/project-view-results/transport.b64
+          cp _project_view_increment.patch /tmp/project-view-increment.patch
           git fetch origin cde11fc824b78ef0284e8182da30f95ede799d83
           git checkout --detach cde11fc824b78ef0284e8182da30f95ede799d83
           python - <<'PY'
@@ -30,7 +31,6 @@ jobs:
           from pathlib import Path
           source = Path('/tmp/project-view-results/transport.b64').read_text().strip()
           source = source.replace('AMI/FLJ4LJ4', 'AMI/FLJ4').replace('uGM4fPh6j6RX', 'uGM4fPh6RX').replace('K0ENQUUQZ', 'K0ENQUQZ')
-          Path('/tmp/project-view-results/normalized.b64').write_text(source)
           assert hashlib.sha256(source.encode()).hexdigest() == 'aabe4bfe6a18eab1d767121104f875c43f4e48258201a4554a45b1158ec2ae3d', 'Transport checksum mismatch'
           patch = gzip.decompress(base64.b64decode(source))
           assert hashlib.sha256(patch).hexdigest() == 'b328dd39959af1273804f84fc8f1f7b049a8d6456013086cd110a190394681f1'
@@ -47,7 +47,10 @@ jobs:
           uvx ruff@0.12.4 check --select PT018 --fix --unsafe-fixes tests/unit_tests/test_project_viewer.py
           uvx ruff@0.12.4 check --fix $FILES
           uvx ruff@0.12.4 format $FILES
+          git apply --check /tmp/project-view-increment.patch
+          git apply /tmp/project-view-increment.patch
           uvx ruff@0.12.4 check --no-fix $FILES
+          uvx ruff@0.12.4 format --check $FILES
           git diff --check
       - name: Install system dependencies
         run: |
