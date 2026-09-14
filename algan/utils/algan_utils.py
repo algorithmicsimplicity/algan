@@ -121,24 +121,27 @@ def get_file_writer(
 # @compiled
 @dataclass(frozen=True)
 class RenderResult:
-    """Outcome metadata returned by :meth:`algan.scene.Scene.save_video`.
+    """Outcome metadata returned by Scene still/video exports.
 
     Attributes
     ----------
     status
         ``"rendered"`` when a file was written, ``"skipped"`` when one already
-        existed and ``overwrite=False``.
+        existed and ``overwrite=False``. ``"deferred"`` means a project
+        screenshot pass has queued the request but has not rendered it yet;
+        the project returns completed results after authoring.
     output_path
         Where the file is, or would have been. Always **absolute**, whatever
         was passed as ``file_path``.
     walltime_seconds
-        Seconds the render took, ``0.0`` for a skipped one.
+        Seconds the render took, ``0.0`` for a skipped or deferred one. A
+        batched still render shares its total time evenly among rendered files.
     render_plan
         The last batch's :class:`~algan.rendering.raytracing.RenderPlan`: which
         renderer ran, what it could not honor, and how often each ceiling bound.
     """
 
-    status: Literal["rendered", "skipped"]
+    status: Literal["rendered", "skipped", "deferred"]
     output_path: Path
     walltime_seconds: float = 0.0
     render_plan: object | None = None
@@ -149,7 +152,11 @@ class RenderResult:
 
     def _repr_html_(self) -> str | None:
         """HTML representation for rich rendering in Jupyter / Colab notebooks."""
-        if not self.output_path or not self.output_path.exists():
+        if (
+            self.status == "deferred"
+            or not self.output_path
+            or not self.output_path.exists()
+        ):
             return f"<p>RenderResult: <code>{self.status}</code> (file: {self.output_path})</p>"
 
         ext = self.output_path.suffix.lower()

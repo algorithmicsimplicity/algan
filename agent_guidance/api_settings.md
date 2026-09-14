@@ -298,3 +298,25 @@ The daemon refuses such a run. Most renderer toggles become module-level default
 `ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
 tries the working directory and then the main script's directory, so an image beside your script loads regardless of
 where you launch Python.
+
+
+### Batched screenshots
+
+`Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job and
+its normal memory-bounded batches. It does not render the intervening frames.
+Times are quantized at the selected frame rate; repeated frame indices share
+rendered pixels, while output names, return order, and overwrite policy retain
+the input order. Shared render wall time is divided among the rendered results.
+
+`Project.render_screenshots()` collects selected `save_frame` calls while
+authoring each scene, then renders them together. Per-call output paths and
+settings are captured; incompatible adjacent options start another job. A
+relative checkpoint inside an unfinished timed context follows that context's
+final rescaling, with its offset still measured in seconds. Explicit positive
+`at` values stay absolute. No extra authoring flag is necessary.
+
+Inside the scene function, a selected call returns `RenderResult` objects with
+`status="deferred"`; these describe destinations, not existing images. The
+project returns completed `"rendered"`/`"skipped"` results after rendering.
+Authoring failures discard that scene's queue. `stop_early=True` still stops at
+the last requested checkpoint, then renders the collected requests.

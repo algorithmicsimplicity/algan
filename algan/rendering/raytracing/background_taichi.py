@@ -15,6 +15,8 @@ def fill_background_from_func(
     frame_offset: ti.i32,
     frames_per_second: ti.f32,
     decode: ti.template(),
+    frame_indices: ti.types.ndarray(),
+    use_frame_indices: ti.template(),
 ):
     """Evaluate ``background_func(x, y, time)`` into the whole output batch.
 
@@ -44,11 +46,11 @@ def fill_background_from_func(
             sample_level = anti_alias_level
             base_width = width // anti_alias_level
             row = (pixel // base_width) * anti_alias_level
-            column = (
-                pixel - (pixel // base_width) * base_width
-            ) * anti_alias_level
+            column = (pixel - (pixel // base_width) * base_width) * anti_alias_level
 
         time = ti.cast(first_frame + frame_offset + frame, ti.f32)
+        if ti.static(use_frame_indices):
+            time = ti.cast(frame_indices[frame_offset + frame], ti.f32)
         time /= frames_per_second
         channel_sum = ti.Vector.zero(ti.f32, 5)
         for sample_y, sample_x in ti.ndrange(sample_level, sample_level):

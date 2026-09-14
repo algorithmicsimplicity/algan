@@ -79,7 +79,7 @@ def _get_active_project_run():
 
 
 class _StopSceneEarly(BaseException):
-    """Abandon a scene function once every requested frame has been rendered.
+    """Abandon a scene function once every requested frame has been queued.
 
     Derived from BaseException rather than Exception on purpose. It unwinds
     through arbitrary user scene code, and a scene that wraps its own work in
@@ -145,6 +145,8 @@ class _ProjectSceneRun:
     stopped_early: bool = False
     last_frame_name: str = ""
     _render_current_frame: bool = False
+    frame_options: dict = field(default_factory=dict)
+    frame_batches: list = field(default_factory=list)
 
     @property
     def render_screenshots(self) -> bool:
@@ -207,6 +209,22 @@ class _ProjectSceneRun:
         """Whether the save-frame call being served should actually render."""
         return self._render_current_frame
 
+    def queue_frames(self, batch) -> None:
+        if self.frame_batches and self.frame_batches[-1].compatible_with(batch):
+            self.frame_batches[-1].targets.extend(batch.targets)
+        else:
+            self.frame_batches.append(batch)
+
+    def render_frames(self) -> None:
+        # Run only after successful authoring (or the requested early stop).
+        # Replacing placeholders keeps the public results in checkpoint order.
+        self.frame_results = []
+        try:
+            for batch in self.frame_batches:
+                self.frame_results.extend(batch.render())
+        finally:
+            self.frame_batches.clear()
+
     def record_frame_results(self, result) -> None:
         if isinstance(result, list):
             self.frame_results.extend(result)
@@ -217,8 +235,8 @@ class _ProjectSceneRun:
             and self.frame_patterns
             and len(self.matched_patterns) == len(self.frame_patterns)
         ):
-            # Every pattern has now been served, so nothing later in this scene
-            # can be wanted. Unwinding here rather than at the next save_frame
+            # Every pattern has been queued; render them after unwinding.
+            # Unwinding here rather than at the next save_frame
             # is what skips authoring the whole tail of a long scene.
             self.stopped_early = True
             raise _StopSceneEarly
@@ -476,14 +494,29 @@ class Project:
         video_settings: VideoSettings | None = None,
         **save_frame_kwargs,
     ):
-        """Run save-frame calls for one, many, or all project scenes.
+        """Author scenes, then render their collected stills in batches.
+
+        Each scene is authored once before its selected save-frame requests are
+        rendered. Compatible requests share memory-bounded batches, including
+        non-consecutive timestamps; intervening video frames are not rendered.
+        The result list retains checkpoint and timestamp order and stable names.
+        Calls with different render options form separate batches.
 
         No scene videos are rendered. ``scenes`` accepts an ID, an unprefixed
         name, a full prefixed name, an iterable mixing those forms, or ``None``
         for all scenes.
 
+        Animation
+        ---------
+        Authors each selected scene before rendering it. A failed authoring
+        pass writes no screenshots for that scene. ``stop_early`` explicitly
+        limits authoring to the requested checkpoints.
+
         Parameters
         ----------
+        scenes
+            Scene ID, name, prefixed name, or an iterable of these. Defaults to
+            None, meaning every scene.
         frames
             Which save-frame calls to render, as a pattern or an iterable of
             them. A pattern is a frame index within its scene (``3``), a glob
@@ -498,7 +531,40 @@ class Project:
             what makes iterating on an early frame of a long scene quick, but it
             leaves the scene half-run: its transcript is not synced and its later
             frames on disk stay as an earlier run left them. Requires ``frames``.
-            Defaults to False.
+            Defaults to False. Collected requests render after unwinding.
+        video_settings
+            Settings used to author the scene and as checkpoint defaults.
+            Defaults to None, meaning the project's settings or SETTINGS.video.
+        **save_frame_kwargs
+            Default ``background`` and ``post_processes`` for checkpoints that
+            do not supply them. ``overwrite=False`` also preserves existing
+            files even when an individual checkpoint allows overwriting.
+
+        Returns
+        -------
+        list of RenderResult
+            Completed results, in scene/checkpoint/timestamp order.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If a scene or frame selection, render option, or timestamp is invalid.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene
+
+
+            def intro():
+                Scene.wait(2)
+                Scene.save_frame("intro", at=[0.5, 1.5])
+                Scene.wait(1)
+                Scene.save_frame("end")
+
+
+            results = Project([intro]).render_screenshots()
         """
         return self._render(
             scenes,
@@ -1030,6 +1096,12 @@ class Project:
             raise AlganConfigurationError(
                 "stop_early needs a frames selection to know what to stop after"
             )
+        if mode == "screenshots":
+            unknown = set(save_video_kwargs) - {"background", "post_processes"}
+            if unknown:
+                raise AlganConfigurationError(
+                    f"Unsupported screenshot options: {', '.join(sorted(unknown))}"
+                )
         effective_settings = video_settings or self.video_settings or SETTINGS.video
         results = []
         matched_anywhere = set()
@@ -1044,6 +1116,7 @@ class Project:
                     mode,
                     frame_patterns=frame_patterns,
                     stop_early=stop_early,
+                    frame_options={"overwrite": overwrite, **save_video_kwargs},
                 )
                 active_scene._project_run = run
                 active_scene._suppress_automatic_transcript = True
@@ -1098,8 +1171,10 @@ class Project:
                             run.allow_video_render = False
                         results.append(result)
                     else:
+                        run.render_frames()
                         results.extend(run.frame_results)
                 finally:
+                    run.frame_batches.clear()
                     _ACTIVE_PROJECT_RUN.reset(run_token)
                     active_scene._project_run = None
                     active_scene._suppress_automatic_transcript = False
