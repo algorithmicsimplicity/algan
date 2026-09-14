@@ -659,7 +659,10 @@ def test_quadrants_pressure_reset_is_declined_on_the_metal_arch(monkeypatch):
     [
         (False, 2, 10, False),  # cache-only, ordinary 15% host pressure
         (True, 2, 10, True),  # fresh compiler IR remains reclaimable
-        (False, 1.2, 10, True),  # at the 7.5% physical floor
+        (False, 1.2, 10, False),  # physical pressure alone must not churn kernels
+        (False, 0.6, 12, False),  # screenshot regression: low RAM, ample commit
+        (True, 0.6, 12, True),  # freshly compiled IR remains reclaimable
+        (False, 0.6, 4.8, True),  # low commit still resets under physical pressure
         (False, 2, 4.8, True),  # at the 15% commit floor
         (False, 2, 0, True),  # no commit capacity
         (False, None, None, True),  # unavailable Windows telemetry

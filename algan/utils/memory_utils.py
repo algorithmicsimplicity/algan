@@ -22,6 +22,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -344,6 +345,9 @@ def _host_memory_pressure(
         current, limit = cgroup
         if current >= cgroup_threshold * limit:
             return True
+    status = _windows_memory_status()
+    if status is not None and status.physical_total > 0:
+        return status.physical_available <= available_threshold * status.physical_total
     try:
         memory = psutil.virtual_memory()
         total = int(memory.total)
@@ -434,23 +438,19 @@ def _cached_cuda_program_has_headroom():
 
     Reloading compiled CUDA kernels holds little reclaimable compiler IR, but
     discarding their Program costs every kernel another first launch. Keep it
-    through the normal 15% physical-pressure cleanup, provided physical RAM
-    stays above half that threshold (and 1 GiB) and commit headroom stays above
-    15% (and 1 GiB). Missing telemetry never suppresses a reset. Other systems
+    through physical-pressure cleanup provided commit headroom stays above
+    15% (and 1 GiB). Available physical RAM alone is not a reason to repeatedly
+    discard and reload the same cached Program: that releases little compiler
+    IR and immediately faults its working set back in on the next screenshot.
+    Garbage collection and CUDA/native cache reclamation still run under
+    physical pressure. Missing telemetry never suppresses a reset. Other systems
     keep their existing policy, especially Linux's hard cgroup boundary.
     """
     status = _windows_memory_status()
     if status is None or status.physical_total <= 0 or status.commit_limit <= 0:
         return False
-    physical_floor = max(
-        1 << 30,
-        status.physical_total * _HOST_AVAILABLE_MEMORY_FRACTION / 2,
-    )
     commit_floor = max(1 << 30, status.commit_limit * _HOST_AVAILABLE_MEMORY_FRACTION)
-    return (
-        status.physical_available > physical_floor
-        and status.commit_available > commit_floor
-    )
+    return status.commit_available > commit_floor
 
 
 #: Reclaimable torch cache below which a steady-state ``release_torch_memory`` call is
@@ -466,6 +466,28 @@ def _reclaimable_cuda_bytes():
         return int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:
         return 0
+
+
+_reclamation_local = threading.local()
+
+
+@contextmanager
+def _coalesced_memory_reclamation():
+    """Coalesce small cleanup requests within one bounded preparation batch.
+
+    Allocation accounting and forced/OOM cleanup remain immediate. Large CUDA
+    caches, GPU pressure and hard host limits also bypass deferral. State belongs to the calling
+    thread so a preparation worker cannot defer the renderer's cleanup.
+    """
+    depth = getattr(_reclamation_local, "depth", 0)
+    _reclamation_local.depth = depth + 1
+    try:
+        yield
+    finally:
+        _reclamation_local.depth = depth
+        if depth == 0 and getattr(_reclamation_local, "pending", False):
+            _reclamation_local.pending = False
+            release_torch_memory(force_gc=False)
 
 
 def release_torch_memory(force_gc=True):
@@ -510,7 +532,19 @@ def release_torch_memory(force_gc=True):
     measures, so every batch and chunk still sees the same free-byte figure.
     """
     host_pressured = _host_memory_pressure()
-    pressured = force_gc or _gpu_memory_pressure() or host_pressured
+    gpu_pressured = _gpu_memory_pressure() if not force_gc else False
+    if (
+        not force_gc
+        and getattr(_reclamation_local, "depth", 0)
+        and not gpu_pressured
+        and not torch.mps.is_available()
+        and (not host_pressured or _cached_cuda_program_has_headroom())
+        and _reclaimable_cuda_bytes() < _MIN_RECLAIMABLE_BYTES
+    ):
+        _reclamation_local.pending = True
+        return
+    _reclamation_local.pending = False
+    pressured = force_gc or gpu_pressured or host_pressured
     if pressured:
         gc.collect()
     if (

@@ -62,6 +62,7 @@ from algan.utils.color_space import srgb_to_linear
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ManualMemory,
+    _coalesced_memory_reclamation,
     auto_record_enabled,
     begin_cuda_peak,
     end_cuda_peak,
@@ -2616,6 +2617,7 @@ class RenderLoopMixin:
                 out[-1].memory = self.memory
                 out[-1].scene = self
 
+    @_coalesced_memory_reclamation()
     def _prewarm_render_batch(self, primitives, render_state):
         """Run a batch's ``project_to_screen`` (+ the CPU merge when merge and
         project both stay on the CPU) ahead of the render.

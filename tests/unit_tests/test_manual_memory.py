@@ -156,6 +156,7 @@ def test_an_unpressured_mps_reclaim_keeps_the_import_cache(monkeypatch):
 
     cleared = []
     monkeypatch.setattr(mps_zero_copy, "clear_import_cache", lambda: cleared.append(1))
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.mps, "is_available", lambda: True)
     monkeypatch.setattr(torch.mps, "empty_cache", lambda: None)
@@ -424,6 +425,8 @@ def test_cached_cuda_reset_requires_valid_windows_telemetry(monkeypatch, status)
 def test_host_memory_pressure_honors_a_finite_cgroup_before_host_ram(monkeypatch):
     from algan.utils import memory_utils as mu
 
+    monkeypatch.setattr(mu, "_windows_memory_status", lambda: None)
+
     # Host RAM looks plentiful, but the process group is over the deliberately
     # earlier hard-cgroup threshold. This is the shape of the 4 GiB container
     # OOM that motivated the native cleanup path.
@@ -499,3 +502,110 @@ def test_force_gc_does_not_force_native_pressure_cleanup(monkeypatch):
 
     mu.release_torch_memory(force_gc=True)
     assert events == ["gc"]
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"), [(10, False), (2.4, True), (0.5, True)]
+)
+def test_host_pressure_uses_fresh_windows_physical_memory(
+    monkeypatch, available, expected
+):
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(mu, "_linux_cgroup_memory_usage", lambda: None)
+    readings = iter(
+        [
+            types.SimpleNamespace(physical_total=16, physical_available=available),
+            types.SimpleNamespace(physical_total=16, physical_available=12),
+        ]
+    )
+    monkeypatch.setattr(mu, "_windows_memory_status", lambda: next(readings))
+    monkeypatch.setattr(
+        mu.psutil, "virtual_memory", lambda: pytest.fail("unnecessary psutil query")
+    )
+    assert mu._host_memory_pressure() is expected
+    assert mu._host_memory_pressure() is False
+
+
+@pytest.mark.parametrize("status", [None, types.SimpleNamespace(physical_total=0)])
+def test_host_pressure_falls_back_if_windows_query_fails(monkeypatch, status):
+    from algan.utils import memory_utils as mu
+
+    monkeypatch.setattr(mu, "_linux_cgroup_memory_usage", lambda: None)
+    monkeypatch.setattr(mu, "_windows_memory_status", lambda: status)
+    monkeypatch.setattr(
+        mu.psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total=16, available=1),
+    )
+    assert mu._host_memory_pressure() is True
+
+
+def _stub_coalesced_cleanup(monkeypatch):
+    from algan.utils import memory_utils as mu
+
+    events = []
+    monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: False)
+    monkeypatch.setattr(mu, "_host_memory_pressure", lambda: True)
+    monkeypatch.setattr(mu, "_cached_cuda_program_has_headroom", lambda: True)
+    monkeypatch.setattr(mu, "_reclaimable_cuda_bytes", lambda: 0)
+    monkeypatch.setattr(mu.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(mu, "_malloc_trim", lambda: None)
+    monkeypatch.setattr(
+        mu, "_reset_quadrants_runtime_for_memory_pressure", lambda: False
+    )
+    monkeypatch.setattr(mu.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(mu.torch.mps, "is_available", lambda: False)
+    return mu, events
+
+
+def test_projection_cleanup_coalesces_nested_requests_and_unwinds_errors(monkeypatch):
+    mu, events = _stub_coalesced_cleanup(monkeypatch)
+
+    def fail_projection():
+        with mu._coalesced_memory_reclamation():
+            for _ in range(24):
+                mu.release_torch_memory(force_gc=False)
+            with mu._coalesced_memory_reclamation():
+                mu.release_torch_memory(force_gc=False)
+            assert events == []
+            raise ValueError("projection failed")
+
+    with pytest.raises(ValueError, match="projection failed"):
+        fail_projection()
+    assert events == ["gc"]
+    mu.release_torch_memory(force_gc=False)
+    assert events == ["gc", "gc"]
+
+
+@pytest.mark.parametrize("reason", ["forced", "gpu", "cache", "host"])
+def test_projection_cleanup_preserves_immediate_reclamation(monkeypatch, reason):
+    mu, events = _stub_coalesced_cleanup(monkeypatch)
+    with mu._coalesced_memory_reclamation():
+        mu.release_torch_memory(force_gc=False)
+        if reason == "gpu":
+            monkeypatch.setattr(mu, "_gpu_memory_pressure", lambda: True)
+        if reason == "cache":
+            monkeypatch.setattr(
+                mu, "_reclaimable_cuda_bytes", lambda: mu._MIN_RECLAIMABLE_BYTES
+            )
+        if reason == "host":
+            monkeypatch.setattr(mu, "_cached_cuda_program_has_headroom", lambda: False)
+        mu.release_torch_memory(force_gc=reason == "forced")
+        assert events == ["gc"]
+    assert events == ["gc"]
+
+
+def test_projection_cleanup_does_not_defer_another_threads_requests(monkeypatch):
+    import threading
+
+    mu, events = _stub_coalesced_cleanup(monkeypatch)
+    with mu._coalesced_memory_reclamation():
+        mu.release_torch_memory(force_gc=False)
+        worker = threading.Thread(
+            target=lambda: mu.release_torch_memory(force_gc=False)
+        )
+        worker.start()
+        worker.join()
+        assert events == ["gc"]
+    assert events == ["gc", "gc"]

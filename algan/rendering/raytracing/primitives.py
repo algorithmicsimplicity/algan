@@ -3304,8 +3304,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # wall -- recovering a second wall's side from handedness at a corner
         # was the ss21.6 wedge failure. Per frame: a morph can flip a
         # contour's winding mid-animation. Zeros unless the wedge is live
-        # (the only reader), so the probe costs nothing otherwise.
-        if rt_settings.analytic_aa_bez_mode() == 3:
+        # (the only reader) AND this is a filled circuit. Unfilled strokes
+        # use the two-sided band coverage, which never consumes these signs.
+        if self.filled and rt_settings.analytic_aa_bez_mode() == 3:
             sigma = _circuit_edge_inward_signs(edges5, vert_circuit)
         else:
             sigma = torch.zeros(edges5.shape[:2], device=device)

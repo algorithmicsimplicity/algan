@@ -345,3 +345,34 @@ def test_closed_circuit_polyline_is_unchanged_by_the_endpoint_rule():
 
     assert edges.shape[0] == segments
     assert bool((edges[:, 4] > 0.5).all())
+
+
+def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch):
+    from algan.rendering.raytracing import primitives as module
+    from algan.rendering.raytracing import settings
+
+    original = module._circuit_edge_inward_signs
+    calls = []
+
+    def record(edges, circuits):
+        calls.append(edges.shape)
+        return original(edges, circuits)
+
+    monkeypatch.setattr(module, "_circuit_edge_inward_signs", record)
+    monkeypatch.setattr(settings, "analytic_aa_bez_mode", lambda: 3)
+    for filled in (False, True):
+        SceneManager.reset()
+        with Off(record_funcs=False, record_attr_modifications=False):
+            square = Square(filled=filled, add_to_scene=False)
+        single = square.get_render_primitives()
+        for frames in (1, 3):
+            primitive = type(single)(triangle_collection=[single])
+            corners = primitive.corners.float().expand(frames, -1, -1, -1).contiguous()
+            chords = torch.ones(
+                corners.shape[1], dtype=torch.long, device=corners.device
+            )
+            calls.clear()
+            primitive._build_circuit_geometry(corners, chords)
+            assert len(calls) == int(filled)
+            assert primitive._rt_edges.shape[0] == frames
+            assert bool(primitive._rt_edges[..., 5].any()) is filled

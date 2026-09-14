@@ -56,8 +56,10 @@ On Windows CUDA, a Program restored entirely from the source-key cache has
 much less reclaimable compiler IR than one that ran the compiler frontend.
 Ordinary host pressure (15% available physical RAM) still triggers garbage
 collection and CUDA/native cache reclamation. A cache-only Program is retained
-while `GlobalMemoryStatusEx` reports both physical memory above 7.5% of RAM
-(and 1 GiB) and available commit above 15% of the commit limit (and 1 GiB).
+while `GlobalMemoryStatusEx` reports available commit above 15% of the commit
+limit (and 1 GiB). Low available physical RAM alone must not discard this
+cache-only Program: repeated screenshots otherwise reload the same kernels
+after every frame, without relieving the underlying pressure.
 New compilation, lower headroom, or unavailable telemetry retains the reset
 fallback. This exception does not apply to Linux/cgroups or CPU rendering.
 It changes the destructive reset decision, not arena sizing or OOM retries.
@@ -194,3 +196,27 @@ For source-only correctness checks, at minimum run import/compile checks on modi
 
 - The standard for optimizations is **visually imperceptible** on the test suite.
 - Wall-clock kernel timing is noisy (thermal throttling swings cross-process throughput ~2x); use in-process alternating A/B runs or kernel-profiler device times. `utils/profiling_utils.py` auto-hooks all Taichi kernels and pipeline stages.
+
+## Warm screenshot preparation (September 13)
+
+Windows host-pressure checks use GlobalMemoryStatusEx directly for physical
+memory, falling back to psutil if telemetry is unavailable or invalid. The
+threshold and freshness are unchanged; psutil's broader Windows query had cost
+0.47–0.59 seconds across 62 calls in a small screenshot.
+
+`_prewarm_render_batch` coalesces small reclamation requests within its bounded
+preparation scope. State is thread-local and nested scopes drain once, including
+on exceptions. Forced cleanup, GPU pressure, a reclaimable CUDA cache of at least
+128 MiB, MPS cleanup, and host pressure without safe Windows commit headroom
+remain immediate. Arena accounting and allocation/OOM retry behavior are unchanged.
+
+Unfilled Bezier strokes omit inward-edge parity preparation: only the filled
+wedge coverage branch reads that data. They still emit the same six-column edge
+layout, with zero in the unused sign channel.
+
+The `1_one_weight` PREVIEW screenshot comparison (GTX 1050, same-process
+legacy/current/legacy/current after warm-up) found the two slowest frames improved
+from 2.25/2.12 seconds to 1.69/1.50 seconds in two-run means. All six screenshots
+were byte-identical after decoding. These are loaded-machine wall timings;
+per-stage profiling confirms cleanup dropped from 0.70 to 0.20 seconds on f4,
+with nine collections instead of 32, independently of whole-frame variability.
