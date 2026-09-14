@@ -16,9 +16,9 @@ logger = get_logger()
 class ViewerHandle:
     """A running viewer, and the means to stop it.
 
-    Returned by :meth:`~algan.scene.Scene.view` or :meth:`~algan.project.Project.view`. Also a context manager, so a
-    script can open a viewer for as long as it needs one and be sure the port is
-    released.
+    Returned by :meth:`~algan.scene.Scene.view` or
+    :meth:`~algan.project.Project.view`. Also a context manager, so a script can
+    open a viewer for as long as it needs one and be sure the port is released.
     """
 
     def __init__(self, server, session):

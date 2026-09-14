@@ -1,7 +1,7 @@
 """Project authoring and the tabbed viewer's real HTTP/session boundary.
 
-Frames are deterministic tiny tensors: these tests exercise session ownership,
-requests, handoff and cleanup without paying for kernel compilation.
+Most tests use deterministic tiny tensors to exercise session ownership,
+requests, handoff and cleanup. The final test also checks real rendered frames.
 """
 
 from __future__ import annotations

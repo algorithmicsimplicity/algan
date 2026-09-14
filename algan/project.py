@@ -1181,14 +1181,14 @@ class Project:
         self,
         scenes=None,
         *,
-        mode: Literal["screenshots", "video", "validate"],
+        mode: Literal["screenshots", "video", "validate", "view"],
         video_settings: VideoSettings | None = None,
         overwrite: bool = True,
         frames=None,
         stop_early: bool = False,
         **save_video_kwargs,
     ):
-        """Shared implementation for screenshot and video project renders."""
+        """Author isolated scenes for exports, validation or interactive viewing."""
         selected = self._selected_scenes(scenes)
         frame_patterns = self._normalized_frame_patterns(frames)
         if mode != "screenshots" and (frame_patterns or stop_early):
