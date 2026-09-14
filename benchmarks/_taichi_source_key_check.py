@@ -9,7 +9,7 @@ the end-to-end audit of that claim, and the place the module's docstring points
 at. `tests/unit_tests/test_taichi_source_key.py` covers the value rules and the
 walk against fixtures; this runs the mechanism inside a real render.
 
-    uv run python benchmarks/_taichi_source_key_check.py
+    python benchmarks/_taichi_source_key_check.py
 
 Four arms, each a separate process, because the patch installs at import:
 
@@ -21,7 +21,7 @@ Four arms, each a separate process, because the patch installs at import:
   Same frontend cost as **off** plus the key computation; run so that **on**
   measures a warm index rather than a first sighting.
 * **on** -- the index on and warm, which is what a render actually uses. Every
-  kernel should hit.
+  kernel must hit; misses, poisoned keys or a disabled index fail the check.
 * **verify** -- `ALGAN_TAICHI_SOURCE_KEY_VERIFY=1`: every hit is *not* taken;
   the full transform and compile run, and the C++ key they produce is compared
   with the one the index stored, raising on the first mismatch. Slower than
@@ -97,13 +97,17 @@ def _digest(path):
 def run_arm(name, out_dir, quiet):
     """Render one frame under one arm; return a result dict."""
     frame = out_dir / f"{name}.png"
-    environment = dict(
-        os.environ, FRAME_OUT=str(frame), ALGAN_LOG_TAICHI_COMPILES="1", **ARMS[name]
+    environment = dict(os.environ)
+    environment.update(
+        FRAME_OUT=str(frame),
+        ALGAN_LOG_TAICHI_COMPILES="1",
+        ALGAN_TAICHI_SOURCE_KEY_VERIFY="0",
     )
+    environment.update(ARMS[name])
     # The daemon keeps renderer state across runs and re-executes the script,
     # either of which would make these arms incomparable.
-    environment.setdefault("ALGAN_AUTO_DAEMON", "0")
-    environment.setdefault("ALGAN_USE_DAEMON", "0")
+    environment["ALGAN_AUTO_DAEMON"] = "0"
+    environment["ALGAN_USE_DAEMON"] = "0"
     started = time.perf_counter()
     result = subprocess.run(
         [sys.executable, "-c", _CHILD],
@@ -139,6 +143,26 @@ def run_arm(name, out_dir, quiet):
         "digest": _digest(frame) if frame.exists() else None,
         "stats": stats,
     }
+
+
+def _cache_failure(name, stats):
+    """Identical pixels prove correctness, not that a cache was used or verified."""
+    required = {"hits", "misses", "poisoned", "verified", "keyed"}
+    if not required.issubset(stats):
+        return "cache counters missing"
+    if name == "off":
+        return "disabled index was used" if any(stats[k] for k in required) else None
+    if stats["keyed"] <= 0:
+        return "no kernels were source-keyed (index unavailable or disabled)"
+    if stats["poisoned"]:
+        return f"{stats['poisoned']} kernels could not be source-keyed"
+    if name == "on" and (stats["hits"] != stats["keyed"] or stats["misses"]):
+        return f"warm index did not hit every kernel: {stats}"
+    if name == "verify" and (
+        stats["verified"] != stats["keyed"] or stats["misses"] or stats["hits"]
+    ):
+        return f"verify mode did not re-derive every cached kernel: {stats}"
+    return None
 
 
 def main(argv=None):
@@ -186,14 +210,19 @@ def main(argv=None):
         print("SOURCE-KEY-CHECK: FAILED the arms rendered different pixels")
         return 1
     on = results.get("on")
-    if on is not None and on["stats"] and on["stats"].get("misses", 0):
-        print(
-            f"SOURCE-KEY-CHECK: WARNING the warm arm still missed {on['stats']['misses']} kernels"
-        )
+    cache_failures = {
+        name: reason
+        for name in names
+        if (reason := _cache_failure(name, results[name]["stats"])) is not None
+    }
+    if cache_failures:
+        for name, reason in cache_failures.items():
+            print(f"SOURCE-KEY-CHECK: FAILED {name}: {reason}")
+        return 1
     speedup = ""
     if "off" in results and on is not None and on["frontend"]:
         speedup = f" frontend {results['off']['frontend']:.2f}s -> {on['frontend']:.2f}s ({results['off']['frontend'] / on['frontend']:.1f}x)"
-    print(f"SOURCE-KEY-CHECK: PASS identical frames across {len(names)} arms{speedup}")
+    print(f"SOURCE-KEY-CHECK: PASS cache assertions and identical frames across {len(names)} arms{speedup}")
     return 0
 
 
