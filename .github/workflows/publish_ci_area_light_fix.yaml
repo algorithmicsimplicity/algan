@@ -1,80 +1,26 @@
-name: Focused CI area-light validation
+name: Clean up CI fix transport
 on:
   push:
     branches: [codex/ci-area-light-publisher]
 permissions:
   contents: write
 jobs:
-  validate:
+  cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      ALGAN_RENDER_DEVICE: cpu
-      PYTHONFAULTHANDLER: "1"
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 05732d379d01f5d6d963f6369d25a15039cf1001
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - uses: ./.github/actions/install-uv
-      - name: Normalize only reported formatting errors
+          ref: b2b6d9c6c39fa7ab144e5b4e8068a25ee44b18db
+      - name: Verify retained implementation and remove temporary refs
         run: |
           set -euo pipefail
-          mkdir -p validation-results
-          python3 - <<'PY'
-          import ast, json
-          from pathlib import Path
-          paths = ['algan/mobs/text.py', 'algan/rendering/raytracing/sheet_stream.py', 'tests/unit_tests/test_physical_area_emission.py']
-          Path('validation-results/before-ast.json').write_text(json.dumps({p: ast.dump(ast.parse(Path(p).read_text())) for p in paths}))
-          PY
-          uvx ruff@0.12.4 check --select I001 --fix algan/mobs/text.py
-          uvx ruff@0.12.4 format algan/mobs/text.py algan/rendering/raytracing/sheet_stream.py tests/unit_tests/test_physical_area_emission.py
-          python3 - <<'PY'
-          import ast, json, subprocess
-          from pathlib import Path
-          before = json.loads(Path('validation-results/before-ast.json').read_text())
-          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
-          assert set(changed) == set(before), changed
-          for p, tree in before.items():
-              assert ast.dump(ast.parse(Path(p).read_text())) == tree, p
-          PY
-          uvx ruff@0.12.4 check --no-fix
-          uvx ruff@0.12.4 format --check
-          git diff --check
-          git diff --binary > validation-results/format.patch
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add algan/mobs/text.py algan/rendering/raytracing/sheet_stream.py tests/unit_tests/test_physical_area_emission.py
-          git commit -m 'Resolve CI lint and formatting errors without behavior changes'
-          git push origin HEAD:refs/heads/codex/ci-area-light-formatted
-          git log -1 --format='%H%n%s' | tee validation-results/commit.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-area-light-format-patch
-          path: |
-            validation-results/format.patch
-            validation-results/commit.txt
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg
-      - name: Locked Python dependencies
-        run: uv sync --locked --all-extras --dev
-      - name: Reported failures and geometry regressions
-        run: |
-          set -euo pipefail
-          .venv/bin/python -m pytest -q \
-            tests/unit_tests/test_fast_suite_curation.py \
-            tests/unit_tests/test_physical_area_emission.py \
-            tests/unit_tests/test_path_tracer.py \
-            tests/unit_tests/test_ux_regressions.py \
-            -k 'area or membership_table or still_renders_something or extended_light' \
-            --junitxml=validation-results/focused.xml 2>&1 | tee validation-results/focused.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-area-light-validation
-          path: validation-results
-          if-no-files-found: ignore
+          expected=b2b6d9c6c39fa7ab144e5b4e8068a25ee44b18db
+          actual=$(git ls-remote origin refs/heads/codex/fix-ci-area-light-layout | cut -f1)
+          test "$actual" = "$expected"
+          staged=$(git ls-remote origin refs/heads/codex/ci-area-light-formatted | cut -f1)
+          test "$staged" = "$expected"
+          helper=$(git ls-remote origin refs/heads/codex/ci-area-light-publisher | cut -f1)
+          test "$helper" = "$GITHUB_SHA"
+          git push --atomic origin :refs/heads/codex/ci-area-light-formatted :refs/heads/codex/ci-area-light-publisher
+          echo 'Removed the two temporary branches; the implementation remains on codex/fix-ci-area-light-layout.' >> "$GITHUB_STEP_SUMMARY"
