@@ -3130,7 +3130,7 @@ class RenderLoopMixin:
                 col_rows = (
                     (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
                 )
-                aux = light._build_aux(loc_f)  # [T, K, 13]
+                aux = light._build_aux(loc_f)  # [T, K, LIGHT_AUX_COLS]
                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
                 if radiance_cols is not None:
                     # Radiance-bearing aux columns (a hemisphere's ground

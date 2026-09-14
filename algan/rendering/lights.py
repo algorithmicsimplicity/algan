@@ -67,7 +67,7 @@ LIGHT_AREA_SAMPLE = 5.0
 LIGHT_ENV_SH = 6.0
 
 # Number of aux columns following the RGB color in a packed light row
-# (packed row width 16 = 3 color + 13 aux).
+# (packed row width 18 = 3 color + 15 aux).
 LIGHT_AUX_COLS = 15
 
 

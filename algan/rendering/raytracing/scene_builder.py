@@ -2611,7 +2611,7 @@ def _pack_lights(light_sources, num_frames, device):
     for light in light_sources or ():
         pos = light.origin.detach().to(device)  # [T, K, 3]
         col = light.light_color.detach().to(device)  # [T, K, >=3]
-        aux = getattr(light, "_render_aux", None)  # [T, K, 13] or None
+        aux = getattr(light, "_render_aux", None)  # [T, K, LIGHT_AUX_COLS] or None
         if aux is not None:
             aux = aux.detach().to(device)
         num_samples = pos.shape[-2]
