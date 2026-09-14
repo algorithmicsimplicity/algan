@@ -3,7 +3,7 @@ on:
   push:
     branches: [codex/ci-area-light-publisher]
 permissions:
-  contents: read
+  contents: write
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -18,24 +18,53 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: ./.github/actions/install-uv
+      - name: Normalize only reported formatting errors
+        run: |
+          set -euo pipefail
+          mkdir -p validation-results
+          python3 - <<'PY'
+          import ast, json
+          from pathlib import Path
+          paths = ['algan/mobs/text.py', 'algan/rendering/raytracing/sheet_stream.py', 'tests/unit_tests/test_physical_area_emission.py']
+          Path('validation-results/before-ast.json').write_text(json.dumps({p: ast.dump(ast.parse(Path(p).read_text())) for p in paths}))
+          PY
+          uvx ruff@0.12.4 check --select I001 --fix algan/mobs/text.py
+          uvx ruff@0.12.4 format algan/mobs/text.py algan/rendering/raytracing/sheet_stream.py tests/unit_tests/test_physical_area_emission.py
+          python3 - <<'PY'
+          import ast, json, subprocess
+          from pathlib import Path
+          before = json.loads(Path('validation-results/before-ast.json').read_text())
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          assert set(changed) == set(before), changed
+          for p, tree in before.items():
+              assert ast.dump(ast.parse(Path(p).read_text())) == tree, p
+          PY
+          uvx ruff@0.12.4 check --no-fix
+          uvx ruff@0.12.4 format --check
+          git diff --check
+          git diff --binary > validation-results/format.patch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add algan/mobs/text.py algan/rendering/raytracing/sheet_stream.py tests/unit_tests/test_physical_area_emission.py
+          git commit -m 'Resolve CI lint and formatting errors without behavior changes'
+          git push origin HEAD:refs/heads/codex/ci-area-light-formatted
+          git log -1 --format='%H%n%s' | tee validation-results/commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-area-light-format-patch
+          path: |
+            validation-results/format.patch
+            validation-results/commit.txt
       - name: System dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg
-      - uses: ./.github/actions/install-uv
       - name: Locked Python dependencies
         run: uv sync --locked --all-extras --dev
-      - name: Changed-file lint and format
-        run: |
-          set -euo pipefail
-          FILES='algan/render_loop.py algan/rendering/lights.py algan/rendering/raytracing/area_light_quads.py algan/rendering/raytracing/scene_builder.py tests/unit_tests/test_physical_area_emission.py'
-          uvx ruff@0.12.4 check --no-fix $FILES
-          uvx ruff@0.12.4 format --check $FILES
       - name: Reported failures and geometry regressions
-        if: ${{ !cancelled() && success() }}
         run: |
           set -euo pipefail
-          mkdir -p validation-results
           .venv/bin/python -m pytest -q \
             tests/unit_tests/test_fast_suite_curation.py \
             tests/unit_tests/test_physical_area_emission.py \
