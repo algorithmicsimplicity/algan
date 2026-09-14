@@ -25,8 +25,9 @@ jobs:
           gh api repos/algorithmicsimplicity/algan/git/blobs/95404ddbfdca80476b77b99d1406ab7a67a0345d --jq .content | base64 --decode > "$RUNNER_TEMP/changed-source.zip"
           python - <<'PY'
           import hashlib
+          import os
           from pathlib import Path
-          p = Path("$RUNNER_TEMP/changed-source.zip")
+          p = Path(os.environ["RUNNER_TEMP"]) / "changed-source.zip"
           print("snapshot sha256:", hashlib.sha256(p.read_bytes()).hexdigest())
           PY
           git fetch origin "$BASE"
