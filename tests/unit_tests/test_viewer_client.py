@@ -9,13 +9,14 @@ from pathlib import Path
 import pytest
 
 
-def test_viewer_client_async_responses():
+@pytest.mark.parametrize("script", ["test_viewer_async.cjs", "test_transcript.cjs"])
+def test_viewer_client_async_responses(script):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is needed to test the viewer's JavaScript client")
     root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        [node, "--test", str(root / "tests/viewer/test_viewer_async.cjs")],
+        [node, "--test", str(root / "tests/viewer" / script)],
         capture_output=True,
         text=True,
         timeout=30,

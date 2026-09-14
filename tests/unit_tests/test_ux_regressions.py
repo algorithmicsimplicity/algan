@@ -155,11 +155,16 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
 def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
     """Make save_frame go through its full body without a real render."""
 
-    def fake_frames(*_args, **_kwargs):
+    def fake_frames(start_ind, end_ind, **_kwargs):
         if on_render is not None:
             on_render()
         yield torch.zeros(
-            (1, scene.num_pixels_screen_height, scene.num_pixels_screen_width, 4),
+            (
+                end_ind - start_ind,
+                scene.num_pixels_screen_height,
+                scene.num_pixels_screen_width,
+                4,
+            ),
             dtype=torch.uint8,
         )
 

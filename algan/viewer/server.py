@@ -12,6 +12,7 @@ Routes:
 ``GET /static/<name>``              its script and stylesheet
 ``GET /api/state``                  runtime, frame rate, size, what is cached
 ``GET /frame/<n>.png``              one rendered frame, rendering it if need be
+``GET /api/transcript``             authored speech and scene-relative word times
 ``GET /api/hierarchy``              the Scene's root nodes
 ``GET /api/children?node=``         one node's children
 ``GET /api/attrs?node=&frame=``     one node's animatable attributes
@@ -132,6 +133,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._png(self.session.frame(index))
             if route == "/api/state":
                 return self._json(self.session.state())
+            if route == "/api/transcript":
+                return self._json(self.session.transcript())
             if route == "/api/hierarchy":
                 return self._json({"roots": self.session.roots()})
             if route == "/api/children":

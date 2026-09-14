@@ -24,6 +24,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from queue import Queue
 from types import SimpleNamespace
 
@@ -391,6 +392,11 @@ def _slice_render_state(render_state, start, end, total_frames):
         return value
 
     return {
+        **(
+            {"frame_indices": render_state["frame_indices"][start:end]}
+            if "frame_indices" in render_state
+            else {}
+        ),
         "ray_origin": sliced(render_state["ray_origin"]),
         "screen_point": sliced(render_state["screen_point"]),
         "screen_basis": sliced(render_state["screen_basis"]),
@@ -412,6 +418,13 @@ def _slice_render_state(render_state, start, end, total_frames):
     }
 
 
+def _frame_window_bounds(start, end, frame_indices=None):
+    """Real frame envelope for a dense window or a slice of selected frames."""
+    if frame_indices is None:
+        return start, end
+    return frame_indices[start], frame_indices[end - 1] + 1
+
+
 def _prepare_background_for_chunk(
     background,
     *,
@@ -422,6 +435,7 @@ def _prepare_background_for_chunk(
     new_ind,
     frames_per_second,
     device,
+    frame_indices=None,
 ):
     """Prepare one chunk's background for rendering.
 
@@ -446,6 +460,7 @@ def _prepare_background_for_chunk(
             first_frame=current_ind,
             frames_per_second=frames_per_second,
             device=torch.device(device),
+            frame_indices=frame_indices,
         )
 
     if torch.is_tensor(background):
@@ -491,6 +506,65 @@ def _check_post_processes(post_processes):
                 f"partial(bloom_filter, glow_spread=0.015). Pass () for no "
                 f"post-processing."
             )
+
+
+def _framewise_post_process(process):
+    """Adapt a still-image pass to preserve one callback per output frame.
+
+    Sparse still rendering may put several requested timestamps in one render
+    batch. ``Scene.save_frame`` historically rendered each still independently,
+    so user passes observed a one-frame batch on every invocation. Keep that
+    extension-point contract without giving up sparse batching of the expensive
+    scene render. Built-in bloom remains batch-native.
+    """
+    base = process.func if isinstance(process, partial) else process
+    if base is bloom_filter:
+        return process
+
+    def framewise(frames, memory):
+        if frames.shape[0] <= 1:
+            return process(frames, memory=memory)
+
+        output = None
+        expected_shape = None
+        expected_dtype = None
+        stable_pointers = None
+        for index in range(frames.shape[0]):
+            try:
+                produced = process(frames[index : index + 1], memory=memory)
+                if produced.ndim == 0 or produced.shape[0] == 0:
+                    raise RuntimeError("A still-frame post-process produced no frames")
+                # Match the old one-still path: if a custom pass unexpectedly
+                # returns several frames, the still writer keeps the last one.
+                produced = produced[-1:]
+                if output is None:
+                    expected_shape = tuple(produced.shape[1:])
+                    expected_dtype = produced.dtype
+                    output = memory.get_tensor(
+                        (frames.shape[0], *expected_shape), expected_dtype
+                    )
+                    stable_pointers = memory.get_pointers()
+                elif (
+                    tuple(produced.shape[1:]) != expected_shape
+                    or produced.dtype != expected_dtype
+                ):
+                    raise AlganConfigurationError(
+                        "A post-process used by save_frame(at=[...]) must return "
+                        "the same per-frame shape and dtype for every still."
+                    )
+                output[index : index + 1].copy_(produced)
+            finally:
+                if stable_pointers is not None:
+                    # Reclaim this callback's temporary arena allocations while
+                    # retaining the aggregate output for the next pipeline pass.
+                    memory.set_pointers(stable_pointers)
+        return output
+
+    return framewise
+
+
+def _framewise_post_processes(post_processes):
+    return tuple(_framewise_post_process(process) for process in post_processes)
 
 
 class RenderLoopMixin:
@@ -1654,6 +1728,13 @@ class RenderLoopMixin:
                         self.frames_per_second if callable(background_source) else 1
                     ),
                     device=render_device(),
+                    frame_indices=(
+                        render_state["frame_indices"][
+                            current_ind - start_ind : new_ind - start_ind
+                        ]
+                        if "frame_indices" in render_state
+                        else None
+                    ),
                 )
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
@@ -1741,6 +1822,7 @@ class RenderLoopMixin:
         post_processes=(),
         transparent_background=False,
         background=None,
+        frame_indices=None,
     ):
         """Yield background-only frame batches for ``[start_ind, end_ind)``.
 
@@ -1823,6 +1905,11 @@ class RenderLoopMixin:
                     self.frames_per_second if callable(background_source) else 1
                 ),
                 device=render_device(),
+                frame_indices=(
+                    frame_indices[current_ind - start_ind : new_ind - start_ind]
+                    if frame_indices is not None
+                    else None
+                ),
             )
             # In-place AA samples the background once per output pixel, so a
             # super-sampled image background must be averaged down first
@@ -2256,13 +2343,22 @@ class RenderLoopMixin:
         return int(outside_arena * _RENDER_PREP_FRACTION)
 
     def _get_batch_of_primitives(
-        self, start_time_ind, max_end_time_ind, actors, max_mem_used
+        self,
+        start_time_ind,
+        max_end_time_ind,
+        actors,
+        max_mem_used,
+        *,
+        frame_indices=None,
     ):
         """Build the largest renderable primitive batch within the memory budget."""
         from algan.rendering.lights import LIGHT_AREA_SAMPLE
 
-        max_end_time = max_end_time_ind / self.frames_per_second
-        start_time = start_time_ind / self.frames_per_second
+        real_start, real_end = _frame_window_bounds(
+            start_time_ind, max_end_time_ind, frame_indices
+        )
+        max_end_time = real_end / self.frames_per_second
+        start_time = real_start / self.frames_per_second
         # Spawn/despawn timestamps are read several times each below (twice per
         # actor in each of the two filters, and once per actor on every step of
         # the runtime search). Each read walks a TimelineEvent to its span and
@@ -2311,7 +2407,10 @@ class RenderLoopMixin:
             )
 
             def fits(duration):
-                cutoff = (start_time_ind + duration) / self.frames_per_second
+                _, last = _frame_window_bounds(
+                    start_time_ind, start_time_ind + duration, frame_indices
+                )
+                cutoff = last / self.frames_per_second
                 mem_used = 0
                 render_mem_used = 0
                 for spawn, mem, render_mem in actor_mem:
@@ -2325,12 +2424,24 @@ class RenderLoopMixin:
             return _max_duration_that_fits(requested_duration, fits)
 
         duration = get_duration()
-        spawn_cutoff = (start_time_ind + duration) / self.frames_per_second
+        _, last = _frame_window_bounds(
+            start_time_ind, start_time_ind + duration, frame_indices
+        )
+        spawn_cutoff = last / self.frames_per_second
         actors = [
             indexed_actors[i]
             for i in self._actors_in_window(index, start_time, spawn_cutoff).tolist()
         ]
-        time_inds = torch.arange(start_time_ind, start_time_ind + duration)
+        selected_indices = (
+            frame_indices[start_time_ind : start_time_ind + duration]
+            if frame_indices is not None
+            else None
+        )
+        time_inds = (
+            torch.tensor(selected_indices, dtype=torch.int64)
+            if selected_indices is not None
+            else torch.arange(start_time_ind, start_time_ind + duration)
+        )
 
         timeline = self.timeline_manager
         # Restrict base-state queries to actors that can contribute to this
@@ -2520,7 +2631,13 @@ class RenderLoopMixin:
             if run:
                 self._emit_primitive_collections(run_class, run, primitive_collections)
         render_state = self._materialize_render_state(
-            start_time_ind, start_time_ind + duration
+            start_time_ind,
+            start_time_ind + duration,
+            **(
+                {"frame_indices": selected_indices}
+                if selected_indices is not None
+                else {}
+            ),
         )
         if (
             not primitive_collections
@@ -2902,7 +3019,7 @@ class RenderLoopMixin:
         primitive_batch[0]._rt_prep_overlapped = True
         logger.debug("Batch prepared on the prefetch worker (overlap).")
 
-    def _materialize_render_state(self, start_ind, end_ind):
+    def _materialize_render_state(self, start_ind, end_ind, *, frame_indices=None):
         """Materialize camera/screen/light state over ``[start_ind, end_ind)``
         and extract the plain tensors the renderer consumes (this used to be
         the first thing _render_primitive_batch did). Returning a snapshot
@@ -2931,8 +3048,13 @@ class RenderLoopMixin:
         camera_location = camera.location
         device = camera_location.device
         fps = self.frames_per_second
-        window_start_time = start_ind / fps
-        window_end_time = end_ind / fps
+        real_start, real_end = (
+            (frame_indices[0], frame_indices[-1] + 1)
+            if frame_indices is not None
+            else (start_ind, end_ind)
+        )
+        window_start_time = real_start / fps
+        window_end_time = real_end / fps
         lights = []
         light_objects = []
         light_active = []
@@ -2960,7 +3082,11 @@ class RenderLoopMixin:
                 and getattr(light, "light_type", -1) == LIGHT_AREA_SAMPLE
             ):
                 if frame_times is None:
-                    frame_times = torch.arange(start_ind, end_ind, device=device) / fps
+                    frame_times = (
+                        torch.tensor(frame_indices, device=device)
+                        if frame_indices is not None
+                        else torch.arange(start_ind, end_ind, device=device)
+                    ) / fps
                 active = frame_times >= max(0.0, spawn_time)
                 if despawn_time >= 0:
                     active = active & (frame_times <= despawn_time)
@@ -3037,6 +3163,7 @@ class RenderLoopMixin:
                     )
                 )
         return {
+            **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera._get_render_screen_basis().to(device),
@@ -3052,14 +3179,45 @@ class RenderLoopMixin:
         background=None,
         post_processes=(bloom_filter,),
         manual_memory=True,
+        *,
+        frame_indices=None,
+        _post_process_per_frame=False,
     ):
         """Yield frames and always release per-render state on exit.
+
+        With ``frame_indices``, start/end are offsets into that strictly
+        increasing sequence of non-negative integer frame indices. Only those
+        frames are materialized and rendered; gaps cost no frame storage.
+        Without it, start/end retain their ordinary timeline-index meaning.
 
         The wrapper is deliberately outside the implementation generator so
         its ``finally`` also runs for OOMs, worker failures, and callers that
         close the generator before consuming every frame.
         """
+        if frame_indices is not None:
+            import operator
+
+            try:
+                values = tuple(frame_indices)
+                if any(isinstance(value, bool) for value in values):
+                    raise ValueError
+                frame_indices = tuple(operator.index(value) for value in values)
+                if (
+                    any(value < 0 for value in frame_indices)
+                    or any(a >= b for a, b in zip(frame_indices, frame_indices[1:]))
+                    or not 0 <= start_time_ind <= end_time_ind <= len(frame_indices)
+                ):
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise AlganConfigurationError(
+                    "frame_indices must be strictly increasing non-negative integers; "
+                    "start/end must bound a slice of that sequence"
+                ) from exc
+            if start_time_ind == end_time_ind:
+                return
         _check_post_processes(post_processes)
+        if _post_process_per_frame and post_processes:
+            post_processes = _framewise_post_processes(post_processes)
         # Every frame-producing path validates the arch before launching a
         # kernel: a render device changed since the last job needs a different
         # arch, or arguments would stage through the wrong device. Video jobs
@@ -3092,6 +3250,11 @@ class RenderLoopMixin:
                         background=background,
                         post_processes=post_processes,
                         manual_memory=manual_memory,
+                        **(
+                            {"frame_indices": frame_indices}
+                            if frame_indices is not None
+                            else {}
+                        ),
                     )
             finally:
                 # Release the arena before the arch scope considers a deferred
@@ -3111,6 +3274,8 @@ class RenderLoopMixin:
         background=None,
         post_processes=(bloom_filter,),
         manual_memory=True,
+        *,
+        frame_indices=None,
     ):
         if end_time_ind <= start_time_ind:
             yield []
@@ -3196,7 +3361,15 @@ class RenderLoopMixin:
                     batch_end_ind = end_time_ind
                 with torch.set_grad_enabled(grad_enabled):
                     batch = self._get_batch_of_primitives(
-                        time_ind, batch_end_ind, actors, max_animate_mem
+                        time_ind,
+                        batch_end_ind,
+                        actors,
+                        max_animate_mem,
+                        **(
+                            {"frame_indices": frame_indices}
+                            if frame_indices is not None
+                            else {}
+                        ),
                     )
                     # Pre-run the ray tracer's vertex shade + packing
                     # (project_to_screen) and merged-scene / STBVH build here
@@ -3343,7 +3516,10 @@ class RenderLoopMixin:
                         and (
                             self._may_slice_across_spawns()
                             or self._fetched_window_has_stable_actor_set(
-                                actors, current_time_ind, new_time_ind
+                                actors,
+                                *_frame_window_bounds(
+                                    current_time_ind, new_time_ind, frame_indices
+                                ),
                             )
                         )
                     ):
@@ -3368,6 +3544,10 @@ class RenderLoopMixin:
                     spawn_boundary = None
                     if (
                         primitives
+                        # Dense spawn-boundary indices cannot be used as
+                        # offsets in a sparse selection. Its ordinary bounded
+                        # prefix/OOM search still shrinks the selected window.
+                        and frame_indices is None
                         and actor_share is not None
                         and actor_share >= _ACTOR_SHARE_RETREAT
                     ):
@@ -3654,6 +3834,15 @@ class RenderLoopMixin:
                             post_processes=post_processes,
                             transparent_background=transparent_background,
                             background=background,
+                            **(
+                                {
+                                    "frame_indices": frame_indices[
+                                        current_time_ind:new_time_ind
+                                    ]
+                                }
+                                if frame_indices is not None
+                                else {}
+                            ),
                         ):
                             yield frame_batch
 

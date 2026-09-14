@@ -42,7 +42,24 @@ main {
   min-width: 0;
 }
 #hierarchy-pane { border-right: 1px solid var(--line); }
-#inspector-pane { border-left: 1px solid var(--line); }
+#inspector-pane {
+  border-left: 1px solid var(--line);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.inspector-tabs { display: flex; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.inspector-tabs button { flex: 1; }
+.inspector-tabs [aria-selected="true"] { color: var(--accent); border-color: var(--accent); }
+.inspector-content { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+.inspector-content[hidden] { display: none; }
+#transcript { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.9; }
+.transcript-block { margin: 0 0 1.2em; }
+button.transcript-word { display: inline; min-width: 0; padding: 1px 2px; border: 0; background: transparent; line-height: inherit; }
+button.transcript-word:hover { background: var(--line); }
+button.transcript-word.current { color: var(--bg); background: var(--accent); }
+button.transcript-word:focus-visible, .inspector-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #stage-pane { display: flex; flex-direction: column; gap: 10px; }
 
 h2 {
