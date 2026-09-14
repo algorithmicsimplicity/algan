@@ -1,0 +1,111 @@
+diff --git a/algan/render_loop.py b/algan/render_loop.py
+index 6e0d5ba..5ba36ef 100644
+--- a/algan/render_loop.py
++++ b/algan/render_loop.py
+@@ -3132,3 +3132,3 @@ class RenderLoopMixin:
+                 )
+-                aux = light._build_aux(loc_f)  # [T, K, 13]
++                aux = light._build_aux(loc_f)  # [T, K, LIGHT_AUX_COLS]
+                 radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
+diff --git a/algan/rendering/lights.py b/algan/rendering/lights.py
+index 181b549..01e40f7 100644
+--- a/algan/rendering/lights.py
++++ b/algan/rendering/lights.py
+@@ -69,3 +69,3 @@ LIGHT_ENV_SH = 6.0
+ # Number of aux columns following the RGB color in a packed light row
+-# (packed row width 16 = 3 color + 13 aux).
++# (packed row width 18 = 3 color + 15 aux).
+ LIGHT_AUX_COLS = 15
+diff --git a/algan/rendering/raytracing/area_light_quads.py b/algan/rendering/raytracing/area_light_quads.py
+index d87084f..ac08dd0 100644
+--- a/algan/rendering/raytracing/area_light_quads.py
++++ b/algan/rendering/raytracing/area_light_quads.py
+@@ -142,5 +142,11 @@ def _quad_geometry(light, num_frames, device):
+     """
++    # Keep the schema import local: lights depends on Mob/Scene, which in turn
++    # imports the renderer. The snapshot also includes the shadow-budget columns.
++    from algan.rendering.lights import LIGHT_AUX_COLS
++
+     origin = light.origin.reshape(light.origin.shape[0], -1, 3).float().to(device)
+     aux = (
+-        light._render_aux.reshape(light._render_aux.shape[0], -1, 13).float().to(device)
++        light._render_aux.reshape(light._render_aux.shape[0], -1, LIGHT_AUX_COLS)
++        .float()
++        .to(device)
+     )
+diff --git a/algan/rendering/raytracing/scene_builder.py b/algan/rendering/raytracing/scene_builder.py
+index 65efb22..939ed1a 100644
+--- a/algan/rendering/raytracing/scene_builder.py
++++ b/algan/rendering/raytracing/scene_builder.py
+@@ -2613,3 +2613,3 @@ def _pack_lights(light_sources, num_frames, device):
+         col = light.light_color.detach().to(device)  # [T, K, >=3]
+-        aux = getattr(light, "_render_aux", None)  # [T, K, 13] or None
++        aux = getattr(light, "_render_aux", None)  # [T, K, LIGHT_AUX_COLS] or None
+         if aux is not None:
+diff --git a/tests/README.md b/tests/README.md
+index 5e9499a..703e162 100644
+--- a/tests/README.md
++++ b/tests/README.md
+@@ -81,2 +81,5 @@ render:
+ | `test_batched_stills.py` (two tests) | Project checkpoints must capture their own authoring cursor and follow final timed-context rescaling before batched rendering. These contracts span Scene exports, Project scene execution, and timeline events; regressions in any of those can silently select the wrong frame. Only the author-then-render and relative-context-time checks are marked. They use a stub renderer; the real pixel comparisons remain feature tests. |
++| `test_batch_preparation_devices.py` (two tests) | Only the render/encoder cleanup-order checks: `test_render_reclaims_arena_before_deferred_pressure_reset` and `test_video_defers_pressure_cleanup_until_encoder_and_frame_locals_are_gone`. They hold the contract between the render loop, prefetch-worker shutdown, scene GC protection, the memory arena, and deferred compiler resets. Changing any of those can reclaim a still-live buffer or retain an entire render arena. Stub renderers and memory hooks; no real render. |
++| `test_manim_compat_movement.py` (one test, parametrized for Axes and Star) | Only `test_translation_replays_existing_rows_without_a_geometry_morph`. Changes to Mob translation, timeline recording/replay, or timed contexts can desynchronize the Algan geometry and its backing Manim object, or rebuild the hierarchy during a simple move. It checks both representations at several timeline positions and preserves descendant identity; no render. The remaining compatibility feature tests stay out. |
++| `test_taichi_runtime_config.py` (one test) | Only `test_cached_cuda_reset_retains_memory_pressure_fallbacks`. Windows physical/commit-memory telemetry from `memory_utils`, compiler-specialization tracking, and render-lifetime guards jointly determine when a cached CUDA runtime can be retained. Changes outside runtime configuration can otherwise discard reusable kernels under ordinary RAM pressure or suppress a necessary reset near the commit limit. Mocked telemetry and compiler hooks; no GPU initialization or render. |
+ | `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
+diff --git a/tests/unit_tests/test_physical_area_emission.py b/tests/unit_tests/test_physical_area_emission.py
+index 96724e1..993d31e 100644
+--- a/tests/unit_tests/test_physical_area_emission.py
++++ b/tests/unit_tests/test_physical_area_emission.py
+@@ -10,3 +10,8 @@ import torch
+ from algan.errors import AlganConfigurationError
+-from algan.rendering.lights import PointLight, RectAreaLight, SpotLight
++from algan.rendering.lights import (
++    LIGHT_AUX_COLS,
++    PointLight,
++    RectAreaLight,
++    SpotLight,
++)
+ from algan.rendering.raytracing.area_light_quads import _quad_geometry
+@@ -47,2 +52,42 @@ def test_area_rows_and_panel_have_the_same_physical_normalization(samples):
+ 
++@pytest.mark.parametrize("samples", [1, 4, 16])
++@pytest.mark.parametrize("frames", [1, 3])
++def test_area_quad_geometry_uses_the_complete_aux_layout(samples, frames):
++    """Shadow-budget columns must not change geometry, frame axes or radiance."""
++    light = RectAreaLight(width=2, height=3, samples=samples)
++    location = torch.tensor(
++        [[0.0, 0.0, 4.0], [1.0, 0.5, 5.0], [-0.5, 1.0, 6.0]]
++    )[:frames]
++    aux = light._build_aux(location)
++    count = light._num_samples()
++    assert aux.shape == (frames, count, LIGHT_AUX_COLS)
++    # The extended layout appends primary/bounce fan sizes after the original
++    # 13 columns. Geometry must still read the normal from columns 3:6.
++    aux[..., 13] = 7.0
++    aux[..., 14] = 3.0
++    scale = torch.arange(1, frames + 1, dtype=torch.float32).unsqueeze(-1)
++    strength = torch.tensor([12.0, 6.0, 3.0]) * scale
++    snapshot = SimpleNamespace(
++        origin=light._get_sample_positions(location),
++        _render_aux=aux,
++        light_color=(strength / count).unsqueeze(1).expand(-1, count, -1),
++        width=light.width,
++        height=light.height,
++    )
++
++    pos, normal, radiance = _quad_geometry(snapshot, frames, torch.device("cpu"))
++
++    assert pos.shape == (frames, 2, 9)
++    assert normal.shape == radiance.shape == (frames, 3)
++    right, up = light._rect_axes(location)
++    a = location - right * light.width / 2 - up * light.height / 2
++    b = location + right * light.width / 2 - up * light.height / 2
++    c = location + right * light.width / 2 + up * light.height / 2
++    d = location - right * light.width / 2 + up * light.height / 2
++    expected_pos = torch.stack((torch.cat((a, b, d), -1), torch.cat((b, c, d), -1)), 1)
++    torch.testing.assert_close(pos, expected_pos)
++    torch.testing.assert_close(normal, light._directions(location))
++    torch.testing.assert_close(radiance, strength / (light.width * light.height))
++
++
+ @pytest.mark.parametrize(
