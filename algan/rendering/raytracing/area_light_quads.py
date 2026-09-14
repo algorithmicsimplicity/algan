@@ -140,9 +140,15 @@ def _quad_geometry(light, num_frames, device):
     ``(v1-v0) x (v2-v0)`` is the light's own facing direction, which is the
     side ``_light_eval``'s one-sided cosine emits toward.
     """
+    # Keep the schema import local: lights depends on Mob/Scene, which in turn
+    # imports the renderer. The snapshot also includes the shadow-budget columns.
+    from algan.rendering.lights import LIGHT_AUX_COLS
+
     origin = light.origin.reshape(light.origin.shape[0], -1, 3).float().to(device)
     aux = (
-        light._render_aux.reshape(light._render_aux.shape[0], -1, 13).float().to(device)
+        light._render_aux.reshape(light._render_aux.shape[0], -1, LIGHT_AUX_COLS)
+        .float()
+        .to(device)
     )
     col = light.light_color
     col = col.reshape(col.shape[0], -1, col.shape[-1])[..., :3].float().to(device)

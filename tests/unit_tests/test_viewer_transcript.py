@@ -71,3 +71,42 @@ def test_empty_scene_serves_an_empty_transcript_and_the_tab_assets(
             handle.url_for("/static/transcript.js"), timeout=3
         ) as response:
             assert b"class TranscriptView" in response.read()
+
+
+def test_resolution_change_stays_lazy_and_drops_stale_worker_plan(
+    fresh_scene, monkeypatch
+):
+    """A size switch cannot launch work selected before the switch."""
+    monkeypatch.setattr(ViewerSession, "_run", lambda self: None)
+    session = ViewerSession(Scene.current(), PREVIEW.set(resolution=(48, 27)))
+    rendered = []
+
+    def render(*args, **kwargs):
+        rendered.append((args, kwargs))
+
+    def change_resolution():
+        state = session.set_resolution("SMOKE_TEST")
+        assert state["resolution"] == [32, 32]
+        assert not session._work.is_set()
+
+    monkeypatch.setattr(session, "_render_range", render)
+    monkeypatch.setattr(session, "_stand_aside", change_resolution)
+    try:
+        assert not session._work.is_set()
+        session.prefetch(0)
+        session._work.clear()  # The worker consumed the wake-up.
+        assert session._render_next() is False
+        assert rendered == []
+        assert not session._work.is_set()
+
+        # Even if the worker loops after the resolution request has already
+        # completed, it may not start the new size speculatively.
+        monkeypatch.setattr(session, "_stand_aside", lambda: None)
+        assert session._render_next() is False
+        assert rendered == []
+
+        session.prefetch(0)
+        assert session._requested_generation == session._generation
+        assert session._work.is_set()
+    finally:
+        session.close()

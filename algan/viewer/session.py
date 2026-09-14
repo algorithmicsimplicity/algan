@@ -131,6 +131,10 @@ class ViewerSession:
         self._order: list[int] = []
         self._wanted = 0
         self._generation = 0
+        # The generation most recently requested by frame()/prefetch(). A
+        # resolution change bumps _generation without updating this marker,
+        # which makes the worker stop until new browser demand arrives.
+        self._requested_generation: int | None = None
         self._error: str | None = None
         self._frame_ready = threading.Condition(self._lock)
         self._scene_free = threading.Condition(self._lock)
@@ -146,7 +150,6 @@ class ViewerSession:
         self._epoch = 0
         self._work = threading.Event()
         self._closed = False
-        self._work.set()
         self._worker = threading.Thread(
             target=self._run, name="algan-viewer-render", daemon=True
         )
@@ -215,14 +218,15 @@ class ViewerSession:
         return rows
 
     def set_resolution(self, name):
-        """Re-render everything at another of the offered resolutions.
+        """Switch to another offered resolution and invalidate cached output.
 
         Returns the new state, or ``None`` if there is no such option.
 
         Takes the Scene lock, so it waits out the batch in flight rather than
         swapping the size under a render that has already read it. Everything
         cached is then wrong by definition and goes: the frames, and the pixel
-        inspections whose coordinates were in the old frame's grid.
+        inspections whose coordinates were in the old frame's grid. Rendering
+        stays lazy; the next frame or prefetch request wakes the worker.
         """
         key = str(name).upper()
         entry = self._options.get(key)
@@ -251,7 +255,6 @@ class ViewerSession:
                 self._generation += 1
                 self._frame_ready.notify_all()
                 self._pixel_ready.notify_all()
-        self._work.set()
         return self.state()
 
     # -- scene access -----------------------------------------------------
@@ -350,6 +353,7 @@ class ViewerSession:
             # move, would abandon its chunk before finishing a single frame.
             self._wanted = index
             self._generation += 1
+            self._requested_generation = self._generation
         self._work.set()
         with self._lock:
             while True:
@@ -370,6 +374,7 @@ class ViewerSession:
         with self._lock:
             self._wanted = max(0, min(int(index), self.total_frames - 1))
             self._generation += 1
+            self._requested_generation = self._generation
         self._work.set()
 
     def time_of(self, index):
@@ -578,6 +583,12 @@ class ViewerSession:
     def _render_next(self):
         """Render one chunk from where the page is looking. False when idle."""
         with self._lock:
+            # A resolution change invalidates the currently requested render
+            # generation without waking the worker. If an already-awake worker
+            # reaches this point after that change, it must become idle rather
+            # than speculatively starting the new resolution on its own.
+            if self._requested_generation != self._generation:
+                return False
             start = self._next_gap()
             if start is None:
                 return False
@@ -593,6 +604,14 @@ class ViewerSession:
         if self._closed:
             return False
         with self._scene():
+            # ``start`` and ``generation`` were chosen before standing aside.
+            # A queued resolution change or seek can run while we wait for the
+            # Scene and invalidate that work. Re-check only after owning the
+            # Scene: otherwise the worker launches one stale render before
+            # ``_render_range`` gets a chance to notice the generation change.
+            with self._lock:
+                if self._closed or self._generation != generation:
+                    return False
             self._render_range(
                 start, end, store=True, generation=generation, yielding=True
             )

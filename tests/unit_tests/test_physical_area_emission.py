@@ -8,7 +8,12 @@ import pytest
 import torch
 
 from algan.errors import AlganConfigurationError
-from algan.rendering.lights import PointLight, RectAreaLight, SpotLight
+from algan.rendering.lights import (
+    LIGHT_AUX_COLS,
+    PointLight,
+    RectAreaLight,
+    SpotLight,
+)
 from algan.rendering.raytracing.area_light_quads import _quad_geometry
 from algan.scene_manager import SceneManager
 
@@ -43,6 +48,46 @@ def test_area_rows_and_panel_have_the_same_physical_normalization(samples):
     snapshot.origin = origin + torch.tensor([0.0, 0.0, 40.0])
     _pos, _normal, farther = _quad_geometry(snapshot, 1, torch.device("cpu"))
     assert torch.equal(radiance, farther)
+
+
+@pytest.mark.parametrize("samples", [1, 4, 16])
+@pytest.mark.parametrize("frames", [1, 3])
+def test_area_quad_geometry_uses_the_complete_aux_layout(samples, frames):
+    """Shadow-budget columns must not change geometry, frame axes or radiance."""
+    light = RectAreaLight(width=2, height=3, samples=samples)
+    location = torch.tensor([[0.0, 0.0, 4.0], [1.0, 0.5, 5.0], [-0.5, 1.0, 6.0]])[
+        :frames
+    ]
+    aux = light._build_aux(location)
+    count = light._num_samples()
+    assert aux.shape == (frames, count, LIGHT_AUX_COLS)
+    # The extended layout appends primary/bounce fan sizes after the original
+    # 13 columns. Geometry must still read the normal from columns 3:6.
+    aux[..., 13] = 7.0
+    aux[..., 14] = 3.0
+    scale = torch.arange(1, frames + 1, dtype=torch.float32).unsqueeze(-1)
+    strength = torch.tensor([12.0, 6.0, 3.0]) * scale
+    snapshot = SimpleNamespace(
+        origin=light._get_sample_positions(location),
+        _render_aux=aux,
+        light_color=(strength / count).unsqueeze(1).expand(-1, count, -1),
+        width=light.width,
+        height=light.height,
+    )
+
+    pos, normal, radiance = _quad_geometry(snapshot, frames, torch.device("cpu"))
+
+    assert pos.shape == (frames, 2, 9)
+    assert normal.shape == radiance.shape == (frames, 3)
+    right, up = light._rect_axes(location)
+    a = location - right * light.width / 2 - up * light.height / 2
+    b = location + right * light.width / 2 - up * light.height / 2
+    c = location + right * light.width / 2 + up * light.height / 2
+    d = location - right * light.width / 2 + up * light.height / 2
+    expected_pos = torch.stack((torch.cat((a, b, d), -1), torch.cat((b, c, d), -1)), 1)
+    torch.testing.assert_close(pos, expected_pos)
+    torch.testing.assert_close(normal, light._directions(location))
+    torch.testing.assert_close(radiance, strength / (light.width * light.height))
 
 
 @pytest.mark.parametrize(

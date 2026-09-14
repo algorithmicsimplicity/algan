@@ -221,8 +221,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.NOT_FOUND, "no such scene")
             return self._json(payload)
         if url.path == "/api/resolution":
-            # POST, not GET: this one throws away every rendered frame and
-            # starts the video again at another size.
+            # POST, not GET: this one throws away every rendered frame at the
+            # old size; the next frame request renders lazily at the new one.
             try:
                 name = _one(parse_qs(url.query), "name")
                 payload = self._request_session(parse_qs(url.query)).set_resolution(
