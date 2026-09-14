@@ -17,6 +17,7 @@ Routes:
 ``GET /api/children?node=``         one node's children
 ``GET /api/attrs?node=&frame=``     one node's animatable attributes
 ``GET /api/fragments?frame=&x=&y=`` the fragment list behind one pixel
+``POST /api/scene?id=``             select a project scene (stable project ID)
 ``POST /api/resolution?name=``      re-render everything at another resolution
 ``POST /api/shutdown``              stop serving
 
@@ -85,6 +86,10 @@ class _Handler(BaseHTTPRequestHandler):
     def session(self):
         return self.server.session
 
+    def _request_session(self, query):
+        resolver = getattr(self.session, "session_for_request", None)
+        return resolver(_one(query, "s", None)) if resolver else self.session
+
     def _refused(self, route, query) -> bool:
         """Whether this request was refused; the refusal is already sent.
 
@@ -128,26 +133,27 @@ class _Handler(BaseHTTPRequestHandler):
                 if target.parent != STATIC.resolve() or not target.is_file():
                     return self._error(HTTPStatus.NOT_FOUND, "no such file")
                 return self._file(target)
-            if route.startswith("/frame/") and route.endswith(".png"):
-                index = int(route[len("/frame/") : -len(".png")])
-                return self._png(self.session.frame(index))
             if route == "/api/state":
                 return self._json(self.session.state())
+            session = self._request_session(query)
+            if route.startswith("/frame/") and route.endswith(".png"):
+                index = int(route[len("/frame/") : -len(".png")])
+                return self._png(session.frame(index))
             if route == "/api/transcript":
-                return self._json(self.session.transcript())
+                return self._json(session.transcript())
             if route == "/api/hierarchy":
-                return self._json({"roots": self.session.roots()})
+                return self._json({"roots": session.roots()})
             if route == "/api/children":
                 node = int(_one(query, "node"))
                 components = _one(query, "components", "0") == "1"
-                rows = self.session.children(node, components)
+                rows = session.children(node, components)
                 if rows is None:
                     return self._error(HTTPStatus.NOT_FOUND, "no such node")
                 return self._json({"node": node, "children": rows})
             if route == "/api/attrs":
                 node = int(_one(query, "node"))
                 frame = _one(query, "frame", None)
-                rows = self.session.attributes(
+                rows = session.attributes(
                     node, None if frame in (None, "") else int(frame)
                 )
                 if rows is None:
@@ -164,14 +170,14 @@ class _Handler(BaseHTTPRequestHandler):
             # then fails with a network error no server log can explain.
             if route == "/api/fragments":
                 return self._json(
-                    self.session.pixel(
+                    session.pixel(
                         int(_one(query, "frame", "0")),
                         int(_one(query, "x", "0")),
                         int(_one(query, "y", "0")),
                     )
                 )
             if route == "/api/prefetch":
-                self.session.prefetch(int(_one(query, "frame", "0")))
+                session.prefetch(int(_one(query, "frame", "0")))
                 return self._json({"ok": True})
         except (TypeError, ValueError) as exc:
             return self._error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -193,12 +199,29 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return None
+        if url.path == "/api/scene":
+            select = getattr(self.session, "select_scene", None)
+            if select is None:
+                return self._error(HTTPStatus.NOT_FOUND, "not a project viewer")
+            try:
+                payload = select(int(_one(parse_qs(url.query), "id")))
+            except (TypeError, ValueError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:  # noqa: BLE001
+                return self._error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}"
+                )
+            if payload is None:
+                return self._error(HTTPStatus.NOT_FOUND, "no such scene")
+            return self._json(payload)
         if url.path == "/api/resolution":
             # POST, not GET: this one throws away every rendered frame and
             # starts the video again at another size.
             try:
                 name = _one(parse_qs(url.query), "name")
-                payload = self.session.set_resolution(name)
+                payload = self._request_session(parse_qs(url.query)).set_resolution(
+                    name
+                )
             except (TypeError, ValueError) as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception as exc:  # noqa: BLE001

@@ -14,12 +14,15 @@ from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from algan.errors import AlganConfigurationError
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
 from algan.settings.video_settings import _PRESETS_BY_NAME, VideoSettings
+
+if TYPE_CHECKING:
+    from algan.viewer.viewer import ViewerHandle
 
 logger = get_logger()
 _ACTIVE_PROJECT_RUN = ContextVar("algan_active_project_run", default=None)
@@ -135,7 +138,7 @@ class _ProjectScene:
 class _ProjectSceneRun:
     project: Project
     scene: _ProjectScene
-    mode: Literal["screenshots", "video", "validate", "profile"]
+    mode: Literal["screenshots", "video", "validate", "profile", "view"]
     next_frame_index: int = 0
     frame_results: list = field(default_factory=list)
     allow_video_render: bool = False
@@ -484,6 +487,127 @@ class Project:
         if combined or self.global_transcript_path.exists():
             self.global_transcript_path.parent.mkdir(parents=True, exist_ok=True)
             self.global_transcript_path.write_text(combined, encoding="utf-8")
+
+    def view(
+        self,
+        scenes: _SceneSelection = None,
+        *,
+        video_settings: VideoSettings | None = None,
+        port: int = 0,
+        open_browser: bool = True,
+        block: bool = True,
+    ) -> ViewerHandle:
+        """Open the project in an interactive viewer with one tab per scene.
+
+        Open with no scene selected or loaded. Tabs use the project's prefixed
+        scene names and project order. Clicking a tab authors only that scene
+        on its first visit, then displays it. Subsequent visits reuse its
+        recording without running its authoring code again. Selecting a tab
+        stops playback and starts that scene at time zero, with its own frame
+        rate, hierarchy, attributes, pixel inspector and synchronized transcript.
+        Only the selected scene renders; switching releases the previous
+        scene's frame cache, so returning to it renders its frames again.
+
+        Animation
+        ---------
+        Does not run any scene function until its tab is selected. That scene's
+        animations and Speech blocks are recorded normally; mobs must still be
+        spawned to appear. Embedded save-frame, save-video and Scene.view calls
+        are skipped. No images, videos or transcript files are exported, though
+        speech generation may populate its normal cache. Viewing preserves the
+        authored scenes and restores the caller's active Scene.
+
+        Parameters
+        ----------
+        scenes
+            Scene ID, name, prefixed name, or iterable mixing these forms.
+            Defaults to None, offering a tab for every scene, in project order.
+            This chooses which tabs appear, not which scenes are loaded.
+        video_settings
+            Settings used for authoring and viewing. Defaults to None, meaning
+            author with the project's settings or SETTINGS.video, then preview
+            each scene at PREVIEW resolution and its own frame rate. An explicit
+            preset such as HD overrides both authoring and viewing settings.
+        port
+            Local server port. Defaults to 0, meaning any free port.
+        open_browser
+            Whether to open the viewer in the default browser. Defaults to True.
+        block
+            Whether to serve until Ctrl-C. Defaults to True. False returns a
+            running handle for a REPL or test; call its stop() method to close
+            the viewer. A blocking viewer occupies the warm render daemon
+            until it stops.
+
+        Returns
+        -------
+        ViewerHandle
+            The viewer's URL and stop() method; also usable as a context manager.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If the tab selection is empty or a selector is invalid. Authoring
+            failures and invalid scene durations are reported in the viewer
+            when that scene's tab is selected; other tabs remain usable.
+
+        See Also
+        --------
+        Scene.view : Inspect a single already-authored scene.
+        render_video : Export the selected scenes instead of opening a viewer.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene, Square, Circle, RIGHT
+
+
+            def intro():
+                Square().spawn().move(RIGHT)
+
+
+            def outro():
+                Circle().spawn()
+                Scene.wait(1)
+
+
+            project = Project([intro, outro])
+            project.view()  # tabs: 0_intro and 1_outro
+        """
+        from algan.scene import _note_render_requested
+        from algan.viewer.viewer import _view_project
+
+        selected = self._selected_scenes(scenes)
+        if not selected:
+            raise AlganConfigurationError("Project.view needs at least one scene")
+        _note_render_requested()
+        # Capture defaults without constructing a Scene. Tab order must not
+        # make one scene inherit another's render settings during authoring.
+        author_settings = (
+            video_settings or self.video_settings or SETTINGS.video
+        ).as_preset()
+        raytracing = SETTINGS.raytracing.to_dict()
+
+        def load_scene(scene_id):
+            previous = SETTINGS.raytracing.to_dict()
+            try:
+                SETTINGS.raytracing._restore(raytracing)
+                authored = self._render(
+                    scene_id, mode="view", video_settings=author_settings
+                )
+                _, _, scene, settings = authored[0]
+                return scene, settings
+            finally:
+                SETTINGS.raytracing._restore(previous)
+
+        return _view_project(
+            [(scene.id, scene.stem) for scene in selected],
+            load_scene,
+            video_settings,
+            port=port,
+            open_browser=open_browser,
+            block=block,
+        )
 
     def render_screenshots(
         self,
@@ -1078,14 +1202,14 @@ class Project:
         self,
         scenes=None,
         *,
-        mode: Literal["screenshots", "video", "validate"],
+        mode: Literal["screenshots", "video", "validate", "view"],
         video_settings: VideoSettings | None = None,
         overwrite: bool = True,
         frames=None,
         stop_early: bool = False,
         **save_video_kwargs,
     ):
-        """Shared implementation for screenshot and video project renders."""
+        """Author isolated scenes for exports, validation or interactive viewing."""
         selected = self._selected_scenes(scenes)
         frame_patterns = self._normalized_frame_patterns(frames)
         if mode != "screenshots" and (frame_patterns or stop_early):
@@ -1138,12 +1262,26 @@ class Project:
                         # The scene never finished, so its transcript would be a
                         # truncated copy of the real one. Leave the file alone.
                         self._warn_partial_scene(project_scene, run)
-                    else:
+                    elif mode != "view":
                         self._sync_scene_transcript(
                             project_scene,
                             active_scene.audio_manager.video_transcript,
                         )
-                    if mode == "validate":
+                    if mode == "view":
+                        duration = float(active_scene._recorded_end_time_for_render())
+                        if not math.isfinite(duration) or duration < 0:
+                            raise AlganConfigurationError(
+                                f"Invalid duration for {project_scene.stem}: {duration}"
+                            )
+                        results.append(
+                            (
+                                project_scene.id,
+                                project_scene.stem,
+                                active_scene,
+                                SETTINGS.raytracing.to_dict(),
+                            )
+                        )
+                    elif mode == "validate":
                         duration = float(active_scene._recorded_end_time_for_render())
                         if not math.isfinite(duration) or duration < 0:
                             raise AlganConfigurationError(
@@ -1179,7 +1317,9 @@ class Project:
                     active_scene._project_run = None
                     active_scene._suppress_automatic_transcript = False
             verb = (
-                "Validated"
+                "Authored"
+                if mode == "view"
+                else "Validated"
                 if mode == "validate"
                 else "Stopped early in"
                 if run.stopped_early

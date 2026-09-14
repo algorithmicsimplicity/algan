@@ -68,7 +68,7 @@ function client() {
   assert.notEqual(bootstrap, -1, "test must remove only the page's automatic bootstrap");
   vm.runInContext(source.slice(0, bootstrap), context, { filename });
   const run = (code) => vm.runInContext(code, context);
-  run("state.totalFrames = 10; renderFragments = (data) => { el('fragments').innerHTML = data.label; };");
+  run("state.sceneReady = true; state.totalFrames = 10; renderFragments = (data) => { el('fragments').innerHTML = data.label; };");
   return { run, elements, images, draws, requests };
 }
 

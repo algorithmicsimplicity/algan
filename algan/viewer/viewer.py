@@ -6,6 +6,7 @@ import threading
 import webbrowser
 
 from algan.logging.logger import get_logger
+from algan.viewer.project import ProjectViewerSession
 from algan.viewer.server import ViewerServer
 from algan.viewer.session import ViewerSession
 
@@ -15,9 +16,9 @@ logger = get_logger()
 class ViewerHandle:
     """A running viewer, and the means to stop it.
 
-    Returned by :meth:`~algan.scene.Scene.view`. Also a context manager, so a
-    script can open a viewer for as long as it needs one and be sure the port is
-    released.
+    Returned by :meth:`~algan.scene.Scene.view` or
+    :meth:`~algan.project.Project.view`. Also a context manager, so a script can
+    open a viewer for as long as it needs one and be sure the port is released.
     """
 
     def __init__(self, server, session):
@@ -40,7 +41,7 @@ class ViewerHandle:
         return self._server.url_for(path)
 
     @property
-    def session(self) -> ViewerSession:
+    def session(self) -> ViewerSession | ProjectViewerSession:
         """The viewer's own handle on the Scene, for tests and scripting."""
         return self._session
 
@@ -86,7 +87,7 @@ def _view(
 ) -> ViewerHandle:
     """Implementation of :meth:`algan.scene.Scene.view`.
 
-    Private on purpose. The viewer is reached from the Scene and nowhere else --
+    Private on purpose. The public entry points are Scene.view and Project.view --
     ``view`` is too general a name to export from a package whose ``__all__`` a
     user dumps into their own namespace with ``from algan import *``. The
     user-facing contract, including every parameter, is documented on
@@ -98,7 +99,22 @@ def _view(
 
         scene = Scene.current()
     session = ViewerSession(scene, video_settings)
-    server = ViewerServer(session, port=port)
+    return _launch(session, port=port, open_browser=open_browser, block=block)
+
+
+def _view_project(
+    scenes, load_scene, video_settings=None, *, port=0, open_browser=True, block=True
+):
+    session = ProjectViewerSession(scenes, load_scene, video_settings)
+    return _launch(session, port=port, open_browser=open_browser, block=block)
+
+
+def _launch(session, *, port, open_browser, block):
+    try:
+        server = ViewerServer(session, port=port)
+    except BaseException:
+        session.close()
+        raise
     handle = ViewerHandle(server, session)
     logger.info("Algan viewer serving at %s", handle.url)
     if open_browser:

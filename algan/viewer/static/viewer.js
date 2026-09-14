@@ -18,6 +18,8 @@ const state = {
   // far in you are.
   zoom: 1, epoch: 0, resolutionName: null, resolutionKeys: "",
   pixelRequest: 0, attributeRequest: 0,
+  sceneId: null, sceneVersion: null, sceneKeys: "", generation: 0,
+  switching: false, sceneReady: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -43,11 +45,14 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 
 /* ``path`` with the token added, whichever separator it needs. */
 function api(path) {
-  return path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
+  const globalRoute = /^\/api\/(state|scene|shutdown)(\?|$)/.test(path);
+  const scene = !globalRoute && state.sceneVersion !== null
+    ? `&s=${state.sceneVersion}` : "";
+  return path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN) + scene;
 }
 
-async function getJSON(url) {
-  const response = await fetch(api(url));
+async function getJSON(url, address = api(url)) {
+  const response = await fetch(address);
   if (!response.ok) throw new Error((await response.json()).error || response.statusText);
   return response.json();
 }
@@ -62,9 +67,11 @@ async function getJSON(url) {
  */
 async function getJSONPatiently(url, attempts = 5) {
   let last;
+  // A retry must address the original scene, not whichever tab is now active.
+  const address = api(url);
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await getJSON(url);
+      return await getJSON(url, address);
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;
       last = err;
@@ -100,13 +107,15 @@ function frameImage(index) {
 /* ---------- drawing ---------- */
 
 async function showFrame(index, { redrawOnly = false } = {}) {
+  if (!state.sceneReady) return false;
   index = Math.max(0, Math.min(index, state.totalFrames - 1));
   state.frame = index;
   const epoch = state.epoch;
+  const generation = state.generation;
   updateReadouts();
   try {
     const image = await frameImage(index);
-    if (state.frame !== index || state.epoch !== epoch) return true;
+    if (state.frame !== index || state.epoch !== epoch || state.generation !== generation) return true;
     if (canvas.width !== image.width || canvas.height !== image.height) {
       canvas.width = image.width;
       canvas.height = image.height;
@@ -117,7 +126,7 @@ async function showFrame(index, { redrawOnly = false } = {}) {
     setStatus("");
     return true;
   } catch (err) {
-    if (state.frame !== index || state.epoch !== epoch) return true;
+    if (state.frame !== index || state.epoch !== epoch || state.generation !== generation) return true;
     if (!redrawOnly) setStatus("rendering…", "busy");
     return false;
   }
@@ -191,7 +200,7 @@ function setStatus(text, kind = "") {
 /* ---------- playback ---------- */
 
 function play() {
-  if (state.playing) return;
+  if (!state.sceneReady || state.playing || state.switching) return;
   state.playing = true;
   el("play").textContent = "Stop";
   state.playStartedAt = performance.now();
@@ -206,11 +215,13 @@ function stop() {
 
 async function tick() {
   if (!state.playing) return;
+  const generation = state.generation;
   const elapsed = (performance.now() - state.playStartedAt) / 1000;
   const target = state.playStartedFrame + Math.floor(elapsed * state.fps);
   if (target >= state.totalFrames) { stop(); await showFrame(state.totalFrames - 1); return; }
   if (target !== state.frame) {
     const drawn = await showFrame(target);
+    if (!state.playing || generation !== state.generation) return;
     if (!drawn) {
       // The frame is not rendered yet. Hold the clock where it is so playback
       // resumes from here instead of skipping the frames spent waiting.
@@ -222,6 +233,8 @@ async function tick() {
 }
 
 async function seek(index) {
+  if (!state.sceneReady || state.switching) return;
+  const generation = state.generation;
   stop();
   index = Math.max(0, Math.min(Math.round(index), state.totalFrames - 1));
   fetch(api(`/api/prefetch?frame=${index}`)).catch(() => {});
@@ -231,12 +244,13 @@ async function seek(index) {
     // failure here means it gave up waiting rather than that it answered
     // instantly. Back off anyway, so a server that does start answering
     // quickly (an error, a restart) cannot turn this into a spin.
-    for (let attempt = 0; attempt < 30 && state.frame === index; attempt++) {
+    for (let attempt = 0; attempt < 30 && state.frame === index
+         && generation === state.generation; attempt++) {
       if (await showFrame(index)) break;
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  refreshPixel();
+  if (generation === state.generation) refreshPixel();
 }
 
 /* ---------- pixel inspection ---------- */
@@ -272,13 +286,15 @@ function showPixelColour(x, y) {
 }
 
 async function inspect(x, y) {
+  if (!state.sceneReady || state.switching) return;
+  const generation = state.generation;
   state.pixel = { x, y };
   showPixelColour(x, y);
   const target = el("fragments");
   const frame = state.frame;
   const epoch = state.epoch;
   const request = ++state.pixelRequest;
-  const isCurrent = () => request === state.pixelRequest
+  const isCurrent = () => generation === state.generation && request === state.pixelRequest
     && frame === state.frame && epoch === state.epoch
     && state.pixel.x === x && state.pixel.y === y;
   // ``/api/fragments``, not ``/api/pixel``: content blockers ship generic
@@ -367,6 +383,7 @@ function renderFragments(data) {
 /* ---------- hierarchy ---------- */
 
 function nodeRow(node) {
+  const generation = state.generation;
   const item = document.createElement("li");
   const row = document.createElement("div");
   row.className = "row";
@@ -396,7 +413,7 @@ function nodeRow(node) {
   let loaded = false;
   let loading = false;
   arrow.onclick = async () => {
-    if (!node.has_children) return;
+    if (!node.has_children || generation !== state.generation) return;
     children.hidden = !children.hidden;
     arrow.textContent = children.hidden ? "▶" : "▼";
     if (loaded || loading || children.hidden) return;
@@ -405,9 +422,11 @@ function nodeRow(node) {
     try {
       const data = await getJSONPatiently(
         `/api/children?node=${node.node}&components=${components}`);
+      if (generation !== state.generation) return;
       children.replaceChildren(...data.children.map(nodeRow));
       loaded = true;
     } catch (err) {
+      if (generation !== state.generation) return;
       const notice = document.createElement("li");
       notice.className = "empty";
       notice.textContent = `${err.message} — collapse and expand to retry.`;
@@ -416,7 +435,9 @@ function nodeRow(node) {
       loading = false;
     }
   };
-  name.onclick = () => selectNode(node, name);
+  name.onclick = () => {
+    if (generation === state.generation) selectNode(node, name);
+  };
   return item;
 }
 
@@ -429,12 +450,14 @@ async function selectNode(node, element) {
 }
 
 async function showAttributes() {
+  if (!state.sceneReady) return;
+  const generation = state.generation;
   const target = el("attrs");
   const selected = state.selected;
   const frame = state.frame;
   const epoch = state.epoch;
   const request = ++state.attributeRequest;
-  const isCurrent = () => request === state.attributeRequest
+  const isCurrent = () => generation === state.generation && request === state.attributeRequest
     && selected === state.selected && frame === state.frame && epoch === state.epoch;
   if (state.selected === null) {
     target.innerHTML = `<p class="empty">Select a mob in the hierarchy.</p>`;
@@ -474,38 +497,163 @@ async function showAttributes() {
  * and no way back. Now a failure leaves the tree empty and `refreshState` asks
  * again a second later, which self-heals as soon as the server answers.
  */
-let hierarchyPending = false;
+let hierarchyPending = null;
 
 async function loadHierarchy() {
-  if (hierarchyPending) return;
-  hierarchyPending = true;
+  if (!state.sceneReady) return;
+  const generation = state.generation;
+  if (hierarchyPending === generation) return;
+  hierarchyPending = generation;
   const tree = el("tree");
   try {
     const data = await getJSON("/api/hierarchy");
-    tree.innerHTML = "";
-    for (const node of data.roots) tree.append(nodeRow(node));
+    if (generation !== state.generation) return;
+    tree.replaceChildren(...data.roots.map(nodeRow));
   } catch (err) {
-    tree.innerHTML = "";
+    if (generation === state.generation) tree.replaceChildren();
   } finally {
-    hierarchyPending = false;
+    if (hierarchyPending === generation) hierarchyPending = null;
   }
 }
 
 let transcriptLoaded = false;
-let transcriptPending = false;
+let transcriptPending = null;
 
 async function loadTranscript() {
-  if (transcriptLoaded || transcriptPending) return;
-  transcriptPending = true;
+  if (!state.sceneReady) return;
+  const generation = state.generation;
+  if (transcriptLoaded || transcriptPending === generation) return;
+  transcriptPending = generation;
   try {
     const data = await getJSON("/api/transcript");
+    if (generation !== state.generation) return;
     transcriptView.setData(data);
     transcriptLoaded = true;
     transcriptView.update(state.frame / state.fps, true);
   } catch (err) {
-    el("transcript-status").textContent = `Transcript unavailable; retrying… ${err.message}`;
+    if (generation === state.generation) {
+      el("transcript-status").textContent = `Transcript unavailable; retrying… ${err.message}`;
+    }
   } finally {
-    transcriptPending = false;
+    if (transcriptPending === generation) transcriptPending = null;
+  }
+}
+
+/* ---------- project scenes ---------- */
+
+function syncScenes(data) {
+  if (!data.scenes) return;
+  const tabs = el("scene-tabs");
+  const keys = JSON.stringify(data.scenes);
+  tabs.hidden = false;
+  if (keys !== state.sceneKeys) {
+    state.sceneKeys = keys;
+    tabs.replaceChildren();
+    for (const scene of data.scenes) {
+      const button = document.createElement("button");
+      button.id = `scene-tab-${scene.id}`;
+      button.type = "button";
+      button.textContent = scene.name;
+      button.dataset.scene = String(scene.id);
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-controls", "scene-panel");
+      button.onclick = () => changeScene(scene.id);
+      button.onkeydown = (event) => {
+        const index = data.scenes.findIndex((entry) => entry.id === scene.id);
+        let next;
+        if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = data.scenes.length - 1;
+        else if (event.key === "ArrowRight") next = (index + 1) % data.scenes.length;
+        else if (event.key === "ArrowLeft") next = (index + data.scenes.length - 1) % data.scenes.length;
+        else return;
+        event.preventDefault();
+        tabs.children[next].focus();
+        changeScene(data.scenes[next].id);
+      };
+      tabs.append(button);
+    }
+    el("scene-panel").setAttribute("role", "tabpanel");
+  }
+  for (const button of tabs.children) {
+    const selected = Number(button.dataset.scene) === data.scene_id;
+    button.setAttribute("aria-selected", String(selected));
+    // No tab is auto-selected. Keep the first one keyboard reachable anyway.
+    button.tabIndex = selected || (data.scene_id === null && button === tabs.children[0]) ? 0 : -1;
+  }
+  if (data.scene_id === null) el("scene-panel").removeAttribute("aria-labelledby");
+  else el("scene-panel").setAttribute("aria-labelledby", `scene-tab-${data.scene_id}`);
+}
+
+function clearScene() {
+  stop();
+  state.sceneReady = false;
+  state.generation++;
+  state.images.clear();
+  state.drawn = false;
+  state.frame = 0;
+  state.selected = null;
+  state.pixel = { x: 0, y: 0 };
+  state.resolutionKeys = "";
+  state.pixelRequest++;
+  state.attributeRequest++;
+  hierarchyPending = null;
+  transcriptPending = null;
+  transcriptLoaded = false;
+  el("tree").replaceChildren();
+  el("fragments").replaceChildren();
+  el("attrs").innerHTML = '<p class="empty">Select a mob in the hierarchy.</p>';
+  el("cached").style.width = "0%";
+  el("x-input").value = el("y-input").value = "0";
+  el("rgba").textContent = "—";
+  el("swatch").style.background = "transparent";
+  // Resizing clears the previous bitmap immediately, including during a slow
+  // handoff. Never leave another scene's picture under the newly selected tab.
+  canvas.width = state.width;
+  canvas.height = state.height;
+  state.zoom = 1;
+  stage.scrollLeft = stage.scrollTop = 0;
+  transcriptView.setData({ blocks: [] });
+  el("transcript-status").textContent = "Loading transcript…";
+  updateReadouts();
+  applyZoom();
+}
+
+async function changeScene(id) {
+  if (state.switching || (state.sceneReady && id === state.sceneId)) return;
+  state.switching = true;
+  clearScene();
+  el("scene-panel").inert = true;
+  el("scene-panel").setAttribute("aria-busy", "true");
+  for (const button of el("scene-tabs").children) button.disabled = true;
+  el("scene-placeholder").hidden = false;
+  el("scene-placeholder").textContent = "Loading selected scene…";
+  setStatus("loading scene…", "busy");
+  try {
+    const response = await fetch(api(`/api/scene?id=${encodeURIComponent(id)}`), { method: "POST" });
+    if (!response.ok) throw new Error((await response.json()).error || response.statusText);
+    adoptState(await response.json());
+    setStatus("rendering…", "busy");
+  } catch (err) {
+    setStatus(err.message, "error");
+    el("scene-placeholder").textContent = err.message;
+  } finally {
+    state.switching = false;
+    el("scene-panel").inert = !state.sceneReady;
+    el("scene-panel").removeAttribute("aria-busy");
+    for (const button of el("scene-tabs").children) {
+      button.disabled = false;
+      // Disabling the focused button during the handoff removes focus in real
+      // browsers. Restore it so the next arrow key still navigates scene tabs.
+      if (Number(button.dataset.scene) === (state.sceneReady ? state.sceneId : id)) button.focus();
+    }
+    // A failed/lost POST must not issue requests for the discarded scene.
+    // The next catalogue poll recovers a lost selection response without
+    // retrying the authoring call.
+    if (state.sceneReady) {
+      loadHierarchy();
+      loadTranscript();
+      showFrame(state.frame);
+    }
   }
 }
 
@@ -515,7 +663,7 @@ async function loadTranscript() {
  * once-a-second poll cannot reset a menu the user has open. */
 function syncResolution(data) {
   const options = data.resolution_options || [];
-  const keys = options.map((o) => o.name).join("|");
+  const keys = JSON.stringify(options);
   const select = el("resolution");
   if (keys !== state.resolutionKeys) {
     state.resolutionKeys = keys;
@@ -532,6 +680,8 @@ function syncResolution(data) {
 }
 
 async function changeResolution(name) {
+  if (!state.sceneReady || state.switching) return;
+  const generation = state.generation;
   const select = el("resolution");
   select.disabled = true;
   setStatus("re-rendering at the new resolution…", "busy");
@@ -540,6 +690,7 @@ async function changeResolution(name) {
                                  { method: "POST" });
     if (!response.ok) throw new Error((await response.json()).error || response.statusText);
     const data = await response.json();
+    if (generation !== state.generation) return;
     // Everything on screen is the old size: drop the decoded frames, forget the
     // pixel that was inspected, and let the epoch in the URL keep the browser
     // from handing back a cached PNG of the wrong shape.
@@ -549,9 +700,9 @@ async function changeResolution(name) {
     el("fragments").innerHTML = "";
     adoptState(data);
     await showFrame(Math.min(state.frame, data.total_frames - 1));
-    setStatus("");
+    if (generation === state.generation) setStatus("");
   } catch (err) {
-    setStatus(err.message, "error");
+    if (generation === state.generation) setStatus(err.message, "error");
   } finally {
     select.disabled = false;
   }
@@ -582,22 +733,47 @@ function scrubTo(event) {
 }
 
 function adoptState(data) {
+  if (data.scene_version !== undefined && (data.scene_version !== state.sceneVersion
+      || data.scene_id !== state.sceneId)) {
+    state.sceneVersion = data.scene_version;
+    state.sceneId = data.scene_id;
+    clearScene();
+    state.epoch = data.epoch ?? 0;
+  }
+  syncScenes(data);
+  state.sceneReady = !data.scenes || data.scene_id !== null;
+  el("scene-panel").inert = !state.sceneReady || state.switching;
+  el("scene-placeholder").hidden = state.sceneReady;
+  if (!state.sceneReady) {
+    const loading = data.loading_scene_id !== null && data.loading_scene_id !== undefined;
+    const name = data.scenes.find(scene => scene.id === data.loading_scene_id)?.name;
+    const message = data.error || (loading
+      ? `Loading ${name}…` : "Select a scene tab to begin.");
+    el("scene-placeholder").textContent = message;
+    el("meta").textContent = "";
+    el("transcript-status").textContent = "Select a scene tab to view its transcript.";
+    setStatus(data.error || (loading ? "loading scene…" : ""), data.error ? "error" : "busy");
+    return;
+  }
   state.fps = data.fps;
   state.totalFrames = data.total_frames;
-  state.duration = data.duration;
+  state.duration = data.runtime ?? data.duration ?? 0;
   state.width = data.width;
   state.height = data.height;
   el("meta").textContent =
     `${data.width}×${data.height} · ${data.fps} fps · `
-    + `${data.total_frames} frames · ${data.duration.toFixed(2)}s`;
+    + `${data.total_frames} frames · ${state.duration.toFixed(2)}s`;
   syncResolution(data);
   updateReadouts();
 }
 
 async function refreshState() {
+  if (state.switching) return;
+  const generation = state.generation;
   try {
     const data = await getJSON("/api/state");
-    if (data.epoch !== state.epoch) {
+    if (state.switching || generation !== state.generation) return;
+    if (data.epoch !== undefined && data.epoch !== state.epoch) {
       // Something else changed the resolution (another tab, a restart): drop
       // frames of the old size rather than drawing them at the new one.
       state.epoch = data.epoch;
@@ -605,6 +781,7 @@ async function refreshState() {
       state.drawn = false;
     }
     adoptState(data);
+    if (!state.sceneReady) return;
     const covered = data.cached.reduce((sum, [a, b]) => sum + (b - a + 1), 0);
     el("cached").style.width =
       `${(covered / Math.max(1, data.total_frames)) * 100}%`;
@@ -617,7 +794,7 @@ async function refreshState() {
     if (!transcriptLoaded) loadTranscript();
     if (!state.drawn) showFrame(state.frame);
   } catch (err) {
-    setStatus(err.message, "error");
+    if (!state.switching && generation === state.generation) setStatus(err.message, "error");
   }
 }
 
@@ -673,8 +850,6 @@ el("show-components").onchange = () => {
   // what retries the two loads below -- so nothing here may be able to stop it
   // being scheduled.
   setInterval(refreshState, 1000);
+  // Discover the selected scene/version before any scene-specific request.
   refreshState();
-  showFrame(0);
-  loadHierarchy();
-  loadTranscript();
 })();
