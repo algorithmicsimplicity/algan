@@ -110,8 +110,12 @@ class ViewerSession:
         self._transcript = snapshot_transcript(
             scene.audio_manager._speech_blocks, self.duration
         )
-        opened_on = video_settings if video_settings is not None else scene.video_settings
-        self._audio = SceneAudio(scene.effects, self.duration, opened_on.audio_sample_rate)
+        opened_on = (
+            video_settings if video_settings is not None else scene.video_settings
+        )
+        self._audio = SceneAudio(
+            scene.effects, self.duration, opened_on.audio_sample_rate
+        )
         # At least one frame: a scene authored but never advanced still has a
         # first frame to look at, and a zero-length scrubber is unusable.
         self.total_frames = max(1, round(self.duration * self.fps))

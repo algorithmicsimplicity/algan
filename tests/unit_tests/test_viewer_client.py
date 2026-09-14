@@ -11,7 +11,12 @@ import pytest
 
 @pytest.mark.parametrize(
     "script",
-    ["test_viewer_async.cjs", "test_transcript.cjs", "test_project.cjs", "test_audio.cjs"],
+    [
+        "test_viewer_async.cjs",
+        "test_transcript.cjs",
+        "test_project.cjs",
+        "test_audio.cjs",
+    ],
 )
 def test_viewer_client_async_responses(script):
     node = shutil.which("node")
