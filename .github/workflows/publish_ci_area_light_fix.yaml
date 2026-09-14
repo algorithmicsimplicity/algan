@@ -1,49 +1,51 @@
-name: Publish CI area-light fix
+name: Focused CI area-light validation
 on:
   push:
     branches: [codex/ci-area-light-publisher]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
+    env:
+      ALGAN_RENDER_DEVICE: cpu
+      PYTHONFAULTHANDLER: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Apply verified source changes to the exact master base
+        with:
+          ref: 05732d379d01f5d6d963f6369d25a15039cf1001
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev pkg-config ffmpeg
+      - uses: ./.github/actions/install-uv
+      - name: Locked Python dependencies
+        run: uv sync --locked --all-extras --dev
+      - name: Changed-file lint and format
         run: |
           set -euo pipefail
-          git show HEAD:.github/ci-area-light-fix.patch > "$RUNNER_TEMP/fix.patch"
-          echo "f328b45b9aef708390ebd7f16056a063864c48cb0ef2bc5f26fd61eb8fce40ec  $RUNNER_TEMP/fix.patch" | sha256sum --check
-          git fetch origin cadf4a439f929da3a70ea78742cd8f15958fd456
-          git checkout --detach cadf4a439f929da3a70ea78742cd8f15958fd456
-          git apply --check "$RUNNER_TEMP/fix.patch"
-          git apply "$RUNNER_TEMP/fix.patch"
-          git diff --check
-          python3 - <<'PY'
-          import ast, runpy, subprocess
-          from pathlib import Path
-          expected = {
-              'algan/render_loop.py': '5ba36efe5c4d36618ec0736225ff8a66f2766a4b',
-              'algan/rendering/lights.py': '01e40f77954861c08bb4d2a410f03534853c30f1',
-              'algan/rendering/raytracing/area_light_quads.py': 'ac08dd0362eebf0c893e3bf71ed19726017cd01d',
-              'algan/rendering/raytracing/scene_builder.py': '939ed1a52d5f055d391428ca9f6329f72b58a994',
-              'tests/README.md': '703e16283d9e6ab19c182fe2620e9171d2ec73e0',
-              'tests/unit_tests/test_physical_area_emission.py': '993d31e786944a3503adfdd8cb28f98521585034',
-          }
-          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
-          assert set(changed) == set(expected), changed
-          for path, sha in expected.items():
-              assert subprocess.check_output(['git', 'hash-object', path], text=True).strip() == sha, path
-              if path.endswith('.py'):
-                  ast.parse(Path(path).read_text(), filename=path)
-          checks = runpy.run_path('tests/unit_tests/test_fast_suite_curation.py')
-          checks['test_the_membership_table_matches_the_markers']()
-          checks['test_the_fast_suite_still_renders_something']()
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add algan/render_loop.py algan/rendering/lights.py algan/rendering/raytracing/area_light_quads.py algan/rendering/raytracing/scene_builder.py tests/README.md tests/unit_tests/test_physical_area_emission.py
-          git commit -m 'Fix area-light auxiliary layout and fast-suite curation'
-          git push origin HEAD:refs/heads/codex/fix-ci-area-light-layout
-          git log -1 --format='%H%n%s' | tee -a "$GITHUB_STEP_SUMMARY"
+          FILES='algan/render_loop.py algan/rendering/lights.py algan/rendering/raytracing/area_light_quads.py algan/rendering/raytracing/scene_builder.py tests/unit_tests/test_physical_area_emission.py'
+          uvx ruff@0.12.4 check --no-fix $FILES
+          uvx ruff@0.12.4 format --check $FILES
+      - name: Reported failures and geometry regressions
+        if: ${{ !cancelled() && success() }}
+        run: |
+          set -euo pipefail
+          mkdir -p validation-results
+          .venv/bin/python -m pytest -q \
+            tests/unit_tests/test_fast_suite_curation.py \
+            tests/unit_tests/test_physical_area_emission.py \
+            tests/unit_tests/test_path_tracer.py \
+            tests/unit_tests/test_ux_regressions.py \
+            -k 'area or membership_table or still_renders_something or extended_light' \
+            --junitxml=validation-results/focused.xml 2>&1 | tee validation-results/focused.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-area-light-validation
+          path: validation-results
+          if-no-files-found: ignore
