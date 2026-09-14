@@ -134,7 +134,6 @@ def test_empty_transcript_and_punctuation_only_blocks_are_safe():
         json.dumps(row, allow_nan=False)
 
 
-@pytest.mark.fast
 def test_speech_records_the_same_lazy_origin_as_its_audio_effect(fresh_scene):
     from algan import Scene, Seq, Speech
 
@@ -158,7 +157,6 @@ def test_speech_records_the_same_lazy_origin_as_its_audio_effect(fresh_scene):
     assert row["end"] == pytest.approx(6)  # no parent stretching or wait_at_end
 
 
-@pytest.mark.fast
 def test_speech_is_scene_local_and_reset_discards_its_metadata(fresh_scene):
     from algan import Scene, Speech
 

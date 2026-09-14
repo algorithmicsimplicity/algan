@@ -170,7 +170,7 @@ The generator is Scene-local. Two Scenes can use different voices or recorded
 sources in the same process without interfering with one another.
 
 Supplying word timings from a custom generator
----------------------------------------------
+----------------------------------------------
 
 Optionally attach ``algan_word_timestamps`` to the returned clip. It is a
 sequence of ``(word, start, end)`` triples, with finite times in **seconds
