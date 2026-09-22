@@ -191,6 +191,12 @@ def _stable_key(svg_mob) -> str:
         file_id,
         str(getattr(svg_mob, "_renderer_type", "")),
     ]
+    # Typst attaches reference geometry during parsing. An ordinary parse must
+    # never satisfy a later request for baseline tracking (or vice versa).
+    if hasattr(svg_mob, "track_baselines"):
+        parts.extend(
+            [str(svg_mob.track_baselines), str(svg_mob._preserve_svg_stroke_widths)]
+        )
     hasher = hashlib.sha256()
     hasher.update("|".join(parts).encode())
     return hasher.hexdigest()
@@ -305,6 +311,17 @@ def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None
     svg_mob.add(*children)
     if rebuilt_groups is not None:
         svg_mob.id_to_vgroup_dict = rebuilt_groups
+    # The recipes retain per-path metadata, but these owner-side lists are
+    # populated by Typst's parser callbacks only on a cold parse. Reconnect
+    # them to the freshly rebuilt paths before Typst scales the imported SVG.
+    if hasattr(svg_mob, "track_baselines"):
+        family = [part for child in children for part in child.get_family()]
+        svg_mob._baseline_tracked_submobjects = [
+            part for part in family if "_typst_reference_points" in vars(part)
+        ]
+        svg_mob._stroke_width_tracked_submobjects = [
+            part for part in family if "_typst_source_stroke_width" in vars(part)
+        ]
 
 
 def _load_disk(key: str):

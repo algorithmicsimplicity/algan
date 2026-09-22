@@ -7,6 +7,7 @@ Mobs
 
    ~algan.mobs.group
    ~algan.mobs.text
+   ~algan.mobs.typst
    ~algan.mobs.image_mob
    ~algan.mobs.image_compat
    ~algan.mobs.manim_compat

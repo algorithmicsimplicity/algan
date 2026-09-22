@@ -29,6 +29,9 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
+from algan.mobs.typst import MathTypst as _NativeMathTypst
+from algan.mobs.typst import Typst as _NativeTypst
+from algan.mobs.typst import _TypstSelection
 from algan.settings import SETTINGS
 
 # Every other manim entry point in Algan goes through a ``LazyModule`` whose
@@ -728,6 +731,12 @@ class ManimCompatMob(ManimMob):
         self.submobjects = target_non_components
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
+        if isinstance(self, _TypstSelection):
+            # Delegated edits graft a freshly converted hierarchy. Selections
+            # must follow those live paths rather than the retired source rows.
+            self._setup_typst_parts(
+                self.manim_mobject, batch=False, parts=target.submobjects
+            )
         return self
 
     def _is_backing_geometry(self, value):
@@ -1023,6 +1032,10 @@ A title placed where Algan's camera can see all of it, over a shape:
 """
 
 _WRAPPER_DOCSTRINGS: dict[str, str] = {
+    "Typst": _NativeTypst.__doc__.replace(
+        "Algan stroke units", "Manim stroke units (twice Algan's default unit)"
+    ),
+    "MathTypst": _NativeMathTypst.__doc__,
     "MathTex": _MATHTEX_DOC,
     "Title": _TITLE_DOC,
 }
@@ -1044,7 +1057,11 @@ def _make_manim_wrapper(name: str):
     )
     wrapper = type(
         name,
-        (ManimCompatMob,),
+        (
+            (_TypstSelection, ManimCompatMob)
+            if name in {"Typst", "MathTypst"}
+            else (ManimCompatMob,)
+        ),
         {
             "_manim_class": manim_class,
             "_needs_latex": needs_latex,
@@ -1056,6 +1073,10 @@ def _make_manim_wrapper(name: str):
     )
     with contextlib.suppress(TypeError, ValueError):
         wrapper.__signature__ = inspect.signature(manim_class)
+    if name in {"Typst", "MathTypst"}:
+        wrapper.select = _TypstSelection.select
+        wrapper.get_baseline_frame = _TypstSelection.get_baseline_frame
+        wrapper.baseline_frames = _TypstSelection.baseline_frames
     _MANIM_WRAPPER_REGISTRY[name] = wrapper
     globals()[name] = wrapper
     return wrapper
@@ -1150,6 +1171,7 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "MarkupText",
     "MathTable",
     "MathTex",
+    "MathTypst",
     "Matrix",
     "MobjectMatrix",
     "MobjectTable",
@@ -1192,6 +1214,7 @@ _WRAPPED_MANIM_CLASS_NAMES = (
     "Title",
     "Torus",
     "Triangle",
+    "Typst",
     "Underline",
     "Union",
     "UnitInterval",

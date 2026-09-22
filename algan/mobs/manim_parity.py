@@ -19,12 +19,8 @@ MANIM_COMMUNITY_VERSION = "0.21.0"
 #: carry, and why. Named rather than silently omitted, so the inventory still
 #: adds up against upstream.
 #:
-#: ``Typst`` and ``MathTypst`` are the only two, and they are what v0.21.0
-#: added over v0.20.1. They typeset through Typst rather than LaTeX, which
-#: means a second document toolchain and the optional ``typst`` package for a
-#: second spelling of what ``Tex``/``MathTex`` already produce -- and Algan
-#: converts the Bezier output, not the markup. See ``VENDORING.md``.
-MANIM_UNVENDORED_MOBJECT_NAMES = ("MathTypst", "Typst")
+#: Typst classes are included; only constructing them requires ``algan[typst]``.
+MANIM_UNVENDORED_MOBJECT_NAMES: tuple[str, ...] = ()
 
 MANIM_MOBJECT_NAMES = (
     "AbstractImageMobject",
@@ -110,6 +106,7 @@ MANIM_MOBJECT_NAMES = (
     "MathTable",
     "MathTex",
     "MathTexPart",
+    "MathTypst",
     "Matrix",
     "Mobject",
     "Mobject1D",
@@ -201,6 +198,7 @@ MANIM_MOBJECT_NAMES = (
     "Title",
     "Torus",
     "Triangle",
+    "Typst",
     "TrueDot",
     "Underline",
     "Union",
@@ -284,6 +282,7 @@ MANIM_EXTERNAL_TOOL_MOBJECT_NAMES = (
     "MathTable",
     "MathTex",
     "MathTexPart",
+    "MathTypst",
     "Matrix",
     "MobjectMatrix",
     "MobjectTable",
@@ -293,6 +292,7 @@ MANIM_EXTERNAL_TOOL_MOBJECT_NAMES = (
     "Tex",
     "Text",
     "Title",
+    "Typst",
     "Variable",
 )
 

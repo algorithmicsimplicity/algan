@@ -40,14 +40,13 @@ Bezier geometry* and renders that with its own ray tracer.
 ## What is kept
 
 `_config`, `constants`, `typing`, `data_structures`, the whole `mobject/` tree
-except the OpenGL hierarchy and the Typst classes, and the `utils/` modules
+except the OpenGL hierarchy, and the `utils/` modules
 those need.
 
 ## What is dropped
 
 `animation/`, `camera/`, `renderer/`, `scene/`, `cli/`, `plugins/`, `opengl/`,
-`mobject/opengl/`, `mobject/text/typst_mobject.py`,
-`utils/typst_file_writing.py`, `utils/docbuild/`, `utils/testing/`,
+`mobject/opengl/`, `utils/docbuild/`, `utils/testing/`,
 `utils/{caching,commands,debug,hashing,ipython_magic,module_ops,opengl,sounds}.py`,
 and `_config/{logger_utils,cli_colors}.py`.
 
@@ -96,8 +95,9 @@ Targeted, asserted, one dropped reference each:
 
 8. `constants.py` -- the `cloup` import and `CONTEXT_SETTINGS`, which only the
    CLI used. Drops the `cloup` dependency.
-9. `typing.py`, `mobject/geometry/labeled.py`, `mobject/graphing/number_line.py`
-   -- the `Typst` branches.
+9. `utils/typst_file_writing.py` -- the optional-dependency error names
+   `algan[typst]`; generated files use Algan's runtime cache directory. Cache
+   keys include the compiler version and resolved additional font paths.
 10. `mobject/types/image_mobject.py` -- the unused runtime `MovingCamera`
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`

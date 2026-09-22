@@ -18,6 +18,7 @@ Animation
    ~algan.animations.manim_animations
    ~algan.animations.movement
    ~algan.animations.changing
+   ~algan.animations.transform_matching_parts
    ~algan.animations.indication
 
 Runtime Mob Attributes

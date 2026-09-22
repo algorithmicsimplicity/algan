@@ -50,6 +50,7 @@ from .mobject.table import *
 from .mobject.text.code_mobject import *
 from .mobject.text.numbers import *
 from .mobject.text.tex_mobject import *
+from .mobject.text.typst_mobject import *
 from .mobject.three_d.polyhedra import *
 from .mobject.three_d.three_d_utils import *
 from .mobject.three_d.three_dimensions import *

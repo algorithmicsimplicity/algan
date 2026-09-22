@@ -405,6 +405,21 @@ If there is now a video at ``algan_outputs/example.mp4`` beside the script,
 your installation is complete! Continue on to :doc:`new_user_tutorials/getting_started`
 to learn how to use Algan.
 
+Optional Typst typesetting
+==========================
+
+For Typst markup and mathematics, install the compiler wheel:
+
+.. code-block:: bash
+
+   pip install "algan[typst]"
+
+Use ``Typst("Hello *world*")`` for markup or ``MathTypst("sqrt(x)")`` for
+mathematics. This backend includes its compiler and needs no separate Typst
+executable, LaTeX installation, or Pango. See
+:doc:`advanced_user_tutorials/text_and_math` for selecting and animating labeled
+parts. ``Tex`` continues to use LaTeX.
+
 .. _installation-optional-latex:
 
 What Algan needs from LaTeX

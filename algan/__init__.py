@@ -155,6 +155,7 @@ from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.procedural_textures import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
+from algan.mobs.typst import *
 from algan.mobs.three_d_models import Model3D, TriangleMesh
 from algan.project import Project
 from algan.rendering import camera
@@ -231,6 +232,7 @@ from algan.animations.changing import *
 from algan.animations.indication import *
 from algan.animations.manim_animations import *
 from algan.animations.movement import *
+from algan.animations.transform_matching_parts import *
 
 # The Manim compatibility layer is a separate surface, reached as
 # ``algan.manim`` rather than star-imported here: every name in it means

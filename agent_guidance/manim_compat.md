@@ -20,9 +20,14 @@ manim...`, it is already correct; if you are debugging one, `manim.X is
 algan.external_libraries.manim.X` is the invariant, and
 `tests/unit_tests/test_manim_mobject_parity.py` pins it.
 
-Two groups of Mobjects are absent, and both are declared in `manim_parity.py` rather than
-silently missing. `Typst`/`MathTypst` (`MANIM_UNVENDORED_MOBJECT_NAMES`) are not vendored at
-all. `Text`/`MarkupText`/`Paragraph` (`MANIM_PANGO_MOBJECT_NAMES`) need `manimpango`, which is a
+`Typst`/`MathTypst` are vendored and always exported, with native Algan classes in
+`mobs/typst.py`. Only construction needs the optional `algan[typst]` compiler wheel.
+Both native and compatibility classes return live, non-owning Algan views from
+`select()`. The shared SVG cache restores Typst's label groups, baseline references
+and stroke metadata; generated SVGs live under the runtime cache's `manim/Typst`.
+`MANIM_UNVENDORED_MOBJECT_NAMES` is now empty.
+
+`Text`/`MarkupText`/`Paragraph` (`MANIM_PANGO_MOBJECT_NAMES`) need `manimpango`, which is a
 dependency on Windows and macOS (where it ships a wheel) and the `algan[pango]` extra on
 Linux (where installation may build the ManimPango Python binding against
 system-installed Pango and Cairo) — so the absent case

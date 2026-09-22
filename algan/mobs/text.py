@@ -314,6 +314,9 @@ class Tex(Mob):
 
         if latex:
             sub_mobs = [_.submobjects for _ in t.submobjects]
+            # Actual typeset segments can differ from constructor arguments
+            # when double braces isolate terms inside a single source string.
+            self._matching_tex_keys = tuple(part.tex_string for part in t.submobjects)
             self.num_mobs_per_segment = torch.tensor([len(_) for _ in sub_mobs])
             self.segment_ends = self.num_mobs_per_segment.cumsum(0)
             self.segment_starts = self.segment_ends - self.num_mobs_per_segment

@@ -137,6 +137,9 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 "Discord" = "https://discord.gg/NvarFmvXKm"
 
 [project.optional-dependencies]
+# Typst markup and mathematics. The wheel includes the compiler; no separate
+# Typst executable, LaTeX distribution or Pango installation is required.
+typst = ["typst>=0.14"]
 # Word-level alignment of recorded speech audio to a transcript (used by the
 # Speech/Audio animation contexts when synchronizing to a pre-recorded audio
 # file). The default pyttsx3 text-to-speech path does not need these.
@@ -203,7 +206,7 @@ dev = [
     # `taichi` is in here as well as in `--all-extras`: a `uv sync --dev` with
     # no extras still has to be able to run the A/B control arm
     # (`ALGAN_TAICHI_BACKEND=taichi`), which is half of every backend report.
-    "algan[audio,fbx,taichi]",
+    "algan[audio,fbx,taichi,typst]",
 ]
 
 [build-system]

@@ -27,6 +27,7 @@ from ...mobject.geometry.line import Line
 from ...mobject.graphing.scale import LinearBase, _ScaleBase
 from ...mobject.text.numbers import DecimalNumber
 from ...mobject.text.tex_mobject import MathTex, SingleStringMathTex, Tex
+from ...mobject.text.typst_mobject import MathTypst, Typst
 from ...mobject.types.vectorized_mobject import VGroup, VMobject
 from ...utils.bezier import interpolate
 from ...utils.config_ops import merge_dicts_recursively
@@ -614,6 +615,8 @@ class NumberLine(Line):
             if isinstance(label, str):
                 if label_constructor is MathTex:
                     label = Tex(label)
+                elif label_constructor is MathTypst:
+                    label = Typst(label)
                 else:
                     label = self._create_label_tex(label, label_constructor)
             else:

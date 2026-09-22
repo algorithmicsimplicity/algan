@@ -1510,6 +1510,11 @@ class Animatable:
                 v = []
             if k in ["anchors"]:
                 v = defaultdict(list)
+            if k == "data_sub_inds" and clone_data:
+                # The values copied below are already sliced from the source.
+                # Fresh rows start at zero: retaining the owner's row offsets
+                # makes property setters index outside a cloned packed view.
+                v = None
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
         clone._generate_animatable_attr_set_get_methods()

@@ -198,3 +198,8 @@ class ManimMob(BezierCircuitCubic):
             )
             self.add_children(grouped)
         self.submobjects = children
+        if hasattr(manim_mob, "tex_strings"):
+            self._matching_tex_keys = tuple(
+                part.tex_string for part in manim_mob.submobjects
+            )
+            self._matching_tex_batch = grouped if batch and children else None

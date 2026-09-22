@@ -200,6 +200,7 @@ MarkupText
 Material
 MathTable
 MathTex
+MathTypst
 Matrix
 MeshBasicMaterial
 MeshDepthMaterial
@@ -328,7 +329,10 @@ TextTriangulated
 ThreeDAxes
 Title
 Torus
+TransformMatchingShapes
+TransformMatchingTex
 Triangle
+Typst
 TriangleMesh
 TruncationCounts
 UHD

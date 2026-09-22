@@ -33,6 +33,7 @@ import numpy.typing as npt
 if TYPE_CHECKING:
     from .mobject.text.tex_mobject import MathTex
     from .mobject.text.text_mobject import Text
+    from .mobject.text.typst_mobject import Typst
 
 __all__ = [
     "ManimFloat",
@@ -936,10 +937,10 @@ MultiMappingFunction: TypeAlias = Callable[[Point3D_Array], Point3D_Array]
 Text mobject types
 """
 
-ManimTextLabel: TypeAlias = "Text | MathTex"
+ManimTextLabel: TypeAlias = "Text | MathTex | Typst"
 """Text-like label mobjects commonly used across Manim.
 
-This includes :class:`~.Text` and :class:`~.MathTex`.
+This includes :class:`~.Text`, :class:`~.MathTex`, and :class:`~.Typst`.
 Subtype-specific variants like :class:`~.Tex` and :class:`~.MathTypst` are
 covered implicitly through inheritance.
 """

@@ -123,6 +123,7 @@ _NATIVE: frozenset[str] = frozenset(
         "Line",
         "Line3D",
         "MarkupText",
+        "MathTypst",
         "Octahedron",
         "Paragraph",
         "Point",
@@ -140,6 +141,7 @@ _NATIVE: frozenset[str] = frozenset(
         "Text",
         "Torus",
         "Triangle",
+        "Typst",
     }
 )
 

@@ -40,7 +40,7 @@ DST = REPO_ROOT / "algan" / "external_libraries" / "manim"
 # What is kept.
 #
 # Everything else upstream ships -- ``animation/``, ``camera/``, ``renderer/``,
-# ``scene/``, ``cli/``, ``plugins/``, ``opengl/``, the Typst pipeline, the
+# ``scene/``, ``cli/``, ``plugins/``, ``opengl/``, the
 # docs and test helpers -- is dropped. Two of those are referenced from the
 # geometry modules and are replaced by the shims further down.
 #
@@ -63,7 +63,7 @@ mobject.value_tracker mobject.vector_field
 mobject.svg mobject.svg.brace mobject.svg.svg_mobject
 mobject.table
 mobject.text mobject.text.code_mobject mobject.text.numbers
-mobject.text.tex_mobject mobject.text.text_mobject
+mobject.text.tex_mobject mobject.text.text_mobject mobject.text.typst_mobject
 mobject.three_d mobject.three_d.polyhedra mobject.three_d.three_d_utils
 mobject.three_d.three_dimensions
 mobject.types mobject.types.image_mobject mobject.types.point_cloud_mobject
@@ -72,7 +72,7 @@ utils utils.bezier utils.config_ops utils.deprecation utils.exceptions
 utils.family utils.family_ops utils.file_ops utils.images utils.iterables
 utils.parameter_parsing utils.paths utils.polylabel utils.qhull
 utils.rate_functions utils.simple_functions utils.space_ops utils.tex
-utils.tex_file_writing utils.tex_templates utils.unit
+utils.tex_file_writing utils.tex_templates utils.typst_file_writing utils.unit
 utils.color utils.color.core utils.color.manim_colors utils.color.AS2700
 utils.color.BS381 utils.color.DVIPSNAMES utils.color.SVGNAMES utils.color.X11
 utils.color.XKCD
@@ -322,15 +322,6 @@ def apply_targeted_patches(text: str, module: str) -> str:
             ")\n"
         )
 
-    elif module == "typing":
-        cut("    from .mobject.text.typst_mobject import Typst\n")
-        cut('"Text | MathTex | Typst"', '"Text | MathTex"')
-        cut(
-            "This includes :class:`~.Text`, :class:`~.MathTex`, and "
-            ":class:`~.Typst`.\n",
-            "This includes :class:`~.Text` and :class:`~.MathTex`.\n",
-        )
-
     elif module == "_config.utils":
         # The vendored subset ships no OpenGL renderer, and the base-swapping
         # this setter does would rebase the geometry classes onto the inert
@@ -356,21 +347,33 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "    from typing import Any as MovingCamera\n",
         )
 
-    elif module == "mobject.geometry.labeled":
-        # Typst needs the `typst` package and a second document pipeline; the
-        # LaTeX and Pango label paths cover everything Algan converts.
-        cut("from ...mobject.text.typst_mobject import Typst\n")
-        cut("(MathTex, Text, Typst)", "(MathTex, Text)")
+    elif module == "utils.typst_file_writing":
         cut(
-            "Must be MathTex, Tex, Text, Typst, or MathTypst.",
-            "Must be MathTex, Tex, or Text.",
+            "import hashlib\n",
+            "import hashlib\nimport json\nfrom importlib.metadata import version\n",
         )
-
-    elif module == "mobject.graphing.number_line":
-        cut("from ...mobject.text.typst_mobject import MathTypst, Typst\n")
         cut(
-            "                elif label_constructor is MathTypst:\n"
-            "                    label = Typst(label)\n"
+            "from .. import config, logger\n",
+            "from .. import logger\nfrom algan.settings import SETTINGS\n",
+        )
+        cut(
+            "\"TypstMobject requires the 'typst' Python package. \"\n"
+            '            "Install it with:  pip install typst>=0.14"',
+            '"Typst requires the optional Typst backend. "\n'
+            "            'Install it with: pip install \"algan[typst]\"'",
+        )
+        cut(
+            "    content_hash = _typst_hash(full_source)\n"
+            '    typst_dir = config.get_dir("tex_dir")\n',
+            "    font_paths = [str(Path(path).expanduser().resolve()) for path in (font_paths or [])]\n"
+            "    content_hash = _typst_hash(json.dumps([full_source, version('typst'), font_paths]))\n"
+            '    typst_dir = Path(SETTINGS.paths.cache_directory) / "manim" / "Typst"\n',
+        )
+        cut(
+            'under :func:`config.get_dir("tex_dir") <manim.ManimConfig.get_dir>`\n'
+            "    using a content-hash filename scheme (identical to the LaTeX pipeline).",
+            "under Algan's runtime cache directory, in ``manim/Typst``. The cache\n"
+            "    key includes the source, compiler version and additional font paths.",
         )
 
     elif module == "mobject.text.text_mobject":
@@ -613,7 +616,7 @@ __all__ = ["MarkupUtils", "PangoUtils", "TextSetting", "available", "manimpango"
 _MESSAGE = (
     "Pango text rendering needs the `manimpango` package, which Algan does "
     "not install by default -- it publishes no Linux wheel, so requiring it "
-    'would mean building Pango from source. Install it with `pip install '
+    "would mean building Pango from source. Install it with `pip install "
     '"algan[pango]"` (or `pip install manimpango`). Without it, use '
     "`algan.Text`, which typesets through LaTeX's text mode instead, or "
     "`algan.Tex` / `mn.MathTex` for mathematics."
@@ -653,6 +656,16 @@ class _LazyName:
         return module if self._name is None else getattr(module, self._name)
 
     def __getattr__(self, attr: str) -> Any:
+        # A private/dunder name is never part of manimpango's top-level API, so
+        # it is always a probe -- `hasattr`, `copy`, `pickle`, `inspect`, or a
+        # framework asking "does this object carry my marker attribute". Answer
+        # those with AttributeError, which is what a probe expects: resolving
+        # instead turns every such probe on a box without the extra into an
+        # ImportError, and one of them (the profiler's `_is_wrapped_kernel`
+        # sweep over every algan module, which reaches the vendored
+        # `text_mobject`'s `manimpango` name) took the whole profiler down.
+        if attr.startswith("_"):
+            raise AttributeError(attr)
         return getattr(self._resolve(), attr)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -1187,6 +1200,7 @@ from .mobject.table import *
 from .mobject.text.code_mobject import *
 from .mobject.text.numbers import *
 from .mobject.text.tex_mobject import *
+from .mobject.text.typst_mobject import *
 from .mobject.three_d.polyhedra import *
 from .mobject.three_d.three_d_utils import *
 from .mobject.three_d.three_dimensions import *
@@ -1277,14 +1291,13 @@ Bezier geometry* and renders that with its own ray tracer.
 ## What is kept
 
 `_config`, `constants`, `typing`, `data_structures`, the whole `mobject/` tree
-except the OpenGL hierarchy and the Typst classes, and the `utils/` modules
+except the OpenGL hierarchy, and the `utils/` modules
 those need.
 
 ## What is dropped
 
 `animation/`, `camera/`, `renderer/`, `scene/`, `cli/`, `plugins/`, `opengl/`,
-`mobject/opengl/`, `mobject/text/typst_mobject.py`,
-`utils/typst_file_writing.py`, `utils/docbuild/`, `utils/testing/`,
+`mobject/opengl/`, `utils/docbuild/`, `utils/testing/`,
 `utils/{{caching,commands,debug,hashing,ipython_magic,module_ops,opengl,sounds}}.py`,
 and `_config/{{logger_utils,cli_colors}}.py`.
 
@@ -1333,8 +1346,9 @@ Targeted, asserted, one dropped reference each:
 
 8. `constants.py` -- the `cloup` import and `CONTEXT_SETTINGS`, which only the
    CLI used. Drops the `cloup` dependency.
-9. `typing.py`, `mobject/geometry/labeled.py`, `mobject/graphing/number_line.py`
-   -- the `Typst` branches.
+9. `utils/typst_file_writing.py` -- the optional-dependency error names
+   `algan[typst]`; generated files use Algan's runtime cache directory. Cache
+   keys include the compiler version and resolved additional font paths.
 10. `mobject/types/image_mobject.py` -- the unused runtime `MovingCamera`
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`
