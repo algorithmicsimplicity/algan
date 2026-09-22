@@ -141,6 +141,7 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 # Speech/Audio animation contexts when synchronizing to a pre-recorded audio
 # file). The default pyttsx3 text-to-speech path does not need these.
 audio = [
+    "soundfile>=0.14.0",
     "torchaudio>=2.0.0",
     "transformers>=4.30.0",
 ]
