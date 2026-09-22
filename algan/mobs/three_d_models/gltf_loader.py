@@ -41,29 +41,47 @@ def _to_tensor(array, dtype=torch.float32):
     return torch.as_tensor(np.array(a, copy=True), dtype=dtype)
 
 
+def _normalized_components(values):
+    """Decode unsigned samples at their full dtype range, including uint16.
+
+    Floats and booleans are already normalized. Signed integers (including
+    ordinary Python integer lists) retain the legacy byte range, 0..255;
+    higher-depth samples must declare an unsigned dtype rather than guessing
+    their bit depth from the brightest value in the image.
+    """
+    arr = np.asarray(values)
+    if arr.dtype.kind == "u":
+        maximum = np.iinfo(arr.dtype).max
+    elif arr.dtype.kind == "i":
+        maximum = 255
+    elif arr.dtype.kind in "fb":
+        maximum = 1
+    else:
+        raise ValueError(f"Unsupported color sample dtype: {arr.dtype}")
+    if not np.isfinite(arr).all() or (arr < 0).any() or (arr > maximum).any():
+        raise ValueError(
+            f"Color samples of dtype {arr.dtype} must be in [0, {maximum}]"
+        )
+    # Copy read-only PIL/trimesh arrays, and convert before dividing so uint16
+    # and non-native byte orders do not depend on Torch's integer support.
+    return np.array(arr, dtype=np.float32, copy=True) / float(maximum)
+
+
 def _image_to_float_hwc(image):
     """PIL image (or array) -> torch ``[H, W, C]`` float in ``[0, 1]``."""
-    arr = np.asarray(image)
+    arr = _normalized_components(image)
     if arr.ndim == 2:  # grayscale
         arr = arr[..., None]
-    # copy=True: PIL/trimesh arrays are commonly read-only views.
-    t = torch.as_tensor(np.array(arr, copy=True)).float()
-    if t.dtype == torch.uint8 or t.max() > 1.0 + 1e-4:
-        t = t / 255.0
-    return t
+    return torch.as_tensor(arr)
 
 
 def _normalize_color(color):
-    """glTF color factors may be uint8 [0, 255] or float [0, 1]; return a
-    4-tuple in [0, 1].
-    """
+    """Normalize supplied channels first, then fill missing channels with one."""
     if color is None:
         return (1.0, 1.0, 1.0, 1.0)
-    c = [float(x) for x in np.asarray(color).reshape(-1)[:4]]
+    c = _normalized_components(np.asarray(color).reshape(-1)[:4]).tolist()
     while len(c) < 4:
         c.append(1.0)
-    if max(c) > 1.0 + 1e-4:
-        c = [x / 255.0 for x in c]
     return tuple(c)
 
 

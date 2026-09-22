@@ -196,19 +196,18 @@ def _uniform_color_and_opacity(color, opacity):
 
 def _sync_image_geometry_to_manim(algan_mob: ImageMob, manim_mob):
     """Push an ImageMob's current affine pose into its Manim ImageMobject."""
-    location = algan_mob.location.reshape(-1, 3)[0].detach().cpu().numpy()
-    basis = algan_mob.basis.reshape(-1, 3, 3)[0].detach().cpu().numpy()
-    right, up = basis[0], basis[1]
+    grid = algan_mob.grid.location.reshape(
+        -1, algan_mob.grid_width, algan_mob.grid_height, 3
+    )[0]
     # Manim ImageMobject point order is top-left, top-right, bottom-left,
-    # bottom-right.  Algan's ImageMob basis rows are its half-width/half-height
-    # axes, so this preserves translation, rotation and non-uniform scale.
-    manim_mob.points = np.stack(
-        (
-            location - right + up,
-            location + right + up,
-            location - right - up,
-            location + right - up,
-        )
+    # bottom-right. Read the rendered corners: a Mob's basis carries scale,
+    # not the image's aspect ratio or its half-extents.
+    manim_mob.points = (
+        torch.stack((grid[0, -1], grid[-1, -1], grid[0, 0], grid[-1, 0]))
+        .detach()
+        .cpu()
+        .numpy()
+        .copy()
     )
     if hasattr(manim_mob, "set_opacity"):
         opacity = float(algan_mob.opacity.reshape(-1)[0].detach().cpu())

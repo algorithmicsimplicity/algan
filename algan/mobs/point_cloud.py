@@ -122,6 +122,7 @@ class PMobject(Group):
             kwargs["scene"] = active_scene_for_new_mob()
         geometry = self._build_geometry(scene=kwargs["scene"])
         super().__init__(*([] if geometry is None else [geometry]), **kwargs)
+        self._point_geometry = geometry
         # Animatable installs instance-level generic color accessors while
         # registering Mob attributes. Point clouds need color accessors that
         # update their per-point RGBA array and rebuilt geometry.
@@ -155,7 +156,14 @@ class PMobject(Group):
 
     def _rebuild_geometry(self):
         geometry = self._build_geometry()
-        self.replace_children([] if geometry is None else [geometry])
+        previous = self._point_geometry
+        if previous is None and geometry is None:
+            return self
+        # Generated spheres and user-supplied members share the hierarchy, but
+        # rebuilding this cloud must only replace its own generated geometry.
+        members = [child for child in self.children if child is not previous]
+        self.replace_children(members if geometry is None else [geometry, *members])
+        self._point_geometry = geometry
         if geometry is not None and self.is_spawned() and not self.is_despawned():
             geometry._create_recursive(animate=False)
         return self
@@ -347,6 +355,8 @@ class PMobject(Group):
                 rgba_arrays.append(mob.rgbas)
         self.points = torch.cat(point_arrays, 0)
         self.rgbas = torch.cat(rgba_arrays, 0)
+        # Ingestion deliberately replaces the members with their merged points.
+        self.replace_children([])
         return self._rebuild_geometry()
 
     def point_from_proportion(self, alpha):

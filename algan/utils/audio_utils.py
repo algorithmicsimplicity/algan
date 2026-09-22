@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 import pyttsx3
@@ -30,6 +33,8 @@ pattern = re.compile(r"[\W_]+", re.UNICODE)
 # A larger chunk size is more efficient with the optimized torchaudio function.
 CHUNK_DURATION_S = 1 * 60  # 1 minute
 MODEL_ID = "facebook/wav2vec2-base-960h"
+# Bump when the alignment algorithm or on-disk timestamp format changes.
+_ALIGNMENT_CACHE_VERSION = 2
 
 
 class Counter:
@@ -81,7 +86,7 @@ def align_large_audio_torchaudio_robust(
     audio_info = torchaudio.info(audio_path)
     audio_duration_s = audio_info.num_frames / audio_info.sample_rate
 
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding="utf-8-sig") as f:
         full_transcript_text = f.read().upper()
         full_transcript_text = full_transcript_text.replace("-", " ")
         full_transcript_words = full_transcript_text.split()
@@ -260,34 +265,134 @@ def subfinder(mylist, pattern):
     return -1
 
 
+def _alignment_cache_key(audio_path, transcript_path):
+    """Fingerprint the resolved sources, their contents, and alignment settings."""
+    transcript = transcript_path.read_bytes()
+    identity = {
+        "version": _ALIGNMENT_CACHE_VERSION,
+        "model": MODEL_ID,
+        "chunk_duration_s": CHUNK_DURATION_S,
+        "audio_path": str(audio_path),
+        "transcript_path": str(transcript_path),
+        "transcript_sha256": hashlib.sha256(transcript).hexdigest(),
+    }
+    hasher = hashlib.sha256()
+    hasher.update(json.dumps(identity, sort_keys=True).encode("utf-8"))
+    with audio_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    words = [
+        strip_nonchars(word)
+        for word in transcript.decode("utf-8-sig").replace("-", " ").split()
+    ]
+    return hasher.hexdigest(), [word for word in words if word]
+
+
+def _validated_alignment(rows, words, duration):
+    """Return a complete, ordered alignment, or None for an unusable entry."""
+    if not isinstance(rows, (list, tuple)) or len(rows) != len(words):
+        return None
+    result = []
+    previous_end = 0.0
+    for row, expected in zip(rows, words):
+        if not isinstance(row, (list, tuple)) or len(row) != 3:
+            return None
+        word, start, end = row
+        if (
+            word != expected
+            or not isinstance(start, (int, float))
+            or not isinstance(end, (int, float))
+            or isinstance(start, bool)
+            or isinstance(end, bool)
+        ):
+            return None
+        try:
+            start, end = float(start), float(end)
+        except OverflowError:
+            return None
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < previous_end
+            or end <= start
+            # MoviePy's probed duration can be rounded while torchaudio counts
+            # samples. Allow its last 50 ms, then clip to the actual reader.
+            or end > duration + 0.05
+            or start >= duration
+        ):
+            return None
+        result.append([word, start, min(end, duration)])
+        previous_end = end
+    return result
+
+
+def _write_alignment_cache(path, rows):
+    """Publish a whole cache entry atomically; never trust a partial write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False
+        ) as target:
+            temporary = Path(target.name)
+            json.dump(
+                {"version": _ALIGNMENT_CACHE_VERSION, "words": rows},
+                target,
+                allow_nan=False,
+            )
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
 def get_speech_generator_from_file(audio_file, transcript_file):
     from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
 
-    full_ac = AudioFileClip(audio_file)
-
-    hasher = hashlib.sha256()
-    hasher.update((f"{audio_file}!!___!!{full_ac.duration}").encode())
-    hash_bytes = hasher.hexdigest()[:64]
-    time_stamp_file = os.path.join(
-        SETTINGS.paths.cache_directory, "audio", f"{hash_bytes}.csv"
+    audio_path = Path(audio_file).resolve(strict=True)
+    transcript_path = Path(transcript_file).resolve(strict=True)
+    cache_key, words = _alignment_cache_key(audio_path, transcript_path)
+    time_stamp_file = (
+        Path(SETTINGS.paths.cache_directory) / "audio" / f"{cache_key}.json"
     )
-
-    if os.path.exists(time_stamp_file):
-        word_time_stamps = []
-        with open(time_stamp_file) as f:
-            for line in f.readlines():
-                word, start, end = [_.strip() for _ in line.split(",")]
-                word_time_stamps.append([word, float(start), float(end)])
-    else:
-        word_time_stamps = align_large_audio_torchaudio_robust(
-            audio_file, transcript_file
-        )
-        Path(time_stamp_file).parent.mkdir(parents=True, exist_ok=True)
-        with open(time_stamp_file, mode="w") as f:
-            for word, start, end in word_time_stamps:
-                f.write(f"{word},{start},{end}\n")
-
-    Counter()
+    full_ac = AudioFileClip(str(audio_path))
+    try:
+        word_time_stamps = None
+        try:
+            cached = json.loads(time_stamp_file.read_text(encoding="utf-8"))
+            if (
+                isinstance(cached, dict)
+                and cached.get("version") == _ALIGNMENT_CACHE_VERSION
+            ):
+                word_time_stamps = _validated_alignment(
+                    cached.get("words"), words, full_ac.duration
+                )
+        except (OSError, ValueError):
+            pass  # A missing, truncated or malformed cache is a cache miss.
+        if word_time_stamps is None:
+            aligned = align_large_audio_torchaudio_robust(
+                str(audio_path),
+                str(transcript_path),
+                model_id=MODEL_ID,
+                chunk_duration_s=CHUNK_DURATION_S,
+            )
+            word_time_stamps = _validated_alignment(aligned, words, full_ac.duration)
+            if word_time_stamps is None:
+                raise AudioTranscriptMismatchError(
+                    f"Speech alignment for {str(audio_path)!r} did not produce "
+                    "complete, ordered timestamps matching the transcript."
+                )
+            if _alignment_cache_key(audio_path, transcript_path)[0] != cache_key:
+                raise AudioTranscriptMismatchError(
+                    "The audio or transcript changed during speech alignment; retry "
+                    "with the finished recording and transcript."
+                )
+            _write_alignment_cache(time_stamp_file, word_time_stamps)
+    except BaseException:
+        with suppress(Exception):
+            full_ac.close()
+        raise
 
     def generator(script):
         script = script.replace("-", " ")

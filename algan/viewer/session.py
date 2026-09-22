@@ -45,7 +45,9 @@ import contextlib
 import io
 import threading
 import time
+from collections import OrderedDict
 
+import psutil
 import torch
 
 from algan.rendering import fragment_capture
@@ -73,6 +75,12 @@ CHUNK_FRAMES = 12
 #: Stop prefetching once this many frames are cached, so a long video does not
 #: fill memory with PNGs nobody scrolled to.
 MAX_CACHED_FRAMES = 900
+
+
+def _frame_cache_budget():
+    """Use at most 1/32 of currently available RAM, capped at 256 MiB."""
+    return max(1, min(256 * 1024 * 1024, int(psutil.virtual_memory().available) // 32))
+
 
 #: The built-in presets the resolution picker offers, in the order it shows
 #: them: smallest first, so the cheap ones to render are the easy ones to reach.
@@ -127,14 +135,22 @@ class ViewerSession:
         self._scene_lock = threading.RLock()
         #: How many threads are queued for ``_scene_lock``. Guarded by ``_lock``.
         self._scene_demand = 0
-        self._cache: dict[int, bytes] = {}
-        self._order: list[int] = []
+        self._cache: OrderedDict[int, bytes] = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_limit_bytes = _frame_cache_budget()
+        self._frame_bytes_estimate = 0
+        # Deliveries belong to active HTTP requests, not speculative storage.
+        # They keep a frame available to its waiters even if another request
+        # moves the playhead, or that one PNG exceeds the entire cache budget.
+        self._frame_waiters: dict[int, int] = {}
+        self._frame_deliveries: dict[int, bytes] = {}
         self._wanted = 0
         self._generation = 0
         # The generation most recently requested by frame()/prefetch(). A
         # resolution change bumps _generation without updating this marker,
         # which makes the worker stop until new browser demand arrives.
         self._requested_generation: int | None = None
+        self._uncacheable_generation: int | None = None
         self._error: str | None = None
         self._frame_ready = threading.Condition(self._lock)
         self._scene_free = threading.Condition(self._lock)
@@ -246,7 +262,9 @@ class ViewerSession:
                 self.total_frames = max(1, round(self.duration * self.fps))
                 self._wanted = min(self._wanted, self.total_frames - 1)
                 self._cache.clear()
-                self._order.clear()
+                self._cache_bytes = 0
+                self._frame_bytes_estimate = 0
+                self._frame_deliveries.clear()
                 self._pixels.clear()
                 self._pixel_order.clear()
                 self._epoch += 1
@@ -322,6 +340,7 @@ class ViewerSession:
         """Everything the page needs to lay itself out."""
         with self._lock:
             cached = sorted(self._cache)
+            cached_bytes = self._cache_bytes
             error = self._error
         return {
             "runtime": self.duration,
@@ -334,6 +353,8 @@ class ViewerSession:
             "supersampling": int(self.video_settings.supersampling),
             "cached": _ranges(cached),
             "cached_count": len(cached),
+            "cached_bytes": cached_bytes,
+            "cache_limit_bytes": self._cache_limit_bytes,
             "error": error,
             "epoch": self._epoch,
             "resolution_name": self._current_option,
@@ -345,29 +366,42 @@ class ViewerSession:
         index = max(0, min(int(index), self.total_frames - 1))
         deadline = time.monotonic() + timeout
         with self._lock:
+            if self._closed:
+                raise RuntimeError("The viewer session is closed")
             png = self._cache.get(index)
             if png is not None:
+                self._cache.move_to_end(index)
                 return png
+            self._frame_waiters[index] = self._frame_waiters.get(index, 0) + 1
             # Point the worker here ONCE. Re-aiming it on every wakeup would
             # bump the generation each time and the worker, seeing the target
             # move, would abandon its chunk before finishing a single frame.
             self._wanted = index
             self._generation += 1
             self._requested_generation = self._generation
-        self._work.set()
-        with self._lock:
-            while True:
-                if self._closed:
-                    raise RuntimeError("The viewer session is closed")
-                png = self._cache.get(index)
-                if png is not None:
-                    return png
-                if self._error:
-                    raise RuntimeError(self._error)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"frame {index} was not rendered in time")
-                self._frame_ready.wait(remaining)
+        try:
+            self._work.set()
+            with self._lock:
+                while True:
+                    if self._closed:
+                        raise RuntimeError("The viewer session is closed")
+                    png = self._frame_deliveries.get(index, self._cache.get(index))
+                    if png is not None:
+                        if index in self._cache:
+                            self._cache.move_to_end(index)
+                        return png
+                    if self._error:
+                        raise RuntimeError(self._error)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"frame {index} was not rendered in time")
+                    self._frame_ready.wait(remaining)
+        finally:
+            with self._lock:
+                self._frame_waiters[index] -= 1
+                if not self._frame_waiters[index]:
+                    del self._frame_waiters[index]
+                    self._frame_deliveries.pop(index, None)
 
     def prefetch(self, index):
         """Ask the worker to render around ``index`` without waiting for it."""
@@ -589,15 +623,32 @@ class ViewerSession:
             # than speculatively starting the new resolution on its own.
             if self._requested_generation != self._generation:
                 return False
-            start = self._next_gap()
+            start = next(
+                (
+                    index
+                    for index in self._frame_waiters
+                    if index not in self._cache and index not in self._frame_deliveries
+                ),
+                None,
+            )
+            if start is None:
+                if self._uncacheable_generation == self._generation:
+                    return False
+                start = self._next_gap()
             if start is None:
                 return False
             # A frame someone is waiting for is rendered whatever the cache
             # holds; running ahead of them is what stops at the cap.
-            if start != self._wanted and len(self._cache) >= MAX_CACHED_FRAMES:
+            capacity = self._prefetch_capacity()
+            if (
+                start != self._wanted
+                and start not in self._frame_waiters
+                and capacity <= 0
+            ):
                 return False
             generation = self._generation
-            end = min(start + CHUNK_FRAMES, self.total_frames)
+            count = min(CHUNK_FRAMES, max(1, capacity))
+            end = min(start + count, self.total_frames)
         # Outside the bookkeeping lock, and behind anything already queued for
         # the Scene: rendering ahead is speculative, and a request is not.
         self._stand_aside()
@@ -616,6 +667,16 @@ class ViewerSession:
                 start, end, store=True, generation=generation, yielding=True
             )
         return True
+
+    def _prefetch_capacity(self):
+        """Frames likely to fit without eviction; called with _lock held."""
+        estimate = self._frame_bytes_estimate or (
+            self.width * self.height * 4 + self.height + 1024
+        )
+        return min(
+            MAX_CACHED_FRAMES - len(self._cache),
+            (self._cache_limit_bytes - self._cache_bytes) // max(1, estimate),
+        )
 
     def _next_gap(self):
         """The first uncached frame at or after the playhead, else anywhere."""
@@ -654,11 +715,18 @@ class ViewerSession:
                 scene.timeline_manager.preserving_authoring_state(
                     preserve_replay_resolution=preserve
                 ),
+                contextlib.ExitStack() as cleanup,
             ):
-                for batch in scene.get_frames(start, end):
+                batches = scene.get_frames(start, end)
+                close_frames = getattr(batches, "close", None)
+                if close_frames is not None:
+                    cleanup.callback(close_frames)
+                for batch in batches:
                     for row in range(batch.shape[0]):
-                        if store:
-                            self._store(index, batch[row])
+                        if store and self._store(index, batch[row]) is False:
+                            # The PNG was larger than estimated, or demand
+                            # moved. Stop before encoding more speculative data.
+                            return
                         index += 1
                     if self._closed:
                         # Shutting down. Leave the generator here; closing it
@@ -689,12 +757,57 @@ class ViewerSession:
         # for exactly the reason the two locks exist.
         Image.fromarray(frame.contiguous().numpy()).save(buffer, format="PNG")
         png = buffer.getvalue()
+        return self._store_png(index, png)
+
+    def _store_png(self, index, png):
+        """Publish one PNG, retaining the playhead and enforcing both caps."""
         with self._lock:
-            self._cache[index] = png
-            self._order.append(index)
-            while len(self._order) > MAX_CACHED_FRAMES:
-                self._cache.pop(self._order.pop(0), None)
+            if self._closed:
+                return False
+            size = len(png)
+            self._frame_bytes_estimate = max(self._frame_bytes_estimate, size)
+            if index in self._frame_waiters:
+                self._frame_deliveries[index] = png
             self._frame_ready.notify_all()
+            if size > self._cache_limit_bytes:
+                # A requested oversized frame is served directly to its
+                # waiters. It must not make the persistent cache exceed its
+                # cap, or make prefetch repeatedly render an uncacheable frame.
+                # Other pending requests still need to finish before idling.
+                if index == self._wanted:
+                    self._uncacheable_generation = self._generation
+                return False
+
+            requested = index == self._wanted or index in self._frame_waiters
+            previous = self._cache.get(index)
+            if (
+                not requested
+                and previous is None
+                and (
+                    self._cache_bytes + size > self._cache_limit_bytes
+                    or len(self._cache) >= MAX_CACHED_FRAMES
+                )
+            ):
+                return False  # Speculative frames never evict useful frames.
+            protected_size = (
+                len(self._cache.get(self._wanted, b"")) if index != self._wanted else 0
+            )
+            if size + protected_size > self._cache_limit_bytes:
+                return False
+            if previous is not None:
+                del self._cache[index]
+                self._cache_bytes -= len(previous)
+            while (
+                self._cache_bytes + size > self._cache_limit_bytes
+                or len(self._cache) >= MAX_CACHED_FRAMES
+            ):
+                oldest = next((key for key in self._cache if key != self._wanted), None)
+                if oldest is None:
+                    return False
+                self._cache_bytes -= len(self._cache.pop(oldest))
+            self._cache[index] = png
+            self._cache_bytes += size
+            return True
 
     def close(self, timeout=30.0):
         """Stop the worker and wait for it to actually leave the Scene alone.
@@ -709,6 +822,9 @@ class ViewerSession:
         self._audio.close()
         self._work.set()
         with self._lock:
+            self._cache.clear()
+            self._cache_bytes = 0
+            self._frame_deliveries.clear()
             # A worker parked in ``_stand_aside`` is not waiting on ``_work``,
             # and a request parked on an inspection needs to be let go too.
             self._scene_free.notify_all()

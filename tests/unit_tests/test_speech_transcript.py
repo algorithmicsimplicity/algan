@@ -213,13 +213,17 @@ def test_recorded_generator_retains_padded_subclip_relative_word_times(
     monkeypatch.setattr(
         audio_utils,
         "align_large_audio_torchaudio_robust",
-        lambda *args: [
+        lambda *args, **kwargs: [
             ("HELLO", 10, 10.4),
             ("WORLD", 10.8, 11.1),
             ("NEXT", 12, 12.2),
         ],
     )
-    generator = audio_utils.get_speech_generator_from_file("voice.wav", "script.txt")
+    audio_file = tmp_path / "voice.wav"
+    audio_file.write_bytes(b"recorded voice")
+    transcript_file = tmp_path / "script.txt"
+    transcript_file.write_text("Hello world next", encoding="utf-8")
+    generator = audio_utils.get_speech_generator_from_file(audio_file, transcript_file)
     clip = generator("Hello,\nworld!")
     assert cuts[0] == pytest.approx((9.95, 11.6))
     assert [row[0] for row in clip.algan_word_timestamps] == ["HELLO", "WORLD"]

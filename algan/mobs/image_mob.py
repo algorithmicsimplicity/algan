@@ -112,8 +112,20 @@ class ImageMob(Surface):
         # set_shader requires.
         self.set_shader(null_shader)
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
-            self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
-            self.move_to(submob.get_center())
+            # Manim stores top-left, top-right, bottom-left, bottom-right.
+            # The native quad is aspect_ratio wide and one unit high: its
+            # basis maps those local axes onto the source's actual edges,
+            # retaining rotation, shear and reflection as well as size.
+            corners = torch.as_tensor(
+                submob.points, dtype=self.location.dtype, device=self.location.device
+            )
+            right = (corners[1] - corners[0]) / aspect_ratio
+            up = corners[0] - corners[2]
+            forward = torch.nn.functional.normalize(
+                torch.linalg.cross(right, up), dim=-1
+            )
+            self.basis = torch.stack((right, up, forward)).flatten()
+            self.move_to((corners[0] + corners[3]) * 0.5)
 
     def setattr_absolute(self, attr_name, value):
         if attr_name == "color":

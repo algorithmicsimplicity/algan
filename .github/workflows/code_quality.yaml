@@ -115,45 +115,26 @@ jobs:
 
       # Named explicitly rather than left to `import algan`, because these are
       # exactly the files a packaging mistake drops and imports do not touch:
-      # the two SMAA lookup textures the anti-aliasing pass loads at render
-      # time, and the vendored manim config the compatibility layer reads. An
-      # import-only check passes without them.
+      # renderer lookup data, vendored Manim config, and the viewer's static
+      # assets. An import-only check passes without them.
       #
       # No `py.typed` here on purpose. Algan ships no PEP 561 marker, so its
       # annotations are invisible to a downstream type checker by design --
       # adding the marker would make them authoritative for users' mypy and
       # pyright runs, which is a promise to make deliberately and not as a
       # side effect of a packaging check.
+      #
+      # A separate interpreter alone still puts the checkout on sys.path.
+      # Isolated mode ignores both that path and PYTHONPATH; the script also
+      # verifies the import came from this environment's installed package.
       - name: Check the installed package is complete
         run: |
-          /tmp/wheel-env/bin/python - <<'PY'
-          import importlib.resources as res
-          import algan
-          print("algan", algan.__version__ if hasattr(algan, "__version__") else "(no __version__)")
-          root = res.files("algan")
-          required = [
-              "rendering/post_processing/anti_aliasing/AreaTex.png",
-              "rendering/post_processing/anti_aliasing/SearchTex.png",
-              "rendering/raytracing/_glass_energy_lut.npz",
-              "external_libraries/manim/_config/default.cfg",
-          ]
-          missing = [r for r in required if not (root / r).is_file()]
-          if missing:
-              raise SystemExit("missing from the installed wheel: " + ", ".join(missing))
-          print("all required data files present")
-          # Compare against the module's own constant rather than a literal:
-          # the table is re-fit from time to time, and a stale literal here
-          # fails the wheel check for a change that is perfectly fine. What
-          # this job is actually checking is that the asset decodes at all.
-          from algan.rendering.raytracing.glass_energy import (
-              GLASS_ENERGY_SHAPE,
-              glass_energy_table,
-          )
-          assert glass_energy_table().shape == GLASS_ENERGY_SHAPE
-          print("glass energy lookup decodes from installed wheel")
-          PY
+          cd "$(mktemp -d)"
+          /tmp/wheel-env/bin/python -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
 
       # The CLI is declared as a console script in pyproject.toml, which is the
       # other thing a wheel can get wrong while importing fine.
       - name: Check the console script is wired up
-        run: /tmp/wheel-env/bin/algan check
+        run: |
+          cd "$(mktemp -d)"
+          /tmp/wheel-env/bin/python -I /tmp/wheel-env/bin/algan check

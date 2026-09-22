@@ -18,6 +18,7 @@ import torch
 
 from algan import BLUE_A, GREEN_A, YELLOW, Dot3D, Off, Scene
 from algan.manim import DotCloud, PGroup, PointCloudDot, TrueDot
+from algan.mobs.point_cloud import OpenGLPGroup, PMobject
 from algan.mobs.surfaces.surface import (
     get_grid_to_triangle_indices,
     get_render_primitives_batched,
@@ -57,6 +58,86 @@ def test_pgroup_collects_point_clouds(scene):
         ).spawn()
     assert len(group.children) == len(BUILDERS)
     assert group.get_render_primitives()
+
+
+@pytest.mark.parametrize("group_type", [PGroup, OpenGLPGroup])
+@pytest.mark.parametrize("style", ["color", "stroke_width"])
+@pytest.mark.parametrize("family", [False, True])
+@pytest.mark.parametrize("spawned", [False, True])
+def test_pgroup_styling_preserves_nested_members_and_transforms(
+    scene, group_type, style, family, spawned
+):
+    with Off():
+        a = PMobject(points=[[-1.0, 0.0, 0.0]], color=BLUE_A, add_to_scene=False)
+        b = PMobject(points=[[1.0, 0.0, 0.0]], color=BLUE_A, add_to_scene=False)
+        nested = group_type(a, add_to_scene=False)
+        group = group_type(nested, b)
+        if spawned:
+            group.spawn()
+        # Warm the hierarchy cache, so retained links must also remain usable.
+        group.get_descendants()
+        initial_rgbas = [mob.rgbas.clone() for mob in (a, b)]
+        if style == "color":
+            assert group.set_color(GREEN_A, family=family) is group
+        else:
+            assert group.set_stroke_width(12, family=family) is group
+
+        assert group.children == [nested, b]
+        assert nested.children == [a]
+        for parent, child in ((group, nested), (group, b), (nested, a)):
+            assert any(item is parent for item in child.parents)
+        for mob, rgba in zip((a, b), initial_rgbas):
+            if style == "color" and family:
+                expected_rgb = GREEN_A.rgb.reshape(-1, 3)[0]
+                assert torch.allclose(mob.rgbas[:, :3], expected_rgb.expand(1, 3))
+            else:
+                assert torch.equal(mob.rgbas, rgba)
+            expected_width = 12 if style == "stroke_width" and family else 4
+            assert mob.get_stroke_width() == expected_width
+            assert mob.point_radius == pytest.approx(expected_width * 0.01)
+
+        corners = [p.corners.clone() for p in group.get_render_primitives()]
+        assert len(corners) == 2
+        locations = [mob.location.clone() for mob in (a, b)]
+        shift = torch.tensor([0.75, 0.25, -0.5])
+        group.move(shift)
+        for mob, location in zip((a, b), locations):
+            assert torch.allclose(mob.location, location + shift)
+        for primitive, before in zip(group.get_render_primitives(), corners):
+            assert torch.allclose(primitive.corners, before + shift, atol=1e-6)
+
+
+def test_rebuilding_group_points_only_replaces_its_generated_geometry(scene):
+    with Off():
+        member = PMobject(points=[[1.0, 0.0, 0.0]], add_to_scene=False)
+        group = PGroup(member)
+        group.add_points([[0.0, 0.0, 0.0]])
+        old_geometry = group.children[0]
+
+        group.set_color(GREEN_A, family=False)
+
+        assert len(group.children) == 2
+        assert group.children[1] is member
+        assert group.children[0] is not old_geometry
+        assert all(parent is not group for parent in old_geometry.parents)
+        assert any(parent is group for parent in member.parents)
+        group.reset_points()
+        assert group.children == [member]
+
+
+def test_ingesting_group_members_still_replaces_them_with_merged_points(scene):
+    with Off():
+        a = PMobject(points=[[-1.0, 0.0, 0.0]], add_to_scene=False)
+        b = PMobject(points=[[1.0, 0.0, 0.0]], add_to_scene=False)
+        group = PGroup(a, b)
+
+        group.ingest_submobjects()
+
+        assert torch.equal(group.points, torch.cat((a.points, b.points)))
+        assert len(group.children) == 1
+        for member in (a, b):
+            assert all(child is not member for child in group.children)
+            assert all(parent is not group for parent in member.parents)
 
 
 @pytest.mark.parametrize("name", sorted(BUILDERS))
