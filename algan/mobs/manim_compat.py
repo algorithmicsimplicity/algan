@@ -29,6 +29,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
+from algan.mobs.stroke_style import _stroke_style
 from algan.mobs.typst import MathTypst as _NativeMathTypst
 from algan.mobs.typst import Typst as _NativeTypst
 from algan.mobs.typst import _TypstSelection
@@ -101,6 +102,10 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
         * SETTINGS.style.manim_stroke_width_ratio
     )
     result.set_stroke(stroke_color, width=stroke_width, opacity=stroke_opacity)
+    cap, join, limit = _stroke_style(mob.cap_style, mob.joint_type, mob.miter_limit)
+    result.cap_style = _manim.CapStyleType[cap.upper()]
+    result.joint_type = _manim.LineJointType[join.upper()]
+    result.miter_limit = limit
     return result
 
 
@@ -223,6 +228,12 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
         return
 
     if isinstance(algan_mob, ManimMob):
+        cap, join, limit = _stroke_style(
+            algan_mob.cap_style, algan_mob.joint_type, algan_mob.miter_limit
+        )
+        manim_mob.cap_style = _manim.CapStyleType[cap.upper()]
+        manim_mob.joint_type = _manim.LineJointType[join.upper()]
+        manim_mob.miter_limit = limit
         if len(manim_mob.points) > 0:
             points = (
                 algan_mob.control_points.location.reshape(-1, 3).detach().cpu().numpy()
@@ -437,7 +448,14 @@ class ManimCompatMob(ManimMob):
     """
 
     _manim_class = _manim.VMobject
-    _ALGAN_ONLY_KWARGS = {"add_to_scene", "glow", "glow_radius", "batch", "scene"}
+    _ALGAN_ONLY_KWARGS = {
+        "add_to_scene",
+        "glow",
+        "glow_radius",
+        "batch",
+        "scene",
+        "miter_limit",
+    }
     #: True for wrappers whose Manim source typesets through LaTeX on
     #: construction (``MathTex``, ``Title``, the ``Matrix`` family, ...), so a
     #: missing TeX distribution is reported up front, in Algan's words, rather

@@ -364,6 +364,64 @@ it lies outside the path:
 centred placement globally, which is the Manim and SVG convention -- see
 :doc:`settings`.
 
+Stroke caps and joins
+---------------------
+
+``cap_style`` controls open endpoints: ``"butt"`` stops at the endpoint,
+``"square"`` extends half a stroke width beyond it, and ``"round"`` adds a
+semicircle. ``joint_type`` controls corners: ``"bevel"`` cuts them diagonally,
+``"miter"`` extends the two edges until they meet, and ``"round"`` rounds them.
+Both default to ``"round"``. Closed paths have joins but no caps.
+
+These keywords work on planar Bézier paths, native shapes, and the classes in
+``algan.manim``. The latter namespace also exposes ``CapStyleType`` and
+``LineJointType`` for scripts using Manim's enums.
+
+.. algan:: StrokeCapsAndJoins
+    :save_last_frame:
+
+    from algan import *
+    import torch
+
+    for x, cap, join in zip(
+        (-3.5, 0, 3.5), ("butt", "round", "square"), ("bevel", "round", "miter")
+    ):
+        Line(
+            [x - 0.9, 1.2, 0], [x + 0.9, 1.2, 0],
+            stroke_width=35, cap_style=cap, color=BLUE,
+        ).spawn()
+        Text(cap).scale(0.4).move_to([x, 2, 0]).spawn()
+        a, b, c = torch.tensor([
+            [x - 0.9, -1.5, 0], [x, -0.5, 0], [x + 0.9, -1.5, 0]
+        ])
+        points = torch.stack([
+            a, a + (b-a)/3, a + 2*(b-a)/3, b,
+            b, b + (c-b)/3, b + 2*(c-b)/3, c,
+        ])
+        BezierCurveCubic(
+            points, stroke_width=35, cap_style="butt", joint_type=join,
+            color=YELLOW,
+        ).spawn()
+        Text(join).scale(0.4).move_to([x, -2.2, 0]).spawn()
+
+    Scene.save_video()
+
+``miter_limit=4`` limits the miter length to four times the stroke's half-width;
+corners exceeding it become bevels. It must be finite and at least 1. Filled
+paths still respect ``SETTINGS.style.border_placement``, including holes.
+
+Set these styles during construction or assign them directly, for example
+``line.cap_style = "square"``. They take effect immediately at every timestamp;
+``stroke_width`` and colors remain animatable. A change of style during a
+``morph`` uses a crossfade. Styles belong to each path, so set them on individual
+children of a group. Explicitly packed paths must share the same styles.
+
+Custom caps and joins add outline preparation work for each rendered frame.
+Planar paths may be rotated in 3-D; nonplanar paths and shaded surface boundaries
+currently require the default round styles and raise an error otherwise.
+Background-stroke keywords with a visible width emit ``UnsupportedFeatureWarning``.
+Use a separate wider path behind the foreground path for that effect.
+
 Holes
 -----
 

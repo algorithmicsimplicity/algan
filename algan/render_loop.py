@@ -1939,6 +1939,7 @@ class RenderLoopMixin:
                 post_processes=list(post_processes),
                 apply_fxaa=self.video_settings.fxaa,
                 premultiplied_over=self.premultiplied_over,
+                _linear_output=getattr(self, "_linear_output", False),
             )
             if getattr(self.memory, "managed", False):
                 model.observe(
@@ -1998,6 +1999,8 @@ class RenderLoopMixin:
             return False
         if actor.empty:
             return False
+        if actor._stroke_style_key() is not None:
+            return False
         if getattr(actor, "_nonplanar_plan", None) is not None:
             # Renders as PN patches and/or per-run circuits, neither of which
             # the vectorized circuit pack knows how to build.
@@ -2043,7 +2046,7 @@ class RenderLoopMixin:
             )
 
             return BezierCircuitPrimitive.batch_identifier_for(
-                actor.num_texture_points, actor.filled
+                actor.num_texture_points, actor.filled, actor._stroke_style_key()
             )
 
     def _authored_draw_order(self):
@@ -2144,7 +2147,7 @@ class RenderLoopMixin:
         )
         return (
             BezierCircuitPrimitive.batch_identifier_for(
-                actor.num_texture_points, actor.filled
+                actor.num_texture_points, actor.filled, actor._stroke_style_key()
             ),
             tex_rows,
             border_tex_rows,
@@ -2512,7 +2515,13 @@ class RenderLoopMixin:
                 deferred_beziers.append(entry)
                 ordered_items.append(entry)
                 continue
-            primitive = actor.get_render_primitives()
+            capture = getattr(self, "_camera_view_captures", {}).get(id(actor))
+            if capture is not None:
+                from algan.rendering.camera_views import _view_primitive
+
+                primitive = _view_primitive(actor, capture, time_inds)
+            else:
+                primitive = actor.get_render_primitives()
             if primitive is not None:
                 if not isinstance(primitive, list):
                     primitive = [primitive]
@@ -3243,6 +3252,26 @@ class RenderLoopMixin:
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
             try:
+                from algan.rendering.camera_views import (
+                    _live_views,
+                    _render_with_camera_views,
+                )
+
+                views = _live_views(self)
+                if views:
+                    # Each pass owns the GC/arena scope. Nesting gc.freeze /
+                    # unfreeze would unfreeze the outer scope prematurely.
+                    yield from _render_with_camera_views(
+                        self,
+                        views,
+                        start_time_ind,
+                        end_time_ind,
+                        background=background,
+                        post_processes=post_processes,
+                        manual_memory=manual_memory,
+                        frame_indices=frame_indices,
+                    )
+                    return
                 with scene_excluded_from_gc():
                     yield from self._get_frames_impl(
                         start_time_ind,

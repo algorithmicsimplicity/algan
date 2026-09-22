@@ -30,6 +30,7 @@ from algan.constants.color import BLACK, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
+from algan.mobs.stroke_style import _warn_background_stroke
 from algan.settings import SETTINGS
 from algan.utils.lazy_import import LazyModule
 from algan.utils.mob_utils import batch_mobs
@@ -164,6 +165,13 @@ class ManimMob(BezierCircuitCubic):
         # An explicit keyword wins, so ``ManimMob(m, z_index=...)`` can override
         # what the source object carries.
         kwargs.setdefault("z_index", float(getattr(manim_mob, "z_index", 0.0) or 0.0))
+        kwargs.setdefault("cap_style", getattr(manim_mob, "cap_style", None))
+        kwargs.setdefault("joint_type", getattr(manim_mob, "joint_type", None))
+        kwargs.setdefault("miter_limit", getattr(manim_mob, "miter_limit", 4))
+        _warn_background_stroke(
+            getattr(manim_mob, "background_stroke_width", 0),
+            getattr(manim_mob, "background_stroke_opacity", 1),
+        )
 
         super().__init__(
             control_points * manim_scale_factor,

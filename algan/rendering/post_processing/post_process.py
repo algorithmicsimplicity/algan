@@ -370,6 +370,7 @@ def post_process_frames(
     apply_fxaa=False,
     *,
     premultiplied_over=False,
+    _linear_output=False,
 ):
     """Downsample, anti-alias, run the post-process chain and tonemap.
 
@@ -449,6 +450,13 @@ def post_process_frames(
             frame_out = process(frame_out, memory=self, premultiplied_over=True)
         else:
             frame_out = process(frame_out, memory=self)
+
+    if _linear_output:
+        if not hdr:
+            raise AlganConfigurationError(
+                "Camera capture requires an HDR render buffer"
+            )
+        return _frames_to_host(frame_out)
 
     frame_out = _finalize_on_device(
         frame_out,

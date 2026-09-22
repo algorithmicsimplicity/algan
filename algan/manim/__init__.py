@@ -68,6 +68,8 @@ for _module in _SOURCE_MODULES:
 # which in this namespace is the wrapped Manim class.
 Mobject = Mob
 GenericGraph = globals()["Graph"]
+CapStyleType = _manim_compat._manim.CapStyleType
+LineJointType = _manim_compat._manim.LineJointType
 
 # The OpenGL* names are Manim's renderer-specific spellings of classes that are
 # renderer-independent in Algan. They resolve against *this* namespace, so an
@@ -103,7 +105,9 @@ __all__ = sorted(
     name
     for name in {
         *(name for module in _SOURCE_MODULES for name in module.__all__),
+        "CapStyleType",
         "GenericGraph",
+        "LineJointType",
         "ManimMaterial",
         "ManimMob",
         "Mobject",

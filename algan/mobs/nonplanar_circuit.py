@@ -737,6 +737,7 @@ def camera_eye(circuit):
     render loop, which the callers fall back to plane-fitting for.
     """
     scene = getattr(circuit, "scene", None)
+    scene = getattr(scene, "_geometry_view", scene)
     camera = getattr(scene, "camera", None)
     if camera is None:
         return None

@@ -386,6 +386,9 @@ class Camera(Mob):
         :class:`~.Camera`
             This camera, so calls can be chained.
         """
+        return self._center_on(mob, buffer_portion)
+
+    def _center_on(self, mob, buffer_portion, aspect_ratio=None):
         f = self.get_forward_direction()
         r = self.get_right_direction()
         u = self.get_up_direction()
@@ -401,7 +404,12 @@ class Camera(Mob):
             self.move_to(mobl - f * dot_product(mobl - selfl, f))
             selfl = self.location
 
-            corner_rays = F.normalize(self.get_corner_pixels() - selfl, dim=-1, p=2)
+            corners = (
+                self.get_corner_pixels()
+                if aspect_ratio is None
+                else self._corner_pixels(aspect_ratio)
+            )
+            corner_rays = F.normalize(corners - selfl, dim=-1, p=2)
             edge_plane_rays = torch.stack(
                 (corner_rays, torch.cat((corner_rays[1:], corner_rays[:1]))), 1
             )
@@ -495,12 +503,16 @@ class Camera(Mob):
         torch.Tensor
             The four corner points, shape ``(4, *, 3)``.
         """
+        return self._corner_pixels()
+
+    def _corner_pixels(self, aspect_ratio=None):
         b = unsquish(self.screen.basis, -1, 3)
         b = b / b.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
-        aspect_ratio = (
-            self.scene.video_settings.resolution[0]
-            / self.scene.video_settings.resolution[1]
-        )
+        if aspect_ratio is None:
+            aspect_ratio = (
+                self.scene.video_settings.resolution[0]
+                / self.scene.video_settings.resolution[1]
+            )
         return (
             self.screen.location
             + b[..., 0, :] * self.corner_x_coords * aspect_ratio

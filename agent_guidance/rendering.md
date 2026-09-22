@@ -5,6 +5,47 @@ The render loop, the sheet route, shading contracts and colour. Read this before
 
 ## The render loop
 
+### Stroke caps and joins
+
+Planar `BezierCircuitCubic` paths carry static `cap_style`, `joint_type` and
+`miter_limit` configuration. The normalized style is part of the primitive merge
+key; custom styles bypass the vectorized Mob collector. Default round/round paths
+keep the distance-band renderer. Other styles expand with the existing
+`skia-pathops` dependency in `rendering/stroke_outline.py`, during projection,
+using the active camera and materialized stroke width. Filled paths become
+disjoint interior and border circuits, preserving opacity, textures and holes.
+Expanded segment counts may differ by frame and are padded with degenerate curves.
+The normal circuit projection and scene merge then account for their geometry,
+including bounds, AA and ray intersections. Projection peak observations and
+OOM window shrinking still apply; outline complexity is content-dependent.
+
+Styles are adopted by `become`; morphs between different styles crossfade.
+Explicit Mob packing requires matching styles. Nonplanar paths and shaded
+boundaries reject custom styles. Background strokes warn rather than disappear
+silently. `test_stroke_styles.py` covers geometry, import, packing and real renders.
+
+### Live camera views
+
+`CameraView` and native-camera `ImageMobjectFromCamera` displays use
+`rendering/camera_views.py`: secondary passes render the same recorded timestamps
+into bounded host texture windows, then the main pass draws their textured
+surfaces. Private render contexts share the authored timeline and actors but own
+their camera, resolution, arena and projection caches. Complete each pass and
+join its prep worker before another pass materializes the timeline. Do not nest
+arenas or render secondary views on the main pass's prefetch worker.
+
+Captures exclude every live display and its descendants. Their HDR output skips
+exposure, tone mapping and post-processing; unpremultiply transparent captures
+before storing straight-color textures, and let the final main pass apply the
+output transform once. Camera-facing nonplanar strokes and pixel stroke widths
+use the temporary `scene._geometry_view`; authored updaters still see the main
+`scene.camera` and video settings.
+`test_camera_views.py` checks synchronization, seeking, batching, alpha, color,
+clipping, exclusions and cleanup. Ordinary single-camera scenes keep their
+existing render path.
+
+### Preparation and rendering
+
 The render loop is implemented in `../algan/render_loop.py` as `RenderLoopMixin`, mixed into `Scene`. It is responsible for:
 
 - choosing frame windows according to animation and render memory budgets;

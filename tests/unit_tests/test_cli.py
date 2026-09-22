@@ -188,11 +188,20 @@ def spawned(monkeypatch):
     return calls
 
 
-def test_a_plain_run_launches_the_script_as_its_own_process(reporting_script, spawned):
+@pytest.mark.parametrize("daemon_use", [None, "0", "1"])
+def test_a_plain_run_launches_the_script_as_its_own_process(
+    reporting_script, spawned, monkeypatch, daemon_use
+):
     """Which is what lets the render daemon serve it warm."""
+    # A plain run preserves the caller's policy, including an explicit opt-out
+    # used while running the tests. Make all three environments deterministic.
+    if daemon_use is None:
+        monkeypatch.delenv("ALGAN_USE_DAEMON", raising=False)
+    else:
+        monkeypatch.setenv("ALGAN_USE_DAEMON", daemon_use)
     assert cli.main(["render", str(reporting_script)]) == 0
     assert spawned[0]["cmd"] == [sys.executable, str(reporting_script)]
-    assert "ALGAN_USE_DAEMON" not in spawned[0]["env"]
+    assert spawned[0]["env"].get("ALGAN_USE_DAEMON") == daemon_use
     assert not _report_of(reporting_script).exists(), "the script must not run here"
 
 

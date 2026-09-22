@@ -130,3 +130,9 @@ It exists in exactly four places, all of which genuinely straddle the boundary: 
 (export), `manim_mob` (import), `manim_adapters` (the root spellings), and
 `shape_style_profiles` (reading Manim's own constructor defaults). Native classes take Algan's
 unit end to end.
+
+`cap_style` and `joint_type` survive native shape argument translation and
+Manim import/export. They accept native strings or `algan.manim.CapStyleType`
+and `LineJointType` enums; AUTO resolves to round. `miter_limit` is Algan-owned
+configuration carried on the backing VMobject during synchronization. Positive
+background-stroke widths warn because background strokes are not rendered.

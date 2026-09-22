@@ -35,6 +35,7 @@ tessellating them.
 from __future__ import annotations
 
 import math
+import typing as _typing
 from functools import lru_cache
 
 import torch.nn.functional as F
@@ -50,6 +51,7 @@ from algan.mobs.nonplanar_circuit import (
     build_render_primitives as build_nonplanar_render_primitives,
 )
 from algan.mobs.nonplanar_circuit import classify_circuit
+from algan.mobs.stroke_style import _stroke_style
 from algan.rendering.mps_compat import cummax_values
 from algan.rendering.raytracing.utils import _unify_time
 from algan.settings.renderer_settings import RENDERER_REGISTRY
@@ -484,6 +486,15 @@ class BezierCircuitCubic(Mob):
     frame spans the square that circumscribes the shape and the shape itself
     covers the middle of the domain rather than all of it.
 
+    Animation
+    ---------
+    Construction is immediate. Spawn the circuit before animating its geometry,
+    width or colors (1 second by default, adjustable with ``Seq(runtime=...)``).
+    ``cap_style``, ``joint_type`` and ``miter_limit`` are immediate configuration,
+    applying to this circuit at every timestamp, before or after spawning.
+    These controls support planar paths, including paths rotated in 3-D;
+    nonplanar paths and shaded surface boundaries require the default styles.
+
     Parameters
     ----------
     control_points
@@ -544,6 +555,20 @@ class BezierCircuitCubic(Mob):
         Manim's attribute of the same name, both in meaning and in being a
         stable sort key over the authored order, and
         :class:`~algan.mobs.manim_mob.ManimMob` carries it across on import.
+    shade_in_3d
+        Whether to shade the filled circuit as a surface. Defaults to False.
+    cap_style
+        Open-path endpoint shape: ``"round"``, ``"butt"`` (ends at the endpoint),
+        or ``"square"`` (extends half a stroke width). Closed paths have no caps.
+        Manim cap enums are also accepted. Defaults to ``"round"``;
+        ``"auto"`` and ``None`` select that default.
+    joint_type
+        Corner shape: ``"round"``, ``"bevel"``, or ``"miter"``. Manim join enums
+        are also accepted. Defaults to ``"round"``; ``"auto"`` and ``None``
+        select that default. Filled borders retain their configured placement.
+    miter_limit
+        Maximum miter length divided by the stroke's half-width. Longer miters
+        become bevel joins. Must be finite and at least 1. Defaults to ``4``.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         which is the fill color. ``location`` is the exception: a circuit's own
@@ -551,6 +576,13 @@ class BezierCircuitCubic(Mob):
         enclose, so the shape turns about itself), so one given here is applied
         as a move onto that point once the frame has been derived, rather than
         replacing it.
+
+    Raises
+    ------
+    :class:`~.AlganConfigurationError`
+        If a stroke style is unknown or the miter limit is not finite and at
+        least 1. Rendering also raises for non-default styles on nonplanar
+        paths or shaded surface boundaries.
 
     See Also
     --------
@@ -635,19 +667,25 @@ class BezierCircuitCubic(Mob):
 
     def __init__(
         self,
-        control_points,
-        normals=None,
-        stroke_width=5,
-        stroke_color=WHITE,
-        filled=True,
-        add_texture_grid=True,
-        grid_width=1,
-        grid_height=None,
-        empty=False,
-        z_index=0,
-        shade_in_3d=False,
-        **kwargs,
-    ):
+        control_points: torch.Tensor | list,
+        normals: torch.Tensor | None = None,
+        stroke_width: float | torch.Tensor = 5,
+        stroke_color: Color | torch.Tensor | tuple | list = WHITE,
+        filled: bool = True,
+        add_texture_grid: bool = True,
+        grid_width: int = 1,
+        grid_height: int | None = None,
+        empty: bool = False,
+        z_index: float = 0,
+        shade_in_3d: bool = False,
+        cap_style: _typing.Any = "round",
+        joint_type: _typing.Any = "round",
+        miter_limit: float = 4,
+        **kwargs: _typing.Any,
+    ) -> None:
+        self.cap_style, self.joint_type, self.miter_limit = _stroke_style(
+            cap_style, joint_type, miter_limit
+        )
         self.num_bezier_parameters = 4
         self.z_index = z_index
         # Cast first: every other geometry entry point in Algan takes a nested
@@ -1003,6 +1041,10 @@ class BezierCircuitCubic(Mob):
     def get_animatable_attrs(self):
         return {"stroke_width"}.union(super().get_animatable_attrs())
 
+    def _stroke_style_key(self):
+        style = _stroke_style(self.cap_style, self.joint_type, self.miter_limit)
+        return None if style[:2] == ("round", "round") else style
+
     #: ``filled`` and ``empty`` decide whether the circuit is a disc or a ring.
     #: ``get_render_primitives`` reads both live and neither is animatable, so a
     #: filled Square becoming an unfilled one used to stay solid -- a full-range
@@ -1015,6 +1057,9 @@ class BezierCircuitCubic(Mob):
         *Mob._MORPH_ADOPTED_ATTRS,
         "filled",
         "empty",
+        "cap_style",
+        "joint_type",
+        "miter_limit",
     )
 
     #: Both of them are also untravellable, and ``filled`` is the sharpest case
@@ -1027,6 +1072,9 @@ class BezierCircuitCubic(Mob):
         *Mob._MORPH_UNTRAVELLABLE_ATTRS,
         "filled",
         "empty",
+        "cap_style",
+        "joint_type",
+        "miter_limit",
     )
 
     @property
@@ -1350,7 +1398,8 @@ class BezierCircuitCubic(Mob):
                 self.basis,
                 self.glow,
                 _stroke_width_in_render_pixels(
-                    self.stroke_width, self.scene.video_settings
+                    self.stroke_width,
+                    getattr(self.scene, "_geometry_view", self.scene).video_settings,
                 ),
                 metalness,
                 roughness,
@@ -1361,6 +1410,11 @@ class BezierCircuitCubic(Mob):
         )
         num_control_points = 4  # cubic beziers
         if self._nonplanar_plan is not None:
+            if self._stroke_style_key() is not None:
+                raise AlganConfigurationError(
+                    "Stroke cap/join controls require an unshaded planar path; "
+                    "nonplanar paths and shaded boundaries currently require round styles"
+                )
             # Not projectable onto one plane: this circuit renders as PN patches
             # and/or per-run circuits built from the same live control points.
             return build_nonplanar_render_primitives(
@@ -1502,6 +1556,7 @@ class BezierCircuitCubic(Mob):
             glow=g,
             num_texture_points=self.num_texture_points,
             filled=self.filled,
+            stroke_style=self._stroke_style_key(),
             reflectivity=reflectivity,
             roughness=roughness,
             refractive_index=refractive_index,
@@ -1867,7 +1922,8 @@ def build_render_primitives_batched(actors, scene):
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = _stroke_width_in_render_pixels(
-        read("stroke_width", actors), scene.video_settings
+        read("stroke_width", actors),
+        getattr(scene, "_geometry_view", scene).video_settings,
     )
     loc = read("location", actors)
     o, basis, g, bw = broadcast_all([o, basis, g, bw], ignored_dims=[-1])

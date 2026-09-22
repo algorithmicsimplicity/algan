@@ -36,6 +36,7 @@ from algan.constants.spatial import INWARD, LEFT, ORIGIN, RIGHT
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.stroke_style import _warn_background_stroke
 from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.settings.shape_style_profiles import _manim_shape_style_for
@@ -143,6 +144,10 @@ def _translate_vector_style_kwargs(
     if stroke_width is not None:
         kwargs["stroke_width"] = float(stroke_width)
 
+    _warn_background_stroke(
+        kwargs.get("background_stroke_width", 0),
+        kwargs.get("background_stroke_opacity", 1),
+    )
     # Accepted by Manim's VMobject/Mobject constructors but not represented by
     # Algan's ray-traced Bezier primitive.
     for key in (
@@ -153,8 +158,6 @@ def _translate_vector_style_kwargs(
         "sheen_direction",
         "shade_in_3d",
         "tolerance_for_point_equality",
-        "joint_type",
-        "cap_style",
         "z_index",
     ):
         kwargs.pop(key, None)

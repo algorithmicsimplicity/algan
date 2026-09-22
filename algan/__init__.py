@@ -145,6 +145,7 @@ from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
 from algan.animation_timeline.animation_contexts import *
 from algan.mobs.bezier_circuit import *
+from algan.mobs.camera_view import *
 from algan.mobs.group import *
 from algan.mobs.image_mob import *
 from algan.mobs.manim_adapters import *
@@ -155,8 +156,8 @@ from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.procedural_textures import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
-from algan.mobs.typst import *
 from algan.mobs.three_d_models import Model3D, TriangleMesh
+from algan.mobs.typst import *
 from algan.project import Project
 from algan.rendering import camera
 from algan.rendering.lights import *

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import numpy as np
 import torch
@@ -210,13 +211,66 @@ class ImageMobject(AbstractImageMobject):
 
 
 class ImageMobjectFromCamera(ImageMobject):
+    """A live display for an Algan camera, or a foreign camera's pixel image.
+
+    An Algan :class:`~.Camera` uses the same live rendering as :class:`~.CameraView`.
+    Foreign cameras retain the snapshot interface through ``pixel_array``.
+
+    Animation
+    ---------
+    Construction is immediate. Spawn the display before animating its position
+    or opacity (1 second by default, adjustable with ``Seq(runtime=...)``).
+    Camera motion is independent of display motion.
+
+    Parameters
+    ----------
+    camera
+        The camera to display. Algan cameras must belong to the display's Scene.
+    default_display_frame_config
+        Styling for ``add_display_frame``. Defaults to ``None``, using a stroke
+        width of 3 Manim units and zero buffer.
+    **kwargs
+        Passed to :class:`~.ImageMobject`. For an Algan camera, ``resolution``
+        sets capture pixels as ``(width, height)`` and defaults to ``(640, 360)``.
+
+    Examples
+    --------
+    Display a second copy of the main camera's live view:
+
+    .. algan:: Example1ImageMobjectFromCamera
+
+        from algan import *
+        import algan.manim as mn
+
+        Square().spawn()
+        display = mn.ImageMobjectFromCamera(Scene.get_camera())
+        with Off():
+            display.move(RIGHT * 3)
+        display.spawn()
+        Scene.save_video()
+    """
+
     def __init__(
         self,
-        camera,
-        default_display_frame_config=None,
-        **kwargs,
-    ):
+        camera: Any,
+        default_display_frame_config: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        from algan.mobs.camera_view import _capture_resolution
+        from algan.rendering.camera import Camera
+
         self.camera = camera
+        self._is_camera_view = isinstance(camera, Camera)
+        if self._is_camera_view:
+            if kwargs.get("scene", camera.scene) is not camera.scene:
+                raise AlganConfigurationError(
+                    "Camera display must belong to the camera's Scene"
+                )
+            kwargs["scene"] = camera.scene
+            self.capture_resolution = _capture_resolution(
+                kwargs.pop("resolution", (640, 360))
+            )
+            self.capture_exclude = ()
         if default_display_frame_config is None:
             default_display_frame_config = {
                 "stroke_width": 3,
@@ -224,11 +278,41 @@ class ImageMobjectFromCamera(ImageMobject):
             }
         self.default_display_frame_config = default_display_frame_config
         pixel_array = getattr(camera, "pixel_array", None)
-        if pixel_array is None:
+        if self._is_camera_view:
+            pixel_array = np.zeros((2, 2, 4), dtype=np.uint8)
+        elif pixel_array is None:
             pixel_array = np.zeros((1, 1, 4), dtype=np.uint8)
         super().__init__(pixel_array, scale_to_resolution=False, **kwargs)
         with Off(animation_manager=self.animation_manager):
             self.scale(3)
+            if self._is_camera_view:
+                self.scale(
+                    torch.tensor(
+                        (
+                            self.capture_resolution[0] / self.capture_resolution[1],
+                            1.0,
+                            1.0,
+                        )
+                    )
+                )
+
+    def _get_camera_view_primitives(self, texture):
+        from algan.mobs.camera_view import CameraView
+
+        return CameraView._get_camera_view_primitives(self, texture)
+
+    def _get_memory_used_per_timestep(self):
+        size = super()._get_memory_used_per_timestep()
+        if self._is_camera_view:
+            w, h = self.capture_resolution
+            size += w * h * 5 * 4 * 4
+        return size
+
+    def _set_opacity_compat(self, alpha):
+        if self._is_camera_view:
+            self.opacity = alpha
+            return self
+        return super()._set_opacity_compat(alpha)
 
     def get_pixel_array(self):
         pixel_array = getattr(self.camera, "pixel_array", self.pixel_array)
@@ -249,6 +333,7 @@ class ImageMobjectFromCamera(ImageMobject):
             # Manim units in, Algan units out -- half, as everywhere on this
             # boundary.
             config["stroke_width"] = config["stroke_width"] / 2
+        config.setdefault("filled", False)
         # The frame is added as a child but Algan renders registered actors
         # rather than walking the hierarchy, so it has to join the scene to be
         # drawn at all.

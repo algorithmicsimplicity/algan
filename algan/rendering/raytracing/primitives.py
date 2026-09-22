@@ -2890,6 +2890,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     _rt_projection_aa = 1.0
 
     def project_to_screen(self, camera, light_sources):
+        if getattr(self, "stroke_style", None) is not None:
+            from algan.rendering.stroke_outline import _expand_stroke
+
+            _expand_stroke(self, camera)
         corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]
         num_frames = camera.ray_origin.shape[0]
         self._rt_num_frames = num_frames

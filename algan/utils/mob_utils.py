@@ -217,6 +217,13 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
     scene = mobs[0].scene
     if any(mob.scene is not scene for mob in mobs[1:]):
         raise AlganConfigurationError("Cannot batch Mobs from multiple Scenes")
+    stroke_styles = [
+        mob._stroke_style_key() for mob in mobs if hasattr(mob, "_stroke_style_key")
+    ]
+    if stroke_styles and any(style != stroke_styles[0] for style in stroke_styles[1:]):
+        raise AlganConfigurationError(
+            "Cannot batch paths with different stroke styles; use Group instead"
+        )
     with Off(
         record_funcs=False,
         record_attr_modifications=False,

@@ -89,6 +89,7 @@ def test_every_exported_name_resolves():
 _NATIVE_MOB_MODULES = (
     "algan.animatable_base.mob",
     "algan.mobs.bezier_circuit",
+    "algan.mobs.camera_view",
     "algan.mobs.group",
     "algan.mobs.image_mob",
     "algan.mobs.numeric_display",

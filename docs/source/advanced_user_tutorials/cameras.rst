@@ -227,6 +227,69 @@ the camera as a child, or drive it with an updater:
 Because child Mobs automatically inherit their parent's movement and rotation,
 the caption stays perfectly pinned to the screen throughout the turn.
 
+Live Insets and Multiple Views
+==============================
+
+:class:`~algan.mobs.camera_view.CameraView` displays another camera's live view
+inside the same Scene. Its camera and its display are independent: animate
+``view.camera`` to pan or zoom the source region, and animate ``view`` to position,
+scale, rotate or fade the inset. ``view.focus_on(subject)`` fits a subject using
+the capture's aspect ratio; it measures the subject when called, so move the
+camera with the subject to keep tracking it.
+
+.. algan:: LiveCameraInset
+
+    from algan import *
+
+    with Off():
+        detail = Group([
+            Circle(radius=0.15, color=YELLOW).move(LEFT * 0.3),
+            Square(size=0.3, color=BLUE).move(RIGHT * 0.3),
+        ]).spawn()
+        inset = CameraView(resolution=(480, 320), height=2.5)
+        inset.focus_on(detail, buffer_portion=0.4)
+        inset.move_to(RIGHT * 3 + UP * 1.5 + OUT * 0.2)
+        border = SurroundingRectangle(inset, buffer=0, filled=False, stroke_color=WHITE)
+        inset.add_children(border)
+        inset.spawn()
+
+    with Sync(runtime=2):
+        detail.move(LEFT * 2)
+        inset.camera.move(LEFT * 2)
+        inset.move(DOWN)
+    Scene.save_video()
+
+Construct another ``CameraView`` for another simultaneous angle. Each omitted
+``camera`` creates an independent camera matching the main camera's current pose
+and lens. Pass ``camera=existing_camera`` to share a source camera between displays.
+For a side view, for example, rotate ``view.camera`` around the subject with
+``view.camera.rotate(90, UP, about=subject.location)``. ``set_fov``, near/far
+clipping, lights, environment maps and the normal renderer remain available.
+
+The display is an ordinary unlit textured surface in world space, so it supports
+perspective, occlusion and opacity. Place it in front of nearby objects with
+``OUT`` when using it as an inset. Attach it to the main camera as described above
+to keep its screen position during main-camera motion. The capture resolution
+defaults to ``(640, 360)`` pixels; increasing the display's world size does not
+increase its capture resolution.
+
+All camera-view displays and their children (including borders and captions)
+are excluded from every secondary capture to prevent recursive images. Pass
+``exclude=[label, source_box]`` to omit additional Mobs and their descendants from
+one view. Exclusion does not hide them from the main camera. Inherited scene
+backgrounds, including render-time background overrides, appear in the captures.
+Exposure, tone mapping and post-processing apply once to the composed result.
+
+Views are live in videos, ``save_frame`` and the interactive viewer, including
+seeking backwards. Each additional view requires another render of the scene;
+captures are processed in bounded windows and use the same timeline timestamps
+as the main view. As with repeated renders, updaters should compute their state
+from timeline time instead of relying on how many times they are called.
+
+``mn.ImageMobjectFromCamera(algan_camera)`` uses this live pipeline too. Cameras
+from other libraries retain its ``pixel_array`` snapshot behavior. Algan's native
+``CameraView`` is the authoring interface; Manim's Scene subclasses are not needed.
+
 See Also
 ========
 

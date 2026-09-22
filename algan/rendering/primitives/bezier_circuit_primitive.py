@@ -98,6 +98,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
         filled=True,
         num_pixels_per_sample=chord_tolerance_pixels,
         z_index=None,
+        stroke_style=None,
     ):
         # Legacy name retained for compatibility.  The ray tracer uses this as
         # the maximum screen-space curve-to-chord error in pixels.
@@ -105,7 +106,9 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.num_bezier_parameters = 4
         self.num_texture_points = num_texture_points
         self.filled = filled
+        self.stroke_style = stroke_style
         if triangle_collection is not None:
+            self.stroke_style = getattr(triangle_collection[0], "stroke_style", None)
             # Group on the already-materialized source device.  Uploading the
             # packed collection belongs to the render-memory boundary, not to
             # the CPU prefetch worker.
@@ -217,10 +220,11 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.basis2 = second_basis
 
     @staticmethod
-    def batch_identifier_for(num_texture_points, filled):
-        return f"{BezierCircuitPrimitive}_{num_texture_points}_{filled}"
+    def batch_identifier_for(num_texture_points, filled, stroke_style=None):
+        base = f"{BezierCircuitPrimitive}_{num_texture_points}_{filled}"
+        return base if stroke_style is None else f"{base}_{stroke_style}"
 
     def get_batch_identifier(self):
         return BezierCircuitPrimitive.batch_identifier_for(
-            self.num_texture_points, self.filled
+            self.num_texture_points, self.filled, getattr(self, "stroke_style", None)
         )

@@ -1963,6 +1963,7 @@ def render_batch_raytraced(
                 post_processes=list(post_processes),
                 apply_fxaa=scene.video_settings.fxaa,
                 premultiplied_over=scene.premultiplied_over,
+                _linear_output=getattr(scene, "_linear_output", False),
             )
             rewind_to(entry_pointers)
             launched_frames.append(end - start)
