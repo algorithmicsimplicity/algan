@@ -50,6 +50,25 @@ with Off(record_funcs=False) as context:
 
 Timestamps are lazy because parent contexts can rescale child timing on exit. Treat an event's final start/end as unresolved until the relevant context tree has closed.
 
+### Motion trails
+
+`TracedPath` registers weakly with its owning timeline. Before a requested state
+window, `_prepare_traced_paths` materializes the history needed by each active
+trail, evaluates its point callable, and stores only the sampled point window.
+It then materializes the originally requested times normally. Samples use a
+spawn-anchored fixed grid plus exact window endpoints; never append points as
+frames happen to render. This is what keeps seeks and different batches equal.
+Historical evaluation must not recursively prepare trails. Updater-removal
+write capture must bypass it, or historical writes contaminate the updater's
+single removal-boundary state. `clear_buffers` releases the sampled geometry.
+Sampling callables and source updaters cannot read another trail's boundary.
+History sampling splits batches at `detach_history` clone boundaries. After
+replaying a batch, it temporarily presents those clones' dictionaries through
+the original Mob references only while evaluating the pure point callable,
+then restores every dictionary in `finally`. This supports bound methods,
+closures and child navigation without copying or rewriting user functions.
+Never run updater replay while those temporary views are installed.
+
 Overlapping edits to the same timeline rows are replayed in execution order using resolved replay windows. Do not simplify this to ordinary independent interpolation without preserving same-row overlap behavior.
 
 ### Attribute storage and materialization
@@ -92,3 +111,17 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 Audio is Scene-owned. `AudioManager` stores the Scene's speech source and transcript. `Audio`/`Speech` contexts add `AudioEffect` objects to the owning Scene and derive timing from that Scene's animation manager.
 
 Do not add process-global transcript or speech-generator state. When constructing `Speech` or `Audio` contexts in low-level code, bind the relevant Scene animation manager explicitly.
+
+`AudioManager._speech_blocks` holds script text and clip-relative word timings;
+its lazy origin is the same event as the audio effect's. Parent rescaling moves
+that origin but does not stretch the clip or its words. `sound/transcript.py`
+snapshots this metadata for the viewer and subtitle exporter.
+
+`Scene.add_subcaption` stores manual `_Subcaption` records on that Scene's audio
+manager. Its zero-length child context captures the authoring cursor and follows
+parent rescaling; duration and offset remain absolute seconds. It must not add
+records during timeline replay. `Scene.save_subtitles` resolves these events and
+existing speech metadata without authoring, materialization or audio generation.
+Both kinds of metadata disappear when the Scene resets. Project subtitle export
+authors isolated scenes and offsets their cues by frame-rounded scene durations;
+manual Scene exports inside Project-managed authoring are suppressed.

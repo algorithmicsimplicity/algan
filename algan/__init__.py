@@ -157,6 +157,7 @@ from algan.mobs.surfaces.procedural_textures import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
 from algan.mobs.three_d_models import Model3D, TriangleMesh
+from algan.mobs.traced_path import *
 from algan.mobs.typst import *
 from algan.project import Project
 from algan.rendering import camera

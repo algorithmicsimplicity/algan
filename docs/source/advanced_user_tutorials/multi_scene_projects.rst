@@ -158,6 +158,34 @@ given. A ``speech_source`` passed to the constructor is installed on every Scene
 audio manager, so narration is configured once rather than per scene -- see
 :doc:`audio_and_speech`.
 
+Subtitles for a combined video
+------------------------------
+
+:meth:`~algan.project.Project.save_subtitles` writes one timed subtitle file for
+selected scenes in project order. By default its path is the project's combined
+video path with ``.srt`` in place of the video extension:
+
+.. code-block:: python
+
+    project.save_subtitles()
+    project.save_subtitles("lesson.vtt", max_chars_per_line=36, max_lines=2)
+    project.save_subtitles("excerpt.srt", scenes=["intro", "outro"])
+
+It authors the selected scenes in isolation and obtains narration from the
+project's speech source. It exports both ``Speech`` text and captions recorded
+with ``Scene.add_subcaption``; ``include_speech=False`` selects manual captions
+only. Scene-local save-frame, save-video and save-subtitles calls are suppressed.
+No frames are rendered, and the project's plain-text transcripts still update
+as they do during validation. ``overwrite=False`` skips authoring if the output
+already exists.
+
+Cue offsets include the preceding selected scenes' full durations, including
+silent scenes and speech holds. Durations are rounded to video frames, so use
+the same ``video_settings`` and ``animate_fade_out`` as the video export.
+``animate_fade_out`` defaults to ``SETTINGS.style.fade_out_on_scene_end`` and
+includes the requested fade in each scene's duration. See
+:doc:`audio_and_speech` for word alignment, manual timing and grouping controls.
+
 Validate authoring before rendering
 ===================================
 

@@ -29,6 +29,7 @@ import copy
 import math
 import os
 import warnings
+import weakref
 
 import numpy as np
 import torch
@@ -2542,6 +2543,8 @@ class AnimationTimeline:
         self._hierarchy_change_warnings = set()
         self._materialization_times = None
         self._materialized_mob_ids = None
+        self._traced_paths = weakref.WeakValueDictionary()
+        self._sampling_traced_paths = False
         # Replay scope (see _replay_state_to_times). An updater re-executed
         # while frames materialize may construct Mobs -- the Manim
         # compatibility layer rebuilds its whole tree on every ``set_value``,
@@ -3599,13 +3602,102 @@ class AnimationTimeline:
             manager = getattr(mob, "animation_manager", None)
             if manager is not None:
                 break
+        if manager is None and self._traced_paths:
+            manager = next(iter(self._traced_paths.values())).animation_manager
         with Off(
             record_attr_modifications=False,
             record_funcs=False,
             priority_level=math.inf,
             animation_manager=manager,
         ):
+            self._prepare_traced_paths(times, active_mobs)
             return self._replay_state_to_times(times, active_mobs)
+
+    def _prepare_traced_paths(self, times, active_mobs):
+        if (
+            not self._traced_paths
+            or self._sampling_traced_paths
+            or self._active_updater_write_capture is not None
+        ):
+            return
+        active_ids = None if active_mobs is None else self._collect_mob_ids(active_mobs)
+        self._sampling_traced_paths = True
+        try:
+            for trail in list(self._traced_paths.values()):
+                trail._trace_points = None
+                if active_ids is not None and trail.id not in active_ids:
+                    continue
+                sample_times = trail._sample_times(times)
+                if sample_times is None:
+                    continue
+                unique_times, inverse = torch.unique(
+                    sample_times, sorted=True, return_inverse=True
+                )
+                chunks = []
+                # Never materialize more historical frames than this render's
+                # own window can afford, or more than 32 at once. Wide textures
+                # otherwise turn a long trace's history into an unbounded batch.
+                for chunk, replacements in self._trace_sample_windows(
+                    unique_times, max(1, min(32, times.numel()))
+                ):
+                    self._replay_state_to_times(chunk)
+                    # Point callables can close over Mobs, hold bound methods,
+                    # or navigate a Group. Present the historical incarnation
+                    # through those same Python references while reading them.
+                    # Updaters have already run with their own historical views.
+                    saved = [
+                        (original, original.__dict__, clone.__dict__.copy())
+                        for original, clone in replacements
+                    ]
+                    try:
+                        for original, _, historical in saved:
+                            object.__setattr__(original, "__dict__", historical)
+                        chunks.append(trail._point_source.points(chunk.numel()))
+                    finally:
+                        for original, current, _ in saved:
+                            object.__setattr__(original, "__dict__", current)
+                points = torch.cat(chunks)
+                trail._trace_points = points[inverse.to(points.device)]
+        except BaseException:
+            self.clear_buffers()
+            raise
+        finally:
+            self._sampling_traced_paths = False
+
+    def _trace_sample_windows(self, times, batch_size):
+        # detach_history (including become) moves old rows to hidden clones.
+        # Partition at those boundaries so a callback sees one consistent Mob
+        # topology throughout each batch. Resolve lazily: enclosing contexts
+        # can still rescale these lifespans after an authoring-time preview.
+        histories = [
+            (original, clone, clone.lifespan.start(), clone.lifespan.end())
+            for entries in self._updater_history_clones.values()
+            for original, clone in entries
+        ]
+        boundaries = sorted(
+            {time for _, _, start, end in histories for time in (start, end)}
+        )
+        cuts = {0, times.numel()}
+        if boundaries:
+            # A context boundary may lie just past a float32 sample. Rounding
+            # it down first would put that sample and the next one in the
+            # same window even though they use different incarnations.
+            cuts.update(
+                torch.searchsorted(
+                    times.detach().to(device="cpu", dtype=torch.float64),
+                    torch.tensor(boundaries, device="cpu", dtype=torch.float64),
+                ).tolist()
+            )
+        cuts = sorted(cuts)
+        for first, last in zip(cuts, cuts[1:]):
+            time = float(times[first])
+            replacements = [
+                (original, clone)
+                for original, clone, start, end in histories
+                if start <= time < end
+            ]
+            for chunk in times[first:last].split(batch_size):
+                yield chunk, replacements
 
     def is_replaying(self) -> bool:
         """Whether frames are currently being materialized from the timeline.
@@ -3794,6 +3886,8 @@ class AnimationTimeline:
 
     def clear_buffers(self):
         self._segment_windows = {}
+        for trail in self._traced_paths.values():
+            trail._trace_points = None
         for t in self.attr_to_timeline.values():
             t.clear_buffers()
 

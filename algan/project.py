@@ -138,7 +138,7 @@ class _ProjectScene:
 class _ProjectSceneRun:
     project: Project
     scene: _ProjectScene
-    mode: Literal["screenshots", "video", "validate", "profile", "view"]
+    mode: Literal["screenshots", "video", "validate", "profile", "view", "subtitles"]
     next_frame_index: int = 0
     frame_results: list = field(default_factory=list)
     allow_video_render: bool = False
@@ -1149,6 +1149,128 @@ class Project:
             profiles,
         )
 
+    def save_subtitles(
+        self,
+        file_path: str | Path | None = None,
+        scenes: _SceneSelection = None,
+        *,
+        subtitle_format: str | None = None,
+        video_settings: VideoSettings | None = None,
+        animate_fade_out: bool | None = None,
+        include_speech: bool = True,
+        max_chars_per_line: int = 42,
+        max_lines: int = 2,
+        max_duration: float = 6.0,
+        overwrite: bool = True,
+    ) -> Path:
+        """Export one subtitle file for selected scenes joined in project order.
+
+        Scene times are offset by the preceding selected scenes' video durations,
+        including silent scenes, speech holds and requested final fade-outs,
+        rounded to video frames. Use the same settings as the video export.
+        See :meth:`Scene.save_subtitles <algan.scene.Scene.save_subtitles>` for
+        speech alignment and manual-caption semantics.
+
+        Animation
+        ---------
+        Authors each selected scene in isolation, obtaining its speech clips,
+        then writes subtitles without rendering frames. Save-frame, save-video
+        and save-subtitles calls inside scene functions are suppressed. Existing
+        Scenes are unchanged. No spawned mobs are required.
+
+        Parameters
+        ----------
+        file_path
+            Destination using Algan's usual output path rules. Defaults to None,
+            meaning the project's video path with the subtitle extension.
+        scenes
+            Scene ID, name or iterable mixing these forms. Defaults to None,
+            meaning all scenes. Selection always retains project order.
+        subtitle_format
+            ``"srt"`` or ``"vtt"``. Defaults to None, inferring the filename's
+            extension or using SRT if none was supplied.
+        video_settings
+            Authoring settings and frame rate used for scene offsets. Defaults
+            to None, meaning the project's settings or SETTINGS.video.
+        animate_fade_out
+            Include the final fade used by :meth:`render_video`. Defaults to None,
+            meaning ``SETTINGS.style.fade_out_on_scene_end``. Pass the same value
+            as the video export to keep subsequent scenes' captions aligned.
+        include_speech
+            Include Speech narration as well as manual captions. Defaults to True.
+        max_chars_per_line
+            Positive speech line length in characters. Defaults to 42; single
+            long words remain intact. Manual captions are not rewrapped.
+        max_lines
+            Positive maximum lines in each speech cue. Defaults to 2.
+        max_duration
+            Positive maximum speech cue duration in seconds. Defaults to 6;
+            a single word may exceed it.
+        overwrite
+            Defaults to True: replace an existing file. False returns its path
+            without re-authoring any scenes or changing the file.
+
+        Returns
+        -------
+        pathlib.Path
+            Absolute path to the combined subtitle file.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If selection, timing, format or grouping options are invalid.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Project, Scene
+
+
+            def intro():
+                Scene.add_subcaption("Welcome!", duration=2)
+                Scene.wait(2)
+
+
+            Project([intro], file_path="lesson.mp4").save_subtitles()
+        """
+        from algan.scene import _note_render_requested
+        from algan.sound.subtitles import (
+            _subtitle_destination,
+            _SubtitleOptions,
+            _write_subtitles,
+        )
+
+        options = _SubtitleOptions(
+            include_speech, max_chars_per_line, max_lines, max_duration
+        )
+        if animate_fade_out is not None and not isinstance(animate_fade_out, bool):
+            raise AlganConfigurationError("animate_fade_out must be a boolean or None")
+        destination, subtitle_format = _subtitle_destination(
+            file_path, subtitle_format, default=self.file_path
+        )
+        # Resolve a generator selection only once; validate even when skipping
+        # an existing output below.
+        selected = tuple(scene.id for scene in self._selected_scenes(scenes))
+        _note_render_requested()
+        if not overwrite and destination.exists():
+            return destination
+        results = self._render(
+            selected,
+            mode="subtitles",
+            video_settings=video_settings,
+            subtitle_options=options,
+            animate_fade_out=animate_fade_out,
+        )
+        cues = []
+        offset = 0.0
+        for duration, scene_cues in results:
+            cues.extend(
+                (start + offset, end + offset, text) for start, end, text in scene_cues
+            )
+            offset += duration
+        return _write_subtitles(destination, cues, subtitle_format, overwrite)
+
     def render_video(
         self,
         scenes=None,
@@ -1202,11 +1324,12 @@ class Project:
         self,
         scenes=None,
         *,
-        mode: Literal["screenshots", "video", "validate", "view"],
+        mode: Literal["screenshots", "video", "validate", "view", "subtitles"],
         video_settings: VideoSettings | None = None,
         overwrite: bool = True,
         frames=None,
         stop_early: bool = False,
+        subtitle_options=None,
         **save_video_kwargs,
     ):
         """Author isolated scenes for exports, validation or interactive viewing."""
@@ -1296,6 +1419,38 @@ class Project:
                                 active_scene.audio_manager.video_transcript,
                             )
                         )
+                    elif mode == "subtitles":
+                        from algan.sound.subtitles import _scene_cues, _seconds
+
+                        # Apply the same authored finalization as a video export,
+                        # without rendering or mutating any caller-owned Scene.
+                        fps = effective_settings.frames_per_second
+                        if active_scene._recorded_end_time_for_render() == 0 and any(
+                            actor.is_spawned() for actor in active_scene.actors
+                        ):
+                            active_scene.wait(1 / fps)
+                        fade_out = save_video_kwargs.get("animate_fade_out")
+                        if fade_out is None:
+                            fade_out = SETTINGS.style.fade_out_on_scene_end
+                        if fade_out:
+                            active_scene.despawn_mobs(retain_history=True, runtime=0.5)
+                        duration = _seconds(
+                            active_scene._recorded_end_time_for_render(),
+                            "Scene duration",
+                        )
+                        if duration < 0:
+                            raise AlganConfigurationError(
+                                "Scene duration must be non-negative"
+                            )
+                        duration = round(duration * fps) / fps
+                        results.append(
+                            (
+                                duration,
+                                _scene_cues(
+                                    active_scene, subtitle_options, duration=duration
+                                ),
+                            )
+                        )
                     elif mode == "video":
                         run.allow_video_render = True
                         try:
@@ -1318,7 +1473,7 @@ class Project:
                     active_scene._suppress_automatic_transcript = False
             verb = (
                 "Authored"
-                if mode == "view"
+                if mode in ("view", "subtitles")
                 else "Validated"
                 if mode == "validate"
                 else "Stopped early in"

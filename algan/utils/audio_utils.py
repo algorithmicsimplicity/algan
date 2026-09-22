@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 
 import pyttsx3
 
+from algan.errors import AlganConfigurationError, AudioTranscriptMismatchError
 from algan.settings import SETTINGS
 
 
@@ -52,10 +54,9 @@ def unflatten(list_, lengths):
 def align_large_audio_torchaudio_robust(
     audio_path, transcript_path, model_id=MODEL_ID, chunk_duration_s=CHUNK_DURATION_S
 ):
-    """
-    Aligns a large audio file with its transcript using a robust, optimized
-    CTC-based chunking strategy powered by torchaudio, including a retry guard.
-    """
+    """Internal: align recorded speech, failing if a chunk cannot advance."""
+    if not math.isfinite(chunk_duration_s) or chunk_duration_s <= 0:
+        raise AlganConfigurationError("chunk_duration_s must be finite and positive")
     try:
         import torchaudio
         import torchaudio.functional as F
@@ -85,6 +86,9 @@ def align_large_audio_torchaudio_robust(
         full_transcript_text = full_transcript_text.replace("-", " ")
         full_transcript_words = full_transcript_text.split()
         full_transcript_text = " ".join(full_transcript_words)
+
+    if not full_transcript_words:
+        return []
 
     total_chunks = int(
         torch.ceil(torch.tensor(audio_duration_s / chunk_duration_s)).item()
@@ -133,17 +137,13 @@ def align_large_audio_torchaudio_robust(
             emissions = torch.log_softmax(logits, dim=-1)
             emissions = torch.cat((emissions, torch.zeros_like(emissions[..., :1])), -1)
 
-        transcript_was_too_long = True
-        retry_count = 0
-        MAX_RETRIES = 10
-        aligned_tokens, scores = None, None
-
-        while transcript_was_too_long and retry_count < MAX_RETRIES:
+        # Each audio window owns its result. In particular, exhausting retries
+        # must never reuse the last successful window's word timestamps.
+        chunk_word_segments = None
+        max_retries = 10
+        for _attempt in range(max_retries):
             remaining_transcript = full_transcript_words[transcript_cursor:]
 
-            ((chunk_end_s - chunk_start_s) / (audio_duration_s - chunk_start_s)) if (
-                audio_duration_s - chunk_start_s
-            ) > 0 else 0
             estimated_len = max(int(estimated_words_per_chunk), 3)
 
             transcript_words = (
@@ -175,6 +175,12 @@ def align_large_audio_torchaudio_robust(
                 [len(strip_nonchars(word)) for word in transcript_words]
                 + ([len(pad)] if len(pad) > 0 else []),
             )
+            if not word_spans or any(not spans for spans in word_spans):
+                raise AudioTranscriptMismatchError(
+                    f"No alignable words in the audio window "
+                    f"{chunk_start_s:.2f}s to {chunk_end_s:.2f}s of {audio_path!r}. "
+                    "Check that the transcript contains words matching the recording."
+                )
             transcript_words_star = transcript_words + ([pad] if len(pad) > 0 else [])
             word_spans = [
                 [
@@ -186,14 +192,11 @@ def align_large_audio_torchaudio_robust(
             ]
             # Move results to CPU for analysis
             if word_spans[-1][1] >= emissions.shape[0] - 10 and not final_chunk:
-                transcript_was_too_long = True
-                retry_count += 1
                 estimated_words_per_chunk *= 0.75
                 logger.info(
                     "Transcript chunk was too long for audio chunk, retrying with shorter transcript chunk."
                 )
                 continue
-            transcript_was_too_long = False
 
             time_per_frame = (chunk_end_s - chunk_start_s) / emissions.shape[0]
             chunk_word_segments = [
@@ -204,30 +207,50 @@ def align_large_audio_torchaudio_robust(
                 ]
                 for _ in (word_spans[:-1] if not final_chunk else word_spans)
             ]
+            break
+
+        if chunk_word_segments is None:
+            raise AudioTranscriptMismatchError(
+                f"Could not align the audio window {chunk_start_s:.2f}s to "
+                f"{chunk_end_s:.2f}s of {audio_path!r} after {max_retries} attempts "
+                f"(transcript word {transcript_cursor + 1}). "
+                "Check that the transcript matches the recording."
+            )
+
+        confirmed_end = (
+            chunk_word_segments[-1][-1] if chunk_word_segments else chunk_start_s
+        )
+        next_chunk_start = confirmed_end + time_per_frame * 0.5
+        if (
+            not math.isfinite(confirmed_end)
+            or confirmed_end <= chunk_start_s
+            or not math.isfinite(next_chunk_start)
+            or next_chunk_start <= chunk_start_s
+            or int(next_chunk_start * audio_info.sample_rate) <= frame_offset
+        ):
+            raise AudioTranscriptMismatchError(
+                f"Speech alignment made no forward progress in the audio window "
+                f"{chunk_start_s:.2f}s to {chunk_end_s:.2f}s of {audio_path!r} "
+                f"(transcript word {transcript_cursor + 1}). "
+                "Check that the transcript matches the recording."
+            )
 
         estimated_words_per_chunk = (
             len(chunk_word_segments)
-            * (
-                (chunk_end_s - chunk_start_s)
-                / (chunk_word_segments[-1][-1] - chunk_start_s)
-            )
+            * ((chunk_end_s - chunk_start_s) / (confirmed_end - chunk_start_s))
             * 0.9
         )
 
         all_word_segments.extend(chunk_word_segments)
-        chunk_start_s = all_word_segments[-1][-1] + time_per_frame * 0.5
+        chunk_start_s = next_chunk_start
 
         confirmed_transcript_len = len(chunk_word_segments)
         transcript_cursor += confirmed_transcript_len
         if transcript_cursor >= len(full_transcript_words):
             break
 
-    # df = pd.DataFrame(all_word_segments)
-    # df.to_csv(output_filename, index=False)
-    return all_word_segments
-
     logger.info("\nAlignment process complete.")
-    # print(f"Output saved to {output_filename}")
+    return all_word_segments
 
 
 def subfinder(mylist, pattern):

@@ -75,7 +75,7 @@ sets of methods are told apart by a leading underscore. Public: `save_video`, `s
 `show_frame`, `wait`, `add`, `add_actor`, `add_effect`, `reset`, `current`, `set_background`,
 `get_background`, `set_environment_map`, `set_video_settings`, `background_is_transparent`,
 `get_camera`, `add_light`/`remove_light`/`clear_lights`, `length_to_pixels`/`pixels_to_length`,
-`despawn_mobs`, `save_audio`, `use_manim_defaults`, `render_all_funcs`, and `get_frames` (the render
+`despawn_mobs`, `save_audio`, `add_subcaption`, `save_subtitles`, `use_manim_defaults`, `render_all_funcs`, and `get_frames` (the render
 loop's entry point, which the viewer and the benchmarks both drive).
 
 Engine-only, and therefore private: `_get_batch_of_primitives`, `_render_primitive_batch`,

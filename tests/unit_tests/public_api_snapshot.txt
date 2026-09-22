@@ -330,6 +330,7 @@ TextTriangulated
 ThreeDAxes
 Title
 Torus
+TracedPath
 TransformMatchingShapes
 TransformMatchingTex
 Triangle

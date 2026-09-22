@@ -25,7 +25,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from queue import Queue
+from queue import Empty, Full, Queue
 from types import SimpleNamespace
 
 import torch
@@ -293,6 +293,74 @@ def write_frames_from_queue(queue, file_writer):
         if frame is None:  # Sentinel value to signal the end
             break
         file_writer.write_frame(frame.numpy())
+
+
+class _VideoWriter:
+    """A bounded encoder queue whose failures reach its sole producer."""
+
+    def __init__(self, file_writer):
+        self.file_writer = file_writer
+        self.queue = Queue(maxsize=8)
+        self._error = None
+        self._thread = threading.Thread(
+            target=self._run, name="algan-video-writer", daemon=True
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        try:
+            write_frames_from_queue(self.queue, self.file_writer)
+        except BaseException as exc:
+            # Publish before exiting. A producer blocked by backpressure must
+            # learn why the consumer stopped, including on the final frame.
+            self._error = exc
+
+    def _raise_if_failed(self):
+        if self._error is not None:
+            raise self._error
+
+    def put(self, frame):
+        while True:
+            self._raise_if_failed()
+            try:
+                # Poll so a dead encoder cannot strand a full queue, and so
+                # Ctrl-C remains observable on Windows while waiting for space.
+                self.queue.put(frame, timeout=0.1)
+                break
+            except Full:
+                pass
+        self._raise_if_failed()
+
+    def _join(self):
+        while self._thread.is_alive():
+            self._thread.join(timeout=0.1)
+
+    def _discard_frames(self):
+        while True:
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                return
+
+    def abort(self):
+        # Only the render thread produces frames. Once it enters cleanup we
+        # can discard the backlog and insert a sentinel without blocking,
+        # whether the consumer has failed, is writing, or is waiting on get().
+        self._discard_frames()
+        self.queue.put_nowait(None)
+        self._join()
+        self._discard_frames()
+
+    def finish(self):
+        try:
+            self.put(None)
+            self._join()
+            self._raise_if_failed()
+        except BaseException:
+            self.abort()
+            raise
 
 
 def _max_duration_that_fits(requested_frames, fits):
@@ -3901,16 +3969,15 @@ class RenderLoopMixin:
                 # materialized. Clearing is idempotent.
                 self.timeline_manager.clear_buffers()
 
-    def _drain_video_writer(self, frame_queue, writer_process, file_writer):
+    def _drain_video_writer(self, writer):
         """Flush the frame queue and wait for the encoder to finish.
 
         Split out so a profiler can time the serial video-encode tail (the
         block spent waiting on ffmpeg after the last frame is produced) as its
         own stage instead of leaving it in the profile's unaccounted bucket.
         """
-        frame_queue.put(None)  # sentinel: end of stream
-        writer_process.join()
-        file_writer.close()
+        writer.finish()
+        writer.file_writer.close()
 
     def _recorded_end_time_for_render(self):
         """End of everything recorded so far, in seconds.
@@ -3975,12 +4042,40 @@ class RenderLoopMixin:
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
     ):
-        with torch.no_grad():
-            previous_scene_times = (
-                [list(pair) for pair in self.scene_times]
-                if preserve_authoring_state
-                else None
-            )
+        previous_scene_times = (
+            [list(pair) for pair in self.scene_times]
+            if preserve_authoring_state
+            else None
+        )
+        try:
+            with torch.no_grad():
+                self._stream_video_frames(
+                    file_writer,
+                    file_path,
+                    post_processes,
+                    background,
+                    despawn_camera_and_lights,
+                    preserve_authoring_state,
+                )
+        finally:
+            if previous_scene_times is not None:
+                self.scene_times[:] = previous_scene_times
+
+        if os.path.exists(file_path_out):
+            os.remove(file_path_out)
+        os.rename(file_path, file_path_out)
+
+    def _stream_video_frames(
+        self,
+        file_writer,
+        file_path,
+        post_processes,
+        background,
+        despawn_camera_and_lights,
+        preserve_authoring_state,
+    ):
+        writer = None
+        try:
             self.scene_times.append(
                 [
                     self.scene_times[-1][0],
@@ -4013,14 +4108,9 @@ class RenderLoopMixin:
             self.file_path = file_path
             self.file_writer = file_writer
 
-            frame_queue = Queue(maxsize=8)
-            writer_process = threading.Thread(
-                target=write_frames_from_queue, args=(frame_queue, file_writer)
-            )
-            writer_process.daemon = True
-            writer_process.start()
-
-            self.frame_queue = frame_queue
+            writer = _VideoWriter(file_writer)
+            self.frame_queue = writer.queue
+            writer.start()
             # The snapshot is taken here rather than around the whole render call:
             # the fade-out and the zero-runtime guard record on the timeline
             # first, and edits made after a snapshot would fall outside it.
@@ -4035,27 +4125,37 @@ class RenderLoopMixin:
             )
             start_ind, end_ind = self.scene_times[-1]
             total_frames = max(1, end_ind - start_ind)
+            with (
+                preserve,
+                _render_progress(total_frames) as report_frame,
+                contextlib.ExitStack() as frame_cleanup,
+            ):
+                # Explicitly close the generator on encoder failure too: its
+                # finally releases materialization buffers and prep workers.
+                batches = self.get_frames(
+                    *self.scene_times[-1],
+                    background=background,
+                    post_processes=post_processes,
+                    manual_memory=True,
+                )
+                close_frames = getattr(batches, "close", None)
+                if close_frames is not None:
+                    frame_cleanup.callback(close_frames)
+                for frame_batch in batches:
+                    for frame in frame_batch:
+                        writer.put(frame)
+                        # After the put: the queue is bounded and feeds the
+                        # encoder thread, so reporting first would run the
+                        # progress ahead of the actual encode.
+                        report_frame()
+            self._drain_video_writer(writer)
+        except BaseException:
+            if writer is not None:
+                writer.abort()
             try:
-                # Wait for the writer process to complete
-                with preserve, _render_progress(total_frames) as report_frame:
-                    for frame_batch in self.get_frames(
-                        *self.scene_times[-1],
-                        background=background,
-                        post_processes=post_processes,
-                        manual_memory=True,
-                    ):
-                        for frame in frame_batch:
-                            frame_queue.put(frame)
-                            # After the put: the queue is bounded and feeds the
-                            # encoder thread, so reporting first would run the
-                            # progress ahead of the actual encode.
-                            report_frame()
-            finally:
-                if previous_scene_times is not None:
-                    self.scene_times[:] = previous_scene_times
-
-        self._drain_video_writer(frame_queue, writer_process, file_writer)
-
-        if os.path.exists(file_path_out):
-            os.remove(file_path_out)
-        os.rename(file_path, file_path_out)
+                file_writer.close()
+            except Exception:
+                # Cleanup must not replace an encoder/rendering error or a
+                # cancellation. The worker is already joined before closing.
+                logger.debug("Video writer cleanup failed", exc_info=True)
+            raise

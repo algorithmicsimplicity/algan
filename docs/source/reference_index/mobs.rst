@@ -10,6 +10,7 @@ Mobs
    ~algan.mobs.typst
    ~algan.mobs.image_mob
    ~algan.mobs.camera_view
+   ~algan.mobs.traced_path
    ~algan.mobs.image_compat
    ~algan.mobs.manim_compat
    ~algan.mobs.opengl_compat

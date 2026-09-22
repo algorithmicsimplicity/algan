@@ -29,6 +29,7 @@ class AudioManager:
         self.speech_generator = speech_generator
         self.video_transcript = ""
         self._speech_blocks: list[_SpeechBlock] = []
+        self._subcaptions = []
 
     def set_speech_source(self, speech_generator):
         self.speech_generator = speech_generator

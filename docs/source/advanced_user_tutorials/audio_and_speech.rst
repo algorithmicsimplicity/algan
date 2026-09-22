@@ -93,8 +93,77 @@ By default, the Scene's AudioManager uses Algan's pyttsx3 speech generator. Each
 When a video contains audio, ``save_video`` writes that transcript beside the
 video as ``<video_stem>_script.txt``.
 
+Timed subtitle files
+====================
+
+Use :meth:`Scene.save_subtitles() <algan.scene.Scene.save_subtitles>` to write
+the recorded narration as an SRT or WebVTT file. The filename's extension selects
+the format; an extensionless name defaults to SRT. The call returns the absolute
+path and uses the same output-directory rules as ``Scene.save_video``.
+
+.. algan-doc-check: skip -- needs a system text-to-speech engine (eSpeak)
+
+.. code-block:: python
+
+    from algan import *
+
+    circle = Circle().spawn()
+    with Speech("First we draw a circle. Then we enlarge it."):
+        circle.scale(2)
+
+    Scene.save_video("circle.mp4")
+    Scene.save_subtitles("circle.srt")
+    Scene.save_subtitles("circle.vtt", max_chars_per_line=36, max_lines=2,
+                         max_duration=5)
+
+Each cue groups adjacent spoken words. ``max_chars_per_line`` controls wrapping,
+``max_lines`` controls lines per cue, and ``max_duration`` limits a cue's length
+in seconds. Their defaults are 42, 2 and 6 respectively. Words are kept intact,
+so a single long word can exceed the character or duration limit. Authored single
+line breaks are retained; a blank line starts a new cue.
+
+Exports reuse the speech clips' existing word timing, without generating audio,
+aligning a recording again or rendering frames. Clips without usable alignment
+use estimates distributed by word length over the audio duration. The exported
+file does not label estimates, so supply aligned narration for precise word
+timing. Cue times follow the audio's actual start, including any enclosing
+context's final timing. They exclude the ``wait_at_end`` hold. Speech suppressed
+by ``Off()`` is omitted. Existing plain-text transcript files are unchanged.
+
+Manual captions
+---------------
+
+:meth:`Scene.add_subcaption() <algan.scene.Scene.add_subcaption>` records a cue
+at the current authoring time, with an explicit duration and an optional offset
+in seconds. A negative offset places it earlier. This is useful for dialogue,
+translations, sound descriptions or captions on scenes without narration:
+
+.. code-block:: python
+
+    from algan import Scene
+
+    Scene.add_subcaption("The two terms cancel.\nOnly x remains.", duration=2)
+    Scene.wait(2)
+    Scene.add_subcaption("[bell rings]", duration=1, offset=0.5)
+    Scene.wait(2)
+    Scene.save_subtitles("cancellation.srt", include_speech=False)
+
+Adding a caption does not advance time or extend the scene. Manual captions keep
+their line breaks and bypass automatic wrapping; empty lines are removed because
+they separate cues in subtitle files. Their start follows enclosing timed
+contexts, while ``duration`` and ``offset`` stay in seconds. Close those contexts
+before the final export. Captions are clipped to the scene's duration, and
+overlaps remain separate cues. Text is literal, including math comparisons and
+Unicode. The files accompany a video; the captions are not drawn into its frames.
+Export before resetting the Scene. To keep an existing file, pass
+``overwrite=False``.
+
+For a combined multi-scene video, use
+:meth:`Project.save_subtitles() <algan.project.Project.save_subtitles>`;
+see :doc:`multi_scene_projects` for selection and timing details.
+
 Listening in the interactive viewer
------------------------------------
+===================================
 
 ``Scene.view()`` plays the scene's existing ``Speech`` and ``Audio`` clips when
 **Play** is pressed. Clips retain their recorded start times, overlap as they do

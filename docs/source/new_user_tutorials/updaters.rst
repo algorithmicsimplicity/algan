@@ -111,6 +111,54 @@ and the updater is applied on top of that result.
     ``ValueError: only one element tensors can be converted to Python scalars``, a
     long way away from the line you actually wrote.
 
+Automatic motion trails
+=======================
+
+Use :class:`~algan.mobs.traced_path.TracedPath` to draw the path taken by another
+Mob. Passing a Mob follows its bounding-box center; passing a callable lets you
+choose a different point, such as ``lambda: ball.location + UP * 0.2``.
+
+.. algan:: UpdatersMotionTrail
+
+    from algan import *
+    import torch
+
+    ball = Dot(LEFT * 2, color=YELLOW).spawn(animate=False)
+    trail = TracedPath(ball, stroke_color=BLUE, stroke_width=4,
+                       dissipating_time=1.5).spawn(animate=False)
+    ball.add_updater(lambda mob, t: mob.move(UP * torch.sin(t * 2 * PI)))
+    with Seq(runtime=4, easing=easings.linear):
+        ball.move(RIGHT * 4)
+    Scene.save_video()
+
+``dissipating_time`` is the age in seconds after which a part of the path
+disappears. Omit it, or pass ``None``, to retain the complete trace from the
+trail's spawn time. A finite trail also shrinks away when the source stops
+moving. The path follows recorded animations and updaters, including motion in
+three dimensions. Its segments have round caps and joins; width uses the same
+reference-pixel units as ``Line``. Animate ``trail.color``, ``trail.opacity`` or
+``trail.stroke_width`` to style the trace.
+
+The default ``sample_interval=1 / 60`` samples motion every sixtieth of a second.
+Smaller intervals follow fast curves more closely, at a cost in geometry and
+sampling work. This spacing is independent of video frame rate. The visible
+start and end of a dissipating trail are sampled at their exact times.
+
+A trail is reconstructed for the requested time: backward scrubbing, repeated
+exports and isolated ``Scene.save_frame(at=...)`` calls do not require playing
+earlier frames first. Historical motion is evaluated in bounded batches. A full
+trace still needs geometry proportional to its elapsed duration; a dissipating
+trace limits the amount retained. Traces must be kept as individual Mobs or in
+a ``Group``, rather than packed with ``batch_mobs``.
+
+Point callables follow the same batch rules as updaters. Keep them deterministic
+and free of scene edits, and return one point per time, normally an Algan Mob's
+``location`` or ``get_center()`` result. Do not accumulate positions in a Python
+list or depend on a TracedPath's geometry to compute its own source motion.
+Callables and source updaters must not read another trail's boundary. Cloning a
+trail keeps the same source, and moving or rotating the trail transforms its
+displayed path without changing that source.
+
 .. seealso::
 
     * :doc:`../advanced_user_tutorials/cameras` -- an updater on the camera is

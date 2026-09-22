@@ -97,6 +97,7 @@ _NATIVE_MOB_MODULES = (
     "algan.mobs.shapes_3d",
     "algan.mobs.surfaces.surface",
     "algan.mobs.text",
+    "algan.mobs.traced_path",
     "algan.mobs.typst",
     "algan.mobs.three_d_models",
 )

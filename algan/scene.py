@@ -937,6 +937,169 @@ class Scene(RenderLoopMixin):
         audio_clip.close()
         return file_path
 
+    @active_scene_method
+    def add_subcaption(
+        self, content: str, duration: float = 1.0, offset: float = 0.0
+    ) -> Scene:
+        """Record a subtitle at the current authoring time.
+
+        Use this for manually timed dialogue, translations or sound descriptions.
+        Speech narration is included automatically by :meth:`save_subtitles`.
+        Captions are exported as text files; they are not drawn into the video.
+
+        Animation
+        ---------
+        Records a caption without advancing time or extending the Scene. Its
+        origin follows enclosing animation contexts; duration and offset remain
+        in seconds after those contexts finish. Mobs need not be spawned. Use
+        ``Scene.wait(2)`` to leave two seconds for a caption on a still scene.
+
+        Parameters
+        ----------
+        content
+            Nonempty, literal Unicode text. Single line breaks are preserved;
+            empty lines are removed because they separate subtitle cues.
+        duration
+            Positive, finite display duration in seconds. Defaults to ``1``.
+        offset
+            Finite seconds after the current authoring time; negative values
+            place the caption earlier. Defaults to ``0``. Export clips captions
+            to the Scene's duration, discarding those wholly outside it.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If text is empty or contains NUL, or timing is invalid.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Scene
+
+            Scene.add_subcaption("The two terms cancel.", duration=2)
+            Scene.wait(2)
+            Scene.save_subtitles("cancellation.srt")
+        """
+        from algan.animation_timeline.animation_contexts import Off
+        from algan.sound.subtitles import _caption_text, _seconds, _Subcaption
+
+        text = _caption_text(content)
+        duration = _seconds(duration, "Caption duration", positive=True)
+        offset = _seconds(offset, "Caption offset")
+        if self.timeline_manager.is_replaying():
+            return self
+        # A zero-length child pins this call's cursor and receives later parent
+        # rescaling. The root context never exits, so cannot anchor this event.
+        with Off(
+            animation_manager=self.animation_manager,
+            priority_level=self.animation_manager.context.priority_level,
+        ) as context:
+            origin = context.get_current_time()
+        self.audio_manager._subcaptions.append(
+            _Subcaption(text, duration, offset, origin)
+        )
+        return self
+
+    @active_scene_method
+    def save_subtitles(
+        self,
+        file_path: str | Path | None = None,
+        *,
+        subtitle_format: str | None = None,
+        include_speech: bool = True,
+        max_chars_per_line: int = 42,
+        max_lines: int = 2,
+        max_duration: float = 6.0,
+        overwrite: bool = True,
+    ) -> Path:
+        r"""Write this Scene's narration and manual captions as SRT or WebVTT.
+
+        Speech uses existing word alignment when available; otherwise timings
+        within a speech clip are estimated from word lengths. Holds after speech
+        remain silent. Manual captions keep their text, line breaks and duration.
+        Overlapping captions remain separate cues, sorted by start time.
+
+        Animation
+        ---------
+        Exports immediately without rendering, generating audio, advancing time,
+        or changing the recording. Close timed contexts before the final export
+        so their timing is resolved. No spawned mobs are required. Save before
+        ``reset()`` if the captions are still needed.
+
+        Parameters
+        ----------
+        file_path
+            Destination using the same path rules as :meth:`save_video`. Defaults
+            to ``None``, meaning ``SETTINGS.paths.output_filename`` with the
+            subtitle extension, under the configured output directory.
+        subtitle_format
+            ``"srt"`` or ``"vtt"``, case insensitive. Defaults to ``None``:
+            infer from the filename, or use SRT when it has no extension.
+        include_speech
+            Include recorded Speech narration alongside manual captions. Defaults
+            to True. Set False to export only hand-authored captions.
+        max_chars_per_line
+            Positive character limit for wrapping speech lines. Defaults to 42.
+            Single long words are kept intact. Manual captions are not rewrapped.
+        max_lines
+            Positive maximum lines per speech cue. Defaults to 2. Single authored
+            line breaks are retained; blank lines start a new speech cue.
+        max_duration
+            Positive maximum seconds per speech cue, unless a single word lasts
+            longer. Defaults to 6. Cue boundaries follow the spoken words.
+        overwrite
+            Defaults to True: replace an existing file. False returns its path
+            without changing it.
+
+        Returns
+        -------
+        pathlib.Path
+            Absolute subtitle path. During Project-managed authoring, this call
+            is suppressed; use :meth:`Project.save_subtitles <algan.project.Project.save_subtitles>`
+            to export the completed project instead.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If the format, extension or grouping limits are invalid.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            from algan import Scene
+
+            Scene.add_subcaption("First line\nSecond line", duration=2)
+            Scene.wait(2)
+            Scene.save_subtitles("example.vtt")
+        """
+        from algan.project import _get_active_project_run
+        from algan.sound.subtitles import (
+            _scene_cues,
+            _subtitle_destination,
+            _SubtitleOptions,
+            _write_subtitles,
+        )
+
+        options = _SubtitleOptions(
+            include_speech, max_chars_per_line, max_lines, max_duration
+        )
+        destination, subtitle_format = _subtitle_destination(file_path, subtitle_format)
+        _note_render_requested()
+        if self._project_run is not None or _get_active_project_run() is not None:
+            return destination
+        if not overwrite and destination.exists():
+            return destination
+        return _write_subtitles(
+            destination, _scene_cues(self, options), subtitle_format, overwrite
+        )
+
     def reset(self, rebuild_timeline: bool = True):
         """Empty the Scene completely and start over.
 

@@ -63,6 +63,14 @@ Shader/material setup that changes primitive layout or registers shader paramete
 
 `tests/unit_tests/test_nonplanar_circuits.py` is the guard for the circuit-planarity rules above.
 
+`TracedPath` is a native Mob whose geometry comes from historical timeline
+samples rather than fixed control-point rows. It emits ordinary unfilled Bezier
+segments with per-segment camera-facing planes, retaining 3-D positions. Its
+primitive topology can vary between materialization windows, and it must stay
+out of the fixed-control-point circuit packing path. Its per-frame memory estimate
+prices the maximum authored trail length (or the dissipation window), including
+sampling and primitive-preparation scratch.
+
 ## Logical PN patches and dicing
 
 Curved surfaces reach the renderer as *logical PN* patches diced to flat triangles per frame (`algan/rendering/logical_pn.py`); no curved-patch primitive exists in the renderer.
