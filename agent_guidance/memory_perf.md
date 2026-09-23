@@ -22,6 +22,24 @@ External PyTorch tensors, compiler workspace and driver allocations do not; they
 need separate headroom and telemetry. An affine estimate is not an exact memory
 formula for every scene.
 
+Texture preparation has its own retry before arena preflight. A PyTorch OOM
+while materializing or building primitives clears partial timeline buffers and
+halves the frame window on the same preparation worker, including prefetched
+batches. One-frame OOMs and unrelated errors still propagate. Custom animation
+callbacks disable compact working sets, so batch sizing also prices every
+allocated texture row (including inactive panels), with assignment scratch,
+against the device where those rows materialize.
+
+Bezier projection reuses unchanged circuit polylines (including Text) across
+frames and preparation windows. Animated circuits are partitioned out without
+changing draw order. Camera-dependent chord selection still runs, and exact
+post-bias controls, plane frames, connectivity and chord counts key the cache;
+materials and bounds remain live. Each render context retains at most 16 MiB
+of keys and device edges outside the arena, visible to pool-headroom telemetry.
+The cache is cleared after joining the prep worker, including errors and closed
+generators. `SETTINGS.raytracing.experimental.bezier_geometry_cache = False`
+restores the uncached build for A/B checks.
+
 Consequences worth knowing when changing render code:
 
 - First-chunk peaks can understate later workspace (historical probes measured

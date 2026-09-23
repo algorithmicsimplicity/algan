@@ -454,6 +454,58 @@ def test_single_frame_batch_renders_when_only_an_estimate_rejects_it(monkeypatch
     assert [len(frame) for frame in frames] == rendered_durations
 
 
+@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize("first_batch", [False, True])
+def test_texture_materialization_oom_shrinks_preparation_window(
+    monkeypatch, prefetch, first_batch
+):
+    rendered = []
+    scene = _make_preflight_scene(monkeypatch, lambda *_args: True, rendered)
+    monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", str(int(prefetch)))
+    monkeypatch.setenv("ALGAN_PREFETCH_MERGE", "0")
+    original = scene._get_batch_of_primitives
+    requests, cleared = [], []
+    scene.timeline_manager.clear_buffers = lambda: cleared.append(True)
+
+    def fetch(start, end, actors, budget):
+        requests.append((start, end))
+        # Cover the initial fetch and a failure arriving through a Future.
+        if (first_batch or start > 0) and end - start > 2:
+            raise torch.OutOfMemoryError("texture window is too large")
+        return original(start, min(end, start + 4), actors, budget)
+
+    scene._get_batch_of_primitives = fetch
+    frames = list(scene.get_frames(0, 8, post_processes=(), manual_memory=False))
+    assert sum(map(len, frames)) == 8
+    if first_batch:
+        assert (0, 8) in requests
+        assert (0, 2) in requests
+        assert rendered == [2, 2, 2, 2]
+    else:
+        assert (4, 8) in requests
+        assert (4, 6) in requests
+        assert rendered == [4, 2, 2]
+    assert cleared
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        torch.OutOfMemoryError("one frame does not fit"),
+        RuntimeError("shape mismatch"),
+    ],
+)
+def test_preparation_failure_is_not_swallowed_at_one_frame(monkeypatch, error):
+    scene = _make_preflight_scene(monkeypatch, lambda *_args: True, [])
+
+    def fetch(*_args):
+        raise error
+
+    scene._get_batch_of_primitives = fetch
+    with pytest.raises(type(error), match=str(error)):
+        list(scene.get_frames(0, 1, post_processes=(), manual_memory=False))
+
+
 def test_single_frame_batch_that_exactly_overflows_still_reports_out_of_memory(
     monkeypatch,
 ):
@@ -495,6 +547,34 @@ def test_fetch_window_carries_the_arena_verdict_into_the_next_batch(monkeypatch)
     # Only the first batch pays for the search; every later fetch asks for the
     # window that was just shown to fit.
     assert requested_windows == [20, 10, 5, 5, 5, 5]
+
+
+@pytest.mark.parametrize("exit_path", ["complete", "error", "close"])
+def test_render_releases_circuit_cache_on_every_exit(monkeypatch, exit_path):
+    from algan.rendering.raytracing.bezier_geometry_cache import _BezierGeometryCache
+
+    scene = _make_preflight_scene(monkeypatch, lambda *_args: True, [])
+    monkeypatch.setattr(render_loop_module, "ensure_taichi_for_render", lambda: None)
+    cache = scene._bezier_geometry_cache = _BezierGeometryCache()
+    cache.put((True, (), b"contour"), (torch.zeros(1, 1, 6),))
+
+    if exit_path == "error":
+
+        def fail(*_args, **_kwargs):
+            raise ValueError("render failed")
+
+        monkeypatch.setattr(scene, "_render_primitive_batch", fail)
+    frames = scene.get_frames(0, 3, post_processes=(), manual_memory=False)
+    if exit_path == "error":
+        with pytest.raises(ValueError, match="render failed"):
+            list(frames)
+    elif exit_path == "close":
+        next(frames)
+        frames.close()
+    else:
+        list(frames)
+    assert not hasattr(scene, "_bezier_geometry_cache")
+    assert cache.bytes == 0
 
 
 def test_outer_preflight_retry_renders_first_fitting_halved_duration(

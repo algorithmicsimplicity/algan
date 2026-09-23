@@ -3158,23 +3158,22 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         return chord_counts
 
-    def _build_circuit_geometry(self, corners, num_samples):
-        """Sample world-space polylines into per-circuit plane coordinates and
-        pack the per-circuit metadata the trace kernel consumes.
-        """
+    def _sample_circuit_edges(
+        self,
+        corners,
+        num_samples,
+        num_segments,
+        nsi,
+        centers,
+        basis_u,
+        basis_v,
+        inward_signs,
+    ):
+        """Build polylines from geometry alone; materials are packed separately."""
         device = corners.device
-        S = corners.shape[1]
-        num_segments = self.num_segments_per_object.to(device).view(-1).long()
-        C = num_segments.shape[0]
-
+        C = len(num_segments)
         circuit_of_segment = torch.repeat_interleave(
             torch.arange(C, device=device), num_segments
-        )
-
-        nsi = (
-            self.next_segment_inds.to(device)
-            .reshape(self.next_segment_inds.shape[0], S)
-            .long()
         )
         # A redirected edge is an invisible fill closure only when the cubic's
         # true endpoint and the selected next cubic's start are discontinuous.
@@ -3206,32 +3205,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         )
         ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
-
-        # Plane frame per circuit: normal + an arbitrary orthonormal basis.
-        normals = F.normalize(self.normals.float(), p=2, dim=-1)
-        centers = self.mob_center.float()
-        (normals, centers), _ = _unify_time([normals, centers], "bezier planes")
-        axis = torch.zeros_like(normals)
-        axis[..., 0] = 1
-        alt_axis = torch.zeros_like(normals)
-        alt_axis[..., 1] = 1
-        helper = torch.where(normals[..., :1].abs() < 0.9, axis, alt_axis)
-        # Crossed helper-first, and ``basis_v`` with it: that pins this frame's
-        # handedness against the SIGN of the plane normal. Any orthonormal pair
-        # spanning the plane would do -- nothing visible depends on which one --
-        # but this is the frame the edge coverage integral is evaluated in, so
-        # its sign decides how a partly covered pixel rounds. Deriving it as
-        # ``cross(normal, helper)`` tied it to the normal, and re-signing that
-        # normal -- so a flat shape faces the viewer, as DEFAULT_BASIS says a Mob
-        # does -- re-rounded scattered antialiased pixels on every circuit and
-        # every glyph: measured at up to 58 channel values over ~25 isolated
-        # high-contrast pixels a frame, with no outline moved and no fill
-        # inverted. Written this way, the two negations cancel exactly (IEEE
-        # subtraction is antisymmetric, so ``cross(a, b)`` is the exact negation
-        # of ``cross(b, a)``) and every baseline still holds byte for byte --
-        # including the CUDA ones, which no CPU machine can regenerate.
-        basis_u = F.normalize(torch.cross(helper, normals, dim=-1), p=2, dim=-1)
-        basis_v = torch.cross(basis_u, normals, dim=-1)
 
         segment_lengths = (
             (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
@@ -3310,18 +3283,80 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # contour's winding mid-animation. Zeros unless the wedge is live
         # (the only reader) AND this is a filled circuit. Unfilled strokes
         # use the two-sided band coverage, which never consumes these signs.
-        if self.filled and rt_settings.analytic_aa_bez_mode() == 3:
+        if inward_signs:
             sigma = _circuit_edge_inward_signs(edges5, vert_circuit)
         else:
             sigma = torch.zeros(edges5.shape[:2], device=device)
-        self._rt_edges = torch.cat((edges5, sigma.unsqueeze(-1)), -1).contiguous()
+        edges = torch.cat((edges5, sigma.unsqueeze(-1)), -1).contiguous()
 
         samples_per_circuit = torch.zeros((C,), dtype=torch.long, device=device)
         samples_per_circuit.index_add_(0, circuit_of_segment, verts_per_segment)
         edge_offsets = torch.zeros((C + 1,), dtype=torch.long, device=device)
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
-        self._rt_edge_offsets = edge_offsets.to(torch.int32).contiguous()
+        return edges, edge_offsets.to(torch.int32).contiguous()
+
+    def _build_circuit_geometry(self, corners, num_samples):
+        """Sample world-space polylines into per-circuit plane coordinates and
+        pack the per-circuit metadata the trace kernel consumes.
+        """
+        device = corners.device
+        S = corners.shape[1]
+        num_segments = self.num_segments_per_object.to(device).view(-1).long()
+        C = num_segments.shape[0]
+
+        circuit_of_segment = torch.repeat_interleave(
+            torch.arange(C, device=device), num_segments
+        )
+
+        nsi = (
+            self.next_segment_inds.to(device)
+            .reshape(self.next_segment_inds.shape[0], S)
+            .long()
+        )
+        # Plane frame per circuit: normal + an arbitrary orthonormal basis.
+        normals = F.normalize(self.normals.float(), p=2, dim=-1)
+        centers = self.mob_center.float()
+        (normals, centers), _ = _unify_time([normals, centers], "bezier planes")
+        axis = torch.zeros_like(normals)
+        axis[..., 0] = 1
+        alt_axis = torch.zeros_like(normals)
+        alt_axis[..., 1] = 1
+        helper = torch.where(normals[..., :1].abs() < 0.9, axis, alt_axis)
+        # Crossed helper-first, and ``basis_v`` with it: that pins this frame's
+        # handedness against the SIGN of the plane normal. Any orthonormal pair
+        # spanning the plane would do -- nothing visible depends on which one --
+        # but this is the frame the edge coverage integral is evaluated in, so
+        # its sign decides how a partly covered pixel rounds. Deriving it as
+        # ``cross(normal, helper)`` tied it to the normal, and re-signing that
+        # normal -- so a flat shape faces the viewer, as DEFAULT_BASIS says a Mob
+        # does -- re-rounded scattered antialiased pixels on every circuit and
+        # every glyph: measured at up to 58 channel values over ~25 isolated
+        # high-contrast pixels a frame, with no outline moved and no fill
+        # inverted. Written this way, the two negations cancel exactly (IEEE
+        # subtraction is antisymmetric, so ``cross(a, b)`` is the exact negation
+        # of ``cross(b, a)``) and every baseline still holds byte for byte --
+        # including the CUDA ones, which no CPU machine can regenerate.
+        basis_u = F.normalize(torch.cross(helper, normals, dim=-1), p=2, dim=-1)
+        basis_v = torch.cross(basis_u, normals, dim=-1)
+
         self._rt_circuit_of_segment = circuit_of_segment
+        args = (corners, num_samples, num_segments, nsi, centers, basis_u, basis_v)
+        inward_signs = bool(self.filled and rt_settings.analytic_aa_bez_mode() == 3)
+        if rt_settings.bezier_geometry_cache:
+            from algan.rendering.raytracing.bezier_geometry_cache import (
+                _build_cached_circuit_edges,
+            )
+
+            self._rt_edges, self._rt_edge_offsets = _build_cached_circuit_edges(
+                getattr(self, "scene", None),
+                self._sample_circuit_edges,
+                args,
+                inward_signs,
+            )
+        else:
+            self._rt_edges, self._rt_edge_offsets = self._sample_circuit_edges(
+                *args, inward_signs
+            )
 
         # Texture-grid transform: maps plane (u, v) displacements to the
         # mob-basis coordinates used by the texture lookup.

@@ -46,6 +46,9 @@ automatically**:
 To start with a blank slate call :meth:`~algan.scene.Scene.clear_lights`,
 which removes all existing lights.
 
+New lights emit white by default. Pass ``color=`` to choose another colour,
+for example ``PointLight(color=BLUE)``.
+
 .. important::
 
    Wrap scene setup in ``with Off():``. Lights are Mobs, so each ``spawn()``

@@ -2457,6 +2457,15 @@ class RenderLoopMixin:
             )
             for actor, spawn in primitive_actors
         ]
+        # Unknown callback dependencies materialize all texture rows, even
+        # panels outside this actor window. The actor-only estimate misses
+        # those entirely. Use the full requested interval conservatively;
+        # preparation retries still cover callback-owned allocations.
+        fallback_animation_mem, fallback_render_mem = (
+            self.timeline_manager._unbounded_texture_memory_per_timestep(
+                start_time, max_end_time
+            )
+        )
         # Two budgets: what a frame allocates on the animation device, and
         # what it allocates on the render device -- a wide attribute's window
         # (a texture) materializes there, outside the render arena, and a
@@ -2464,7 +2473,7 @@ class RenderLoopMixin:
         # second. Read once per fetch, since it is a measurement.
         max_render_mem_used = (
             self._render_device_prep_budget()
-            if any(render_mem for _, _, render_mem in actor_mem)
+            if fallback_render_mem or any(render_mem for _, _, render_mem in actor_mem)
             else float("inf")
         )
 
@@ -2488,6 +2497,8 @@ class RenderLoopMixin:
                     if spawn <= cutoff:
                         mem_used += mem * duration
                         render_mem_used += render_mem * duration
+                mem_used = max(mem_used, fallback_animation_mem * duration)
+                render_mem_used = max(render_mem_used, fallback_render_mem * duration)
                 return (
                     mem_used <= max_mem_used and render_mem_used <= max_render_mem_used
                 )
@@ -3354,6 +3365,12 @@ class RenderLoopMixin:
                         ),
                     )
             finally:
+                # _get_frames_impl has drained its prep worker before returning
+                # here, including errors and abandoned generators. Release
+                # render-local device geometry before memory-pressure cleanup.
+                cache = self.__dict__.pop("_bezier_geometry_cache", None)
+                if cache is not None:
+                    cache.clear()
                 # Release the arena before the arch scope considers a deferred
                 # compiler reset. WDDM charges GPU allocations against host
                 # commit too; its freed storage must be reclaimable before the
@@ -3457,17 +3474,51 @@ class RenderLoopMixin:
                 if batch_end_ind is None:
                     batch_end_ind = end_time_ind
                 with torch.set_grad_enabled(grad_enabled):
-                    batch = self._get_batch_of_primitives(
-                        time_ind,
-                        batch_end_ind,
-                        actors,
-                        max_animate_mem,
-                        **(
-                            {"frame_indices": frame_indices}
-                            if frame_indices is not None
-                            else {}
-                        ),
-                    )
+                    while True:
+                        try:
+                            batch = self._get_batch_of_primitives(
+                                time_ind,
+                                batch_end_ind,
+                                actors,
+                                max_animate_mem,
+                                **(
+                                    {"frame_indices": frame_indices}
+                                    if frame_indices is not None
+                                    else {}
+                                ),
+                            )
+                            break
+                        except (
+                            InsufficientMemoryException,
+                            OutOfRenderMemory,
+                            MemoryError,
+                            RuntimeError,
+                        ) as prep_exc:
+                            if not isinstance(
+                                prep_exc,
+                                (
+                                    InsufficientMemoryException,
+                                    OutOfRenderMemory,
+                                    MemoryError,
+                                ),
+                            ) and not is_cuda_oom(prep_exc):
+                                raise
+                            duration = batch_end_ind - time_ind
+                            if duration <= 1:
+                                raise
+                            batch_end_ind = time_ind + max(1, duration // 2)
+                        # Preparation allocates outside the arena: a dense
+                        # texture query can OOM before the render retry ever
+                        # sees a batch. Drop partial state and the exception's
+                        # traceback before retrying, on the same prep worker.
+                        self.timeline_manager.clear_buffers()
+                        release_torch_memory(force_gc=True)
+                        logger.log(
+                            PERF,
+                            "Batch preparation exceeded memory; retrying frames %s:%s.",
+                            time_ind,
+                            batch_end_ind,
+                        )
                     # Pre-run the ray tracer's vertex shade + packing
                     # (project_to_screen) and merged-scene / STBVH build here
                     # (all torch-only) so they ride the prefetch: batch b+1's

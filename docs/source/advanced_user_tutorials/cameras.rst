@@ -12,10 +12,11 @@ rotate, and animate it using the exact same methods you use for everything else.
 
     camera = Scene.get_camera()
 
-By default, the camera sits at ``ORIGIN + OUT * 7`` aimed towards ``ORIGIN``,
-using a perspective projection with a vertical field of view of ~53°. At the
-origin plane (``z = 0``), the default framing spans approximately 12.4 × 7 world
-units.
+By default, the Scene's camera sits at ``ORIGIN + OUT * 20`` aimed towards
+``ORIGIN``, using a perspective projection with a vertical field of view of
+approximately 22.62°. At the origin plane (``z = 0``), the framing is 8 world
+units tall; its width follows the output aspect ratio (approximately 14.22
+world units at 16:9, or 4.5 at 9:16).
 
 Moving and Animating the Camera
 ===============================

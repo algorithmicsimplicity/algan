@@ -706,11 +706,28 @@ class Mob(
         write. See :meth:`_distribute_over_packed_subtree`.
         """
         timeline = self.scene.timeline_manager.attr_to_timeline.get(key)
-        if timeline is None:
+        if timeline is None or self.id not in timeline.mob_id_to_inds:
             return None
+        subtree = self.get_descendants(include_self=True)
+        # Each block map names rows of the immediate parent. Compose it down
+        # the hierarchy: a cylinder pack has two caps per member, then a grid
+        # per cap, so its grandchildren have 2 * members blocks.
+        root_rows = attr_ranges_for_mob(timeline, self).tensor()
+        member_owners = {id(self): torch.arange(members, device=root_rows.device)}
+        for parent in subtree:
+            parent_owners = member_owners.get(id(parent))
+            for child in parent.children:
+                sizes = child.parent_batch_sizes
+                member_owners[id(child)] = (
+                    parent_owners.repeat_interleave(sizes.to(parent_owners.device))
+                    if parent_owners is not None
+                    and sizes is not None
+                    and sizes.numel() == parent_owners.numel()
+                    else None
+                )
         descendants = [
             mob
-            for mob in self.get_descendants(include_self=True)
+            for mob in subtree
             if mob is self or key not in getattr(mob, "_excluded_from_parent_attrs", ())
         ]
         rows, owners = [], []
@@ -720,27 +737,8 @@ class Mob(
                     continue
                 return None
             mob_rows = attr_ranges_for_mob(timeline, mob).tensor()
-            if mob is self:
-                owner = torch.arange(members, device=mob_rows.device)
-            else:
-                sizes = mob.parent_batch_sizes
-                if sizes is None or sizes.shape[-1] != members:
-                    if not partial:
-                        return None
-                    owners.append(
-                        torch.full(
-                            (mob_rows.numel(),),
-                            -1,
-                            dtype=torch.long,
-                            device=mob_rows.device,
-                        )
-                    )
-                    rows.append(mob_rows)
-                    continue
-                owner = torch.arange(members, device=mob_rows.device).repeat_interleave(
-                    sizes.to(mob_rows.device)
-                )
-            if mob_rows.numel() != owner.numel():
+            owner = member_owners.get(id(mob))
+            if owner is None or mob_rows.numel() != owner.numel():
                 if not partial:
                     return None
                 owner = torch.full(

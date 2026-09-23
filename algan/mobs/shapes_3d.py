@@ -1747,7 +1747,14 @@ class Polyhedron(Mob):
         # Opt-in Manim shape profile: a mapped solid adopts Manim's fill
         # defaults on its faces unless the caller styled them (fill_color /
         # fill_opacity reach faces_config through the constructors above).
-        face_config_source = self.faces_config
+        face_config_source = dict(self.faces_config)
+        # The parent is constructed before its faces exist, so Mob's initial
+        # colour cannot propagate into them. Explicit face styling wins;
+        # otherwise carry the author's colour to the triangle constructors.
+        if kwargs.get("color") is not None and not (
+            "fill_color" in face_config_source or "color" in face_config_source
+        ):
+            face_config_source["fill_color"] = kwargs["color"]
         style = _manim_shape_style_for(type(self))
         if style is not None:
             face_config_source = dict(face_config_source)
@@ -1910,7 +1917,9 @@ class Prism(Polyhedron):
         The box is centered on the Mob's location, so each side extends half its
         length either way.
     **kwargs
-        Passed to :class:`~algan.mobs.shapes_3d.Polyhedron`. ``fill_color``,
+        Passed to :class:`~algan.mobs.shapes_3d.Polyhedron`. ``color`` sets the
+        face colour unless ``fill_color`` or a colour in ``faces_config`` is
+        supplied. ``fill_color``,
         ``fill_opacity`` and ``stroke_width`` are Manim's face-styling names and
         are forwarded into ``faces_config`` rather than applied to the Mob.
 
@@ -1985,7 +1994,9 @@ class Cube(Prism):
     fill_color
         Color of the faces: an Algan :class:`~algan.constants.color.Color`, a
         named constant such as ``BLUE``, or anything ``Color()`` accepts.
-        Defaults to ``None``, meaning ``BLUE``.
+        Defaults to ``None``, meaning the colour in ``faces_config``, then
+        ``color`` if supplied, otherwise ``BLUE``. An explicit ``fill_color``
+        takes precedence over those alternatives.
     stroke_width
         Width of the outline drawn around each face, in world units. Defaults to
         ``0`` (no outline).
@@ -2020,7 +2031,12 @@ class Cube(Prism):
 
         self.size = size
         if fill_color is None:
-            fill_color = BLUE
+            face_config = kwargs.get("faces_config") or {}
+            fill_color = face_config.get(
+                "fill_color", face_config.get("color", kwargs.get("color"))
+            )
+            if fill_color is None:
+                fill_color = BLUE
         super().__init__(
             width=size,
             height=size,

@@ -3422,6 +3422,12 @@ project_on_gpu = env_flag("ALGAN_PROJECT_ON_GPU", True)
 # the exact fallback. Read live.
 project_gpu_peak_factor = env_float("ALGAN_PROJECT_GPU_PEAK_FACTOR", 8.0)
 
+# Reuse unchanged circuit polylines within and between render batches. The
+# scene owns a bounded cache, released after the prep worker joins at teardown.
+# Read live; SETTINGS.raytracing.experimental.bezier_geometry_cache = False
+# restores the per-frame build for parity and performance comparisons.
+bezier_geometry_cache = True
+
 
 def set_project_on_gpu(enabled):
     """Toggle GPU-side ``project_to_screen`` (see ``project_on_gpu``)."""

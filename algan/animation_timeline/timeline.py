@@ -3271,6 +3271,46 @@ class AnimationTimeline:
         """
         self._segment_window_attrs.add(attr_name)
 
+    def _unbounded_texture_memory_per_timestep(self, start, end):
+        """Dense texture scratch when callbacks defeat actor working sets.
+
+        The render loop normally prices live actors. A custom callback can
+        read any mob, including a despawned panel, so its window materializes
+        every allocated texture row. Price that fallback before allocating it.
+        Return animation-device and render-device bytes per frame, including
+        the base state and two assignment-replay temporaries.
+        """
+        if not self._segment_window_attrs:
+            return 0, 0
+        self._resolve_replay_windows()
+        functions = []
+        if self.function_timeline.function_applications:
+            starts, ends, _ = self.function_timeline._windows()
+            # Interval overlap, not just evaluation at the two endpoints: a
+            # callback can begin and finish entirely inside the requested span.
+            indices = ((starts < end) & (ends > start)).nonzero().view(-1)
+            functions = [
+                self.function_timeline.function_applications[i]
+                for i in indices.tolist()
+            ]
+        if (
+            not _opt_disabled("compactstate")
+            and self._active_mob_ids([], functions, []) is not None
+        ):
+            return 0, 0
+        animation_bytes = render_bytes = 0
+        for attr in self._segment_window_attrs:
+            timeline = self.attr_to_timeline.get(attr)
+            if timeline is None:
+                continue
+            state = timeline.current_state
+            cost = 3 * timeline.pointer * state.shape[-1] * state.element_size()
+            if timeline.materialize_device is None:
+                animation_bytes += cost
+            else:
+                render_bytes += cost
+        return animation_bytes, render_bytes
+
     def segment_window_for(self, attr_name, mob_id):
         """The current batch's :class:`SegmentWindow` for one mob's rows of
         ``attr_name``, or None when the window was materialized densely.

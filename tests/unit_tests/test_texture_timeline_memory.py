@@ -12,9 +12,10 @@ geometry at all, and the only pixel-compared texture scenes live in
 
 import math
 
+import pytest
 import torch
 
-from algan import Scene, Surface
+from algan import Scene, Square, Surface
 from algan.animation_timeline.animation_contexts import Off, Seq
 from algan.animation_timeline.timeline import AttributeTimeline
 from algan.constants import easings
@@ -213,3 +214,78 @@ def test_scene_render_still_works_end_to_end_with_a_texture():
     Surface(color_texture=_texture(4, 4, 2), grid_height=4, grid_width=4).spawn()
     result = Scene.save_frame()
     assert result.rendered
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("animated_texture", [False, True])
+def test_many_panels_keep_static_textures_out_of_frame_buffers(animated_texture):
+    scene = SceneManager.reset()
+    panels = []
+    for index in range(4):
+        surface = Surface(
+            color_texture=_texture(16, 8, index % 3), grid_height=2, grid_width=2
+        ).spawn()
+        panels.append(surface)
+        if animated_texture and index == 1:
+            surface.color_texture = _texture(16, 8, 2)
+        scene.wait(1)
+        surface.despawn()
+    timeline = scene.timeline_manager
+    times = torch.linspace(0, 10, 32)
+    timeline.set_state_to_times(times, active_mobs=list(scene.actors))
+    try:
+        attribute = timeline.attr_to_timeline[panels[0]._color_texture_attr]
+        assert attribute.active_state.numel() == 0
+        for panel in panels:
+            window = timeline.segment_window_for(panel._color_texture_attr, panel.id)
+            assert window is not None
+            assert window.endpoints.shape[0] <= (3 if animated_texture else 1)
+    finally:
+        timeline.clear_buffers()
+
+
+@pytest.mark.parametrize("render_device", [False, True])
+def test_custom_callback_batch_prices_inactive_texture_rows(monkeypatch, render_device):
+    scene = SceneManager.reset()
+    scene.frames_per_second = 8
+    with Off():
+        square = Square().spawn()
+    square.animate_function(lambda mob, t: mob.set(opacity=t))
+    panels = []
+    for index in range(4):
+        with Off():
+            surface = Surface(
+                color_texture=_texture(16, 8, index % 3), grid_height=2, grid_width=2
+            ).spawn()
+        panels.append(surface)
+        scene.wait(1)
+        with Off():
+            surface.despawn()
+    timeline = scene.timeline_manager
+    attribute = timeline.attr_to_timeline[panels[0]._color_texture_attr]
+    # Test both budget destinations without requiring CUDA or large tensors.
+    if render_device:
+        attribute.materialize_device = torch.device("cpu")
+    per_frame = 3 * attribute.pointer * 16 * 8 * 5 * 4
+    expected = (0, per_frame) if render_device else (per_frame, 0)
+    assert timeline._unbounded_texture_memory_per_timestep(-0.5, 6) == expected
+    assert timeline._unbounded_texture_memory_per_timestep(2, 3) == (0, 0)
+    monkeypatch.setattr(scene, "_render_device_prep_budget", lambda: per_frame * 2)
+    materialized_shapes = []
+    materialize = attribute.rematerialize_state_at_times
+
+    def capture(*args, **kwargs):
+        result = materialize(*args, **kwargs)
+        materialized_shapes.append(tuple(attribute.active_state.shape[:2]))
+        return result
+
+    monkeypatch.setattr(attribute, "rematerialize_state_at_times", capture)
+    try:
+        with scene._batch_prep_context():
+            _, end, _ = scene._get_batch_of_primitives(
+                0, 8, list(scene.actors), per_frame * 2
+            )
+        assert end == 2, "the very first batch must price all four inactive panels"
+        assert materialized_shapes == [(2, attribute.pointer)]
+    finally:
+        timeline.clear_buffers()

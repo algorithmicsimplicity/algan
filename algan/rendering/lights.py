@@ -40,6 +40,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
+from algan.constants.color import WHITE, Color
 from algan.constants.spatial import ORIGIN, UP
 from algan.errors import AlganConfigurationError
 from algan.rendering.raytracing import settings as rt_settings
@@ -148,6 +149,9 @@ def _as_direction_target(target):
 class Light(Mob):
     """Base class of all light sources.
 
+    Lights emit white by default. Pass ``color=`` to choose another colour,
+    using any value accepted by :class:`~.Color`.
+
     Parameters
     ----------
     intensity
@@ -208,6 +212,16 @@ class Light(Mob):
         # setter (which cannot run before Animatable.__init__ has built its state), so
         # the constructor validates the value itself, above.
         self._init_default_attr("intensity", cast_to_tensor(intensity))
+
+    def get_default_color(self) -> Color:
+        """Get the white colour used when no light colour was supplied.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``WHITE``, with full opacity and zero glow.
+        """
+        return WHITE
 
     def set_animated_attribute(self, attr, value, recursive=True):
         """Animate one animatable attribute to a new value, by name.

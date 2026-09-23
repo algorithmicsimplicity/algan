@@ -36,6 +36,7 @@ def _render_pass(scene, camera, actors, resolution):
     result.actors = actors
     result.memory = None
     result._actor_window_cache = None
+    result.__dict__.pop("_bezier_geometry_cache", None)
     result._camera_view_pass = True
     result._camera_view_captures = {}
     result.set_video_settings(scene.video_settings.set(resolution=resolution))

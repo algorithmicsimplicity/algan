@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
@@ -347,7 +348,8 @@ def test_closed_circuit_polyline_is_unchanged_by_the_endpoint_rule():
     assert bool((edges[:, 4] > 0.5).all())
 
 
-def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch):
+@pytest.mark.parametrize("cached", [False, True])
+def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch, cached):
     from algan.rendering.raytracing import primitives as module
     from algan.rendering.raytracing import settings
 
@@ -360,6 +362,7 @@ def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch):
 
     monkeypatch.setattr(module, "_circuit_edge_inward_signs", record)
     monkeypatch.setattr(settings, "analytic_aa_bez_mode", lambda: 3)
+    monkeypatch.setattr(settings, "bezier_geometry_cache", cached)
     for filled in (False, True):
         SceneManager.reset()
         with Off(record_funcs=False, record_attr_modifications=False):
@@ -374,5 +377,5 @@ def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch):
             calls.clear()
             primitive._build_circuit_geometry(corners, chords)
             assert len(calls) == int(filled)
-            assert primitive._rt_edges.shape[0] == frames
+            assert primitive._rt_edges.shape[0] == (1 if cached else frames)
             assert bool(primitive._rt_edges[..., 5].any()) is filled
