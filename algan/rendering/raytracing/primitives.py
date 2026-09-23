@@ -2909,6 +2909,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             device
         )
 
+        edge_source = (corners, self.mob_center)
         corners = self._apply_z_index_bias(corners, cam_o, sp)
 
         # Ratio of the internal render resolution to the output resolution: the
@@ -2926,7 +2927,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             camera.screen_height,
             bool(getattr(camera, "analytic_raster", False)),
         )
-        self._build_circuit_geometry(corners, num_samples)
+        self._build_circuit_geometry(corners, num_samples, edge_source)
         self._build_frame_bounds(corners, cam_o, sp, sb, camera.screen_height)
 
         # The polylines/metadata now carry everything the renderer needs;
@@ -3295,9 +3296,19 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
         return edges, edge_offsets.to(torch.int32).contiguous()
 
-    def _build_circuit_geometry(self, corners, num_samples):
+    def _build_circuit_geometry(self, corners, num_samples, edge_source=None):
         """Sample world-space polylines into per-circuit plane coordinates and
         pack the per-circuit metadata the trace kernel consumes.
+
+        ``edge_source`` is the ``(control points, centers)`` pair from before
+        :meth:`_apply_z_index_bias`. Edges are plane coordinates relative to
+        each circuit's center, and the bias slides a circuit and its center
+        together along the circuit's own eye ray, so it does not change them.
+        Sampling them before the bias means a circuit that is still in the
+        world has identical edges in every frame, however the camera -- and
+        with it the bias -- moves, which is what lets
+        :func:`~.bezier_geometry_cache._build_cached_circuit_edges` build them
+        once. The metadata keeps the biased centers the renderer places them at.
         """
         device = corners.device
         S = corners.shape[1]
@@ -3340,7 +3351,19 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         basis_v = torch.cross(basis_u, normals, dim=-1)
 
         self._rt_circuit_of_segment = circuit_of_segment
-        args = (corners, num_samples, num_segments, nsi, centers, basis_u, basis_v)
+        edge_corners, edge_centers = corners, centers
+        if edge_source is not None:
+            edge_corners = edge_source[0].float().contiguous()
+            edge_centers = edge_source[1].float()
+        args = (
+            edge_corners,
+            num_samples,
+            num_segments,
+            nsi,
+            edge_centers,
+            basis_u,
+            basis_v,
+        )
         inward_signs = bool(self.filled and rt_settings.analytic_aa_bez_mode() == 3)
         if rt_settings.bezier_geometry_cache:
             from algan.rendering.raytracing.bezier_geometry_cache import (

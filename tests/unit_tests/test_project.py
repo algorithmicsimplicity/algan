@@ -60,6 +60,135 @@ def test_validate_propagates_authoring_error_with_scene_name(tmp_path):
         assert "0_broken" in error.value.__notes__[0]
 
 
+def test_validate_script_compares_exact_words_in_project_order(tmp_path):
+    def first():
+        with Speech("One word.", wait_at_end=0):
+            pass
+
+    def second():
+        with Speech("Then another.", wait_at_end=0):
+            pass
+
+    project = Project(
+        [first, second],
+        speech_source=lambda _: _SilentClip(),
+        **_project_paths(tmp_path),
+    )
+    project.validate(["second", "first"], script="One   word.\n\nThen another.")
+    expected = tmp_path / "script.txt"
+    expected.write_text("One word. Then another.", encoding="utf-8")
+    project.validate(script=expected)
+    project.validate("second", script="Then another.")
+    for script, word in [
+        ("One wrong. Then another.", 2),
+        ("One word.", 3),
+        ("One word. Then another. Extra.", 5),
+        ("one word. Then another.", 1),
+    ]:
+        with pytest.raises(AlganConfigurationError, match=f"word {word}:"):
+            project.validate(script=script)
+    assert project.run_cli(["--validate", "--script", str(expected)])
+
+
+def test_script_mismatch_names_the_scene_and_shows_context(tmp_path):
+    def opening():
+        with Speech("A short opening line.", wait_at_end=0):
+            pass
+
+    def middle():
+        with Speech("The model tried hacking into the servers today.", wait_at_end=0):
+            pass
+
+    project = Project(
+        [opening, middle],
+        speech_source=lambda _: _SilentClip(),
+        **_project_paths(tmp_path),
+    )
+    script = "A short opening line. The model tried hacked into the servers today."
+    with pytest.raises(AlganConfigurationError) as error:
+        project.validate(script=script)
+    message = str(error.value)
+    assert "word 8: expected 'hacked', got 'hacking'" in message
+    assert "middle" in message
+    assert "word 4 of that scene" in message
+    assert "script:    ... short opening line. The model tried [hacked] into" in message
+    assert (
+        "narration: ... short opening line. The model tried [hacking] into" in message
+    )
+    with pytest.raises(AlganConfigurationError, match="after the end of scene"):
+        project.validate(script=script.replace("hacked", "hacking") + " Extra.")
+
+
+def test_project_post_process_defaults_reach_cli_video_and_stills(
+    monkeypatch, tmp_path
+):
+    from PIL import Image
+
+    calls = []
+
+    def effect(frames, **kwargs):
+        return frames
+
+    def scene():
+        Scene.wait(1)
+        Scene.save_frame("checkpoint")
+
+    def fake_video(active_scene, file_path=None, video_settings=None, **kwargs):
+        calls.append(("video", kwargs["post_processes"]))
+        return RenderResult("rendered", Path(file_path), 1)
+
+    def fake_still(batch):
+        calls.append(("still", batch.post_processes))
+        results = []
+        for target in batch.targets:
+            target.path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (12, 20), "red").save(target.path)
+            results.append(RenderResult("rendered", target.path, 1))
+        return results
+
+    monkeypatch.setattr(algan_utils, "_render_scene_to_file", fake_video)
+    monkeypatch.setattr("algan._still_frames._StillBatch.render", fake_still)
+    project = Project([scene], post_processes=[effect], **_project_paths(tmp_path))
+    project.run_cli(["--render-video"])
+    project.run_cli(["--render-screenshots", "--contact-sheet"])
+    assert calls == [("video", (effect,)), ("still", (effect,))]
+    assert (
+        project.last_contact_sheet_path
+        == tmp_path / "screenshots" / "contact_sheet.png"
+    )
+    with Image.open(project.last_contact_sheet_path) as sheet:
+        assert sheet.mode == "RGB"
+        assert sheet.size[0] == 344
+        assert sheet.getpixel((172, 100)) == (255, 0, 0)
+        assert sheet.crop((12, 258, 320, sheet.height - 12)).getextrema()[0][1] > 200
+    project.render_video(post_processes=[])
+    project.render_screenshots(post_processes=[])
+    assert calls[-2:] == [("video", []), ("still", ())]
+
+
+def test_contact_sheet_handles_mixed_aspects_and_does_not_overwrite_stills(tmp_path):
+    from PIL import Image
+
+    def scene():
+        pass
+
+    project = Project([scene], **_project_paths(tmp_path))
+    results = []
+    for index, size in enumerate(((20, 40), (40, 20), (30, 30))):
+        path = tmp_path / f"s{index}_f0_label.png"
+        Image.new("RGB", size, "blue").save(path)
+        results.append(RenderResult("rendered", path, 0))
+    sheet = project._write_contact_sheet(results, True, 2, overwrite=True)
+    with Image.open(sheet) as image:
+        assert image.width == 676
+        assert image.height > 500
+    before = sheet.read_bytes()
+    project._write_contact_sheet(results[:1], True, 1, overwrite=False)
+    assert sheet.read_bytes() == before
+    with pytest.raises(AlganConfigurationError, match="overwrite"):
+        project._write_contact_sheet(results, results[0].output_path, 2, overwrite=True)
+
+
 def test_project_profile_uses_managed_speech_and_suppresses_manual_saves(
     monkeypatch, tmp_path
 ):

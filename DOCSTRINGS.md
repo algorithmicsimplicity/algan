@@ -219,11 +219,12 @@ it frequently is not.
 
 A number without a unit is a support ticket.
 
-- **Angles are in degrees** throughout Algan's native API. Say "in degrees" in every angle
-  parameter. The Manim-parity surfaces that take **radians** — `RegularPolygon.start_angle`,
-  `Line.path_arc`, `Wiggle.rotation_angle`, `ManimCompatMob.rotate`, and the `u_range` /
-  `v_range` parametric domains on `Sphere` / `Cone` / `Cylinder` / `Torus` — must say
-  "in radians" and name the reason, because they contradict the default.
+- **Angles are in degrees** throughout Algan's root API, including the root adapters of Manim
+  classes (`Arc`, `Arrow(path_arc=...)`, `RegularPolygon.start_angle`, `Line.path_arc`,
+  `Wiggle.rotation_angle`) and `ManimCompatMob.rotate`. Say "in degrees" in every angle
+  parameter. Only `algan.manim` keeps Manim's **radians**; a root parameter that must accept
+  a Manim-style value points there rather than taking radians itself. Where a caller could
+  plausibly pass radians by habit, call `_warn_if_angle_looks_like_radians` and say so.
 - **Distances** are in world units unless the method name says screen (`move_to_screen_position`,
   `move_to_screen_edge`); for screen-space parameters say so and give the range ("``x`` and ``y`` in
   screen units, where ``(0, 0)`` is the center").

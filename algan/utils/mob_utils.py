@@ -23,9 +23,13 @@ entrances through opacity instead (this is what ``Tex.write()`` does).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from algan.animatable_base.mob import Mob
 
 from algan.animation_timeline.animation_contexts import *
 from algan.errors import AlganConfigurationError
@@ -186,12 +190,23 @@ def pack_member_rows(mob, count, rows_per_member, overrides=None):
     return mob
 
 
-def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
+def batch_mobs(
+    mobs: Iterable[Mob | Iterable],
+    parent_batch_sizes: torch.Tensor | Sequence[int] | None = None,
+    add_to_scene: bool = True,
+) -> Mob | None:
     """Pack existing Mobs into one Mob holding all of their rows.
 
     The generic counterpart to a class's own ``from_batches``: it works for any
     Mob class, but the per-object Mobs have to exist first, so it saves
     render-time cost and Scene-actor count rather than construction cost.
+
+    Animation
+    ---------
+    Packs immediately without recording an animation. Pack fresh, unspawned
+    Mobs before recording their animations, then spawn the result. Indexed
+    members share the pack's lifespan; use per-member opacity for staggered
+    appearances.
 
     Parameters
     ----------
@@ -210,6 +225,17 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
     -------
     :class:`~algan.animatable_base.mob.Mob` or None
         The packed Mob, or None when ``mobs`` is empty.
+
+    Examples
+    --------
+    .. algan:: Example1BatchMobs
+
+        from algan import *
+
+        tiles = batch_mobs([Square(size=0.5).move(RIGHT * x) for x in (-2, 0, 2)])
+        tiles.spawn()
+        tiles[1].color = BLUE
+        Scene.save_video()
     """
     mobs = list(traverse(mobs))
     if len(mobs) == 0:

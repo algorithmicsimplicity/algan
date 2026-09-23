@@ -44,7 +44,7 @@ coalesce into at most one queued re-run):
   Those subcommands read ``$ALGAN_HOME/daemon.json`` for the port and the
   token and send the line for you.
 
-* ``--watch`` re-renders when the scene script or any of its sibling helper
+* ``--watch`` re-renders when the scene script or any of its imported helper
   modules change on disk (polled; coalesced; never interrupts).
 
 When a run ends the daemon restores a clean slate, before it goes idle rather
@@ -55,10 +55,11 @@ process and nothing else:
 * ``SETTINGS.snapshot()`` / ``SETTINGS.restore()`` resets every public
   runtime settings section to its import-time value, so one run cannot leak
   configuration into the next. Private adaptive renderer state is retained.
-* User helper modules -- modules imported from the script's directory tree
-  are evicted from ``sys.modules`` so the next run picks up their edits (the
-  daemon prints what it evicted). Modules imported from elsewhere are NOT
-  reloaded.
+* User helper modules are evicted together from ``sys.modules``, wherever
+  their source files live, so imports and scene state are fresh on every run.
+  Algan, the standard library, installed packages and the daemon's startup
+  dependencies stay loaded, as does a user package containing a compiled
+  extension module. Algan source edits require the restart below.
 * **The render's GPU memory goes back to the driver**: one ``gc.collect()``
   (the scene's object graph is cyclic, so refcounting alone frees almost none
   of it) and one ``torch.cuda.empty_cache()``. Measured on a 4 GB card, an
@@ -127,8 +128,12 @@ import argparse
 import codecs
 import contextlib
 import hashlib
+import importlib
+import importlib.machinery
+import importlib.util
 import io
 import json
+import linecache
 import os
 import queue
 import runpy
@@ -218,8 +223,8 @@ def _say(msg):
 
 
 def _is_under(path, root):
-    path = os.path.normcase(os.path.abspath(path))
-    root = os.path.normcase(os.path.abspath(root))
+    path = os.path.normcase(os.path.realpath(path))
+    root = os.path.normcase(os.path.realpath(root))
     try:
         return os.path.commonpath([path, root]) == root
     except ValueError:  # different drives on Windows
@@ -759,10 +764,40 @@ def _library_roots():
 _LIBRARY_ROOTS = _library_roots()
 
 
-def _user_modules(script_dir):
-    """Names of loaded modules whose source lives under the script's tree."""
+_EXTENSION_SUFFIXES = tuple(
+    suffix.lower() for suffix in importlib.machinery.EXTENSION_SUFFIXES
+)
+
+
+def _compiled_packages():
+    """Top-level names of packages with a loaded compiled extension module."""
+    packages = set()
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if isinstance(file, str) and file.lower().endswith(_EXTENSION_SUFFIXES):
+            packages.add(name.partition(".")[0])
+    return packages
+
+
+def _user_modules(script_dir=None, *, protected=(), kept=None):
+    """Find user source modules, optionally restricted to one directory.
+
+    The daemon passes its startup module names as ``protected``. Protect their
+    top-level packages too: an editable compiler/dependency can load additional
+    submodules during a render, outside any site-packages directory. Reloading
+    half of such a package is as unsafe as reloading Algan itself.
+
+    A package with a loaded compiled extension module is kept whole for the
+    same reason: an extension module cannot be unloaded, so re-executing the
+    package's Python modules would pair fresh code with the old extension's
+    state. ``kept``, when given a set, collects the names of those packages.
+    """
+    compiled = _compiled_packages()
     names = []
     for name, module in list(sys.modules.items()):
+        top = name.partition(".")[0]
+        if name in protected or top in protected:
+            continue
         file = getattr(module, "__file__", None)
         # Require a real absolute path: torch sets e.g.
         # torch.ops.__file__ = "torch.ops", which would otherwise resolve
@@ -770,11 +805,57 @@ def _user_modules(script_dir):
         if (
             isinstance(file, str)
             and os.path.isabs(file)
-            and _is_under(file, script_dir)
+            and file.endswith((".py", ".pyw", ".pyc"))
+            and (script_dir is None or _is_under(file, script_dir))
             and not _is_under(file, _ALGAN_DIR)
             and not any(_is_under(file, root) for root in _LIBRARY_ROOTS)
         ):
+            if top in compiled:
+                if kept is not None:
+                    kept.add(top)
+                continue
             names.append(name)
+    return names
+
+
+#: Compiled user packages the daemon has already said it keeps loaded.
+_REPORTED_KEPT_PACKAGES = set()
+
+
+def _evict_user_modules(protected):
+    """Drop a whole user import graph between jobs, including stale bytecode.
+
+    Re-importing the graph (rather than importlib.reload in an arbitrary order)
+    preserves circular imports and refreshes ``from helper import value``.
+    CPython's timestamp pyc validation has only one-second precision; deleting
+    just these modules' caches also handles rapid same-size source edits.
+    """
+    kept = set()
+    names = sorted(_user_modules(protected=protected, kept=kept))
+    new_kept = sorted(kept - _REPORTED_KEPT_PACKAGES)
+    if new_kept:
+        _REPORTED_KEPT_PACKAGES.update(new_kept)
+        _say(
+            "not reloading (contains compiled extension modules; restart the "
+            "daemon to pick up edits): " + ", ".join(new_kept)
+        )
+    for name in names:
+        module = sys.modules.pop(name, None)
+        file = getattr(module, "__file__", "")
+        cached = getattr(module, "__cached__", None)
+        if file.endswith((".py", ".pyw")):
+            # Derive the cache destination from the source, never trust an
+            # arbitrary module attribute as a path to delete.
+            expected = importlib.util.cache_from_source(file)
+            if cached == expected:
+                with contextlib.suppress(OSError):
+                    os.unlink(expected)
+        parent_name, _, child = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and getattr(parent, child, None) is module:
+            delattr(parent, child)
+    importlib.invalidate_caches()
+    linecache.clearcache()
     return names
 
 
@@ -1185,10 +1266,9 @@ def main(argv=None):
     _start_stdin(events)
 
     run_count = 0
-    # Every script tree the daemon has executed. User modules from all of them
-    # are evicted before each run, so an edit is always picked up and one
-    # script's helpers never satisfy another's import.
-    script_dirs = set()
+    # Includes editable startup dependencies outside site-packages. User
+    # modules imported by jobs, including helpers on other drives, are not here.
+    protected_modules = frozenset(sys.modules)
     last = {"script": script, "args": list(args.script_args), "cwd": os.getcwd()}
 
     # Whether the daemon's state is fresh enough to run into. Set False for
@@ -1203,9 +1283,7 @@ def main(argv=None):
 
             _reset_after_interruption()
             clean["interrupted"] = False
-        evicted = sorted({n for d in script_dirs for n in _user_modules(d)})
-        for name in evicted:
-            sys.modules.pop(name, None)
+        evicted = _evict_user_modules(protected_modules)
         if evicted:
             _say("reloading: " + ", ".join(evicted))
         snapshot.restore()
@@ -1265,8 +1343,10 @@ def main(argv=None):
         # why the call resets an unset variable to its default rather than
         # leaving it, and why one client's DEBUG does not follow the next.
         apply_environment_logging()
-        script_dirs.add(os.path.dirname(path))
+        old_path = sys.path[:]
         _add_to_path(os.path.dirname(path))
+        importlib.invalidate_caches()
+        linecache.clearcache()
         _say(f"run #{run_count} ({reason}): {path}")
         old_argv, old_cwd = sys.argv, os.getcwd()
         started = time.perf_counter()
@@ -1301,6 +1381,7 @@ def main(argv=None):
         finally:
             set_busy(False)
             sys.argv = old_argv
+            sys.path[:] = old_path
             with contextlib.suppress(OSError):
                 os.chdir(old_cwd)
         if watcher is not None and path == script:
@@ -1308,7 +1389,7 @@ def main(argv=None):
                 {path}
                 | {
                     getattr(sys.modules[n], "__file__", None)
-                    for n in _user_modules(os.path.dirname(path))
+                    for n in _user_modules(protected=protected_modules)
                 }
                 - {None}
             )

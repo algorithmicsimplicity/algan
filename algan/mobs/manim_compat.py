@@ -11,6 +11,7 @@ remain native to Algan.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import re
 from collections.abc import Mapping
@@ -434,6 +435,19 @@ def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
     return value
 
 
+@functools.lru_cache(maxsize=None)
+def _accepts_keyword(manim_class, name):
+    """Whether a Manim constructor takes ``name``, directly or via ``**kwargs``."""
+    try:
+        parameters = inspect.signature(manim_class.__init__).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 class ManimCompatMob(ManimMob):
     """Base class for Mobs whose construction/query API is supplied by Manim.
 
@@ -454,6 +468,9 @@ class ManimCompatMob(ManimMob):
         "batch",
         "scene",
         "miter_limit",
+        "opacity",
+        "unlit",
+        "name",
     }
     #: True for wrappers whose Manim source typesets through LaTeX on
     #: construction (``MathTex``, ``Title``, the ``Matrix`` family, ...), so a
@@ -473,6 +490,15 @@ class ManimCompatMob(ManimMob):
             if key in self._ALGAN_ONLY_KWARGS
         }
         batch = bool(algan_kwargs.pop("batch", False))
+        # Most Manim classes forward fill and stroke opacity to VMobject, but a
+        # few spell out a closed signature without them (SampleSpace has no
+        # stroke_opacity). Those are applied through Algan's own properties
+        # after construction, so every root class accepts both.
+        component_opacity = {
+            key: kwargs.pop(key)
+            for key in ("fill_opacity", "stroke_opacity")
+            if key in kwargs and not _accepts_keyword(self._manim_class, key)
+        }
         # Color keywords are normalized before conversion because Manim's
         # parser is narrower than Algan's: it reads a tuple of floats as a
         # *list of colors* and rejects each element. Everything Algan accepts
@@ -494,6 +520,8 @@ class ManimCompatMob(ManimMob):
             **manim_kwargs,
         )
         self._initialize_from_manim(source, batch=batch, **algan_kwargs)
+        for key, value in component_opacity.items():
+            setattr(self, key, value)
 
     def _initialize_from_manim(self, source, *, batch=False, **kwargs):
         self.manim_mobject = source

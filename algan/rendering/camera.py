@@ -26,6 +26,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
@@ -33,6 +34,7 @@ from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.utils.tensor_utils import (
     broadcast_gather,
+    cast_to_direction,
     dot_product,
     squish,
     unsquish,
@@ -81,6 +83,11 @@ class Camera(Mob):
     it is an approximation, not true parallel projection; see
     :doc:`/advanced_user_tutorials/renderer_limitations`.
     """
+
+    #: Width over height of the :class:`~.CameraView` capture this camera
+    #: renders, set by the view. None for a camera whose image is the Scene's
+    #: own output.
+    _view_aspect_ratio: float | None = None
 
     def __init__(
         self,
@@ -314,6 +321,217 @@ class Camera(Mob):
             self.rotate(roll, OUTWARD, about=ORIGIN, degrees=degrees)
         return self
 
+    def fly_to(
+        self,
+        position: torch.Tensor | tuple | list,
+        *,
+        look_at: torch.Tensor | tuple | list | None = None,
+        via: torch.Tensor | tuple | list | None = None,
+        look_at_via: torch.Tensor | tuple | list | None = None,
+    ) -> Camera:
+        """Move the camera and its aim together while keeping the horizon level.
+
+        The camera faces an interpolated target from its actual position at
+        every frame. World ``UP`` defines the horizon, so turns do not accumulate
+        roll. A camera that starts tilted about its viewing direction levels out
+        gradually over the move rather than snapping level on the first frame.
+        At a vertical view, the starting right direction defines the frame.
+
+        Animation
+        ---------
+        Recorded over the current context's runtime (1 second by default).
+        Use ``with Seq(runtime=3): camera.fly_to(...)`` to retime the shot or
+        ``with Off(): ...`` to place it immediately. Moves this camera and its
+        screen together; the camera is already spawned by its Scene.
+
+        Parameters
+        ----------
+        position
+            Destination in world units, a tensor or sequence of shape ``(3,)``.
+        look_at
+            Destination target in world units, shape ``(3,)``. The initial target
+            lies along the current viewing direction, at the distance from the
+            starting camera to this target. Both targets interpolate together
+            with the position. Defaults to None, preserving the viewing direction.
+        via
+            World-space waypoint, shape ``(3,)``, on a quadratic curve through
+            the start and destination. The camera passes through it halfway
+            through the eased motion. Defaults to None, taking a straight path.
+        look_at_via
+            World-space waypoint for the look-at target, shape ``(3,)``. The
+            target follows a quadratic curve through it, reaching it halfway
+            through the eased motion, so the aim can sweep along an arc. Requires
+            ``look_at``. Defaults to None, moving the target in a straight line.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If a point is not a finite 3-vector, the destination equals its
+            look-at target, or ``look_at_via`` is given without ``look_at``. A
+            coincident intermediate target retains the starting viewing
+            direction.
+
+        Examples
+        --------
+        .. algan:: Example1CameraFlyTo
+
+            from algan import *
+
+            Sphere().spawn()
+            with Seq(runtime=3):
+                Scene.get_camera().fly_to(
+                    (4, 2, 7), look_at=ORIGIN, via=(2, 3, 8)
+                )
+            Scene.save_video()
+        """
+        if look_at_via is not None and look_at is None:
+            raise AlganConfigurationError("look_at_via requires look_at")
+        position = self._shot_point("position", position)
+        target = None if look_at is None else self._shot_point("look_at", look_at)
+        waypoint = None if via is None else self._shot_point("via", via)
+        target_waypoint = (
+            None
+            if look_at_via is None
+            else self._shot_point("look_at_via", look_at_via)
+        )
+        if target is not None and torch.linalg.vector_norm(target - position) < 1e-7:
+            raise AlganConfigurationError("position and look_at must be different")
+        return self._fly_to(position, target, waypoint, target_waypoint)
+
+    @staticmethod
+    def _shot_point(name, value):
+        point = cast_to_direction(name, value)
+        if point.numel() != 3 or not torch.isfinite(point).all():
+            raise AlganConfigurationError(f"{name} must be a finite 3-vector")
+        return point.reshape(1, 1, 3).clone()
+
+    @staticmethod
+    def _level_right(forward, right):
+        """The right direction of a frame facing ``forward`` with world UP up.
+
+        At a vertical view the horizon is undefined, so ``right`` projected onto
+        the view plane stands in for it.
+        """
+        level_right = torch.linalg.cross(forward, UP.to(forward).expand_as(forward))
+        fallback = right - (right * forward).sum(-1, keepdim=True) * forward
+        fallback = torch.where(
+            fallback.norm(dim=-1, keepdim=True) > 1e-7,
+            fallback,
+            RIGHT.to(forward).expand_as(forward),
+        )
+        return F.normalize(
+            torch.where(
+                level_right.norm(dim=-1, keepdim=True) > 1e-7, level_right, fallback
+            ),
+            dim=-1,
+        )
+
+    @animated_function(animated_args={"interpolation": 0})
+    def _fly_to(self, position, target, via, target_via=None, interpolation=1):
+        start = self.location
+        forward = self.get_forward_direction()
+        right = self.get_right_direction()
+        # The starting roll: the signed angle about the view direction from the
+        # level right to the actual one. It eases out over the move, so a tilted
+        # camera levels gradually instead of jumping on the first frame.
+        start_level = self._level_right(forward, right)
+        roll = torch.atan2(
+            (torch.linalg.cross(start_level, right) * forward).sum(-1, keepdim=True),
+            (start_level * right).sum(-1, keepdim=True),
+        )
+        t = interpolation
+        destination = start * (1 - t) + position * t
+        if via is not None:
+            destination = destination + 4 * t * (1 - t) * (
+                via - (start + position) * 0.5
+            )
+        if target is not None:
+            initial_target = start + forward * (target - start).norm(
+                dim=-1, keepdim=True
+            )
+            aim_target = initial_target * (1 - t) + target * t
+            if target_via is not None:
+                aim_target = aim_target + 4 * t * (1 - t) * (
+                    target_via - (initial_target + target) * 0.5
+                )
+            aim = aim_target - destination
+            forward = torch.where(
+                aim.norm(dim=-1, keepdim=True) > 1e-7,
+                F.normalize(aim, dim=-1),
+                forward,
+            )
+        level_right = self._level_right(forward, right)
+        roll = roll * (1 - t)
+        # Rodrigues' rotation of the level right about ``forward``.
+        new_right = level_right * torch.cos(roll) + torch.linalg.cross(
+            forward, level_right
+        ) * torch.sin(roll)
+        new_up = torch.linalg.cross(new_right, forward)
+        self.move_to(destination)
+        self.basis = squish(torch.stack((new_right, new_up, forward), dim=-2), -2, -1)
+        return self
+
+    def visible_size_at(self, point: torch.Tensor | tuple | list) -> torch.Tensor:
+        """Measure the visible width and height at a point's camera depth.
+
+        Measures a plane parallel to the screen through ``point``. Off-axis
+        points use forward depth, not distance along their viewing ray. This
+        also describes the camera's near-orthographic perspective approximation.
+
+        Animation
+        ---------
+        Queries the current camera pose immediately without recording anything.
+        During an updater or frame query, reads that frame's pose.
+
+        Parameters
+        ----------
+        point
+            World-space point, a tensor or sequence of shape ``(*, 3)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Visible ``(width, height)`` in world units, shape ``(*, 2)`` with
+            the camera's leading frame and batch dimensions. Uses the Scene's
+            current output aspect ratio, including portrait resolutions. For
+            the camera of a :class:`~.CameraView`, uses that view's capture
+            resolution instead.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If the point is non-finite or lies at or behind the camera plane.
+
+        Examples
+        --------
+        .. algan:: Example1CameraVisibleSizeAt
+
+            from algan import *
+
+            width, height = Scene.get_camera().visible_size_at(ORIGIN).flatten()
+            Rectangle(width=float(width) * 0.8, height=float(height) * 0.8).spawn()
+            Scene.save_video()
+        """
+        point = cast_to_direction("point", point)
+        depth = ((point - self.location) * self.get_forward_direction()).sum(
+            -1, keepdim=True
+        )
+        if not torch.isfinite(point).all() or (depth <= 0).any():
+            raise AlganConfigurationError(
+                "point must be finite and in front of the camera"
+            )
+        distance = (self.screen.location - self.location).norm(dim=-1, keepdim=True)
+        height = 2 * self.screen_half_height * depth / distance
+        aspect = self._view_aspect_ratio or (
+            self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
+        )
+        return torch.cat((height * aspect, height), dim=-1)
+
     def _get_render_screen_basis(self):
         """Per-frame screen basis used by the renderers to project the scene.
 
@@ -509,7 +727,7 @@ class Camera(Mob):
         b = unsquish(self.screen.basis, -1, 3)
         b = b / b.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         if aspect_ratio is None:
-            aspect_ratio = (
+            aspect_ratio = self._view_aspect_ratio or (
                 self.scene.video_settings.resolution[0]
                 / self.scene.video_settings.resolution[1]
             )

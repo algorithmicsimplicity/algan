@@ -93,6 +93,13 @@ render:
 | `test_subtitles.py` (one test) | Only `test_caption_cursors_follow_context_rescaling_and_scene_ownership`: manual subtitle timing depends on lazy context rescaling, Scene dispatch, and reset ownership. Changes in any of those can shift or discard captions without a renderer error. It writes tiny text files; format and grouping checks remain feature tests. |
 | `test_traced_path.py` (one test) | Only `test_trace_is_independent_of_frame_order_and_batching`: source motion, lazy timing, materialization, and buffer cleanup jointly determine a motion trail. Changes outside the feature can otherwise make it depend on playback order or alter authored state. Tensor checks; the focused pixel comparison remains a feature test. |
 
+The camera flight seek/batching check in `test_camera_fly_to.py`, and the
+independent fill/stroke replay check and the recolor-keeps-component-opacity
+replay check in `test_authoring_styles.py`, are also marked fast: they depend on
+the shared timeline, Mob transforms, component attribute propagation, and the
+mapping from a color write's rows to the Mobs that own them. The remaining tests
+in those files are feature tests.
+
 ### What is not in it, and where that is covered instead
 
 Everything else — which is most of the suite, on purpose. The general shape:

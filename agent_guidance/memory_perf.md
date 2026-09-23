@@ -31,10 +31,19 @@ allocated texture row (including inactive panels), with assignment scratch,
 against the device where those rows materialize.
 
 Bezier projection reuses unchanged circuit polylines (including Text) across
-frames and preparation windows. Animated circuits are partitioned out without
-changing draw order. Camera-dependent chord selection still runs, and exact
-post-bias controls, plane frames, connectivity and chord counts key the cache;
-materials and bounds remain live. Each render context retains at most 16 MiB
+frames and preparation windows. Edges are sampled from the controls and centers
+*before* the author-order/z-index depth bias, which slides each circuit along its
+own eye ray and so moves every circuit whenever the camera moves; sampling after
+it defeated reuse in every moving-camera shot. A still circuit is reused
+exactly. A rigidly translated one (relative controls within 16 float epsilons of
+the coordinate scale, compared in 8-frame chunks) reuses its first frame's
+edges, which differ from per-frame edges by rounding only. Rotating, scaling or
+morphing circuits are partitioned out without changing draw order.
+Camera-dependent chord selection still runs, and exact pre-bias controls, plane
+frames, connectivity and chord counts key the cross-batch cache; materials and
+bounds remain live. A/B this with batching pinned
+(`available_memory_override`, `ALGAN_PREFETCH_BATCHES=0`): the cache changes
+batch sizes, and re-windowing moving text alone produces 255-level pixel diffs. Each render context retains at most 16 MiB
 of keys and device edges outside the arena, visible to pool-headroom telemetry.
 The cache is cleared after joining the prep worker, including errors and closed
 generators. `SETTINGS.raytracing.experimental.bezier_geometry_cache = False`

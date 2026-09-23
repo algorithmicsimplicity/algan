@@ -48,10 +48,15 @@ def _build(primitive, chords=None):
     }
 
 
-def _same(actual, expected):
+def _same(actual, expected, edge_atol=0.0):
+    # ``edge_atol`` admits the rounding of a rigid translation, whose frames
+    # share edges built from the first one (see _build_cached_circuit_edges).
     for name in expected:
         a, b = torch.broadcast_tensors(actual[name], expected[name])
-        assert torch.equal(a, b), name
+        if name == "_rt_edges" and edge_atol:
+            torch.testing.assert_close(a, b, atol=edge_atol, rtol=0)
+        else:
+            assert torch.equal(a, b), name
 
 
 def test_static_edges_build_once_across_frames_and_new_primitives(monkeypatch):
@@ -115,7 +120,7 @@ def test_text_reuses_geometry_across_materialized_fade_windows(monkeypatch):
                     actual = _build(primitive)
                     colors.append(actual["_rt_circuit_colors"].reshape(2, -1, 5))
                     monkeypatch.setattr(rt_settings, "bezier_geometry_cache", False)
-                    _same(actual, _build(primitive))
+                    _same(actual, _build(primitive), edge_atol=1e-6)
                     monkeypatch.setattr(rt_settings, "bezier_geometry_cache", True)
                 outputs.append(torch.cat(colors, 1))
             assert scene._bezier_geometry_cache.hits >= 1
@@ -126,29 +131,67 @@ def test_text_reuses_geometry_across_materialized_fade_windows(monkeypatch):
                 scene._bezier_geometry_cache.clear()
 
 
-def test_moving_circuit_does_not_disable_reuse_of_static_neighbours(monkeypatch):
+def test_rigid_motion_reuses_edges_and_contour_changes_rebuild(monkeypatch):
     with Scene() as scene:
         primitive = _primitive(scene)
         segments = primitive.num_segments_per_object.flatten().long()
         start, end = int(segments[0]), int(segments[:2].sum())
-        # The moving circuit is between static circuits, so partitioning must
-        # restore order rather than simply concatenate the two groups.
+        # A rigid translation keeps the circuit's edges, which are relative
+        # to its center, so it is built once like its still neighbours.
         primitive.corners[1:, start:end, :, 0] += 0.25
         primitive.mob_center[1:, 1, 0] += 0.25
+        primitive.corners[2, start:end, :, 1] += 0.5
+        primitive.mob_center[2, 1, 1] += 0.5
         monkeypatch.setattr(rt_settings, "bezier_geometry_cache", False)
         expected = _build(primitive)
         monkeypatch.setattr(rt_settings, "bezier_geometry_cache", True)
-        _same(_build(primitive), expected)
-        primitive.corners[2, start:end, :, 1] += 0.5
-        primitive.mob_center[2, 1, 1] += 0.5
-        # A genuine contour change as well as a rigid translation: cached
-        # local edges must not accidentally conceal an animated control point.
+        rigid = _build(primitive)
+        assert rigid["_rt_edges"].shape[0] == 1
+        _same(rigid, expected, edge_atol=1e-6)
+        # A genuine contour change as well as the translation: cached local
+        # edges must not conceal an animated control point. The moving circuit
+        # is between still ones, so partitioning must restore their order
+        # rather than simply concatenate the two groups.
         primitive.corners[2, start, 1, 0] += 0.1875
         actual = _build(primitive)
-        assert not torch.equal(actual["_rt_edges"], expected["_rt_edges"])
-        assert scene._bezier_geometry_cache.hits == 1
+        assert actual["_rt_edges"].shape[0] == 3
+        assert not torch.equal(actual["_rt_edges"][2], actual["_rt_edges"][1])
         monkeypatch.setattr(rt_settings, "bezier_geometry_cache", False)
         _same(actual, _build(primitive))
+
+
+def test_draw_order_bias_under_a_moving_camera_reuses_still_edges(monkeypatch):
+    # Every multi-circuit scene gets an author-order bias along each circuit's
+    # eye ray, which moves with the camera. It must not defeat the reuse.
+    origins = torch.tensor([[0.0, 0.0, 20.0], [1.0, 0.5, 17.0], [2.0, 1.0, 14.0]])
+    camera = SimpleNamespace(
+        ray_origin=origins,
+        screen_point=origins - torch.tensor([0.0, 0.0, 2.0]),
+        screen_basis=torch.eye(3).expand(3, 3, 3),
+        screen_height=200,
+        output_screen_height=200,
+        analytic_raster=True,
+    )
+    monkeypatch.setattr(rt_settings, "pn_criterion_kernel", False)
+
+    def project():
+        primitive = _primitive(scene, frames=3)
+        z = primitive.z_index
+        primitive.z_index = torch.arange(z.numel(), dtype=torch.float32).view_as(z) * 50
+        primitive._has_z_index = True
+        primitive.project_to_screen(camera, [])
+        return primitive
+
+    with Scene() as scene:
+        cached = project()
+        assert cached._rt_edges.shape[0] == 1
+        monkeypatch.setattr(rt_settings, "bezier_geometry_cache", False)
+        reference = project()
+        assert reference._rt_edges.shape[0] == 3
+        a, b = torch.broadcast_tensors(cached._rt_edges, reference._rt_edges)
+        assert torch.equal(a, b)
+        # The renderer still places each frame at its biased center.
+        assert not torch.equal(cached._rt_circuit_meta[0], cached._rt_circuit_meta[2])
 
 
 @pytest.mark.parametrize("change", ["corners", "plane", "topology", "samples", "wedge"])

@@ -193,11 +193,22 @@ degrees that Algan's API expects:
     a Manim script gives 90 degrees in Algan and 1.57 in Manim -- both correct, for
     different reasons.
 
-A few Manim-parity surfaces keep Manim's radians on purpose. These take
-**radians**, not degrees:
+Every root angle argument takes degrees, including the ones whose names come
+from Manim: ``RegularPolygon(start_angle=90)``, ``Line(path_arc=60)``,
+``Arc(angle=90)`` and ``Wiggle(rotation_angle=3.6)``. A non-integer value
+smaller than a full turn, such as ``PI / 2``, looks like radians and warns with
+the degree spelling (for ``Wiggle``, whose angles are a few degrees, only values
+below 1 warn). For Manim's radians, use the ``algan.manim`` classes, for
+example ``algan.manim.RegularPolygon(start_angle=PI / 2)`` or
+``algan.manim.Line(path_arc=PI / 3)``.
 
-* ``RegularPolygon(start_angle=...)`` and ``Line(path_arc=...)``.
-* ``Wiggle(rotation_angle=...)``.
+.. note::
+
+    ``RegularPolygon(start_angle=...)``, ``Line(path_arc=...)`` and
+    ``Wiggle(rotation_angle=...)`` took radians in earlier releases. A script
+    written for those releases warns rather than silently drawing a different
+    angle when it passes a radian value such as ``PI / 4``, but a whole number
+    such as ``path_arc=1`` is now read as one degree.
 
 The ``u_range`` / ``v_range`` parametric domains of
 :class:`~algan.mobs.shapes_3d.Sphere`, ``Cone``, ``Cylinder`` and ``Torus`` keep

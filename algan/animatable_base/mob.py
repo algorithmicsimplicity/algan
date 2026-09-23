@@ -246,6 +246,12 @@ class Mob(
         How much light the Mob emits of its own, on top of what it reflects.
         ``0`` is an ordinary unlit surface and ``1`` a strongly glowing one;
         larger values keep brightening. Defaults to ``0``.
+    unlit
+        Render the Mob and its attached descendants in their own colors,
+        ignoring scene lights, using the shader of :class:`~.UnlitMaterial`.
+        Preserves color, texture, glow and opacity. Defaults to False, keeping
+        the geometry's normal material. This configures shading immediately,
+        before spawning; use :meth:`set_material` before spawning to replace it.
     **kwargs
         Passed to :class:`~.Animatable` -- notably ``scene`` and
         ``add_to_scene``.
@@ -427,6 +433,7 @@ class Mob(
         color: Color | None = None,
         opacity: float = 1,
         glow: float = 0,
+        unlit: bool = False,
         **kwargs,
     ):
         self.register_attrs_as_animatable(
@@ -498,6 +505,11 @@ class Mob(
         self._init_default_attr("glow", reject_non_finite("glow", cast_to_tensor(glow)))
         self.num_points_per_object = 1
         self.shader = None
+        self._constructor_unlit = unlit
+        if unlit:
+            from algan.rendering.shaders.material_shaders import basic_material_shader
+
+            self.set_shader(basic_material_shader)
 
     @property
     def _morph_kind(self):
@@ -1424,9 +1436,69 @@ class Mob(
             value = value.to(current_value.device)
         if recursive:
             value = self._distribute_over_packed_subtree(attr, value, current_value)
+        if attr == "color":
+            value = self._keep_explicit_alpha(value, current_value, recursive)
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
+
+    def _keep_explicit_alpha(self, value, current_value, recursive):
+        """Keep an alpha chosen through a component opacity when a color replaces it.
+
+        ``fill_opacity`` and ``stroke_opacity`` store their value in the alpha
+        channel of the color rows they reach, and mark those Mobs. A later
+        color write whose alpha is the default 1 -- every named color -- then
+        changes only RGB and glow on the marked rows, the way Manim's
+        ``set_color`` keeps a Mobject's opacity. A color that carries its own
+        alpha below 1 still sets it. Rows are matched by buffer index, so a
+        Group write reaches exactly the marked parts of its subtree.
+        """
+        scene = self.scene
+        if not getattr(scene, "_has_explicit_color_alpha", False) or getattr(
+            scene, "_writing_component_alpha", False
+        ):
+            return value
+        mobs = self.get_descendants(include_self=True) if recursive else [self]
+        keepers = [
+            mob
+            for mob in mobs
+            if getattr(mob, "_explicit_color_alpha", False)
+            and (
+                mob is self
+                or "color" not in getattr(mob, "_excluded_from_parent_attrs", ())
+            )
+        ]
+        if not keepers:
+            return value
+        timeline = scene.timeline_manager
+        attr_timeline = timeline.attr_to_timeline.get("color")
+        if attr_timeline is None:
+            return value
+        # The rows ``current_value`` was read from, in its order: the recorded
+        # rows while replaying a function, the live hierarchy's otherwise.
+        inds = timeline.peek_replay_inds("color", self.id, recursive)
+        if inds is None:
+            inds = self._get_attr_ranges("color", include_descendants=recursive)
+        rows = inds.tensor() if hasattr(inds, "tensor") else torch.as_tensor(inds)
+        if rows.numel() != current_value.shape[-2]:
+            return value
+        keep_rows = [
+            attr_ranges_for_mob(attr_timeline, mob).tensor()
+            for mob in keepers
+            if mob.id in attr_timeline.mob_id_to_inds
+        ]
+        if not keep_rows:
+            return value
+        keep = torch.isin(rows, torch.cat(keep_rows).to(rows.device))
+        keep = keep.to(current_value.device).unsqueeze(-1)
+        value = value.as_subclass(torch.Tensor)
+        value = value.expand(torch.broadcast_shapes(value.shape, current_value.shape))
+        value = value.clone()
+        alpha = value[..., -1:]
+        value[..., -1:] = torch.where(
+            keep & (alpha == 1), current_value[..., -1:].expand_as(alpha), alpha
+        )
+        return value
 
     def map_animated_attribute(self, attr: str, func: Callable) -> Mob:
         """Animate an attribute to a function of its own current value, across

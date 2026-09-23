@@ -72,8 +72,41 @@ def _constant_rows(tensor):
     )
 
 
+def _rigid_segments(corners, centers, circuit_ids, frame_chunk=8):
+    """Segments whose controls relative to their circuit's center stay put.
+
+    Compared to frame 0 within 16 float epsilons of the coordinate scale,
+    which absorbs the rounding of a translation. Streamed over frame chunks,
+    so the temporaries are a few frames' worth of controls rather than the
+    batch's. A NaN compares false and stays on the rebuild path.
+    """
+    num_frames = max(corners.shape[0], centers.shape[0])
+    rigid = torch.ones(corners.shape[1], dtype=torch.bool, device=corners.device)
+    if num_frames == 1:
+        return rigid
+    low, high = torch.aminmax(corners)
+    scale = torch.stack((-low, high, centers.abs().amax())).amax().clamp_min(1.0)
+    tolerance = 16 * torch.finfo(corners.dtype).eps * scale
+
+    def relative(start, end):
+        c = corners[start:end] if corners.shape[0] > 1 else corners
+        m = centers[start:end] if centers.shape[0] > 1 else centers
+        return c - m[:, circuit_ids].unsqueeze(-2)
+
+    reference = relative(0, 1)
+    for start in range(1, num_frames, frame_chunk):
+        deviation = (relative(start, start + frame_chunk) - reference).abs()
+        rigid &= (
+            (deviation <= tolerance)
+            .reshape(deviation.shape[0], deviation.shape[1], -1)
+            .all(2)
+            .all(0)
+        )
+    return rigid
+
+
 def _cached_static_edges(cache, build, args, inward_signs):
-    # The actual post-bias geometry, plane frame, topology and chosen chord
+    # The actual pre-bias geometry, plane frame, topology and chosen chord
     # counts are the key. Camera/resolution/tolerance changes still run the
     # criterion; reuse is valid only if its resulting geometry is identical.
     # One packed transfer avoids a device synchronization per source array.
@@ -97,6 +130,18 @@ def _cached_static_edges(cache, build, args, inward_signs):
 def _build_cached_circuit_edges(scene, build, args, inward_signs):
     """Reuse static circuits even when the collection also contains animation.
 
+    Edges are plane coordinates relative to each circuit's center, so a
+    circuit whose shape and plane do not change has the same edges in every
+    frame, whether it is still or moving rigidly -- a line of text scrolling
+    up a terminal, or a label in a group that slides across the frame. Such a
+    circuit is built once, from the batch's first frame, and the caller places
+    it at each frame's center. For a still circuit that is exact. For a
+    translated one the control points relative to the center agree between
+    frames only up to the rounding of the translation, so they are compared to
+    within 16 float epsilons of the coordinate scale, and the reused edges
+    differ from per-frame ones by that rounding alone. Rotation, scaling and
+    any change of shape rebuild the circuit every frame.
+
     Only edge geometry is retained. Materials, texture transforms and frame
     bounds are rebuilt from the current batch by the caller. The result keeps
     the original circuit/edge order and supports a singleton frame dimension.
@@ -108,8 +153,10 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
     circuit_ids = torch.repeat_interleave(
         torch.arange(len(segments), device=device), segments
     )
-    static = _constant_rows(centers) & _constant_rows(basis_u) & _constant_rows(basis_v)
-    segment_static = _constant_rows(corners) & _constant_rows(next_inds)
+    static = _constant_rows(basis_u) & _constant_rows(basis_v)
+    segment_static = _rigid_segments(corners, centers, circuit_ids) & _constant_rows(
+        next_inds
+    )
     static = (
         static.int()
         .scatter_reduce_(0, circuit_ids, segment_static.int(), "amin")

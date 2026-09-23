@@ -1274,7 +1274,6 @@ def test_internal_helpers_are_importable_but_not_star_exported():
     for name in (
         "project_onto_basis",
         "animate_lagged_by_location",
-        "batch_mobs",
         "pack_animatable_rows",
         "pack_member_rows",
         "get_orthonormal_vector",

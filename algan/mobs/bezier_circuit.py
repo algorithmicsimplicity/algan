@@ -569,6 +569,14 @@ class BezierCircuitCubic(Mob):
     miter_limit
         Maximum miter length divided by the stroke's half-width. Longer miters
         become bevel joins. Must be finite and at least 1. Defaults to ``4``.
+    fill_opacity
+        Initial fill alpha from 0 to 1, independent of the stroke and multiplied
+        by overall ``opacity``. Defaults to None, preserving the fill color's
+        alpha. Can be animated later through :attr:`fill_opacity`.
+    stroke_opacity
+        Initial stroke alpha from 0 to 1, independent of the fill. Defaults to
+        None, preserving ``stroke_color``'s alpha. Can be animated later through
+        :attr:`stroke_opacity`.
     **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob` -- notably ``color``,
         which is the fill color. ``location`` is the exception: a circuit's own
@@ -681,6 +689,8 @@ class BezierCircuitCubic(Mob):
         cap_style: _typing.Any = "round",
         joint_type: _typing.Any = "round",
         miter_limit: float = 4,
+        fill_opacity: float | torch.Tensor | None = None,
+        stroke_opacity: float | torch.Tensor | None = None,
         **kwargs: _typing.Any,
     ) -> None:
         self.cap_style, self.joint_type, self.miter_limit = _stroke_style(
@@ -814,6 +824,11 @@ class BezierCircuitCubic(Mob):
         self.normals = normals
         self.is_primitive = True
         self.render_primitive = RENDERER_REGISTRY.bezier_circuit_primitive
+
+        if fill_opacity is not None:
+            self.fill_opacity = fill_opacity
+        if stroke_opacity is not None:
+            self.stroke_opacity = stroke_opacity
 
         if requested_location is not None:
             # Off, unlike ``Circle``'s: this runs before the circuit exists to
@@ -1076,6 +1091,118 @@ class BezierCircuitCubic(Mob):
         "joint_type",
         "miter_limit",
     )
+
+    @property
+    def fill_opacity(self) -> torch.Tensor:
+        """Read or animate the fill color's alpha independently of the stroke.
+
+        Values range from 0 (transparent) to 1 (opaque), with shape ``(*, 1)``
+        per fill texel. This is the alpha component of ``color``. Once set, it
+        survives later ``color`` assignments whose alpha is 1, which includes
+        every named color, so ``box.color = RED`` recolors a translucent box
+        without making it opaque. A color with its own alpha below 1 replaces
+        it. The Mob's overall ``opacity`` multiplies both fill and stroke at
+        render time.
+
+        Animation
+        ---------
+        Assignment fades this circuit and descendant circuit fills over the
+        current context's runtime (1 second by default). RGB, glow and stroke
+        alpha are preserved. Use ``with Off(): ...`` for an immediate change.
+        Unfilled paths stay unfilled; choose ``filled=True`` before spawning
+        to animate a fill from zero alpha.
+
+        Examples
+        --------
+        .. algan:: Example1CircuitFillOpacity
+
+            from algan import *
+
+            square = Square(fill_opacity=0.2, stroke_opacity=1).spawn()
+            square.fill_opacity = 0.8
+            square.color = RED  # keeps the 0.8 fill opacity
+            Scene.save_video()
+        """
+        return (self.grid.color if self.filled else self.color)[..., -1:]
+
+    @fill_opacity.setter
+    def fill_opacity(self, value: float | torch.Tensor) -> None:
+        self._set_component_alpha(value, stroke=False)
+
+    @property
+    def stroke_opacity(self) -> torch.Tensor:
+        """Read or animate stroke alpha without changing the fill.
+
+        Values range from 0 to 1, shape ``(*, 1)`` per stroke texel. This is the
+        alpha component of ``stroke_color``. Once set, it survives later
+        ``stroke_color`` assignments whose alpha is 1, such as a named color; a
+        color with its own alpha below 1 replaces it. On an unfilled path it
+        also survives ``color`` assignments, which recolor that path's stroke.
+        Overall Mob ``opacity`` multiplies it at render time.
+
+        Animation
+        ---------
+        Assignment fades this circuit and descendant circuit strokes over the
+        current context's runtime (1 second by default), preserving their RGB
+        and glow. Use ``with Off(): ...`` for an immediate change. May be set
+        before or after spawning.
+
+        Examples
+        --------
+        .. algan:: Example1CircuitStrokeOpacity
+
+            from algan import *
+
+            square = Square(fill_opacity=0.5, stroke_opacity=1).spawn()
+            square.stroke_opacity = 0
+            Scene.save_video()
+        """
+        return self.border_grid.color[..., -1:]
+
+    @stroke_opacity.setter
+    def stroke_opacity(self, value: float | torch.Tensor) -> None:
+        self._set_component_alpha(value, stroke=True)
+
+    def _component_alpha_parts(self, *, stroke):
+        """The Mobs whose color alpha is this circuit's fill or stroke opacity.
+
+        An unfilled circuit draws its path from ``grid`` as well as
+        ``border_grid``, so both carry the stroke there.
+        """
+        if stroke:
+            return [self.border_grid] + ([] if self.filled else [self.grid])
+        return [self] + ([self.grid, self.control_points] if self.filled else [])
+
+    def _mark_explicit_alpha(self, *, stroke):
+        """Make later default-alpha color writes keep this circuit's alpha.
+
+        See :meth:`~algan.animatable_base.mob.Mob._keep_explicit_alpha`.
+        """
+        for part in self._component_alpha_parts(stroke=stroke):
+            part._explicit_color_alpha = True
+        self.scene._has_explicit_color_alpha = True
+
+    def _set_component_alpha(self, value, *, stroke):
+        from algan.animatable_base.mob import _validate_opacity
+
+        value = _validate_opacity(cast_to_tensor(value))
+        scene = self.scene
+        # These writes set alpha deliberately, including back to 1, so they
+        # must not be mistaken for a color write that keeps the old alpha.
+        previous = getattr(scene, "_writing_component_alpha", False)
+        scene._writing_component_alpha = True
+        try:
+            with Sync(animation_manager=self.animation_manager):
+                for circuit in self.get_descendants():
+                    if not isinstance(circuit, BezierCircuitCubic):
+                        continue
+                    for part in circuit._component_alpha_parts(stroke=stroke):
+                        colors = part.color.clone()
+                        colors[..., -1:] = value
+                        part.set_non_recursive(color=colors)
+                    circuit._mark_explicit_alpha(stroke=stroke)
+        finally:
+            scene._writing_component_alpha = previous
 
     @property
     def stroke_color(self):

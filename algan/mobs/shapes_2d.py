@@ -40,7 +40,10 @@ from algan.mobs.stroke_style import _warn_background_stroke
 from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.settings.shape_style_profiles import _manim_shape_style_for
-from algan.utils.api_renames import _reject_renamed_keywords
+from algan.utils.api_renames import (
+    _reject_renamed_keywords,
+    _warn_if_angle_looks_like_radians,
+)
 from algan.utils.tensor_utils import (
     broadcast_all,
     cast_to_direction,
@@ -143,6 +146,13 @@ def _translate_vector_style_kwargs(
         )
     if stroke_width is not None:
         kwargs["stroke_width"] = float(stroke_width)
+    # Forwarded as well as folded into the colors above, so the circuit records
+    # them as explicit component opacities that later color writes keep. A
+    # line's fill is invisible, so only its stroke opacity matters.
+    if fill_opacity is not None and not line:
+        kwargs["fill_opacity"] = fill_opacity
+    if stroke_opacity is not None:
+        kwargs["stroke_opacity"] = stroke_opacity
 
     _warn_background_stroke(
         kwargs.get("background_stroke_width", 0),
@@ -191,10 +201,11 @@ class Line(BezierCircuitCubic):
         Gap left at each end, in world units, so a line between two labelled
         points does not touch them. Defaults to ``0`` (no gap).
     path_arc
-        Angle of the circular arc bulging the line away from straight, **in
-        radians** -- a Manim-parity argument, which is why it contradicts Algan's
-        usual degrees. Positive and negative values bulge opposite ways. Defaults
-        to ``0`` (a straight segment).
+        Angle of the circular arc bulging the line away from straight, in
+        degrees. Positive and negative values bulge opposite ways. A value that
+        looks like radians (a non-integer smaller than a full turn) warns.
+        Defaults to ``0`` (a straight segment). ``algan.manim.Line`` takes
+        Manim's radians.
     *args, **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``color``,
         ``stroke_width`` and ``grid_width``.
@@ -209,12 +220,13 @@ class Line(BezierCircuitCubic):
         from algan import *
 
         Line(LEFT, RIGHT, color=BLUE).spawn()
-        Line(LEFT, RIGHT, path_arc=1.0, color=YELLOW).spawn()
+        Line(LEFT, RIGHT, path_arc=60, color=YELLOW).spawn()
 
         Scene.save_video()
     """
 
     def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
+        _warn_if_angle_looks_like_radians("path_arc", path_arc)
         start_center = (
             start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
         )
@@ -242,7 +254,7 @@ class Line(BezierCircuitCubic):
             arc = mn.ArcBetweenPoints(
                 start_center.detach().reshape(-1, 3)[0].cpu().numpy(),
                 end_center.detach().reshape(-1, 3)[0].cpu().numpy(),
-                angle=float(path_arc),
+                angle=math.radians(float(path_arc)),  # Algan degrees -> Manim radians
             )
             control_points = torch.from_numpy(arc.points).to(
                 device=start_center.device, dtype=start_center.dtype
@@ -652,17 +664,32 @@ class RegularPolygon(Polygon):
     radius
         Distance from the center to each vertex, in world units. Defaults to ``1``.
     start_angle
-        Angle of the first vertex, **in radians** (Manim's convention). Defaults to
-        ``None``, which puts the first vertex at the top and repeats the closing
-        vertex -- a topology that matters when morphing with
+        Angle of the first vertex, in degrees. A value that looks like radians
+        (a non-integer smaller than a full turn, such as ``PI / 2``) warns.
+        Defaults to ``None``, which puts the first vertex at the top and repeats
+        the closing vertex -- a topology that matters when morphing with
         :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`.
     **kwargs
         Passed to :class:`~.Polygon` and on to :class:`~.BezierCircuitCubic`.
 
+    Animation
+    ---------
+    Constructs an unspawned polygon immediately. Call ``spawn()`` before
+    recording animations. ``algan.manim.RegularPolygon`` retains radians.
+
     Raises
     ------
-    ValueError
+    :class:`~.AlganConfigurationError`
         If fewer than 3 sides are requested.
+
+    Examples
+    --------
+    .. algan:: Example1RegularPolygonAngle
+
+        from algan import *
+
+        RegularPolygon(n=5, start_angle=90, color=BLUE).spawn()
+        Scene.save_video()
     """
 
     def __init__(
@@ -687,9 +714,10 @@ class RegularPolygon(Polygon):
             # latter is observable during ``become`` because it determines
             # how cubic segments are paired.
             angles = torch.linspace(math.pi / 2, -math.pi * 1.5, n + 1)
-            self.start_angle = math.pi / 2
+            self.start_angle = 90.0
         else:
-            angles = start_angle + torch.arange(n) * (2 * math.pi / n)
+            _warn_if_angle_looks_like_radians("start_angle", start_angle)
+            angles = math.radians(start_angle) + torch.arange(n) * (2 * math.pi / n)
             self.start_angle = start_angle
         vertices = torch.stack(
             (

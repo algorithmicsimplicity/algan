@@ -32,6 +32,23 @@ Defining a project
 
     project = Project([intro, the_loss_surface, outro], file_path="gradient_descent.mp4")
 
+Pass ``post_processes`` at construction to use the same custom bloom or other
+frame effects in CLI videos, stills and profiling:
+
+.. code-block:: python
+
+    from functools import partial
+    from algan.rendering.post_processing.bloom import bloom_filter
+
+    project = Project(
+        [intro, the_loss_surface, outro],
+        post_processes=[partial(bloom_filter, glow_spread=0.015)],
+    )
+    project.run_cli()
+
+An explicit ``post_processes`` export argument overrides the project default;
+an empty sequence disables the passes.
+
 Note that the scene functions do **not** call ``Scene.save_video()``. The project
 renders them; calling it yourself would render a second, unmanaged video.
 
@@ -208,6 +225,23 @@ script. Pretty-printed transcript files can wrap hyphenated words across lines.
 This is an authoring check: it does not run frame-dependent updaters, compile
 shaders, or prove visual correctness. Inspect selected checkpoints and motion
 clips afterwards. Use ``python video.py --validate`` for the CLI equivalent.
+
+To check narration word for word, pass literal text with
+``project.validate(script="The exact narration.")`` or a UTF-8 file with
+``project.validate(script=Path("narration.txt"))`` (import ``Path`` from
+``pathlib``). Whitespace differences are ignored; punctuation and capitalization
+must match. A mismatch reports the first differing word, including missing or
+extra words. Only selected scenes are compared, in project order. The CLI
+equivalent is ``python video.py --validate --script narration.txt``.
+
+For a labelled overview of selected stills, use
+``project.render_screenshots(contact_sheet=True)`` or
+``python video.py --render-screenshots --contact-sheet``. The sheet preserves
+image aspect ratios and uses checkpoint filenames as labels. It is saved as
+``contact_sheet.png`` in the screenshot directory alongside the individual
+stills. Pass a path instead of True to choose another destination; the resolved
+path is available as ``project.last_contact_sheet_path``. Frame and scene
+selections apply to the sheet too.
 
 Profile scenes and estimate an export
 =====================================

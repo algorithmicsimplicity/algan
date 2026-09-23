@@ -386,6 +386,12 @@ class MobHierarchyMixin:
         if not candidates:
             return self
         self._validate_new_children([*self.children, *candidates])
+        if getattr(self, "_constructor_unlit", False):
+            from algan.rendering.shaders.material_shaders import basic_material_shader
+
+            for mob in candidates:
+                if hasattr(mob, "set_shader"):
+                    mob.set_shader(basic_material_shader)
         for mob in candidates:
             self.children.append(mob)
             mob._link_parent(self)

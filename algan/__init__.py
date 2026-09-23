@@ -520,7 +520,6 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "get_rotation_around_axis",  # algan.geometry.geometry
         "get_rotation_between_bases",  # algan.geometry.geometry
         "get_orthonormal_vector",  # algan.geometry.geometry
-        "batch_mobs",  # algan.utils.mob_utils
         "pack_animatable_rows",  # algan.utils.mob_utils
         "pack_member_rows",  # algan.utils.mob_utils
         "animate_lagged_by_location",  # algan.utils.animation_utils

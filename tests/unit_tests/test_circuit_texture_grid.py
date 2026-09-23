@@ -63,7 +63,7 @@ def test_degenerate_second_axis_defaults_to_one_row():
     assert (thick.grid_width, thick.grid_height) == (8, 3)
 
     # An arc is not collinear, so it keeps the square default.
-    arc = Line(LEFT, RIGHT, path_arc=1.0, grid_width=4, add_to_scene=False)
+    arc = Line(LEFT, RIGHT, path_arc=60, grid_width=4, add_to_scene=False)
     assert (arc.grid_width, arc.grid_height) == (4, 4)
 
     # A Point has no extent at all.

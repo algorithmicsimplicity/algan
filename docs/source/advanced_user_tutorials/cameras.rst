@@ -41,6 +41,29 @@ ones that matter for camera work:
      - Swings along a circle around ``p`` *without* changing its pointing direction.
    * - ``camera.center_on(mob)``
      - Automatically reframes so the target Mob is centered.
+   * - ``camera.fly_to(position, look_at=target, via=waypoint, look_at_via=aim_waypoint)``
+     - Move position and aim together, with a level horizon and optional curves.
+   * - ``camera.visible_size_at(point)``
+     - Query visible width and height in world units at the point's forward depth.
+
+For a shot that changes both position and target, ``fly_to`` recomputes the
+view direction at every frame. ``via`` is a world-space waypoint passed halfway
+through the eased motion; omit it for a straight path. ``look_at_via`` does the
+same for the target, so the aim can sweep along an arc. World ``UP`` keeps the
+horizon level, with the starting right direction used at a vertical view; a
+camera that starts tilted levels out gradually over the move.
+
+.. code-block:: python
+
+    with Seq(runtime=3):
+        camera.fly_to((4, 2, 7), look_at=ORIGIN, via=(2, 3, 8))
+
+    width, height = camera.visible_size_at(ORIGIN).flatten()
+
+``visible_size_at`` uses the Scene's current resolution, so the same query
+works for a narrow 9:16 frame. On the camera of a ``CameraView`` it uses that
+view's capture resolution instead. It measures the plane parallel to the screen
+through the point; an off-axis point uses forward depth rather than ray length.
 
 The turntable shot is the classic way to show off a 3-D scene. Notice that we use
 :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with

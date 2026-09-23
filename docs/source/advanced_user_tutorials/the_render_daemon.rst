@@ -82,7 +82,7 @@ switch to the daemon, press Enter.
        whatever scripts are launched against it. Script arguments go after
        ``--``.
    * - ``--watch``
-     - Also re-render when the script or its sibling helper modules change on
+     - Also re-render when the script or its imported helper modules change on
        disk. Needs a ``SCRIPT``.
    * - ``--port PORT``
      - Trigger-socket port. Without it the daemon prefers 46711 and binds an
@@ -115,7 +115,8 @@ most one queued re-run. There are three ways in:
 
       algan daemon render         # also: ping, cancel, quit
 
-* **``--watch``**, which polls the script and its sibling modules for changes.
+* **``--watch``**, which polls the script and its imported helpers for changes,
+  including helpers outside the script's folder.
 
 Use ``algan daemon cancel`` to interrupt the active script. It reads the state
 file's token and raises ``KeyboardInterrupt`` in that script. An idle daemon
@@ -201,9 +202,17 @@ nothing else:
 * Every public :doc:`settings <settings>` section is restored to its import-time
   value, so one run cannot leak configuration into the next. Private adaptive
   renderer state is kept deliberately.
-* Helper modules imported from the script's directory tree are evicted from
-  ``sys.modules``, so the next run picks up their edits. Modules imported from
-  anywhere else are **not** reloaded.
+* User source modules are evicted together from ``sys.modules``, including
+  helpers in parent folders, other projects, or custom import paths. The next
+  run imports fresh code and scene state, including ``from common import ...``
+  references and circular imports. Their bytecode and traceback caches are
+  cleared too, so rapid edits do not reuse stale source lines. Algan, installed
+  packages, the standard library and the daemon's startup dependencies stay
+  loaded: re-importing part of Torch or the compiler would corrupt the runtime.
+  A user package that contains a compiled extension module (``.pyd`` or
+  ``.so``) stays loaded as a whole for the same reason, because the extension
+  cannot be unloaded. The daemon says so once; restart it to pick up edits to
+  such a package.
 * The render's GPU memory goes back to the driver: one ``gc.collect()`` and one
   ``torch.cuda.empty_cache()``. On a 4 GB card an idle daemon that used to hold
   1.6 GB after a 90-frame render now holds about 0.1 GB, for ~0.15 s and no

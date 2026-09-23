@@ -30,11 +30,13 @@ from algan.animation_timeline.animation_contexts import (
 from algan.animations.movement import Homotopy
 from algan.constants import easings
 from algan.constants.color import GRAY, YELLOW
-from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.spatial import OUTWARD, UP
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import get_rotation_around_axis
-from algan.utils.api_renames import _renamed_keywords
+from algan.utils.api_renames import (
+    _renamed_keywords,
+    _warn_if_angle_looks_like_radians,
+)
 from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
 
@@ -177,7 +179,7 @@ def wiggle_step(
     scale_value
         Peak scale, as a multiple of the original size.
     rotation_angle
-        Peak rotation, **in radians** (converted internally to degrees).
+        Peak rotation, in degrees.
     n_wiggles
         Number of half-oscillations.
     scale_about_point
@@ -187,7 +189,7 @@ def wiggle_step(
     """
     t = cast_to_tensor(t)
     s_val = 1.0 + (scale_value - 1.0) * there_and_back(t)
-    rot_deg = wiggle(t, n_wiggles) * rotation_angle * RADIANS_TO_DEGREES
+    rot_deg = wiggle(t, n_wiggles) * rotation_angle
 
     R = get_rotation_around_axis(rot_deg, OUTWARD, dim=-1)
     R_basis = R.view(-1, 1, 3, 3)
@@ -213,7 +215,7 @@ def wiggle_step(
 def Wiggle(
     mob,
     scale_value: float = 1.1,
-    rotation_angle: float = 0.01 * math.pi * 2,
+    rotation_angle: float = 3.6,
     n_wiggles: int = 6,
     scale_about_point=None,
     rotate_about_point=None,
@@ -239,8 +241,9 @@ def Wiggle(
         Peak size during the wiggle, as a multiple of the current size. Defaults to
         ``1.1``.
     rotation_angle
-        Peak rocking angle, **in radians** -- unusually for Algan, since this
-        mirrors Manim's signature. Defaults to ``0.02 * pi`` (about 3.6 degrees).
+        Peak rocking angle, in degrees. A non-zero value below 1 looks like
+        radians and warns. Defaults to ``3.6``, the same as Manim's
+        ``0.02 * pi`` radians.
     n_wiggles
         How many times the Mob rocks. Defaults to ``6``.
     scale_about_point
@@ -257,6 +260,11 @@ def Wiggle(
     :class:`~.Mob`
         The Mob that was passed in.
     """
+    # A few degrees is the normal range here, which the generic check would
+    # read as radians. Below one degree a wiggle is invisible, so only those
+    # values can be told apart from Manim's radians (0.02 * pi by default).
+    if isinstance(rotation_angle, (int, float)) and abs(rotation_angle) < 1:
+        _warn_if_angle_looks_like_radians("rotation_angle", rotation_angle)
     basis_0 = mob.basis.clone()
     location_0 = mob.location.clone()
     with Sync(runtime=runtime, animation_manager=animation_manager_for(mob)):

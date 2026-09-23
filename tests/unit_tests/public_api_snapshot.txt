@@ -362,6 +362,7 @@ algan_scene
 animated_function
 basic_material_shader
 basic_pbr_shader
+batch_mobs
 clear_cache
 clear_cached_kernels
 cosine_color

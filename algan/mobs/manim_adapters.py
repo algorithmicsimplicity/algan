@@ -636,6 +636,9 @@ def _root_docstring(name, root_name, wrapper, root_sig, angle_params) -> str:
         f"Manim's ``{name}``, under Algan's conventions: "
         f"{'; '.join(converted)}. ``algan.manim.{name}`` is the same class "
         f"under Manim's own conventions."
+        " Native ``opacity``, ``glow``, ``unlit``, ``name``, ``location`` and "
+        "``basis`` constructor keywords are also accepted; see :class:`~.Mob` "
+        "for their meanings and defaults."
     )
     animation = (
         "Animation\n"
@@ -686,6 +689,8 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
 
     def __init__(self, *args, **kwargs):
         _reject_renamed_keywords(root_name, kwargs, manim_alternative=name)
+        location = kwargs.pop("location", None)
+        basis = kwargs.pop("basis", None)
         for new, old in inbound.items():
             if new in kwargs:
                 kwargs[old] = kwargs.pop(new)
@@ -694,6 +699,14 @@ def _make_adapter(name: str, angle_params: tuple[str, ...]):
         # ``**kwargs`` too, and skipping the pass is how one gets missed.
         args, kwargs = _converted_kwargs(signature, angle_params, args, kwargs)
         super(adapter, self).__init__(*args, **_to_manim_stroke_width(kwargs))
+        if location is not None:
+            # Construction uses the native transform, even if the backing
+            # Manim class implements a method with this spelling.
+            from algan.animatable_base.mob import Mob
+
+            Mob.move_to(self, location)
+        if basis is not None:
+            self.basis = basis
 
     adapter = type(
         root_name,

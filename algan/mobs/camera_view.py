@@ -156,6 +156,10 @@ class CameraView(ImageMob):
                 camera.screen.basis = main.screen.basis
                 camera.orthographic = main.orthographic
         self.camera = camera
+        if camera is not scene.camera:
+            # Framing queries on the view's camera (``visible_size_at``,
+            # ``center_on``) measure the captured image, not the Scene's.
+            camera._view_aspect_ratio = resolution[0] / resolution[1]
         self.capture_resolution = resolution
         self.capture_exclude = exclude
         # A tiny placeholder supplies UVs without authoring a full image in the

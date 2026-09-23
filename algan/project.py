@@ -9,7 +9,7 @@ import math
 import os
 import re
 import textwrap
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -38,6 +38,55 @@ class SceneValidation:
     duration_seconds: float
     checkpoints: int
     transcript: str
+
+
+def _describe_script_mismatch(scenes, expected_words, context=6):
+    """Explain where narration first departs from a script, or return None.
+
+    Names the scene holding the differing narration word and shows a few words
+    either side in both texts, since a bare word number is hard to find in a
+    long script. Past the end of the narration, the last scene is named.
+    """
+    actual_words, owners = [], []
+    for scene in scenes:
+        words = scene.transcript.split()
+        actual_words.extend(words)
+        owners.extend((scene.name, local) for local in range(len(words)))
+    if actual_words == expected_words:
+        return None
+    index = next(
+        (
+            i
+            for i, (spoken, wanted) in enumerate(zip(actual_words, expected_words))
+            if spoken != wanted
+        ),
+        min(len(actual_words), len(expected_words)),
+    )
+
+    def show(words, end_label):
+        before = words[max(0, index - context) : index]
+        word = words[index] if index < len(words) else end_label
+        after = words[index + 1 : index + 1 + context]
+        prefix = "... " if index > context else ""
+        suffix = " ..." if index + 1 + context < len(words) else ""
+        return f"{prefix}{' '.join([*before, f'[{word}]', *after])}{suffix}"
+
+    wanted = expected_words[index] if index < len(expected_words) else "<end of script>"
+    spoken = actual_words[index] if index < len(actual_words) else "<end of narration>"
+    if index < len(owners):
+        name, local = owners[index]
+        where = f"in scene {name!r} (word {local + 1} of that scene)"
+    elif scenes:
+        where = f"after the end of scene {scenes[-1].name!r}"
+    else:
+        where = "with no narration in the selected scenes"
+    return (
+        f"Narration differs from script at word {index + 1}: expected "
+        f"{wanted!r}, got {spoken!r}, {where}.\n"
+        f"  script:    {show(expected_words, '<end of script>')}\n"
+        f"  narration: {show(actual_words, '<end of narration>')}\n"
+        f"({len(expected_words)} script words, {len(actual_words)} narration words)"
+    )
 
 
 @dataclass(frozen=True)
@@ -258,6 +307,9 @@ class Project:
     scene_functions
         A nonempty iterable of callables. Each callable must be invokable with
         no arguments. Optional parameters are allowed.
+    video_settings
+        Settings used to author and render every project Scene. Defaults to
+        None, using SETTINGS.video.
     file_path
         Destination for :meth:`concatenate_videos`. It follows
         :meth:`Scene.save_video <algan.scene.Scene.save_video>` path rules and
@@ -265,27 +317,57 @@ class Project:
     video_directory, screenshot_directory, transcript_directory
         Output directories. A bare directory name is placed under Algan's
         standard output directory; a path with an explicit parent is used as
-        supplied.
+        supplied. Default to ``"videos"``, ``"screenshots"`` and
+        ``"transcripts"``, respectively.
     transcript_line_length
-        Maximum number of characters per transcript line.
-    video_settings
-        Optional settings used to author and render every project Scene.
+        Maximum number of characters per transcript line. Defaults to 88.
     speech_source
-        Optional speech generator installed on each Scene's audio manager.
+        Speech generator installed on each Scene's audio manager. Defaults to
+        None, using the default speech source.
+    post_processes
+        Sequence of frame-processing callables, as for :meth:`Scene.save_video`.
+        Used for videos, screenshots and profiling, including :meth:`run_cli`.
+        Defaults to None, using the renderer's defaults. An empty sequence
+        disables post-processing; explicit export options override this default.
+
+    Animation
+    ---------
+    Construction records nothing. Each requested operation authors its selected
+    scene functions in isolated Scenes before rendering or validating them.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from functools import partial
+        from algan import Project, Scene, Square
+        from algan.rendering.post_processing.bloom import bloom_filter
+
+
+        def intro():
+            Square().spawn()
+            Scene.save_frame("opening")
+
+
+        project = Project(
+            [intro], post_processes=[partial(bloom_filter, glow_spread=0.015)]
+        )
+        project.run_cli()
     """
 
     def __init__(
         self,
-        scene_functions,
+        scene_functions: Iterable[Callable[[], None]],
         video_settings: VideoSettings | None = None,
-        file_path=None,
+        file_path: str | Path | None = None,
         *,
-        video_directory="videos",
-        screenshot_directory="screenshots",
-        transcript_directory="transcripts",
+        video_directory: str | Path = "videos",
+        screenshot_directory: str | Path = "screenshots",
+        transcript_directory: str | Path = "transcripts",
         transcript_line_length: int = 88,
-        speech_source=None,
-    ):
+        speech_source: Callable | None = None,
+        post_processes: Sequence[Callable] | None = None,
+    ) -> None:
         try:
             functions = tuple(scene_functions)
         except TypeError as exc:
@@ -360,6 +442,13 @@ class Project:
         self.transcript_line_length = transcript_line_length
         self.video_settings = video_settings
         self.speech_source = speech_source
+        from algan.render_loop import _check_post_processes
+
+        if callable(post_processes):
+            _check_post_processes(post_processes)
+        self.post_processes = None if post_processes is None else tuple(post_processes)
+        _check_post_processes(self.post_processes)
+        self.last_contact_sheet_path: Path | None = None
 
         from algan.utils.algan_utils import _resolve_output_destination
 
@@ -616,6 +705,8 @@ class Project:
         frames=None,
         stop_early: bool = False,
         video_settings: VideoSettings | None = None,
+        contact_sheet: bool | str | Path = False,
+        contact_sheet_columns: int = 4,
         **save_frame_kwargs,
     ):
         """Author scenes, then render their collected stills in batches.
@@ -659,6 +750,13 @@ class Project:
         video_settings
             Settings used to author the scene and as checkpoint defaults.
             Defaults to None, meaning the project's settings or SETTINGS.video.
+        contact_sheet
+            Also combine the selected stills into a labelled image. True writes
+            ``contact_sheet.png`` in the screenshot directory; a path chooses
+            the destination (bare names use that directory). Labels are the
+            stable checkpoint filenames. Defaults to False, writing no sheet.
+        contact_sheet_columns
+            Maximum thumbnails per row, a positive integer. Defaults to 4.
         **save_frame_kwargs
             Default ``background`` and ``post_processes`` for checkpoints that
             do not supply them. ``overwrite=False`` also preserves existing
@@ -690,7 +788,16 @@ class Project:
 
             results = Project([intro]).render_screenshots()
         """
-        return self._render(
+        if (
+            isinstance(contact_sheet_columns, bool)
+            or not isinstance(contact_sheet_columns, int)
+            or contact_sheet_columns < 1
+        ):
+            raise AlganConfigurationError(
+                "contact_sheet_columns must be a positive integer"
+            )
+        self.last_contact_sheet_path = None
+        results = self._render(
             scenes,
             mode="screenshots",
             frames=frames,
@@ -698,6 +805,75 @@ class Project:
             video_settings=video_settings,
             **save_frame_kwargs,
         )
+        if contact_sheet and results:
+            self.last_contact_sheet_path = self._write_contact_sheet(
+                results,
+                contact_sheet,
+                contact_sheet_columns,
+                overwrite=save_frame_kwargs.get("overwrite", True),
+            )
+        return results
+
+    def _write_contact_sheet(self, results, destination, columns, *, overwrite):
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+        path = Path(
+            "contact_sheet.png" if destination is True else destination
+        ).expanduser()
+        if not path.parent.parts and not path.is_absolute():
+            path = self.screenshot_directory / path
+        if not path.suffix:
+            path = path.with_suffix(".png")
+        path = path.resolve()
+        sources = [Path(result.output_path).resolve() for result in results]
+        if path in sources:
+            raise AlganConfigurationError(
+                "The contact sheet cannot overwrite a selected still"
+            )
+        if path.exists() and not overwrite:
+            return path
+        # Bound each thumbnail independently, preserving portrait and landscape
+        # framing. Open one source at a time, so full-resolution stills do not
+        # accumulate in memory alongside the sheet.
+        font = ImageFont.load_default()
+        labels = [textwrap.wrap(source.stem, 42) or [source.stem] for source in sources]
+        label_height = 16 * max(map(len, labels)) + 12
+        width, height, gutter = 320, 240, 12
+        columns = min(columns, len(sources))
+        rows = math.ceil(len(sources) / columns)
+        sheet = Image.new(
+            "RGB",
+            (
+                columns * (width + gutter) + gutter,
+                rows * (height + label_height + gutter) + gutter,
+            ),
+            "#181c24",
+        )
+        draw = ImageDraw.Draw(sheet)
+        for index, (source, label) in enumerate(zip(sources, labels)):
+            x = gutter + (index % columns) * (width + gutter)
+            y = gutter + (index // columns) * (height + label_height + gutter)
+            with Image.open(source) as original:
+                thumbnail = ImageOps.contain(original.convert("RGBA"), (width, height))
+                sheet.paste(
+                    thumbnail,
+                    (
+                        x + (width - thumbnail.width) // 2,
+                        y + (height - thumbnail.height) // 2,
+                    ),
+                    thumbnail,
+                )
+            draw.multiline_text(
+                (x, y + height + 6),
+                "\n".join(label),
+                font=font,
+                fill="white",
+                spacing=4,
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(path)
+        logger.info(f"Saved contact sheet: {path}")
+        return path
 
     def run_cli(self, argv=None) -> bool:
         """Run the project action requested by command-line arguments.
@@ -705,9 +881,9 @@ class Project:
         ``argv`` defaults to the current process arguments (excluding the
         executable/script name). The recognized arguments are::
 
-            --render-screenshots [SCENE ...] [--frames PATTERN ...] [--stop-early]
+            --render-screenshots [SCENE ...] [--frames PATTERN ...] [--stop-early] [--contact-sheet [PATH]]
             --render-video [SCENE ...]
-            --validate [SCENE ...]
+            --validate [SCENE ...] [--script PATH]
             --profile [SCENE ...] [--profile-runs N]
             --estimate-render-time SCENE ... [--profile-runs N]
             --concatenate-videos
@@ -805,7 +981,27 @@ class Project:
             help="Render at this preset instead of the project's own. One of: "
             f"{', '.join(_PRESETS_BY_NAME)} (case-insensitive).",
         )
+        parser.add_argument(
+            "--contact-sheet",
+            nargs="?",
+            const=True,
+            default=False,
+            metavar="PATH",
+            help="Screenshots only: also write a labelled contact sheet.",
+        )
+        parser.add_argument(
+            "--script",
+            type=Path,
+            metavar="PATH",
+            help="Validation only: compare narration with this UTF-8 script word for word.",
+        )
         arguments, _unknown = parser.parse_known_args(argv)
+        if arguments.contact_sheet and arguments.render_screenshots is None:
+            raise AlganConfigurationError(
+                "--contact-sheet only applies to --render-screenshots"
+            )
+        if arguments.script is not None and arguments.validate is None:
+            raise AlganConfigurationError("--script only applies to --validate")
 
         # Only forward what was actually asked for, so a project that overrides
         # render_screenshots/render_video with a narrower signature still works.
@@ -828,6 +1024,8 @@ class Project:
                     "--frames and --stop-early only apply to --render-screenshots"
                 )
             if arguments.validate is not None:
+                if arguments.script is not None:
+                    shared["script"] = arguments.script
                 report = self.validate(
                     self._parse_cli_scene_selectors(arguments.validate), **shared
                 )
@@ -865,6 +1063,8 @@ class Project:
                 options["frames"] = tuple(arguments.frames)
             if arguments.stop_early:
                 options["stop_early"] = True
+            if arguments.contact_sheet:
+                options["contact_sheet"] = arguments.contact_sheet
             scenes = self._parse_cli_scene_selectors(arguments.render_screenshots)
             self.render_screenshots(scenes, **options)
             return True
@@ -895,6 +1095,7 @@ class Project:
         scenes: _SceneSelection = None,
         *,
         video_settings: VideoSettings | None = None,
+        script: str | Path | None = None,
     ) -> ProjectValidation:
         """Author scenes and resolve narration timing without rendering frames.
 
@@ -902,6 +1103,11 @@ class Project:
         audio from the configured source, which can populate caches, and project
         transcripts are updated. This checks authoring and timing; it does not
         run frame updaters, compile shaders, or check visual output.
+
+        Animation
+        ---------
+        Authors the selected scene functions immediately in isolated Scenes;
+        it records their animations without rendering frames.
 
         Parameters
         ----------
@@ -911,6 +1117,11 @@ class Project:
         video_settings
             Settings used while authoring, including screen layout. Defaults
             to None, meaning the project's settings or SETTINGS.video.
+        script
+            Expected narration text, or a Path to a UTF-8 text file. Compared
+            against the selected scenes in project order. Whitespace is ignored;
+            words, punctuation and capitalization must match exactly. Defaults
+            to None, skipping the comparison. A string always means literal text.
 
         Returns
         -------
@@ -921,8 +1132,11 @@ class Project:
         Raises
         ------
         AlganConfigurationError
-            If a scene selector or authored duration is invalid. Authoring and
-            speech-source errors propagate with the scene name attached.
+            If a scene selector or authored duration is invalid, or narration
+            differs from ``script``. The message names the first differing
+            word, the scene it falls in, and the words around it in both
+            texts. Authoring and speech-source errors propagate with the scene
+            name attached.
 
         Examples
         --------
@@ -943,7 +1157,14 @@ class Project:
         # An intentional author-only pass must not trigger the daemon's
         # "script forgot to export" warning. Skipped exports count there too.
         _note_render_requested()
-        return ProjectValidation(
+        if script is not None and not isinstance(script, (str, Path)):
+            raise AlganConfigurationError("script must be narration text or a Path")
+        expected = (
+            script.read_text(encoding="utf-8-sig")
+            if isinstance(script, Path)
+            else script
+        )
+        report = ProjectValidation(
             tuple(
                 self._render(
                     scenes,
@@ -952,6 +1173,11 @@ class Project:
                 )
             )
         )
+        if expected is not None:
+            mismatch = _describe_script_mismatch(report.scenes, expected.split())
+            if mismatch is not None:
+                raise AlganConfigurationError(mismatch)
+        return report
 
     def profile(
         self,
@@ -1034,6 +1260,10 @@ class Project:
                 run.allow_video_render = True
 
             options = dict(profile_kwargs)
+            if self.post_processes is not None:
+                export_options = dict(options.get("save_video_kwargs") or {})
+                export_options.setdefault("post_processes", self.post_processes)
+                options["save_video_kwargs"] = export_options
             options.setdefault("kernel_profiler", False)
             options.setdefault("output_directory", self.video_directory / "profiling")
             options.setdefault("tag", project_scene.stem)
@@ -1349,6 +1579,8 @@ class Project:
                 raise AlganConfigurationError(
                     f"Unsupported screenshot options: {', '.join(sorted(unknown))}"
                 )
+        if mode in ("screenshots", "video") and self.post_processes is not None:
+            save_video_kwargs.setdefault("post_processes", self.post_processes)
         effective_settings = video_settings or self.video_settings or SETTINGS.video
         results = []
         matched_anywhere = set()

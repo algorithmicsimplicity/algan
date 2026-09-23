@@ -173,10 +173,10 @@ class ManimMob(BezierCircuitCubic):
             getattr(manim_mob, "background_stroke_opacity", 1),
         )
 
+        kwargs.setdefault("opacity", 1)
         super().__init__(
             control_points * manim_scale_factor,
             color=convert_manim_color(manim_mob.fill_color, opacity=fill_opacity),
-            opacity=1,
             stroke_color=convert_manim_color(manim_mob.stroke_color, stroke_opacity),
             # Manim's stroke width is twice Algan's -- or whatever
             # ``SETTINGS.style.manim_stroke_width_ratio`` says, which
@@ -193,6 +193,13 @@ class ManimMob(BezierCircuitCubic):
             empty=empty,
             **kwargs,
         )
+        # Manim's ``set_color`` keeps a Mobject's opacity. A translucent import
+        # keeps its alpha through Algan color writes in the same way.
+        for opacity, stroke in ((fill_opacity, False), (stroke_opacity, True)):
+            if opacity is not None:
+                opacity = torch.as_tensor(opacity, dtype=torch.float32)
+                if bool(((opacity > 0) & (opacity < 1)).any()):
+                    self._mark_explicit_alpha(stroke=stroke)
         self.singleton_batch_indexing = True
         if len(children) > 0:
             grouped = (
