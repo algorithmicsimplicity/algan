@@ -192,11 +192,74 @@ class Camera(Mob):
                 "near clip distance must be less than far clip distance"
             )
 
-    def set_near_orthographic(self, distance=1e5):
-        """Flatten perspective by moving the camera far from its screen."""
+    def set_near_orthographic(self, distance: float = 1e5) -> Camera:
+        """Flatten perspective while preserving the visible frame at the origin.
+
+        Move the eye and screen along the viewing axis together, keeping the
+        same framing on the plane parallel to the screen through ``ORIGIN``.
+        Objects on that plane retain their screen positions and apparent sizes.
+        This is a distant perspective camera, so other depths retain a small
+        amount of perspective. If the origin plane is at or behind the eye,
+        preserve the frame at the current screen plane instead.
+
+        Animation
+        ---------
+        Recorded as an animation: the eye and screen move together from their
+        current positions over the current context's runtime (1 second by
+        default), preserving the reference frame throughout. Use
+        ``with Seq(runtime=3): ...`` to change the duration, or ``with Off():``
+        for an immediate change. Only the camera and its screen move. May be
+        called before or after spawning scene objects.
+
+        Parameters
+        ----------
+        distance
+            Positive, finite distance from the eye to its screen, in world
+            units. Larger values flatten perspective further. Defaults to
+            ``1e5``.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If ``distance`` is non-finite or not positive.
+
+        Examples
+        --------
+        Preserve a square's framing while flattening perspective:
+
+        .. algan:: Example1CameraSetNearOrthographic
+
+            from algan import *
+
+            Square().spawn()
+            with Seq(runtime=2):
+                Scene.get_camera().set_near_orthographic()
+            Scene.save_video()
+        """
         distance = self._validated_positive("distance", distance)
+        forward = self.get_forward_direction()
+        screen_distance = (self.screen.location - self.location).norm(
+            dim=-1, keepdim=True
+        )
+        depth = (-self.location * forward).sum(-1, keepdim=True)
+        # A camera constructed at ORIGIN has no visible origin plane yet.
+        # Retain its screen-plane framing until it has been positioned.
+        depth = torch.where(depth > 0, depth, screen_distance)
+        scale_change = 1 - distance / screen_distance
+        location = self.location + forward * depth * scale_change
+        screen_location = (
+            self.screen.location + forward * (depth - screen_distance) * scale_change
+        )
         self.orthographic = True
-        return self._set_distance_to_screen(distance, preserve_mode=True)
+        with Sync(animation_manager=self.animation_manager):
+            self.set_non_recursive(location=location)
+            self.screen.set_non_recursive(location=screen_location)
+        return self
 
     def get_fov(self):
         """The camera's vertical field of view in degrees (like Three.js's

@@ -1614,12 +1614,27 @@ class BezierCircuitCubic(Mob):
             p=2, dim=-1, keepdim=True
         ) > 1e-5
 
+        if num_segments_per_circuit is not None:
+            # Packed members are independent even when their endpoints touch.
+            # Restart the subpath scan at every member and compare its final
+            # endpoint with its OWN start, as a standalone circuit would.
+            counts = num_segments_per_circuit.to(device=x.device)
+            member_ends = counts.cumsum(0) - 1
+            member_starts = member_ends + 1 - counts
+            circuit_start_mask[..., member_starts, :, :] = True
+            circuit_end_mask[..., member_ends, :, :] = (
+                end_points.index_select(-3, member_ends)
+                - start_points.index_select(-3, member_starts)
+            ).norm(p=2, dim=-1, keepdim=True) > 1e-5
+
         inds = torch.arange(x.shape[-3], device=x.device).view(-1, 1, 1)
         circuit_start_inds = torch.where(circuit_start_mask, inds, 0)
         circuit_start_inds = cummax_values(circuit_start_inds, -3)
         # circuit_start_inds now contains the index of the start of the current index's circuit.
 
         next_segment_inds = (inds + 1) % x.shape[-3]
+        if num_segments_per_circuit is not None:
+            next_segment_inds[member_ends] = member_starts.view(-1, 1, 1)
         # If the current ind is the end of the circuit, then the next segment is the first ind of this circuit, otherwise it is the next ind.
         next_segment_inds = torch.where(
             circuit_end_mask, circuit_start_inds, next_segment_inds

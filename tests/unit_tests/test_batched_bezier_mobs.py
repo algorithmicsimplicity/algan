@@ -1,6 +1,7 @@
 import copy
 
 import manim as mn
+import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
@@ -85,6 +86,47 @@ def test_direct_bezier_batch_matches_object_batch():
         assert torch.equal(
             getattr(actual_primitive, attr), getattr(expected_primitive, attr)
         ), attr
+
+
+@pytest.mark.parametrize("filled", [False, True])
+@pytest.mark.parametrize("packing", ["from_batches", "batch_mobs"])
+def test_packed_paths_keep_touching_members_independent(filled, packing):
+    def path(*points):
+        points = torch.tensor(points, dtype=torch.float32)
+        t = torch.linspace(0, 1, 4).view(1, 4, 1)
+        return points[:-1, None] * (1 - t) + points[1:, None] * t
+
+    # Unequal member sizes, a shared endpoint, and a hole/disconnected subpath
+    # inside a member. The final member also ends at the first member's start.
+    paths = [
+        path((-5, 1, 0), (-3, 1, 0)),
+        torch.cat(
+            (
+                path((-3, 1, 0), (-3, 3, 0), (-1, 3, 0)),
+                path((0, 2, 0), (1, 2, 0)),
+            )
+        ),
+        path((1, 2, 0), (-5, 1, 0)),
+    ]
+    with Off(record_funcs=False, record_attr_modifications=False):
+        individual = [
+            BezierCircuitCubic(points, filled=filled, add_to_scene=False)
+            for points in paths
+        ]
+        if packing == "from_batches":
+            packed = BezierCircuitCubic.from_batches(
+                paths, filled=filled, add_to_scene=False
+            )
+        else:
+            packed = batch_mobs(individual, add_to_scene=False)
+
+    actual = packed.get_render_primitives()
+    # Standalone primitives carry relative links, so concatenating them is an
+    # independent oracle for the topology of a packed circuit.
+    expected_links = torch.cat(
+        [mob.get_render_primitives().next_segment_inds for mob in individual], -3
+    )
+    torch.testing.assert_close(actual.next_segment_inds, expected_links)
 
 
 def test_border_texture_grid_is_independent_from_fill_texture_grid():

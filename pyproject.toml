@@ -278,15 +278,16 @@ exclude_lines = ["pragma: no cover"]
 line-length = 88
 target-version = "py310"
 extend-exclude = [
-  ".github",
-  ".hg",
-  ".env",
-  "env",
-  "build",
-  "buck-out",
-  "media",
-  "algan/external_libraries",
-  "benchmarks",
+    ".github",
+    ".hg",
+    ".env",
+    "env",
+    "build",
+    "buck-out",
+    "media",
+    "algan/external_libraries",
+    "benchmarks",
+    ".claude",
 ]
 # `ruff check` reports and does not rewrite. Opt in to rewriting per-invocation
 # with `ruff check --fix` (and `--unsafe-fixes` for the rest). This used to be

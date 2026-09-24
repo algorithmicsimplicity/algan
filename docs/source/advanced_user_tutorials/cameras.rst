@@ -153,7 +153,7 @@ Near-Orthographic Projection
 ============================
 
 If you are building technical diagrams, engineering cross-sections, or 2-D plots
-where you need exact parallel lines without perspective distortion, use
+where you want almost parallel lines with minimal perspective distortion, use
 :meth:`~algan.rendering.camera.Camera.set_near_orthographic`:
 
 .. algan:: CameraOrthographic
@@ -170,8 +170,14 @@ where you need exact parallel lines without perspective distortion, use
 
     Scene.save_video()
 
-This pushes the camera far away while narrowing the lens, removing perspective
-foreshortening so distant and near objects appear identical in scale.
+This moves both the eye and its internal screen while narrowing the lens. The
+visible frame on the plane parallel to the screen through ``ORIGIN`` stays the
+same throughout the animation: the default 16:9 frame remains approximately
+14.2 by 8 world units, so text and shapes on that plane keep their apparent size.
+Other depths retain a small amount of perspective because this is a distant
+perspective camera. ``distance`` sets the eye-to-screen distance in world units
+and defaults to ``1e5``. If the origin plane is at or behind the eye, the current
+screen plane is used as the framing reference instead.
 
 Clipping Planes
 ===============
