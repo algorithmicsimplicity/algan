@@ -435,7 +435,7 @@ def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
     return value
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _accepts_keyword(manim_class, name):
     """Whether a Manim constructor takes ``name``, directly or via ``**kwargs``."""
     try:
