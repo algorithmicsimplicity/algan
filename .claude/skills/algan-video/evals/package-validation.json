@@ -1,0 +1,199 @@
+{
+  "created": "2026-09-10",
+  "algan_rendered": false,
+  "checks": [
+    {
+      "check": "python_syntax",
+      "passed": true,
+      "detail": "9 Python files compiled to code objects without executing imports."
+    },
+    {
+      "check": "skill_frontmatter",
+      "passed": true,
+      "detail": "Valid YAML; matching name; 195 core lines; description 535 characters."
+    },
+    {
+      "check": "markdown_links",
+      "passed": true,
+      "detail": "27 local file links resolved."
+    },
+    {
+      "check": "markdown_python_syntax",
+      "passed": true,
+      "detail": "47 Python snippets syntax checked; not executed in Algan."
+    },
+    {
+      "check": "vertex_tensor_contract",
+      "passed": true,
+      "detail": "4 CPU tensor cases passed, including static color broadcast across animated frames; glow preserved; no input mutation."
+    },
+    {
+      "check": "fragment_static_contract",
+      "passed": true,
+      "detail": "16 arguments, live template annotation syntax, no future annotations, and preserved fourth glow component. Compiler execution NOT tested."
+    },
+    {
+      "check": "isolated_updater_arithmetic",
+      "passed": true,
+      "detail": "Batched/single-time offsets agree; elapsed-time rotation and explicit target argument checked with a stub, not Algan."
+    },
+    {
+      "check": "evaluation_definitions",
+      "passed": true,
+      "detail": "10 distinct behavioral case definitions parsed; these cases have NOT been run by an Algan agent."
+    },
+    {
+      "check": "utility_cli_help",
+      "passed": true,
+      "detail": "Both utility --help commands exit successfully."
+    },
+    {
+      "check": "environment_failure_detection",
+      "passed": true,
+      "detail": "Current environment correctly reported missing Algan/compiler rather than reporting render readiness."
+    },
+    {
+      "check": "video_positive_verification",
+      "passed": true,
+      "detail": "Synthetic FFmpeg fixture (NOT an Algan render) passed dimension/rate/duration/audio checks and full decode; filename contains a space."
+    },
+    {
+      "check": "video_negative_verification",
+      "passed": true,
+      "detail": "5 failure cases correctly rejected: dimensions, rate, duration, audio policy, and missing file."
+    }
+  ],
+  "updates": [
+    {
+      "version": "1.3.0",
+      "created": "2026-09-24",
+      "algan_rendered": true,
+      "environment": "Windows 10, Python 3.11.6, Algan 0.0.2 source checkout 45c1d6a3 + local changes, CUDA GTX 1050",
+      "checks": [
+        {
+          "check": "python_syntax",
+          "passed": true,
+          "detail": "15 Python files compiled."
+        },
+        {
+          "check": "skill_frontmatter",
+          "passed": true,
+          "detail": "Valid YAML; version 1.3.0; 262 core lines; description 285 characters."
+        },
+        {
+          "check": "markdown_links",
+          "passed": true,
+          "detail": "34 local links resolved, including section anchors."
+        },
+        {
+          "check": "markdown_python_syntax",
+          "passed": true,
+          "detail": "58 snippets parsed."
+        },
+        {
+          "check": "component_opacity",
+          "passed": true,
+          "detail": "fill_opacity kept at 0.6 after color = RED; translucent fill with solid outline rendered; frames inspected."
+        },
+        {
+          "check": "unlit_constructor",
+          "passed": true,
+          "detail": "Line3D(unlit=True) rendered flat beside a lit copy; frames inspected."
+        },
+        {
+          "check": "batch_mobs_star_import",
+          "passed": true,
+          "detail": "Pack from the star import animated per member; frames inspected."
+        },
+        {
+          "check": "root_angles",
+          "passed": true,
+          "detail": "Radian-looking start_angle and path_arc warned; path_arc=60 rendered a 60-degree arc."
+        },
+        {
+          "check": "camera_fly_to",
+          "passed": true,
+          "detail": "Reference snippet rendered with a level horizon; visible_size_at aspect 0.5625 at 540x960; frames inspected."
+        },
+        {
+          "check": "project_template",
+          "passed": true,
+          "detail": "run_cli driver: --validate --script matched and reported a one-word mismatch with scene and context; --render-screenshots --contact-sheet, --render-video and --concatenate-videos produced outputs; sheet inspected."
+        },
+        {
+          "check": "daemon_module_reload",
+          "passed": true,
+          "detail": "Subfolder script importing a parent-folder helper saw each of three edits; last two runs in the warm daemon."
+        }
+      ]
+    },
+    {
+      "version": "1.2.0",
+      "created": "2026-09-23",
+      "algan_rendered": true,
+      "environment": "Windows 10, Python 3.11.6, PyTorch 2.7.1+cu128, Algan 0.0.2 source checkout 91685dbf + local changes, CUDA GTX 1050",
+      "checks": [
+        {
+          "check": "python_syntax",
+          "passed": true,
+          "detail": "15 Python files compiled."
+        },
+        {
+          "check": "skill_frontmatter",
+          "passed": true,
+          "detail": "Valid YAML; version 1.2.0; 265 core lines; description 285 characters."
+        },
+        {
+          "check": "markdown_links",
+          "passed": true,
+          "detail": "34 local links resolved, including section anchors."
+        },
+        {
+          "check": "markdown_python_syntax",
+          "passed": true,
+          "detail": "55 snippets parsed (one list-indented snippet after dedent)."
+        },
+        {
+          "check": "project_template",
+          "passed": true,
+          "detail": "validate --script matched and reported a deliberate mismatch; stills, PREVIEW draft and concat rendered with Algan; stills inspected."
+        },
+        {
+          "check": "contact_sheet",
+          "passed": true,
+          "detail": "Stills mode and video-sampling mode on a rendered Algan clip; no-match exit code 1; --help."
+        },
+        {
+          "check": "text_as_image_recipe",
+          "passed": true,
+          "detail": "ImageMob from a [H, W, 5] PIL array rendered upright; set_color_by_image in Off() swapped it; frames inspected."
+        },
+        {
+          "check": "packed_member_animation",
+          "passed": true,
+          "detail": "batch_mobs members animated individually (opacity, color, move, rotate, glow); frames inspected."
+        },
+        {
+          "check": "camera_rig",
+          "passed": true,
+          "detail": "Roll-free position+target move with curved via path rendered; frames inspected."
+        },
+        {
+          "check": "block_spanning_change",
+          "passed": true,
+          "detail": "Sync(equalize_runtimes=True) stretched bare and wrapped 1 s moves to a 2 s sibling sequence; a longer explicit filler stretched the content instead; template camera move spans its Speech clip (timeline queried)."
+        },
+        {
+          "check": "daemon_module_reload",
+          "passed": true,
+          "detail": "Root script reloaded edited helper; subfolder script importing from its parent stayed stale over three runs."
+        },
+        {
+          "check": "evaluation_definitions_11_12",
+          "passed": true,
+          "detail": "Parsed; NOT run by an agent."
+        }
+      ]
+    }
+  ]
+}

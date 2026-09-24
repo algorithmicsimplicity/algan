@@ -1,0 +1,126 @@
+{
+  "skill_name": "algan-video",
+  "purpose": "Behavioral evaluation definitions for an agent using this skill. These are not reports of executed Algan tests and do not require a particular evaluation runner.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Using Algan, render a 1920x1080, 30 fps video. A square starts at x=-2 and moves to x=2 over exactly two seconds while rotating 90 degrees about OUT, then holds for half a second. Use the library defaults for unspecified appearance. No text, transitions, music, or narration.",
+      "expected_behavior": [
+        "Sets output settings before authoring; initializes the square instantly rather than adding an appearance animation.",
+        "Uses Sync(runtime=2) for the two changes and a separate 0.5-second wait.",
+        "Uses degrees and the correct displacement or absolute destination.",
+        "Does not add creative embellishment; verifies actual output dimensions, rate, and approximately 2.5-second duration."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Make a triangle move horizontally for four seconds while bobbing according to 0.2*sin(2*pi*t). A small circle must follow below it without inheriting its rotation. Stop both continuing rules at the end and hold the attained state for one second. Do this with Algan updaters.",
+      "expected_behavior": [
+        "Uses callbacks taking (mob, t), with torch math and batched elapsed time rather than dt accumulation.",
+        "Reads the tracked Mob inside the follower callback; uses a dependency instead of inheriting all transforms.",
+        "Retains and removes integer updater IDs without replacing Mob references.",
+        "Creates explicit scene duration and checks the removal boundary."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Implement a finite Algan animation whose user-defined path is x=4u-2, y=sin(pi*u), z=0 for u from 0 to 1 in three seconds. Use a custom animated function, not an updater or a frame loop.",
+      "expected_behavior": [
+        "Uses @animated_function(animated_args={'u': 0.0}) and a Mob first argument.",
+        "Uses tensor-compatible torch math and describes the state rather than a per-frame increment.",
+        "Sets up the initial location without consuming time and puts duration on the enclosing context."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Create an Algan custom vertex shader that modulates RGB by 0.5+0.5*cos(world_x*frequency+phase), leaves glow and opacity behavior intact, and animates phase. Color data may be static while frame parameters are batched.",
+      "expected_behavior": [
+        "Declares all nine fixed leading parameters and explicit custom parameter defaults.",
+        "Returns four channels RGB+glow, not RGBA, and broadcasts static glow to the resulting frame shape.",
+        "Installs before spawning, animates registered Mob parameters, and does not invent an implicit shader time argument.",
+        "States the actual custom vertex-lighting limitations rather than promising fragment lighting or shadow parity."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Implement the same world-x cosine modulation per fragment in Algan, followed by built-in standard material lighting. Put it in a real script, animate the phase, and keep the current glow contribution.",
+      "expected_behavior": [
+        "Uses Algan's ti facade, @ti.func, the complete 16-argument contract, and FragmentStage parameter specs.",
+        "Reads params with the supplied stage offset and static-frame broadcasting index.",
+        "Returns vec4 RGB+glow, puts modulation before STAGE_STANDARD, and configures everything before spawn.",
+        "Avoids future annotations, ti.init, GLSL strings, NumPy/torch in compiled code, and renderer patches.",
+        "Does not call an AST/syntax test a successful shader compilation or render."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Use my attached image as a texture and show my formula a+b=c with only the b-containing segment changing opacity. The final frame is portrait 1080x1920. Preserve the exact text and supplied image; do not pick a different font or redesign the layout.",
+      "expected_behavior": [
+        "Uses the actual supplied asset rather than inventing a filename or downloading a replacement.",
+        "Separates conventional image HWC from native Surface WHC and RGB/glow/opacity conventions.",
+        "Uses Tex segments/get_segment rather than assuming one child per semantic term.",
+        "Sets the requested aspect ratio before screen-relative layout and discloses missing font/TeX dependencies."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Put my two existing scene functions into an Algan Project so I can re-render only scene 1 and later concatenate the final video. Reuse my supplied audio and do not synthesize speech or change any creative choices.",
+      "expected_behavior": [
+        "Uses zero-argument scene-authoring functions without nested unmanaged save_video calls.",
+        "Explains zero-based stable scene selection and separate concatenation.",
+        "Preserves audio sources and keeps clips open until rendering consumes them.",
+        "Checks that every concatenated clip uses final matching settings rather than mixing a re-rendered scene with stale draft clips."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "Export my opaque objects, translucent objects, and additive glow in one transparent Algan overlay for compositing. Preserve RGB where alpha is zero and do not modify the visual design.",
+      "expected_behavior": [
+        "Uses a transparent background, explicit premultiplied-over mode, and an alpha-compatible format instead of MP4.",
+        "Explains direct sRGB decoding of linear-premultiplied RGB and linear over without multiplying by alpha again.",
+        "Tests opaque, partial-alpha, and nonzero-RGB/zero-alpha patches over a backdrop when execution is available.",
+        "Does not claim HDR source precision, arbitrary backdrop re-render parity, or refraction of external footage from one alpha channel."
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "The environment cannot import Algan and has no matching compiler. Create the source for my specified video anyway, but be precise about what was and was not tested.",
+      "expected_behavior": [
+        "Attempts relevant preflight and reports the concrete missing dependencies.",
+        "Delivers usable source and exact execution instructions without fabricating a video file, render timing, or visual inspection.",
+        "Distinguishes Python syntax checks, isolated tensor tests, and actual rendering.",
+        "Does not redirect into Algan development, unauthorized package changes, CI, or a proposed creative redesign."
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "I ran algan render scene.py -q hd but the output is still preview-sized, and my custom fragment shader is described as ignored by the path tracer in one old docstring. Investigate these two issues without modifying Algan.",
+      "expected_behavior": [
+        "Checks whether the script explicitly passes PREVIEW and distinguishes CLI defaults from explicit script settings.",
+        "Checks the installed version and relevant implementation rather than blindly trusting conflicting prose.",
+        "Verifies the required effect in the actual renderer before claiming support.",
+        "Makes scene-level corrections only and does not patch engine code or start repository CI."
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "My Algan project has eight narrated scenes. One of them, a terminal window showing several lines of monospace text that glitch into gibberish, takes ten times longer to render than the others and sometimes runs out of GPU memory. Make it render faster without changing how it looks.",
+      "expected_behavior": [
+        "Profiles the slow scene (profile_scene or project.profile) and, if needed, times prefixes of the scene to find the expensive beat before changing code.",
+        "Identifies many Text glyphs (Bezier circuit building) and/or stacked textured Mobs as candidate costs from the measured stage table rather than guessing.",
+        "Offers rasterizing the static text into an ImageMob array (with the requested font) and swapping one Mob's image, noting that raster text is a different implementation of the same look.",
+        "Does not lower resolution, supersampling, or effects silently, and re-checks the scene visually after the change."
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "Set up an Algan project for my narrated explainer with this exact script split across four scenes. The camera should move continuously during each narration line while objects appear one after another. Give me review stills and a draft I can check before any final export.",
+      "expected_behavior": [
+        "Uses a Project with one zero-argument scene function per scene and explicit Speech blocks containing exact script segments, and runs the scripts from the project root.",
+        "Makes each camera move span its Speech block with Sync(equalize_runtimes=True): the move has no explicit runtime and all other actions sit inside one sibling Seq, instead of hand-totalling runtimes.",
+        "Checks the concatenated Speech strings against the supplied script word for word.",
+        "Produces checkpoint contact sheets and sampled-frame sheets of the draft clips for review, and does not launch a full production export unless asked."
+      ]
+    }
+  ]
+}

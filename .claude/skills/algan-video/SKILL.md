@@ -1,510 +1,280 @@
 ---
 name: algan-video
-description: "Use Algan (a Python 2D/3D animation engine and Manim successor with a ray-traced renderer) to author and render a video from a user's brief. Use when asked to make an animation, explainer video, rendered clip, still frame, or 3D visualisation with Algan. Covers scripting, animating, updaters, text and LaTeX, 3D lighting and materials, custom shaders, audio, output and quality settings."
+description: >-
+  Create, edit, render, and troubleshoot videos using the Algan Python animation
+  library. Use when an agent must create 2D/3D animated or still-shot visual
+  content using computer graphics. Algan is a successor to Manim, it can do everything Manim can,
+  as well as 3D ray-traced rendering.
+metadata:
+  compatibility: >-
+    Requires a Python execution environment with Algan and its matching dependencies,
+    file access, and FFmpeg for video export. Text, LaTeX, speech alignment, and some
+    model formats have optional dependencies. Rendering requires a supported CPU/GPU
+    backend. Custom compiled shaders must be defined in real Python source files.
+  version: "1.3.0"
+  source-checked: "2026-09-24"
+  algan-source-commit: "45c1d6a3fd47f83b09b7a82bb77f5d080f457556 + local changes (Algan 0.0.2)"
 ---
 
-# Making videos with Algan
+# Algan video production
 
-This skill is a tool manual. The user supplies the creative direction (what is
-on screen, when, and why); you translate it into an Algan script and render it.
-Do not invent content, pacing or styling the user did not ask for. When the
-brief leaves a visual decision open, pick the plainest option that satisfies it
-and say what you chose.
+Turn the user's requested visual content into Algan scene code, then render and
+verify the requested deliverables. Algan is the production tool, not the subject
+of the task.
 
-Algan is **lazy**: a script *records* animations on a Scene's timeline, and
-`Scene.save_video()` renders that recording. Nothing appears unless it was
-spawned, and nothing is computed until a render call.
+## Scope and creative direction
 
-The deeper catalogues live beside this file. Read the one your task touches:
+This skill covers only how to realize a vision with Algan: API mechanics,
+workflow, rendering, and verification. It deliberately contains no visual-style or
+design guidance, so that it can be combined with any user's style instructions.
+Take all creative direction (content, style, palette, typography, composition,
+camera language, pacing, transitions, sound) from the user and from their own
+style instructions, such as a project `AGENTS.md` or a separate style skill,
+including how much creative latitude you have and when to consult them. Where
+those instructions ask you to design, design within them. Nothing in this package
+is a style source: its colors, sizes, motions, and example values only
+demonstrate the API. Do not add unrequested content such as music, narration, or
+captions.
 
-| Task touches | Read |
-| --- | --- |
-| Mob classes and constructor args, every Mob method, contexts, easings, colours, `Scene` methods | `references/api_reference.md` |
-| Cameras, lights, shadows, materials, reflections, glass, environment maps, textures, models, custom shaders | `references/three_d_and_shaders.md` |
-| Text, LaTeX, numbers, images, SVG, Manim geometry, plots, audio, narration, multi-scene projects | `references/media_and_audio.md` |
-| Output paths, quality presets, `SETTINGS`, transparency, performance, memory, troubleshooting | `references/output_and_performance.md` |
+If the user provides a narration script for the video, then use it as given.
+You may suggest script improvements to the user but you MUST NOT change the script
+without the user's explicit permission. Use explicit `with Speech(...):` blocks,
+each containing an exact, meaningful transcript segment and the animations that
+belong to those words. Do not mechanically divide narration into a requested
+number of chunks and dispatch animations by chunk index. Reuse visual helpers,
+while keeping the narration-to-action mapping readable at the call site.
 
-## 1. Running Algan
+A transcript is sufficient to author this workflow. Use Speech's default local
+source for scratch timing when no recording is supplied; state that it is scratch
+speech. Do not ask for WPM estimates or require a recording to proceed. A later
+recording can replace the speech source without rewriting the animation blocks.
 
-```bash
-pip install algan          # once; see references/output_and_performance.md for extras
-algan check                # prints versions, render device, LaTeX/ffmpeg status
-python scene.py            # runs the script; writes algan_outputs/<name>.mp4 beside it
-algan render scene.py -q HD     # same, forcing a quality preset the script does not set
-```
+Reuse decisions and assets already supplied. Resolve mechanical details with
+minimal, stated assumptions. Consult the user about creative decisions as their
+instructions direct; without such instructions, ask about a missing creative
+decision only when it really blocks the requested result. Do not silently replace
+a required effect with an approximation that changes the vision. Explain any
+actual limitation.
 
-Facts that matter when an agent runs the script rather than a person:
+## Production workflow
 
-- **Every script must call** `Scene.save_video(...)` or `Scene.save_frame(...)`.
-  Running a script that records animations and never renders produces nothing.
-- **Do not call `Scene.view()`** in an unattended run. It starts a web viewer and
-  blocks until Ctrl-C.
-- **Keep all code below `from algan import *`.** A warm render daemon may re-run
-  the script in another process; lines above the import execute twice.
-- **The first render is slow** (tens of seconds to minutes) while kernels
-  compile and cache. Later renders start warm. This is not a hang.
-- `Text` needs a font backend and `Tex`/`MathTex` need a LaTeX install. On
-  Linux install TeX Live first (`algan check` reports what was found).
-- Set `ALGAN_USE_DAEMON=0` in the environment if the daemon misbehaves or you
-  need a fully isolated run.
-
-## 2. Recommended workflow
-
-1. **Write `scene.py`** from the brief. Put scene setup in `with Off():`, then
-   the animation beats, then one `Scene.save_video("name")`.
-2. **Smoke-test cheaply**: `Scene.save_video("name", SMOKE_TEST)` (32x32, 2 fps)
-   proves the script runs end to end in seconds.
-3. **Check composition with stills**, which you can open with an image reader:
+1. **Identify the deliverable.** Extract the specified content, assets, durations,
+   aspect ratio, resolution, frame rate, audio requirements, output format, and
+   transparency/compositing requirements. Keep user text and narration exact.
+   Distinguish a runnable source project from a fully exported production video.
+   For a long multi-scene request without an explicit full-export requirement,
+   deliver the complete source, review frames and representative clips. Do not
+   automatically launch a full production export. An explicit export request
+   authorizes it; an explicit request to skip rendering takes precedence.
+2. **Check the environment.** Read [setup and rendering](references/setup-and-rendering.md).
+   Reuse a working interpreter and Algan installation if one exists. Run
+   `scripts/check_environment.py` with that interpreter and use `algan check`
+   from the same environment. Install only needed dependencies. Record the actual
+   Algan version/source location. These references describe the commit above;
+   prefer the installed version's verified API when it differs.
+3. **Select the relevant references.** Use the table below. Load advanced sections
+   only when needed. Prefer public Algan methods and existing materials; write
+   custom callbacks or shaders when the requested behavior calls for them.
+4. **Author the scene.** Keep initial placement and static configuration separate
+   from animation. Keep assets relative to the project, construct reusable
+   functions for repeated mechanics, and separate scene authoring from export.
+   Use `Project` for independently rendered scenes when useful; for a multi-scene
+   narrated video, start from the layout in `examples/project_template/`.
+   Place named `Scene.save_frame` checkpoints throughout the script. Authoring
+   checkpoints does not mean rendering every checkpoint on every iteration.
    ```python
-   Scene.save_frame("check", at=[0.0, 2.5, 5.0])   # check_0.0.png, check_2.5.png, ...
+   Scene.save_frame("important_moment", at=[0.0, 2.5, 5.0])   # check_0.0.png, check_2.5.png, ...
    ```
    `at` is seconds on the timeline; a negative value counts back from the current
-   time. Rendering never alters the Scene, so leave the `save_video` in place.
-4. **Preview the motion** at the default preset (`LD`, 864x486 at 15 fps) or
-   `PREVIEW`, and iterate.
-5. **Final render** once, with a preset for that call only:
-   `Scene.save_video("name", HD)`. `RenderResult.output_path` tells you where it
-   went.
+   time. Use `at` to get stills before, during, and after key animations.
+   Give the stills informative names describing which part of the script they are showing.
+5. **Validate, then inspect selected renders.** Use `project.validate()` first to
+   author every scene and resolve Speech timing without rendering. This can
+   generate/cache speech and update transcripts; it does not execute render-time
+   updaters or prove visual correctness. When the user supplied a script, pass it
+   (`project.validate(script=Path("script.txt"))`, or `--validate --script
+   script.txt`) so the Speech strings are checked against it word for word.
+   Build a compact storyboard from selected checkpoints with
+   `project.render_screenshots(contact_sheet=True)` (or `--render-screenshots
+   --contact-sheet`), then render representative draft clips
+   and review their motion with `scripts/contact_sheet.py video ... --fps 1`
+   (a sampled sheet catches framing and motion problems between checkpoints; it
+   does not replace watching for timing and audio). Inspect starts, transitions,
+   updater-dependent motion, final holds, text, texture orientation, shadows,
+   shader output, and sound timing against the user's specification. A draft
+   tests implementation, not a license to redesign. Use the intended renderer for
+   a representative final-quality test. If a scene renders much slower than the
+   others or runs out of memory, profile it before changing anything; see
+   [performance](references/performance.md).
+6. **Deliver the requested scope.** Export the full video only when it is part of
+   the requested deliverable. For source projects, provide the complete runnable
+   project, reviewed samples, and full-export command. For requested exports,
+   use the requested format and settings. Check the
+   returned output path, file existence, metadata, decoding, audio, and alpha
+   when relevant. Provide the video, reproducible source, required asset manifest,
+   exact invocation, and any known limitations. Never label unexecuted code or an
+   uninspected render as verified.
 
-## 3. The core model
+## Task-to-reference map
 
-```python
-from algan import *
+| Need | Read | Starting example |
+|---|---|---|
+| Installation, settings, rendering, output paths | [Setup and rendering](references/setup-and-rendering.md) | `examples/basic_scene.py` |
+| Transforms, timing, easing, lifecycle, morphs | [Animation and updaters](references/animation-and-updaters.md) | `examples/basic_scene.py` |
+| Followers, continuous motion, custom animations | [Animation and updaters](references/animation-and-updaters.md) | `examples/updaters.py`, `examples/custom_animation.py` |
+| Shapes, grouping, layout, text, equations, image/model assets | [Geometry, text, and assets](references/geometry-text-and-assets.md) | `examples/text_and_texture.py` |
+| Materials, glass, lights, cameras, renderer choice | [Materials, lights, and camera](references/materials-lights-and-camera.md) | `examples/fragment_shader_taichi.py` |
+| A custom PyTorch vertex shader or compiled fragment pipeline | [Custom shaders](references/custom-shaders.md) | `examples/vertex_shader.py`, `examples/fragment_shader_taichi.py` |
+| Audio, recorded narration, multiple scenes | [Audio and projects](references/audio-and-projects.md) | `examples/multi_scene_project.py`, `examples/project_template/` |
+| Slow renders, out-of-memory, many objects, heavy text | [Performance](references/performance.md) | `profile_scene`, `batch_mobs` |
+| Reviewing stills and motion | Production workflow step 5 | `render_screenshots(contact_sheet=True)`, `scripts/contact_sheet.py` |
+| Backgrounds, bloom, post-processing, transparent overlays | [Compositing and post-processing](references/compositing-and-postprocessing.md) | See reference snippets |
+| Failed or incorrect output | [Troubleshooting](references/troubleshooting.md) | `scripts/verify_video.py` |
+| API drift or uncertain support | [API sources](references/api-sources.md) | Inspect only the relevant installed API |
 
-with Off():                                  # instant setup, no animation recorded
-    title = Text("Hello", font_size=72).move_to(UP * 2).spawn()
-    box = Square(color=BLUE).spawn()
+## Essential Algan rules
 
-box.move(RIGHT * 2)                          # 1-second animation, then the next starts
-box.color = YELLOW                           # assigning an animatable attribute animates it
-with Sync(runtime=2):                        # everything inside plays together
-    box.rotate(90, OUT)
-    title.color = BLUE
-Scene.wait(1)                                # hold
-box.despawn()                                # fade out; optional
+**Do not call `Scene.view()`** in an unattended run. It starts a web viewer and
+blocks until Ctrl-C.
 
-Scene.save_video("hello")                    # -> algan_outputs/hello.mp4
-```
+**Keep all code below `from algan import *`.** A warm render daemon may re-run
+the script in another process; lines above the import execute twice.
 
-- **Mobs** are everything drawable: shapes, text, images, 3D solids, lights,
-  the camera. A Mob must be `.spawn()`ed to appear; it fades in over 1 s unless
-  spawned inside `Off()` or with `spawn(False)` (no fade, instant).
-- **Animatable attributes**: `location`, `basis` (orientation and scale; change
-  it through `rotate`/`scale`), `color`, `glow`, `opacity`, plus whatever a
-  material or shader adds. Assignment records a 1-second interpolation. Reads
-  return a **copy**, so `mob.location[0] = 1` changes nothing; write
-  `mob.location = mob.location + RIGHT` or `mob.location += RIGHT`.
-- **Colours** carry five channels: r, g, b, glow, opacity. `GREEN.set_glow(0.5)`,
-  `RED.set_opacity(0.5)`. `BLUE * 0.5` also halves opacity, which silently makes a
-  background transparent. Manim's palette (`RED`, `BLUE_E`, `TEAL_A`, ...),
-  `WHITE`, `BLACK`, `TRANSPARENT` and `Color((r, g, b))` are available.
-- **Common methods** (each is a 1 s animation unless a context says otherwise):
-  `move(delta)`, `move_to(point, arc_angle=None)`, `rotate(deg, axis, about=None)`,
-  `orbit(deg, axis, about=p)` (travel without turning), `scale(k)`,
-  `look_at(point)`, `wait(s)`, `set(location=..., color=...)` for several
-  attributes in one beat, and `become(other)`:
-  ```python
-  square = square.become(Circle(add_to_scene=False))   # reassign; target never drawn
-  ```
-- **Directions**: `RIGHT/LEFT` (x), `UP/DOWN` (y), `OUT/IN` (z, `OUT` is toward
-  the viewer), `ORIGIN`. Angles are degrees. The default camera sits at
-  `OUT * 7`, and the visible area at z=0 is about **12.4 wide by 7 tall**, so x
-  spans roughly -6.2..6.2 and y roughly -3.5..3.5.
+**The first render is slow** (tens of seconds to minutes) while kernels
+compile and cache. Later renders start warm. This is not a hang.
 
-### Animation contexts
+**Set `ALGAN_USE_DAEMON=0` in the environment if the daemon misbehaves** or you
+need a fully isolated run. Between runs the daemon reloads every edited helper
+module the script imported, wherever it lives. It keeps Algan, installed packages
+and any user package containing a compiled extension loaded (it says so). When
+Algan's own source changes it shuts down and runs the script in a fresh process.
 
-| Context | Behaviour |
-| --- | --- |
-| `Seq()` | One after another (the default outside any context). |
-| `Sync()` | All start together. Same as `Lag(0)`. |
-| `Lag(r)` | Next starts when the previous is fraction `r` through. |
-| `Off()` | Instant, nothing recorded as motion. Use for setup. |
-| `Audio(path)` / `Speech(text)` | Block runtime taken from a sound clip. See `references/media_and_audio.md`. |
+**Cancel through `algan daemon cancel`.** It interrupts the active script and
+keeps queued scripts. Wait for cleanup before retrying. For older versions or a
+failed recovery, see the [Windows recovery recipe](references/troubleshooting.md#cancellation-and-recovery).
 
-All take `runtime=` (the whole block, animations rescaled to fit),
-`runtime_per_part=` (each animation inside), and `easing=` (a rate function).
-Contexts nest: a nested block counts as one animation for its parent and
-inherits parameters it does not set. Wrap a routine in a function to reuse it.
+**Always prefer screen-relative helpers** when laying out Mobs on the screen.
+Methods such as `Mob.fit_to_screen` position and scale mobs to take up
+a specified rectangular portion of the screen, without you needing to
+figure out the exact world coordinates.
 
-```python
-with Sync(runtime=3):
-    with Seq():                     # circle's routine, three steps in 3 s total
-        circle.move(LEFT * 3)
-        circle.color = YELLOW
-        circle.move(RIGHT * 3)
-    square.rotate(360, OUT)         # plays alongside the whole routine
-```
+**Authoring records a timeline.** Rendering materializes that recording later,
+possibly in parallel frame batches. Do not implement frame-by-frame animation
+with a Python sleep loop or assume callbacks run once in chronological order.
 
-**Before a Mob is spawned its animations are always instant**, whatever the
-surrounding context. `Scene.wait(s)` and `mob.wait(s)` insert a pause.
+**Configure, then spawn, then animate.** Unspawned objects can be positioned
+without consuming animation time. Visible objects must be spawned. Set materials
+(or `unlit=True` at construction), shaders, `two_sided`, `casts_shadows`, and
+`receives_shadows` before spawning.
+Use `with Off():` for instantaneous setup, including camera and light changes.
+`spawn()` normally animates appearance; use `Off()` or `spawn(False)` for an
+instant appearance. Do not accidentally spend the opening seconds constructing
+objects or lights one after another.
 
-### Easing
+**Timing belongs in contexts.** `Seq` is sequential, `Sync` simultaneous,
+`Lag(ratio)` staggered, and `Off` instantaneous. Use `runtime`, not `run_time` or
+`duration`. `runtime` is the whole block's duration; `runtime_per_part` is per
+child animation. Put ordinary Mob calls inside a context instead of passing
+timing keywords to them. Specialized convenience APIs can have their own timing
+arguments; check their signatures rather than generalizing.
 
-Default is `easings.smooth` (ease in and out). Use `easings.identity` for
-constant speed (turntables, orbits, clock hands), `easings.ease_out_quintic` for
-arrivals, `easings.ease_in_expo`/`ease_out_expo` for sharp acceleration.
-`easings.inversed(f)` reverses one. Any function mapping a tensor in [0, 1] to
-[0, 1] works. Put `easing=` on the context that owns the motion, not an outer one
-that also holds other animations.
+**Use Algan units and names.** Every angle in the root API is in degrees:
+transforms (`rotate`, `look`, camera `fov`) and constructor angles such as
+`RegularPolygon(start_angle=...)`, `Line(path_arc=...)`, `Arc(angle=...)` and
+`Wiggle(rotation_angle=...)`. Only `algan.manim` classes take Manim's radians. A
+root angle that looks like radians (for example `PI / 4`) warns; fix the value
+rather than ignoring the warning.
+`move(v)` is a displacement; `move_to(p)` is an absolute destination. Use
+`easings.identity` for a specified linear interpolation and `easing=` to select
+a requested easing. Do not write Manim's `Scene.play`, `.animate`, or
+`rate_func=`. Geometry imported through `algan.manim` has a separate convention;
+see the geometry reference.
 
-## 4. Placing things
+**Updaters are functions of elapsed time.** The callback is `(mob, t, ...)`;
+`t` is seconds since attachment, as a torch tensor of shape `[frames, 1, 1]`.
+It is not `dt` or a Python scalar. Use torch operations and broadcasting. Do not
+accumulate state, call `.item()` on frame batches, use `math.sin(t)`, create Mobs
+per callback, or mutate external Python state. Keep the ID returned by
+`add_updater` to remove that updater later. An updater does not create video
+duration: author animations or `Scene.wait(...)` too.
 
-Prefer relative placement, then screen-relative, then absolute coordinates:
+**Animatable values and static configuration are different.** Assign properties
+on the Mob after installing a material/shader, for example `ball.roughness = 0.4`.
+Do not replace the material object after spawn. Background settings, many light
+shape parameters, and clip planes are not timeline animations. Use separate
+scenes or supported time-dependent callbacks when necessary.
 
-```python
-label.move_next_to(box, DOWN, buffer=0.3)            # edge to edge
-label.move_next_to(box, RIGHT, align_edge=DOWN)      # and share a bottom edge
-caption.move_to_screen_edge(DOWN)                     # rest against a screen edge
-logo.move_to_screen_corner((UP, LEFT))
-hud.move_to_screen_position(0.9, 0.1)                 # (0,0) bottom-left, (1,1) top-right
-diagram.fit_to_screen((0.0, 0.0), (0.5, 1.0))         # scale + move into the left half
-diagram.fit_to_screen()                               # fill the frame
-box.move_to(UP * 2 + LEFT * 3); box.y = 0             # absolute; x/y/z set one axis
-box.scale_to_height(2.5); circle.scale_to_width(box.get_width())
-```
+**Filled 2D shapes have a default outline.** Native filled shapes draw a white,
+screen-space outline (`stroke_width=5`) unless told otherwise; set the stroke the
+specification calls for, or `stroke_width=0`. For a see-through fill with a solid
+outline, use `fill_opacity=` and `stroke_opacity=` on one Mob rather than two
+Mobs. See the geometry reference.
 
-Measurements (`get_width`, `get_height`, `get_center`, `get_bounding_box`) are
-read at call time; use an updater if one Mob must keep tracking another.
-`SETTINGS.style.buffer` (0.6) is the default gap for the layout methods. Screen
-methods resolve the camera **once**, when recorded; to pin something during a
-camera move, make it a child of the camera or use an updater.
+**Move the camera with `fly_to`.** `camera.fly_to(position, look_at=target,
+via=..., look_at_via=...)` moves position and aim together with a level horizon;
+`move` plus `look_at` in one `Sync` does not track the target.
+`camera.visible_size_at(point)` gives the visible width and height at a point's
+depth for framing, including portrait frames. See the camera reference.
 
-### Groups and hierarchy
+**Colors are not uniformly RGBA.** Mob colors and native surface color textures
+use `[R, G, B, glow, opacity]`. A vertex shader receives/returns RGB plus glow;
+a fragment stage returns `vec4(R, G, B, glow)`, not alpha. Stage RGB parameters
+need three components. Preserve the correct trailing channels.
 
-```python
-row = Group([Square(color=BLUE).scale(0.3) for _ in range(6)]).spawn()
-row.arrange_in_line(RIGHT, buffer=0.2)          # animated, like everything else
-row.arrange_in_grid(2, row_buffer=0.5)
-row.rotate(180, OUT); row.color = YELLOW        # propagates to every member
-row[0].move(UP)                                 # members stay individually animatable
-with Lag(0.3):
-    for member in row:
-        member.color = RED
-parent.add_children([child_a, child_b])         # explicit parent/child link
-```
+**Preserve settings objects.** Use `SETTINGS.video.set(...)`, not replacement
+assignment to `SETTINGS.video`. Presets are immutable: `HD.set(...)` returns a
+new preset. `samples_per_pixel=1` selects the deterministic hybrid renderer;
+values greater than one select the path tracer, not merely a higher-quality
+version of the same algorithm. Test required effects in the final mode.
 
-A child moves, rotates, scales, recolours, spawns and despawns with its parent,
-as if bolted to it; direct changes to the child ignore the parent. `Group` takes
-a list or several Mobs, is indexable and iterable, and its centre is the
-members' centre.
+## Minimal complete authoring pattern
 
-## 5. Text and mathematics
-
-```python
-title = Text("Euler's identity", font_size=64, weight="BOLD",
-             color_map={"identity": YELLOW}).spawn()
-formula = Tex(r"e^{i\pi}", "+ 1", "= 0", font_size=80).spawn()   # math mode, no $ needed
-with Lag(0.5):
-    for i in range(len(formula.tex_strings)):
-        formula.get_segment(i).color = YELLOW    # per-segment: the pieces you passed
-with Lag(0.2):
-    for glyph in title.character_mobs:           # per-glyph (spaces excluded)
-        glyph.color = BLUE
-Text("Hand written", font_size=64).spawn(False).write(runtime=3)   # handwriting effect
-counter = DecimalNumber(0.0, decimal_places=2).scale(2).spawn()
-with Seq(runtime=3):
-    counter.value = 100.0                        # counts up
-```
-
-Always use raw strings for LaTeX. `MathTex`, `Title`, `Paragraph`,
-`BulletedList`, `MarkupText` also exist (Manim-compatible). Text and formulae are
-vector outlines: they morph, scale and take gradients, but are drawn **unlit**.
-
-## 6. Updaters (per-frame rules)
-
-An updater runs every frame from the moment it is added until removed, on top of
-whatever the timeline says. Use one for idle motion, following, or any rule whose
-duration you do not know in advance.
-
-```python
-import torch
-spin = triangle.add_updater(lambda mob, t: mob.rotate(t * 180, OUT))   # t = seconds since added
-label.add_updater(lambda mob, t: mob.move_next_to(ball, DOWN))         # follow without inheriting orientation
-ball.add_updater(lambda mob, t: mob.move(UP * 0.8 * torch.sin(t * 2 * PI)))
-Scene.get_camera().add_updater(lambda cam, t: cam.look_at(ball.location))
-Scene.wait(3)
-triangle.remove_updater(spin)     # Mob keeps whatever state it reached
-```
-
-Rules that keep updaters correct:
-
-- The signature is `(mob, t)`; declare `t` even when unused.
-- **`t` is a torch tensor of shape `[frames, 1, 1]`**, not a float. Use
-  `torch.sin`, `torch.exp`, ... never the `math` module (it fails at render time).
-- Write state as a function of `t` from a fixed reference, never by accumulating
-  increments; frames are evaluated in parallel batches.
-- Updaters win over recorded animations of the same attribute on that frame.
-
-## 7. Built-in and custom animations
-
-Attention: `Indicate(mob)`, `Circumscribe(mob)`, `Flash(mob)`, `FocusOn(mob)`,
-`Wiggle(mob)`, `Blink(mob, blinks=2)`, `ShowPassingFlash(outline, runtime=2)`,
-`DrawBorderThenFill([a, b], runtime=2)` (spawn with `spawn(False)` first),
-`AnimatedBoundary(mob).spawn()` (a Mob; `.stop()` freezes it).
-Motion and deformation: `MoveAlongPath(dot, path_mob, runtime=3)`,
-`ApplyMatrix(grid, torch.tensor([[1., .6], [0., 1.]]))`,
-`ApplyPointwiseFunction`, `ApplyComplexFunction`, `Homotopy(mob, f(x, y, z, t))`,
-`PhaseFlow(mob, vector_field, virtual_time=2.0)`, `ApplyWave(text)`. They take
-`runtime=` and obey contexts. Their callbacks receive **batched torch tensors**.
-
-A custom fixed-length animation describes one frame as a function of a swept
-parameter:
-
-```python
-@animated_function(animated_args={"t": 0.0})     # start values of the swept args
-def move_along(mob, t):
-    mob.location = UP * np.sin(t) + RIGHT * (t - PI)   # one frame; assignments here are not separately animated
-
-with Seq(runtime=3, easing=easings.identity):
-    move_along(square, 2 * PI)                     # sweeps t from 0 to 2*pi
-```
-
-To place animations at times you compute yourself, name the context and move
-its write pointer:
-
-```python
-with Seq() as ctx:
-    start = ctx.current_time
-    for i, mob in enumerate(mobs):
-        ctx.current_time = start + delay_for[i]
-        with Seq(runtime=1):
-            mob.color = RED
-    ctx.current_time = ctx.end_time        # resume sequential recording after the block
-```
-
-## 8. 3D: camera, lights, materials
-
-3D solids (`Sphere`, `Cube`, `Cylinder`, `Cone`, `Torus`, `Prism`, Platonic
-solids, `Surface(uv_function)`, `Model3D`) are lit and cast shadows; flat 2D
-shapes and text are not lit.
-
-```python
-SETTINGS.raytracing.set(shadows=True)                # shadows are off by default (cost)
-with Off():
-    Scene.clear_lights()                             # drop the default point light
-    DirectionalLight(location=UP * 8 + RIGHT * 4 + OUT * 4, target=ORIGIN,
-                     intensity=3, shadow_angle=3).spawn()      # soft sun
-    AmbientLight(intensity=0.3).spawn()              # keeps shadow sides from going black
-    floor = Prism(width=9, height=0.2, depth=9, color=GREY).move(DOWN * 1.4)
-    floor.set_material(MeshStandardMaterial(metalness=0.8, roughness=0.1)).spawn()
-    ball = Sphere(radius=0.8, color=BLUE).set_material(
-        MeshPhysicalMaterial(transmission=1.0, ior=1.5, roughness=0.0)).spawn()   # glass
-
-camera = Scene.get_camera()
-with Seq(runtime=4, easing=easings.identity):
-    camera.rotate(360, UP, about=ORIGIN)             # turntable, stays aimed at the origin
-camera.set_fov(30)                                   # animatable; dolly-zoom friendly
-with Seq(runtime=3):
-    ball.roughness = 0.6                             # material properties become animatable attrs
-```
-
-- `set_material`, `set_shader`, `set_fragment_shader`, `two_sided`,
-  `casts_shadows`, `receives_shadows` must be set **before `spawn()`**.
-- Materials are Three.js style: `MeshBasicMaterial` (unlit), `MeshLambertMaterial`,
-  `MeshPhongMaterial`, `MeshStandardMaterial(metalness, roughness)`,
-  `MeshPhysicalMaterial(+ transmission, ior, clearcoat, sheen)`,
-  `MeshToonMaterial`, `MeshNormalMaterial`. Presets: `WOOD`, `GLASS`, `PLASTIC`,
-  `RUBBER`, `CERAMIC`, `STONE`, `MIRROR`, `BRUSHED_METAL`, `CHROME`, `COPPER`.
-- Lights: `PointLight`, `DirectionalLight`, `AmbientLight`, `HemisphereLight`,
-  `SpotLight`, `RectAreaLight`. Spawn them inside `Off()` (each spawn is a 1 s fade
-  otherwise). `location`, `color`, `intensity` animate; cone angles, decay and
-  emitter sizes are fixed per light.
-- **A mirror with nothing to reflect renders black.** Add
-  `Scene.set_environment_map("panorama.png")` (equirectangular image) or
-  surrounding geometry. **Glass with nothing behind it looks like nothing**: put a
-  patterned backdrop behind it. `opacity` is coverage (fade in/out);
-  `transmission` is glassiness.
-- Camera config that is not animatable: `set_near`, `set_far`,
-  `set_near_orthographic()` (parallel projection for diagrams). Set once, before
-  spawning.
-- Path tracing (global illumination, many lights, soft area shadows):
-  `SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)`. Much slower;
-  denoised by default. Keep `samples_per_pixel=1` (the deterministic renderer) for
-  2D and text work.
-
-Full light parameters, material tables, textures on surfaces and model import
-are in `references/three_d_and_shaders.md`.
-
-## 9. Custom shaders
-
-Three levels, from simplest to most control. All are set before `spawn()`.
-
-**Materials** (above) cover metal, plastic, glass, toon. Reach for a shader only
-when the look is not a material.
-
-**Fragment shader pipelines** run in the render kernel per pixel hit. Pass one
-stage or a list applied left to right; each stage's parameters become animatable
-attributes on the Mob:
-
-```python
-ball = Sphere(radius=1, color=BLUE_E)
-ball.set_fragment_shader([standard_shader, fresnel_rim])   # lit PBR, then an additive rim light
-ball.rim_color = (0.4, 0.9, 1.0)      # width-3 tuple; palette constants need [..., :3]
-ball.rim_power = 3.0
-ball.spawn()
-ball.set_fragment_shader([cosine_color, STAGE_PHONG])       # recolour, then light (before spawn)
-```
-
-Lighting stages: `STAGE_UNLIT`, `STAGE_LAMBERT`, `STAGE_PHONG`, `STAGE_STANDARD`,
-`STAGE_PHYSICAL`, `STAGE_MANIM` (or pass `phong_shader`, `standard_shader`, ...
-which resolve to them). Shipped additive looks: `fresnel_rim`, `glass_ball`.
-Example recolour stage: `cosine_color` (`frequency`, `phase`).
-
-A **custom stage** is a Taichi `@ti.func` with the fixed stage signature plus a
-list of `(name, width, default)` parameter specs:
+This demonstrates the mechanics only. Replace the object, changes, values, and
+export settings with the user's requirements.
 
 ```python
 from algan import *
-from algan.taichi_compat import ti
 
-@ti.func
-def _stage_bands(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
-                 params: ti.template(), f, prim, off,
-                 light_pos: ti.template(), light_col: ti.template(), num_lights,
-                 shadows: ti.template(), vis, cam_pos):
-    tm = f % params.shape[0]
-    freq = params[tm, prim, off + 0]          # slot 0 = first spec below
-    k = 0.5 + 0.5 * ti.cos(pos[1] * freq)     # bands along world y
-    return ti.math.vec4(in_rgb[0] * k, in_rgb[1] * k, in_rgb[2] * k, in_glow)
 
-bands = FragmentStage(_stage_bands, [("frequency", 1, 6.0)])
-mob.set_fragment_shader([bands, STAGE_STANDARD])
-mob.frequency = 12.0                          # animatable
+def build_scene():
+    with Off():
+        shape = Square().scale(0.5).move_to(LEFT).spawn()
+
+    with Sync(runtime=1.5):
+        shape.move(RIGHT * 2)
+        shape.rotate(90, OUT)
+
+    Scene.wait(0.5)
+
+
+if __name__ == "__main__":
+    build_scene()
+    result = Scene.save_video("renders/example.mp4", PREVIEW)
+    print(result.output_path)
 ```
 
-The stage receives the previous stage's colour in `in_rgb`/`in_glow` and returns
-`vec4(r, g, b, glow)`. Read parameters from `params[tm, prim, off + slot]`. A
-stage can also carry a `scatter=` function to change how rays bounce; copy
-`forced_mirror_scatter` in `algan/rendering/shaders/fragment_shaders.py` as the
-template. The first render with a new pipeline pays a kernel compile.
+Ordinary methods on spawned objects and assignments to animatable attributes
+record changes. A Python function containing several such calls does not
+automatically make them simultaneous; give it an appropriate context.
 
-**Vertex shaders** (`set_shader`) are plain PyTorch functions evaluated per
-vertex with nine fixed parameters followed by your own, which become animatable:
+For a custom motion with finite duration, use `@animated_function` with explicitly
+interpolated arguments. For a continuing rule, use an updater. For changing
+surface appearance per pixel, use a fragment stage. These are different tools,
+not interchangeable forms of a generic callback.
 
-```python
-def toon(memory, vertex_location, vertex_normal, albedo_color, camera_location,
-         light_origin, light_color, light_intensity, ambient_light_intensity,
-         bands=4.0):
-    ...                                        # torch ops; return a colour per vertex
-mob.set_shader(toon); mob.bands = 6.0
-```
+## Delivery and verification contract
 
-They see only a plain point light and never receive shadows, so prefer fragment
-pipelines in lit scenes. Define one shader function and reuse it across Mobs;
-different shader objects batch separately. Details and the shipped shader sources
-to copy from are listed in `references/three_d_and_shaders.md`.
+Run examples as real `.py` files using the chosen environment. Adapt their
+preview settings before a final delivery; they are not production specifications.
+Do not upload assets to external services, use paid synthesis, or overwrite
+unrelated files without authorization. Do not include font files in deliverables.
 
-## 10. Images, textures, models, plots
+`scripts/verify_video.py` checks a local video with FFprobe and can decode it with
+FFmpeg. It does not inspect visual correctness or prove meaningful alpha data;
+inspect images and a composited test for those. Check `RenderResult.status` so
+an existing skipped file is not mistaken for a new render.
 
-```python
-ImageMob("photo.png").scale(2).spawn()                       # flat textured plane; paths resolve beside the script
-globe = Sphere(radius=1.5, color_texture=get_checkerboard((RED, WHITE))).spawn()
-globe.color_texture = get_stripes((BLUE, WHITE))             # cross-fades texel by texel
-Sphere().set_material(MeshStandardMaterial(map="earth.png", roughness_map="gloss.png"))
-Model3D("robot.glb", fit_to_size=2.0).spawn()                # glTF/GLB/OBJ/PLY/STL; .fbx needs assimp
-SVGMob("logo.svg").scale(2).spawn()
-axes = Axes(x_range=(-3, 3, 1), y_range=(-1.5, 1.5, 0.5), x_length=9, y_length=4.5)
-graph = axes.plot(lambda x: np.sin(x), color=YELLOW)          # returns a Mob; spawn both
-square = Square(grid_width=64, grid_height=64, stroke_width=0)
-square.set_color_by_function(lambda uv: torch.cat((uv[..., :1], 1 - uv[..., :1], uv[..., 1:]), -1))
-```
-
-Texture maps sample only on `Surface`-based Mobs (`Sphere`, `Cylinder`, `Torus`,
-`ImageMob`, ...), not on `Cube` or polyhedra. 2D shapes take a colour grid
-(`grid_width`/`grid_height`) for gradients and image fills. Manim geometry
-imports via `ManimMob(mn.Mobject)` (import Manim as `import manim as mn`, never
-star-import both); `Axes`, `NumberPlane`, `BarChart`, `Table`, `Brace`, `Arrow`,
-`Arc`, `Star` and more are available natively with Manim's arguments.
-
-## 11. Backgrounds, glow, post-processing, transparency
-
-```python
-Scene.set_background(Color([0.05, 0.05, 0.15]))              # whole Scene; not animatable
-Scene.save_video("v", background="backdrop.png")             # this render only
-Scene.save_video("v", background=lambda x, y, t: ...)        # procedural, per pixel per frame (torch tensors)
-dot.glow = 0.4                                               # bloom makes glow visible; 0.3-0.5 is plenty
-Scene.save_video("v", post_processes=())                     # disable bloom
-Scene.save_video("v", post_processes=(partial(bloom_filter, strength=8), desaturate))
-Scene.save_video("overlay.mov", background=TRANSPARENT)      # alpha output needs .mov (or .webm with codec)
-```
-
-A custom pass is `def f(frames, memory=None): ...` returning the frames (the
-`memory` keyword is required). Import `bloom_filter` from
-`algan.rendering.post_processing.bloom`.
-
-## 12. Audio and narration
-
-```python
-with Audio("music.wav"):            # block runtime = clip length
-    circle.rotate(360, OUT)
-with Speech("Gradient descent follows the slope downhill."):   # synthesised; runtime = spoken length
-    title.move(UP)
-```
-
-`Speech` needs a system TTS engine (built in on macOS/Windows; `espeak-ng` on
-Linux). For recorded narration, align a transcript with
-`get_speech_generator_from_file` and install it with
-`Scene.current().audio_manager.set_speech_source(...)`. See
-`references/media_and_audio.md`.
-
-## 13. Output, quality and settings
-
-```python
-Scene.save_video("clip")                     # algan_outputs/clip.mp4, LD (864x486, 15 fps)
-Scene.save_video("clip", HD)                 # this render only: 1920x1080, 30 fps
-Scene.save_video("renders/final.mp4")        # a path with a directory is used as given
-Scene.save_frame("still.png", at=1.5)        # one still
-SETTINGS.video.set(HD, fps=60)               # default for every render; set at the top of the script
-SETTINGS.paths.set(output_directory="renders")
-SETTINGS.computing.set(render_device="cpu")  # or "cuda", "mps", "auto"; top of script
-```
-
-Presets: `SMOKE_TEST`, `PREVIEW`, `LD`, `MD` (720p30), `HD` (1080p30),
-`PRODUCTION` (1440p60), `UHD` (2160p60), `THUMBNAIL`. Presets are immutable;
-`HD.set(fps=24)` returns a copy. Mutate sections with `.set(...)`, never
-`SETTINGS.video = HD`. `SETTINGS.video` is read when the Scene is created (the
-first Mob creates it), so global changes go at the top of the script; per-render
-arguments have no ordering constraint.
-
-Other `save_video` keywords: `reset=True` (tear the Scene down afterwards),
-`animate_fade_out=True`, `overwrite`, `codec`, `audio_codec`, `ffmpeg_params`.
-
-Cost scales with pixels x frames x supersampling. Cheapest speedups while
-drafting: a smaller preset, `SETTINGS.video.set(ssaa=1, fxaa=True)`, shadows off,
-lower `max_bounces` in glassy scenes, `samples_per_pixel=1`. Out-of-memory advice
-and the full settings map are in `references/output_and_performance.md`.
-
-## 14. Multi-scene projects
-
-For a longer video, give `Project` zero-argument scene functions; it renders any
-subset with stable names and concatenates them. Scene functions do **not** call
-`save_video`.
-
-```python
-def intro(): Text("Title", font_size=90).spawn(); Scene.wait(2)
-def body():  Sphere(color=BLUE).spawn().rotate(360, UP)
-project = Project([intro, body], file_path="talk.mp4", video_settings=PREVIEW)
-project.render_video(); project.concatenate_videos()       # or project.render_video("body")
-if __name__ == "__main__": project.run_cli()                # python talk.py --render-video 1 --video-settings HD
-```
-
-## 15. Pitfalls checklist
-
-- Empty video: a Mob was never spawned (`NeverSpawnedMobWarning`), or the
-  `spawn()` happened after the animations you expected.
-- Everything happens at once or takes no time: you are inside `Off()`, or the Mob
-  was not yet spawned when animated.
-- Three seconds of darkness at the start: lights spawned outside `Off()`.
-- Wrong colours after `become`/morph targets appear on screen: build targets
-  with `add_to_scene=False`.
-- `ValueError: only one element tensors...` at render time: `math` used on a
-  tensor inside an updater, homotopy or surface function. Use `torch`.
-- LaTeX fails: missing TeX install, non-raw string, or `$...$` added inside `Tex`.
-- Material or shader has no effect: it was set after `spawn()`.
-- Metal is black: nothing to reflect. Glass is invisible: nothing behind it.
-- Shadows missing: `SETTINGS.raytracing.set(shadows=True)` not set.
-- `.mp4` refused: the background is transparent; use `.mov`.
-- Unexpectedly transparent output: a colour was scaled (`BLUE * 0.2`), scaling its
-  alpha. Use `Color([...])` or `.set_opacity(1.0)`.
-- `SETTINGS.video.set(...)` ignored: it ran after the first Mob created the Scene.
-- `Scene.view()` hangs the run: it is interactive; use `save_frame` instead.
+When rendering is unavailable, deliver the scene source and precise execution
+instructions, state the concrete blocker, and distinguish syntax checks,
+mathematical callback tests, and actual renders. Do not fabricate output paths,
+frame inspections, performance figures, or execution success.
