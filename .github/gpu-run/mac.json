@@ -1,7 +1,7 @@
 {
-  "_comment": "Diagnostic A/B for the MPS numeric-display updater CI crash.",
-  "_request": "2026-09-25 numeric-display isolated cache A/B",
-  "command": "set +e; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; default_rc=$?; .venv/bin/python -c \"from algan.settings import SETTINGS; SETTINGS.raytracing.experimental.bezier_geometry_cache=False; import pytest; raise SystemExit(pytest.main(['-q','-s','-p','no:cacheprovider','tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater']))\"; nocache_rc=$?; echo RESULT default_rc=$default_rc nocache_rc=$nocache_rc; exit 0",
+  "_comment": "Diagnostic sequences for the MPS numeric-display updater CI crash.",
+  "_request": "2026-09-25 numeric-display predecessor sequences",
+  "command": "set +e; echo === expected-error-then-numeric ===; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_reshaping_a_pre_existing_mob_inside_an_updater_is_explained tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; error_then_numeric=$?; echo === earlier-renders-then-numeric ===; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_constructing_a_mob_inside_an_updater_renders tests/unit_tests/test_updater_mob_creation.py::test_spawning_a_mob_inside_an_updater_renders tests/unit_tests/test_updater_mob_creation.py::test_a_render_leaves_the_scene_as_it_was_authored tests/unit_tests/test_updater_mob_creation.py::test_an_updater_reads_the_mob_it_just_built tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; earlier_then_numeric=$?; echo RESULT error_then_numeric=$error_then_numeric earlier_then_numeric=$earlier_then_numeric; exit 0",
   "arms": ["mac-mps"],
   "env": {},
   "latex": true,
