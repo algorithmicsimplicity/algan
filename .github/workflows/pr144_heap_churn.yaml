@@ -1,0 +1,45 @@
+name: PR144 allocator-only investigation
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_heap_churn.yaml]
+permissions:
+  contents: read
+jobs:
+  allocation:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - name: Install only the allocator being investigated
+        run: |
+          uv venv
+          uv pip install --python .venv/bin/python 'torch==2.13.0' 'psutil==7.0.0'
+      - name: Compile native error observation
+        run: |
+          cp benchmarks/pr144_command_trace.mm "$RUNNER_TEMP/"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'pr144_command_trace.mm'
+          text = path.read_text().replace('  old_commit(self, selector);', '  [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> buffer) { report(buffer, buffer.error); }];\n  old_commit(self, selector);')
+          path.write_text(text)
+          PY
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_command_trace.mm" -o "$RUNNER_TEMP/pr144_command_trace.dylib"
+      - name: Allocate, read, release and recreate one bounded heap at a time
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python benchmarks/pr144_heap_churn.py 2>&1 | tee algan_outputs/heap-churn.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-heap-churn
+          path: algan_outputs/
+          retention-days: 7
