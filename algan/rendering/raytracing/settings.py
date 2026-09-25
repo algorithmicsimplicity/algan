@@ -3426,7 +3426,7 @@ project_gpu_peak_factor = env_float("ALGAN_PROJECT_GPU_PEAK_FACTOR", 8.0)
 # scene owns a bounded cache, released after the prep worker joins at teardown.
 # Read live; SETTINGS.raytracing.experimental.bezier_geometry_cache = False
 # restores the per-frame build for parity and performance comparisons.
-bezier_geometry_cache = True
+bezier_geometry_cache = False
 
 
 def set_project_on_gpu(enabled):
