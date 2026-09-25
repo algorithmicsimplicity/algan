@@ -1,0 +1,81 @@
+name: PR144 mixed-number lifetime probe
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_mixed_updater_repeat.yaml]
+permissions:
+  contents: read
+jobs:
+  mixed:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+      PR144_HISTORY: full
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the observer and preserve the original renderer
+        run: |
+          cp benchmarks/pr144_command_trace.mm "$RUNNER_TEMP/"
+          cp benchmarks/pr144_command_probe.py "$RUNNER_TEMP/"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          path = root / 'pr144_command_trace.mm'
+          text = path.read_text().replace('return [NSString stringWithUTF8String:context.c_str()] ?: @"";', 'const char *value = context.empty() ? getenv("PR144_OPERATION") : context.c_str();\n  return value ? [NSString stringWithUTF8String:value] : @"";')
+          text = text.replace('  old_commit(self, selector);', '  [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> buffer) { report(buffer, buffer.error); }];\n  old_commit(self, selector);')
+          path.write_text(text)
+          path = root / 'pr144_command_probe.py'
+          text = path.read_text().replace('enabled = "test_updater_mob_creation.py" in item.nodeid', 'enabled = True')
+          compile(text, str(path), 'exec')
+          path.write_text(text)
+          PY
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_command_trace.mm" -o "$RUNNER_TEMP/pr144_command_trace.dylib"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Repeat both original tests in one process
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          cat > tests/unit_tests/test_pr144_mixed_repeat.py <<'PY'
+          import pytest
+          import torch
+          from test_updater_mob_creation import test_numeric_display_counts_inside_an_updater as numeric
+          from test_updater_mob_creation import test_set_value_leaves_a_manim_number_visible as visible
+          from algan.settings import SETTINGS
+
+          @pytest.mark.parametrize('cycle', range(50))
+          def test_exact_transition(tmp_path, cycle):
+              snapshot = SETTINGS.snapshot()
+              try:
+                  numeric(tmp_path)
+              finally:
+                  SETTINGS.restore(snapshot)
+              visible(tmp_path)
+              print('MIXED_TRANSITION_PASS', cycle, 'live', torch.mps.current_allocated_memory(), 'driver', torch.mps.driver_allocated_memory(), flush=True)
+          PY
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests/test_pr144_mixed_repeat.py -x -v -s -p pr144_command_probe --junitxml=algan_outputs/results.xml 2>&1 | tee algan_outputs/mixed-repeat.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-mixed-number-repeat
+          path: algan_outputs/
+          retention-days: 7
