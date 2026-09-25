@@ -1,9 +1,10 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "_comment": "Diagnostic repeated numeric-display renders with MPS allocator telemetry.",
+  "_request": "2026-09-25 repeated MPS render leak probe",
+  "command": "cat > tests/_diag_mps_repeat.py <<'PY'\nimport pathlib\nimport torch\nimport algan\nimport algan.manim as mn\nfrom algan import SMOKE_TEST\n\ndef test_repeat(tmp_path):\n    for i in range(30):\n        with algan.Scene(video_settings=SMOKE_TEST):\n            tracker = mn.ValueTracker(0).spawn()\n            display = algan.DecimalNumber(0.0).spawn()\n            display.add_updater(lambda mob, t: mob.set_value(tracker.get_value()))\n            tracker.set_value(5)\n            result = algan.Scene.save_video(str(tmp_path / f'numeric_{i}.mp4'), SMOKE_TEST)\n        print('MEM', i, torch.mps.current_allocated_memory(), torch.mps.driver_allocated_memory(), flush=True)\n        assert result.status == 'rendered'\nPY\nset +e; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/_diag_mps_repeat.py; rc=$?; rm -f tests/_diag_mps_repeat.py; echo RESULT repeat_rc=$rc; exit 0",
   "arms": ["mac-mps"],
   "env": {},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 90
 }
