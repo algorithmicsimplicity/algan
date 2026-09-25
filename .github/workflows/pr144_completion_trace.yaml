@@ -1,0 +1,79 @@
+name: PR144 first failed GPU submission
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_completion_trace.yaml]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record completion callbacks without adding GPU synchronization
+        run: |
+          cp benchmarks/pr144_command_trace.mm "$RUNNER_TEMP/"
+          cp benchmarks/pr144_command_probe.py "$RUNNER_TEMP/"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          path = root / 'pr144_command_trace.mm'
+          text = path.read_text().replace('return [NSString stringWithUTF8String:context.c_str()] ?: @"";', 'const char *value = context.empty() ? getenv("PR144_OPERATION") : context.c_str();\n  return value ? [NSString stringWithUTF8String:value] : @"";')
+          needle = 'if (active.load()) {\n    NSMutableDictionary *meta = metadata(self);'
+          assert text.count(needle) == 1
+          text = text.replace(needle, '{\n    NSMutableDictionary *meta = metadata(self);')
+          needle = '  old_commit(self, selector);'
+          assert text.count(needle) == 1
+          text = text.replace(needle, '  [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> buffer) {\n    report(buffer, buffer.error);\n  }];\n' + needle)
+          path.write_text(text)
+          path = root / 'pr144_command_probe.py'
+          text = path.read_text().replace('_native.pr144_enable(int(enabled))', '_native.pr144_enable(1)')
+          compile(text, str(path), 'exec')
+          path.write_text(text)
+          PY
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_command_trace.mm" -o "$RUNNER_TEMP/pr144_command_trace.dylib"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Validate observer on unchanged updater-only tests
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+          PR144_HISTORY: updaters
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 -x -v -s -p pr144_command_probe --junitxml=algan_outputs/control.xml 2>&1 | tee algan_outputs/control.log
+      - name: Stop after the first genuine GPU failure in the full history
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+          PR144_HISTORY: full
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 -x -v -s -p pr144_command_probe --junitxml=algan_outputs/results.xml 2>&1 | tee algan_outputs/completion-trace.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-completion-trace
+          path: |
+            algan_outputs/
+            tests/unit_tests/pytest.log
+            tests/fast/pytest.log
+          retention-days: 7
