@@ -7,18 +7,12 @@ permissions:
   contents: read
 jobs:
   trace:
-    name: Command trace / ${{ matrix.history }}
     runs-on: macos-latest
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        history: [updaters, full]
     env:
       ALGAN_RENDER_DEVICE: mps
       ALGAN_ALLOW_UNBASELINED_MACOS: "1"
       PYTHONFAULTHANDLER: "1"
-      PR144_HISTORY: ${{ matrix.history }}
     steps:
       - uses: actions/checkout@v4
       - name: Build native submission observers against immutable production source
@@ -28,16 +22,8 @@ jobs:
           python3 - <<'PY'
           import os
           from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP'])
-          path = root / 'pr144_command_trace.mm'
+          path = Path(os.environ['RUNNER_TEMP']) / 'pr144_command_trace.mm'
           text = path.read_text().replace('return [NSString stringWithUTF8String:context.c_str()] ?: @"";', 'const char *value = context.empty() ? getenv("PR144_OPERATION") : context.c_str();\n  return value ? [NSString stringWithUTF8String:value] : @"";')
-          path.write_text(text)
-          path = root / 'pr144_command_probe.py'
-          text = path.read_text().replace('_native.pr144_context(value.encode())', 'previous_context = os.environ.get("PR144_OPERATION", "")\n        _native.pr144_context(value.encode())', 1)
-          text = text.replace('_native.pr144_context(b"")\n            os.environ.pop("PR144_OPERATION", None)', '_native.pr144_context(previous_context.encode())\n            os.environ["PR144_OPERATION"] = previous_context', 1)
-          text = text.replace('value = json.dumps(details)\n            _native.pr144_context', 'value = json.dumps(details)\n            previous_context = os.environ.get("PR144_OPERATION", "")\n            _native.pr144_context')
-          text = text.replace('_native.pr144_context(b"")\n                os.environ.pop("PR144_OPERATION", None)', '_native.pr144_context(previous_context.encode())\n                os.environ["PR144_OPERATION"] = previous_context')
-          compile(text, str(path), 'exec')
           path.write_text(text)
           PY
           xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_command_trace.mm" -o "$RUNNER_TEMP/pr144_command_trace.dylib"
@@ -56,17 +42,25 @@ jobs:
       - uses: ./.github/actions/install-uv
       - run: uv venv && uv sync --locked --all-extras --dev
       - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
-      - name: Observe existing synchronization boundaries without adding fences
+      - name: Require the unchanged updater-only control to pass
         env:
           PYTHONPATH: ${{ runner.temp }}
+          PR144_HISTORY: updaters
         run: |
           mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 -x -v -s -p pr144_command_probe --junitxml=algan_outputs/control.xml 2>&1 | tee algan_outputs/control.log
+      - name: Observe the complete history in a single fresh worker
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+          PR144_HISTORY: full
+        run: |
           set -o pipefail
           .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 -x -v -s -p pr144_command_probe --junitxml=algan_outputs/results.xml 2>&1 | tee algan_outputs/command-trace.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pr144-command-trace-${{ matrix.history }}
+          name: pr144-command-trace-full
           path: |
             algan_outputs/
             tests/unit_tests/pytest.log
