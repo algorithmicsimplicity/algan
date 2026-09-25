@@ -23,7 +23,7 @@ import os
 import re
 import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -326,34 +326,7 @@ def _write_slowest_table(limit: int = 25) -> None:
     _write_to_logs("\n".join(lines) + "\n")
 
 
-# Every collected item belongs to exactly one batch. Keep modules (including
-# their parametrizations and module-scoped fixtures) together, and keep the
-# one end-to-end fast render in the last batch. CI uses separate interpreters,
-# not fork(), so no live Metal device or native compiler state is inherited.
-CI_BATCHES = ("early", "middle", "late")
-
-
-def _ci_batch(nodeid: str) -> str:
-    path = PurePosixPath(nodeid.split("::", 1)[0].replace("\\", "/"))
-    if "unit_tests" in path.parts:
-        if path.name < "test_n":
-            return "early"
-        if path.name < "test_s":
-            return "middle"
-    return "late"
-
-
 def pytest_addoption(parser):
-    parser.addoption(
-        "--ci-batch",
-        choices=CI_BATCHES,
-        default=None,
-        help=(
-            "Select one disjoint module batch for MPS CI process isolation. "
-            "Run all three batches against tests/unit_tests tests/fast for "
-            "the complete portable suite; omitted means no partitioning."
-        ),
-    )
     parser.addoption(
         "--fast",
         action="store_true",
@@ -408,7 +381,7 @@ def _mark_known_mps_failures(items):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Apply optional CI/fast selection, then xfail what MPS cannot do yet.
+    """Reduce the run to the ``fast`` marker, then xfail what MPS cannot do yet.
 
     ``--fast`` deselects rather than skips, deliberately: the fast suite
     excludes most of the suite by design, and hundreds of ``s`` characters
@@ -419,14 +392,6 @@ def pytest_collection_modifyitems(config, items):
     items that will actually run and a ``--fast`` run on an Apple GPU gets the
     same treatment as a full one.
     """
-    batch = config.getoption("ci_batch")
-    if batch is not None:
-        selected, deselected = [], []
-        for item in items:
-            target = selected if _ci_batch(item.nodeid) == batch else deselected
-            target.append(item)
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
     if config.getoption("fast"):
         selected, deselected = [], []
         for item in items:

@@ -188,7 +188,11 @@ def get_num_available_bytes(device=torch.device("cuda")):
         clear_import_cache()
         torch.mps.empty_cache()
 
-        allocated_bytes = torch.mps.current_allocated_memory()
+        from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
+
+        # DLPack-owned standalone arenas are absent from Torch's live counter.
+        # Their final storage view owns the charge, including surviving imports.
+        allocated_bytes = torch.mps.current_allocated_memory() + external_mps_bytes()
         total_bytes = torch.mps.recommended_max_memory()
         total_bytes = max(0, total_bytes - int(total_bytes * _MPS_HEADROOM))
         free_bytes = max(0, total_bytes - allocated_bytes)
@@ -1161,7 +1165,14 @@ class ManualMemory:
         # that pins a larger arena (``available_memory_override``, a benchmark
         # fixture) would otherwise abort the process rather than get an error.
         num_bytes = _addressable_arena_bytes(device, num_bytes)
-        self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
+        if managed and num_bytes > 0 and torch.device(device).type == "mps":
+            from algan.rendering.mps_arena import allocate
+
+            if torch.device(device).index not in (None, 0):
+                raise ValueError("MPS arenas support only device mps:0")
+            self.data = allocate(num_bytes)
+        else:
+            self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
         self.current_reverse_pointer = self.length
 
