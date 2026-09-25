@@ -1,0 +1,39 @@
+name: PR144 pipeline-count investigation
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_pipeline_limit.yaml]
+permissions:
+  contents: read
+jobs:
+  limits:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_AUTO_DAEMON: "0"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Compare retained and scoped native temporaries
+        run: |
+          mkdir -p algan_outputs
+          status=0
+          .venv/bin/python benchmarks/pr144_pipeline_limit_taichi.py --count 16384 > algan_outputs/control.log 2>&1 || status=1
+          .venv/bin/python benchmarks/pr144_pipeline_limit_taichi.py --count 16384 --pool > algan_outputs/pooled.log 2>&1 || status=1
+          tail -n 30 algan_outputs/control.log
+          tail -n 30 algan_outputs/pooled.log
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-pipeline-limit
+          path: algan_outputs/
+          retention-days: 7
