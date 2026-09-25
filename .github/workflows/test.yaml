@@ -262,6 +262,40 @@ jobs:
       - name: Report the environment Algan resolved
         run: uv run algan check
 
+      # PyTorch 2.7.1's MPSGraph cache retains one compiled graph per
+      # operation/tensor-shape signature for the life of the process, and
+      # torch.mps.empty_cache() in that release only drains the allocator.
+      # The full MPS suite exercises enough distinct render shapes for that
+      # native cache to exhaust the hosted runner late in the job. PyTorch
+      # 2.13 makes empty_cache() clear MPSGraphCache as well. Keep Algan's
+      # published torch>=2.0 requirement and the ordinary lock untouched:
+      # this is an Apple-MPS CI compatibility override, not a new minimum for
+      # CPU/CUDA users.
+      #
+      # TorchAudio 2.11 is built against PyTorch's stable ABI and supports
+      # PyTorch 2.11 and later, so replace the lock's 2.7.1 pair together.
+      # UV_NO_SYNC is required because the following bare `uv run` would
+      # otherwise reconcile the environment back to uv.lock and silently
+      # reinstall torch/torchaudio 2.7.1.
+      - name: Install MPS PyTorch graph-cache fix
+        if: matrix.render_device == 'mps'
+        run: |
+          uv pip install --python .venv/bin/python \
+            "torch==2.13.0" \
+            "torchaudio==2.11.0"
+          .venv/bin/python - <<'PY'
+          import torch
+          import torchaudio
+
+          torch_version = torch.__version__.split("+", 1)[0]
+          torchaudio_version = torchaudio.__version__.split("+", 1)[0]
+          print("MPS CI torch:", torch_version)
+          print("MPS CI torchaudio:", torchaudio_version)
+          assert torch_version == "2.13.0"
+          assert torchaudio_version == "2.11.0"
+          PY
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+
       # Scoped to the two suites whose baselines survive a change of machine.
       # tests/full_renders is left out deliberately: measured on this runner
       # against baselines rendered elsewhere, five of its six scenes differed by
