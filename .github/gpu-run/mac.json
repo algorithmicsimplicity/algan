@@ -1,12 +1,12 @@
 {
-  "_comment": "Diagnostic: current RSS with largest shape first; compare fixed, allocator-only, aabb, and Bezier-cache MPS paths.",
-  "_request": "2026-09-25 bounded-shape MPS graph-cache RSS stress",
-  "command": "set +e; for mode in fixed control aabb cache; do echo ===== MODE:$mode =====; .venv/bin/python -u benchmarks/_diag_mps_bezier_graph_cache.py --mode $mode --calls 300; echo RESULT $mode=$?; done; exit 0",
+  "_comment": "Diagnostic: verify upstream MPSGraph empty_cache fix under PyTorch 2.13 and smoke the exact failing Algan test.",
+  "_request": "2026-09-25 PyTorch 2.13 MPSGraph cache control",
+  "command": "set +e; uv pip install --python .venv/bin/python --no-deps torch==2.13.0; install_rc=$?; .venv/bin/python -c 'import torch; print(\"TORCH\", torch.__version__)'; if [ $install_rc -eq 0 ]; then for mode in fixed aabb cache; do echo ===== MODE:$mode =====; .venv/bin/python -u benchmarks/_diag_mps_bezier_graph_cache.py --mode $mode --calls 200; echo RESULT $mode=$?; done; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; echo RESULT target=$?; fi; exit 0",
   "arms": [
     "mac-mps"
   ],
   "env": {},
-  "latex": false,
+  "latex": true,
   "taichi_wheel_run_id": "none",
   "timeout_minutes": 45
 }
