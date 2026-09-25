@@ -1,0 +1,69 @@
+name: PR144 first native error
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_native_errors.yaml]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build read-only native error observers and use the original source
+        run: |
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_metal_errors.mm -o "$RUNNER_TEMP/pr144_metal_errors.dylib"
+          cat > "$RUNNER_TEMP/pr144_native_errors.py" <<'PY'
+          import ctypes
+          import os
+          def pytest_sessionstart(session):
+              import torch
+              assert torch.__version__.split('+')[0] == '2.13.0'
+              assert torch.backends.mps.is_available()
+              library = ctypes.CDLL(os.path.join(os.environ['RUNNER_TEMP'], 'pr144_metal_errors.dylib'))
+              library.pr144_install.argtypes = []
+              library.pr144_install.restype = ctypes.c_int
+              assert library.pr144_install() == 1
+              session.config._pr144_native_library = library
+          def pytest_runtest_setup(item):
+              os.environ['PR144_CURRENT_TEST'] = item.nodeid
+          PY
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Stop on the first failing test without process isolation
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          # Python coverage is omitted in this diagnostic arm only, to also
+          # separate instrumentation overhead from native process history.
+          # Kernel coverage stays disabled by the ordinary tests/conftest.py.
+          .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 -x -v -s -p pr144_native_errors --junitxml=algan_outputs/results.xml 2>&1 | tee algan_outputs/native-errors.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-first-native-error
+          path: |
+            algan_outputs/
+            tests/unit_tests/pytest.log
+            tests/fast/pytest.log
+          retention-days: 7
