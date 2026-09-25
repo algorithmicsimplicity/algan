@@ -1,0 +1,308 @@
+diff --git a/.github/workflows/test.yaml b/.github/workflows/test.yaml
+index 5f28c24..e0b9f8a 100644
+--- a/.github/workflows/test.yaml
++++ b/.github/workflows/test.yaml
+@@ -327,8 +327,29 @@ jobs:
+       # from quietly meaning less than it looks like it means.
+       # DESIGN_mps_support.md §4 is the scoreboard.
+       - name: Run tests
++        if: matrix.render_device != 'mps'
+         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+ 
++      # PyTorch's graph-cache fix does not bound the complete native Metal
++      # state of a process that runs thousands of different GPU workloads.
++      # Keep the required check name and every test, but retire the process
++      # between disjoint module batches. Never fork a process with live Metal
++      # state, and never retry a failed test to turn the check green.
++      # --cov-append preserves coverage across batches. A failed early batch
++      # must still fail the job even when the remaining batches pass.
++      - name: Run MPS tests in isolated batches
++        if: matrix.render_device == 'mps'
++        run: |
++          set -euo pipefail
++          .venv/bin/python -m coverage erase
++          status=0
++          for batch in early middle late; do
++            .venv/bin/python -m pytest tests/unit_tests tests/fast \
++              --ci-batch="$batch" --cov=algan --cov-append --cov-report=xml -n 1 \
++              || status=1
++          done
++          exit "$status"
++
+       # What the fast render drew, and -- when the comparison failed -- the
+       # difference video the harness wrote beside it. A pixel failure reports
+       # one number ("differs by up to 45 channel values, worst at frame 36"),
+diff --git a/tests/README.md b/tests/README.md
+index 1db0a25..0359e52 100644
+--- a/tests/README.md
++++ b/tests/README.md
+@@ -6,6 +6,38 @@ as a placeholder for `.venv/bin/python` on Linux/macOS or
+ See [../AGENTS.md](../AGENTS.md). Avoid bare `uv run` when using a locally built
+ compiler wheel, because synchronization can replace it.
+ 
++## MPS CI process isolation
++
++The required MPS job uses Torch 2.13.0 with TorchAudio 2.11.0, without changing
++Algan's published dependency minimums or the lockfile used by CPU CI. It runs
++all of `tests/unit_tests tests/fast` in three **sequential fresh interpreters**:
++
++```bash
++<venv-python> -m coverage erase
++<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=early --cov=algan --cov-append --cov-report=xml -n 1
++<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=middle --cov=algan --cov-append --cov-report=xml -n 1
++<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=late --cov=algan --cov-append --cov-report=xml -n 1
++```
++
++`early` contains unit-test modules sorting before `test_n`, `middle` contains
++those from `test_n` up to (but not including) `test_s`, and `late` contains the
++remaining modules and the fast render. Partitioning uses the module path, not
++a test's name or parameter ID. New modules automatically belong to one batch;
++parametrizations and module-scoped fixtures stay together. Omitting `--ci-batch`
++retains normal unpartitioned collection, including on CPU CI.
++
++This contains the end-of-suite Metal pipeline failures seen only after a broad
++execution history in one worker. It is **not** a claim that the underlying
++native compiler/driver defect has been identified or fixed. It uses neither
++CPU fallback nor additional skips/xfails, and does not fork an initialized
++Metal process. CI attempts every batch, fails if **any** invocation fails
++(including collection errors or native worker crashes), and appends coverage
++across them. It never retries failed tests until they pass. Run all three
++batches to reproduce the complete gate; one batch alone is only a subset.
++
++Tests that allocate `ti.ndarray` before their first kernel call must explicitly
++initialize the runtime rather than depend on an earlier module's render.
++
+ ## The fast suite — run this one
+ 
+ ```bash
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 2d643c6..7f90c6b 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -23,7 +23,7 @@ import os
+ import re
+ import sys
+ import time
+-from pathlib import Path
++from pathlib import Path, PurePosixPath
+ from typing import Any
+ 
+ import pytest
+@@ -326,7 +326,34 @@ def _write_slowest_table(limit: int = 25) -> None:
+     _write_to_logs("\n".join(lines) + "\n")
+ 
+ 
++# Every collected item belongs to exactly one batch. Keep modules (including
++# their parametrizations and module-scoped fixtures) together, and keep the
++# one end-to-end fast render in the last batch. CI uses separate interpreters,
++# not fork(), so no live Metal device or native compiler state is inherited.
++CI_BATCHES = ("early", "middle", "late")
++
++
++def _ci_batch(nodeid: str) -> str:
++    path = PurePosixPath(nodeid.split("::", 1)[0].replace("\\", "/"))
++    if "unit_tests" in path.parts:
++        if path.name < "test_n":
++            return "early"
++        if path.name < "test_s":
++            return "middle"
++    return "late"
++
++
+ def pytest_addoption(parser):
++    parser.addoption(
++        "--ci-batch",
++        choices=CI_BATCHES,
++        default=None,
++        help=(
++            "Select one disjoint module batch for MPS CI process isolation. "
++            "Run all three batches against tests/unit_tests tests/fast for "
++            "the complete portable suite; omitted means no partitioning."
++        ),
++    )
+     parser.addoption(
+         "--fast",
+         action="store_true",
+@@ -381,7 +408,7 @@ def _mark_known_mps_failures(items):
+ 
+ 
+ def pytest_collection_modifyitems(config, items):
+-    """Reduce the run to the ``fast`` marker, then xfail what MPS cannot do yet.
++    """Apply optional CI/fast selection, then xfail what MPS cannot do yet.
+ 
+     ``--fast`` deselects rather than skips, deliberately: the fast suite
+     excludes most of the suite by design, and hundreds of ``s`` characters
+@@ -392,6 +419,14 @@ def pytest_collection_modifyitems(config, items):
+     items that will actually run and a ``--fast`` run on an Apple GPU gets the
+     same treatment as a full one.
+     """
++    batch = config.getoption("ci_batch")
++    if batch is not None:
++        selected, deselected = [], []
++        for item in items:
++            target = selected if _ci_batch(item.nodeid) == batch else deselected
++            target.append(item)
++        config.hook.pytest_deselected(items=deselected)
++        items[:] = selected
+     if config.getoption("fast"):
+         selected, deselected = [], []
+         for item in items:
+diff --git a/tests/unit_tests/test_ci_batches.py b/tests/unit_tests/test_ci_batches.py
+new file mode 100644
+index 0000000..1604d17
+--- /dev/null
++++ b/tests/unit_tests/test_ci_batches.py
+@@ -0,0 +1,137 @@
++"""MPS CI partitions preserve coverage and do not turn earlier failures green."""
++
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import yaml
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++@pytest.fixture
++def suite_plugin(pytestconfig):
++    """Use the loaded conftest, without importing its side effects twice."""
++    target = ROOT / "tests" / "conftest.py"
++    return next(
++        plugin
++        for plugin in pytestconfig.pluginmanager.get_plugins()
++        if getattr(plugin, "__file__", None)
++        and Path(plugin.__file__).resolve() == target
++    )
++
++
++@pytest.mark.parametrize(
++    ("nodeid", "expected"),
++    [
++        ("tests/unit_tests/test_animation.py::test_a", "early"),
++        ("tests/unit_tests/test_mps_zero_copy.py::test_a", "early"),
++        ("tests/unit_tests/test_nested_ior.py::test_a", "middle"),
++        ("tests/unit_tests/test_render_batch_sizing.py::test_a", "middle"),
++        ("tests/unit_tests/test_scene.py::test_a", "late"),
++        ("tests/unit_tests/test_ux_regressions.py::test_a[refraction]", "late"),
++        ("tests/fast/test_fast_render.py::test_a", "late"),
++        ("tests/unit_tests/test_a.py::TestGroup::test_a[test_z.py]", "early"),
++        (r"tests\unit_tests\test_nested_ior.py::test_a", "middle"),
++        ("tests/new_suite/test_a.py::test_a[unit_tests/test_m.py]", "late"),
++    ],
++)
++def test_batch_uses_the_module_not_the_test_name(suite_plugin, nodeid, expected):
++    assert suite_plugin._ci_batch(nodeid) == expected
++
++
++def test_every_portable_module_belongs_to_exactly_one_batch(suite_plugin):
++    modules = sorted((ROOT / "tests" / "unit_tests").glob("test_*.py"))
++    modules += sorted((ROOT / "tests" / "fast").glob("test_*.py"))
++    assert modules
++    for module in modules:
++        nodeid = module.relative_to(ROOT).as_posix()
++        assert sum(suite_plugin._ci_batch(nodeid) == b for b in suite_plugin.CI_BATCHES) == 1
++
++
++@pytest.mark.parametrize("batch", [None, "early", "middle", "late"])
++def test_selection_preserves_order_and_marks_only_selected_items(
++    suite_plugin, monkeypatch, batch
++):
++    paths = [
++        "tests/unit_tests/test_a.py::test_x[0]",
++        "tests/unit_tests/test_a.py::test_x[1]",
++        "tests/unit_tests/test_n.py::test_x",
++        "tests/unit_tests/test_s.py::test_x",
++        "tests/fast/test_fast_render.py::test_x",
++    ]
++    original = [SimpleNamespace(nodeid=path) for path in paths]
++    selected = original.copy()
++    removed, marked = [], []
++    config = SimpleNamespace(
++        getoption={"ci_batch": batch, "fast": False}.__getitem__,
++        hook=SimpleNamespace(pytest_deselected=lambda *, items: removed.extend(items)),
++    )
++    monkeypatch.setattr(suite_plugin, "_mark_known_mps_failures", marked.extend)
++    suite_plugin.pytest_collection_modifyitems(config, selected)
++    expected = [
++        item for item in original
++        if batch is None or suite_plugin._ci_batch(item.nodeid) == batch
++    ]
++    assert selected == expected
++    assert marked == expected
++    assert removed == [item for item in original if item not in expected]
++    assert len(selected) + len(removed) == len(original)
++
++
++def _mps_step():
++    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "test.yaml").read_text())
++    steps = workflow["jobs"]["build"]["steps"]
++    mps = next(step for step in steps if step.get("name") == "Run MPS tests in isolated batches")
++    cpu = next(step for step in steps if step.get("name") == "Run tests")
++    assert mps["if"] == "matrix.render_device == 'mps'"
++    assert cpu["if"] == "matrix.render_device != 'mps'"
++    assert "--ci-batch" not in cpu["run"]
++    return mps["run"]
++
++
++@pytest.mark.skipif(os.name == "nt" or not shutil.which("bash"), reason="CI uses a POSIX shell")
++@pytest.mark.parametrize("failed_batch", ["", "early", "middle", "late"])
++def test_ci_runs_every_batch_and_preserves_any_failure(tmp_path, suite_plugin, failed_batch):
++    """Execute the real workflow shell with a stand-in interpreter."""
++    interpreter = tmp_path / ".venv" / "bin" / "python"
++    interpreter.parent.mkdir(parents=True)
++    interpreter.write_text(
++        f"#!{sys.executable} -S\n"
++        "import json, os, sys\n"
++        "with open(os.environ['CI_BATCH_TRACE'], 'a') as out:\n"
++        "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
++        "bad = '--ci-batch=' + os.environ['CI_BATCH_FAILURE']\n"
++        "sys.exit(int(bad in sys.argv))\n"
++    )
++    interpreter.chmod(0o755)
++    trace = tmp_path / "calls.jsonl"
++    env = dict(os.environ, CI_BATCH_TRACE=str(trace), CI_BATCH_FAILURE=failed_batch)
++    result = subprocess.run(
++        [shutil.which("bash"), "-c", _mps_step()],
++        cwd=tmp_path,
++        env=env,
++        capture_output=True,
++        text=True,
++        timeout=20,
++        check=False,
++    )
++    assert result.returncode == int(bool(failed_batch)), result.stderr
++    calls = [json.loads(line) for line in trace.read_text().splitlines()]
++    assert calls[0] == ["-m", "coverage", "erase"]
++    assert len(calls) == len(suite_plugin.CI_BATCHES) + 1
++    for batch, call in zip(suite_plugin.CI_BATCHES, calls[1:], strict=True):
++        assert call[:4] == ["-m", "pytest", "tests/unit_tests", "tests/fast"]
++        assert f"--ci-batch={batch}" in call
++        assert "--cov-append" in call
++        assert "--cov=algan" in call
++        assert "--cov-report=xml" in call
++        assert "--fast" not in call
++        assert "--forked" not in call
+diff --git a/tests/unit_tests/test_nested_ior.py b/tests/unit_tests/test_nested_ior.py
+index 139997e..223fbd2 100644
+--- a/tests/unit_tests/test_nested_ior.py
++++ b/tests/unit_tests/test_nested_ior.py
+@@ -26,7 +26,11 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+ 
+ def _kernels():
+     from algan.rendering.raytracing import wavefront_kernels_taichi as k
++    from algan.rendering.taichi_runtime import init_taichi
+ 
++    # These probes allocate ti.ndarray before their first guarded kernel call.
++    # Importing kernel definitions is lazy, not runtime initialization.
++    init_taichi()
+     return k
+ 
+ 
