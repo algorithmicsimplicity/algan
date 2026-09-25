@@ -1,9 +1,12 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
-  "arms": ["mac-mps"],
+  "_comment": "Diagnostic: changed/new tests since last green, then failing updater target, Python 3.10 MPS.",
+  "_request": "2026-09-25 postgreen-a",
+  "command": "set +e; rm -rf .diag310; uv venv --python 3.10 .diag310; UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev; sync_rc=$?; if [ $sync_rc -ne 0 ]; then echo RESULT sync=$sync_rc; exit 0; fi; .diag310/bin/python -m pytest -q -s -p no:cacheprovider --durations=20 tests/unit_tests/test_audio_alignment.py tests/unit_tests/test_authoring_styles.py tests/unit_tests/test_bezier_curve_sampling.py tests/unit_tests/test_bezier_geometry_cache.py tests/unit_tests/test_camera_fly_to.py tests/unit_tests/test_camera_views.py tests/unit_tests/test_circuit_texture_grid.py tests/unit_tests/test_cli.py tests/unit_tests/test_daemon_user_modules.py tests/unit_tests/test_imported_colors.py tests/unit_tests/test_manim_image_import.py tests/unit_tests/test_manim_mobject_parity.py tests/unit_tests/test_point_cloud_rendering.py tests/unit_tests/test_project.py tests/unit_tests/test_public_api_surface.py tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; echo RESULT postgreen_a=$rc; exit 0",
+  "arms": [
+    "mac-mps"
+  ],
   "env": {},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 90
 }
