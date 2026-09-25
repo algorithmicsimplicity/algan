@@ -1,10 +1,10 @@
 {
-  "_comment": "Diagnostic: reproduce required CI's Python 3.10 interpreter in the Mac harness.",
-  "_request": "2026-09-25 isolated numeric display on Python 3.10/MPS retry",
-  "command": "set +e; rm -rf .diag310; uv venv --python 3.10 .diag310; UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev; sync_rc=$?; if [ $sync_rc -eq 0 ]; then .diag310/bin/python -V; .diag310/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; else rc=$sync_rc; fi; echo RESULT py310_numeric=$rc; exit 0",
+  "_comment": "Diagnostic: bracket the late-suite slow block under the same Python 3.10/MPS stack as CI.",
+  "_request": "2026-09-25 py310 tonemap-vs-traced contamination",
+  "command": "set +e; rm -rf .diag310; uv venv --python 3.10 .diag310; UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev; sync_rc=$?; if [ $sync_rc -ne 0 ]; then echo RESULT sync=$sync_rc; exit 0; fi; echo '=== TONEMAP THEN TARGET ==='; .diag310/bin/python -m pytest -vv -s -p no:cacheprovider --durations=20 tests/unit_tests/test_tonemapping.py tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; r1=$?; echo RESULT tonemap_then_target=$r1; echo '=== TORCHCOMPILE+TRACED THEN TARGET ==='; .diag310/bin/python -m pytest -vv -s -p no:cacheprovider --durations=20 tests/unit_tests/test_torch_compile.py tests/unit_tests/test_traced_path.py tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; r2=$?; echo RESULT compile_traced_then_target=$r2; exit 0",
   "arms": ["mac-mps"],
   "env": {},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 45
+  "timeout_minutes": 60
 }
