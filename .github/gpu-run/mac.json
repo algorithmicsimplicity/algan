@@ -1,8 +1,8 @@
 {
-  "_request": "pr144-command-lifetime-fixed-shape-controls",
-  "command": "uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0' && .venv/bin/python -u benchmarks/pr144_command_lifetime_taichi.py --calls 30000 && .venv/bin/python -u benchmarks/pr144_command_lifetime_taichi.py --calls 30000 --drain",
+  "_request": "pr144-pipeline-count-fixed-tensors",
+  "command": "uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0' && .venv/bin/python -u benchmarks/pr144_pipeline_volume_taichi.py --count 1200 && .venv/bin/python -u benchmarks/pr144_pipeline_volume_taichi.py --count 1200 --reset-every 100",
   "arms": ["mac-mps"],
-  "env": {"PYTHONFAULTHANDLER":"1"},
+  "env": {"PYTHONFAULTHANDLER":"1", "ALGAN_AUTO_DAEMON":"0"},
   "latex": false,
   "taichi_wheel_run_id": "none",
   "timeout_minutes": 20
