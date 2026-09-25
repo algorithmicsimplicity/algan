@@ -1,7 +1,7 @@
 {
   "_comment": "Diagnostic: reproduce required CI's Python 3.10 interpreter in the Mac harness.",
-  "_request": "2026-09-25 isolated numeric display on Python 3.10/MPS",
-  "command": "set +e; uv venv --python 3.10 .diag310; VIRTUAL_ENV=$PWD/.diag310 uv sync --locked --all-groups; sync_rc=$?; if [ $sync_rc -eq 0 ]; then .diag310/bin/python -V; .diag310/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; else rc=$sync_rc; fi; echo RESULT py310_numeric=$rc; exit 0",
+  "_request": "2026-09-25 isolated numeric display on Python 3.10/MPS retry",
+  "command": "set +e; rm -rf .diag310; uv venv --python 3.10 .diag310; UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev; sync_rc=$?; if [ $sync_rc -eq 0 ]; then .diag310/bin/python -V; .diag310/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; else rc=$sync_rc; fi; echo RESULT py310_numeric=$rc; exit 0",
   "arms": ["mac-mps"],
   "env": {},
   "latex": true,
