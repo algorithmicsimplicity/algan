@@ -1,9 +1,10 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "_comment": "Probe PyTorch 2.7.1 MPSGraph cache growth using the exact torch.where shape pattern from _aabb_corners.",
+  "_request": "2026-09-25 MPSGraph varying-shape where probe",
+  "command": "cat > /tmp/mps_graph_probe.py <<'PY'\nimport gc, os, psutil, torch\np=psutil.Process(os.getpid())\ndev=torch.device('mps')\nsel=torch.tensor([[cx,cy,cz] for cx in (0,1) for cy in (0,1) for cz in (0,1)], dtype=torch.bool, device=dev).view(1,1,8,3)\ndef one(n):\n    lo=torch.randn((1,n,3),device=dev); hi=lo+1\n    out=torch.where(sel, hi.unsqueeze(-2), lo.unsqueeze(-2))\n    torch.mps.synchronize(); del out,hi,lo; torch.mps.empty_cache(); gc.collect()\ndef report(tag):\n    print(tag, 'rss', p.memory_info().rss, 'current', torch.mps.current_allocated_memory(), 'driver', torch.mps.driver_allocated_memory(), flush=True)\nreport('START')\nfor i in range(300):\n    one(64)\nreport('FIXED300')\nfor n in range(1,601):\n    one(n)\n    if n%100==0: report(f'VAR{n}')\nPY\n.venv/bin/python /tmp/mps_graph_probe.py; rc=$?; echo RESULT graph_probe_rc=$rc; exit 0",
   "arms": ["mac-mps"],
   "env": {},
-  "latex": true,
+  "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 45
 }
