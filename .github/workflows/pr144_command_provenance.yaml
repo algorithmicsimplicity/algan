@@ -1,0 +1,62 @@
+name: PR144 command provenance
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_command_provenance.yaml]
+permissions:
+  contents: read
+jobs:
+  trace:
+    name: GPU command provenance / ${{ matrix.history }}
+    runs-on: macos-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        history: [isolated, full]
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+      PR144_HISTORY: ${{ matrix.history }}
+      PR144_EXIT_NATIVE_ERROR: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build passive command observers and restore the failing source
+        run: |
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_command_provenance.mm -o "$RUNNER_TEMP/pr144_command_provenance.dylib"
+          cp benchmarks/pr144_command_provenance.py "$RUNNER_TEMP/"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Attribute the first failed command buffer without adding fences
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests tests/fast -n 1 --max-worker-restart=0 -x -v -s -p pr144_command_provenance --junitxml=algan_outputs/results.xml > algan_outputs/command-provenance.log 2>&1
+      - name: Show outcome
+        if: always()
+        run: |
+          tail -n 50 algan_outputs/command-provenance.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-command-provenance-${{ matrix.history }}
+          path: |
+            algan_outputs/
+            tests/unit_tests/pytest.log
+          retention-days: 7
