@@ -1,9 +1,10 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "_comment": "Diagnostic: compare process RSS under shape-varying MPS ops; each arm is a fresh process.",
+  "_request": "2026-09-25 MPS Bezier graph-cache shape stress",
+  "command": "set +e; for mode in control aabb cache; do echo ===== MODE:$mode =====; uv run python -u benchmarks/_diag_mps_bezier_graph_cache.py --mode $mode --calls 300; echo RESULT $mode=$?; done; exit 0",
   "arms": ["mac-mps"],
   "env": {},
-  "latex": true,
+  "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 45
 }
