@@ -1319,7 +1319,11 @@ def run_once(
         # right after the render (allocated) and what the driver has mapped
         # for it (reserved). Both used to print as 0 MB on every Metal run.
         with suppress(Exception):
-            peak_alloc = torch.mps.current_allocated_memory() / 2**20
+            from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
+
+            peak_alloc = (
+                torch.mps.current_allocated_memory() + external_mps_bytes()
+            ) / 2**20
             peak_reserved = torch.mps.driver_allocated_memory() / 2**20
     return {
         "total": total,
