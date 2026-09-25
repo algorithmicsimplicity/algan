@@ -1,0 +1,113 @@
+name: PR144 isolated MPS candidate
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_ci_batch_candidate.yaml]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply candidate to the immutable PR head, without helper history
+        run: |
+          cp .github/patches/pr144-ci-batches.patch "$RUNNER_TEMP/candidate.patch"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git apply --check "$RUNNER_TEMP/candidate.patch"
+          git apply "$RUNNER_TEMP/candidate.patch"
+          git diff --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - name: Install the CI MPS override
+        run: |
+          uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+      - name: Format and lint only the changed Python files
+        run: |
+          .venv/bin/python -m ruff format tests/conftest.py tests/unit_tests/test_ci_batches.py
+          .venv/bin/python -m ruff check tests/conftest.py tests/unit_tests/test_ci_batches.py tests/unit_tests/test_nested_ior.py
+          git diff --check
+      - name: Validate partition semantics and standalone IOR initialization on MPS
+        run: |
+          .venv/bin/python -m pytest -q tests/unit_tests/test_ci_batches.py tests/unit_tests/test_nested_ior.py
+      - name: Verify complete, disjoint collection
+        run: |
+          cat > "$RUNNER_TEMP/ci_collect.py" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          def pytest_collection_finish(session):
+              Path(os.environ['COLLECTION_FILE']).write_text(json.dumps([item.nodeid for item in session.items]))
+          PY
+          export PYTHONPATH="$RUNNER_TEMP:$PWD"
+          COLLECTION_FILE="$RUNNER_TEMP/all.json" .venv/bin/python -m pytest tests/unit_tests tests/fast --collect-only -q -p ci_collect > "$RUNNER_TEMP/collect-all.log"
+          for batch in early middle late; do
+            COLLECTION_FILE="$RUNNER_TEMP/$batch.json" .venv/bin/python -m pytest tests/unit_tests tests/fast --collect-only -q -p ci_collect --ci-batch="$batch" > "$RUNNER_TEMP/collect-$batch.log"
+          done
+          .venv/bin/python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          all_items = json.loads((root / 'all.json').read_text())
+          batches = {name: json.loads((root / (name + '.json')).read_text()) for name in ('early','middle','late')}
+          flattened = [item for items in batches.values() for item in items]
+          assert Counter(flattened) == Counter(all_items)
+          assert len(set(flattened)) == len(flattened)
+          assert all(batches.values())
+          print('COMPLETE_PARTITION', len(all_items), {name:len(items) for name,items in batches.items()})
+          PY
+      - name: Publish the clean candidate object for review, not the production branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/test.yaml tests/conftest.py tests/unit_tests/test_nested_ior.py tests/unit_tests/test_ci_batches.py tests/README.md
+          git commit -m 'Isolate MPS CI workloads without dropping tests or masking failures'
+          test "$(git rev-parse HEAD^)" = cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git push origin HEAD:refs/heads/diagnostic/pr144-ci-batches-validated
+          echo "CANDIDATE_COMMIT=$(git rev-parse HEAD)" | tee "$RUNNER_TEMP/candidate.txt"
+      - name: Run the actual sequential MPS CI step
+        run: |
+          .venv/bin/python - <<'PY'
+          import subprocess, yaml
+          from pathlib import Path
+          workflow = yaml.safe_load(Path('.github/workflows/test.yaml').read_text())
+          step = next(s for s in workflow['jobs']['build']['steps'] if s.get('name') == 'Run MPS tests in isolated batches')
+          raise SystemExit(subprocess.run(['bash','-c',step['run']], check=False).returncode)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-isolated-candidate
+          path: |
+            tests/unit_tests/test_ci_batches.py
+            tests/unit_tests/pytest.log
+            tests/fast/pytest.log
+            tests/fast/algan_outputs/
+            coverage.xml
+            ${{ runner.temp }}/candidate.txt
+            ${{ runner.temp }}/all.json
+            ${{ runner.temp }}/early.json
+            ${{ runner.temp }}/middle.json
+            ${{ runner.temp }}/late.json
+            ${{ runner.temp }}/collect-*.log
+          retention-days: 7
