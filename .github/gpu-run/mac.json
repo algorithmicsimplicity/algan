@@ -1,9 +1,9 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
-  "arms": ["mac-mps"],
-  "env": {},
-  "latex": true,
-  "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "_request":"pr144-ux-isolated-py310",
+  "command":"uv venv --python 3.10 .diag310; UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev; uv pip install --python .diag310/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'; export UV_NO_SYNC=1 PYTHONFAULTHANDLER=1; export QD_SHADER_DUMP_DIR=$PWD/algan_outputs/shader-dumps; mkdir -p \"$QD_SHADER_DUMP_DIR\"; .diag310/bin/python -m pytest -v -s tests/unit_tests/test_updater_mob_creation.py tests/unit_tests/test_ux_regressions.py tests/unit_tests/test_viewer_fragments.py::test_capture_is_off_unless_armed tests/unit_tests/test_watertight_triangle.py",
+  "arms":["mac-mps"],
+  "env":{"ALGAN_ALLOW_UNBASELINED_MACOS":"1"},
+  "latex":true,
+  "taichi_wheel_run_id":"none",
+  "timeout_minutes":25
 }
