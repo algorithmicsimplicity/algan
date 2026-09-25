@@ -1,8 +1,10 @@
 {
-  "_comment": "Diagnostic: compare process RSS under shape-varying MPS ops; each arm is a fresh process.",
-  "_request": "2026-09-25 MPS Bezier graph-cache shape stress",
-  "command": "set +e; for mode in control aabb cache; do echo ===== MODE:$mode =====; uv run python -u benchmarks/_diag_mps_bezier_graph_cache.py --mode $mode --calls 300; echo RESULT $mode=$?; done; exit 0",
-  "arms": ["mac-mps"],
+  "_comment": "Diagnostic: current RSS with largest shape first; compare fixed, allocator-only, aabb, and Bezier-cache MPS paths.",
+  "_request": "2026-09-25 bounded-shape MPS graph-cache RSS stress",
+  "command": "set +e; for mode in fixed control aabb cache; do echo ===== MODE:$mode =====; .venv/bin/python -u benchmarks/_diag_mps_bezier_graph_cache.py --mode $mode --calls 300; echo RESULT $mode=$?; done; exit 0",
+  "arms": [
+    "mac-mps"
+  ],
   "env": {},
   "latex": false,
   "taichi_wheel_run_id": "none",
