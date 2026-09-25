@@ -1,0 +1,32 @@
+name: PR144 native allocation lifetime
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_buffer_lifetime.yaml]
+permissions:
+  contents: read
+jobs:
+  buffers:
+    name: Buffer lifetime / ${{ matrix.mode }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [direct, reuse-heap]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone native lifetime controls
+        run: |
+          xcrun clang++ -std=c++17 -O1 -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_buffer_reuse.mm -o "$RUNNER_TEMP/buffer-lifetime"
+      - name: Exercise the native buffer allocation strategy
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          "$RUNNER_TEMP/buffer-lifetime" '${{ matrix.mode }}' 2>&1 | tee evidence/buffer-lifetime.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-buffer-${{ matrix.mode }}
+          path: evidence/
+          retention-days: 7
