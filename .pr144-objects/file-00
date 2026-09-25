@@ -1,0 +1,177 @@
+name: Code Quality
+on:
+  push:
+    branches: [master, stable]
+  pull_request:
+    branches: [master, stable]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  lock_file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-uv
+      # `--locked` asserts the lockfile is already up to date; without it this
+      # step was a no-op guard. Bare `uv lock` *writes* uv.lock and exits 0, so
+      # a pyproject.toml change that had never been locked passed here and then
+      # failed several minutes into the test job, on `uv sync --locked`, with a
+      # message about syncing rather than about the lockfile.
+      #
+      # `--locked` is the spelling uv 0.4.25 (pinned in ./actions/install-uv)
+      # understands. Newer uv shows it as `--check`; both still work.
+      - run: uv lock --locked
+
+  linting:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    needs: [lock_file]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+      # Pinned for the same reason as the format job below -- see the comment
+      # there. `check` reports only: the repository sets `fix = false`, and
+      # this job passes no `--fix`, so CI can never rewrite the checkout.
+      - run: uvx ruff@0.12.4 check --no-fix
+
+  formatting:
+    name: Ruff Format
+    runs-on: ubuntu-latest
+    needs: [lock_file]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+      # Pinned, and it has to stay pinned: bare `uvx ruff` resolves whatever
+      # version is newest at run time, so a release upstream turns this job red
+      # with no change to the repository. That is not hypothetical -- a newer
+      # ruff began formatting Python inside Markdown, which the project's own
+      # ruff refuses to do at all ("Markdown formatting is experimental"), so
+      # CI was enforcing a rule no contributor could reproduce locally.
+      #
+      # Keep this in step with the `ruff` dev dependency in pyproject.toml
+      # (currently >=0.9.3, resolved to 0.12.4 in uv.lock). Bumping it is a
+      # deliberate act: expect a reformat commit alongside.
+      - run: uvx ruff@0.12.4 format --check
+
+  packaging:
+    name: Wheel builds and imports
+    runs-on: ubuntu-latest
+    needs: [lock_file]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+
+      # ManimPango publishes no wheel this runner's interpreter can use, so
+      # installing Algan's dependencies builds it from source -- and its
+      # setup.py asks pkg-config for pangocairo >= 1.30 before it will even
+      # report its build requirements. Without these the job dies in
+      # `uv pip install dist/*.whl` with `RequiredDependencyException:
+      # pangocairo >= 1.30.0 is required`, which reads like a packaging fault
+      # in Algan and is not one. The test job installs the same two for the
+      # same reason. (Cairo used to be here too, for pycairo; `manim` is no
+      # longer a dependency, so nothing pulls it in any more.)
+      - name: Install system dependencies for manimpango
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev pkg-config
+
+      - name: Build the wheel and sdist
+        run: uv build
+
+      # `algan/external_libraries/` is copied from three MIT projects, and MIT
+      # requires the notice in every copy. This is here rather than only in the
+      # release workflow because the failure is silent: the wheel that shipped
+      # with half of Manim's double license installed, imported and rendered
+      # fine. Catching it in the PR that narrows the glob is the whole point --
+      # a PyPI artifact cannot be edited afterwards, only yanked.
+      - name: Check every vendored license notice is shipped
+        run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
+
+      # The tests import Algan from the source tree, so nothing else in CI can
+      # see the wheel at all. What that hides is packaging, not code: hatchling
+      # is told `include = ["/algan"]` and ships whatever is under it, so a new
+      # `exclude` entry, or a data directory added outside `algan/`, produces a
+      # wheel that installs cleanly and fails at runtime -- with every other
+      # job green, and the first report coming from a user on PyPI.
+      #
+      # `--python` names the target interpreter explicitly rather than relying
+      # on VIRTUAL_ENV or on uv discovering the workspace venv: the point is to
+      # install the built artifact into an empty environment and nothing else,
+      # the way a user would.
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv /tmp/wheel-env
+          uv pip install --python /tmp/wheel-env/bin/python dist/*.whl
+
+      # Named explicitly rather than left to `import algan`, because these are
+      # exactly the files a packaging mistake drops and imports do not touch:
+      # renderer lookup data, vendored Manim config, and the viewer's static
+      # assets. An import-only check passes without them.
+      #
+      # No `py.typed` here on purpose. Algan ships no PEP 561 marker, so its
+      # annotations are invisible to a downstream type checker by design --
+      # adding the marker would make them authoritative for users' mypy and
+      # pyright runs, which is a promise to make deliberately and not as a
+      # side effect of a packaging check.
+      #
+      # A separate interpreter alone still puts the checkout on sys.path.
+      # Isolated mode ignores both that path and PYTHONPATH; the script also
+      # verifies the import came from this environment's installed package.
+      - name: Check the installed package is complete
+        run: |
+          cd "$(mktemp -d)"
+          /tmp/wheel-env/bin/python -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
+
+      # The CLI is declared as a console script in pyproject.toml, which is the
+      # other thing a wheel can get wrong while importing fine.
+      - name: Check the console script is wired up
+        run: |
+          cd "$(mktemp -d)"
+          /tmp/wheel-env/bin/python -I /tmp/wheel-env/bin/algan check
+
+  macos_packaging:
+    name: Native macOS wheel builds and imports
+    runs-on: macos-latest
+    needs: [lock_file]
+    env:
+      ALGAN_RENDER_DEVICE: mps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - run: brew install pango cairo pkg-config
+      # Build through the sdist too: it must carry the hook and native source.
+      - run: uv build
+      - run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
+      - run: python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
+      - name: Test the installed wheel outside the source checkout
+        run: |
+          uv venv "$RUNNER_TEMP/wheel-env"
+          uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
+          cp tests/unit_tests/test_mps_arena.py "$RUNNER_TEMP/test_mps_arena.py"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I -m pytest -q test_mps_arena.py
+      # The same abi3 binary must load on the supported ceiling, not just the
+      # Python used to compile it. Do not rebuild it under the second Python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Reuse the identical wheel on Python 3.13
+        run: |
+          uv venv --python 3.13 "$RUNNER_TEMP/wheel-env313"
+          uv pip install --python "$RUNNER_TEMP/wheel-env313/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env313/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'

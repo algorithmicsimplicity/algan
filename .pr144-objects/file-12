@@ -1,0 +1,746 @@
+# Algan test suites
+
+Use the project environment's interpreter. Commands below use `<venv-python>`
+as a placeholder for `.venv/bin/python` on Linux/macOS or
+`.venv/Scripts/python.exe` on Windows; substitute the path before running them.
+See [../AGENTS.md](../AGENTS.md). Avoid bare `uv run` when using a locally built
+compiler wheel, because synchronization can replace it.
+
+## MPS arenas and the single-process CI gate
+
+The required MPS arm runs the complete portable suite in **one worker**, using
+Torch 2.13.0 and TorchAudio 2.11.0. CPU CI and the published dependency minimums
+remain unchanged; `uv.lock` is not overridden for CPU/CUDA. Reproduce the MPS
+job after installing the project with the Mac native build hook:
+
+```bash
+uv sync --locked --all-extras --dev
+uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+.venv/bin/python -m pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+```
+
+Do not use bare `uv run` after the Torch override: it can restore the lock's
+older Torch. CI sets `UV_NO_SYNC=1`. There are no process batches or retries.
+
+Managed, nonempty MPS arenas use a standalone tracked `MTLBuffer`, imported by
+Torch through DLPack. The storage, not the `ManualMemory` wrapper, owns its
+native release. Typed slices and Quadrants imports therefore remain valid
+after the parent dies. External live bytes are included in arena sizing, but
+are not added to the driver counter (which already includes native buffers).
+Ordinary tensors and CPU/CUDA/unmanaged/empty arenas keep their original path.
+
+This avoids the large-heap recycling failure reproduced on the hosted Apple
+paravirtual GPU: repeated approximately 1.2 GB allocations fail even without
+Algan or Quadrants, while standalone buffers survive. The later Metal pipeline
+errors were downstream of a GPU hang, not evidence of invalid shader code.
+This does not claim to repair Apple's driver or Torch's general allocator.
+
+`test_mps_arena.py` covers native capsule ownership, offset/dtype views,
+Quadrants import lifetime, cross-thread destruction, pending GPU work,
+accounting, and **384 sequential large allocations**, beyond the original
+321–322-cycle failure. The test uses only one arena at a time and checks host
+headroom. Hardware checks run on the MPS arm, never by silently falling back to
+CPU. The normal macOS baseline opt-out is unchanged: a skipped image comparison
+must not be reported as pixel parity.
+
+Mac source/editable installs require Apple's Command Line Tools. Release wheels
+ship a CPython 3.10+ stable-ABI universal2 extension and require no compiler at
+runtime. `Native macOS wheel builds and imports` verifies the sdist build and
+tests the same wheel outside the checkout on Python 3.10 and 3.13. It must not
+ship an editable binary accidentally left in the source tree. A missing native
+owner or a Torch build without Metal DLPack support produces an explicit error;
+there is no fallback to the problematic heap path.
+
+Tests that allocate `ti.ndarray` before their first kernel call must initialize
+the runtime explicitly rather than depend on an earlier module's render.
+
+## The fast suite — run this one
+
+```bash
+<venv-python> -m pytest -q --fast
+```
+
+**This is the suite to run after every change.** It is a hand-picked set of
+tests marked `fast`, and **nothing else runs** — a test with no marker is
+outside it, including one added five minutes ago. It prints where it landed
+against its budget when it finishes:
+
+```
+fast suite: 21s of its 75s budget (28%)
+```
+
+That figure moves by a good fraction between runs, because most of the render's
+cost is Taichi specialising a kernel and that is sensitive to what the process
+did beforehand. It is reported rather than enforced for exactly that reason: a
+timing assertion here would be a flake. The 21 s above is measured, on a warm
+cache on a 4-vCPU CPU-only container; the budget leaves room for the render to
+pay a kernel compile, which is where most of the time goes when it does.
+
+Before curation this suite was *everything not marked `slow`*: 910 of the
+suite's 1038 collected tests, 112–147 s on CUDA, and every new test anywhere
+joined it automatically. The current selection is defined by the `fast` markers; the table below explains
+the coverage, not a frozen test count.
+
+**Wait for the third consecutive run before believing the number.** Taichi's
+cost is per kernel variant, charged to whichever test reaches it first, so any
+change that touches a kernel makes the next run pay a cold compile that has
+nothing to do with the suite's size. A measured sequence immediately after
+adding two small kernels ran 194 s → 160 s → 112 s, and only the last is the
+suite. Taking a marker off a test on the strength of run 1 evicts coverage to
+pay for a compile that would not have happened again.
+
+Give it no path, so it uses the `testpaths` from `pyproject.toml`.
+
+### What is in it
+
+The suite answers one question: **is Algan still working?** Not *is every
+feature intact* — that is the full suite's job. So it holds the mechanisms that
+every animation, every Mob and every render route through, and one end-to-end
+render:
+
+| Marked `fast` | Why it is in |
+| --- | --- |
+| `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
+| `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
+| `test_easings.py` | Every animation is evaluated through one of these curves. |
+| `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
+| `test_short_authoring_regressions.py` (packed movement tests) | Whole-pack and member transforms must distribute over nested cylinder caps in buffer order, including timeline replay. This crosses the Mob hierarchy, packing and timeline indexing. |
+| `test_texture_timeline_memory.py` (static and mixed texture window tests) | Spawn/despawn and color animation must preserve compact texture windows across timeline materialization, primitive generation and batching. These two tests guard the integration without rendering. |
+| `test_mob_reparenting.py` | That the hierarchy is read when an animation is *recorded*, not when it plays: a parent transform resolves the descendant union to rows and the event keeps them, so re-parenting afterwards redirects the next animation without rewriting the last one. That contract lives in the timeline (`modify_attribute_and_record`, `replay_inds`) and in two version-keyed descendant caches, none of which are in this file — a mutation that forgets to bump a version does not error, it silently drops a member from a transform. Tensor-only, no render. |
+| `test_scene_containment.py` | Which Scene owns a Mob and which managers that Scene owns — where every recorded event lands. |
+| `test_settings_api.py` | `SETTINGS` is read live by every subsystem. |
+| `test_camera_views.py` (one test) | Camera/display independence and Scene ownership depend on Mob hierarchy and transform behavior. The real multi-camera render comparisons remain feature tests outside the fast suite. |
+| `test_transform_matching_parts.py` (one test) | Cloning a packed selection must allocate independent, locally indexed rows. Changes to Mob cloning, packing or timeline indexing can otherwise corrupt matching transforms. |
+| `test_typst.py` (two tests) | Label selections must animate their original geometry, replay correctly, and acquire independent rows when cloned. These contracts span SVG grouping, Mob hierarchy, cloning and timeline replay. Compiler and typesetting feature tests remain outside the fast suite. |
+| `test_torch_compile.py` | `SETTINGS.computing.torch_compile` and the `compiled` decorator every fused pipeline function goes through. The switch is read at every call, so a change to how the section validates or restores it reaches the whole render path; and the fallback contract — a compile failure warns once and runs eagerly, the function's own errors propagate — is what keeps the switch from ever failing a render. Dynamo's `eager` backend only: no Inductor build, no render, about two seconds. |
+| `test_ux_regressions.py` (per test, not the whole module) | The front door: `save_video`/`save_frame` and what they leave behind, contexts, `Group`, the star exports, and the errors users hit. It is a catch-all file, so its tests are marked one by one — see below. |
+| `test_spatial_constants.py` | `IN`/`OUT` are aliases of `INWARD`/`OUTWARD` so a script may rebind the short names, which only holds while Algan's own source reads the long ones. An AST walk over the whole package, so any module that reaches for `IN` or `OUT` trips it — including one added today. Cheap: no Taichi, no render. |
+| `test_mesh_identity.py` (per test) | Per-triangle surface identity (`tri_obj`), which the analytic-AA resolve groups fragments by and the scene merge offsets per primitive. It is a contract between the mob side (what declares a surface), the merge and two kernel walks, so a change to batching, to a composite mob's `get_render_primitives`, or to the merge's offsetting breaks it from elsewhere. Pure tensor assertions — no render, no Taichi. |
+| `test_batched_surface_mobs.py` (per test) | Indexing into a packed Mob -- `Mob.__getitem__`, `_set_data_sub_inds` and `__len__` resolving one member's rows out of a shared batch. Every packed Mob (all `Text`, every point cloud) depends on it, and it breaks from the Mob base or the timeline rather than from the surface code. Only the two indexing tests are marked; the equivalence tests beside them fail only when `surface.py` changes. |
+| `test_bezier_group_runs.py` (per test) | That the vectorized bezier build is still *reached*, and that splitting a clashing group into runs leaves the merged collection unchanged. The batchability gate reads timeline internals (`mob_id_to_inds`, `ranges_for`, `parent_batch_sizes`), so a timeline or packing change can silently send every circuit back to the per-actor build -- output stays correct and nothing else notices. Two tensor-only tests are marked; the frame comparison beside them renders and is not. |
+| `test_bezier_geometry_cache.py` (one test) | A stationary Text fade must reuse its contours across materialized windows beside moving shapes. This depends on Text packing, timeline replay, collection merging and Scene ownership; a change outside the cache can silently disable reuse. Tensor assertions, no render. |
+| `test_neural_net_idle.py` | The batched idle-updater fast path (`ALGAN_BATCHED_IDLE_UPDATER`) must write exactly what the per-mob loops it replaced write. It reads rows through the same timeline machinery as any updater (`trace_updater_mob_access`, `_compact_index`, `modify`), so a change to replay or materialization can silently desync the two arms; the marked test materializes one window under each arm on a freshly built net and requires bit-equal buffers. Tensor-only, no render; the file's other two tests stay unmarked. |
+| `test_public_api_surface.py` | `algan.__all__` is assembled by rules over every exported module, not written by hand, so it moves from anywhere: adding a module-level helper to an exported module publishes a new name, and moving a class between the native and `algan.manim` surfaces withdraws one. The snapshot catches both at the commit that causes them rather than at release. It also holds the native/`algan.manim` boundary — no Manim adapter may shadow a native class — which a rename in either direction can break. Pure Python, no Taichi, no render: about half a second. |
+| `test_mps_friendly.py` (per test) | MPS-friendly mode substitutes a float32 accumulator, an int32 reduction or a log-step scan wherever Metal cannot run the wide one, and the *call sites* are all over the renderer while the substitutions live in one module. So the marked tests are the cheap half — the flag's resolution, the dtype selectors, the scan against `cummax`/`cummin`, and an AST walk that fails if any renderer module reaches for `torch.float64`, `ti.f64` or `cummax` directly. That walk is the one that trips on a change made elsewhere: a new float64 accumulator anywhere under `algan/rendering/` is an Apple GPU that aborts, and nothing else in the loop would say so. No Taichi, no render. The kernel-variant comparisons and the end-to-end render beside them are unmarked. |
+| `test_kernel_control_flow.py` | A `continue` under a compile-time gate — `if ti.static(...)` or a statically unrolled `for ... in ti.static(range(n))` — emits a bare `ContinueStmt` and leaves every statement after it in an already-terminated block, which is **invalid SPIR-V**. Same shape of argument as the walk above: it trips on a kernel written anywhere under `algan/`, and the consequence is an Apple GPU that will not build a pipeline, which nothing else in the loop can see (LLVM executes the invalid module correctly, so the CPU and CUDA suites are both green on it). `../algan/rendering/DESIGN_mps_support.md` §1.2c is what it cost the once. An AST walk: no Taichi, no render, about half a second. |
+| `test_arena_args.py` (one test) | That every launch site of an arena-converted kernel passes the argument count its wrapper packs from. The list a site must match (`call_params`) lives in the kernel module, the sites live in the tracer, the raster pipeline and the path tracer, and nothing in Python connects them — so adding a kernel parameter breaks the sites from elsewhere, and the wrapper's own arity check only fires when that particular launch renders. Only the static arity test is marked; the prologue/spec comparisons beside it move when their own kernel does, and the Metal buffer-count walk parses the whole package. Source reading, no Taichi, no render: about half a second. |
+| `test_weight_floor_exit.py` (one test) | That the argument *index* the file's render arms assert on still names `weight_floor_exit`. The arms are unmarked by design — a render each — so when `vis_lights` joined the parameter list after the gate, the stale count reached master and only the 25-minute CI run saw it. This reads the count and the index straight off the kernel module for nothing. It does not replace the arms: it cannot see whether either gate variant compiles, which is what they are for. |
+| `test_shape_anchors.py` | Where a shape's `location` sits, which is the point every rotation and every scale is taken about, and the origin the texture grid is laid out from. It is derived from geometry in two places (`_circuit_location_and_basis` for circuits, `Polyhedron` for the flat solids) and consumed by the transforms, the frame and the layout — so it moves from the Mob base, from the circuit frame, or from either derivation, and an anchor that drifts off a shape's centroid does not raise: it makes the shape orbit a point beside itself, which only shows up in pixels. Construction and tensor assertions, no render. |
+| `test_taichi_warmstart.py` (one test, not the module) | Only `test_the_memoization_is_live_on_this_compiler`, and only because the thing it guards is invisible: the warm-start memoization is version-gated to the compiler internals it patches, so a compiler bump in `pyproject.toml`, a new backend in `taichi_compat`, or an env-var rename turns it off — and a silent no-op reads exactly like a slow machine. That is not hypothetical; it cost ~25 s per render for the length of the Quadrants evaluation (`../taichi_patches/PLAN.md` §6.1). Everything else in the file is a feature test for the memo and stays out. No Taichi init, no render: it reads one module-level string. |
+| `test_taichi_fast_launch.py` (one test, not the module) | Only `test_the_dispatcher_is_live_on_this_compiler`, for the same reason as its warm-start twin: the launch-plan dispatcher is version-gated to the compiler's launch internals, and a compiler bump or backend rename turns it off with nothing to show but ~0.2-0.4 ms more per kernel launch. Everything else in the file compiles real kernels to hold the dispatcher's key and fallbacks against the compiler's own instantiation choices, and stays out. No Taichi init, no render: it reads one module-level string. |
+| `test_taichi_source_key.py` (one test, not the module) | Only `test_the_index_installs_on_this_compiler`, for the same reason as the warm-start row above: the source-keyed cache index (`algan/utils/taichi_source_key.py`) rests on Quadrants internals — `Kernel._try_load_fastcache`, `src_hasher`, `Program.load_fast_cache` — so a compiler bump turns it off from elsewhere, and an index that silently stands down is a warm frontend that quietly went from ~1 s back to ~12 s. The value rules, the closure walk, the hook control flow and the subprocess renders beside it are feature tests and stay out. No Taichi init, no render: it reads the version gate. |
+| `test_taichi_early_return.py` (one test, not the module) | Only `test_the_rewrite_is_live_on_this_compiler`, for the same reason as the two rows above: the early-`return` rewrite for inlined `@ti.func` bodies (`algan/utils/taichi_early_return.py`) wraps one compile-path function per compiler — `FuncBase.get_tree_and_ctx` on Quadrants, `kernel_impl._get_tree_and_ctx` on taichi — and is version-gated to them, so a compiler bump in `pyproject.toml`, a new backend in `taichi_compat`, or an env-var rename turns it off from elsewhere. A silent no-op looks like nothing at all until a shader stage that used to compile fails with the compiler's own "Return inside non-static if/for" message. It reads the gate and compiles one early-return func on the live compiler: about a second, no render. The forty-odd feature tests beside it hold the rewrite against real compilation and stay out. |
+| `test_transparent_output.py` (per test, not the whole module) | That a transparent render's background arrives **premultiplied** by its own alpha. Nothing in one place enforces it: `_prefill_background` writes the value, `wf_composite` adds it as `weight * bg` beside geometry that already carries its own coverage, and the tonemap divides alpha back out before encoding — three modules, no Python connecting them. So the contract breaks from the kernel side (a change to the unpremultiply, to the 5-channel layout, or to the composite arithmetic) and the failure is silent: a half-opaque background stored `encode(color / a) * a` and was simply too bright, wrong by more the more transparent it was, which no error and no opaque baseline can see. Only the premultiply tests are marked, including the one asserting opaque output does not move; the container/codec tests beside them fail only when their own map changes. Tensor assertions, no Taichi, no render: under half a second. |
+| `test_mps_known_failures.py` (one test, not the module) | Only `test_every_entry_names_a_test_that_exists`, and it is in for the same reason the AST walks above are: it trips on a change made **elsewhere**. `mps_known_failures.py` xfails by nodeid across eight other files, and an `xfail` on a nodeid nothing collects is a silent no-op — so renaming or deleting any of those tests takes its entry out of service, and the required MPS arm quietly starts claiming less than it looks like it claims. Reads the list and walks each named file's AST: no Taichi, no render, under a second. The reason-format check beside it moves only when the list itself does and stays out. |
+| `test_batched_stills.py` (two tests) | Project checkpoints must capture their own authoring cursor and follow final timed-context rescaling before batched rendering. These contracts span Scene exports, Project scene execution, and timeline events; regressions in any of those can silently select the wrong frame. Only the author-then-render and relative-context-time checks are marked. They use a stub renderer; the real pixel comparisons remain feature tests. |
+| `test_batch_preparation_devices.py` (two tests) | Only the render/encoder cleanup-order checks: `test_render_reclaims_arena_before_deferred_pressure_reset` and `test_video_defers_pressure_cleanup_until_encoder_and_frame_locals_are_gone`. They hold the contract between the render loop, prefetch-worker shutdown, scene GC protection, the memory arena, and deferred compiler resets. Changing any of those can reclaim a still-live buffer or retain an entire render arena. Stub renderers and memory hooks; no real render. |
+| `test_manim_compat_movement.py` (one test, parametrized for Axes and Star) | Only `test_translation_replays_existing_rows_without_a_geometry_morph`. Changes to Mob translation, timeline recording/replay, or timed contexts can desynchronize the Algan geometry and its backing Manim object, or rebuild the hierarchy during a simple move. It checks both representations at several timeline positions and preserves descendant identity; no render. The remaining compatibility feature tests stay out. |
+| `test_taichi_runtime_config.py` (one test) | Only `test_cached_cuda_reset_retains_memory_pressure_fallbacks`. Windows physical/commit-memory telemetry from `memory_utils`, compiler-specialization tracking, and render-lifetime guards jointly determine when a cached CUDA runtime can be retained. Changes outside runtime configuration can otherwise discard reusable kernels under ordinary RAM pressure or suppress a necessary reset near the commit limit. Mocked telemetry and compiler hooks; no GPU initialization or render. |
+| `tests/fast/test_fast_render.py` | One real scene, rendered and compared pixel-wise. The only thing in the loop that can see a renderer regression, and most of its wall clock. |
+| `test_stroke_styles.py` (one test) | Only `test_style_survives_clone_and_compatible_packing`: Mob cloning and packing must retain static stroke metadata and reject incompatible packs. These operations live outside the stroke implementation. Geometry and render checks remain feature tests. |
+| `test_subtitles.py` (one test) | Only `test_caption_cursors_follow_context_rescaling_and_scene_ownership`: manual subtitle timing depends on lazy context rescaling, Scene dispatch, and reset ownership. Changes in any of those can shift or discard captions without a renderer error. It writes tiny text files; format and grouping checks remain feature tests. |
+| `test_traced_path.py` (one test) | Only `test_trace_is_independent_of_frame_order_and_batching`: source motion, lazy timing, materialization, and buffer cleanup jointly determine a motion trail. Changes outside the feature can otherwise make it depend on playback order or alter authored state. Tensor checks; the focused pixel comparison remains a feature test. |
+
+The camera flight seek/batching check in `test_camera_fly_to.py`, and the
+independent fill/stroke replay check and the recolor-keeps-component-opacity
+replay check in `test_authoring_styles.py`, are also marked fast: they depend on
+the shared timeline, Mob transforms, component attribute propagation, and the
+mapping from a color write's rows to the Mobs that own them. The remaining tests
+in those files are feature tests.
+
+### What is not in it, and where that is covered instead
+
+Everything else — which is most of the suite, on purpose. The general shape:
+a test that only breaks when *its own* subsystem is worked on does not belong
+here, because whoever works on that subsystem runs its file (or the full suite)
+anyway.
+
+| Left out | Why | Covered by |
+| --- | --- | --- |
+| Per-feature behaviour: the indication animations, `become`, `wave_color`, `DecimalNumber`, materials, fragment shaders, neural nets, the Manim compatibility layer, glTF/FBX import | Breaks when that feature is worked on, not when anything else is | Its own file, plus `tests/full_renders/` for pixels |
+| Renderer internals: PN tessellation, surface autotune, bezier sampling, BVH refit, wavefront compaction, the frag-pid gate | Same, one subsystem each | Its own file |
+| Batch sizing, the arena, texture memory, post-processing memory | Cheap, but they only move when their own module does; the fast render exercises the real path | `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py`, … |
+| Repo-consistency audits: doc examples, render coverage, the env-var registry, Manim mobject parity | They fail when you *add* public API, which the full suite and CI catch before a push | `test_doc_examples.py`, `test_render_coverage_audit.py`, `test_environment.py`, `test_manim_mobject_parity.py` |
+| The other six render scenes | ~2 minutes each | `tests/full_renders/` |
+| Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
+| PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
+| Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
+
+**CI is not the fast suite.** It names `tests/unit_tests tests/fast` as paths
+and runs everything under them, `fast`-marked or not (see the comment in
+`.github/workflows/test.yaml`). The fast suite is a development loop; CI can
+afford twelve minutes and should keep spending them.
+
+It runs those paths in four ordinary matrix arms: Linux 3.10/3.13 with the
+`auto` render device, plus macOS 3.10 once on CPU and once on MPS. The macOS
+CPU arm preserves the portability check. The MPS arm pins
+`ALGAN_RENDER_DEVICE=mps` and, before pytest, asserts both that torch exposes an
+MPS device and that Algan's own startup resolver returns `mps`; a silent CPU
+fallback therefore makes the required check fail. Both macOS arms use the
+normal locked dependency graph and published `algan-quadrants` wheel. The
+`algan check` step then prints the resolved device/compiler along with whether
+LaTeX and FFmpeg are on `PATH`.
+
+**The MPS arm carries an xfail list, and it is meant to shrink.** When the arm
+was first turned on it reported 32 failures and 3 errors against 3311 passes;
+it now reports **3564 passed, 217 skipped, 2 xfailed** (run 34213125405
+measured 3563 passed and 1 failed, and that 1 was this list's own last stale
+entry XPASSing; removing it moves that test into the passed column).
+`tests/mps_known_failures.py` names those two, one entry per test with the
+defect it waits on and a pointer to the measurement in
+`../algan/rendering/DESIGN_mps_support.md` §4;
+`conftest.py` applies it as a **strict** `xfail`, and only when the resolved
+render device is MPS. Three consequences worth knowing before adding or
+removing a line:
+
+* the listed tests still **run**, and the summary counts them, so the arm's
+  output says how much of the port is left on every run;
+* `strict` means a fix turns the arm **red** with `XPASS`, naming the test.
+  Deleting the entry is the last step of the fix, not an optional tidy-up;
+* nothing applies off MPS. On Linux, on CUDA and on the macOS CPU arm these are
+  ordinary tests and a failure in one is an ordinary failure.
+
+`test_mps_known_failures.py` keeps the list from rotting the other way: an
+entry whose test has been renamed or deleted is an `xfail` that silently marks
+nothing, so it fails collection-time rather than passing quietly.
+
+## The full suite
+
+```bash
+<venv-python> -m pytest -q
+```
+
+Everything, about twelve minutes on CUDA. Run it before pushing, after touching
+the renderer, and whenever the fast suite's coverage table above says the thing
+you changed lives here.
+
+| Directory | What it protects | Cost |
+| --- | --- | --- |
+| `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~90 s |
+| `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | ~50 s |
+| `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against release-hosted baselines. | ~12 minutes on CUDA |
+| `tests/path_traced/` | What the `samples_per_pixel > 1` path tracer draws across four small scenes, compared pixel-wise against release-hosted baselines. | ~15 s warm |
+
+## Adding a test: does it belong in the fast suite?
+
+Default to **no**, and leave it unmarked. That is not a demotion — the full
+suite runs it, CI runs it, and whoever touches the code it covers runs it.
+
+Mark it `fast` only if **a change somewhere else in the codebase is liable to
+break it**. Ask which file someone would have to edit for this test to start
+failing: if the honest answer is "the one it tests", it is a feature test and
+it stays out. If the answer is "the timeline, or the Mob base, or the Scene, or
+anything that records or materializes state" — the machinery every animation
+runs through — then it is a canary worth paying for on every change.
+
+Two supporting rules:
+
+- **Cheap is not a reason.** A test that costs 5 ms and never fires except when
+  its own module changes still costs a reader's attention and a maintainer's
+  judgement; hundreds of those are exactly what this suite was curated out of.
+- **The budget is a first-come constraint.** If the suite reports itself over,
+  the fix is to take the marker off whatever went in most recently, not to
+  raise the number. Raising it is a deliberate trade of loop time for coverage.
+
+One trap when weighing cost: with Taichi, **the cost is per kernel variant, not
+per test**, and it is charged to whichever test reaches that variant first.
+Excluding the slowest Monte Carlo test in `test_raytracing_unit.py` did not save
+its seven seconds — it moved them to the next test that needed the same kernel.
+A group that shares a kernel joins or stays out together, which is why that
+module is discussed as a whole in its docstring.
+
+Marking is per module (`pytestmark = pytest.mark.fast`, with a comment saying
+why the module is in) or per test, whichever matches how coherent the file is.
+A module-level mark means the *whole file* is core, new tests included, so use
+it only where that is true. It is true of the timeline and transform files —
+each is about one mechanism, so a new test in them is the same kind of test.
+It is not true of `test_ux_regressions.py`, which is a catch-all: within an hour
+of this suite being curated, a merge added two tests to it, one of them a
+six-second subprocess its author had deliberately kept out of the loop, and a
+module-level mark would have enrolled both. That file is marked per test.
+
+There is no `slow` marker any more: it meant "outside the fast suite", which is
+now what every unmarked test already is. `--strict-markers` is on, so a stale
+`@pytest.mark.slow` fails collection rather than sitting there doing nothing,
+and `test_fast_suite_curation.py` fails if a `fast` marker appears that the
+table above does not explain.
+
+## The full-render suite
+
+`tests/full_renders/scenes/` holds **six dense scenes**, not one scene per
+concept. Each one packs a whole subsystem into a single render while keeping
+everything laid out in labelled, non-overlapping rows, so a regression reads as
+a diff in one column rather than as a mystery.
+
+| Scene | Covers |
+| --- | --- |
+| `complex_hierarchy_become` | Arbitrary hierarchy-to-hierarchy `become`: primitive-aware pairing across different tree shapes, cubic-bezier/Surface/mesh conversion, collapsed-target growth and surplus-source collapse for unequal leaf counts, Image-only dissolve, and parent transforms after target-tree reconstruction. |
+| `shapes_and_timeline` | 2-D bezier circuits (fills, non-convex triangulation, inward borders, analytic AA), all four animation contexts and their nesting, rate functions, every indication animation, `become`, updaters, `wave_color`, `DrawBorderThenFill`, `DecimalNumber`, the spawn/despawn lifecycle, and the raw primitives underneath it all. |
+| `solids_and_camera` | Analytic PN surfaces vs. flat meshes side by side, the Platonic solids, `Surface`, `Arrow3D`/`Line3D`/`Dot3D`/`ConvexHull3D`, parent-and-child transforms in one block, the movement helpers, screen-relative layout, and every camera motion. |
+| `materials_and_lighting` | All nine `Mesh*Material` classes and the presets, animated material parameters, all six light types, shadows, glow through bloom and tonemapping, opacity, and the reflection/refraction paths of the wavefront tracer. |
+| `text_and_media` | `Text`/`MarkupText`/`Tex`/`MathTex`/`Paragraph`/`Code` and the triangulated variants, `write()`, per-glyph addressing, Tex-to-Tex morphing, `ImageMob` (textured and per-pixel), glTF import with PBR and normal maps, and composed fragment shaders. |
+| `manim_compat_and_plots` | `Axes(...).plot(...)` and the other delegated builders, `NumberPlane`, `BarChart`, matrices and tables, `Graph`, braces, the Manim-flavoured shapes, and `ApplyMatrix`/`ApplyComplexFunction`/`Homotopy`/`MoveAlongPath`/`AnimatedBoundary`. |
+
+### Scene conventions
+
+A scene file **records** an animation; it never renders one. The harness owns
+the `Scene`, the settings and the comparison. Scene files may import only
+`from algan import *` (plus `torch`, which building raw primitives genuinely
+needs), and must carry a module docstring saying what they are for.
+`tests/unit_tests/test_render_coverage_audit.py` enforces all of that, and also
+fails if a public renderable class, material or light appears in no scene and
+is not listed in its `EXEMPT` dict with a reason.
+
+The harness makes `tests/full_renders/` the working directory while a scene
+runs, so `assets/world_map.jpg` resolves; and it snapshots `SETTINGS` around
+each scene, so a scene may turn a renderer feature on for itself
+(`materials_and_lighting` turns shadows on).
+
+`assets/textured_icosphere.glb` is a compact UV-mapped model with embedded
+albedo, metallic/roughness and normal textures. Keeping the fixture small is
+deliberate: it keeps the render inside the arena without weakening importer or
+material coverage.
+
+## The path-traced suite
+
+`tests/path_traced/scenes/` holds four small scenes rendered through the
+`samples_per_pixel > 1` wavefront path tracer (each scene file sets
+`samples_per_pixel` itself, and the harness asserts the plan chose the path
+tracer). They are deliberately tiny — 128×72, five frames — because the path
+tracer pays per (pixel, sample, frame) and behavioural correctness lives in
+`tests/unit_tests/test_path_tracer.py`; these baselines exist to catch what
+only pixels can see.
+
+| Scene | Covers |
+| --- | --- |
+| `translucency_and_order` | Deterministic 2-D compositing under PT: same-depth author order, depth-separated overlap, and the closed-shell opacity ring on a rotating translucent solid. |
+| `lit_and_shadowed` | NEE direct lighting with shadows, the sampled emitter table, GGX metal, and diffuse colour bleed. |
+| `environment_and_refraction` | Environment-map NEE and escape, mirror reflection, and refraction through the nested-IOR stack. |
+| `authored_under_many_lights` | The authored-appearance branch past the shadow cap: a toon floor and a Manim box under 24 point lights plus the two direction-less rows, sampling their light rows rather than summing them (roadmap §6a-bis). |
+
+The path tracer promises convergence, not byte-identical frames, but its
+accumulation happens to be atomic-free and its sampler is a pure function of
+path identity, so at a pinned memory budget the same tolerance applies as
+everywhere else. Like the full-render suite the baselines are per machine,
+and the suite skips in CI (`ALGAN_RUN_PATH_TRACED=1` overrides).
+
+The original `expected_outputs_cpu/` set was rendered on a cloud CPU
+container. The original `expected_outputs_cuda/` set was rendered on a Kaggle Tesla T4
+(`benchmarks/performance/reports/t4_2026_09/pt-cudabase-1.txt`: recorded,
+re-rendered byte-identically in the same session, and byte-identically again
+in a second session). Two of the four scenes — `environment_and_refraction`
+and `translucency_and_order` — are byte-identical between the two devices;
+`lit_and_shadowed` and `authored_under_many_lights` differ by a few counts
+where the two backends round the sampler differently. Re-recording either
+set is the same procedure on that device: run
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest
+tests/path_traced -q` twice, check the second run's outputs against the first
+(at fixed settings and memory budget), look at the videos, then package and
+upload the heavy baselines and commit the manifest as described below. A device
+without a resolvable baseline fails its comparisons; the explicit macOS opt-out
+covers unbaselined macOS keys only, not corrupt or unavailable downloads.
+
+## The fast suite's render
+
+`tests/fast/scene.py` is a seventh scene under the same conventions, kept apart
+from the six above so that the full-render suite and its coverage audit stay
+what they are. Its docstring is worth reading before editing it: it is shaped
+by the kernel-variant cost, which is why it is one scene rather than several
+and why it contains no `Surface` geometry.
+
+## Baseline status and renderer changes
+
+`tests/baselines.json` is the current inventory of published heavy-baseline keys,
+asset names and digests. At the 2026-09-09 documentation check it points to
+`baselines-2026-09-09.2`; that tag is provenance, not a recommendation to overwrite
+an existing baseline release.
+
+Older notes declared all devices out of date after winding and sampler changes.
+Those blanket claims are no longer a useful status check: the manifest and local
+baseline directories have changed since then. Run the comparison on the intended
+backend and toolchain, inspect the result, and distinguish a genuine rendering
+change from a missing asset or environment mismatch before regenerating anything.
+
+Use `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` or
+`ALGAN_UPDATE_PATH_TRACED_BASELINES=1` only for a deliberate rebaseline. Review the
+videos, package and upload the new archives, then commit the updated manifest.
+A hash-valid archive proves its bytes match the pointer; it does not prove the
+images are the right baseline for an unrelated machine or compiler build.
+
+## Baselines are per device
+
+Each render suite selects a device/toolchain key from the actual render device
+and the suite's execution mode, not merely from `torch.cuda.is_available()`.
+Examples include `cpu`, `cuda`, `cpu_eager`, `macos_cpu` and `macos_mps`.
+The corresponding local directory is `expected_outputs_<key>/`. A machine with no baselines for its
+device renders the scene and then **fails**, naming why nothing could be
+resolved. A suite that cannot compare must never report itself green on a new
+device, which is what it used to do. macOS has an opt-out
+(`ALGAN_ALLOW_UNBASELINED_MACOS=1`); nothing else does.
+
+The device is the one the render will actually run on —
+`SETTINGS.computing.render_device`, so `ALGAN_RENDER_DEVICE=cpu` on a CUDA
+machine compares against the CPU baseline, and an Apple Silicon Mac (where the
+automatic probe resolves to MPS) does not silently compare a Metal render
+against a CPU one.
+
+**macOS is keyed separately** (`expected_outputs_macos_cpu/`), and nothing is
+committed under that name, so a Mac renders and then fails this test until one
+is committed (`ALGAN_UPDATE_FAST_BASELINE=1`, review, commit) — or until
+`ALGAN_ALLOW_UNBASELINED_MACOS=1` is set, which skips the comparison for the
+macOS keys only. That is
+measured, not assumed: the x86-64 CPU baseline was copied in and run on an
+Apple Silicon CI runner, and it missed by **up to 45 channel values** (worst at
+frame 36) against a tolerance of 2. This is the scene that matched *exactly*
+across two x86-64 machines when five of the six full-render scenes did not — so
+the change of instruction set is its own axis, separate from the per-machine
+spread below, and fp32 arithmetic through a path tracer does not survive it.
+
+A Mac therefore covers kernel compilation, tessellation, LaTeX, the fonts and
+the encoder, but not the pixels. To gate pixels there, render with
+`ALGAN_UPDATE_FAST_BASELINE=1` on the Mac, look at the result, and commit it.
+
+The fast suite keeps its CPU/CUDA baselines in Git; heavy suites use the
+release manifest. Backend sets are *not* interchangeable. Earlier measurements
+found differences larger than the tolerance:
+
+- **PN surfaces** (`Sphere`, `Cylinder`, `Cone`, `Torus`, `Surface`) differ
+  across their interiors, because the subdivision-level criterion kernel runs
+  under Taichi's `fast_math` and flips borderline tessellation levels
+  differently per backend. Measured at up to 8% of a frame's pixels.
+- **Silhouettes and specular highlights** differ by up to ~75 channel values on
+  edge pixels, from float ordering.
+Text used to differ far more than either — up to ~230 — and that one was never
+a device difference at all. `Text` defaults to `font=""`, which Pango resolves
+through fontconfig, so the glyph advances changed with whatever the machine had
+installed. In that comparison, `Tex`/`MathTex` matched across devices at zero
+shift, which helped identify font selection as the cause. They use LaTeX and
+`dvisvgm` outlines, but still require a compatible toolchain: a replacement
+converter can change outlines or lose the SVG grouping used for glyph indexing.
+
+## Baselines are per machine too, which decides what CI runs
+
+Per *device* understates it: the full-render baselines do not survive a change
+of CPU either. Measured, not assumed — a GitHub Actions `ubuntu-latest` runner
+rendered these scenes against baselines produced on another CPU:
+
+| Scene | Max deviation | |
+| --- | ---: | --- |
+| `tests/fast` | 0 | matched |
+| `shapes_and_timeline` | 0 | matched |
+| `text_and_media` | 29 | failed |
+| `complex_hierarchy_become` | 44 | failed |
+| `manim_compat_and_plots` | 50 | failed |
+| `solids_and_camera` | 53 | failed |
+| `materials_and_lighting` | 204 | failed |
+
+against a tolerance of 2. The split is not arbitrary: everything that matched is
+built from 2-D circuits and flat triangle meshes, and everything that moved
+carries PN surfaces, shadows, refraction or glTF — which is what
+`pn_criterion_kernel` under `fast_math` predicts, since which tessellation
+levels sit on a boundary depends on the CPU evaluating the criterion.
+
+So **CI runs `tests/unit_tests` and `tests/fast`**, the two that are portable,
+and `test_full_render_scene` skips itself when `CI` is set. Run it anyway with
+`ALGAN_RUN_FULL_RENDERS=1` — on the machine whose baselines these are, or to
+re-measure the spread.
+
+Neither obvious shortcut is worth taking. Raising the tolerance would have to
+reach ~204 to pass, which is far past where it stops catching regressions;
+re-baselining on a runner just moves the failure onto the developer's machine.
+The real fix, if this suite should ever gate CI, is making the level criterion
+independent of the host CPU — probably dropping `fast_math` on those kernels —
+which is a renderer change that moves every baseline including CUDA.
+
+One thing this measurement did confirm: the fast scene contains `Text` and
+`Tex` and matched exactly on a machine with a different font set, which is the
+evidence that vendoring the fonts works.
+
+## Fonts are vendored, not borrowed
+
+`tests/assets/fonts/` holds the **Algan Test Sans** and **Algan Test Mono**
+faces, and `tests/conftest.py` registers them with Pango before any scene runs.
+Every `Text`, `MarkupText` and `Paragraph` call in a scene names one of them
+(`font=FONT`), and `Code` names the mono family through its `paragraph_config` —
+its own default is the `"Monospace"` fontconfig alias, which is host-dependent
+in exactly the same way.
+
+This is what stops a container image with a different font set from shifting
+every glyph and failing the suite as if the renderer had regressed. It is
+enforced, not left to review: `test_scene_text_pins_a_vendored_font` fails on
+any Text-like call in a scene that does not pass `font=`, because one unpinned
+call reintroduces the drift for the whole scene.
+
+The faces are the Liberation fonts with their name tables rewritten. Renaming
+is deliberate — the SIL OFL reserves the upstream name, and a distinct family
+means a system installation of Liberation can never shadow the vendored files.
+See `tests/assets/fonts/LICENSE.txt`.
+
+**When adding a scene**, give its text `font=FONT` and declare
+`FONT = "Algan Test Sans"` under the star import, as the existing scenes do.
+
+## Re-baselining
+
+Baselines are re-baselined **for the device you are on** — the environment
+variables below write to whichever `expected_outputs_<device>/` matches the
+current machine, so re-baselining on CPU cannot repair a CUDA baseline or vice
+versa.
+
+Every render suite is re-baselined by rendering with the baselines writable,
+then **looking at the result** before committing:
+
+```bash
+ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q
+```
+
+```bash
+ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
+```
+
+```bash
+ALGAN_UPDATE_PATH_TRACED_BASELINES=1 <venv-python> -m pytest tests/path_traced -q
+```
+
+These variables are read by the harnesses rather than by the package, which is
+why they are declared in `_HARNESS_VARIABLES` in `algan/environment.py`:
+exporting one must not make every `import algan` warn about it. A rebaseline
+always writes to the **tree**, never to the download cache — see the next
+section for what to do with the result.
+
+Frames are compared channel-wise with a tolerance of 2 by the
+`assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
+suites share so they cannot drift apart on tolerance. That tolerance is not
+slack for sloppiness: torch's CPU rate-function evaluation rounds differently
+depending on the materialization window, so byte-identity across re-windowed
+state is unattainable. A failure writes a diff video to the suite's
+`output_errors/`.
+
+The second thing the tolerance absorbs is **split pixels**. A pixel that spawns
+three or more branches — reflective or refractive geometry under analytic AA,
+where each covered pixel takes several sub-pixel reflection taps — sums those
+branches into `pix_accum` with `ti.atomic_add` in GPU scheduling order, and
+float addition is not associative, so such a scene renders slightly differently
+every run. The recorded probe measured `|d| = 1` on tens of channel samples out of
+165M. That is an observation, not a universal bound supplied by `u8` conversion;
+rounding and encoding can amplify differences, so measure the current scene
+and backend before choosing a tolerance. It does mean a scene like that cannot be a *byte-identical* A/B parity
+fixture; `../agent_guidance/memory_perf.md` covers how to pick one, and
+`benchmarks/_split_determinism_check.py` measures a scene's own run-to-run
+floor.
+
+On Windows, run render work **one process at a time** — a killed or timed-out
+run orphans children that keep the output mp4s locked.
+
+## Where the heavy baselines live
+
+Historically, full-render and path-tracer baseline videos were committed whole
+on every rebaseline, adding large blobs to Git history. They are not part of
+the normal CI pixel comparisons; they gate locally on a matching machine and
+configuration. Moving new baseline sets to release assets keeps subsequent
+source commits small; it does not rewrite the existing history.
+
+They are therefore hosted as **GitHub release assets** rather than carried in
+every clone. `tests/fast` is deliberately not: it is the small render baseline CI compares, so keeping it in git means an ordinary clone
+and an ordinary CI run never fetch anything.
+
+`tests/baseline_store.py` resolves a suite's baseline directory in this order,
+and its module docstring is the contract:
+
+1. `ALGAN_BASELINE_DIR` — a directory of `<suite>/<key>/` trees, for a machine
+   that keeps its own or has no network. **Final**: if it holds nothing for
+   this suite, the comparison fails rather than falling through to a download.
+2. the in-repo `expected_outputs_<key>/`, when it exists and has files;
+3. the verified cache under `~/.algan/cache/baselines/<tag>/`;
+4. a one-time download of the release asset pinned in `tests/baselines.json`.
+
+Any failure warns once and returns "no baselines" — and **every render suite
+turns that into a failure, not a skip**. `require_baseline_dir` raises
+`BaselinesUnavailableError` carrying the reason the resolver recorded (an
+unpublished device key, a download that never arrived, a digest that did not
+match), so the run says which of those happened rather than reading as green.
+
+That is a deliberate change of posture. A skip is close enough to green to
+hide a suite that compared nothing, and it did: `tests/full_renders` skipped
+all six scenes for the whole life of its `cpu_eager` key, because the archive
+that key names was never published. A device with no baselines now fails until
+it has some — render them with the suite's `ALGAN_UPDATE_*` variable (which
+writes the tree and never reaches the comparison), look at them, and publish
+them.
+
+#### The one opt-out: `ALGAN_ALLOW_UNBASELINED_MACOS=1`
+
+macOS is the one platform where nothing is published and a machine cannot fix
+that by fetching — `macos_cpu` and `macos_mps` (and the `_mpsfriendly` variant
+of each) have no baselines anywhere. Setting `ALGAN_ALLOW_UNBASELINED_MACOS=1`
+on a Mac restores the old behaviour **for those four keys only**: all three
+render suites still render, so kernel compilation, tessellation, LaTeX, the
+fonts and the encoder are all still covered, and only the pixel comparison
+skips.
+
+Two limits keep it from becoming the hole it replaces. It covers no other
+device key, so the CPU and CUDA suites cannot go quiet through it; and it
+applies only when the cause is *"this device has no baselines"* — a Mac whose
+download failed, or whose cached archive missed its digest, still fails.
+
+**CI's two macOS arms set it** (`.github/workflows/test.yaml`, the job `env:`),
+which is the only reason they are not red on `tests/fast`: they have no
+baseline and no way to get one. What they still prove is that the pipeline
+runs on Apple Silicon, and the render each one produces is uploaded as the
+`fast-render-macos-latest-py3.10-<device>` artifact so the frames can be
+looked at.
+
+The better answer on a Mac is still to baseline it: render with the suite's
+`ALGAN_UPDATE_*` variable, look at the videos, and publish them. The keys
+exist because the pixels genuinely differ across instruction sets (measured:
+up to 45 channel values on the fast scene), not because Macs are unsupported.
+
+`ALGAN_NO_BASELINE_DOWNLOAD=1` forbids step 4 (offline, or a machine that must
+not fetch).
+
+### After a rebaseline
+
+The freshly rendered local MP4s are the inputs to the baseline archive. Heavy
+baselines are not committed to the repository; the manifest is. Finish a
+rebaseline by packaging and uploading those inputs, then committing the pointer:
+
+```bash
+<venv-python> scripts/package_baselines.py --tag baselines-YYYY-MM-DD
+gh release create baselines-YYYY-MM-DD dist/baselines/*.tar.gz --title ...
+git add tests/baselines.json  # the new tag and sha256s
+```
+
+Upload **before** pushing the pointer: a tag with no assets behind it makes
+downloads fail and comparisons report missing baselines. The tarballs are byte-reproducible
+(sorted members, normalized mtimes and modes, zeroed gzip header), so the
+pinned sha256 is a fact about the baselines rather than about the machine that
+packaged them, and anyone can re-derive it from an uploaded asset.
+
+`scripts/package_baselines.py --verify` re-packages any local hosted baseline
+directories into a temporary directory and reports whether they match the
+published pointer. A clean checkout has none, so it verifies that the pointer
+names a published release instead.
+`tests/unit_tests/test_baseline_store.py` runs it, so a rebaseline that is
+committed but never uploaded fails a test instead of going unnoticed until the
+mp4s leave the tree.
+
+The heavy MP4s are no longer committed, so a normal checkout reaches the cache
+or release download. `ALGAN_BASELINE_DIR` still supplies a local canonical copy,
+and a freshly rendered `expected_outputs_<key>/` directory still takes precedence
+until it is packaged and published. A null tag remains supported only as a
+bootstrap/test state.
+
+## The unit suite
+
+Organised by subsystem. The files worth knowing about (★ = in the fast suite):
+
+- ★ `test_timeline_*`, `test_active_timeline_materialization.py`, `test_lifecycle.py` —
+  the recording/replay engine: overlapping edits, replay windows, the state
+  query, spawn lifetimes.
+- ★ `test_mob_movement.py`, `test_mob_orientation.py`, `test_mob_layout.py`,
+  `test_parent_child_basis.py`, `test_scene_containment.py` — transforms,
+  layout, hierarchy, Scene ownership.
+- `test_scene_actor_registration.py` — the actor registration that decides
+  whether a *particular* composite's geometry reaches the renderer at all. One
+  test per composite that once got it wrong, so it stays out of the fast suite.
+- ★ `test_settings_api.py` — the `SETTINGS` root, its validation and the
+  experimental-switch gate. `test_environment.py` covers the environment — how
+  `ALGAN_` variables parse, and the rule that the package reaches them only
+  through `algan/environment.py`'s accessors, which is what keeps its registry
+  of declared names honest — and is an audit, so it is not in the fast suite.
+- ★ `test_ux_regressions.py`, `test_easings.py` — the authoring surface
+  users touch most. `test_materials.py`, `test_fragment_shaders.py` and
+  `test_indication_animations.py` are per-feature and stay out.
+- `test_memory_model.py`, `test_render_batch_sizing.py`, `test_manual_memory.py` —
+  batch sizing and the arena. Cheap, and they guard a component that silently
+  degrades rather than failing — but they only move when their own module does,
+  and the fast suite's render exercises the real path.
+- `test_raytracing_unit.py` — brute-force references for the tracer. Expensive.
+- `test_render_truncations.py` — the instrument on the render path's four fixed
+  ceilings: what each reports, that a ceiling warns once per render rather than
+  once per batch, and two scenes built to exceed one. A feature test — it breaks
+  when the instrument does — so it stays out of the fast suite.
+- `test_render_coverage_audit.py` — keeps the render suite honest (above).
+- `test_fast_suite_curation.py` — keeps the `fast` markers and the membership
+  table above in step, so the suite cannot grow without someone saying why.
+- `test_doc_examples.py` — keeps `docs/` honest against `algan/` (below).
+
+### The documentation examples
+
+`test_doc_examples.py` extracts every Python block in `docs/source` and checks it
+in three tiers, because the blocks do not all support the same checking:
+
+| Tier | Covers | Catches | Runs |
+| --- | --- | --- | --- |
+| `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | with the suite, ~1 s |
+| `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | with the suite, ~35 s |
+| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | opt in with `ALGAN_RUN_DOC_RENDERS=1` |
+
+None of the three is in the fast suite. They are an audit of `docs/` against
+`algan/`: they fail when public API is renamed or removed, which is a thing you
+find out about before pushing rather than on every save.
+
+Most documented code is a *fragment* — a few lines operating on an undefined
+`mob` — which can never be a runnable scene without inventing scaffolding around
+it. That is why tier 1 exists and why it only flags **capitalized** free names:
+classes and constants are what get renamed, and lowercase names are the reader's
+own variables.
+
+A block that is deliberately not runnable opts out with an reStructuredText
+comment on the line above it, which never reaches the rendered page:
+
+```rst
+.. algan-doc-check: skip -- needs an asset that does not ship with the docs
+
+.. code-block:: python
+```
+
+Use it for anti-examples showing what raises, Manim-side snippets in a migration
+comparison, and examples needing assets or system packages the repository does
+not carry. For a block broken by a bug that is already being worked on, add it to
+`KNOWN_BROKEN` in that module with a reason instead, so it is skipped loudly
+rather than quietly deleted.
+
+The render tier is gated on an environment variable, not merely left out of the
+fast suite, and the distinction matters: being outside `--fast` does nothing for
+CI, which names its paths explicitly instead of passing that flag (see the
+comment in `.github/workflows/test.yaml`). That gap is how this tier took a
+runner down once: before the texture-timeline fix it peaked at **14.7 GB** and
+was OOM-killed part way through.
+
+A historical warm-cache run rendered 77 examples in about **two minutes at
+2.3 GB**. That measurement made runtime, rather than the old memory cliff, the
+reason to keep the render gate opt-in — two minutes is more than
+the fast suite's whole allowance, and CI would pay it on every run. Worth
+revisiting if the render-time coverage is wanted in CI; measure a cold Taichi
+cache first, since the number above is from a warm one. Run it locally with:
+
+```bash
+ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders
+```
+
+### Recording a known defect
+
+Three bugs were once pinned here as strict `xfail`s — a parent `Group.move()`
+desynchronizing a compatibility Mob's backing Manim object, `Indicate`'s scale
+pulse writing a `scale_coefficient` row instead of a basis, and the point-cloud
+family having no `get_render_primitives` at all. All three are fixed, and the
+tests that recorded them now assert the working behaviour: see
+`test_a_parent_group_move_keeps_the_backing_mobject_in_step`,
+`test_indicate_grows_the_mob_in_the_middle`, and
+`test_point_cloud_mob_produces_render_primitives`. The point clouds have left
+the coverage audit's `EXEMPT` list and appear in `shapes_and_timeline`.
+
+Backend-specific expected failures remain in `tests/mps_known_failures.py`;
+inspect that manifest and the current run, rather than assuming none remain.
+To record a new defect
+rather than fix it, a strict `xfail` is still the way — it keeps the bug visible
+and fails the suite when it starts passing, which is what tells you to turn the
+test around and drop the marker. It is a built-in marker, so `--strict-markers`
+has nothing to say about it; only project-specific markers need the entry in
+`pyproject.toml`.
+
+## Retired suites
+
+The former `tests/test_files/` and `tests/run_test.py` harness has been removed.
+Use `tests/full_renders/`, `tests/path_traced/` and their baseline manifest rather
+than looking for or recreating the old per-concept scene layout.

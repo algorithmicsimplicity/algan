@@ -1,0 +1,365 @@
+name: Test
+
+on:
+  # master is where development happens; stable carries the latest released
+  # version. stable is listed so that the release PR -- master into stable --
+  # is gated: pull_request filters on the *base* branch, so leaving it out
+  # would skip CI at exactly the moment it matters most.
+  #
+  # 'developer/**' is kept while the old development branch still exists.
+  push:
+    branches: [master, stable]
+  pull_request:
+    branches: [master, stable]
+  # Lets a run be started by hand from the Actions tab. Only takes effect once
+  # this file is on the default branch: GitHub reads workflow_dispatch from
+  # there, not from the ref being dispatched.
+  workflow_dispatch:
+
+# Cancel in-progress runs when pushing a new commit on the PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # The device is in the name only where it distinguishes two arms, and that
+    # is not cosmetic: a job's name IS the check name, branch protection pins
+    # required checks BY name, and a renamed check does not report -- it goes
+    # missing, which reads as "still pending" and blocks every PR until someone
+    # edits the protection rule. Three of these arms existed before the MPS one
+    # and keep the names they had; only the new arm carries a suffix, so
+    # nothing that was required stops arriving.
+    name: ${{ matrix.os }} / Python ${{ matrix.python_version }}${{ matrix.render_device == 'mps' && ' / render=mps' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform or render device failing must not cancel the others. The
+      # matrix is the portability/release gate, so every arm should report.
+      fail-fast: false
+      # Keep the supported Python floor on both operating systems and the
+      # ceiling on Linux. macOS deliberately has two independent 3.10 arms:
+      # CPU preserves the portability check that existed before MPS support;
+      # MPS is the required Apple-GPU regression gate. Keeping the entries
+      # explicit makes the device visible in the PR check name and avoids an
+      # accidental Cartesian product when another device or Python is added.
+      #
+      # 3.10 is the floor because Quadrants publishes cp310-cp313 wheels and no
+      # cp39 -- it moved there from 3.9 when Quadrants became the kernel
+      # compiler. Testing the floor is not a formality: it is the version whose
+      # standard library is missing things a contributor's editor will happily
+      # offer, and Ruff guards only the annotations (`target-version = "py310"`
+      # plus a mandatory `from __future__ import annotations`). `zip(strict=)`
+      # is 3.10, `typing.Self` and `tomllib` are 3.11,
+      # `warnings.warn(skip_file_prefixes=)` and `tarfile`'s `filter="data"`
+      # are 3.12 -- the last two are declined BY NAME in `algan/errors.py` and
+      # `tests/baseline_store.py`, and nothing but this arm guards that the
+      # package still imports and runs there.
+      #
+      # 3.13 is the ceiling below `<3.14`, and it is not a formality either:
+      # pydub -- reached at import time through manim's scene_file_writer --
+      # imports `audioop`, which was REMOVED from the standard library in 3.13.
+      # What makes that work is `audioop-lts`, which uv.lock carries with a
+      # `python_full_version >= '3.13'` marker. This arm is what keeps a future
+      # lock update from quietly dropping it.
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python_version: "3.10"
+            render_device: auto
+          - os: ubuntu-latest
+            python_version: "3.13"
+            render_device: auto
+          - os: macos-latest
+            python_version: "3.10"
+            render_device: cpu
+          - os: macos-latest
+            python_version: "3.10"
+            render_device: mps
+
+    # The two macOS arms are intentionally explicit. The CPU arm keeps macOS
+    # portability coverage. The MPS arm is an ordinary required test arm: the
+    # hosted macOS runner is Apple Silicon and exposes a real Metal device, and
+    # the sanity step below fails before pytest if Algan does not actually
+    # resolve this request to MPS. Both use the normal locked dependency graph,
+    # including the published patched `algan-quadrants` wheel; no private
+    # compiler artifact is installed here.
+    env:
+      ALGAN_RENDER_DEVICE: ${{ matrix.render_device }}
+      # Nothing is committed or published for the `macos_cpu` / `macos_mps`
+      # baseline keys, and no Mac can fix that by fetching -- the x86-64
+      # baseline does not transfer (measured: off by up to 45 channel values
+      # against a tolerance of 2), and MPS-friendly mode is documented as not
+      # bit-identical in the first place. An absent baseline is a *failure*
+      # everywhere else on purpose (a skipped comparison reads as green while
+      # comparing nothing), so this is the one narrow opt-out that turns it
+      # back into a skip; `macos_opt_out_permits` in tests/baseline_store.py
+      # is where its narrowness is enforced -- it covers only those keys, and
+      # only the "this device is unbaselined" reason, so a failed download or
+      # a bad digest still fails on a Mac too. Both macOS arms therefore prove
+      # the pipeline works there -- kernel compilation, tessellation, LaTeX,
+      # the fonts, the encoder -- and the render they produce is uploaded as
+      # an artifact below so the frames can be eyeballed.
+      ALGAN_ALLOW_UNBASELINED_MACOS: ${{ startsWith(matrix.os, 'macos') && '1' || '0' }}
+      # A render that dies in a native assertion -- Metal's `MPSNDArray ...
+      # dimension length > INT_MAX`, a CUDA abort, a segfault in a kernel --
+      # takes the process down with SIGABRT and leaves nothing in the log but
+      # the C++ message. Several of these tests render in a SUBPROCESS and
+      # report `proc.stderr[-2000:]`, which is then just that one line: no
+      # Python frame, so nothing says which allocation asked for it. This makes
+      # every Python process the job starts dump its stack on the fatal
+      # signals, which is what turns such a crash back into something a log can
+      # be read for. pytest enables faulthandler for its own process; this is
+      # what reaches the children.
+      PYTHONFAULTHANDLER: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Install system dependencies for manimpango (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango1.0-dev pkg-config
+
+      # The macOS ManimPango wheel bundles its own Pango, but the Pango stack
+      # still resolves family names through fontconfig, and tests/conftest.py
+      # registers the vendored test faces through it before any scene renders.
+      # Installing the Homebrew stack gives that a system configuration to
+      # read, and mirrors what the Linux job installs.
+      - name: Install system dependencies for manimpango (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pango cairo pkg-config
+
+      - name: Install LaTeX dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-latex-base \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            latexmk # or full texlive-full if needed
+
+      # BasicTeX, not MacTeX: MacTeX is a multi-gigabyte download, and Algan
+      # needs only `latex`, `dvisvgm`, and the packages the default Tex
+      # template asks for. `standalone` and `preview` come from the
+      # documentclass line; `dvisvgm` is what turns the .dvi into the SVG the
+      # glyph circuits are built from, and -- unlike on Debian, where it
+      # arrives with texlive-latex-base -- scheme-basic does not carry it. Its
+      # absence is quiet and late: `latex` succeeds, `dvisvgm` raises
+      # FileNotFoundError, and every Tex, MathTex and NumericDisplay test
+      # fails several minutes into the run. The remaining two are named
+      # defensively, on the same reasoning.
+      #
+      # If `tlmgr` ever fails with "Local TeX Live is older than remote
+      # repository", the cask is lagging a TeX Live release -- point tlmgr at
+      # the matching historic repository (tug.org/historic/systems/texlive/
+      # <year>/tlnet-final) rather than waiting for Homebrew to catch up.
+      - name: Install LaTeX dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install \
+            standalone preview amsfonts xkeyval dvisvgm
+
+      # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
+      # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
+      # after this one; it fetched a static build by scraping an upstream readme
+      # for the version, that readme's format changed, and the action now fails
+      # with "AssertionError: Failed to read version from readme". Since apt has
+      # already installed ffmpeg by this point the step was redundant as well as
+      # broken, so it is gone rather than pinned.
+      #
+      # There is no macOS counterpart on purpose. moviepy encodes through the
+      # binary that `imageio-ffmpeg` ships -- a locked dependency, so `uv sync`
+      # has already put one on the machine -- and Algan only reaches for a
+      # system ffmpeg when hunting for an NVENC-capable build, which no Mac
+      # has. `brew install ffmpeg` is several minutes of dependency building
+      # for something nothing in the test run would call.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install uv
+        uses: ./.github/actions/install-uv
+
+      - name: Create venv
+        run: uv venv
+
+      # `--all-extras` matters here beyond LaTeX/Pango: `taichi` is an extra now
+      # that Quadrants is the default kernel compiler, and this is what puts the
+      # A/B control backend on the runner. The default backend itself needs
+      # nothing special -- `algan-quadrants` is a normal locked runtime
+      # dependency and uv selects its published platform wheel.
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      # A required MPS check must not be able to go green after silently running
+      # on CPU. Ask Algan's startup resolver -- the same source the renderer
+      # uses -- and separately verify that torch sees an MPS device. Printing
+      # the distribution version also leaves evidence that this ordinary gate
+      # used the locked published `algan-quadrants`, not a private wheel.
+      #
+      # It also reports the size this machine gives the render arena, because
+      # the hosted macOS pool is NOT one machine and this arm's worst failure
+      # to date turned on which one it drew: the same commit aborts on some
+      # runners and is clean on others (DESIGN_mps_support.md §4.7), and the
+      # arena is 0.16 of total RAM, so the machine decides whether it clears
+      # `_MPS_MAX_ARENA_BYTES`. Nothing else in the log says which machine this
+      # was -- step durations were tried as a proxy and do not separate them --
+      # so a failure that depends on it is indistinguishable from a flake
+      # without these four numbers.
+      - name: Require the MPS render device
+        if: matrix.render_device == 'mps'
+        run: |
+          uv run python - <<'PY'
+          from importlib import metadata
+
+          import psutil
+          import torch
+
+          from algan.settings import SETTINGS, _startup
+          from algan.taichi_compat import BACKEND
+          from algan.utils.memory_utils import (
+              _MPS_MAX_ARENA_BYTES,
+              get_num_available_bytes,
+          )
+
+          gib = 1 << 30
+          arena = int(
+              get_num_available_bytes(torch.device("mps"))
+              * SETTINGS.computing.rendering_memory_fraction
+          )
+          print("total RAM:", psutil.virtual_memory().total / gib, "GiB")
+          print("mps.recommended_max_memory:", torch.mps.recommended_max_memory() / gib)
+          print("render arena:", arena / gib, "GiB")
+          print("arena ceiling reached:", arena >= _MPS_MAX_ARENA_BYTES)
+
+          actual = _startup.render_device().type
+          available = torch.backends.mps.is_available()
+          print("algan-quadrants:", metadata.version("algan-quadrants"))
+          print("Algan kernel compiler:", BACKEND)
+          print("torch.backends.mps.is_available():", available)
+          print("Algan render device:", actual)
+          assert BACKEND == "quadrants", (
+              f"required MPS gate selected {BACKEND!r}, expected 'quadrants'"
+          )
+          assert available, "required MPS gate has no available MPS device"
+          assert actual == "mps", (
+              f"required MPS gate resolved {actual!r}, expected 'mps'"
+          )
+          PY
+
+      # Cheap environment report for all arms: accelerator choice, compiler,
+      # LaTeX and FFmpeg become explicit in the log before a later test failure.
+      - name: Report the environment Algan resolved
+        run: uv run algan check
+
+      # Keep the MPSGraph reclamation fix while CPU/CUDA retain the published
+      # minimums and uv.lock. The native arena owner avoids the separate large
+      # MTLHeap recycling defect; neither fix requires partitioning the suite.
+      - name: Install MPS PyTorch graph-cache fix
+        if: matrix.render_device == 'mps'
+        run: |
+          uv pip install --python .venv/bin/python \
+            "torch==2.13.0" "torchaudio==2.11.0"
+          .venv/bin/python - <<'PYTHON'
+          import torch
+          import torchaudio
+          from algan.rendering import mps_arena
+          assert torch.__version__.split("+", 1)[0] == "2.13.0"
+          assert torchaudio.__version__.split("+", 1)[0] == "2.11.0"
+          tensor = mps_arena.allocate(4096)
+          tensor.fill_(7)
+          assert tensor[:8].cpu().tolist() == [7] * 8
+          assert mps_arena.allocated_bytes() == 4096
+          del tensor
+          torch.mps.synchronize()
+          assert mps_arena.allocated_bytes() == 0
+          print("MPS CI: native-owned arena; torch", torch.__version__)
+          PYTHON
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+
+      # Scoped to the two suites whose baselines survive a change of machine.
+      # tests/full_renders is left out deliberately: measured on this runner
+      # against baselines rendered elsewhere, five of its six scenes differed by
+      # 29-204 channel values against a tolerance of 2, while tests/fast and
+      # shapes_and_timeline matched exactly. See tests/README.md.
+      #
+      # Named as paths rather than run with --fast on purpose, and the reason is
+      # stronger since the fast suite became opt-in: --fast now runs only the
+      # 191 hand-picked tests marked 'fast', while everything under these two
+      # paths is portable and passes here. CI can afford the whole thing; the
+      # fast suite is a development loop, not a CI scope.
+      #
+      # The render in tests/fast compares pixels on Linux and renders without
+      # comparing on macOS, because no baseline is committed for Apple Silicon
+      # and the x86-64 one does not transfer: copying it in and running it here
+      # missed by up to 45 channel values against a tolerance of 2. So what the
+      # Mac job proves about the renderer is that the pipeline works there --
+      # kernel compilation, tessellation, LaTeX, the fonts, the encoder -- not
+      # that the frames are right. That skip is what ALGAN_ALLOW_UNBASELINED_MACOS
+      # buys, in the job `env:` above; without it both macOS arms go red on the
+      # missing baseline. See tests/fast/test_fast_render.py.
+      #
+      # The MPS arm additionally xfails what the port has not finished:
+      # tests/mps_known_failures.py is the list, one entry per test with the
+      # defect it is waiting on, and tests/conftest.py applies it ONLY when the
+      # resolved render device is MPS. They are strict xfails, so the arm goes
+      # red on an XPASS -- a fix cannot leave a stale entry behind -- and the
+      # summary counts them on every run, which is what keeps a required check
+      # from quietly meaning less than it looks like it means.
+      # DESIGN_mps_support.md §4 is the scoreboard.
+      - name: Run tests
+        run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+
+      # What the fast render drew, and -- when the comparison failed -- the
+      # difference video the harness wrote beside it. A pixel failure reports
+      # one number ("differs by up to 45 channel values, worst at frame 36"),
+      # which says how far but not what moved: glyph edges, a silhouette and a
+      # tessellation flip all look the same in that sentence and want different
+      # fixes. Both are also worth having from a *green* macOS run, where the
+      # comparison skips for want of a baseline and the render itself is the
+      # only evidence the frames are sane -- hence `always()` rather than
+      # `failure()`.
+      #
+      # `output_errors/` exists only after a failed comparison, so
+      # `if-no-files-found: ignore` keeps a passing run quiet.
+      #
+      # The name carries platform, Python version AND render device because the
+      # CPU and MPS macOS arms otherwise collide; upload-artifact@v4 rejects
+      # duplicate artifact names within one workflow run.
+      - name: Upload the fast render and any difference video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-render-${{ matrix.os }}-py${{ matrix.python_version }}-${{ matrix.render_device }}
+          path: |
+            tests/fast/algan_outputs/
+            tests/fast/output_errors/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # One upload, from one job. Every job covers the same lines of the same
+      # source, so a second report adds nothing but a second chance for a
+      # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
+      #
+      # The Python version is pinned in this condition as well as the OS, and
+      # has to be: `runner.os == 'Linux'` alone was a single job when the
+      # matrix held one Python, and became two the moment the 3.13 leg was
+      # added.
+      - name: Upload coverage to Codecov
+        if: runner.os == 'Linux' && matrix.python_version == '3.10'
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: true
+          verbose: true
