@@ -1,10 +1,10 @@
 {
-  "_comment": "Run renderer-touching tests added/changed since the last green MPS master, then the failing target.",
-  "_request": "2026-09-25 narrowed post-green state contamination",
-  "command": "set +e; .venv/bin/python -m pytest -q -s -p no:cacheprovider tests/unit_tests/test_authoring_styles.py tests/unit_tests/test_bezier_geometry_cache.py tests/unit_tests/test_camera_views.py tests/unit_tests/test_render_batch_sizing.py tests/unit_tests/test_stroke_styles.py tests/unit_tests/test_texture_timeline_memory.py tests/unit_tests/test_traced_path.py tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; echo RESULT narrowed_rc=$rc; exit 0",
+  "_comment": "Diagnostic: print collection order around the late-suite MPS failure.",
+  "_request": "2026-09-25 collect late-suite order",
+  "command": "set +e; .venv/bin/python -m pytest --collect-only -q tests/unit_tests tests/fast > /tmp/collect.txt; rc=$?; echo COLLECTION_RC=$rc; nl -ba /tmp/collect.txt | sed -n '4200,4800p'; exit 0",
   "arms": ["mac-mps"],
   "env": {},
-  "latex": true,
+  "latex": false,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 90
+  "timeout_minutes": 20
 }
