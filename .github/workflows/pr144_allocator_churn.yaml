@@ -1,0 +1,43 @@
+name: PR144 allocator-only control
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_allocator_churn.yaml]
+permissions:
+  contents: read
+jobs:
+  allocator:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      PR144_EXIT_NATIVE_ERROR: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - name: Install PyTorch without the renderer
+        run: |
+          uv venv
+          uv pip install --python .venv/bin/python 'torch==2.13.0' 'psutil==7.0.0' 'numpy==2.2.6'
+      - name: Build the native command observer
+        run: |
+          sed -i '' 's/static void wait(/static void wait_observer(/;s/(IMP)wait)/(IMP)wait_observer)/' benchmarks/pr144_command_provenance.mm
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_command_provenance.mm -o "$RUNNER_TEMP/pr144_command_provenance.dylib"
+      - name: Replay bounded allocations with and without a full buffer write
+        run: |
+          mkdir -p evidence
+          status=0
+          .venv/bin/python -u benchmarks/pr144_allocator_churn.py allocate > evidence/allocate.log 2>&1 || status=1
+          .venv/bin/python -u benchmarks/pr144_allocator_churn.py fill > evidence/fill.log 2>&1 || status=1
+          tail -n 40 evidence/allocate.log
+          tail -n 40 evidence/fill.log
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-allocator-only
+          path: evidence/
+          retention-days: 7
