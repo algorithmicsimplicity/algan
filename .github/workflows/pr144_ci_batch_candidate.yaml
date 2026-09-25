@@ -76,15 +76,22 @@ jobs:
           assert all(batches.values())
           print('COMPLETE_PARTITION', len(all_items), {name:len(items) for name,items in batches.items()})
           PY
-      - name: Publish the clean candidate object for review, not the production branch
+      - name: Export validated test blobs without changing any workflow or production ref
         run: |
+          # GITHUB_TOKEN cannot publish workflow changes. Only export the
+          # ordinary test/docs blobs; the authorized connector will assemble
+          # those and the workflow into one commit directly on the PR parent.
+          cp .github/workflows/test.yaml "$RUNNER_TEMP/mps-test.yaml"
+          git restore --source=cd07b02a7dc2490d1dca0a16168687717d7c5415 .github/workflows/test.yaml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/test.yaml tests/conftest.py tests/unit_tests/test_nested_ior.py tests/unit_tests/test_ci_batches.py tests/README.md
-          git commit -m 'Isolate MPS CI workloads without dropping tests or masking failures'
+          git add tests/conftest.py tests/unit_tests/test_nested_ior.py tests/unit_tests/test_ci_batches.py tests/README.md
+          git commit -m 'Export validated MPS CI test and documentation blobs'
           test "$(git rev-parse HEAD^)" = cd07b02a7dc2490d1dca0a16168687717d7c5415
           git push origin HEAD:refs/heads/diagnostic/pr144-ci-batches-validated
-          echo "CANDIDATE_COMMIT=$(git rev-parse HEAD)" | tee "$RUNNER_TEMP/candidate.txt"
+          cp "$RUNNER_TEMP/mps-test.yaml" .github/workflows/test.yaml
+          echo "CANDIDATE_TEST_TREE=$(git rev-parse HEAD^{tree})" | tee "$RUNNER_TEMP/candidate.txt"
+          git diff --check
       - name: Run the actual sequential MPS CI step
         run: |
           .venv/bin/python - <<'PY'
