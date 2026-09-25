@@ -1,0 +1,39 @@
+name: PR144 uninstrumented allocator comparison
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_allocator_versions.yaml]
+permissions:
+  contents: read
+jobs:
+  allocation:
+    name: Plain allocator / Torch ${{ matrix.torch }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        torch: ['2.13.0', '2.14.0']
+    env:
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - name: Install the published allocator without Algan or Quadrants
+        run: |
+          uv venv
+          uv pip install --python .venv/bin/python 'torch==${{ matrix.torch }}' 'psutil==7.0.0'
+      - name: Recreate one bounded allocation at a time without diagnostic hooks
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python benchmarks/pr144_heap_churn_plain.py 2>&1 | tee algan_outputs/plain-allocator.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-plain-allocator-${{ matrix.torch }}
+          path: algan_outputs/
+          retention-days: 7
