@@ -1,9 +1,9 @@
 {
-  "_request": "pr144-sixty-program-resets",
-  "command": "uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0' && .venv/bin/python -u benchmarks/pr144_reset_probe.py",
+  "_request": "pr144-NR-plus-S-tail-shader-capture",
+  "command": "uv venv --python 3.10 .diag310 && UV_PROJECT_ENVIRONMENT=$PWD/.diag310 uv sync --locked --all-extras --dev && uv pip install --python .diag310/bin/python 'torch==2.13.0' 'torchaudio==2.11.0' && UV_NO_SYNC=1 PR144_START=test_n PR144_END=test_s PR144_TAIL=test_s PYTHONPATH=$PWD/benchmarks:$PWD .diag310/bin/python -m pytest -v -p pr144_prefix_probe --cov=algan -n 1 tests/unit_tests tests/fast",
   "arms": ["mac-mps"],
   "env": {"ALGAN_ALLOW_UNBASELINED_MACOS": "1", "PYTHONFAULTHANDLER": "1"},
-  "latex": false,
+  "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 20
+  "timeout_minutes": 75
 }
