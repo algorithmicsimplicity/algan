@@ -24,6 +24,7 @@ jobs:
       - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
       - name: Compare retained and scoped native temporaries
         run: |
+          sed -i '' '/^from __future__ import annotations$/d' benchmarks/pr144_pipeline_limit_taichi.py
           mkdir -p algan_outputs
           status=0
           .venv/bin/python benchmarks/pr144_pipeline_limit_taichi.py --count 16384 > algan_outputs/control.log 2>&1 || status=1
