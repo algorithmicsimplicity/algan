@@ -1,0 +1,116 @@
+name: PR144 production native arena validation
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_production_validation.yaml]
+permissions:
+  contents: write
+jobs:
+  production:
+    runs-on: macos-latest
+    timeout-minutes: 130
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: '1'
+      PYTHONFAULTHANDLER: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct exactly the locally validated production tree
+        run: |
+          cp .github/patches/pr144-production-{a,b}.patch "$RUNNER_TEMP/"
+          cp tests/unit_tests/test_mps_arena{,_build}.py "$RUNNER_TEMP/"
+          git fetch --depth=1 origin 9c987d608cfd9e8583b731d6f2b57031003c7f5a 312f8bed0309eb52d8a1983f1de80b67a984ce3a
+          git checkout --detach 9c987d608cfd9e8583b731d6f2b57031003c7f5a
+          git apply --check "$RUNNER_TEMP/pr144-production-a.patch" "$RUNNER_TEMP/pr144-production-b.patch"
+          git apply "$RUNNER_TEMP/pr144-production-a.patch" "$RUNNER_TEMP/pr144-production-b.patch"
+          cp "$RUNNER_TEMP"/test_mps_arena{,_build}.py tests/unit_tests/
+          git diff --check
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          expected = {
+            '.github/workflows/code_quality.yaml': '2a603483f280c77ad0c268b1fbe6f22aa9a3bf49',
+            '.github/workflows/release.yaml': '2d13943017014b5e810dbb11158a985e61f0f882',
+            '.github/workflows/test.yaml': '4125472ad2f1ecf73c27363844f8a25ab6d1f5ec',
+            'agent_guidance/memory_perf.md': '6d78015a2cc77688c346fd80f3beb3986d8e5fba',
+            'algan/rendering/_mps_arena_native.mm': '4dbc9bbba856d856c62b4cc84cc8f1ef40019261',
+            'algan/rendering/mps_arena.py': '8093e21ca561bc77efdb6258ba35e2732b35c2cf',
+            'algan/utils/memory_utils.py': 'e52b6d7a317400acb2b50ec696917b9791e11120',
+            'algan/utils/profiling_utils.py': 'fd29c4a5f57854c696bbc46aa125522d60b0df3e',
+            'docs/source/installation.rst': '32f931e00adf72082c59cf3b2bbafc340ec2e686',
+            'hatch_build.py': 'cb0424d883e24786b73900361e9874e23889f05d',
+            'pyproject.toml': '8a36d18841db619bd05bb395f94b931132acc655',
+            'scripts/gate/verify_mps_arena_wheel.py': '45e2f25894c4314088ba6eef769ed9235144c226',
+            'tests/README.md': 'b412f42fcd54234f170bad1cd71cf697b6387c6e',
+            'tests/unit_tests/test_mps_arena.py': '82003d90bc410aa6e41f780b4f7ccae9c3dcb325',
+            'tests/unit_tests/test_mps_arena_build.py': '452382715e976f7c375a85663077f0cf22acdb6d',
+            'tests/unit_tests/test_nested_ior.py': '223fbd2fe464896c42c440031f523ddb1960c0a5',
+          }
+          for path, sha in expected.items():
+              actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
+              assert actual == sha, (path, actual, sha)
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'manifest.json').write_text(json.dumps(expected, indent=2))
+          print('VERIFIED', len(expected), 'production files match the locally tested bytes')
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo '/Library/TeX/texbin' >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - name: Build the native editable install and retain the CI dependency override
+        run: |
+          uv venv
+          uv sync --locked --all-extras --dev
+          uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0' 'hatchling==1.32.0'
+          echo 'UV_NO_SYNC=1' >> "$GITHUB_ENV"
+      - name: Validate native lifetime, accounting, bounded churn and build policy
+        run: |
+          mkdir -p algan_outputs
+          .venv/bin/python -m ruff check hatch_build.py algan/rendering/mps_arena.py scripts/gate/verify_mps_arena_wheel.py tests/unit_tests/test_mps_arena.py tests/unit_tests/test_mps_arena_build.py algan/utils/memory_utils.py algan/utils/profiling_utils.py tests/unit_tests/test_nested_ior.py
+          .venv/bin/python -m pytest -q tests/unit_tests/test_mps_arena.py tests/unit_tests/test_mps_arena_build.py tests/unit_tests/test_manual_memory.py tests/unit_tests/test_mps_zero_copy.py tests/unit_tests/test_nested_ior.py --junitxml=algan_outputs/focused.xml
+      - name: Verify the distributable native wheel, not an editable binary
+        run: |
+          uv build
+          .venv/bin/python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
+          .venv/bin/python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
+          uv pip install --python .venv/bin/python --no-deps --reinstall dist/*.whl
+          cp tests/unit_tests/test_mps_arena.py "$RUNNER_TEMP/test_mps_arena.py"
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'
+      - name: Export verified blobs without publishing workflow changes through Actions
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          manifest = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'manifest.json').read_text())
+          env = dict(os.environ, GIT_INDEX_FILE=os.path.join(os.environ['RUNNER_TEMP'], 'export.index'))
+          base = '312f8bed0309eb52d8a1983f1de80b67a984ce3a'
+          subprocess.run(['git', 'read-tree', base], env=env, check=True)
+          for i, (path, expected) in enumerate(manifest.items()):
+              sha = subprocess.check_output(['git', 'hash-object', '-w', path], text=True).strip()
+              assert sha == expected, path
+              subprocess.run(['git', 'update-index', '--add', '--cacheinfo', f'100644,{sha},.pr144-objects/file-{i:02}'], env=env, check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], env=env, text=True).strip()
+          subprocess.run(['git', 'config', 'user.name', 'Algan validation'], check=True)
+          subprocess.run(['git', 'config', 'user.email', 'algan-validation@users.noreply.github.com'], check=True)
+          commit = subprocess.check_output(['git', 'commit-tree', tree, '-p', base, '-m', 'Export validated native arena file objects for connector publication'], text=True).strip()
+          subprocess.run(['git', 'push', 'origin', commit + ':refs/heads/diagnostic/pr144-production-objects'], check=True)
+          print('PRODUCTION_OBJECTS_COMMIT', commit)
+          PY
+      - name: Full portable MPS suite in one worker, no partitioning or retries
+        run: |
+          .venv/bin/python -m pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1 --junitxml=algan_outputs/full.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-production-validation
+          path: |
+            algan_outputs/
+            tests/fast/algan_outputs/
+            coverage.xml
+          retention-days: 7
