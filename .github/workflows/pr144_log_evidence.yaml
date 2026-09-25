@@ -1,0 +1,46 @@
+name: PR144 log evidence
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_log_evidence.yaml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download completed job logs without truncating the diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p evidence
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request, urllib.error
+          root = pathlib.Path('evidence')
+          base = 'https://api.github.com/repos/algorithmicsimplicity/algan'
+          for name, job in [('original',107916799713),('full-telemetry',107974393924),('batches',107983222807)]:
+              url = f'{base}/actions/jobs/{job}/logs'
+              request = urllib.request.Request(url, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json'})
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      data = response.read()
+                  (root / (name+'.log')).write_bytes(data)
+                  print(name, len(data), 'bytes')
+                  text = data.decode('utf-8', errors='replace')
+                  lines = text.splitlines()
+                  selected = set()
+                  for i, line in enumerate(lines):
+                      if any(s in line for s in ('DIAG_RESOURCES','Compilation failed','FAILED tests/','Fatal Python error','failed,','passed,','RLIMIT','DIAG_ENV')):
+                          selected.update(range(max(0,i-3),min(len(lines),i+5)))
+                  (root / (name+'-summary.txt')).write_text('\n'.join(lines[i] for i in sorted(selected)))
+              except urllib.error.HTTPError as error:
+                  (root / (name+'-unavailable.txt')).write_text(str(error))
+                  print(name, 'logs unavailable', error.code)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr144-job-log-evidence
+          path: evidence/
+          retention-days: 7
