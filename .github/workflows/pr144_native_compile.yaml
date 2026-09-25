@@ -1,0 +1,50 @@
+name: PR144 native compiler ownership
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_native_compile.yaml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: run-on-mac-mac-mps
+          run-id: 36100817491
+          github-token: ${{ github.token }}
+          path: captured
+      - name: Compile the native-only bounded probe
+        run: |
+          # Distinct function names keep the second arm from merely reusing the
+          # first arm's source/entry-point compiler cache key.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('benchmarks/pr144_native_compile.mm')
+          text = path.read_text()
+          text = text.replace('"pr144_main_" + std::to_string(i)', 'std::string(scoped ? "pr144_pooled_" : "pr144_control_") + std::to_string(i)')
+          path.write_text(text)
+          PY
+          xcrun clang++ -std=c++17 -O1 -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_native_compile.mm -o "$RUNNER_TEMP/native-compile"
+      - name: Repeated real shader compilation and tiny-pipeline sentinel
+        run: |
+          mkdir -p evidence
+          shader=$(find captured -name 'pt_shade_arena_c142_0_1_t01.metal' -print -quit)
+          test -n "$shader"
+          shasum -a 256 "$shader" | tee evidence/shader.txt
+          status=0
+          "$RUNNER_TEMP/native-compile" "$shader" control 16 > evidence/control.log 2>&1 || status=1
+          "$RUNNER_TEMP/native-compile" "$shader" pooled 16 > evidence/pooled.log 2>&1 || status=1
+          cat evidence/control.log
+          cat evidence/pooled.log
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-native-compiler-ownership
+          path: evidence/
+          retention-days: 7
