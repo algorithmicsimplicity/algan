@@ -6,6 +6,38 @@ as a placeholder for `.venv/bin/python` on Linux/macOS or
 See [../AGENTS.md](../AGENTS.md). Avoid bare `uv run` when using a locally built
 compiler wheel, because synchronization can replace it.
 
+## MPS CI process isolation
+
+The required MPS job uses Torch 2.13.0 with TorchAudio 2.11.0, without changing
+Algan's published dependency minimums or the lockfile used by CPU CI. It runs
+all of `tests/unit_tests tests/fast` in three **sequential fresh interpreters**:
+
+```bash
+<venv-python> -m coverage erase
+<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=early --cov=algan --cov-append --cov-report=xml -n 1
+<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=middle --cov=algan --cov-append --cov-report=xml -n 1
+<venv-python> -m pytest tests/unit_tests tests/fast --ci-batch=late --cov=algan --cov-append --cov-report=xml -n 1
+```
+
+`early` contains unit-test modules sorting before `test_n`, `middle` contains
+those from `test_n` up to (but not including) `test_s`, and `late` contains the
+remaining modules and the fast render. Partitioning uses the module path, not
+a test's name or parameter ID. New modules automatically belong to one batch;
+parametrizations and module-scoped fixtures stay together. Omitting `--ci-batch`
+retains normal unpartitioned collection, including on CPU CI.
+
+This contains the end-of-suite Metal pipeline failures seen only after a broad
+execution history in one worker. It is **not** a claim that the underlying
+native compiler/driver defect has been identified or fixed. It uses neither
+CPU fallback nor additional skips/xfails, and does not fork an initialized
+Metal process. CI attempts every batch, fails if **any** invocation fails
+(including collection errors or native worker crashes), and appends coverage
+across them. It never retries failed tests until they pass. Run all three
+batches to reproduce the complete gate; one batch alone is only a subset.
+
+Tests that allocate `ti.ndarray` before their first kernel call must explicitly
+initialize the runtime rather than depend on an earlier module's render.
+
 ## The fast suite — run this one
 
 ```bash

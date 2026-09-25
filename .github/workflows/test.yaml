@@ -327,7 +327,28 @@ jobs:
       # from quietly meaning less than it looks like it means.
       # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests
+        if: matrix.render_device != 'mps'
         run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+
+      # PyTorch's graph-cache fix does not bound the complete native Metal
+      # state of a process that runs thousands of different GPU workloads.
+      # Keep the required check name and every test, but retire the process
+      # between disjoint module batches. Never fork a process with live Metal
+      # state, and never retry a failed test to turn the check green.
+      # --cov-append preserves coverage across batches. A failed early batch
+      # must still fail the job even when the remaining batches pass.
+      - name: Run MPS tests in isolated batches
+        if: matrix.render_device == 'mps'
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m coverage erase
+          status=0
+          for batch in early middle late; do
+            .venv/bin/python -m pytest tests/unit_tests tests/fast \
+              --ci-batch="$batch" --cov=algan --cov-append --cov-report=xml -n 1 \
+              || status=1
+          done
+          exit "$status"
 
       # What the fast render drew, and -- when the comparison failed -- the
       # difference video the harness wrote beside it. A pixel failure reports
