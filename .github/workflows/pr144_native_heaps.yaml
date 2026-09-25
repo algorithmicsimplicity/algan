@@ -1,0 +1,32 @@
+name: PR144 native Metal heap comparison
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_native_heaps.yaml]
+permissions:
+  contents: read
+jobs:
+  heaps:
+    name: Native heap / ${{ matrix.mode }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [automatic, placement, automatic-no-purge]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone native allocator and readback test
+        run: |
+          xcrun clang++ -std=c++17 -O1 -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_native_heap.mm -o "$RUNNER_TEMP/native-heap"
+      - name: Exercise only native heap and blit commands
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          "$RUNNER_TEMP/native-heap" '${{ matrix.mode }}' 2>&1 | tee evidence/native-heap.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-native-heap-${{ matrix.mode }}
+          path: evidence/
+          retention-days: 7
