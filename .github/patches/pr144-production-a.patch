@@ -1,0 +1,481 @@
+diff --git a/.github/workflows/code_quality.yaml b/.github/workflows/code_quality.yaml
+index 943f573..2a60348 100644
+--- a/.github/workflows/code_quality.yaml
++++ b/.github/workflows/code_quality.yaml
+@@ -138,3 +138,40 @@ jobs:
+         run: |
+           cd "$(mktemp -d)"
+           /tmp/wheel-env/bin/python -I /tmp/wheel-env/bin/algan check
++
++  macos_packaging:
++    name: Native macOS wheel builds and imports
++    runs-on: macos-latest
++    needs: [lock_file]
++    env:
++      ALGAN_RENDER_DEVICE: mps
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.10"
++      - uses: ./.github/actions/install-uv
++      - run: brew install pango cairo pkg-config
++      # Build through the sdist too: it must carry the hook and native source.
++      - run: uv build
++      - run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
++      - run: python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
++      - name: Test the installed wheel outside the source checkout
++        run: |
++          uv venv "$RUNNER_TEMP/wheel-env"
++          uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
++          cp tests/unit_tests/test_mps_arena.py "$RUNNER_TEMP/test_mps_arena.py"
++          cd "$RUNNER_TEMP"
++          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
++          "$RUNNER_TEMP/wheel-env/bin/python" -I -m pytest -q test_mps_arena.py
++      # The same abi3 binary must load on the supported ceiling, not just the
++      # Python used to compile it. Do not rebuild it under the second Python.
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.13"
++      - name: Reuse the identical wheel on Python 3.13
++        run: |
++          uv venv --python 3.13 "$RUNNER_TEMP/wheel-env313"
++          uv pip install --python "$RUNNER_TEMP/wheel-env313/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
++          cd "$RUNNER_TEMP"
++          "$RUNNER_TEMP/wheel-env313/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'
+diff --git a/.github/workflows/release.yaml b/.github/workflows/release.yaml
+index 4b78444..2d13943 100644
+--- a/.github/workflows/release.yaml
++++ b/.github/workflows/release.yaml
+@@ -183,6 +183,28 @@ jobs:
+           path: dist/*
+           if-no-files-found: error
+ 
++  build_macos:
++    name: Build native macOS wheel
++    needs: gate
++    if: ${{ !inputs.docs_only }}
++    runs-on: macos-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.10"
++      - uses: ./.github/actions/install-uv
++      - run: uv build --wheel --out-dir dist
++      - run: uvx twine check dist/*
++      - run: python scripts/gate/verify_license_notices.py dist/*.whl
++      - name: Require the universal2 stable-ABI owner in the wheel
++        run: python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
++      - uses: actions/upload-artifact@v4
++        with:
++          name: distributions-macos
++          path: dist/*
++          if-no-files-found: error
++
+   # --------------------------------------------------------------------------
+   # 3. Build the docs, examples and all.
+   # --------------------------------------------------------------------------
+@@ -252,7 +274,7 @@ jobs:
+   # --------------------------------------------------------------------------
+   promote:
+     name: Promote to stable and tag
+-    needs: [gate, build, docs]
++    needs: [gate, build, build_macos, docs]
+     if: ${{ !inputs.dry_run && !inputs.docs_only }}
+     runs-on: ubuntu-latest
+     permissions:
+@@ -338,7 +360,7 @@ jobs:
+   # --------------------------------------------------------------------------
+   github_release:
+     name: GitHub release
+-    needs: [gate, build, promote]
++    needs: [gate, build, build_macos, promote]
+     if: ${{ !inputs.dry_run && !inputs.docs_only }}
+     runs-on: ubuntu-latest
+     permissions:
+@@ -346,7 +368,8 @@ jobs:
+     steps:
+       - uses: actions/download-artifact@v4
+         with:
+-          name: distributions
++          pattern: distributions*
++          merge-multiple: true
+           path: dist
+ 
+       # No baseline tarballs here on purpose. The heavy render baselines live
+@@ -382,7 +405,7 @@ jobs:
+   # --------------------------------------------------------------------------
+   pypi:
+     name: Publish to PyPI
+-    needs: [gate, build, promote, publish_docs, github_release]
++    needs: [gate, build, build_macos, promote, publish_docs, github_release]
+     if: ${{ !inputs.dry_run && !inputs.docs_only }}
+     runs-on: ubuntu-latest
+     environment:
+@@ -393,7 +416,8 @@ jobs:
+     steps:
+       - uses: actions/download-artifact@v4
+         with:
+-          name: distributions
++          pattern: distributions*
++          merge-multiple: true
+           path: dist
+ 
+       # Trusted Publishing, same as quadrants_build.yaml's publish job. No
+diff --git a/.github/workflows/test.yaml b/.github/workflows/test.yaml
+index c80f6c7..4125472 100644
+--- a/.github/workflows/test.yaml
++++ b/.github/workflows/test.yaml
+@@ -262,6 +262,31 @@ jobs:
+       - name: Report the environment Algan resolved
+         run: uv run algan check
+ 
++      # Keep the MPSGraph reclamation fix while CPU/CUDA retain the published
++      # minimums and uv.lock. The native arena owner avoids the separate large
++      # MTLHeap recycling defect; neither fix requires partitioning the suite.
++      - name: Install MPS PyTorch graph-cache fix
++        if: matrix.render_device == 'mps'
++        run: |
++          uv pip install --python .venv/bin/python \
++            "torch==2.13.0" "torchaudio==2.11.0"
++          .venv/bin/python - <<'PYTHON'
++          import torch
++          import torchaudio
++          from algan.rendering import mps_arena
++          assert torch.__version__.split("+", 1)[0] == "2.13.0"
++          assert torchaudio.__version__.split("+", 1)[0] == "2.11.0"
++          tensor = mps_arena.allocate(4096)
++          tensor.fill_(7)
++          assert tensor[:8].cpu().tolist() == [7] * 8
++          assert mps_arena.allocated_bytes() == 4096
++          del tensor
++          torch.mps.synchronize()
++          assert mps_arena.allocated_bytes() == 0
++          print("MPS CI: native-owned arena; torch", torch.__version__)
++          PYTHON
++          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
++
+       # Scoped to the two suites whose baselines survive a change of machine.
+       # tests/full_renders is left out deliberately: measured on this runner
+       # against baselines rendered elsewhere, five of its six scenes differed by
+diff --git a/agent_guidance/memory_perf.md b/agent_guidance/memory_perf.md
+index ad0257e..6d78015 100644
+--- a/agent_guidance/memory_perf.md
++++ b/agent_guidance/memory_perf.md
+@@ -15,6 +15,28 @@ check those when changing geometry or ray-state storage. What always applies:
+ - test one-frame and multi-frame windows;
+ - test retry behavior rather than relying on host OOM exceptions.
+ 
++## Native-owned MPS arenas
++
++`rendering/mps_arena.py` routes only managed, nonempty Metal arenas to
++`_mps_arena_native`. The extension is built by `hatch_build.py` on macOS and
++shipped in platform wheels; it never imports Torch's C++ ABI or compiles at
++render time. Do not replace its `MTLDevice.newBufferWithLength` call with an
++`MTLHeap` allocation: heap cycling alone reproduces the hosted GPU hang.
++
++The DLPack capsule transfers its deleter to **Torch storage**. Every typed view
++and `_algan_storage` held by the zero-copy importer is an owner. Never add a
++`ManualMemory.__del__` that frees the buffer, attach ownership only to a tensor
++object, or keep a global strong registry of live tensors. Metal's ordinary
++retained-reference command buffers protect already-encoded work; the existing
++zero-copy wrapper still owns queue fencing. No new per-kernel fence is needed.
++
++Torch's live counter excludes external DLPack storage. Arena sizing and live
++allocation reporting add `mps_arena.allocated_bytes()`; the driver counter must
++not add it again. The counter does not initialize Metal, and follows the final
++storage owner rather than render teardown. Preserve the byte-addressing clamp,
++alignment, pointer scopes, OOM propagation, and the ordinary allocation path
++for other devices and unmanaged/empty arenas.
++
+ ## Batch sizing fits a model to observed arena peaks
+ 
+ `rendering/memory_model.py` fits `peak(n) = a + b*n` to the arena's own high-water mark over rendered chunks, and sizes the next chunk from it. New allocations made **through the arena** contribute to that measurement.
+diff --git a/algan/rendering/_mps_arena_native.mm b/algan/rendering/_mps_arena_native.mm
+new file mode 100644
+index 0000000..4dbc9bb
+--- /dev/null
++++ b/algan/rendering/_mps_arena_native.mm
+@@ -0,0 +1,151 @@
++// Native ownership for the render arena; no PyTorch or Quadrants C++ ABI.
++#define Py_LIMITED_API 0x030A0000
++#define PY_SSIZE_T_CLEAN
++#include <Python.h>
++#import <Foundation/Foundation.h>
++#import <Metal/Metal.h>
++
++#include <atomic>
++#include <cstdint>
++#include <new>
++
++namespace {
++// The stable, legacy DLManagedTensor ABI (DLPack 0.x). Use the legacy capsule
++// for compatibility with the supported Torch releases. For kDLMetal, data is
++// an opaque id<MTLBuffer>, NOT contents() or gpuAddress. Layout reference:
++// https://dmlc.github.io/dlpack/latest/c_api.html
++struct DLDevice { int32_t device_type; int32_t device_id; };
++struct DLDataType { uint8_t code; uint8_t bits; uint16_t lanes; };
++struct DLTensor {
++  void *data;
++  DLDevice device;
++  int32_t ndim;
++  DLDataType dtype;
++  int64_t *shape;
++  int64_t *strides;
++  uint64_t byte_offset;
++};
++struct DLManagedTensor {
++  DLTensor dl_tensor;
++  void *manager_ctx;
++  void (*deleter)(DLManagedTensor *);
++};
++constexpr int32_t kDLMetal = 8;
++constexpr uint64_t kMaxArenaBytes = (1ULL << 31) - (1ULL << 20);
++std::atomic<uint64_t> live_bytes{0};
++
++struct Owner {
++  DLManagedTensor tensor{};
++  id<MTLBuffer> buffer = nil;
++  int64_t shape = 0;
++  int64_t stride = 1;
++  uint64_t bytes = 0;
++};
++
++void destroy(DLManagedTensor *managed) noexcept {
++  if (!managed) return;
++  auto *owner = static_cast<Owner *>(managed->manager_ctx);
++  // Torch calls this when the last STORAGE owner dies, not when the original
++  // tensor or ManualMemory dies. The callback uses no Python or Torch APIs,
++  // so it is safe off the GIL and during interpreter shutdown. Already-encoded
++  // work retains its Metal resources through the ordinary retained-reference
++  // command buffers; there is no allocator reuse or new synchronization here.
++  @autoreleasepool { [owner->buffer release]; }
++  live_bytes.fetch_sub(owner->bytes, std::memory_order_relaxed);
++  delete owner;
++}
++
++void capsule_destroy(PyObject *capsule) {
++  // A consumed capsule is renamed used_dltensor by Torch. Its storage deleter
++  // now owns the release; releasing it here as well would double-free it.
++  if (PyCapsule_IsValid(capsule, "dltensor")) {
++    destroy(static_cast<DLManagedTensor *>(PyCapsule_GetPointer(capsule, "dltensor")));
++  }
++}
++
++PyObject *allocate(PyObject *, PyObject *size_object) {
++  if (PyBool_Check(size_object)) {
++    PyErr_SetString(PyExc_TypeError, "MPS arena size must be an integer byte count, not bool");
++    return nullptr;
++  }
++  PyObject *index = PyNumber_Index(size_object);
++  if (!index) return nullptr;
++  long long size = PyLong_AsLongLong(index);
++  Py_DECREF(index);
++  if (size == -1 && PyErr_Occurred()) return nullptr;
++  if (size <= 0 || static_cast<uint64_t>(size) > kMaxArenaBytes) {
++    PyErr_SetString(PyExc_ValueError, "MPS arena size must be positive and below the MPS addressing limit");
++    return nullptr;
++  }
++  @autoreleasepool {
++    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
++    if (!device) {
++      PyErr_SetString(PyExc_RuntimeError, "No Metal device is available for the MPS arena");
++      return nullptr;
++    }
++    // Algan's MPS path targets Apple's unified-memory device, as does Torch.
++    // Refuse discrete-memory devices: this owner deliberately creates shared
++    // storage and is supported on the unified-memory Apple GPU only.
++    if (![device hasUnifiedMemory]) {
++      [device release];
++      PyErr_SetString(PyExc_RuntimeError, "Native MPS arenas require a unified-memory Apple GPU");
++      return nullptr;
++    }
++    if (static_cast<uint64_t>(size) > [device maxBufferLength]) {
++      [device release];
++      PyErr_SetString(PyExc_ValueError, "MPS arena exceeds Metal maxBufferLength");
++      return nullptr;
++    }
++    // Deliberately NOT newHeap / newBuffer on an MTLHeap. Repeated large heap
++    // allocations on the hosted paravirtual GPU reproduce a native GPU hang
++    // without Algan or Quadrants. A standalone tracked buffer avoids that path.
++    id<MTLBuffer> buffer = [device newBufferWithLength:static_cast<NSUInteger>(size)
++        options:MTLResourceStorageModeShared | MTLResourceHazardTrackingModeTracked];
++    [device release];
++    if (!buffer) {
++      // memory_utils.is_cuda_oom recognizes this alongside Torch's OOMs.
++      PyErr_SetString(PyExc_RuntimeError, "MPS backend out of memory allocating a standalone render arena");
++      return nullptr;
++    }
++    auto *owner = new (std::nothrow) Owner{};
++    if (!owner) {
++      [buffer release];
++      return PyErr_NoMemory();
++    }
++    owner->buffer = buffer;
++    owner->shape = size;
++    owner->bytes = [buffer length];
++    owner->tensor.dl_tensor = {
++        static_cast<void *>(buffer), {kDLMetal, 0}, 1, {1, 8, 1},
++        &owner->shape, &owner->stride, 0};
++    owner->tensor.manager_ctx = owner;
++    owner->tensor.deleter = destroy;
++    live_bytes.fetch_add(owner->bytes, std::memory_order_relaxed);
++    PyObject *capsule = PyCapsule_New(&owner->tensor, "dltensor", capsule_destroy);
++    if (!capsule) destroy(&owner->tensor);
++    return capsule;
++  }
++}
++
++PyObject *allocated_bytes(PyObject *, PyObject *) {
++  return PyLong_FromUnsignedLongLong(live_bytes.load(std::memory_order_relaxed));
++}
++
++PyMethodDef methods[] = {
++    {"allocate", allocate, METH_O, "Return one owning DLPack capsule over a standalone Metal byte buffer."},
++    {"allocated_bytes", allocated_bytes, METH_NOARGS, "Bytes retained by live external tensor storage and unconsumed capsules."},
++    {nullptr, nullptr, 0, nullptr}};
++PyModuleDef module = {
++    PyModuleDef_HEAD_INIT, "_mps_arena_native",
++    "Standalone Metal render-arena ownership (CPython stable ABI).",
++    -1, methods, nullptr, nullptr, nullptr, nullptr};
++}  // namespace
++
++PyMODINIT_FUNC PyInit__mps_arena_native() {
++  PyObject *result = PyModule_Create(&module);
++  if (result && PyModule_AddIntConstant(result, "MAX_ARENA_BYTES", kMaxArenaBytes) < 0) {
++    Py_DECREF(result);
++    return nullptr;
++  }
++  return result;
++}
+diff --git a/algan/rendering/mps_arena.py b/algan/rendering/mps_arena.py
+new file mode 100644
+index 0000000..8093e21
+--- /dev/null
++++ b/algan/rendering/mps_arena.py
+@@ -0,0 +1,74 @@
++"""Standalone Metal storage for managed render arenas.
++
++Only managed, nonempty MPS arenas use this allocator. Ordinary tensors, dry-run
++arenas and other devices retain Torch's allocator. The native DLPack owner lives
++until the final storage view (including a Quadrants import) is released. No
++Python finalizer, global tensor registry, CPU staging, or runtime compiler is
++involved. The existing zero-copy launch wrapper still owns queue ordering.
++
++Torch's live-allocation counter excludes externally owned DLPack storage. Read
++``allocated_bytes`` alongside it for arena sizing; do NOT add it to the driver
++counter, which already includes the native Metal resources.
++"""
++
++from __future__ import annotations
++
++import importlib
++import operator
++import sys
++
++import torch
++
++MAX_ARENA_BYTES = (1 << 31) - (1 << 20)
++_NATIVE = None
++
++
++def _native():
++    global _NATIVE
++    if _NATIVE is None:
++        if sys.platform != "darwin":
++            raise RuntimeError("Standalone MPS arenas are available only on macOS")
++        try:
++            _NATIVE = importlib.import_module("algan.rendering._mps_arena_native")
++        except ImportError as error:
++            raise RuntimeError(
++                "Algan's native MPS arena extension is missing or cannot be loaded. "
++                "Install the macOS Algan wheel, or install Apple's Command Line "
++                "Tools (xcode-select --install) and rebuild the source installation "
++                "with python -m pip install --no-cache-dir --force-reinstall --no-deps . "
++                "The unsafe heap allocator is not used as a fallback."
++            ) from error
++    return _NATIVE
++
++
++def allocated_bytes() -> int:
++    """Return live external storage bytes without initializing Metal."""
++    return 0 if _NATIVE is None else int(_NATIVE.allocated_bytes())
++
++
++def allocate(num_bytes: int) -> torch.Tensor:
++    """Allocate a contiguous uint8 MPS tensor with native storage ownership."""
++    if isinstance(num_bytes, bool):
++        raise TypeError("MPS arena size must be an integer byte count, not bool")
++    num_bytes = operator.index(num_bytes)
++    if not 0 < num_bytes <= MAX_ARENA_BYTES:
++        raise ValueError(
++            "MPS arena size must be positive and below the addressing limit"
++        )
++    native = _native()
++    # The new buffer has no producer work to synchronize. Consumption transfers
++    # responsibility for its deleter to Torch's storage, not to this function.
++    capsule = native.allocate(num_bytes)
++    try:
++        return torch.from_dlpack(capsule)
++    except (RuntimeError, BufferError) as error:
++        # Older Torch releases do not understand kDLMetal. Do not silently
++        # return to the heap path that this allocator exists to avoid. Leave
++        # unrelated conversion errors intact (including genuine OOM errors).
++        if "device" in str(error).lower() and "support" in str(error).lower():
++            raise RuntimeError(
++                "This PyTorch build cannot import Metal DLPack storage. "
++                "Use PyTorch 2.13 or newer for MPS rendering; Algan's CPU/CUDA "
++                "dependency minimums are unchanged."
++            ) from error
++        raise
+diff --git a/algan/utils/memory_utils.py b/algan/utils/memory_utils.py
+index f2f51aa..e52b6d7 100644
+--- a/algan/utils/memory_utils.py
++++ b/algan/utils/memory_utils.py
+@@ -188,7 +188,11 @@ def get_num_available_bytes(device=torch.device("cuda")):
+         clear_import_cache()
+         torch.mps.empty_cache()
+ 
+-        allocated_bytes = torch.mps.current_allocated_memory()
++        from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
++
++        # DLPack-owned standalone arenas are absent from Torch's live counter.
++        # Their final storage view owns the charge, including surviving imports.
++        allocated_bytes = torch.mps.current_allocated_memory() + external_mps_bytes()
+         total_bytes = torch.mps.recommended_max_memory()
+         total_bytes = max(0, total_bytes - int(total_bytes * _MPS_HEADROOM))
+         free_bytes = max(0, total_bytes - allocated_bytes)
+@@ -1161,7 +1165,14 @@ class ManualMemory:
+         # that pins a larger arena (``available_memory_override``, a benchmark
+         # fixture) would otherwise abort the process rather than get an error.
+         num_bytes = _addressable_arena_bytes(device, num_bytes)
+-        self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
++        if managed and num_bytes > 0 and torch.device(device).type == "mps":
++            from algan.rendering.mps_arena import allocate
++
++            if torch.device(device).index not in (None, 0):
++                raise ValueError("MPS arenas support only device mps:0")
++            self.data = allocate(num_bytes)
++        else:
++            self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
+         self.length = len(self.data)
+         self.current_reverse_pointer = self.length
+ 
+diff --git a/algan/utils/profiling_utils.py b/algan/utils/profiling_utils.py
+index 3e7d437..fd29c4a 100644
+--- a/algan/utils/profiling_utils.py
++++ b/algan/utils/profiling_utils.py
+@@ -1319,7 +1319,11 @@ def run_once(
+         # right after the render (allocated) and what the driver has mapped
+         # for it (reserved). Both used to print as 0 MB on every Metal run.
+         with suppress(Exception):
+-            peak_alloc = torch.mps.current_allocated_memory() / 2**20
++            from algan.rendering.mps_arena import allocated_bytes as external_mps_bytes
++
++            peak_alloc = (
++                torch.mps.current_allocated_memory() + external_mps_bytes()
++            ) / 2**20
+             peak_reserved = torch.mps.driver_allocated_memory() / 2**20
+     return {
+         "total": total,
