@@ -6,10 +6,34 @@ on:
 permissions:
   contents: read
 jobs:
+  cancel_obsolete_probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: write
+    steps:
+      - name: Stop only the superseded Color-incompatible diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, urllib.request, urllib.error
+          request = urllib.request.Request('https://api.github.com/repos/algorithmicsimplicity/algan/actions/runs/36122611353/cancel', data=b'', method='POST', headers={'Authorization': 'Bearer '+os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print('Superseded probe cancellation:', response.status)
+          except urllib.error.HTTPError as error:
+              if error.code != 409:
+                  raise
+              print('Superseded probe is already complete')
+          PY
   trace:
     name: GPU command provenance / ${{ matrix.history }}
     runs-on: macos-latest
     timeout-minutes: 120
+    concurrency:
+      group: pr144-command-provenance-${{ matrix.history }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
