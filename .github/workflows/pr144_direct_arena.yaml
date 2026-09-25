@@ -1,0 +1,98 @@
+name: PR144 direct Metal arena candidate
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_direct_arena.yaml]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: macos-latest
+    timeout-minutes: 130
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve the bridge outside the original production checkout
+        run: |
+          cp benchmarks/pr144_direct_tensor.mm "$RUNNER_TEMP/"
+          cp benchmarks/pr144_direct_tensor_probe.py "$RUNNER_TEMP/"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Compile a native-owned DLPack bridge without depending on Torch's C++ ABI
+        run: |
+          include=$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("include"))')
+          xcrun clang++ -std=c++17 -O2 -dynamiclib -undefined dynamic_lookup -fno-objc-arc -I"$include" -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_direct_tensor.mm" -o "$RUNNER_TEMP/pr144_direct_tensor.dylib"
+      - name: Require correct views, ownership, reclamation and 768 allocator cycles
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python "$RUNNER_TEMP/pr144_direct_tensor_probe.py" 2>&1 | tee algan_outputs/direct-tensor-probe.log
+      - name: Substitute only the arena allocation and its memory accounting
+        run: |
+          cat > "$RUNNER_TEMP/pr144_direct_arena.py" <<'PY'
+          import ctypes
+          import os
+          from pathlib import Path
+          import torch
+          library = ctypes.PyDLL(str(Path(os.environ['RUNNER_TEMP']) / 'pr144_direct_tensor.dylib'))
+          library.pr144_direct_allocate.argtypes = [ctypes.c_uint64]
+          library.pr144_direct_allocate.restype = ctypes.py_object
+          library.pr144_direct_live_bytes.argtypes = []
+          library.pr144_direct_live_bytes.restype = ctypes.c_uint64
+          def allocate(size):
+              return torch.from_dlpack(library.pr144_direct_allocate(size))
+          def allocated_bytes():
+              return library.pr144_direct_live_bytes()
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('algan/utils/memory_utils.py')
+          text = path.read_text()
+          old = '        self.data = torch.empty(num_bytes, device=device, dtype=torch.uint8)'
+          assert text.count(old) == 1
+          text = text.replace(old, '        if managed and torch.device(device).type == "mps" and num_bytes > 0:\n            from pr144_direct_arena import allocate\n            self.data = allocate(num_bytes)\n        else:\n            self.data = torch.empty(num_bytes, device=device, dtype=torch.uint8)')
+          old = '        allocated_bytes = torch.mps.current_allocated_memory()'
+          assert text.count(old) == 1
+          text = text.replace(old, '        from pr144_direct_arena import allocated_bytes as external_allocated_bytes\n        allocated_bytes = torch.mps.current_allocated_memory() + external_allocated_bytes()')
+          compile(text, str(path), 'exec')
+          path.write_text(text)
+          PY
+          git diff --check
+          git diff --stat
+      - name: Require real updater, arena compaction and baseline-render coverage
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests/test_updater_mob_creation.py tests/unit_tests/test_wavefront_compaction.py tests/fast -x -v --junitxml=algan_outputs/focused.xml 2>&1 | tee algan_outputs/focused.log
+      - name: Complete original portable suite in one process, without batching or retries
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1 -v --junitxml=algan_outputs/results.xml 2>&1 | tee algan_outputs/single-process.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-direct-arena-candidate
+          path: |
+            algan_outputs/
+            tests/fast/algan_outputs/
+            coverage.xml
+          retention-days: 7
