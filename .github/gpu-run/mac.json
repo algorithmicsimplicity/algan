@@ -1,9 +1,12 @@
 {
-  "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
-  "arms": ["mac-mps"],
+  "_comment": "Diagnostic: renderer-heavy subset in one process with per-file process RSS and MPS counters; updater target runs last.",
+  "_request": "2026-09-25 MPS render subset RSS telemetry",
+  "command": "set +e; uv run pytest -q -s -p mps_diag_plugin -p no:cacheprovider tests/unit_tests/test_area_light_soft_shadow.py tests/unit_tests/test_authoring_styles.py tests/unit_tests/test_batch_preparation_devices.py tests/unit_tests/test_batched_stills.py tests/unit_tests/test_bezier_geometry_cache.py tests/unit_tests/test_camera_views.py tests/unit_tests/test_closed_shell_opacity.py tests/unit_tests/test_deterministic_shadow_opacity.py tests/unit_tests/test_mesh_identity.py tests/unit_tests/test_path_tracer.py tests/unit_tests/test_pn_mesh.py tests/unit_tests/test_point_cloud_rendering.py tests/unit_tests/test_preflight_overlap.py tests/unit_tests/test_premultiplied_over.py tests/unit_tests/test_render_batch_sizing.py tests/unit_tests/test_render_output_pipeline.py tests/unit_tests/test_render_truncations.py tests/unit_tests/test_stroke_styles.py tests/unit_tests/test_texture_timeline_memory.py tests/unit_tests/test_traced_path.py tests/unit_tests/test_ux_regressions.py tests/fast/test_fast_render.py tests/unit_tests/test_updater_mob_creation.py::test_numeric_display_counts_inside_an_updater; rc=$?; echo RESULT render_subset=$rc; exit 0",
+  "arms": [
+    "mac-mps"
+  ],
   "env": {},
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 55
 }
