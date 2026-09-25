@@ -64,9 +64,9 @@ jobs:
           from pathlib import Path
           path = Path('algan/utils/memory_utils.py')
           text = path.read_text()
-          old = '        self.data = torch.empty(num_bytes, device=device, dtype=torch.uint8)'
+          old = '        self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)'
           assert text.count(old) == 1
-          text = text.replace(old, '        if managed and torch.device(device).type == "mps" and num_bytes > 0:\n            from pr144_direct_arena import allocate\n            self.data = allocate(num_bytes)\n        else:\n            self.data = torch.empty(num_bytes, device=device, dtype=torch.uint8)')
+          text = text.replace(old, '        if managed and torch.device(device).type == "mps" and num_bytes > 0:\n            from pr144_direct_arena import allocate\n            self.data = allocate(num_bytes)\n        else:\n            self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)')
           old = '        allocated_bytes = torch.mps.current_allocated_memory()'
           assert text.count(old) == 1
           text = text.replace(old, '        from pr144_direct_arena import allocated_bytes as external_allocated_bytes\n        allocated_bytes = torch.mps.current_allocated_memory() + external_allocated_bytes()')
