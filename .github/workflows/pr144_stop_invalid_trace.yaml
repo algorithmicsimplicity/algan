@@ -1,0 +1,32 @@
+name: PR144 retire invalid diagnostic
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_stop_invalid_trace.yaml]
+permissions:
+  actions: write
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Cancel the known-invalid experiment and preserve all valid runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          run = 36125038739
+          base = f'https://api.github.com/repos/algorithmicsimplicity/algan/actions/runs/{run}'
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'}
+          with urllib.request.urlopen(urllib.request.Request(base, headers=headers), timeout=30) as response:
+              value = json.load(response)
+          assert value['head_branch'] == 'diagnostic/pr144-metal-pipeline'
+          assert value['head_sha'] == '0ccf15bf3b745e3e927a1258551cb0481f4755aa'
+          if value['status'] != 'completed':
+              request = urllib.request.Request(base + '/cancel', headers=headers, data=b'', method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print('Cancelled invalid diagnostic', run, response.status)
+          else:
+              print('Already completed', run, value['conclusion'])
+          PY
