@@ -1,0 +1,49 @@
+name: PR144 shared-event sequence investigation
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_queue_sequence.yaml]
+permissions:
+  contents: read
+jobs:
+  sequence:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_AUTO_DAEMON: "0"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve the bounded probe and compile the error observer
+        run: |
+          cp benchmarks/pr144_command_trace.mm "$RUNNER_TEMP/"
+          cp benchmarks/pr144_queue_sequence_taichi.py "$RUNNER_TEMP/"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'pr144_command_trace.mm'
+          text = path.read_text().replace('  old_commit(self, selector);', '  [(id<MTLCommandBuffer>)self addCompletedHandler:^(id<MTLCommandBuffer> buffer) { report(buffer, buffer.error); }];\n  old_commit(self, selector);')
+          path.write_text(text)
+          PY
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal "$RUNNER_TEMP/pr144_command_trace.mm" -o "$RUNNER_TEMP/pr144_command_trace.dylib"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Exercise 131072 shared-event submissions with fixed eight-element storage
+        run: |
+          mkdir -p algan_outputs
+          set -o pipefail
+          .venv/bin/python "$RUNNER_TEMP/pr144_queue_sequence_taichi.py" 2>&1 | tee algan_outputs/queue-sequence.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-queue-sequence
+          path: algan_outputs/
+          retention-days: 7
