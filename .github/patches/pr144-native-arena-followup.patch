@@ -1,0 +1,35 @@
+diff --git a/.github/workflows/code_quality.yaml b/.github/workflows/code_quality.yaml
+index 0dfd9d9..e9d8764 100644
+--- a/.github/workflows/code_quality.yaml
++++ b/.github/workflows/code_quality.yaml
+@@ -148,6 +148,8 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: "3.10"
++      - name: Install system dependencies for the installed-wheel smoke test
++        run: brew install pango cairo pkg-config
+       - uses: ./.github/actions/install-uv
+       - name: Build the source distribution and native wheel
+         run: uv build
+ diff --git a/.github/workflows/release.yaml b/.github/workflows/release.yaml
+index dde6a7d..4779fbb 100644
+--- a/.github/workflows/release.yaml
++++ b/.github/workflows/release.yaml
+@@ -9,7 +9,7 @@ name: Release
+ # moved, a docs deploy re-run, and a GitHub release edited. Everything that can
+ # fail should fail before the one step that cannot be taken back.
+ #
+-# `dry_run` (the default) runs the three read-only jobs -- gate, build, docs --
++# `dry_run` (the default) runs the read-only jobs -- gate, both builds, docs --
+ # and stops before anything is pushed. Use it to rehearse a release; the wheel
+ # and the built HTML land as artifacts you can inspect.
+ #
+@@ -193,6 +193,8 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: "3.10"
++      - name: Install system dependencies for the installed-wheel smoke test
++        run: brew install pango cairo pkg-config
+       - uses: ./.github/actions/install-uv
+       - name: Build the stable-ABI universal2 wheel
+         run: uv build --wheel --out-dir dist
