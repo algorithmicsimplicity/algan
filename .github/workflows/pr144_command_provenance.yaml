@@ -27,6 +27,7 @@ jobs:
           sed -i '' 's/static void wait(/static void wait_observer(/;s/(IMP)wait)/(IMP)wait_observer)/' benchmarks/pr144_command_provenance.mm
           xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_command_provenance.mm -o "$RUNNER_TEMP/pr144_command_provenance.dylib"
           cp benchmarks/pr144_command_provenance.py "$RUNNER_TEMP/"
+          git restore benchmarks/pr144_command_provenance.mm
           git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
           git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
       - uses: actions/setup-python@v5
