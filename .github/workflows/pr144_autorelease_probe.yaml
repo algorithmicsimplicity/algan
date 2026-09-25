@@ -1,0 +1,53 @@
+name: PR144 native lifetime investigation
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_autorelease_probe.yaml]
+permissions:
+  contents: read
+jobs:
+  single_process:
+    runs-on: macos-latest
+    timeout-minutes: 130
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use only the immutable failing production code and the probe
+        run: |
+          cp benchmarks/pr144_autorelease_probe.py "$RUNNER_TEMP/pr144_autorelease_probe.py"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - name: Match the failing MPS dependencies
+        run: |
+          uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+      - name: Full suite in one worker with no batching or retries
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          .venv/bin/python -m pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1 -v -p pr144_autorelease_probe --junitxml=algan_outputs/results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-native-lifetime-full
+          path: |
+            algan_outputs/
+            tests/unit_tests/pytest.log
+            tests/fast/pytest.log
+            tests/fast/algan_outputs/
+          retention-days: 7
