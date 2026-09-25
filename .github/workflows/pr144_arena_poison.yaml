@@ -16,7 +16,7 @@ jobs:
       PR144_HISTORY: updaters
     steps:
       - uses: actions/checkout@v4
-      - name: Build native error observer
+      - name: Build native error observer without Torch dispatch interception
         run: |
           xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_command_trace.mm -o "$RUNNER_TEMP/pr144_command_trace.dylib"
           cp benchmarks/pr144_command_probe.py "$RUNNER_TEMP/"
