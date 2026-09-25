@@ -1,0 +1,54 @@
+name: PR144 updater arena initialization
+on:
+  push:
+    branches: [diagnostic/pr144-metal-pipeline]
+    paths: [.github/workflows/pr144_arena_poison.yaml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      ALGAN_RENDER_DEVICE: mps
+      ALGAN_ALLOW_UNBASELINED_MACOS: "1"
+      PYTHONFAULTHANDLER: "1"
+      PR144_HISTORY: updaters
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native error observer
+        run: |
+          xcrun clang++ -std=c++17 -O1 -dynamiclib -fno-objc-arc -framework Foundation -framework Metal benchmarks/pr144_command_trace.mm -o "$RUNNER_TEMP/pr144_command_trace.dylib"
+          cp benchmarks/pr144_command_probe.py "$RUNNER_TEMP/"
+          git fetch --depth=1 origin cd07b02a7dc2490d1dca0a16168687717d7c5415
+          git checkout --detach cd07b02a7dc2490d1dca0a16168687717d7c5415
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: brew install pango cairo pkg-config
+      - name: Install LaTeX
+        run: |
+          brew install --cask basictex
+          echo "/Library/TeX/texbin" >> "$GITHUB_PATH"
+          sudo /Library/TeX/texbin/tlmgr update --self
+          sudo /Library/TeX/texbin/tlmgr install standalone preview amsfonts xkeyval dvisvgm
+      - uses: ./.github/actions/install-uv
+      - run: uv venv && uv sync --locked --all-extras --dev
+      - run: uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+      - name: Compare default and poisoned arena reads without weakening assertions
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          mkdir -p algan_outputs
+          status=0
+          for poison in -1 255 0; do
+            ALGAN_ARENA_POISON=$poison .venv/bin/python -m pytest tests/unit_tests/test_updater_mob_creation.py -k 'numeric_display_counts or set_value_leaves' -n 1 -x -v -s -p pr144_command_probe > "algan_outputs/poison-${poison}.log" 2>&1 || status=1
+            tail -n 30 "algan_outputs/poison-${poison}.log"
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr144-updater-arena-poison
+          path: algan_outputs/
+          retention-days: 7
