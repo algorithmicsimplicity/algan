@@ -78,7 +78,6 @@ from algan.rendering.mps_compat import (
     mps_friendly,
     reduction_index_dtype,
     taichi_accumulate_dtype,
-    taichi_reduction_index_dtype,
 )
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
@@ -1476,6 +1475,11 @@ def _sibling_weights(sheet_band, cov, msk, band_area, band_union, band_corr):
 def _lane_first_owners(band_id, msk_o, t_o, nb, n):
     """``sheet_sample_depth``'s per-sample nearest-owner table.
 
+    ``band_id`` gives each sorted fragment's row in the table, and ``nb`` the
+    table's row count. The compaction tabulates triangle sheets only, so its
+    other fragments carry row -1 and are skipped (see
+    :func:`_triangle_sheet_rows`).
+
     Returns ``[nb, AA_NUM_SAMPLES]`` float32: for each sheet and sub-pixel
     sample lane, the exact depth of the sheet's earliest fragment owning THAT
     lane (the stream is depth-ascending within a group, so the first owner in
@@ -1534,22 +1538,50 @@ def _lane_first_owners(band_id, msk_o, t_o, nb, n):
     sample_depths = torch.full(
         (nb, AA_NUM_SAMPLES), float("inf"), dtype=torch.float32, device=device
     )
+    # Skipped fragments scatter into one spare row past the table's end.
+    target = torch.where(band_id >= 0, band_id, torch.full_like(band_id, nb)).to(
+        torch.int64
+    )
     for lane in range(AA_NUM_SAMPLES):
         owns = ((msk_o >> lane) & 1) != 0
         masked = torch.where(owns, positions, big)
         del owns
-        first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        first_sorted = torch.full((nb + 1,), n, dtype=idx_dtype, device=device)
         first_sorted.scatter_reduce_(
-            0, band_id, masked, reduce="amin", include_self=True
+            0, target, masked, reduce="amin", include_self=True
         )
-        first_sorted = first_sorted.to(torch.int64)
+        first_sorted = first_sorted[:nb].to(torch.int64)
         del masked
         has = first_sorted < n
         d_lane = t_o.index_select(0, first_sorted.clamp_max(max(n - 1, 0)))
         sample_depths[:, lane] = torch.where(has, d_lane, inf)
         del first_sorted, has, d_lane
-    del big, positions, inf
+    del big, positions, inf, target
     return sample_depths
+
+
+def _triangle_sheet_rows(band_id, tri_o, nb, bound):
+    """Rows of the sample-depth table: triangle sheets only.
+
+    Returns ``(row, rows)``: ``row`` is ``[nb]`` int32, each triangle sheet's
+    dense row (in sheet order) and -1 for every other sheet; ``rows`` is the
+    table height, ``min(nb, bound)``. ``tri_o`` flags each sorted fragment,
+    ``band_id`` its sheet. Only triangle sheets can be a depth-gate enforcer
+    or subject, and a sheet never mixes the two kinds (every bezier fragment
+    is its own group), so this is every row the gate reads -- while a stream
+    of circuit strokes, one sheet per fragment, tabulates nothing. ``bound``
+    is a host-side upper bound on the triangle sheets (the emission's
+    triangle fragment count), so sizing the table costs no readback; without
+    one the table keeps its old height, one row per sheet.
+    """
+    device = band_id.device
+    tri_sheet = torch.zeros(nb, dtype=torch.int32, device=device)
+    # Every fragment of a sheet has the sheet's kind, so racing writes agree.
+    tri_sheet.scatter_(0, band_id, tri_o.to(torch.int32))
+    row = torch.cumsum(tri_sheet, 0, dtype=torch.int32) - 1
+    row = torch.where(tri_sheet != 0, row, torch.full_like(row, -1))
+    rows = nb if bound is None else min(nb, int(bound))
+    return row, rows
 
 
 def _sample_depth_lose_reference(
@@ -1668,6 +1700,7 @@ def compact_sheets(
     sample_depth=False,
     memory=None,
     persist_output=False,
+    resolve_only=False,
 ):
     """Compact one emission's fragment stream into its sheet stream.
 
@@ -1734,6 +1767,15 @@ def compact_sheets(
     the lane's own, so a thin margin is the reading least entitled to decide. The lose bits ride bits 20..27 of BOTH
     mask words (record and weights). Off, no bit is set anywhere and the output
     is byte-identical to before.
+
+    ``resolve_only`` returns just what the resolve consumes -- ``sheet_key``,
+    ``sheet_ref``, ``sheet_ab``, ``sheet_wgt``, ``sheet_wmsk``, ``sheet_cap``,
+    ``sheet_offsets`` and the counts -- and releases every other per-sheet
+    array as soon as it has been read, instead of carrying the record fields
+    below (``sheet_pix``, ``sheet_cov``, ``sheet_msk``, ``sheet_nfrag``,
+    ``sheet_fused``) to the return. The compaction is the frame's memory peak,
+    and on a stream of strokes -- one sheet per fragment -- each of those is a
+    full fragment-length array. Values are identical either way.
 
     Returns a dict of per-sheet arrays, ordered by ``(pixel, classic order of
     the sheet's nearest fragment)`` so a walk over them front-to-back matches
@@ -1999,6 +2041,7 @@ def compact_sheets(
     # per fragment and was right). Donors (empty masks) carry rank 0 and
     # ride with their sheet's owners. Integer throughout: deterministic.
     rank = _conflict_rank(band_start, order, frag_msk, positions)
+    del band_start
     # The rank rides in four bits of the sheet key, so a pixel resolves at most
     # SHEET_RANK_LIMIT + 1 overlapping layers of ONE surface. Past that the
     # clamp fuses the surplus into the last sub-band, where they attenuate once
@@ -2289,14 +2332,19 @@ def compact_sheets(
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_reduce,
         )
+        from algan.taichi_compat import ti
 
-        # The five reduction outputs take ``reduction_index_dtype`` -- int64
-        # here, int32 in MPS-friendly mode, where Taichi's int64 atomics abort
-        # on Metal -- and widen straight back, so everything downstream sees
-        # the same int64 positions either way. ``.to`` is the identity when the
-        # dtype already matches, so the default path allocates and copies
-        # exactly what it did.
-        idx_dtype = reduction_index_dtype()
+        # The five reduction outputs are stream positions and a count, all
+        # below ``n``, which the fused kernels already bound under 2**31. They
+        # stay int32 on every backend -- MPS-friendly mode always narrowed them,
+        # since Taichi's int64 atomics abort on Metal -- rather than widening
+        # to int64: this is the compaction's peak, and on a stroke-heavy frame
+        # (one sheet per fragment) each table is a full fragment-length array.
+        # Every reader indexes with them (``index_select`` takes int32) or
+        # compares them; the walk-order sort and the fused-record gather are
+        # handed int64 copies. The sorted positions are not read in this arm.
+        positions = None
+        idx_dtype = torch.int32
         first_sorted = torch.full((nb,), n, dtype=idx_dtype, device=device)
         min_pos = torch.full((nb,), n, dtype=idx_dtype, device=device)
         first_sorted_p = torch.full((nb,), n, dtype=idx_dtype, device=device)
@@ -2317,24 +2365,20 @@ def compact_sheets(
             cmax,
             nfrag,
             bool(positioned_depth),
-            taichi_reduction_index_dtype(),
+            ti.i32,
         )
-        first_sorted = first_sorted.to(torch.int64)
-        min_pos = min_pos.to(torch.int64)
-        first_sorted_p = first_sorted_p.to(torch.int64)
-        min_pos_p = min_pos_p.to(torch.int64)
-        nfrag = nfrag.to(torch.int64)
         nearest_orig = pos_o.index_select(0, first_sorted)
         sheet_pix = pix_o.index_select(0, first_sorted)
         if positioned_depth:
             has_pos = first_sorted_p < n
+            # Each ``where`` writes over an input that dies with it, so the
+            # fallback costs no table beyond the gather.
+            positioned = pos_o.index_select(0, first_sorted_p.clamp_max_(max(n - 1, 0)))
             nearest_orig = torch.where(
-                has_pos,
-                pos_o.index_select(0, first_sorted_p.clamp_max(max(n - 1, 0))),
-                nearest_orig,
+                has_pos, positioned, nearest_orig, out=positioned
             )
-            min_pos = torch.where(has_pos, min_pos_p, min_pos)
-            del first_sorted_p, min_pos_p, has_pos
+            min_pos = torch.where(has_pos, min_pos_p, min_pos, out=min_pos_p)
+            del first_sorted_p, min_pos_p, has_pos, positioned
         else:
             del first_sorted_p, min_pos_p
     else:
@@ -2395,15 +2439,29 @@ def compact_sheets(
             min_pos = torch.where(has_pos, min_pos_p, min_pos)
             del min_pos_p, has_pos
         del pos_src, positions_src
+    # The sorted stream's pixels were read for the sheets' own, just above.
+    del pix_o
 
     # ---- sheet_sample_depth: per-sample nearest-owner depths ---------------
     # ``d(sheet, s)``: the exact f32 depth of the sheet's nearest fragment
     # owning sample bit s. See ``_lane_first_owners``, which computes the
     # table (one masked amin scatter per lane in torch, one kernel pass under
     # ``sheet_sample_depth_kernel``).
-    sample_depths = None
-    if sample_depth:
-        sample_depths = _lane_first_owners(band_id, msk_o, t_o, nb, n)
+    sample_depths = depth_row = None
+    if sample_depth and tri_present:
+        # Triangle sheets alone: the gate below never reads another sheet's
+        # row, and a stream without triangles cannot set a lose bit at all.
+        # On a frame of 5,400 overlapping strokes this table was 273 MB (plus
+        # its reordered copy) of rows nothing read.
+        depth_row, depth_rows = _triangle_sheet_rows(
+            band_id,
+            is_tri.index_select(0, order),
+            nb,
+            coverage.get("num_tri_fragments"),
+        )
+        sample_depths = _lane_first_owners(
+            depth_row.index_select(0, band_id), msk_o, t_o, depth_rows, n
+        )
     del t_o
     del positions, msk_o
 
@@ -2414,9 +2472,10 @@ def compact_sheets(
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_rep_orig,
         )
+        from algan.taichi_compat import ti
 
-        idx_dtype = reduction_index_dtype()
-        rep_orig = torch.full((nb,), n, dtype=idx_dtype, device=device)
+        # int32 like the tables above, for the same reason.
+        rep_orig = torch.full((nb,), n, dtype=torch.int32, device=device)
         band_stats_rep_orig(
             kernel_index(band_id.contiguous()),
             pos_o,
@@ -2424,9 +2483,8 @@ def compact_sheets(
             cmax,
             n,
             rep_orig,
-            taichi_reduction_index_dtype(),
+            ti.i32,
         )
-        rep_orig = rep_orig.to(torch.int64)
         del cmax, cov_o
     else:
         idx_dtype = reduction_index_dtype()
@@ -2482,7 +2540,8 @@ def compact_sheets(
     # ---- Final order: (pixel, classic order of nearest fragment) -----------
     # Band IDs (and their class/rank subdivisions) retain pixel order. Only
     # the sheets within a pixel need restoring to nearest-fragment order.
-    final = _sheet_walk_order(sheet_pix, min_pos)
+    final = _sheet_walk_order(sheet_pix, min_pos.to(torch.int64))
+    del min_pos
 
     # §4.4's additive sibling compositing, expressed in the weights the walk
     # consumes (see ``_sibling_weights``). Where a band holds one sheet --
@@ -2495,14 +2554,14 @@ def compact_sheets(
         final_records, sheet_band_final = gather_sheet_records(
             final,
             nearest_orig,
-            rep_orig,
+            rep_orig.to(torch.int64),
             frag_key,
             frag_ref,
             frag_ab,
             frag_cap,
             sheet_cov,
             sheet_msk,
-            nfrag,
+            nfrag.to(torch.int64),
             fused,
             sheet_band,
             memory=memory if persist_output else None,
@@ -2521,8 +2580,15 @@ def compact_sheets(
         sheet_key = gather_packed_key(gather_packed_key(frag_key, nearest_orig), final)
         sheet_pix = sheet_pix.index_select(0, final)
         rep_final = rep_orig.index_select(0, final)
+    # Everything read in sheet order has now been gathered into walk order;
+    # the sheet-order copies go before the walk-order work below piles up.
+    has_sheet_band = sheet_band is not None
+    del nearest_orig, rep_orig, sheet_cov, sheet_msk, sheet_band
+    if resolve_only and not fused_stream:
+        # Only the record fields read these two, and they are not wanted.
+        del nfrag, fused
     sheet_wgt, sheet_wmsk = sheet_cov_final, sheet_msk_final
-    if sheet_band is not None:
+    if has_sheet_band:
         sheet_wgt, sheet_wmsk = _sibling_weights(
             sheet_band_final,
             sheet_cov_final,
@@ -2531,13 +2597,14 @@ def compact_sheets(
             band_union,
             band_corr,
         )
+    del band_area, band_union, band_corr
 
     # ---- sheet_sample_depth: classify, floor, cede --------------------------
     # Everything here works on the FINAL-ordered per-sheet arrays; the lose
     # words land in both mask outputs so the resolve (which consumes the
     # weights) and every record reader see the same thing. Off, none of this
     # runs and the outputs above are exactly what they were.
-    if sample_depth:
+    if sample_depths is not None:
         ppf = int(width) * int(height)
         rep_ref = (
             final_records["sheet_ref"]
@@ -2550,9 +2617,9 @@ def compact_sheets(
         full_s = low == AA_MASK_ALL
         mat_opaque_s = (sheet_msk_final & AA_MAT_OPAQUE_BIT) != 0
         nonareal_s = positioned_s & ((sheet_msk_final & AA_SLIVER_BIT) == 0)
-        # The depth table was built in sheet order; everything below works in
-        # the final (walk) order.
-        sample_depths = sample_depths.index_select(0, final)
+        # The depth table's rows were assigned in sheet order; everything
+        # below works in the final (walk) order, so its row map follows.
+        depth_row = depth_row.index_select(0, final)
         # Band identity and the multi-sheet-band exemption: a band split into
         # siblings (shade-class split, conflict-rank split) claims against
         # band-pooled arithmetic whose single occlusion write ignores slots,
@@ -2564,7 +2631,7 @@ def compact_sheets(
         # every value present; ``cid_band`` is the dense parent id. So the
         # table height is a number the host already has -- it used to be an
         # ``amax`` readback here.
-        if sheet_band is not None:
+        if has_sheet_band:
             band_of_sheet = sheet_band_final
             n_bands = n_group
         else:
@@ -2597,13 +2664,16 @@ def compact_sheets(
         subject = is_tri_sheet & nonareal_s & only_band & positive_wgt
 
         if rt_settings.sheet_depth_reduce_kernel:
-            from algan.rendering.raytracing.sheet_depth_taichi import sheet_depth_lose
+            from algan.rendering.raytracing.sheet_depth_taichi import (
+                sheet_depth_lose_rows,
+            )
 
             lose_word = torch.empty(nb, dtype=torch.int32, device=device)
-            sheet_depth_lose(
+            sheet_depth_lose_rows(
                 kernel_index(sheet_pix),
                 sheet_sid,
                 sample_depths,
+                depth_row,
                 low,
                 subject.contiguous().view(torch.uint8),
                 enforcer.contiguous().view(torch.uint8),
@@ -2614,15 +2684,48 @@ def compact_sheets(
                 lose_word,
             )
         else:
-            lose_word = _sample_depth_lose_reference(
-                sheet_pix, sample_depths, sheet_sid, enforcer, subject, low
+            # The reference arm reads a row per sheet: expand the table.
+            per_sheet = torch.where(
+                (depth_row >= 0).unsqueeze(1),
+                sample_depths.index_select(0, depth_row.clamp_min(0).to(torch.int64)),
+                torch.full((), float("inf"), dtype=torch.float32, device=device),
             )
+            lose_word = _sample_depth_lose_reference(
+                sheet_pix, per_sheet, sheet_sid, enforcer, subject, low
+            )
+            del per_sheet
         sheet_msk_final = sheet_msk_final | lose_word
         sheet_wmsk = sheet_wmsk | lose_word
+        del lose_word, sample_depths, depth_row, band_of_sheet, only_band
+        del positive_wgt, sheet_sid, enforcer, subject, is_tri_sheet, low
+        del positioned_s, full_s, mat_opaque_s, nonareal_s
+    del cid_band, sheet_band_final
 
     # CSR aligned with covered_idx: every covered pixel holds at least one
     # fragment, hence at least one sheet, so the two pixel sets coincide.
     sheet_offsets = _sheet_offsets(coverage["covered_idx"][:num_covered], sheet_pix)
+    if resolve_only and final_records is None:
+        # The resolve reads none of these; the gathers below are the peak.
+        del sheet_pix, final
+        if sheet_cov_final is not sheet_wgt:
+            del sheet_cov_final
+        if sheet_msk_final is not sheet_wmsk:
+            del sheet_msk_final
+        out = {
+            "sheet_key": sheet_key,
+            "sheet_ref": frag_ref.index_select(0, rep_final),
+            "sheet_ab": frag_ab.index_select(0, rep_final),
+            "sheet_wgt": sheet_wgt,
+            "sheet_wmsk": sheet_wmsk,
+            "sheet_cap": frag_cap.index_select(0, rep_final),
+            "num_sheets": nb,
+            "num_groups": num_tri_groups,
+            "num_split_groups": num_split_groups,
+            "band_rule": band_rule,
+            "band_c": float(band_c),
+            "sheet_offsets": sheet_offsets,
+        }
+        return out
 
     if persist_output:
         if memory is None or final_records is None:
@@ -2668,7 +2771,7 @@ def compact_sheets(
         else frag_cap.index_select(0, rep_final),
         "sheet_nfrag": final_records["sheet_nfrag"]
         if final_records is not None
-        else nfrag.index_select(0, final),
+        else nfrag.index_select(0, final).to(torch.int64),
         "sheet_fused": final_records["sheet_fused"]
         if final_records is not None
         else fused.index_select(0, final),

@@ -8,6 +8,7 @@ import torch
 from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
 from algan.rendering.raytracing.sheet_depth_taichi import (
     sheet_depth_lose,
+    sheet_depth_lose_rows,
     sheet_lane_depths,
     sheet_lane_depths_inplace,
 )
@@ -51,6 +52,65 @@ def test_competing_depth_matches_unbounded_reference(cede):
         pixel, sid, depth, mask, subject, enforcer, n, epsilon, cede, shift, got
     )
     assert torch.equal(got, expected)
+
+
+def test_row_mapped_table_matches_a_row_per_sheet():
+    # sheet_depth_lose_rows reads each sheet's depths through a row map, over
+    # a table holding only the sheets it reads (enforcers and subjects), in
+    # any order. It must decide exactly what the full per-sheet table decides.
+    init_taichi()
+    gen = torch.Generator().manual_seed(7)
+    pixel = torch.repeat_interleave(
+        torch.tensor([0, 3, 9, 17]), torch.tensor([2, 9, 40, 5])
+    )
+    n = pixel.numel()
+    sid = torch.randint(0, 5, (n,), generator=gen)
+    depth = torch.randint(0, 5, (n, _AA_NUM_SAMPLES), generator=gen).float()
+    mask = torch.randint(
+        0, 1 << _AA_NUM_SAMPLES, (n,), generator=gen, dtype=torch.int32
+    )
+    subject = torch.randint(0, 2, (n,), generator=gen, dtype=torch.uint8)
+    enforcer = torch.randint(0, 2, (n,), generator=gen, dtype=torch.uint8)
+    args = (1e-5, 0.25, 16)
+    expected = torch.zeros(n, dtype=torch.int32)
+    sheet_depth_lose(pixel, sid, depth, mask, subject, enforcer, n, *args, expected)
+    read = ((subject != 0) | (enforcer != 0)).nonzero(as_tuple=True)[0]
+    scrambled = read[torch.randperm(read.numel(), generator=gen)]
+    row = torch.full((n,), -1, dtype=torch.int32)
+    row[scrambled] = torch.arange(scrambled.numel(), dtype=torch.int32)
+    table = depth.index_select(0, scrambled).contiguous()
+    got = torch.full_like(expected, -1)
+    sheet_depth_lose_rows(
+        pixel, sid, table, row, mask, subject, enforcer, n, *args, got
+    )
+    assert torch.equal(got, expected)
+
+
+def test_owner_table_skips_fragments_without_a_row():
+    # _lane_first_owners over rows for some sheets only: fragments whose row
+    # is -1 must not touch the table, in either arm.
+    from algan import SETTINGS
+    from algan.rendering.raytracing.sheets import _lane_first_owners
+    from algan.settings._startup import render_device
+
+    init_taichi()
+    gen = torch.Generator().manual_seed(11)
+    rows, n = 5, 300
+    band = torch.randint(-1, rows, (n,), generator=gen)
+    mask = torch.randint(256, (n,), generator=gen, dtype=torch.int32)
+    depth = torch.rand(n, generator=gen)
+    expected = torch.full((rows, _AA_NUM_SAMPLES), float("inf"))
+    for i in reversed(range(n)):
+        for lane in range(_AA_NUM_SAMPLES):
+            if band[i] >= 0 and (int(mask[i]) >> lane) & 1:
+                expected[band[i], lane] = depth[i]
+    tensors = [value.to(render_device()) for value in (band, mask, depth)]
+    for kernel in (False, True):
+        with SETTINGS.raytracing.experimental.override(
+            sheet_sample_depth_kernel=kernel
+        ):
+            out = _lane_first_owners(*tensors, rows, n)
+        assert torch.equal(out.cpu().view(torch.int32), expected.view(torch.int32))
 
 
 def test_empty_depth_stream():

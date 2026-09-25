@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 
@@ -65,6 +69,68 @@ def test_frame_route_returns_a_png_of_the_right_size(viewer):
     data = fetch(viewer, "/frame/0.png", raw=True)
     assert data[:4] == b"\x89PNG"
     assert Image.open(io.BytesIO(data)).size == TINY.resolution
+
+
+def test_playback_requests_share_one_memory_sized_render_job(fresh_scene, monkeypatch):
+    square = Square().spawn(animate=False)
+    square.move(RIGHT * 0.5)
+    Scene.wait(3)
+    scene = Scene.current()
+    original_frames = scene.get_frames
+    jobs = []
+    first_stored = threading.Event()
+    continue_rendering = threading.Event()
+    finished = threading.Event()
+
+    def frames(start, end):
+        sizes = []
+        jobs.append((start, end, sizes))
+        try:
+            with closing(original_frames(start, end)) as batches:
+                for batch in batches:
+                    sizes.append(len(batch))
+                    yield batch
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(scene, "get_frames", frames)
+    with Scene.view(TINY, block=False, open_browser=False) as handle:
+        original_store = handle.session._store
+
+        def store(index, frame):
+            stored = original_store(index, frame)
+            if index == 0:
+                first_stored.set()
+                assert continue_rendering.wait(30)
+            return stored
+
+        monkeypatch.setattr(handle.session, "_store", store)
+        with ThreadPoolExecutor(max_workers=2) as clients:
+            first = clients.submit(fetch, handle, "/frame/0.png", raw=True)
+            try:
+                assert first_stored.wait(120)
+                lookahead = clients.submit(fetch, handle, "/frame/1.png", raw=True)
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    with handle.session._lock:
+                        if 1 in handle.session._frame_waiters:
+                            break
+                    time.sleep(0.005)
+                else:
+                    pytest.fail("playback lookahead did not reach the render job")
+            finally:
+                continue_rendering.set()
+            assert first.result(120).startswith(b"\x89PNG")
+            assert lookahead.result(120).startswith(b"\x89PNG")
+            assert finished.wait(120)
+        total = handle.session.total_frames
+        assert len(jobs) == 1, jobs
+        start, end, sizes = jobs[0]
+        assert (start, end) == (0, total)
+        assert sum(sizes) == total
+        assert sizes[0] == 1  # The renderer's ordinary initial memory probe.
+        assert max(sizes) > 1, sizes
+        assert handle.session.state()["cached_count"] == total
 
 
 def test_frames_can_be_fetched_out_of_order(viewer):

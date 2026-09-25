@@ -2004,6 +2004,26 @@ def set_raster_span_candidates(enabled):
     raster_span_candidates = bool(enabled)
 
 
+# The same for circuits, whose long diagonal strokes -- a network's synapses --
+# are the widest-boxed primitives a scene has: a 5,400-stroke network produced
+# 8.3 M box chunks at HD, 255 MB of candidate rows, for ~9 M covered pixels.
+# A circuit whose box is at least ``4 * raster_chunk`` pixels, and whose outline
+# lies wholly in front of the camera, expands row by row into the chunks within
+# its query radius of its PROJECTED flattened outline
+# (``sheet_compact_taichi._circuit_reach``). Exact: the count still tests every
+# pixel it can accept, in the same order. Needs ``raster_pair_expand_kernel``.
+# ALGAN_RASTER_CIRCUIT_SPAN_CANDIDATES=0 keeps circuit boxes.
+raster_circuit_span_candidates = env_flag("ALGAN_RASTER_CIRCUIT_SPAN_CANDIDATES", True)
+
+
+def set_raster_circuit_span_candidates(enabled):
+    """Toggle circuit row-span candidates (see ``raster_circuit_span_candidates``).
+    Takes effect at the next batch's emission.
+    """
+    global raster_circuit_span_candidates
+    raster_circuit_span_candidates = bool(enabled)
+
+
 # Covered-pixel-compacted resolve: the emission already knows exactly which
 # pixels hold fragments, so the resolve launches one thread per COVERED pixel
 # instead of one per screen pixel that early-outs, turning the resolve from

@@ -66,12 +66,6 @@ from algan.viewer import hierarchy
 from algan.viewer.audio import SceneAudio
 from algan.viewer.pixels import PixelRecord
 
-#: How many frames one render call produces. A render call has real fixed cost
-#: -- the arena, the batch cost models, the prefetch pool -- so asking for one
-#: frame at a time pays it per frame; measured on a CPU container, eight frames
-#: cost barely more than one.
-CHUNK_FRAMES = 12
-
 #: Stop prefetching once this many frames are cached, so a long video does not
 #: fill memory with PNGs nobody scrolled to.
 MAX_CACHED_FRAMES = 900
@@ -146,6 +140,10 @@ class ViewerSession:
         self._frame_deliveries: dict[int, bytes] = {}
         self._wanted = 0
         self._generation = 0
+        # (start, end, generation) of the worker's current render job. Image
+        # requests inside it share that job instead of cancelling its memory
+        # probe and starting again at a one-frame batch.
+        self._rendering: tuple[int, int, int] | None = None
         # The generation most recently requested by frame()/prefetch(). A
         # resolution change bumps _generation without updating this marker,
         # which makes the worker stop until new browser demand arrives.
@@ -377,7 +375,13 @@ class ViewerSession:
             # bump the generation each time and the worker, seeing the target
             # move, would abandon its chunk before finishing a single frame.
             self._wanted = index
-            self._generation += 1
+            rendering = self._rendering
+            if not (
+                rendering is not None
+                and rendering[0] <= index < rendering[1]
+                and rendering[2] == self._generation
+            ):
+                self._generation += 1
             self._requested_generation = self._generation
         try:
             self._work.set()
@@ -637,18 +641,22 @@ class ViewerSession:
                 start = self._next_gap()
             if start is None:
                 return False
+            requested = start == self._wanted or start in self._frame_waiters
+            if requested:
+                self._make_cache_room(start)
             # A frame someone is waiting for is rendered whatever the cache
             # holds; running ahead of them is what stops at the cap.
             capacity = self._prefetch_capacity()
-            if (
-                start != self._wanted
-                and start not in self._frame_waiters
-                and capacity <= 0
-            ):
+            if not requested and capacity <= 0:
                 return False
             generation = self._generation
-            count = min(CHUNK_FRAMES, max(1, capacity))
-            end = min(start + count, self.total_frames)
+            # Offer all the frames the PNG cache can retain. get_frames uses
+            # the same memory sizing and OOM retries as save_video, and keeps
+            # its learned costs across batches within this job.
+            end = min(start + max(1, capacity), self.total_frames)
+            end = min(
+                (index for index in self._cache if start < index < end), default=end
+            )
         # Outside the bookkeeping lock, and behind anything already queued for
         # the Scene: rendering ahead is speculative, and a request is not.
         self._stand_aside()
@@ -663,27 +671,54 @@ class ViewerSession:
             with self._lock:
                 if self._closed or self._generation != generation:
                     return False
-            self._render_range(
-                start, end, store=True, generation=generation, yielding=True
-            )
+                self._rendering = (start, end, generation)
+            try:
+                self._render_range(
+                    start, end, store=True, generation=generation, yielding=True
+                )
+            finally:
+                with self._lock:
+                    self._rendering = None
         return True
+
+    def _estimated_frame_bytes(self):
+        return self._frame_bytes_estimate or (
+            self.width * self.height * 4 + self.height + 1024
+        )
+
+    def _make_cache_room(self, start):
+        """Move the retained window on demand; called with _lock held.
+
+        A full cache must not turn playback into one new render job per frame.
+        Retain frames in the upcoming window, dropping old history or distant
+        future frames in one pass. Speculative work alone never moves it.
+        """
+        count = max(
+            1,
+            min(
+                MAX_CACHED_FRAMES,
+                self._cache_limit_bytes // max(1, self._estimated_frame_bytes()),
+            ),
+        )
+        for index in list(self._cache):
+            if (
+                not start <= index < start + count
+                and index != self._wanted
+                and index not in self._frame_waiters
+            ):
+                self._cache_bytes -= len(self._cache.pop(index))
 
     def _prefetch_capacity(self):
         """Frames likely to fit without eviction; called with _lock held."""
-        estimate = self._frame_bytes_estimate or (
-            self.width * self.height * 4 + self.height + 1024
-        )
         return min(
             MAX_CACHED_FRAMES - len(self._cache),
-            (self._cache_limit_bytes - self._cache_bytes) // max(1, estimate),
+            (self._cache_limit_bytes - self._cache_bytes)
+            // max(1, self._estimated_frame_bytes()),
         )
 
     def _next_gap(self):
-        """The first uncached frame at or after the playhead, else anywhere."""
+        """The first uncached frame at or after the playhead."""
         for index in range(self._wanted, self.total_frames):
-            if index not in self._cache:
-                return index
-        for index in range(0, self._wanted):
             if index not in self._cache:
                 return index
         return None

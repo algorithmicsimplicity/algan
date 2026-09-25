@@ -101,18 +101,35 @@ def _guarded_error(
     the search stops where the reference stops being meaningful. Zero measures
     against the PN patch exactly. Matches ``_guarded_pixel_error``.
     """
-    e = _screen_pixels(exact, cam_origin, screen_point, sx, sy, sz, half_height)
     a = _screen_pixels(approximated, cam_origin, screen_point, sx, sy, sz, half_height)
+    # Form the small displacement before projecting. Subtracting two absolute
+    # float32 projections loses precision with a distant near-orthographic eye
+    # and can report curvature even after a patch has been diced to level 8.
+    # Same identity and translated guard clamp as _guarded_pixel_error.
+    delta = exact - approximated
+    delta_depth = delta.dot(sz)
+    exact_depth = (exact - cam_origin).dot(sz)
     result = 0.0
-    inside = (ti.abs(e[0]) <= guard and ti.abs(e[1]) <= guard) or (
-        ti.abs(a[0]) <= guard and ti.abs(a[1]) <= guard
-    )
-    if (e[2] * sign > _MIN_FRONT_DEPTH) and (a[2] * sign > _MIN_FRONT_DEPTH) and inside:
-        dx = ti.min(ti.max(e[0], -guard), guard) - ti.min(ti.max(a[0], -guard), guard)
-        dy = ti.min(ti.max(e[1], -guard), guard) - ti.min(ti.max(a[1], -guard), guard)
+    if (exact_depth * sign > _MIN_FRONT_DEPTH) and (a[2] * sign > _MIN_FRONT_DEPTH):
         screen_distance = (screen_point - cam_origin).dot(sz)
-        allowance = slack * ti.abs(screen_distance / e[2]) * half_height
-        result = ti.max(ti.sqrt(dx * dx + dy * dy) - allowance, 0.0)
+        scale = screen_distance / exact_depth
+        projected_delta = scale * (
+            delta - (approximated - cam_origin) * (delta_depth / a[2])
+        )
+        dx = projected_delta.dot(sx) * half_height
+        dy = projected_delta.dot(sy) * half_height
+        ex = a[0] + dx
+        ey = a[1] + dy
+        inside = (ti.abs(ex) <= guard and ti.abs(ey) <= guard) or (
+            ti.abs(a[0]) <= guard and ti.abs(a[1]) <= guard
+        )
+        if inside:
+            ax = ti.min(ti.max(a[0], -guard), guard)
+            ay = ti.min(ti.max(a[1], -guard), guard)
+            dx = ti.min(ti.max(dx + (a[0] - ax), -guard - ax), guard - ax)
+            dy = ti.min(ti.max(dy + (a[1] - ay), -guard - ay), guard - ay)
+            allowance = slack * ti.abs(scale) * half_height
+            result = ti.max(ti.sqrt(dx * dx + dy * dy) - allowance, 0.0)
     return result
 
 

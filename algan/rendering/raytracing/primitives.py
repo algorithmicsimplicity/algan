@@ -1610,16 +1610,50 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         front half, whose near-plane projection is genuinely large.
         """
         guard = self.screen_guard_factor * float(screen_height)
-        exact_pixels, exact_depth, exact_scale = self._project_to_output_pixels(
-            exact, *cam, screen_height
-        )
         approximated_pixels, approximated_depth, _ = self._project_to_output_pixels(
             approximated, *cam, screen_height
         )
-        error = (
-            exact_pixels.clamp(-guard, guard) - approximated_pixels.clamp(-guard, guard)
-        ).norm(dim=-1)
+        # Subtract in world space *before* projecting. Two absolute float32
+        # projections of a distant camera can differ by more than the pixel
+        # tolerance even as the points converge, driving a tiny patch to the
+        # subdivision cap. With d = exact - approximated, r = approximated -
+        # eye, and D the screen distance, the projected difference is exactly
+        # D / depth_exact * (d - r * dot(d, normal) / depth_approximated).
+        # This stays float32 (including on MPS), but its precision follows the
+        # small displacement rather than the distance to the eye.
+        shape = (-1,) + (1,) * (exact.ndim - 2) + (3,)
+        origin, screen, basis = cam
+        origin, screen = origin.view(shape), screen.view(shape)
+        normal = basis[:, 2].view(shape)
+        delta = exact - approximated
+        delta_depth = (delta * normal).sum(-1)
+        # Measure this depth independently: adding delta_depth to a much
+        # larger approximated depth can round a near-eye exact point to zero.
+        exact_depth = ((exact - origin) * normal).sum(-1)
+        screen_distance = ((screen - origin) * normal).sum(-1)
+        scale = screen_distance / exact_depth
+        projected_delta = scale.unsqueeze(-1) * (
+            delta
+            - (approximated - origin) * (delta_depth / approximated_depth).unsqueeze(-1)
+        )
+        pixel_delta = torch.stack(
+            tuple(
+                (projected_delta * basis[:, axis].view(shape)).sum(-1)
+                for axis in (0, 1)
+            ),
+            dim=-1,
+        ) * (float(screen_height) / 2.0)
+        exact_pixels = approximated_pixels + pixel_delta
+        # Translate the clamp into the approximated point's clamped frame.
+        # Inside the guard this keeps pixel_delta verbatim instead of adding
+        # it to an absolute pixel coordinate only to subtract that again.
+        clamped = approximated_pixels.clamp(-guard, guard)
+        clipped_delta = (pixel_delta + (approximated_pixels - clamped)).clamp(
+            min=-guard - clamped, max=guard - clamped
+        )
+        error = clipped_delta.norm(dim=-1)
         if slack is not None:
+            exact_scale = scale.abs() * (float(screen_height) / 2.0)
             allowance = slack.view(-1, *((1,) * (error.ndim - 1))) * exact_scale
             error = (error - allowance).clamp_min(0)
         sign = front_sign.view(-1, *((1,) * (error.ndim - 1)))

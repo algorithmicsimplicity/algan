@@ -139,9 +139,153 @@ def test_prefetch_chunk_length_uses_free_bytes_and_seek_still_works_when_full(
     assert not session._render_next()
     session.prefetch(50)
     assert session._render_next()
-    assert calls[-1] == (50, 51)
+    assert calls[-1] == (50, 52)
     assert session.frame(50) == b"abcd"
     _assert_accounted(session)
+
+
+def test_render_window_uses_cache_capacity_without_a_fixed_frame_cap(
+    session, monkeypatch
+):
+    session._cache_limit_bytes = 400
+    session._frame_bytes_estimate = 4
+    calls = []
+    monkeypatch.setattr(
+        session,
+        "_render_range",
+        lambda start, end, **kwargs: calls.append((start, end)),
+    )
+    session.prefetch(0)
+    assert session._render_next()
+    # Give get_frames the whole available window so its memory model, shared
+    # with save_video, can grow past its initial one-frame probe.
+    assert calls == [(0, session.total_frames)]
+
+
+@pytest.mark.parametrize("limit", ["bytes", "frames"])
+def test_playback_past_a_full_cache_refills_a_batch(session, monkeypatch, limit):
+    session._cache_limit_bytes = 12 if limit == "bytes" else 100
+    monkeypatch.setattr(viewer, "MAX_CACHED_FRAMES", 100 if limit == "bytes" else 3)
+    for index in range(3):
+        session._store_png(index, b"abcd")
+    calls = []
+
+    def render(start, end, **kwargs):
+        calls.append((start, end))
+        for index in range(start, end):
+            assert session._store_png(index, b"abcd")
+
+    monkeypatch.setattr(session, "_render_range", render)
+    session.prefetch(3)
+    assert session._render_next()
+    assert calls == [(3, 6)]
+    assert list(session._cache) == [3, 4, 5]
+    assert not session._render_next()
+    _assert_accounted(session)
+
+
+def test_backward_seek_keeps_nearby_frames_and_does_not_render_them_again(
+    session, monkeypatch
+):
+    session._cache_limit_bytes = 12
+    session._wanted = 50
+    for index in range(50, 53):
+        session._store_png(index, b"abcd")
+    calls = []
+
+    def render(start, end, **kwargs):
+        calls.append((start, end))
+        for index in range(start, end):
+            assert session._store_png(index, b"abcd")
+
+    monkeypatch.setattr(session, "_render_range", render)
+    session.prefetch(48)
+    assert session._render_next()
+    assert calls == [(48, 50)]
+    assert set(session._cache) == {48, 49, 50}
+    assert not session._render_next()
+    _assert_accounted(session)
+
+
+def test_playback_lookahead_does_not_restart_the_memory_probe(session, monkeypatch):
+    from algan.rendering.memory_model import ChunkMemoryModel
+
+    session._cache_limit_bytes = 400
+    session._frame_bytes_estimate = 4
+    sizes = []
+    closed = threading.Event()
+    requests = []
+
+    def frames(start, end):
+        model = ChunkMemoryModel()
+        try:
+            while start < end:
+                count = model.plan("viewer", end - start, 10_000_000)
+                sizes.append(count)
+                model.observe("viewer", count, count * 100_000)
+                yield torch.zeros((count, 2, 2, 3), dtype=torch.uint8)
+                start += count
+        finally:
+            closed.set()
+
+    def store(index, frame):
+        stored = session._store_png(index, b"abcd")
+        if index == 0:
+            # The browser displays the first probe, then requests lookahead
+            # images while the same render job is still running.
+            requests.append(executor.submit(session.frame, 1, timeout=3))
+            _wait_for_requests(session, [1])
+        return stored
+
+    monkeypatch.setattr(session.scene, "get_frames", frames)
+    monkeypatch.setattr(session, "_store", store)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            session.prefetch(0)
+            assert session._render_next()
+            assert len(sizes) > 1, sizes
+            assert max(sizes) > 1, sizes
+            assert requests[0].result(3) == b"abcd"
+            assert closed.is_set()
+            _assert_accounted(session)
+        finally:
+            session.close()
+
+
+@pytest.mark.parametrize("interrupt", ["seek", "scene", "close"])
+def test_render_window_still_yields_after_the_inflight_batch(
+    session, monkeypatch, interrupt
+):
+    session._cache_limit_bytes = 400
+    session._frame_bytes_estimate = 4
+    closed = threading.Event()
+    sizes = []
+
+    def frames(start, end):
+        try:
+            for count in (1, end - start - 1):
+                sizes.append(count)
+                yield torch.zeros((count, 2, 2, 3), dtype=torch.uint8)
+        finally:
+            closed.set()
+
+    def store(index, frame):
+        stored = session._store_png(index, b"abcd")
+        if interrupt == "seek":
+            session.prefetch(75)
+        elif interrupt == "scene":
+            session._scene_demand += 1
+        else:
+            session.close()
+        return stored
+
+    monkeypatch.setattr(session.scene, "get_frames", frames)
+    monkeypatch.setattr(session, "_store", store)
+    session.prefetch(0)
+    assert session._render_next()
+    assert sizes == [1]
+    assert closed.is_set()
+    assert session._rendering is None
 
 
 def test_oversized_frame_is_delivered_without_caching_or_repeated_prefetch(session):

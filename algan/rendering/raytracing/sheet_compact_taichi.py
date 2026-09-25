@@ -101,7 +101,23 @@ gated (``raster_fused_gather``, ``sheet_mask_kernel``, ``sheet_rank_kernel``,
 passes stay runnable as the A/B arm.
 """
 
-from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
+from algan.rendering.raytracing.bezier_acceleration import (
+    BEZIER_ACCEL_HEADER_SIZE,
+    BEZIER_EDGE_END,
+    BEZIER_EDGE_START,
+)
+from algan.rendering.raytracing.raster_taichi import _AA_FILTER_RADIUS, _AA_NUM_SAMPLES
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _M_BASIS_U,
+    _M_BASIS_V,
+    _M_BORDER_CENTERED,
+    _M_BORDER_W,
+    _M_CENTER,
+    _M_FILLED,
+    _axis_cos,
+    _circuit_query_radius,
+    _generate_ray,
+)
 from algan.taichi_compat import ti
 
 # Taichi is NOT initialized here. The arch depends on
@@ -404,11 +420,11 @@ def one_mesh_pixel_apply(
 
 @ti.kernel
 def sheet_lane_first_owner(
-    band: ti.types.ndarray(),  # [n] i64 -- sheet index of each SORTED fragment
+    band: ti.types.ndarray(),  # [n] -- table row of each SORTED fragment, < 0 to skip
     msk: ti.types.ndarray(),  # [n] i32 -- mask words
     n: ti.i32,
     mask_all: ti.i32,  # _AA_MASK_ALL
-    first_lane: ti.types.ndarray(),  # [nb * _AA_NUM_SAMPLES] i32, PRE-FILLED n
+    first_lane: ti.types.ndarray(),  # [rows * _AA_NUM_SAMPLES] i32, PRE-FILLED n
 ):
     """One pass: per (sheet, sample lane), the earliest owner's sorted index.
 
@@ -419,15 +435,17 @@ def sheet_lane_first_owner(
     pre-initialised table; integer min is order-independent, so the result is
     exactly the torch loop's whatever order the threads land in. Lanes a
     sheet does not own keep the fill value, which the caller reads as "no
-    owner" exactly as it read the torch arm's sentinel.
+    owner" exactly as it read the torch arm's sentinel. A fragment whose row
+    is negative belongs to a sheet the table does not hold, and is skipped.
     """
     for i in range(n):
         b = ti.cast(band[i], ti.i32)
-        bits = msk[i] & mask_all
-        base = b * _AA_NUM_SAMPLES
-        for lane in ti.static(range(_AA_NUM_SAMPLES)):
-            if ((bits >> lane) & 1) != 0:
-                ti.atomic_min(first_lane[base + lane], i)
+        if b >= 0:
+            bits = msk[i] & mask_all
+            base = b * _AA_NUM_SAMPLES
+            for lane in ti.static(range(_AA_NUM_SAMPLES)):
+                if ((bits >> lane) & 1) != 0:
+                    ti.atomic_min(first_lane[base + lane], i)
 
 
 @ti.kernel
@@ -798,3 +816,323 @@ def pair_expand_write(
                     j += 1
 
 
+# ---- Row-span candidates for circuits (raster_circuit_span_candidates) --------
+#
+# The circuit twin of the triangle spans above. A circuit is a planar outline --
+# its plane in ``circuit_meta``, its flattened edges in plane coordinates in
+# ``edges_2d`` -- and ``raster_bez_count`` accepts a pixel only when the point
+# its centre ray hits on that plane lies within the circuit's query radius of
+# an edge, or (filled) inside the outline. The radius is a fixed number of
+# pixels scaled by ``pixel_size``, so it is known in pixels up front; see
+# ``_circuit_reach`` for its bound on screen. A row's candidates are then the
+# pixels whose centres lie within that reach of the PROJECTED edges: each edge
+# is clipped to the row's centre line widened by the reach, and the clipped
+# ends bound the row. A filled interior needs nothing more, since along the
+# row it lies between boundary crossings, which lie on edges crossing the row.
+
+
+@ti.func
+def _camera_terms(f, cam_origin: ti.template(), screen_point: ti.template(),
+                  pixel_basis_x: ti.template(), pixel_basis_y: ti.template()):
+    """Frame ``f``'s camera, in the form :func:`_screen_point_of` reads."""
+    ro = ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1], cam_origin[f, 2])
+    sp = ti.math.vec3(screen_point[f, 0], screen_point[f, 1], screen_point[f, 2])
+    pbx = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1], pixel_basis_x[f, 2])
+    pby = ti.math.vec3(pixel_basis_y[f, 0], pixel_basis_y[f, 1], pixel_basis_y[f, 2])
+    nvec = pbx.cross(pby)
+    big_d = (sp - ro).dot(nvec)
+    dsq = ti.max(nvec.dot(nvec), 1e-30)
+    return ro, sp, pbx, pby, nvec, big_d, dsq
+
+
+@ti.func
+def _screen_point_of(w, ro, sp, pbx, pby, nvec, big_d, dsq, half_w, half_h):
+    """``(front, px, py)``: world point ``w`` in screen pixel coordinates.
+
+    The inverse of ``_generate_ray``, exactly as the host's
+    ``raster_pipeline._project_points``; ``front`` is 0 for a point not in
+    front of the camera.
+    """
+    front = 0
+    px = 0.0
+    py = 0.0
+    d = w - ro
+    wpn = d.dot(nvec)
+    if ti.abs(wpn) >= 1e-12:
+        td = big_d / wpn
+        if td > 0.0:
+            front = 1
+            rel = ro + td * d - sp
+            u = rel.cross(pby).dot(nvec) / dsq
+            v = pbx.cross(rel).dot(nvec) / dsq
+            px = u * half_h + half_w
+            py = v * half_h + half_h
+    return front, px, py
+
+
+@ti.func
+def _circuit_plane(tm, c, circuit_meta: ti.template()):
+    center = ti.math.vec3(circuit_meta[tm, c, _M_CENTER],
+                          circuit_meta[tm, c, _M_CENTER + 1],
+                          circuit_meta[tm, c, _M_CENTER + 2])
+    bu = ti.math.vec3(circuit_meta[tm, c, _M_BASIS_U],
+                      circuit_meta[tm, c, _M_BASIS_U + 1],
+                      circuit_meta[tm, c, _M_BASIS_U + 2])
+    bv = ti.math.vec3(circuit_meta[tm, c, _M_BASIS_V],
+                      circuit_meta[tm, c, _M_BASIS_V + 1],
+                      circuit_meta[tm, c, _M_BASIS_V + 2])
+    return center, bu, bv
+
+
+@ti.func
+def _circuit_reach(f, tm, c, half_w, half_h, aa_min_half_width,
+                   cam_origin: ti.template(), screen_point: ti.template(),
+                   pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+                   circuit_meta: ti.template()):
+    """How far from its projected outline, in screen pixels, a pixel centre
+    can still be accepted.
+
+    ``_bez_pixel_hit`` accepts a centre whose plane point is within
+    ``R * pixel_size`` of the outline, ``R`` being its query radius in pixels
+    (the stroke's reach, the hairline dilation and the coverage filter's).
+    ``pixel_size`` is world-per-pixel at the point's perpendicular depth, and
+    a pinhole camera magnifies a world displacement there by at most
+    ``1 / (pixel_size * cos(theta))`` pixels, ``theta`` the ray's angle off
+    the optical axis -- whatever the plane's tilt. So ``R / cos(theta)`` over
+    the frame's widest ray bounds it, with slack for the depth change across
+    the reach itself (a fraction of a percent: the reach is a few pixels).
+    """
+    border_w = ti.abs(circuit_meta[tm, c, _M_BORDER_W])
+    outline_w = ti.max(aa_min_half_width, 0.6)
+    filled = circuit_meta[tm, c, _M_FILLED] > 0.5
+    centered = circuit_meta[tm, c, _M_BORDER_CENTERED] > 0.5
+    r = _circuit_query_radius(border_w, outline_w, filled, centered) + _AA_FILTER_RADIUS
+    lowest = 1.0
+    for k in ti.static(range(4)):
+        ro, rd = _generate_ray(f, 0, 0, 2.0 * half_w * (k % 2),
+                               2.0 * half_h * (k // 2), half_w, half_h,
+                               cam_origin, screen_point, pixel_basis_x,
+                               pixel_basis_y)
+        lowest = ti.min(lowest, _axis_cos(f, ro, rd, screen_point))
+    return r / ti.max(lowest, 0.05) * 1.02 + 0.5
+
+
+@ti.func
+def _circuit_span_setup(mask_e, bw, bh, span_min_area, f, c, half_w, half_h,
+                        aa_min_half_width, cam_origin: ti.template(),
+                        screen_point: ti.template(), pixel_basis_x: ti.template(),
+                        pixel_basis_y: ti.template(), circuit_meta: ti.template(),
+                        edges_2d: ti.template(), edge_accel: ti.template()):
+    """``(use_span, e0, e1, reach)`` for candidate circuit ``c`` of frame ``f``.
+
+    Row by row only for a box of at least ``span_min_area`` pixels whose
+    outline has edges and lies wholly in front of the camera; anything else
+    keeps its box.
+    """
+    use_span = 0
+    e0 = 0
+    e1 = 0
+    reach = 0.0
+    if (mask_e != 0) and (bw * bh >= span_min_area):
+        tm = f % circuit_meta.shape[0]
+        te = f % edges_2d.shape[0]
+        header = (te * circuit_meta.shape[1] + c) * BEZIER_ACCEL_HEADER_SIZE
+        e0 = edge_accel[header + BEZIER_EDGE_START]
+        e1 = edge_accel[header + BEZIER_EDGE_END]
+        if e1 > e0:
+            ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
+                f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+            center, bu, bv = _circuit_plane(tm, c, circuit_meta)
+            front = 1
+            for k in range(e0, e1):
+                for end in ti.static(range(2)):
+                    w = (center + edges_2d[te, k, 2 * end] * bu
+                         + edges_2d[te, k, 2 * end + 1] * bv)
+                    ok, _px, _py = _screen_point_of(w, ro, sp, pbx, pby, nvec,
+                                                    big_d, dsq, 0.0, 0.0)
+                    front = ti.min(front, ok)
+            if front == 1:
+                use_span = 1
+                reach = _circuit_reach(f, tm, c, half_w, half_h,
+                                       aa_min_half_width, cam_origin,
+                                       screen_point, pixel_basis_x,
+                                       pixel_basis_y, circuit_meta)
+    return use_span, e0, e1, reach
+
+
+@ti.func
+def _circuit_span_chunks(f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+                         cam_origin: ti.template(), screen_point: ti.template(),
+                         pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+                         circuit_meta: ti.template(), edges_2d: ti.template()):
+    """Chunks the row ``y`` of a circuit span candidate expands to, and the span."""
+    tm = f % circuit_meta.shape[0]
+    te = f % edges_2d.shape[0]
+    ro, sp, pbx, pby, nvec, big_d, dsq = _camera_terms(
+        f, cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    center, bu, bv = _circuit_plane(tm, c, circuit_meta)
+    ylo = ti.cast(y, ti.f32) + 0.5 - reach
+    yhi = ti.cast(y, ti.f32) + 0.5 + reach
+    ok = 0
+    xmin = 1e30
+    xmax = -1e30
+    for k in range(e0, e1):
+        wa = center + edges_2d[te, k, 0] * bu + edges_2d[te, k, 1] * bv
+        wb = center + edges_2d[te, k, 2] * bu + edges_2d[te, k, 3] * bv
+        _fa, ax, ay = _screen_point_of(wa, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                       half_w, half_h)
+        _fb, bx, by = _screen_point_of(wb, ro, sp, pbx, pby, nvec, big_d, dsq,
+                                       half_w, half_h)
+        if (ti.max(ay, by) >= ylo) and (ti.min(ay, by) <= yhi):
+            t0 = 0.0
+            t1 = 1.0
+            dy = by - ay
+            if ti.abs(dy) > 1e-12:
+                ta = (ylo - ay) / dy
+                tb = (yhi - ay) / dy
+                t0 = ti.max(0.0, ti.min(ta, tb))
+                t1 = ti.min(1.0, ti.max(ta, tb))
+            xa = ax + (bx - ax) * t0
+            xb = ax + (bx - ax) * t1
+            xmin = ti.min(xmin, ti.min(xa, xb))
+            xmax = ti.max(xmax, ti.max(xa, xb))
+            ok = 1
+    xs = bx0
+    xe = bx0 - 1
+    nch = 0
+    if ok == 1:
+        lo = ti.max(xmin - reach, -1e6)
+        hi = ti.min(xmax + reach, 1e6)
+        xs = ti.max(ti.cast(ti.floor(lo), ti.i32) - 1, bx0)
+        xe = ti.min(ti.cast(ti.floor(hi), ti.i32) + 1, bx1)
+        if xe >= xs:
+            nch = (xe - xs + 1 + chunk - 1) // chunk
+    return nch, xs, xe
+
+
+@ti.kernel
+def pair_expand_count_circuits(
+    mask: ti.types.ndarray(),  # [N] u8
+    x0f: ti.types.ndarray(),  # [N] i64
+    x1f: ti.types.ndarray(),  # [N] i64
+    y0f: ti.types.ndarray(),  # [N] i64
+    y1f: ti.types.ndarray(),  # [N] i64
+    n: ti.i32,
+    chunk: ti.i32,
+    counts: ti.types.ndarray(),  # [N] i64 OUT
+    f_abs: ti.types.ndarray(),  # [Ft]
+    ncirc: ti.i32,
+    span_min_area: ti.i32,
+    cam_origin: ti.types.ndarray(),
+    screen_point: ti.types.ndarray(),
+    pixel_basis_x: ti.types.ndarray(),
+    pixel_basis_y: ti.types.ndarray(),
+    circuit_meta: ti.types.ndarray(),
+    edges_2d: ti.types.ndarray(),
+    edge_accel: ti.types.ndarray(),
+    half_w: ti.f32,
+    half_h: ti.f32,
+    aa_min_half_width: ti.f32,
+):
+    """:func:`pair_expand_count` for circuits: each candidate's chunk count,
+    row by row along its projected outline where it qualifies.
+    """
+    for e in range(n):
+        cnt = ti.i64(0)
+        if mask[e] != 0:
+            bx0 = ti.cast(x0f[e], ti.i32)
+            bx1 = ti.cast(x1f[e], ti.i32)
+            by0 = ti.cast(y0f[e], ti.i32)
+            by1 = ti.cast(y1f[e], ti.i32)
+            bw = bx1 - bx0 + 1
+            bh = by1 - by0 + 1
+            c = e % ncirc
+            f = ti.cast(f_abs[e // ncirc], ti.i32)
+            use_span, e0, e1, reach = _circuit_span_setup(
+                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
+                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, circuit_meta, edges_2d, edge_accel)
+            if use_span == 1:
+                for y in range(by0, by1 + 1):
+                    nch, _xs, _xe = _circuit_span_chunks(
+                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+                        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                        circuit_meta, edges_2d)
+                    cnt += nch
+            else:
+                cnt = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
+        counts[e] = cnt
+
+
+@ti.kernel
+def pair_expand_write_circuits(
+    mask: ti.types.ndarray(),  # [N] u8
+    x0f: ti.types.ndarray(),  # [N] i64
+    x1f: ti.types.ndarray(),  # [N] i64
+    y0f: ti.types.ndarray(),  # [N] i64
+    y1f: ti.types.ndarray(),  # [N] i64
+    f_abs: ti.types.ndarray(),  # [Ft]
+    offs: ti.types.ndarray(),  # [N] i64 -- EXCLUSIVE prefix of the counts
+    n: ti.i32,
+    ncirc: ti.i32,
+    chunk: ti.i32,
+    rows: ti.types.ndarray(),  # [total, 8] i32 OUT
+    span_min_area: ti.i32,
+    cam_origin: ti.types.ndarray(),
+    screen_point: ti.types.ndarray(),
+    pixel_basis_x: ti.types.ndarray(),
+    pixel_basis_y: ti.types.ndarray(),
+    circuit_meta: ti.types.ndarray(),
+    edges_2d: ti.types.ndarray(),
+    edge_accel: ti.types.ndarray(),
+    half_w: ti.f32,
+    half_h: ti.f32,
+    aa_min_half_width: ti.f32,
+):
+    """:func:`pair_expand_write` for circuits, in the same row layout: each
+    row's span a one-row-high box, so ``raster_bez_count`` decodes it unchanged,
+    and rows ascending within a candidate, as its box's chunks were.
+    """
+    for e in range(n):
+        if mask[e] != 0:
+            bx0 = ti.cast(x0f[e], ti.i32)
+            bx1 = ti.cast(x1f[e], ti.i32)
+            by0 = ti.cast(y0f[e], ti.i32)
+            by1 = ti.cast(y1f[e], ti.i32)
+            bw = bx1 - bx0 + 1
+            bh = by1 - by0 + 1
+            c = e % ncirc
+            f = ti.cast(f_abs[e // ncirc], ti.i32)
+            j = offs[e]
+            use_span, e0, e1, reach = _circuit_span_setup(
+                mask[e], bw, bh, span_min_area, f, c, half_w, half_h,
+                aa_min_half_width, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, circuit_meta, edges_2d, edge_accel)
+            if use_span == 1:
+                for y in range(by0, by1 + 1):
+                    nch, xs, xe = _circuit_span_chunks(
+                        f, c, y, bx0, bx1, chunk, e0, e1, reach, half_w, half_h,
+                        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                        circuit_meta, edges_2d)
+                    for k in range(nch):
+                        rows[j, 0] = c
+                        rows[j, 1] = f
+                        rows[j, 2] = xs
+                        rows[j, 3] = y
+                        rows[j, 4] = xe - xs + 1
+                        rows[j, 5] = 1
+                        rows[j, 6] = k * chunk
+                        rows[j, 7] = 0
+                        j += 1
+            else:
+                nch = (ti.cast(bw, ti.i64) * bh + chunk - 1) // chunk
+                for k in range(ti.cast(nch, ti.i32)):
+                    rows[j, 0] = c
+                    rows[j, 1] = f
+                    rows[j, 2] = bx0
+                    rows[j, 3] = by0
+                    rows[j, 4] = bw
+                    rows[j, 5] = bh
+                    rows[j, 6] = k * chunk
+                    rows[j, 7] = 0
+                    j += 1

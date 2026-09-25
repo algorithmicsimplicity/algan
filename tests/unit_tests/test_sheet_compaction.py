@@ -97,10 +97,13 @@ def _compact(
     positioned_depth=True,
     sample_depth=False,
     tri_extra=None,
+    num_tri_fragments=None,
 ):
     coverage, merged, cam, pws = _coverage(frags, tri_norm=tri_norm)
     if tri_extra is not None:
         merged["tri_extra"] = tri_extra
+    if num_tri_fragments is not None:
+        coverage["num_tri_fragments"] = num_tri_fragments
     return compact_sheets(
         coverage,
         merged,
@@ -1081,6 +1084,115 @@ def test_a_sheet_cedes_everything_it_loses_or_nothing():
     assert _t(out, 0) == pytest.approx(1.000)
     assert _lose(out["sheet_msk"][0]) == 0
     assert _lose(out["sheet_msk"][1]) == 0b00111111
+
+
+# The crossing surfaces, with circuit strokes (negative refs) in front of,
+# between and behind them, and a stroke alone on another pixel: the stream a
+# network drawn over a mesh produces.
+_CROSSING_WITH_STROKES = [
+    (0, 0.5000, -1, 0.3, MASK_ALL),
+    (0, 1.0000, 0, 0.375, 0b11100000 | MAT_OPAQUE),
+    (0, 1.0010, 4, 0.375, 0b00000111 | MAT_OPAQUE),
+    (0, 1.0015, -2, 0.2, MASK_ALL),
+    (0, 1.0020, 1, 0.625, 0b00011111 | MAT_OPAQUE),
+    (0, 1.0030, 5, 0.625, 0b11111000 | MAT_OPAQUE),
+    (0, 3.0000, -3, 0.9, MASK_ALL),
+    (2, 1.0000, -4, 0.8, MASK_ALL),
+]
+
+
+@pytest.mark.parametrize("owner_kernel", [False, True])
+@pytest.mark.parametrize("reduce_kernel", [False, True])
+def test_depth_table_rows_are_triangle_sheets_only(owner_kernel, reduce_kernel):
+    # The per-sample depth table tabulates triangle sheets alone: the four
+    # circuit sheets get no row, and a table sized by the emission's triangle
+    # fragment count must decide exactly what a row per sheet decided.
+    from algan import SETTINGS
+
+    with SETTINGS.raytracing.experimental.override(
+        sheet_sample_depth_kernel=owner_kernel,
+        sheet_depth_reduce_kernel=reduce_kernel,
+    ):
+        tight = _compact(
+            _CROSSING_WITH_STROKES,
+            band_rule="facing",
+            sample_depth=True,
+            num_tri_fragments=4,
+        )
+        per_sheet = _compact(
+            _CROSSING_WITH_STROKES, band_rule="facing", sample_depth=True
+        )
+    assert tight["num_sheets"] == 6
+    for field, value in per_sheet.items():
+        if torch.is_tensor(value):
+            assert torch.equal(tight[field], value), field
+    lose = {
+        int(tight["sheet_ref"][i]): _lose(tight["sheet_msk"][i])
+        for i in range(int(tight["num_sheets"]))
+    }
+    # Surface 0 (refs 0/1) cedes {0,1,2} to surface 1, which cedes {3..7}.
+    # A sheet reports its dominant fragment's ref, whichever of the two it is.
+    assert lose.get(0, 0) | lose.get(1, 0) == 0b00000111
+    assert lose.get(4, 0) | lose.get(5, 0) == 0b11111000
+    assert all(lose[ref] == 0 for ref in (-1, -2, -3, -4))
+
+
+@pytest.mark.parametrize("sample_depth", [False, True])
+@pytest.mark.parametrize("shade_split", [False, True])
+def test_resolve_only_returns_the_same_resolve_fields(sample_depth, shade_split):
+    # The production call asks only for what the resolve reads, which lets
+    # the compaction free the record-only arrays early. Every field it does
+    # return must be the full call's, bit for bit.
+    z = (0.0, 0.0, 1.0)
+    x = (1.0, 0.0, 0.0)
+    tn = _norms({0: (z, z, z), 1: (x, x, x), 4: (z, z, z), 5: (z, z, z)})
+    frags = _CROSSING_WITH_STROKES + [
+        (3, 1.001, 0, 0.5, 0b00001111 | MAT_OPAQUE),
+        (3, 1.002, 1, 0.5, 0b11110000 | MAT_OPAQUE),
+    ]
+    kwargs = {
+        "band_rule": "facing",
+        "shade_split": shade_split,
+        "sample_depth": sample_depth,
+    }
+    coverage, merged, cam, pws = _coverage(frags, tri_norm=tn)
+    full = compact_sheets(
+        dict(coverage), merged, cam, pws, time_start=0, width=4, height=4, **kwargs
+    )
+    lean = compact_sheets(
+        dict(coverage),
+        merged,
+        cam,
+        pws,
+        time_start=0,
+        width=4,
+        height=4,
+        resolve_only=True,
+        **kwargs,
+    )
+    for field in (
+        "sheet_key",
+        "sheet_ref",
+        "sheet_ab",
+        "sheet_wgt",
+        "sheet_wmsk",
+        "sheet_cap",
+        "sheet_offsets",
+    ):
+        assert torch.equal(lean[field], full[field]), field
+    assert lean["num_sheets"] == full["num_sheets"]
+    assert "sheet_nfrag" not in lean
+
+
+def test_sample_depth_without_triangles_changes_nothing():
+    # No triangle sheet can be an enforcer or a subject, so a circuit-only
+    # stream builds no depth table and every output is the setting-off one.
+    strokes = [f for f in _CROSSING_WITH_STROKES if f[2] < 0]
+    on = _compact(strokes, sample_depth=True, num_tri_fragments=0)
+    off = _compact(strokes, sample_depth=False)
+    for field, value in off.items():
+        if torch.is_tensor(value):
+            assert torch.equal(on[field], value), field
 
 
 def test_sheet_sample_depth_setting_reaches_the_live_module():

@@ -985,7 +985,9 @@ def _class_any_flags(pre_m):
     )
 
 
-def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None):
+def _pair_expand_rows(
+    mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None, circuits=None
+):
     """The kernel arm of ``_class_pairs_flat`` (``raster_pair_expand_kernel``).
 
     One pass counts each candidate's chunks, the host keeps only the prefix
@@ -1013,6 +1015,10 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None):
     x1f = x1.reshape(-1).contiguous()
     y0f = y0.reshape(-1).contiguous()
     y1f = y1.reshape(-1).contiguous()
+    if circuits is not None and rt_settings.raster_circuit_span_candidates:
+        return _circuit_pair_expand_rows(
+            mflat, x0f, x1f, y0f, y1f, f_abs, numel, ncirc, device, circuits
+        )
     counts = torch.empty(numel, dtype=torch.int64, device=device)
     spans = 1 if (screen is not None and rt_settings.raster_span_candidates) else 0
     if spans:
@@ -1062,7 +1068,91 @@ def _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen=None):
     return rows
 
 
-def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None):
+def _circuit_pair_expand_rows(
+    mflat, x0f, x1f, y0f, y1f, f_abs, numel, ncirc, device, circuits
+):
+    """:func:`_pair_expand_rows` for circuits, row by row along each outline.
+
+    ``circuits`` is ``(cam_origin, screen_point, pixel_basis_x,
+    pixel_basis_y, circuit_meta, edges_2d, edge_accel, half_w, half_h,
+    aa_min_half_width)``: the geometry ``raster_bez_count`` itself reads.
+    A long diagonal stroke's box is almost all empty -- a 5,400-stroke
+    network produced 8.3 M box chunks at HD for ~9 M covered pixels -- and
+    every chunk pixel is a coverage test and 32 bytes of candidate row. Only
+    the candidate set changes, to a superset of every pixel the count can
+    accept (see ``sheet_compact_taichi._circuit_reach``), in the same row
+    order, so the fragments are the ones the boxes gave.
+    """
+    from algan.rendering.raytracing.sheet_compact_taichi import (
+        pair_expand_count_circuits,
+        pair_expand_write_circuits,
+    )
+
+    (
+        cam_origin,
+        screen_point,
+        pbx,
+        pby,
+        circuit_meta,
+        edges_2d,
+        edge_accel,
+        half_w,
+        half_h,
+        aa_hw,
+    ) = circuits
+    span_min_area = 4 * raster_chunk
+    f_abs_k = kernel_index(f_abs.contiguous())
+    geometry = (
+        cam_origin.contiguous(),
+        screen_point.contiguous(),
+        pbx.contiguous(),
+        pby.contiguous(),
+        circuit_meta,
+        edges_2d,
+        edge_accel,
+        float(half_w),
+        float(half_h),
+        float(aa_hw),
+    )
+    counts = torch.empty(numel, dtype=torch.int64, device=device)
+    pair_expand_count_circuits(
+        mflat.view(torch.uint8),
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        numel,
+        raster_chunk,
+        counts,
+        f_abs_k,
+        ncirc,
+        span_min_area,
+        *geometry,
+    )
+    offs = torch.cumsum(counts, 0) - counts
+    total = int(counts.sum().item())
+    if total == 0:
+        return None
+    rows = torch.empty((total, 8), dtype=torch.int32, device=device)
+    pair_expand_write_circuits(
+        mflat.view(torch.uint8),
+        x0f,
+        x1f,
+        y0f,
+        y1f,
+        f_abs_k,
+        offs,
+        numel,
+        ncirc,
+        raster_chunk,
+        rows,
+        span_min_area,
+        *geometry,
+    )
+    return rows
+
+
+def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None, circuits=None):
     """Chunk expansion over a ``[frames, C]`` window in one pass.
 
     Row content and ordering are identical to per-frame ``_class_pairs``
@@ -1075,7 +1165,9 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None):
         and mask.numel()
         and f_abs.numel() * ncirc == mask.numel()
     ):
-        return _pair_expand_rows(mask, x0, x1, y0, y1, f_abs, ncirc, device, screen)
+        return _pair_expand_rows(
+            mask, x0, x1, y0, y1, f_abs, ncirc, device, screen, circuits
+        )
     idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
     if idx.numel() == 0:
         return None
@@ -1106,7 +1198,9 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device, screen=None):
     return rows.to(torch.int32).contiguous()
 
 
-def _window_pairs(bounds, time_start, g0, g1, ppf, width, device, screen=None):
+def _window_pairs(
+    bounds, time_start, g0, g1, ppf, width, device, screen=None, circuits=None
+):
     """Emit a tile's candidate pairs for all covered frames at once.
 
     Consumes the ``precompute_circuit_screen_bounds`` /
@@ -1156,10 +1250,14 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device, screen=None):
     x0 = x01[..., 0]
     x1 = x01[..., 1]
     return (
-        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device, screen)
+        _class_pairs_flat(
+            m[..., 3] & reach, x0, x1, y0, y1, f_abs, device, screen, circuits
+        )
         if need_op
         else None,
-        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device, screen)
+        _class_pairs_flat(
+            m[..., 4] & reach, x0, x1, y0, y1, f_abs, device, screen, circuits
+        )
         if need_tr
         else None,
     )
@@ -1821,9 +1919,29 @@ def prepare_sparse_raster_coverage(
         if pt is not None:
             tri_trans.append(pt)
     if use_bez_pre:
-        po, pt = _window_pairs(
-            bez_bounds, int(time_start), g0, g1, ppf, int(width), device
+        circuits = (
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+            merged["circuit_meta"],
+            merged["edges_2d"],
+            merged["edge_accel"],
+            half_w,
+            half_h,
+            float(rt_settings.analytic_aa_bez_min_half_width),
         )
+        po, pt = _window_pairs(
+            bez_bounds,
+            int(time_start),
+            g0,
+            g1,
+            ppf,
+            int(width),
+            device,
+            circuits=circuits,
+        )
+        circuits = None
         if po is not None:
             bez_opaque.append(po)
         if pt is not None:
@@ -1926,6 +2044,9 @@ def prepare_sparse_raster_coverage(
     # COUNT kernel produces, so calibration measures the exact bytes-per-
     # fragment/per-covered-pixel here and learns the density separately.
     with memory.scope("sparse_discovery"), memory.temp():
+        # Where this scope's forward scratch begins: rewound to once the
+        # fragment stream has been gathered out of it (see below).
+        scratch_floor = memory.get_pointers()[0]
         dummy_z = _arena_tensor(memory, (1,), torch.int64, Z_SENTINEL)
         # Candidate (primitive, tile) pair count: a value-dependent driver of
         # the per-pair count arrays, independent of the fragment count.
@@ -2025,6 +2146,14 @@ def prepare_sparse_raster_coverage(
             opaque and frag_bounds[i + 1] > frag_bounds[i]
             for i, (_kind, _pairs, opaque, *_rest) in enumerate(count_parts)
         )
+        # Triangle fragments emitted, from the same host bounds: truncation
+        # only drops fragments, so this bounds the compaction's triangle
+        # sheets, which is all its sample-depth table needs rows for.
+        num_tri_frags = sum(
+            frag_bounds[i + 1] - frag_bounds[i]
+            for i, (kind, *_rest) in enumerate(count_parts)
+            if kind == "tri"
+        )
 
         pair_cursor = 0
         for spec_index, (kind, pairs, opaque, _counts, accepts) in enumerate(
@@ -2114,6 +2243,22 @@ def prepare_sparse_raster_coverage(
             order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
         )
         del order
+        # Discovery is over: the sorted stream above is the only thing read
+        # from here on. Release what found it before the truncation and the
+        # sheet compaction, which is this function's memory peak and used to
+        # run with all of it still held. On a 5,400-stroke HD frame that was
+        # ~0.4 GB of allocator-owned candidates -- the expanded pair rows and
+        # the int64 count prefix -- plus ~0.3 GB of forward arena scratch: the
+        # per-pair counts and acceptance masks and the unsorted ``frag_*_u``
+        # stream. The candidate lists are cleared too, since a lone part is
+        # the very tensor ``_cat`` handed on.
+        del frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
+        del dummy_z, count_parts, counts_all, counts64, prefix, specs
+        tri_opaque = tri_trans = bez_opaque = bez_trans = None
+        po = pt = po_t = po_b = pb = None
+        pairs = pairs_w = offsets = offsets_w = accepts = accepts_w = _counts = None
+        counts = live = None
+        memory.set_pointers((scratch_floor, memory.get_pointers()[1]))
         # Kept before the coverage adjustment below overwrites it: this is
         # MATERIAL opacity, which the one-mesh rule needs, while the adjusted
         # opaque_s means "occludes every sample".
@@ -2309,6 +2454,7 @@ def prepare_sparse_raster_coverage(
                     "run_offsets": run_offsets,
                     "num_fragments": num_frags,
                     "num_covered": num_covered,
+                    "num_tri_fragments": num_tri_frags,
                 },
                 merged,
                 cam_origin,
@@ -2324,6 +2470,10 @@ def prepare_sparse_raster_coverage(
                 sample_depth=bool(rt_settings.sheet_sample_depth),
                 memory=memory,
                 persist_output=bool(rt_settings.sheet_fused_stream),
+                # Only the fields copied below: this compaction is the frame's
+                # memory peak, and the record-only fields cost it a full
+                # fragment-length array apiece on a stroke-heavy frame.
+                resolve_only=True,
             )
         ns = int(stream["num_sheets"])
         if stream.get("_arena_persistent", False):
