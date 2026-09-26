@@ -35,9 +35,11 @@ tessellating them.
 from __future__ import annotations
 
 import math
+import threading
 import typing as _typing
 from functools import lru_cache
 
+import numpy as np
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
@@ -46,7 +48,6 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUTWARD, RIGHT, UP
 from algan.errors import AlganConfigurationError
-from algan.geometry.geometry import rotate_vector_around_axis
 from algan.mobs.nonplanar_circuit import (
     build_render_primitives as build_nonplanar_render_primitives,
 )
@@ -109,27 +110,106 @@ def _resample_texture_grid(value, old_size, new_size):
     return resized.permute(0, 2, 3, 1).reshape(*leading, -1, channels)
 
 
-def _extremal_control_point_index(dists, relative_tolerance=0.0):
-    """Index of the control point furthest from a circuit's centre, ties broken
-    toward the lowest index.
+#: Relative band within which control points count as equally far out, from
+#: a circuit's centre or from its first axis. Symmetric shapes tie exactly in
+#: exact arithmetic -- every corner of a square, every point of a circle, the
+#: two ends of a line -- and in floating point come out a few ulps apart, in
+#: whichever direction the centroid's rounding happened to fall. A band a
+#: hundred times wider than float32 rounding keeps those ties ties, and the
+#: lowest index wins them, so rounding never picks the winner.
+_TIE_TOLERANCE = 1e-5
 
-    ``torch.argmax`` does not promise which of several equal maxima it hands
-    back, and a circuit's control points tie constantly: every corner of a
-    square is the same distance from its centre, and so is every point of a
-    circle. Since the winner sets the whole local frame -- including the sign of
-    the plane normal -- an unspecified tie-break is an unspecified basis, which
-    is exactly what this avoids.
+#: How far a unit plane normal must lean along an axis before that axis decides
+#: which way the plane faces (see :func:`_face_outward`).
+_FACING_TOLERANCE = 1e-4
 
-    ``relative_tolerance`` widens "equal" to a fraction of the maximum, for the
-    collinear case where the two ends of a path are equidistant in exact
-    arithmetic and an ulp apart in practice.
+
+def _dot3(a, b):
+    """Dot product over a last axis of size 3, as three products and two sums.
+
+    The frame computation below runs in NumPy and is written out elementwise,
+    never through a library reduction (``norm``, ``cross``, ``sum``): every
+    operation is then one correctly rounded IEEE operation per element, so a
+    circuit's result does not depend on what else shares its array. That is what
+    lets :func:`_circuit_frames` frame a whole ``Text`` at once and still give
+    each glyph the bits it gets framed alone -- the pack must land on exactly
+    what its members would have. (NumPy rather than torch because a circuit is
+    a few dozen points: torch's per-operation overhead was the whole cost.)
     """
-    dists = dists.reshape(-1)
-    threshold = dists.amax()
-    if relative_tolerance:
-        threshold = threshold * (1.0 - relative_tolerance)
-    inds = torch.arange(dists.numel(), device=dists.device)
-    return int(torch.where(dists >= threshold, inds, dists.numel()).amin())
+    return a[..., 0] * b[..., 0] + a[..., 1] * b[..., 1] + a[..., 2] * b[..., 2]
+
+
+def _norm3(v):
+    """Euclidean length over a last axis of size 3 (see :func:`_dot3`)."""
+    return np.sqrt(_dot3(v, v))
+
+
+def _cross3(a, b):
+    """Cross product over a last axis of size 3 (see :func:`_dot3`)."""
+    return np.stack(
+        (
+            a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
+            a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+            a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
+        ),
+        -1,
+    )
+
+
+def _halving_sum(values):
+    """Sum over axis 1 by pairwise halving, zero-padded to a power of two.
+
+    Each circuit's terms sit at the start of its row with zeros after them, so
+    halving a row longer than its own power of two first adds only zeros to
+    them, exactly: the total is the same to the last bit whether a circuit is
+    summed alone or padded out beside a longer one. A library ``sum`` promises
+    no such thing; its reduction order moves with the array's shape.
+    """
+    size = values.shape[1]
+    padded = 1 if size <= 1 else 1 << (size - 1).bit_length()
+    if padded != size:
+        pad = np.zeros(
+            (values.shape[0], padded - size, *values.shape[2:]), values.dtype
+        )
+        values = np.concatenate((values, pad), 1)
+    while padded > 1:
+        padded //= 2
+        values = values[:, :padded] + values[:, padded:]
+    return values[:, 0]
+
+
+def _lowest_within_band(scores, present):
+    """Per row, the lowest index whose score is within the tie band of the top.
+
+    ``argmax`` promises nothing about equal maxima, and a circuit's control
+    points tie constantly (see ``_TIE_TOLERANCE``); the winner sets the
+    circuit's first axis, so an unspecified winner is an unspecified frame.
+    Returns ``(index, top)`` per row.
+    """
+    top = np.where(present, scores, -1.0).max(1)
+    count = scores.shape[1]
+    tied = present & (scores >= (top * (1.0 - _TIE_TOLERANCE))[:, None])
+    return np.where(tied, np.arange(count), count).min(1), top
+
+
+def _face_outward(normal):
+    """Sign unit plane normals so the plane faces OUTWARD.
+
+    A plane has two faces, and which one a circuit presents used to follow
+    from which two control points won its tie-breaks -- about half of all
+    glyphs faced away from the camera, and a translation of a few ulps could
+    turn one over. The sign is now the plane's own: the normal points along
+    +z unless the plane is edge-on to it, then along +y, then along +x. Each
+    axis decides only when the normal leans along it by more than
+    ``_FACING_TOLERANCE``, far beyond rounding, so noise cannot flip a face.
+    """
+    x, y, z = normal[..., 0], normal[..., 1], normal[..., 2]
+    lean = np.where(
+        np.abs(z) > _FACING_TOLERANCE,
+        z,
+        np.where(np.abs(y) > _FACING_TOLERANCE, y, x),
+    )
+    return np.where((lean < 0)[..., None], -normal, normal)
 
 
 def _texture_grid_offsets(samples, *, device=None, dtype=None):
@@ -166,187 +246,306 @@ def _texture_grid_offsets(samples, *, device=None, dtype=None):
 #: work is one small matrix multiply either way.
 _CENTROID_SAMPLES_PER_SEGMENT = 32
 
-#: Below this, times the square of the circuit's diagonal, an enclosed area is
-#: not an area: a straight Line's control points are collinear, so the shoelace
-#: sum over them is rounding noise rather than a shape, and the centroid falls
-#: back to the path's own.
-_DEGENERATE_AREA_FRACTION = 1e-9
+#: Below this, times the circuit's diagonal and the size of its coordinates
+#: (the larger of its largest coordinate and its diagonal), an enclosed area is
+#: not an area. A straight Line's control points are collinear only up to
+#: float32 rounding -- a third of the way along, they are off the line by an
+#: ulp of their coordinates -- so the shoelace sum over them is a sliver of
+#: rounding noise, which scales with exactly that product. The bound used to be
+#: 1e-9 of the diagonal squared, below that noise: a Line from (2, 1) to
+#: (-1, 3) enclosed "area", and the centroid divided noise by it, anchoring
+#: the line a third of the way off its middle and pinning row 0 to its end
+#: instead of its start. Now anything thinner than ~1e-5 of its own size
+#: measures as the path it is.
+_DEGENERATE_AREA_FRACTION = 1e-5
 
 
-@lru_cache(maxsize=8)
-def _bezier_sample_weights(samples, device, dtype):
+@lru_cache(maxsize=4)
+def _bezier_sample_weights(samples):
     """Bernstein weights that sample one cubic segment, shape ``(samples, 4)``.
 
-    Cached: a ``Text`` builds one circuit per glyph and every one of them wants
-    the identical matrix, and rebuilding it there costs more than the multiply
-    it feeds.
+    float64, read-only and cached: every circuit wants the identical matrix.
     """
-    t = torch.linspace(0, 1, samples + 1, device=device, dtype=dtype)[:-1].view(-1, 1)
-    s = 1 - t
-    return torch.cat((s * s * s, 3 * s * s * t, 3 * s * t * t, t * t * t), -1)
+    t = np.linspace(0.0, 1.0, samples + 1)[:-1].reshape(-1, 1)
+    s = 1.0 - t
+    weights = np.concatenate((s * s * s, 3 * s * s * t, 3 * s * t * t, t * t * t), -1)
+    weights.setflags(write=False)
+    return weights
 
 
-def _circuit_polyline(control_points):
-    """Sample a cubic circuit into closed polyline loops.
+def _circuit_centroids(points, counts, origins, extents):
+    """Where each circuit balances: the centroid of the region it encloses.
 
-    Returns ``(points, next_index, wraps)``: every sample in authoring order,
-    for each one the index of the sample that follows it *around its own loop*,
-    and which of those steps is the loop's closing one. A segment whose P0 is
-    not where the previous segment's P3 left off starts a new loop -- which is
-    how a circuit carries holes, and each hole has to close on itself before its
-    signed area can cancel the outer loop's.
-
-    Sampling excludes each segment's ``t = 1``, which is the next segment's
-    ``t = 0``, and appends each loop's own final point once instead. On a closed
-    loop that point is where the loop began, so the closing step spans nothing;
-    on an open path -- a stroke, a half-drawn ``Create`` -- it is the far end,
-    which is the point a truncated sampling would have dropped, and the closing
-    step is the chord a fill would span. ``wraps`` is what lets a measure taken
-    over the path itself leave that chord out.
-    """
-    points = control_points.reshape(-1, 3)
-    segment_count = points.shape[-2] // 4
-    segments = points[: segment_count * 4].reshape(segment_count, 4, 3)
-
-    samples = _CENTROID_SAMPLES_PER_SEGMENT
-    weights = _bezier_sample_weights(samples, points.device, points.dtype)
-    curve = torch.einsum("ks,nsc->nkc", weights, segments).reshape(-1, 3)
-
-    # A loop starts wherever a segment does not continue the previous one.
-    if segment_count > 1:
-        extent = points.amax(-2) - points.amin(-2)
-        tolerance = 1e-6 * float(extent.norm(p=2, dim=-1).clamp_min(1.0))
-        gaps = (segments[1:, 0, :] - segments[:-1, 3, :]).norm(p=2, dim=-1)
-        breaks = bool((gaps > tolerance).any())
-    else:
-        breaks = False
-
-    count = curve.shape[-2]
-    if not breaks:
-        # One loop, which is every shape that is not a glyph or a shape with a
-        # hole: the closing step is simply the last one, so none of the
-        # per-loop bookkeeping below is needed.
-        curve = torch.cat((curve, segments[-1, 3, :].unsqueeze(-2)), -2)
-        next_index = torch.cat(
-            (
-                torch.arange(1, count + 1, device=points.device),
-                torch.zeros(1, dtype=torch.long, device=points.device),
-            )
-        )
-        wraps = torch.zeros(count + 1, dtype=torch.bool, device=points.device)
-        wraps[-1] = True
-        return curve, next_index, wraps
-
-    starts = torch.ones(segment_count, dtype=torch.bool, device=points.device)
-    starts[1:] = gaps > tolerance
-    loop_of_segment = starts.cumsum(0) - 1
-    loop_of_sample = loop_of_segment.repeat_interleave(samples)
-
-    loop_count = int(loop_of_segment[-1]) + 1
-    indices = torch.arange(count, device=points.device)
-    # First and last sample of each loop, found by scattering the sample
-    # indices to their loop and keeping the extremes.
-    scatter_base = torch.full(
-        (loop_count,), count, device=points.device, dtype=indices.dtype
-    )
-    first_of_loop = scatter_base.scatter_reduce(
-        0, loop_of_sample, indices, reduce="amin"
-    )
-    last_segment_of_loop = torch.zeros_like(scatter_base).scatter_reduce(
-        0,
-        loop_of_segment,
-        torch.arange(segment_count, device=points.device),
-        reduce="amax",
-    )
-    # Each loop's own end point, appended after the samples: index ``count + l``
-    # closes loop ``l``.
-    curve = torch.cat((curve, segments[last_segment_of_loop, 3, :]), -2)
-
-    continues = torch.zeros(count, dtype=torch.bool, device=points.device)
-    continues[:-1] = loop_of_sample[1:] == loop_of_sample[:-1]
-    next_index = torch.cat(
-        (
-            torch.where(continues, indices + 1, count + loop_of_sample),
-            first_of_loop,
-        )
-    )
-    wraps = torch.zeros(count + loop_count, dtype=torch.bool, device=points.device)
-    wraps[count:] = True
-    return curve, next_index, wraps
-
-
-def _circuit_centroid(control_points, bbox_centre):
-    """Where a circuit balances: the centroid of the region it encloses.
-
-    This is the point the shape turns about, so it is the shape's own centre of
-    area and not the middle of the box around it. The two differ for anything
-    not point-symmetric -- a ``Triangle``'s box centre sits a quarter of a unit
+    This is the point a shape turns about, so it is its own centre of area and
+    not the middle of the box around it. The two differ for anything not
+    point-symmetric -- a ``Triangle``'s box centre sits a quarter of a unit
     above its centroid, which is enough to make a spin look like it is also
     drifting upward, since the shape then orbits a point above itself.
 
-    Measured by the shoelace sums over :func:`_circuit_polyline`, taken about
-    ``bbox_centre`` (which lies in the circuit's plane, so the triangle fan
-    those sums describe is planar and their signed areas are exact). Sub-loops
-    contribute their own signed area, so a hole subtracts itself.
+    Measured by shoelace sums over a polyline sampled from the curves
+    (``_CENTROID_SAMPLES_PER_SEGMENT`` a segment), taken about ``origins``
+    (which lie in each circuit's plane, so the triangle fans those sums
+    describe are planar and their signed areas exact), in float64 so a
+    symmetric shape comes back at its exact centre. A segment whose P0 is not
+    where the previous segment's P3 left off starts a new loop -- which is how
+    a circuit carries holes -- and each loop closes on itself, so a hole
+    subtracts its own area. A path that encloses no area -- a straight
+    :class:`~.Line`, or any open stroke -- falls back to the centroid of the
+    path itself, weighted by arc length; the chord that would close it for a
+    fill carries no weight there. A circuit of fewer than one segment, or of no
+    length, falls back to its origin.
 
-    A path that encloses no area -- a straight :class:`~.Line`, or any open
-    stroke -- has no area centroid, and falls back to the centroid of the path
-    itself, weighted by arc length. A circuit that is a single point falls back
-    to that point.
+    Every circuit's sums run over its own polyline only (see
+    :func:`_halving_sum`), so the batch does not change any circuit's result.
 
     Parameters
     ----------
-    control_points
-        The circuit's cubic control points, shape ``(*, 3)``.
-    bbox_centre
-        Midpoint of the control points' bounding box, shape ``(3,)``. Used as
-        the origin the moments are taken about.
+    points
+        NumPy control points, shape ``(B, N, 3)``: each circuit's own first,
+        zero padding after.
+    counts
+        Each circuit's number of control points, shape ``(B,)``.
+    origins
+        Where the moments are taken, shape ``(B, 3)``: each circuit's
+        bounding-box centre.
+    extents
+        Each circuit's bounding-box diagonal, shape ``(B,)``.
 
     Returns
     -------
-    torch.Tensor
-        The centroid, shape ``(3,)``, in ``control_points``' dtype.
+    tuple
+        ``(centroids, area_normals, encloses_area)``: shapes ``(B, 3)``,
+        ``(B, 3)`` and ``(B,)``, float64. An area normal is the unit normal of
+        the plane a circuit's loops span (Newell's), meaningful only where
+        ``encloses_area``.
     """
-    points = control_points.reshape(-1, 3)
-    if points.shape[-2] < 4:
-        return bbox_centre
-    # float64 throughout: the sums below are differences of similar magnitudes,
-    # and a symmetric shape has to come back at its exact centre rather than an
-    # ulp off it, or every render of one moves by a rounding error.
-    origin = bbox_centre.to(torch.float64)
-    curve, next_index, wraps = _circuit_polyline(points.to(torch.float64) - origin)
-    start = curve
-    end = curve[next_index]
+    batch, width, _ = points.shape
+    samples = _CENTROID_SAMPLES_PER_SEGMENT
+    segments = counts // 4
+    most = width // 4
+    origin = origins.astype(np.float64)
+    extent = extents.astype(np.float64)
+    control = (points[:, : most * 4].astype(np.float64) - origin[:, None]).reshape(
+        batch, most, 4, 3
+    )
+    segment_index = np.arange(most)
+    valid = segment_index < segments[:, None]
 
-    extent = float((points.amax(-2) - points.amin(-2)).norm(p=2, dim=-1))
-    cross = torch.cross(start, end, dim=-1)
-    vector_area = cross.sum(-2) * 0.5
-    if float(vector_area.norm(p=2, dim=-1)) > _DEGENERATE_AREA_FRACTION * extent**2:
-        # Planar shoelace, taken along the plane the loops actually span.
-        normal = vector_area / vector_area.norm(p=2, dim=-1)
-        twice_areas = (cross * normal).sum(-1)
-        centroid = ((start + end) * twice_areas.unsqueeze(-1)).sum(-2) / (
-            3 * twice_areas.sum()
+    weights = _bezier_sample_weights(samples)
+    rows = control[:, :, None]
+
+    def term(k):
+        return weights[:, k].reshape(1, 1, samples, 1) * rows[..., k, :]
+
+    curve = ((term(0) + term(1)) + term(2)) + term(3)  # (B, M, S, 3)
+
+    # Loops: a segment starts one when it is its circuit's first, or when it
+    # does not continue the one before it.
+    tolerance = 1e-6 * np.maximum(extent, 1.0)
+    starts = np.ones((batch, most), dtype=bool)
+    if most > 1:
+        gaps = _norm3(control[:, 1:, 0] - control[:, :-1, 3])
+        starts[:, 1:] = gaps > tolerance[:, None]
+    starts &= valid
+    ends = np.zeros_like(starts)
+    ends[:, :-1] = starts[:, 1:]
+    ends |= segment_index == (segments - 1)[:, None]
+    ends &= valid
+    loop = np.cumsum(starts, 1) - 1
+    first_segment = np.maximum.accumulate(np.where(starts, segment_index, -1), 1).clip(
+        min=0
+    )
+
+    # Steps within a segment go sample to sample; a segment's last sample steps
+    # to the next segment's first while the loop goes on, and to the
+    # segment's own end point where the loop closes.
+    following = np.concatenate((curve[:, 1:, 0], np.zeros_like(curve[:, :1, 0])), 1)
+    last_step = np.where(ends[..., None], control[:, :, 3], following)
+    step_end = np.concatenate((curve[:, :, 1:], last_step[:, :, None]), 2)
+    keep = valid[:, :, None, None]
+    step_start = np.where(keep, curve, 0.0).reshape(batch, most * samples, 3)
+    step_end = np.where(keep, step_end, 0.0).reshape(batch, most * samples, 3)
+
+    # Then each loop's closing step, from its end point back to where it began,
+    # right after its circuit's own samples.
+    length = most * samples + most
+    start = np.zeros((batch, length, 3))
+    end = np.zeros((batch, length, 3))
+    start[:, : most * samples] = step_start
+    end[:, : most * samples] = step_end
+    wraps = np.zeros((batch, length), dtype=bool)
+    closing_row, closing_segment = np.nonzero(ends)
+    slot = segments[closing_row] * samples + loop[closing_row, closing_segment]
+    start[closing_row, slot] = control[closing_row, closing_segment, 3]
+    end[closing_row, slot] = curve[
+        closing_row, first_segment[closing_row, closing_segment], 0
+    ]
+    wraps[closing_row, slot] = True
+
+    cross = _cross3(start, end)
+    vector_area = _halving_sum(cross) * 0.5
+    area_size = _norm3(vector_area)
+    present = np.arange(width) < counts[:, None]
+    magnitude = np.where(present, np.abs(points).max(-1), 0).max(1).astype(np.float64)
+    encloses_area = (segments > 0) & (
+        area_size > _DEGENERATE_AREA_FRACTION * extent * np.maximum(magnitude, extent)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        area_normal = vector_area / np.maximum(area_size, 1e-300)[:, None]
+        twice_areas = _dot3(cross, area_normal[:, None])
+        area_centroid = (
+            _halving_sum((start + end) * twice_areas[..., None])
+            / (3 * _halving_sum(twice_areas))[:, None]
         )
-        return (origin + centroid).to(control_points.dtype)
+        lengths = _norm3(end - start) * (~wraps)
+        total = _halving_sum(lengths)
+        path_centroid = (
+            _halving_sum(((start + end) * 0.5) * lengths[..., None])
+            / np.maximum(total, 1e-300)[:, None]
+        )
+    offset = np.where(
+        encloses_area[:, None],
+        area_centroid,
+        np.where(((segments > 0) & (total > 0))[:, None], path_centroid, 0.0),
+    )
+    return origin + offset, area_normal, encloses_area
 
-    # The path's own centroid: the closing chord of an open path is not part of
-    # what is drawn, so it carries no weight here.
-    lengths = (end - start).norm(p=2, dim=-1) * (~wraps)
-    total = lengths.sum()
-    if float(total) <= 0:
-        return bbox_centre
-    centroid = (((start + end) * 0.5) * lengths.unsqueeze(-1)).sum(-2) / total
-    return (origin + centroid).to(control_points.dtype)
+
+def _grouped_centroids(points, counts, origins, extents):
+    """:func:`_circuit_centroids`, run on circuits of similar length together.
+
+    The centroid pass pads every circuit to the longest one in its call, so a
+    ``Text`` whose longest glyph has four times the segments of its shortest
+    would do four times the work on the short ones. Circuits are grouped by the
+    power of two of their segment count, which bounds the padding at half of
+    each group. Grouping changes no result: every circuit's sums run over its
+    own rows only.
+    """
+    segments = np.maximum(counts // 4, 1)
+    buckets = np.ceil(np.log2(segments)).astype(np.int64)
+    unique = np.unique(buckets)
+    if unique.size == 1:
+        return _circuit_centroids(points, counts, origins, extents)
+    batch = points.shape[0]
+    centroids = np.zeros((batch, 3))
+    normals = np.zeros((batch, 3))
+    encloses = np.zeros(batch, dtype=bool)
+    for bucket in unique:
+        rows = np.nonzero(buckets == bucket)[0]
+        width = int(counts[rows].max())
+        (centroids[rows], normals[rows], encloses[rows]) = _circuit_centroids(
+            points[rows, :width], counts[rows], origins[rows], extents[rows]
+        )
+    return centroids, normals, encloses
+
+
+def _circuit_centroid(control_points, bbox_centre):
+    """The centroid of one circuit, about ``bbox_centre``, as a torch tensor.
+
+    See :func:`_circuit_centroids`, which this runs for a batch of one.
+    """
+    points = control_points.reshape(-1, 3).detach().cpu().numpy()
+    origin = bbox_centre.reshape(1, 3).detach().cpu().numpy()
+    extent = _norm3(points.max(0) - points.min(0)).reshape(1)
+    centroid, _, _ = _circuit_centroids(
+        points[None], np.array([points.shape[0]]), origin, extent
+    )
+    return torch.from_numpy(centroid[0].astype(points.dtype)).to(control_points.device)
+
+
+#: Largest circuit, in control points, whose frame is memoized, and how many
+#: frames are kept. A glyph is a few dozen points; the bound keeps a packed
+#: whole-scene batch (hashed as one key) out of the memo.
+_FRAME_MEMO_MAX_POINTS = 4096
+_FRAME_MEMO_SIZE = 32768
+_FRAME_MEMO: dict = {}
+_FRAME_MEMO_LOCK = threading.Lock()
+
+
+def _frame_memo_key(points):
+    """The memo key of one circuit's control points, or None to skip the memo."""
+    if points.device.type != "cpu" or points.shape[0] > _FRAME_MEMO_MAX_POINTS:
+        return None
+    try:
+        raw = points.detach().contiguous().numpy().tobytes()
+    except (TypeError, RuntimeError):  # a dtype numpy has no equivalent for
+        return None
+    return (points.dtype, points.shape[0], raw)
+
+
+def _remember_frame(key, frame):
+    stored = tuple(
+        value.clone() if torch.is_tensor(value) else value for value in frame
+    )
+    # Circuits can be built on the batch-prep worker too (an updater building
+    # a Mob during replay), so eviction must not race an insert.
+    with _FRAME_MEMO_LOCK:
+        if len(_FRAME_MEMO) >= _FRAME_MEMO_SIZE:
+            # Drop the oldest half: insertion order is age order in a dict.
+            for stale in list(_FRAME_MEMO)[: _FRAME_MEMO_SIZE // 2]:
+                del _FRAME_MEMO[stale]
+        _FRAME_MEMO[key] = stored
 
 
 def _circuit_location_and_basis(control_points):
-    """Return the same local frame used by a standalone bezier circuit, plus
-    whether its second in-plane axis had to be synthesized.
+    """Memoized frame of one circuit: see :func:`_circuit_frames`.
+
+    Returns ``(location, basis, second_axis_synthesized)``: shapes ``(3,)`` and
+    ``(9,)``, and a bool. A bit-identical input returns a copy of the frame
+    computed for it before; framed alone or in a batch, a circuit gets the
+    same bits either way.
+    """
+    points = control_points.reshape(-1, 3)
+    key = _frame_memo_key(points)
+    cached = _FRAME_MEMO.get(key) if key is not None else None
+    if cached is None:
+        locations, bases, synthesized = _circuit_frames([points])
+        cached = (locations[0], bases[0], bool(synthesized[0]))
+        if key is not None:
+            _remember_frame(key, cached)
+        return cached
+    return tuple(value.clone() if torch.is_tensor(value) else value for value in cached)
+
+
+def _circuit_locations_and_bases(control_point_batches):
+    """Memoized frames of many circuits, computed together where not memoized.
+
+    Returns ``(locations, bases)``, shapes ``(count, 3)`` and ``(count, 9)``.
+    """
+    batches = [points.reshape(-1, 3) for points in control_point_batches]
+    keys = [_frame_memo_key(points) for points in batches]
+    frames = [(_FRAME_MEMO.get(key) if key is not None else None) for key in keys]
+    missing = [index for index, frame in enumerate(frames) if frame is None]
+    if missing:
+        locations, bases, synthesized = _circuit_frames(
+            [batches[index] for index in missing]
+        )
+        for row, index in enumerate(missing):
+            frame = (locations[row], bases[row], bool(synthesized[row]))
+            frames[index] = frame
+            if keys[index] is not None:
+                _remember_frame(keys[index], frame)
+    return (
+        torch.stack([frame[0] for frame in frames]),
+        torch.stack([frame[1] for frame in frames]),
+    )
+
+
+def _circuit_frames(control_point_batches):
+    """Return the local frame of each circuit, plus whether its second in-plane
+    axis had to be synthesized.
 
     Row 2 is the circuit's plane normal. Rows 0 and 1 span that plane and always
     share a length, so the frame is orthogonal with a square in-plane footprint
     -- which is what the texture grid, laid out along those two rows, relies on.
+
+    The plane is the one the circuit's loops span (their Newell normal) when
+    it encloses area, and otherwise the one through its centre, its furthest
+    control point and the control point furthest from that axis. Which of the
+    plane's two faces the circuit presents is the plane's own business, not its
+    control points': :func:`_face_outward` turns it towards OUTWARD, so every
+    flat shape, whatever order its outline was authored in, faces the camera it
+    was drawn in front of, as ``DEFAULT_BASIS`` says a Mob does.
 
     Within the plane the rows are aligned to the world axes, not to the
     circuit's own geometry. They used to point at the control point furthest
@@ -354,102 +553,129 @@ def _circuit_location_and_basis(control_points):
     0 = ``(-2, 0.5, 0)``. Since a shape-``(*, 3)`` factor to
     :meth:`~.Mob.scale` scales the Mob's own right, up and forward axes, that
     made ``rect.scale([4, 1, 1])`` stretch along the diagonal and render the
-    rectangle as a parallelogram. Row lengths are unchanged by the alignment, so
-    ``scale_coefficient`` and anything derived from it (``Circle.radius``) keep
-    their old values; only the in-plane rotation of the frame moves.
+    rectangle as a parallelogram. Both rows are as long as the distance from the
+    centre to the furthest control point, so ``scale_coefficient`` and anything
+    derived from it (``Circle.radius``) follow the shape's extent.
 
     A straight Line is the exception and keeps the geometry-derived frame: its
     control points are collinear, so there is no plane to align to, and the
     extremal displacement genuinely is the shape's own axis. Row 0 is pinned to
     the START of such a path -- see :class:`~algan.mobs.shapes_2d.Line`, whose
-    documented guarantee this is.
+    documented guarantee this is -- and row 1 is a clockwise quarter turn of it
+    about OUTWARD.
+
+    Every choice among equally distant control points is made within
+    ``_TIE_TOLERANCE`` and every facing decision within
+    ``_FACING_TOLERANCE``, so rounding cannot turn a frame round, and every
+    reduction runs over a circuit's own rows (see :func:`_dot3`), so framing a
+    whole ``Text`` at once gives each glyph exactly the frame it gets alone.
+
+    Parameters
+    ----------
+    control_point_batches
+        One ``(N_i, 3)`` tensor of cubic control points per circuit, all of one
+        dtype and device.
 
     Returns
     -------
     tuple
-        ``(location, basis, second_axis_synthesized)``: the circuit's centre,
-        its flattened 3x3 frame, and whether the control points were collinear
-        so that row 1 carries no extent of the shape's own.
+        ``(locations, bases, synthesized)``: each circuit's centre, shape
+        ``(B, 3)``; its flattened 3x3 frame, shape ``(B, 9)``; and whether its
+        control points were collinear (or coincident), so that row 1 carries
+        no extent of the shape's own, shape ``(B,)``.
     """
-    control_points = control_points.reshape(-1, 3)
-    mn = control_points.amin(-2)
-    mx = control_points.amax(-2)
-    bbox_centre = (mn + mx) * 0.5
+    batches = [points.reshape(-1, 3) for points in control_point_batches]
+    device = batches[0].device
+    arrays = [points.detach().cpu().numpy() for points in batches]
+    dtype = arrays[0].dtype
+    counts = np.array([array.shape[0] for array in arrays], dtype=np.int64)
+    batch = len(arrays)
+    width = int(counts.max())
+    points = np.zeros((batch, width, 3), dtype=dtype)
+    for row, array in enumerate(arrays):
+        points[row, : array.shape[0]] = array
+    present = np.arange(width) < counts[:, None]
+    lowest = np.where(present[..., None], points, np.inf).min(1)
+    highest = np.where(present[..., None], points, -np.inf).max(1)
+    bbox_centre = (lowest + highest) * 0.5
+    diagonal = highest - lowest
     # The frame is anchored at the shape's centroid, not at the middle of its
     # box: ``location`` is what a Mob turns and scales about, and a shape has
-    # to turn about itself. See :func:`_circuit_centroid`.
-    location = _circuit_centroid(control_points, bbox_centre)
-    if (mx - mn).norm(p=2, dim=-1) <= 1e-6:
-        basis = squish(
-            torch.eye(3, device=control_points.device, dtype=control_points.dtype)
-        )
-        return location, basis.reshape(-1), True
-
-    disps = control_points - location
-    centre_dists = disps.norm(p=2, dim=-1, keepdim=True)
-    first_basis = disps[_extremal_control_point_index(centre_dists)].unsqueeze(-2)
-    if first_basis.norm(p=2, dim=-1) <= 1e-4:
-        first_basis = RIGHT.to(control_points) * 1e-4
-    first_basis_n = F.normalize(first_basis, p=2, dim=-1)
-
-    planar_disps = disps - dot_product(disps, first_basis_n) * first_basis_n
-    dists = planar_disps.norm(p=2, dim=-1, keepdim=True)
-    second_basis = planar_disps[_extremal_control_point_index(dists)].unsqueeze(-2)
-    degenerate = bool(second_basis.norm(p=2, dim=-1).max() <= 1e-4)
-    if degenerate:
-        # Collinear control points: no plane to derive a second axis from, so
-        # row 1 is synthesized perpendicular to row 0 and carries none of the
-        # shape's own extent. Re-pick row 0 with a tolerance, so that the two
-        # ends of a path -- equidistant from its centre in exact arithmetic,
-        # an ulp apart in practice -- always resolve to the lowest-indexed
-        # control point, i.e. the start.
-        first_basis = disps[
-            _extremal_control_point_index(centre_dists, 1e-6)
-        ].unsqueeze(-2)
-        first_basis_n = F.normalize(first_basis, p=2, dim=-1)
-        # Clockwise about OUTWARD, so that the negated cross below lands on
-        # OUTWARD here too: a straight path's face is the same face a closed
-        # one's is.
-        second_basis = rotate_vector_around_axis(first_basis, -90, OUTWARD, -1)
-    scale = first_basis.norm(p=2, dim=-1, keepdim=True)
-    second_basis = second_basis * scale / second_basis.norm(p=2, dim=-1, keepdim=True)
-    # NEGATED, which is what makes a flat shape face the viewer. Row 2 is the
-    # face the circuit presents, and ``cross(row 0, row 1)`` follows the order
-    # the control points were authored in: every 2-D shape Algan ships is wound
-    # so that it comes out INWARD, which would leave a Square stating that it
-    # faces away from the camera it was drawn in front of, while
-    # ``DEFAULT_BASIS`` says a Mob faces OUTWARD. The sign belongs here rather
-    # than in the shapes because it is the *frame's* convention, not the paths':
-    # a path's direction is drawn (``Create``) and interpolated (``become``),
-    # and reversing one to fix a normal would move all of that.
-    third_basis_n = -F.normalize(
-        broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
+    # to turn about itself. See :func:`_circuit_centroids`.
+    centroids, area_normals, encloses_area = _grouped_centroids(
+        points, counts, bbox_centre, _norm3(diagonal.astype(np.float64))
+    )
+    location = centroids.astype(dtype)
+    coincident = _norm3(diagonal) <= 1e-6
+    rows = np.arange(batch)
+    right, up, outward = (
+        axis.reshape(3).cpu().numpy().astype(dtype) for axis in (RIGHT, UP, OUTWARD)
     )
 
-    if not degenerate:
-        # Swing the in-plane pair round to the world axes, keeping the plane and
-        # both row lengths exactly as derived above. Row 0 takes whichever world
-        # axis the plane admits, preferring x; row 1 follows from the plane's
-        # orientation, so on a plane whose normal faces the camera it comes out
-        # along +y -- an upright shape's own up is UP, which is what
-        # ``wave_color`` means by "bottom to top". Only one of the three world
-        # axes can be parallel to the normal, so the loop always settles.
-        for reference in (RIGHT, UP, OUTWARD):
-            candidate = reference.to(third_basis_n) - (
-                dot_product(reference.to(third_basis_n), third_basis_n) * third_basis_n
-            )
-            if bool(candidate.norm(p=2, dim=-1).min() > 1e-4):
-                first_basis_n = F.normalize(candidate, p=2, dim=-1)
-                first_basis = first_basis_n * scale
-                # cross(first, cross(third, first)) == third, so the frame keeps
-                # the handedness the plane normal was computed with.
-                second_basis = (
-                    broadcast_cross_product(third_basis_n, first_basis_n) * scale
-                )
-                break
+    with np.errstate(divide="ignore", invalid="ignore"):
+        disps = points - location[:, None]
+        first_index, farthest = _lowest_within_band(_norm3(disps), present)
+        first = disps[rows, first_index]
+        short = farthest <= 1e-4
+        first_axis = np.where(short[:, None], right * 1e-4, first)
+        first_unit = first_axis / _norm3(first_axis)[:, None]
+        planar_disps = (
+            disps - _dot3(disps, first_unit[:, None])[..., None] * first_unit[:, None]
+        )
+        second_index, widest = _lowest_within_band(_norm3(planar_disps), present)
+        collinear = widest <= 1e-4
 
-    basis = torch.cat((first_basis, second_basis, third_basis_n), -1)
-    return location, basis.reshape(-1), degenerate
+        # A plane: the loops' own, else the extremal pair's.
+        pair = _cross3(first_unit, planar_disps[rows, second_index])
+        pair_normal = pair / np.maximum(_norm3(pair), 1e-30)[:, None]
+        normal = _face_outward(
+            np.where(encloses_area[:, None], area_normals.astype(dtype), pair_normal)
+        )
+        scale = np.where(short, 1e-4, farthest).astype(dtype)[:, None]
+        # Row 0 takes whichever world axis the plane admits, preferring x; row
+        # 1 follows from the plane's orientation, so on a plane whose normal
+        # faces the camera it comes out along +y -- an upright shape's own up
+        # is UP, which is what ``wave_color`` means by "bottom to top". Only one
+        # of the three world axes can be parallel to the normal, so one always
+        # qualifies.
+        along = None
+        for axis in (outward, up, right):
+            candidate = axis[None] - _dot3(axis[None], normal)[:, None] * normal
+            size = _norm3(candidate)[:, None]
+            unit = candidate / np.maximum(size, 1e-30)
+            along = unit if along is None else np.where(size > 1e-4, unit, along)
+        row_0 = along * scale
+        row_1 = _cross3(normal, along) * scale
+
+        # Collinear: row 0 from the centre to the start of the path, row 1 a
+        # clockwise quarter turn of it about OUTWARD, carrying no extent of the
+        # shape's own. The turn is written out, (x, y, z) -> (y, -x, z), so it
+        # is exact. Row 2 is the negated cross of the two, which is OUTWARD for
+        # a path in the screen plane; a path along z gives no cross at all and
+        # takes RIGHT as its second axis instead.
+        line_0 = first
+        line_size = _norm3(line_0)[:, None]
+        line_unit = line_0 / np.maximum(line_size, 1e-30)
+        line_1 = np.stack((line_0[:, 1], -line_0[:, 0], line_0[:, 2]), -1)
+        line_1 = line_1 * (line_size / np.maximum(_norm3(line_1), 1e-30)[:, None])
+        along_z = _norm3(_cross3(line_unit, line_1)) <= 1e-6 * line_size[:, 0]
+        line_1 = np.where(along_z[:, None], right * line_size, line_1)
+        line_cross = _cross3(line_unit, line_1)
+        line_2 = -line_cross / np.maximum(_norm3(line_cross), 1e-30)[:, None]
+        turned = _face_outward(line_2)
+        line_1 = np.where((_dot3(turned, line_2) < 0)[:, None], -line_1, line_1)
+
+    basis = np.where(
+        collinear[:, None],
+        np.concatenate((line_0, line_1, turned), -1),
+        np.concatenate((row_0, row_1, normal), -1),
+    )
+    basis = np.where(coincident[:, None], np.eye(3, dtype=dtype).reshape(1, 9), basis)
+    return (
+        torch.from_numpy(np.ascontiguousarray(location)).to(device),
+        torch.from_numpy(np.ascontiguousarray(basis)).to(device),
+        torch.from_numpy(collinear | coincident).to(device),
+    )
 
 
 class BezierCircuitCubic(Mob):
@@ -878,11 +1104,10 @@ class BezierCircuitCubic(Mob):
             )
 
         mob = cls(torch.cat(batches, -2), *args, **kwargs)
-        locations, bases, _ = zip(
-            *[_circuit_location_and_basis(points) for points in batches]
-        )
-        locations = torch.stack(locations, -2).unsqueeze(0)
-        bases = torch.stack(bases, -2).unsqueeze(0)
+        # Every member framed in one pass, each exactly as it would be alone.
+        locations, bases = _circuit_locations_and_bases(batches)
+        locations = locations.unsqueeze(0)
+        bases = bases.unsqueeze(0)
         count = len(batches)
 
         with Off(

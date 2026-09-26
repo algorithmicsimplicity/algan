@@ -4116,6 +4116,148 @@ class RenderLoopMixin:
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
 
+    def _static_frame_runs(self, start_ind, end_ind, background, post_processes):
+        """Which of a video's frames to render, and how often to write each.
+
+        A frame is a *repeat* when the recording proves its state equals the
+        previous frame's, and is then written again instead of rendered again
+        (``SETTINGS.raytracing.experimental.reuse_static_frames``). The test
+        replicates, comparison for comparison, how materialization reads the
+        recording at a frame's time (``time_ind / frames_per_second``, float32):
+
+        * no function application or updater is active at either frame (the
+          replay's own ``start <= t < end`` test, on the same float32 windows);
+        * every attribute's base state has the same edit rank at both frames
+          (``_query_row_states`` depends on time only through that rank);
+        * every lifespan end-point mask is unchanged (``record_end_points``);
+        * no actor spawns or despawns between them (the batch's actor set).
+
+        Equal recorded state gives equal primitives and render state, and the
+        deterministic renderer and per-frame post-processing then give equal
+        pixels. Anything whose output can vary with the frame itself returns
+        None (render every frame): the path tracer's per-frame sampling, a
+        callable background, traced paths, live camera views, and
+        post-processes from outside Algan.
+
+        Returns
+        -------
+        tuple or None
+            ``(frame_indices, repeats)``: the absolute frames to render, in
+            order, and how many consecutive video frames each one fills.
+        """
+        total = int(end_ind) - int(start_ind)
+        if not rt_settings_module.reuse_static_frames or total < 2:
+            return None
+        if int(rt_settings_module.samples_per_pixel) != 1:
+            return None
+        chosen_background = (
+            background if background is not None else self.background_frame
+        )
+        if callable(chosen_background) and not torch.is_tensor(chosen_background):
+            return None
+        for process in post_processes or ():
+            function = process.func if isinstance(process, partial) else process
+            module = getattr(function, "__module__", "") or ""
+            if not module.startswith("algan.rendering.post_processing"):
+                return None
+        from algan.rendering.camera_views import _live_views
+
+        if _live_views(self):
+            return None
+        timeline = self.timeline_manager
+        if len(timeline._traced_paths):
+            return None
+        timeline._resolve_replay_windows()
+
+        # Exactly the render's frame times: _get_batch_of_primitives divides
+        # the int64 frame indices by the frame rate.
+        times = torch.arange(int(start_ind), int(end_ind)) / self.frames_per_second
+        changed = torch.zeros(total, dtype=torch.bool)
+        changed[0] = True
+
+        def steps(per_frame):
+            changed[1:] |= (per_frame[1:] != per_frame[:-1]).to(changed.device)
+
+        def counts_at_or_before(values, at, right=True):
+            dtype = torch.promote_types(values.dtype, at.dtype)
+            ordered = values.reshape(-1).to(dtype).sort().values
+            return torch.searchsorted(
+                ordered, at.to(device=ordered.device, dtype=dtype), right=right
+            ).cpu()
+
+        # Animations and updaters: a frame at which one is active differs
+        # from both of its neighbours. ``ends`` is floored at ``starts`` so an
+        # inverted window counts as never active, as the replay test has it.
+        functions = timeline.function_timeline
+        windows = []
+        if functions.function_applications:
+            windows.append(functions._windows()[:2])
+        if functions.updaters:
+            windows.append(functions._updater_windows()[:2])
+        for starts, ends in windows:
+            if starts.numel() == 0:
+                continue
+            ends = torch.maximum(ends, starts)
+            active = counts_at_or_before(starts, times) > counts_at_or_before(
+                ends, times
+            )
+            changed |= active
+            changed[1:] |= active[:-1]
+
+        for attribute in timeline.attr_to_timeline.values():
+            attribute.prepare_for_queries()
+            if attribute._edits_sorted:
+                index = attribute._prepared_queries(times)
+                steps(
+                    torch.searchsorted(
+                        index.unique_timestamps,
+                        times.to(index.unique_timestamps.device).contiguous(),
+                        right=True,
+                    ).cpu()
+                )
+            if attribute.record_end_points and attribute.pointer:
+                attribute._refresh_end_points()
+                bounds = attribute._end_points.reshape(-1, 2)
+                # Rows whose ``start <= t`` / ``t < end`` flips between frames.
+                steps(counts_at_or_before(bounds[:, 0], times))
+                steps(counts_at_or_before(bounds[:, 1], times))
+
+        # The batch's actor set, which _actors_in_window tests in float64.
+        spawns, despawns = [], []
+        for actor in [
+            self.camera,
+            self.camera.screen,
+            *self.light_sources,
+            *self.actors,
+        ]:
+            spawn = actor.lifespan.start()
+            if spawn < 0:
+                continue
+            despawn = actor.lifespan.end()
+            spawns.append(spawn)
+            despawns.append(math.inf if despawn < 0 else despawn)
+        if spawns:
+            times64 = (
+                torch.arange(int(start_ind), int(end_ind), dtype=torch.float64)
+                / self.frames_per_second
+            )
+            steps(
+                counts_at_or_before(torch.tensor(spawns, dtype=torch.float64), times64)
+            )
+            steps(
+                counts_at_or_before(
+                    torch.tensor(despawns, dtype=torch.float64), times64, right=False
+                )
+            )
+
+        rendered = changed.nonzero().view(-1)
+        if rendered.numel() == total:
+            return None
+        boundaries = torch.cat((rendered, torch.tensor([total])))
+        repeats = (boundaries[1:] - boundaries[:-1]).tolist()
+        frame_indices = tuple((rendered + int(start_ind)).tolist())
+        return frame_indices, repeats
+
     def _stream_video_frames(
         self,
         file_writer,
@@ -4181,24 +4323,45 @@ class RenderLoopMixin:
                 _render_progress(total_frames) as report_frame,
                 contextlib.ExitStack() as frame_cleanup,
             ):
+                runs = self._static_frame_runs(
+                    start_ind, end_ind, background, post_processes
+                )
+                repeats = None
+                frame_window, sparse = tuple(self.scene_times[-1]), {}
+                if runs is not None:
+                    frame_indices, repeats = runs
+                    frame_window = (0, len(frame_indices))
+                    sparse = {"frame_indices": frame_indices}
+                    logger.log(
+                        PERF,
+                        "Rendering %d of %d frames; the rest repeat the frame "
+                        "before them.",
+                        len(frame_indices),
+                        end_ind - start_ind,
+                    )
                 # Explicitly close the generator on encoder failure too: its
                 # finally releases materialization buffers and prep workers.
                 batches = self.get_frames(
-                    *self.scene_times[-1],
+                    *frame_window,
                     background=background,
                     post_processes=post_processes,
                     manual_memory=True,
+                    **sparse,
                 )
                 close_frames = getattr(batches, "close", None)
                 if close_frames is not None:
                     frame_cleanup.callback(close_frames)
+                rendered = 0
                 for frame_batch in batches:
                     for frame in frame_batch:
-                        writer.put(frame)
-                        # After the put: the queue is bounded and feeds the
-                        # encoder thread, so reporting first would run the
-                        # progress ahead of the actual encode.
-                        report_frame()
+                        copies = 1 if repeats is None else repeats[rendered]
+                        rendered += 1
+                        for _ in range(copies):
+                            writer.put(frame)
+                            # After the put: the queue is bounded and feeds the
+                            # encoder thread, so reporting first would run the
+                            # progress ahead of the actual encode.
+                            report_frame()
             self._drain_video_writer(writer)
         except BaseException:
             if writer is not None:

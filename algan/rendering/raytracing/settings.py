@@ -1486,6 +1486,15 @@ shadow_light_major = env_flag("ALGAN_SHADOW_LIGHT_MAJOR", True)
 # T4 explainer UHD: 3.40 -> 2.84 s warm render median; pixel-identical.
 pinned_frame_readback = env_flag("ALGAN_PINNED_FRAME_READBACK", True)
 
+# A video frame whose recorded state provably equals the previous frame's --
+# no animation or updater active at either, no edit, lifespan or spawn
+# boundary between them -- is written again instead of rendered again.
+# Holds between narrated animations are often a third of an explainer's
+# frames. Deterministic renderer only (samples_per_pixel == 1), and skipped
+# for callable backgrounds, traced paths and live camera views. See
+# RenderLoopMixin._static_frame_runs.
+reuse_static_frames = env_flag("ALGAN_REUSE_STATIC_FRAMES", False)
+
 # Bounded light-major queue, one worker per shadow ray, fixed-order reduction.
 # Host dispatch gates: changing these never invalidates compiled settings.
 shadow_ray_parallel = env_flag("ALGAN_SHADOW_RAY_PARALLEL", False)

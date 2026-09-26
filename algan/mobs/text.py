@@ -25,6 +25,10 @@ See :doc:`/advanced_user_tutorials/text_and_math`.
 
 from __future__ import annotations
 
+import os
+import threading
+from typing import NamedTuple
+
 import torch.nn.functional as F
 
 from algan.settings._startup import _ANIMATION_DEVICE
@@ -58,6 +62,7 @@ from algan.utils.tensor_utils import unsquish
 #: ``latex`` compiles the document, ``dvisvgm`` turns the DVI into the SVG
 #: outlines Algan reads.
 _LATEX_BINARIES = ("latex", "dvisvgm")
+_LATEX_TOOLCHAIN_FOUND = None
 
 
 def _require_latex_toolchain():
@@ -71,10 +76,18 @@ def _require_latex_toolchain():
     :func:`make_manim_dir` writes a scratch directory for a run that cannot
     happen.
     """
+    global _LATEX_TOOLCHAIN_FOUND
     import shutil
 
+    # ``shutil.which`` stats every PATH entry for every extension, ~15 ms, and
+    # this runs for every Tex. A success is remembered for the PATH it was
+    # found on; a failure is not, so a TeX installed mid-session is picked up.
+    searched = (shutil.which, os.environ.get("PATH"))
+    if searched == _LATEX_TOOLCHAIN_FOUND:
+        return
     missing = [name for name in _LATEX_BINARIES if shutil.which(name) is None]
     if not missing:
+        _LATEX_TOOLCHAIN_FOUND = searched
         return
     names = " and ".join(missing)
     raise AlganConfigurationError(
@@ -91,6 +104,87 @@ def _require_latex_toolchain():
         'macOS and `pip install "algan[pango]"` on Linux. '
         "Tex(..., latex=False) does the same."
     )
+
+
+class _TexGlyphs(NamedTuple):
+    """What a typeset formula contributes to a :class:`Tex`: its outlines.
+
+    ``tex_keys`` and ``segment_sizes`` are the typeset segments and how many
+    glyphs each holds; ``points`` is each outline glyph's Manim point array
+    and ``is_svg_path`` whether it came from an SVG path (which decides the
+    triangulated path's orientation). ``styled_fills`` is each Pango glyph's
+    fill color and opacity (None for LaTeX).
+    """
+
+    tex_keys: tuple | None
+    segment_sizes: tuple
+    points: tuple
+    is_svg_path: tuple
+    styled_fills: tuple | None
+
+
+#: Typeset outlines by source, so a formula is typeset and parsed once per
+#: process. Manim's MathTex rebuilds a glyph tree from the (disk-cached) SVG
+#: each time, ~50 ms for a short formula, and a ``DecimalNumber`` typesets
+#: ``"0123456789"`` once per digit slot.
+_TEX_GLYPH_MEMO: dict = {}
+_TEX_GLYPH_MEMO_SIZE = 4096
+_TEX_GLYPH_MEMO_LOCK = threading.Lock()
+
+
+def _tex_glyph_memo_key(
+    tex_strings, delimiter, tex_environment, latex, pango_kwargs, kwargs
+):
+    """Everything the typeset outlines depend on, or None to typeset afresh.
+
+    For LaTeX: the strings, the separator and environment they are joined
+    with, and the TeX template MathTex falls back to
+    (``config["tex_template"]``), which a script may replace or edit between
+    two Tex. For Pango: the joined string and every Pango option, and the
+    Pango backend's version.
+    """
+    if "tex_template" in kwargs:
+        return None
+    try:
+        if latex:
+            template = mn.config["tex_template"]
+            style_key = (
+                template.body,
+                template.tex_compiler,
+                template.output_format,
+            )
+        else:
+            from algan.utils.manim_svg_cache import _manimpango_cache_version
+
+            style_key = (
+                _manimpango_cache_version(),
+                _frozen_pango_options(pango_kwargs or {}),
+            )
+    except Exception:  # noqa: BLE001 - an unkeyable input is never memoized
+        return None
+    return (bool(latex), tuple(tex_strings), delimiter, tex_environment, style_key)
+
+
+def _frozen_pango_options(value):
+    """A hashable copy of Pango's options; raises on anything not plain data."""
+    if isinstance(value, dict):
+        return tuple(
+            sorted((str(k), _frozen_pango_options(v)) for k, v in value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_pango_options(v) for v in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unkeyable Pango option {type(value).__name__}")
+
+
+def _remember_tex_glyphs(key, glyphs):
+    with _TEX_GLYPH_MEMO_LOCK:
+        if len(_TEX_GLYPH_MEMO) >= _TEX_GLYPH_MEMO_SIZE:
+            # Drop the oldest half: insertion order is age order in a dict.
+            for stale in list(_TEX_GLYPH_MEMO)[: _TEX_GLYPH_MEMO_SIZE // 2]:
+                del _TEX_GLYPH_MEMO[stale]
+        _TEX_GLYPH_MEMO[key] = glyphs
 
 
 def make_manim_dir():
@@ -110,12 +204,22 @@ def make_manim_dir():
     from algan.utils.path_utils import _ensure_writable_directory
 
     for tex_dir in _configure_manim_dirs(config, create=False):
+        # The write probe creates and deletes a file, ~2 ms a directory, and
+        # this runs for every Tex. A directory that passed it once this
+        # process and still exists is not probed again.
+        key = str(tex_dir)
+        if key in _VERIFIED_TEX_DIRS and os.path.isdir(key):
+            continue
         _ensure_writable_directory(
             tex_dir,
             purpose="text/LaTeX cache",
             remedy="Set SETTINGS.paths.cache_directory to a writable directory "
             "or set ALGAN_CACHE_DIR before starting Python.",
         )
+        _VERIFIED_TEX_DIRS.add(key)
+
+
+_VERIFIED_TEX_DIRS: set = set()
 
 
 class Tex(Mob):
@@ -283,7 +387,13 @@ class Tex(Mob):
         self.latex = latex
 
         base_font_size = 48
-        if self.latex:
+        memo_key = _tex_glyph_memo_key(
+            self.tex_strings, delimiter, tex_environment, latex, pango_kwargs, kwargs
+        )
+        glyphs = _TEX_GLYPH_MEMO.get(memo_key) if memo_key is not None else None
+        if glyphs is not None:
+            t = None
+        elif self.latex:
             tex_kwargs = {
                 "arg_separator": delimiter,
                 "font_size": base_font_size,
@@ -306,52 +416,80 @@ class Tex(Mob):
                 **{"use_svg_cache": True, **(pango_kwargs or {})},
             )
 
-        def maybe_flip(submob):
-            x = torch.from_numpy(submob.points).to(_ANIMATION_DEVICE)
-            if (not latex) or (not isinstance(submob, mn.VMobjectFromSVGPath)):
+        if latex:
+            if glyphs is None:
+                sub_mobs = [_.submobjects for _ in t.submobjects]
+                chars = [x for group in sub_mobs for x in group]
+                outlines = [c for c in chars if not isinstance(c, mn.ImageMobject)]
+                # Actual typeset segments can differ from constructor arguments
+                # when double braces isolate terms inside a single source string.
+                glyphs = _TexGlyphs(
+                    tuple(part.tex_string for part in t.submobjects),
+                    tuple(len(_) for _ in sub_mobs),
+                    tuple(c.points.copy() for c in outlines),
+                    tuple(isinstance(c, mn.VMobjectFromSVGPath) for c in outlines),
+                    None,
+                )
+                if memo_key is not None and len(outlines) == len(chars):
+                    _remember_tex_glyphs(memo_key, glyphs)
+            else:
+                # Only formulas without image glyphs are memoized.
+                chars = []
+            self._matching_tex_keys = glyphs.tex_keys
+            self.num_mobs_per_segment = torch.tensor(list(glyphs.segment_sizes))
+            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
+            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
+            # Copied: a memoized outline is shared by every later Tex of the
+            # same source, and a path built on it must not alias it.
+            outline_points = [points.copy() for points in glyphs.points]
+            outline_is_svg_path = glyphs.is_svg_path
+        else:
+            if glyphs is None:
+                chars = t.submobjects
+                outlines = [c for c in chars if not isinstance(c, mn.ImageMobject)]
+                glyphs = _TexGlyphs(
+                    None,
+                    (len(chars),),
+                    tuple(c.points.copy() for c in outlines),
+                    tuple(isinstance(c, mn.VMobjectFromSVGPath) for c in outlines),
+                    # Pango styling (color_map/gradient_map/gradient) lands as
+                    # per-submobject fill colors on the manim Text; capture them
+                    # (aligned with the ImageMobject-filtered glyph list) to
+                    # re-apply on the batch.
+                    tuple(
+                        (c.fill_color.to_hex().upper(), float(c.fill_opacity))
+                        for c in outlines
+                    ),
+                )
+                if memo_key is not None and len(outlines) == len(chars):
+                    _remember_tex_glyphs(memo_key, glyphs)
+            else:
+                chars = []
+            self.num_mobs_per_segment = torch.tensor(list(glyphs.segment_sizes))
+            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
+            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
+            outline_points = [points.copy() for points in glyphs.points]
+            outline_is_svg_path = glyphs.is_svg_path
+
+        def maybe_flip(points, is_svg_path):
+            x = torch.from_numpy(points).to(_ANIMATION_DEVICE)
+            if (not latex) or (not is_svg_path):
                 return x.flip(-2)
             return x
 
-        if latex:
-            sub_mobs = [_.submobjects for _ in t.submobjects]
-            # Actual typeset segments can differ from constructor arguments
-            # when double braces isolate terms inside a single source string.
-            self._matching_tex_keys = tuple(part.tex_string for part in t.submobjects)
-            self.num_mobs_per_segment = torch.tensor([len(_) for _ in sub_mobs])
-            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
-            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
-            chars = [x for group in sub_mobs for x in group]
-        else:
-            chars = t.submobjects
-            self.num_mobs_per_segment = torch.tensor([len(chars)])
-            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
-            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
-
-        if latex:
-            styled_fills = None
-        else:
-            # Pango styling (color_map/gradient_map/gradient) lands as per-submobject fill
-            # colors on the manim Text; capture them (aligned with the
-            # ImageMobject-filtered glyph list) to re-apply on the batch.
-            styled_fills = [
-                (char.fill_color.to_hex().upper(), float(char.fill_opacity))
-                for char in chars
-                if not isinstance(char, mn.ImageMobject)
-            ]
+        styled_fills = None if latex else list(glyphs.styled_fills)
 
         triangulated_paths = [
-            unsquish(maybe_flip(char), -2, 4).transpose(-3, -2)
-            for char in chars
-            if not isinstance(char, mn.ImageMobject)
+            unsquish(maybe_flip(points, is_svg_path), -2, 4).transpose(-3, -2)
+            for points, is_svg_path in zip(outline_points, outline_is_svg_path)
         ]
         bezier_paths = [
             unsquish(
-                torch.from_numpy(char.points).to(_ANIMATION_DEVICE).float(),
+                torch.from_numpy(points).to(_ANIMATION_DEVICE).float(),
                 -2,
                 4,
             )
-            for char in chars
-            if not isinstance(char, mn.ImageMobject)
+            for points in outline_points
         ]
         with Off(animation_manager=kwargs["scene"].animation_manager):
             paths = triangulated_paths if self.triangulated else bezier_paths

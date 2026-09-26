@@ -587,7 +587,7 @@ def _extremal_within_group(values, scores, groups, num_groups):
     """The row of ``values`` scoring highest within each group.
 
     Ties break toward the lowest index, for the reason a whole circuit's frame
-    does (``_extremal_control_point_index``): the winner sets the basis, and an
+    does (``bezier_circuit._lowest_within_band``): the winner sets the basis, and an
     unspecified winner is an unspecified basis -- which is what the border width
     and the coverage filter are measured in.
     """

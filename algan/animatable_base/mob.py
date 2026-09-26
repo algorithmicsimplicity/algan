@@ -2347,13 +2347,29 @@ class Mob(
                     (self.parent_batch_sizes.item(),), dtype=torch.long
                 )
             sub_pbs = self.parent_batch_sizes[data_sub_inds]
-            inds = torch.arange(self.batch_size).split(
-                [_.item() for _ in self.parent_batch_sizes]
+            # The rows of each selected member, in selection order: exactly
+            # ``torch.arange(batch_size).split(sizes)`` indexed by the
+            # selection, but built from the selected members' offsets alone.
+            # Splitting the whole batch (one ``.item()`` per member, at every
+            # level of the hierarchy) made each view of a packed Mob cost time
+            # proportional to the pack, not to the view.
+            sizes = self.parent_batch_sizes.tolist()
+            if sum(sizes) != self.batch_size:
+                raise RuntimeError(
+                    f"split_with_sizes expects split_sizes to sum exactly to "
+                    f"{self.batch_size}, but got split_sizes={sizes}"
+                )
+            starts = [0] * len(sizes)
+            for member in range(1, len(sizes)):
+                starts[member] = starts[member - 1] + sizes[member - 1]
+            members = range(len(sizes))
+            selected = (
+                members[data_sub_inds]
+                if isinstance(data_sub_inds, slice)
+                else [members[d] for d in data_sub_inds]
             )
             data_sub_inds = torch.cat(
-                [inds[d] for d in data_sub_inds]
-                if not isinstance(data_sub_inds, slice)
-                else inds[data_sub_inds]
+                [torch.arange(starts[d], starts[d] + sizes[d]) for d in selected]
             )
         else:
             sub_pbs = self.parent_batch_sizes

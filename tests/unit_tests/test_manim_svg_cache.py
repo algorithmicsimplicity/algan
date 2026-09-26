@@ -18,6 +18,7 @@ import pytest
 import torch
 
 import algan
+from algan.mobs import text as text_module
 from algan.settings import SETTINGS
 from algan.utils import manim_svg_cache as svg_cache
 
@@ -57,6 +58,9 @@ def test_native_pango_text_matches_uncached_on_cold_memory_and_disk_hits(
         pytest.skip("Pango is unavailable")
 
     def snapshot():
+        # Tex keeps each source's outlines in memory above this cache; clear
+        # it so every stage reaches the SVG layer under test.
+        text_module._TEX_GLYPH_MEMO.clear()
         with algan.Scene():
             text = algan.Text(**options)
             values = [len(text.character_mobs)]

@@ -247,3 +247,64 @@ from 2.25/2.12 seconds to 1.69/1.50 seconds in two-run means. All six screenshot
 were byte-identical after decoding. These are loaded-machine wall timings;
 per-stage profiling confirms cleanup dropped from 0.70 to 0.20 seconds on f4,
 with nine collections instead of 32, independently of whole-frame variability.
+
+## Static frame reuse (September 26)
+
+`SETTINGS.raytracing.experimental.reuse_static_frames`
+(`ALGAN_REUSE_STATIC_FRAMES`, off by default) makes a video render write a
+frame again instead of rendering it again when the recording proves the frame
+equals the previous one. `RenderLoopMixin._static_frame_runs` decides that
+from the recording alone -- no materialization -- by replicating, comparison
+for comparison, how a frame is materialized at `time_ind / fps` (float32):
+no function application or updater active at either frame (the same float32
+windows the replay tests), the same edit-timestamp rank for every attribute
+(`_query_row_states` depends on time only through that rank), unchanged
+`record_end_points` masks, and no spawn/despawn between the two frames (the
+batch actor set, in float64). The unique frames go through `get_frames`'
+sparse `frame_indices` path; `_stream_video_frames` writes each one for its run.
+It returns None (every frame rendered) for the path tracer, callable
+backgrounds, traced paths, live camera views and post-processes defined
+outside `algan.rendering.post_processing`.
+
+On the backprop explainer (30 PREVIEW scenes) 35% of all frames were provable
+repeats (40-84% in most scenes; 0% under an orbiting camera). Whole-scene
+warm renders: 58.7 -> 28.8 s (a shadowed landscape), 12.6 -> 7.7 s, 103 -> 94 s.
+Written frames were byte-identical to rendering every frame on four of seven
+scenes. On the others some *animated* frames differed -- by one level on two
+scenes, by up to 60 levels on a few frames of `one_weight` -- and in every case
+the differing frame was a rendered one, never a repeat: every repeat was
+byte-identical to its source in the reuse-off render. That is the existing
+window dependence of moving content (rendering fewer frames changes the batch
+windows), which separates a cold from a warm reuse-off render of the same
+scene by as much (62 levels there). `scratch/perf/static_diag.py` in the
+backprop project is the per-frame diagnosis;
+`tests/unit_tests/test_static_frame_reuse.py` checks frame-for-frame equality
+and which frames are rendered.
+
+## Authoring memos (September 26)
+
+- **Circuit frames.** `from_batches` frames all of its members in one NumPy
+  pass (`_circuit_frames`; 45 glyphs in 17 ms instead of 110), bit-identical to
+  framing each alone -- see `mobs_geometry.md`. On top of that,
+  `_circuit_location_and_basis` / `_circuit_locations_and_bases` memoize frames
+  by the exact bytes of the control points (CPU, up to 4096 points), so a
+  repeated formula, a `DecimalNumber`'s digit sets and a rebuilt network cost a
+  lookup. Copies are handed out.
+- **Typeset glyphs.** `Tex`/`Text` keep each source's outlines
+  (`_TEX_GLYPH_MEMO`), keyed by the strings, separator, environment and
+  `config["tex_template"]` (LaTeX) or every Pango option plus the ManimPango
+  version. Formulas with image glyphs and explicit templates are not memoized.
+  A 9-part formula went from 277 to 23 ms; a `DecimalNumber` from 1.3 to 0.4 s.
+- **Toolchain probe and tex dirs.** `_require_latex_toolchain` remembers a
+  success, and `make_manim_dir` probes each directory once per process.
+- **Speech clips.** `get_pyttsx_speech_generator` returns a clip whose ffmpeg
+  probe (duration, channels) is cached in a `<file>.info.json` sidecar keyed by
+  size and mtime, and whose reader opens on first read: 240 ms -> 1 ms per
+  `Speech` block. `save_video` mixes it exactly as before.
+- **Views of packed Mobs.** `Mob._set_data_sub_inds` builds the selected
+  members' rows from their offsets instead of splitting the whole batch (one
+  `.item()` per member at every hierarchy level).
+
+All of these memos reproduce the uncached state bit for bit
+(`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
+between runs, so a script's second run through it reuses every glyph and frame.

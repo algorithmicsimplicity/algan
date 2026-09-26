@@ -147,14 +147,24 @@ adjusting: its front faces +z, and so does a Mob's.
 ### A shape is anchored at its centroid, not at the middle of its box
 
 `location` is what a Mob turns and scales about, so a shape has to be anchored at the point it
-balances on. `_circuit_location_and_basis` gets that from `_circuit_centroid`: the centroid of
-the region the circuit encloses, by shoelace sums over a polyline sampled from the curves
-(`_circuit_polyline`, 16 samples a segment, float64 so a symmetric shape comes back at its
-exact centre). Sub-loops carry their own signed area, so a hole subtracts itself and an
-`Annulus` lands dead centre. A path that encloses no area — a straight `Line`, any open stroke
-— has no area centroid and falls back to the centroid of the path itself, weighted by arc
-length, which is why the closing chord an open path would need for a *fill* is marked in
-`wraps` and left out of that sum.
+balances on. `_circuit_frames` gets that from `_circuit_centroids`: the centroid of the region
+the circuit encloses, by shoelace sums over a polyline sampled from the curves (32 samples a
+segment, float64 so a symmetric shape comes back at its exact centre). Sub-loops carry their
+own signed area, so a hole subtracts itself and an `Annulus` lands dead centre. A path that
+encloses no area — a straight `Line`, any open stroke — has no area centroid and falls back to
+the centroid of the path itself, weighted by arc length, which is why the closing chord an open
+path would need for a *fill* is marked in `wraps` and left out of that sum.
+
+"Encloses no area" is judged against **float32 rounding**, not zero: a `Line`'s interior control
+points are off the line by an ulp of their coordinates, so the shoelace sum over them is a
+sliver of noise proportional to the circuit's diagonal times the size of its coordinates.
+`_DEGENERATE_AREA_FRACTION` (1e-5) scales that product. It used to be 1e-9 of the diagonal
+squared, below the noise, and most lines "enclosed area": the centroid divided noise by it, so
+72 of the 90 synapses of the backprop video's network were anchored off their own middle (one
+by 91% of its length), a `Line`'s row 0 could point at its end rather than its start, and
+because a circuit's anchor is one of the points `get_bounding_box` spans, `fit_to_screen`
+shrank a whole network ~1.6% below its rectangle. The same anchors had also mis-mapped every
+synapse's texel ramp, which is laid out about the anchor along row 0.
 
 The box's midpoint is what `get_center` reports, and the two differ for anything that is not
 point-symmetric: a `Triangle`'s box centre sits a quarter of a unit above its centroid. Anchor
@@ -184,6 +194,25 @@ after — but what that vector is *called* did, from `OUTWARD` to `INWARD`, whic
 shape stating that it faced away from the camera it was drawn in front of. The cross is
 therefore **negated** (and the synthesized branch, for a collinear path, turns the other way
 round to agree), so every 2-D shape now presents `OUTWARD` like every other Mob.
+
+That negation fixed the three shapes it was measured on, but the sign still came from *which*
+two control points won the frame's tie-breaks (furthest from the centre, then furthest from
+that axis), and for everything else that is arbitrary: about half of all glyphs faced `INWARD`,
+and a translation of a few ulps flipped some of them. The sign is now the plane's own
+(`_face_outward`): the normal points along +z unless the plane is edge-on to it, then +y, then
++x, each decided only past `_FACING_TOLERANCE`. The plane itself is the loops' Newell normal
+when the circuit encloses area, and the extremal pair's otherwise; every choice among equally
+distant control points is made within `_TIE_TOLERANCE` (1e-5, a hundred times float32 rounding)
+with the lowest index winning. Rounding can no longer turn a frame round
+(`tests/unit_tests/test_circuit_frames.py`). Re-signing the glyphs that had faced `INWARD`
+re-rounds a few antialiased edge pixels (the analytic-AA frame note below); the fast baseline
+was regenerated for it (at most four pixels a frame, all on glyph edges).
+
+`_circuit_frames` frames many circuits in one NumPy pass (every glyph of a `Text` at once, six
+times faster than one by one) and still gives each exactly the bits it gets alone, which the
+pack contract below requires: every operation is an elementwise IEEE `+ - * / sqrt` or an exact
+min/max, and every sum is a pairwise halving over the circuit's own zero-padded row
+(`_halving_sum`), never a library reduction whose order moves with the array's shape.
 
 Row 1 comes with it — it is `cross(row 2, row 0)`, and the frame stays right-handed — so an
 upright shape's own up is now `UP` rather than `DOWN`. Three things read that row, and all

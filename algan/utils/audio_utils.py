@@ -438,8 +438,6 @@ def get_speech_generator_from_file(audio_file, transcript_file):
 
 
 def get_pyttsx_speech_generator(script):
-    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
-
     hasher = hashlib.sha256()
     hasher.update(script.encode())
     hash_bytes = hasher.hexdigest()[:32]
@@ -450,4 +448,118 @@ def get_pyttsx_speech_generator(script):
         engine.save_to_file(script, file)
         engine.runAndWait()
         engine.stop()
-    return AudioFileClip(file)
+    return _cached_audio_file_clip(file)
+
+
+# Bump when the sidecar's fields or their meaning change.
+_AUDIO_INFO_VERSION = 1
+
+
+def _cached_audio_file_clip(file):
+    """An ``AudioFileClip`` of ``file`` that opens no decoder until it is played.
+
+    Authoring a Speech block needs only the clip's duration, but constructing an
+    ``AudioFileClip`` runs ``ffmpeg -i`` to probe the file and then starts a
+    second ffmpeg process and reads its first buffer: about 0.15 s per block,
+    and a narrated video has one block per sentence. The probe's answer is
+    stored in a sidecar next to the file, keyed by the file's size and
+    modification time, and the returned clip starts its reader on first use --
+    in practice when ``Scene.save_video`` mixes the audio track. Validating,
+    screenshots and ``Scene.view`` then never decode the narration at all.
+    """
+    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+
+    info_path = Path(f"{file}.info.json")
+    try:
+        stat = os.stat(file)
+        key = [stat.st_size, stat.st_mtime_ns]
+    except OSError:
+        return AudioFileClip(file)
+    with suppress(Exception):
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+        if info.get("version") == _AUDIO_INFO_VERSION and info.get("key") == key:
+            return _lazy_audio_file_clip_class()(file, info)
+    clip = AudioFileClip(file)
+    info = {
+        "version": _AUDIO_INFO_VERSION,
+        "key": key,
+        "duration": clip.duration,
+        "nchannels": clip.nchannels,
+        "buffersize": clip.buffersize,
+        "fps": clip.fps,
+    }
+    temporary = None
+    with suppress(OSError):
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=info_path.parent,
+            suffix=".tmp",
+            delete=False,
+        ) as target:
+            temporary = Path(target.name)
+            json.dump(info, target)
+        os.replace(temporary, info_path)
+        temporary = None
+    if temporary is not None:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+    return clip
+
+
+_LAZY_AUDIO_FILE_CLIP = None
+
+
+def _lazy_audio_file_clip_class():
+    """Build the lazy clip class on first use, so moviepy stays a deferred import."""
+    global _LAZY_AUDIO_FILE_CLIP
+    if _LAZY_AUDIO_FILE_CLIP is not None:
+        return _LAZY_AUDIO_FILE_CLIP
+    from moviepy import AudioFileClip
+    from moviepy.audio.AudioClip import AudioClip
+    from moviepy.audio.io.readers import FFMPEG_AudioReader
+
+    class LazyAudioFileClip(AudioFileClip):
+        """``AudioFileClip`` with its probed metadata supplied and its reader deferred.
+
+        Exactly the attributes ``AudioFileClip.__init__`` sets, from the values
+        the probe returned for this very file; ``reader`` is created on first
+        access with ``AudioFileClip``'s own default arguments. Copies made by
+        ``with_start`` and friends read through the original's reader, as
+        ``AudioFileClip``'s own ``frame_function`` closure does.
+        """
+
+        def __init__(self, filename, info):
+            AudioClip.__init__(self)
+            self.filename = filename
+            self._reader = None
+            self.fps = info["fps"]
+            self.duration = info["duration"]
+            self.end = info["duration"]
+            self.buffersize = info["buffersize"]
+            self.frame_function = lambda t: self.reader.get_frame(t)
+            self.nchannels = info["nchannels"]
+
+        @property
+        def reader(self):
+            if self._reader is None:
+                self._reader = FFMPEG_AudioReader(
+                    self.filename,
+                    decode_file=False,
+                    fps=self.fps,
+                    nbytes=2,
+                    buffersize=200000,
+                )
+            return self._reader
+
+        @reader.setter
+        def reader(self, value):
+            self._reader = value
+
+        def close(self):
+            if self._reader is not None:
+                self._reader.close()
+                self._reader = None
+
+    _LAZY_AUDIO_FILE_CLIP = LazyAudioFileClip
+    return LazyAudioFileClip
