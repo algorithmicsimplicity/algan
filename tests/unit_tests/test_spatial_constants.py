@@ -1,10 +1,9 @@
 """``IN``/``OUT`` belong to the script, so the library must not read them.
 
-Algan carries no compatibility aliases for its own API -- ``CLAUDE.md`` says so,
-and one name per thing is the rule everywhere else. These two are the deliberate
-exception, for a reason this module makes permanent: ``in`` and ``out`` are
-ordinary enough words that a script will want them, and a name the library
-depends on is a poor thing to leave in the way. ``INWARD``/``OUTWARD`` are what
+``IN``/``OUT`` are aliases of ``INWARD``/``OUTWARD`` with one extra rule, which
+this module makes permanent: ``in`` and ``out`` are ordinary enough words that a
+script will want them, and a name the library depends on is a poor thing to
+leave in the way. ``INWARD``/``OUTWARD`` are what
 Algan's own source says; ``IN``/``OUT`` are the same objects under the names a
 script is free to keep, rebind, or ignore.
 

@@ -502,8 +502,7 @@ see :doc:`advanced_user_tutorials/multi_scene_projects`.
 Manim names that still work
 ===========================
 
-Algan otherwise gives each thing exactly one name, but the compatibility layer
-is a deliberate exception: a handful of Manim spellings are exported so a ported
+The compatibility layer exports a handful of Manim spellings so a ported
 script keeps reading the way its author wrote it. ``Mobject`` is
 :class:`~algan.animatable_base.mob.Mob`, ``GenericGraph`` is
 :class:`~algan.mobs.manim_compat.Graph`, and Manim's OpenGL-renderer class names

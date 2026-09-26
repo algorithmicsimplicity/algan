@@ -418,10 +418,10 @@ Also, for classes:
 
 ## 12. Deprecation and API-change notes
 
-Teach the current canonical API. Do not revive removed aliases in examples or
+Teach the current API. Do not revive removed names in examples or
 assume that an old release's spelling is still accepted. Consequently:
 
-- Do not document removed or aliased names, even to be helpful. If you find a docstring mentioning
+- Do not document removed names, even to be helpful. If you find a docstring mentioning
   `render_to_file`, `render_settings`, or `RenderSettings`, delete the mention.
 - A parameter that still exists but is deprecated (e.g. `clone(reset_history=...)`, which warns)
   needs a `.. deprecated::` note in its entry saying what to use instead.

@@ -1,13 +1,11 @@
 """Superseded argument spellings, and the degrees-not-radians check beside them.
 
-Algan carries no compatibility aliases: there is one spelling for each thing,
-and Manim's spellings live in :mod:`algan.manim` (see
-``agent_guidance/api_settings.md``). A reader arriving from Manim still writes
-``mobject=`` and ``element_to_mobject=``, though, and a bare
+The root namespace does not accept Manim's keyword spellings today; they work
+under :mod:`algan.manim`. A reader arriving from Manim still writes
+``mobject=`` and ``element_to_mobject=`` at the root, though, and a bare
 ``TypeError: got an unexpected keyword argument 'mobject'`` does not say that
 ``mob=`` is right there. These helpers word that error, in the same spirit as
-``_MANIM_METHOD_HINTS`` in ``algan/animatable_base/mob.py``: the old name does
-not exist and never will, and the message is the only thing it buys.
+``_MANIM_METHOD_HINTS`` in ``algan/animatable_base/mob.py``.
 
 :func:`_warn_if_angle_looks_like_radians` is the other half of the same
 migration problem. Algan states angles in degrees everywhere, so

@@ -1329,12 +1329,11 @@ def test_only_the_two_angle_multipliers_a_script_writes_are_exported():
 
 
 def test_there_is_no_module_level_scene_method_wrapper():
-    """``Scene.set_environment_map`` is the one spelling.
+    """``Scene.set_environment_map`` is reached through ``Scene``.
 
     ``active_scene_method`` already resolves the active Scene when the method
-    is called on the class, so a module-level ``set_environment_map`` was a
-    second name for one thing -- and the only one of its kind, which made it
-    a precedent rather than a convenience.
+    is called on the class, so a module-level ``set_environment_map`` added a
+    star-import name without adding anything a script could not already write.
     """
     assert not hasattr(algan, "set_environment_map")
     assert "set_environment_map" not in algan.__all__
@@ -1769,9 +1768,9 @@ def test_add_parent_rejects_cycles_like_group_does():
 
 @pytest.mark.fast
 def test_manim_method_names_point_at_the_algan_one():
-    """Algan carries no aliases for its own API, so these names will never
-    exist -- but ``AttributeError: 'Square' object has no attribute 'shift'``
-    does not say that ``move`` is right there.
+    """Manim's method names are not Mob methods, and a bare
+    ``AttributeError: 'Square' object has no attribute 'shift'`` does not say
+    that ``move`` is right there.
     """
     with algan.Scene():
         square = Square().spawn()

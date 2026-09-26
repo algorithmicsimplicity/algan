@@ -142,10 +142,9 @@ def _coerce_if_color(attr, value):
     return value
 
 
-#: Manim ``Mobject`` methods and the Algan call that does the same job. Algan
-#: carries no aliases for its own API (see CLAUDE.md), so these names do not
-#: exist and never will -- but a reader arriving from Manim writes them, and a
-#: bare ``AttributeError: 'Square' object has no attribute 'shift'`` does not
+#: Manim ``Mobject`` methods and the Algan call that does the same job. These
+#: names are not Mob methods, but a reader arriving from Manim writes them, and
+#: a bare ``AttributeError: 'Square' object has no attribute 'shift'`` does not
 #: say that ``move`` is right there. Used only to word the error.
 _MANIM_METHOD_HINTS = {
     "shift": "move(...)",

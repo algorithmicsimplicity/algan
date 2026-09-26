@@ -167,11 +167,10 @@ from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.utils.algan_utils import *
 
 # There is deliberately no module-level wrapper for a Scene method here.
-# ``Scene.set_environment_map`` is the one spelling, and ``Scene.foo(...)``
-# already resolves the active Scene when called on the class -- so the wrapper
-# bought nothing and cost the namespace a second name for one thing. It used to
-# sit between these two blocks, which is why they need the split marker to stay
-# apart now that it is gone: the shader/material imports below must land after
+# ``Scene.foo(...)`` already resolves the active Scene when called on the
+# class, so a ``set_environment_map`` wrapper bought nothing and added a name to
+# every star-import. It used to sit between these two blocks, which is why they
+# need the split marker to stay apart now that it is gone: the shader/material imports below must land after
 # the Mob modules above, and sorting them into one block would hoist
 # ``material_presets`` above them.
 # isort: split
