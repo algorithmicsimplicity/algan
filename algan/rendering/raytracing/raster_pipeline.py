@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
 
 from algan.environment import env_flag, env_str
@@ -1324,8 +1325,31 @@ def _depth_bin(frag_key):
     return depth_bin
 
 
+def _fragment_layer(frag_ref, layer_offset_triangles):
+    """Each fragment's compositing layer: the circuit id for a circuit
+    fragment, the offset triangle index for a triangle fragment (int32).
+    """
+    is_bez = frag_ref < 0
+    bez_code = (-frag_ref - 1).clamp_min(0)
+    # Mirrors ``raster_taichi._decode_bez_ref``: the low bits carry the
+    # fragment's border/fill blend weight, not part of the circuit id.
+    bez_layer = bez_code >> _BEZ_BORDER_BITS
+    tri_layer = frag_ref + int(layer_offset_triangles)
+    # int32, not int64: the sort below is a radix sort, so its cost is
+    # proportional to the key width, and this key cannot leave int32 -- both
+    # arms are derived from ``frag_ref`` (an int32 primitive index) plus a
+    # primitive-count offset. Same values, same stable order, half the passes.
+    return torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
+
+
 def _binned_fragment_order(
-    frag_key, layer, num_bins, *, min_fragments=65536, devices=("cuda",)
+    frag_key,
+    frag_ref,
+    layer_offset_triangles,
+    num_bins,
+    *,
+    min_fragments=65536,
+    devices=("cuda",),
 ):
     """The same order as the two stable sorts, by counting sort, or None.
 
@@ -1335,12 +1359,17 @@ def _binned_fragment_order(
     counts, and scatter each fragment's index into its pixel's run
     (``sheet_sort_taichi.pixel_bin_counts`` / ``pixel_bin_scatter``). What is
     left is ordering each run by ``(depth bin, descending layer, original
-    index)``, which ``bin_run_sort_pairs`` does in place per pixel -- a handful of
-    fragments each -- with the original index as the comparator's last key, so
-    the atomics' arbitrary order within a run cannot leak into the result. The
-    run key packs the depth bin above ``0x7FFFFFFF - layer``, each non-negative
-    and within its 32 bits, so it compares like the pair; the bin is
-    ``_depth_bin``'s own torch expression, bit for bit.
+    index)``, which ``bin_run_sort_pairs`` does in place per pixel -- a handful
+    of fragments each -- with the original index as the comparator's last key,
+    so the atomics' arbitrary order within a run cannot leak into the result.
+    The run key packs the depth bin above ``0x7FFFFFFF - layer``, each
+    non-negative and within its 32 bits, so it compares like the pair.
+
+    On CUDA the key is built in the counting pass itself
+    (``sheet_sort_taichi.fragment_bin_keys``): there torch evaluates
+    ``t / depth_tie_epsilon`` as ``t * (1 / eps)`` in f32, which one kernel
+    multiply reproduces bit for bit. Elsewhere the key is ``_depth_bin``'s and
+    ``_fragment_layer``'s own torch expressions.
 
     Declines (None) below ``min_fragments``, off ``devices``, where a launch
     would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
@@ -1362,6 +1391,7 @@ def _binned_fragment_order(
         return None
     from algan.rendering.raytracing.sheet_sort_taichi import (
         bin_run_sort_pairs,
+        fragment_bin_keys,
         pixel_bin_counts,
         pixel_bin_scatter,
     )
@@ -1369,10 +1399,30 @@ def _binned_fragment_order(
     device = frag_key.device
     counts = torch.zeros(num_bins, dtype=torch.int32, device=device)
     outside = torch.zeros(1, dtype=torch.int32, device=device)
-    pixel_bin_counts(frag_key, n, num_bins, counts, outside)
-    if int(outside.item()):
-        return None
-    group = (_depth_bin(frag_key) << 32) | (0x7FFFFFFF - layer.to(torch.int64))
+    if device.type == "cuda" and not _opt_disabled("fusedbinkeys"):
+        group = torch.empty(n, dtype=torch.int64, device=device)
+        inv_eps = float(np.float32(1.0) / np.float32(depth_tie_epsilon))
+        fragment_bin_keys(
+            frag_key,
+            frag_ref,
+            n,
+            num_bins,
+            inv_eps,
+            int(_BEZ_BORDER_BITS),
+            int(layer_offset_triangles),
+            counts,
+            group,
+            outside,
+        )
+        if int(outside.item()):
+            return None
+    else:
+        pixel_bin_counts(frag_key, n, num_bins, counts, outside)
+        if int(outside.item()):
+            return None
+        layer = _fragment_layer(frag_ref, layer_offset_triangles)
+        group = (_depth_bin(frag_key) << 32) | (0x7FFFFFFF - layer.to(torch.int64))
+        del layer
     offsets = torch.zeros(num_bins + 1, dtype=torch.int32, device=device)
     torch.cumsum(counts, 0, out=offsets[1:])
     del counts
@@ -1396,18 +1446,13 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=N
     window); given, the counting sort (``_binned_fragment_order``) is tried
     before the comparison sorts.
     """
-    is_bez = frag_ref < 0
-    bez_code = (-frag_ref - 1).clamp_min(0)
-    # Mirrors ``raster_taichi._decode_bez_ref``: the low bits carry the
-    # fragment's border/fill blend weight, not part of the circuit id.
-    bez_layer = bez_code >> _BEZ_BORDER_BITS
-    tri_layer = frag_ref + int(layer_offset_triangles)
-    # int32, not int64: the sort below is a radix sort, so its cost is
-    # proportional to the key width, and this key cannot leave int32 -- both
-    # arms are derived from ``frag_ref`` (an int32 primitive index) plus a
-    # primitive-count offset. Same values, same stable order, half the passes.
-    layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int32)
-    del is_bez, bez_code, bez_layer, tri_layer
+    if num_bins is not None and not rt_settings.sheet_fragment_run_sort:
+        order = _binned_fragment_order(
+            frag_key, frag_ref, layer_offset_triangles, num_bins
+        )
+        if order is not None:
+            return order
+    layer = _fragment_layer(frag_ref, layer_offset_triangles)
 
     from algan.rendering.raytracing.sheet_stream import (
         fragment_run_order,
@@ -1420,10 +1465,6 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=N
     order = _exact_fragment_order_on_device(frag_key, layer)
     if order is not None:
         return order
-    if num_bins is not None:
-        order = _binned_fragment_order(frag_key, layer, num_bins)
-        if order is not None:
-            return order
     order = _packed_fragment_order(frag_key, layer)
     if order is not None:
         return order

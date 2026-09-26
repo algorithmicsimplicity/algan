@@ -82,7 +82,7 @@ def test_binned_order_matches_two_sorts(n, pixels, depths, layers):
     key, ref = _stream(n + pixels + 7, n, pixels, depths, layers, device)
     want, layer = _reference(key, ref, offset=layers)
     got = rpl._binned_fragment_order(
-        key, layer, pixels, min_fragments=0, devices=(device,)
+        key, ref, layers, pixels, min_fragments=0, devices=(device,)
     )
     assert got is not None
     assert got.dtype == want.dtype
@@ -92,9 +92,8 @@ def test_binned_order_matches_two_sorts(n, pixels, depths, layers):
 def test_binned_order_declines_out_of_range_pixels():
     device = _kernel_device()
     key, ref = _stream(1, 1000, 50, 2, 3, device)
-    _want, layer = _reference(key, ref, offset=3)
     # 49 is the largest pixel; a window of 40 bins leaves keys outside it.
     assert (
-        rpl._binned_fragment_order(key, layer, 40, min_fragments=0, devices=(device,))
+        rpl._binned_fragment_order(key, ref, 3, 40, min_fragments=0, devices=(device,))
         is None
     )

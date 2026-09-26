@@ -470,6 +470,46 @@ def _reclaimable_cuda_bytes():
 
 _reclamation_local = threading.local()
 
+#: A reclaim that only host pressure asked for, and that handed back less host
+#: memory than this, did nothing for the pressure that triggered it.
+_HOST_RECLAIM_MIN_GAIN = 64 << 20
+#: Longest run of host-only reclaims skipped after ineffective ones.
+_HOST_RECLAIM_MAX_BACKOFF = 32
+_host_reclaim_backoff = {"skip": 0, "window": 0}
+
+
+def _host_reclaim_backed_off():
+    """Whether this host-only reclaim is skipped (and count it if so).
+
+    Available physical memory on a desktop is mostly other processes'. When it
+    sits under the threshold for reasons a render cannot touch -- measured on
+    the 16 GB dev box at HD: 324 of 469 chunk-boundary reclaims were host-only,
+    each freed a median 1 MB of host memory and together cost 20 s of a 441 s
+    render in ``gc.collect`` and ``torch.cuda.empty_cache`` -- reclaiming at
+    every chunk boundary is pure cost. So each ineffective host-only reclaim
+    doubles how many of the next ones are skipped (up to
+    ``_HOST_RECLAIM_MAX_BACKOFF``) and an effective one resets it: garbage
+    that does accumulate is still collected within a bounded number of calls,
+    and GPU pressure and forced reclaims are never skipped.
+    """
+    if _host_reclaim_backoff["skip"] > 0:
+        _host_reclaim_backoff["skip"] -= 1
+        return True
+    return False
+
+
+def _note_host_reclaim(before, after):
+    """Record whether a host-only reclaim freed host memory (see above)."""
+    if before is None or after is None:
+        return
+    if after.physical_available - before.physical_available >= _HOST_RECLAIM_MIN_GAIN:
+        _host_reclaim_backoff["window"] = 0
+        _host_reclaim_backoff["skip"] = 0
+        return
+    window = min(max(1, 2 * _host_reclaim_backoff["window"]), _HOST_RECLAIM_MAX_BACKOFF)
+    _host_reclaim_backoff["window"] = window
+    _host_reclaim_backoff["skip"] = window
+
 
 @contextmanager
 def _coalesced_memory_reclamation():
@@ -533,6 +573,19 @@ def release_torch_memory(force_gc=True):
     """
     host_pressured = _host_memory_pressure()
     gpu_pressured = _gpu_memory_pressure() if not force_gc else False
+    # A reclaim only host pressure asks for backs off while such reclaims keep
+    # freeing nothing (``_host_reclaim_backed_off``). Windows only: the
+    # measurement is its available-physical figure, and a Linux cgroup limit is
+    # a hard boundary that keeps today's policy.
+    host_status = None
+    if host_pressured and not gpu_pressured and not force_gc:
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        if not _opt_disabled("hostbackoff"):
+            host_status = _windows_memory_status()
+            if host_status is not None and _host_reclaim_backed_off():
+                host_pressured = False
+                host_status = None
     if (
         not force_gc
         and getattr(_reclamation_local, "depth", 0)
@@ -594,6 +647,8 @@ def release_torch_memory(force_gc=True):
             # reset deferred until render exit performs the same final trim
             # from ``render_job_holding_the_arch``.
             _malloc_trim()
+    if host_status is not None:
+        _note_host_reclaim(host_status, _windows_memory_status())
 
 
 @contextmanager

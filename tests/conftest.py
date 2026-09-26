@@ -450,6 +450,22 @@ def _isolate_global_settings():
         SETTINGS.restore(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_reclaim_backoff(monkeypatch):
+    """Pin the pre-backoff host reclaim policy unless a test opts in.
+
+    ``release_torch_memory`` backs host-only reclaims off after ineffective
+    ones, measuring the REAL machine's available memory; tests that stub host
+    pressure and count reclaims would otherwise depend on the box they run on
+    and on the tests before them. ``test_host_reclaim_backoff`` re-enables it.
+    """
+    from algan.utils import memory_utils
+
+    monkeypatch.setattr(memory_utils, "_HOST_RECLAIM_MAX_BACKOFF", 0)
+    monkeypatch.setitem(memory_utils._host_reclaim_backoff, "skip", 0)
+    monkeypatch.setitem(memory_utils._host_reclaim_backoff, "window", 0)
+
+
 @pytest.fixture
 def fresh_scene():
     """A pristine active-Scene stack, torn down again afterwards.

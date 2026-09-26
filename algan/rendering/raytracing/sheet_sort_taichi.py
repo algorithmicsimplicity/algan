@@ -145,6 +145,51 @@ def pixel_bin_counts(
 
 
 @ti.kernel
+def fragment_bin_keys(
+    frag_key: ti.types.ndarray(),
+    frag_ref: ti.types.ndarray(),
+    n: ti.i32,
+    num_bins: ti.i32,
+    inv_eps: ti.f32,
+    bez_shift: ti.i32,
+    layer_offset: ti.i32,
+    counts: ti.types.ndarray(),
+    group: ti.types.ndarray(),
+    outside: ti.types.ndarray(),
+):
+    """:func:`pixel_bin_counts` plus each fragment's within-pixel sort key.
+
+    ``group[i] = (depth_bin << 32) | (0x7FFFFFFF - layer)``, computed exactly
+    as the torch expressions in ``raster_pipeline`` compute it ON CUDA, where
+    ``t / eps`` by a host scalar is ``t * (1 / eps)`` in f32 (so ``inv_eps``
+    must be that f32 reciprocal): one multiply, a floor, and the clamp to
+    ``[0, 2**31)`` spelled as comparisons, which is what the int64 cast and
+    clamp give for every input including NaN and the infinities. The layer is
+    the circuit id above the border bits for a circuit fragment and the
+    offset triangle index otherwise, both in wrapping i32 like the tensors.
+    """
+    for i in range(n):
+        k = frag_key[i]
+        p = k >> 32
+        if p >= 0 and p < num_bins:
+            ti.atomic_add(counts[ti.cast(p, ti.i32)], 1)
+        else:
+            outside[0] = 1
+        t = ti.bit_cast(ti.cast(k, ti.u32), ti.f32)  # the low 32 bits
+        x = ti.floor(t * inv_eps)
+        db = ti.cast(0, ti.i64)
+        if x >= 2147483648.0:
+            db = ti.cast(0x7FFFFFFF, ti.i64)
+        elif x >= 0.0:
+            db = ti.cast(x, ti.i64)
+        r = frag_ref[i]
+        layer = r + layer_offset
+        if r < 0:
+            layer = (-r - 1) >> bez_shift
+        group[i] = (db << 32) | (ti.cast(0x7FFFFFFF, ti.i64) - ti.cast(layer, ti.i64))
+
+
+@ti.kernel
 def pixel_bin_scatter(
     frag_key: ti.types.ndarray(),
     n: ti.i32,
