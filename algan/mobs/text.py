@@ -290,6 +290,8 @@ class Tex(Mob):
             }
             if tex_environment is not None:
                 tex_kwargs["tex_environment"] = tex_environment
+            if "tex_template" in kwargs:
+                tex_kwargs["tex_template"] = kwargs["tex_template"]
             t = mn.MathTex(*self.tex_strings, **tex_kwargs)
         else:
             if not hasattr(mn, "Text"):
@@ -353,6 +355,9 @@ class Tex(Mob):
             for char in chars
             if not isinstance(char, mn.ImageMobject)
         ]
+        # Templates configure typesetting, not Mob or glyph geometry. Keep the
+        # keyword until after typesetting so any glyph-memo lookup can see it.
+        kwargs.pop("tex_template", None)
         with Off(animation_manager=kwargs["scene"].animation_manager):
             paths = triangulated_paths if self.triangulated else bezier_paths
             if self.triangulated:
