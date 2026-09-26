@@ -57,6 +57,9 @@ from algan.rendering.raytracing.raster_taichi import (
     _AA_ONE_MESH_BIT as AA_ONE_MESH_BIT,
 )
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_SLIVER_BIT as AA_SLIVER_BIT,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _BEZ_BORDER_BITS,
     AA_FULL_COVERAGE,
     Z_SENTINEL,
@@ -1302,19 +1305,92 @@ def _primary_depth_key(frag_key):
     happen inside a sort kernel.
     """
     pixel = frag_key >> 32
+    depth_bin = _depth_bin(frag_key)
+    primary_key = (pixel << 32) | depth_bin
+    del pixel, depth_bin
+    return primary_key
+
+
+def _depth_bin(frag_key):
+    """Each fragment's depth bin, ``floor(t / depth_tie_epsilon)`` clamped to
+    ``[0, 2**31)``: the depth half of :func:`_primary_depth_key`.
+    """
     t_bits = (frag_key & 0xFFFFFFFF).to(torch.int32)
     # dtype-view reinterprets IEEE bits; it does not allocate a numeric cast.
     t = t_bits.view(torch.float32)
     depth_bin = torch.floor(t / depth_tie_epsilon).to(torch.int64)
     del t, t_bits
     depth_bin.clamp_(0, 0x7FFFFFFF)
-    primary_key = (pixel << 32) | depth_bin
-    del pixel, depth_bin
-    return primary_key
+    return depth_bin
 
 
-def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
-    """Return one gather order matching classic depth-bin/layer semantics."""
+def _binned_fragment_order(
+    frag_key, layer, num_bins, *, min_fragments=65536, devices=("cuda",)
+):
+    """The same order as the two stable sorts, by counting sort, or None.
+
+    A fragment's pixel is a chunk-relative ordinal below ``num_bins`` (the
+    emission's pixel window; ``raster_taichi._pair_pixel`` guards it), so the
+    major key needs no comparison sort: count fragments per pixel, prefix the
+    counts, and scatter each fragment's index into its pixel's run
+    (``sheet_sort_taichi.pixel_bin_counts`` / ``pixel_bin_scatter``). What is
+    left is ordering each run by ``(depth bin, descending layer, original
+    index)``, which ``bin_run_order`` does in place per pixel -- a handful of
+    fragments each -- with the original index as the comparator's last key, so
+    the atomics' arbitrary order within a run cannot leak into the result. The
+    run key packs the depth bin above ``0x7FFFFFFF - layer``, each non-negative
+    and within its 32 bits, so it compares like the pair; the bin is
+    ``_depth_bin``'s own torch expression, bit for bit.
+
+    Declines (None) below ``min_fragments``, off ``devices``, where a launch
+    would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
+    when any key's pixel lies outside ``[0, num_bins)`` -- a bug upstream,
+    which the comparison sort would at least keep in order.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+    from algan.rendering.raytracing.sheet_stream import stream_kernel_available
+
+    n = int(frag_key.numel())
+    num_bins = int(num_bins)
+    if (
+        n < min_fragments
+        or frag_key.device.type not in devices
+        or not 0 < num_bins < 2**31 - 1
+        or _opt_disabled("binfragsort")
+        or not stream_kernel_available(frag_key)
+    ):
+        return None
+    from algan.rendering.raytracing.sheet_sort_taichi import (
+        bin_run_order,
+        pixel_bin_counts,
+        pixel_bin_scatter,
+    )
+
+    device = frag_key.device
+    counts = torch.zeros(num_bins, dtype=torch.int32, device=device)
+    outside = torch.zeros(1, dtype=torch.int32, device=device)
+    pixel_bin_counts(frag_key, n, num_bins, counts, outside)
+    if int(outside.item()):
+        return None
+    group = (_depth_bin(frag_key) << 32) | (0x7FFFFFFF - layer.to(torch.int64))
+    offsets = torch.zeros(num_bins + 1, dtype=torch.int32, device=device)
+    torch.cumsum(counts, 0, out=offsets[1:])
+    del counts
+    cursor = offsets[:-1].clone()
+    order = torch.empty(n, dtype=torch.int64, device=device)
+    pixel_bin_scatter(frag_key, n, cursor, order)
+    del cursor
+    bin_run_order(offsets, group, order, num_bins)
+    return order
+
+
+def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=None):
+    """Return one gather order matching classic depth-bin/layer semantics.
+
+    ``num_bins`` bounds the fragments' pixel ordinals (the chunk's pixel
+    window); given, the counting sort (``_binned_fragment_order``) is tried
+    before the comparison sorts.
+    """
     is_bez = frag_ref < 0
     bez_code = (-frag_ref - 1).clamp_min(0)
     # Mirrors ``raster_taichi._decode_bez_ref``: the low bits carry the
@@ -1339,6 +1415,13 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     order = _exact_fragment_order_on_device(frag_key, layer)
     if order is not None:
         return order
+    if num_bins is not None:
+        order = _binned_fragment_order(frag_key, layer, num_bins)
+        if order is not None:
+            return order
+    order = _packed_fragment_order(frag_key, layer)
+    if order is not None:
+        return order
     layer_order = torch.argsort(layer, descending=True, stable=True)
     del layer
 
@@ -1352,6 +1435,56 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     order = layer_order.index_select(0, depth_order)
     del layer_order, depth_order
     return order
+
+
+def _packed_fragment_order(frag_key, layer, *, min_fragments=65536, devices=("cuda",)):
+    """The same order as ONE stable sort of a mixed-radix key, or None.
+
+    The torch arm composes two stable sorts -- descending layer, then the
+    primary ``(pixel << 32) | depth bin`` key -- so the stream comes out
+    ordered by ``(pixel, depth bin, descending layer, original index)``. A
+    single stable sort of ``((pixel - p0) * D + (bin - d0)) * L + (l1 - layer)``
+    over the measured ranges orders it by exactly that tuple: each column is
+    shifted to start at zero and scaled by the spans of the columns after it,
+    so the packed key compares like the tuple, and stability supplies the
+    original index as the last key. Nothing is quantized -- the depth bin is
+    ``_primary_depth_key``'s own. It replaces two radix sorts (32- and 64-bit
+    keys) and a 64-bit gather with one sort, of 32-bit keys whenever the
+    spans' product fits (a frame window of 2-D strokes: pixels times a handful
+    of depth bins times the circuit count).
+
+    Declines -- the caller falls through to the two sorts -- off CUDA, below
+    ``min_fragments``, when the product of the spans leaves int64, and under
+    ``ALGAN_OPT_DISABLE=packedfragsort``. One host readback for the bounds.
+    """
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    n = int(frag_key.numel())
+    if (
+        n < min_fragments
+        or frag_key.device.type not in devices
+        or _opt_disabled("packedfragsort")
+    ):
+        return None
+    primary = _primary_depth_key(frag_key)
+    pixel = primary >> 32
+    depth_bin = primary & 0xFFFFFFFF
+    del primary
+    bounds = torch.stack(
+        [v.to(torch.int64) for k in (pixel, depth_bin, layer) for v in torch.aminmax(k)]
+    ).tolist()
+    p0, p1, d0, d1, l0, l1 = bounds
+    span_d = d1 - d0 + 1
+    span_l = l1 - l0 + 1
+    capacity = (p1 - p0 + 1) * span_d * span_l
+    if capacity > (1 << 63) - 1:
+        return None
+    key = pixel.sub_(p0).mul_(span_d).add_(depth_bin.sub_(d0))
+    del depth_bin
+    key.mul_(span_l).add_(l1 - layer.to(torch.int64))
+    if capacity <= (1 << 31) - 1:
+        key = key.to(torch.int32)
+    return torch.argsort(key, stable=True)
 
 
 def _exact_fragment_order_on_device(frag_key, layer):
@@ -1804,6 +1937,55 @@ def _shadow_identity_epsilons(merged):
     return eps_self, eps_near
 
 
+def _persist_stroke_sheets(
+    memory, key_s, ref_s, ab_s, cov_s, msk_s, covered, counts, pixel_offsets
+):
+    """Persist a stroke-only stream's sheet record (see the call site).
+
+    The values are exactly what ``sheets._stroke_sheets`` derives from the
+    persisted fragment fields: the area rounded through the band sum (``+ 0.0``
+    turns -0.0 into +0.0) and clamped at zero, the sliver bit forced onto an
+    empty sample union, the 2.0 no-ceiling cap, and the emission's own CSR.
+    Returns the eight persistent arrays in the order the caller binds them.
+    """
+    num_frags = int(key_s.shape[0])
+    num_covered = int(covered.numel())
+    sheet_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
+    sheet_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+    sheet_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
+    sheet_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+    sheet_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+    sheet_cap = _arena_tensor(memory, (num_frags,), torch.float32, 2.0, persist=True)
+    covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
+    run_offsets = _arena_tensor(
+        memory, (num_covered + 1,), torch.int32, 0, persist=True
+    )
+    sheet_key.copy_(key_s)
+    sheet_ref.copy_(ref_s)
+    sheet_ab.copy_(ab_s)
+    torch.add(cov_s, 0.0, out=sheet_cov).clamp_min_(0.0)
+    torch.bitwise_or(
+        msk_s,
+        ((msk_s & AA_MASK_ALL) == 0).to(msk_s.dtype) * AA_SLIVER_BIT,
+        out=sheet_msk,
+    )
+    covered_idx.copy_(covered.to(torch.int32))
+    if pixel_offsets is not None:
+        run_offsets.copy_(pixel_offsets)
+    else:
+        run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+    return (
+        sheet_key,
+        sheet_ref,
+        sheet_ab,
+        sheet_cov,
+        sheet_msk,
+        sheet_cap,
+        covered_idx,
+        run_offsets,
+    )
+
+
 def prepare_sparse_raster_coverage(
     merged,
     tri_screen,
@@ -2238,7 +2420,9 @@ def prepare_sparse_raster_coverage(
 
         _check_emitted_keys(frag_key_u, int(g1), num_frags)
 
-        order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
+        order = _exact_fragment_order(
+            frag_key_u, frag_ref_u, layer_offset_triangles, num_bins=int(g1)
+        )
         key_s, ref_s, ab_s, cov_s, msk_s, opaque_s = _gather_fragment_arrays(
             order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
         )
@@ -2297,6 +2481,7 @@ def prepare_sparse_raster_coverage(
                 )
             else:
                 opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
+        from algan.animation_timeline.timeline import _opt_disabled
         from algan.rendering.raytracing.sheet_stream import (
             pixel_runs,
             stream_kernel_available,
@@ -2369,7 +2554,11 @@ def prepare_sparse_raster_coverage(
         # re-claims the corr residue and wobble regresses 2-4x (0.015 ->
         # 0.060; the exact-fit angles go 0.000 -> 0.032). Only the §6.7 run
         # lanes are truly subsumed (compaction has no budget to truncate).
-        if rt_settings.analytic_aa_one_mesh and num_frags:
+        # A stream with no triangle fragment has no one-mesh pixel (a circuit
+        # fragment has no surface id), so the block would only write the 2.0
+        # sentinel below over every fragment and leave the masks as they are.
+        stroke_only = num_tri_frags == 0 and not _opt_disabled("strokesheets")
+        if rt_settings.analytic_aa_one_mesh and num_frags and not stroke_only:
             msk_s, cap_s = _one_mesh_pixel_caps(
                 key_s,
                 ref_s,
@@ -2394,7 +2583,7 @@ def prepare_sparse_raster_coverage(
         # band never spans two meshes -- so per-fragment is per-band. Rides the
         # mask word as data; every reader masks with AA_MASK_ALL or tests named
         # flag bits, so it is inert where unread.
-        if rt_settings.sheet_sample_depth and num_frags:
+        if rt_settings.sheet_sample_depth and num_frags and not stroke_only:
             # Set the bit where the predicate holds, rather than selecting
             # between two materialized [n] constants: ``full_like`` and
             # ``zeros_like`` were two whole int32 fragment streams allocated,
@@ -2405,124 +2594,170 @@ def prepare_sparse_raster_coverage(
             )
 
         num_covered = int(covered.numel())
-        frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
-        frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-        frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
-        frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
-        frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-        frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
-        covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
-        run_offsets = _arena_tensor(
-            memory, (num_covered + 1,), torch.int32, 0, persist=True
-        )
-        frag_key.copy_(key_s)
-        frag_ref.copy_(ref_s)
-        frag_ab.copy_(ab_s)
-        frag_cov.copy_(cov_s)
-        frag_msk.copy_(msk_s)
-        frag_cap.copy_(cap_s)
-        covered_idx.copy_(covered.to(torch.int32))
-        if device_runs:
-            run_offsets.copy_(pixel_offsets)
-        else:
-            run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
-        del pixel_offsets
-        # Everything above now lives in the arena. The sheet compaction below
-        # is this function's memory peak, so the host copies are released
-        # before it starts rather than at the return.
-        del key_s, ref_s, ab_s, cov_s, msk_s, cap_s, pix_s, mat_opaque_s
-        del opaque_s, covered, counts
-
-        # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
-        # Aggregation happens here, once, before any kernel: the resolve then
-        # composites a few depth-sorted sheets per pixel instead of walking
-        # the raw fragment list. Intermediates are allocator-owned (like the
-        # torch sort scratch above); only the final sheet arrays persist.
-        from algan.rendering.raytracing.sheets import compact_sheets
-
-        # Fused sorted fields are temporary; returned sheet records own their storage.
-        with memory.temp():
-            stream = compact_sheets(
-                {
-                    "frag_key": frag_key,
-                    "frag_ref": frag_ref,
-                    "frag_ab": frag_ab,
-                    "frag_cov": frag_cov,
-                    "frag_msk": frag_msk,
-                    "frag_cap": frag_cap,
-                    "covered_idx": covered_idx,
-                    "run_offsets": run_offsets,
-                    "num_fragments": num_frags,
-                    "num_covered": num_covered,
-                    "num_tri_fragments": num_tri_frags,
-                },
-                merged,
-                cam_origin,
-                pixel_world_scale,
-                int(time_start),
-                int(width),
-                int(height),
-                band_rule="prim",
-                band_c=2.0,
-                tri_screen=tri_screen,
-                shade_split=bool(rt_settings.sheet_shade_split),
-                positioned_depth=bool(rt_settings.sheet_positioned_depth),
-                sample_depth=bool(rt_settings.sheet_sample_depth),
-                memory=memory,
-                persist_output=bool(rt_settings.sheet_fused_stream),
-                # Only the fields copied below: this compaction is the frame's
-                # memory peak, and the record-only fields cost it a full
-                # fragment-length array apiece on a stroke-heavy frame.
-                resolve_only=True,
+        if stroke_only:
+            # A stream with no triangle fragment compacts one sheet per
+            # fragment (``sheets._stroke_sheets``), so the sheet record is the
+            # sorted stream itself. Persist it once, straight from the stream,
+            # and let the fragment fields alias it: the general route writes
+            # the stream into the arena and then copies it again as sheets,
+            # which here is two full-stream arena copies of the same values
+            # and twice the persistent footprint. Only the viewer's fragment
+            # inspector reads the fragment fields, and for this stream they
+            # are the sheets.
+            (
+                frag_key,
+                frag_ref,
+                frag_ab,
+                frag_cov,
+                frag_msk,
+                frag_cap,
+                covered_idx,
+                run_offsets,
+            ) = _persist_stroke_sheets(
+                memory,
+                key_s,
+                ref_s,
+                ab_s,
+                cov_s,
+                msk_s,
+                covered,
+                counts,
+                pixel_offsets if device_runs else None,
             )
-        ns = int(stream["num_sheets"])
-        if stream.get("_arena_persistent", False):
-            # The fused final-record kernel already wrote the production fields
-            # into reverse-arena storage while their source stream was live.
-            # Reuse those views directly instead of seven copy launches after
-            # the temp scope has ended.
-            sheet_key = stream["sheet_key"]
-            sheet_ref = stream["sheet_ref"]
-            sheet_ab = stream["sheet_ab"]
-            sheet_cov = stream["sheet_wgt"]
-            sheet_msk = stream["sheet_wmsk"]
-            sheet_cap_t = stream["sheet_cap"]
-            sheet_offsets = stream["sheet_offsets"]
+            del key_s, ref_s, ab_s, cov_s, msk_s, cap_s, pix_s, mat_opaque_s
+            del opaque_s, covered, counts, pixel_offsets
+            sheet_data = {
+                "sheet_key": frag_key,
+                "sheet_ref": frag_ref,
+                "sheet_ab": frag_ab,
+                "sheet_cov": frag_cov,
+                "sheet_msk": frag_msk,
+                "sheet_cap": frag_cap,
+                "sheet_offsets": run_offsets,
+                "num_sheets": num_frags,
+                "env_in_composite": bool(env_in_composite),
+            }
         else:
-            sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
-            sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-            sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
-            sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-            sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
-            sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
-            sheet_offsets = _arena_tensor(
-                memory, (num_covered + 1,), torch.int32, persist=True
+            frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
+            frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+            frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
+            frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+            frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
+            frag_cap = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
+            covered_idx = _arena_tensor(
+                memory, (num_covered,), torch.int32, persist=True
             )
-            sheet_key.copy_(stream["sheet_key"])
-            sheet_ref.copy_(stream["sheet_ref"])
-            sheet_ab.copy_(stream["sheet_ab"])
-            # The resolve consumes the COMPOSITING weights, not the record: they
-            # are the sheet's own area and union everywhere except inside a band
-            # the shading-class split subdivided, where they carry §4.4's
-            # additive sibling arithmetic (``sheets._sibling_weights``).
-            sheet_cov.copy_(stream["sheet_wgt"])
-            sheet_msk.copy_(stream["sheet_wmsk"])
-            sheet_cap_t.copy_(stream["sheet_cap"])
-            sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
-        stream = None
-        sheet_data = {
-            "sheet_key": sheet_key,
-            "sheet_ref": sheet_ref,
-            "sheet_ab": sheet_ab,
-            "sheet_cov": sheet_cov,
-            "sheet_msk": sheet_msk,
-            "sheet_cap": sheet_cap_t,
-            "sheet_offsets": sheet_offsets,
-            "num_sheets": ns,
-            # Pinned with the emission like aa_*: the resolve's env
-            # handling must match the frame buffer this batch prefilled.
-            "env_in_composite": bool(env_in_composite),
-        }
+            run_offsets = _arena_tensor(
+                memory, (num_covered + 1,), torch.int32, 0, persist=True
+            )
+            frag_key.copy_(key_s)
+            frag_ref.copy_(ref_s)
+            frag_ab.copy_(ab_s)
+            frag_cov.copy_(cov_s)
+            frag_msk.copy_(msk_s)
+            frag_cap.copy_(cap_s)
+            covered_idx.copy_(covered.to(torch.int32))
+            if device_runs:
+                run_offsets.copy_(pixel_offsets)
+            else:
+                run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+            del pixel_offsets
+            # Everything above now lives in the arena. The sheet compaction below
+            # is this function's memory peak, so the host copies are released
+            # before it starts rather than at the return.
+            del key_s, ref_s, ab_s, cov_s, msk_s, cap_s, pix_s, mat_opaque_s
+            del opaque_s, covered, counts
+
+            # -- SHEET COMPACTION (DESIGN_sheet_resolve.md P1/P2) ---------------
+            # Aggregation happens here, once, before any kernel: the resolve then
+            # composites a few depth-sorted sheets per pixel instead of walking
+            # the raw fragment list. Intermediates are allocator-owned (like the
+            # torch sort scratch above); only the final sheet arrays persist.
+            from algan.rendering.raytracing.sheets import compact_sheets
+
+            # Fused sorted fields are temporary; returned sheet records own their storage.
+            with memory.temp():
+                stream = compact_sheets(
+                    {
+                        "frag_key": frag_key,
+                        "frag_ref": frag_ref,
+                        "frag_ab": frag_ab,
+                        "frag_cov": frag_cov,
+                        "frag_msk": frag_msk,
+                        "frag_cap": frag_cap,
+                        "covered_idx": covered_idx,
+                        "run_offsets": run_offsets,
+                        "num_fragments": num_frags,
+                        "num_covered": num_covered,
+                        "num_tri_fragments": num_tri_frags,
+                    },
+                    merged,
+                    cam_origin,
+                    pixel_world_scale,
+                    int(time_start),
+                    int(width),
+                    int(height),
+                    band_rule="prim",
+                    band_c=2.0,
+                    tri_screen=tri_screen,
+                    shade_split=bool(rt_settings.sheet_shade_split),
+                    positioned_depth=bool(rt_settings.sheet_positioned_depth),
+                    sample_depth=bool(rt_settings.sheet_sample_depth),
+                    memory=memory,
+                    persist_output=bool(rt_settings.sheet_fused_stream),
+                    # Only the fields copied below: this compaction is the frame's
+                    # memory peak, and the record-only fields cost it a full
+                    # fragment-length array apiece on a stroke-heavy frame.
+                    resolve_only=True,
+                )
+            ns = int(stream["num_sheets"])
+            if stream.get("_arena_persistent", False):
+                # The fused final-record kernel already wrote the production fields
+                # into reverse-arena storage while their source stream was live.
+                # Reuse those views directly instead of seven copy launches after
+                # the temp scope has ended.
+                sheet_key = stream["sheet_key"]
+                sheet_ref = stream["sheet_ref"]
+                sheet_ab = stream["sheet_ab"]
+                sheet_cov = stream["sheet_wgt"]
+                sheet_msk = stream["sheet_wmsk"]
+                sheet_cap_t = stream["sheet_cap"]
+                sheet_offsets = stream["sheet_offsets"]
+            else:
+                sheet_key = _arena_tensor(memory, (ns,), torch.int64, persist=True)
+                sheet_ref = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+                sheet_ab = _arena_tensor(memory, (ns, 2), torch.float32, persist=True)
+                sheet_cov = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+                sheet_msk = _arena_tensor(memory, (ns,), torch.int32, persist=True)
+                sheet_cap_t = _arena_tensor(memory, (ns,), torch.float32, persist=True)
+                sheet_offsets = _arena_tensor(
+                    memory, (num_covered + 1,), torch.int32, persist=True
+                )
+                sheet_key.copy_(stream["sheet_key"])
+                sheet_ref.copy_(stream["sheet_ref"])
+                sheet_ab.copy_(stream["sheet_ab"])
+                # The resolve consumes the COMPOSITING weights, not the record: they
+                # are the sheet's own area and union everywhere except inside a band
+                # the shading-class split subdivided, where they carry §4.4's
+                # additive sibling arithmetic (``sheets._sibling_weights``).
+                sheet_cov.copy_(stream["sheet_wgt"])
+                sheet_msk.copy_(stream["sheet_wmsk"])
+                sheet_cap_t.copy_(stream["sheet_cap"])
+                sheet_offsets.copy_(stream["sheet_offsets"].to(torch.int32))
+            stream = None
+            sheet_data = {
+                "sheet_key": sheet_key,
+                "sheet_ref": sheet_ref,
+                "sheet_ab": sheet_ab,
+                "sheet_cov": sheet_cov,
+                "sheet_msk": sheet_msk,
+                "sheet_cap": sheet_cap_t,
+                "sheet_offsets": sheet_offsets,
+                "num_sheets": ns,
+                # Pinned with the emission like aa_*: the resolve's env
+                # handling must match the frame buffer this batch prefilled.
+                "env_in_composite": bool(env_in_composite),
+            }
 
         # Recorded for calibration: the fragment/covered counts are this
         # scope's value-dependent drivers and are only known once the COUNT

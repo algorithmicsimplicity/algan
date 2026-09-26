@@ -121,3 +121,58 @@ def key_run_order(
                 for i in range(start, end):
                     order[i] = i
             _sort_run(start, end, order, group, depth, depth_key)
+
+
+@ti.kernel
+def pixel_bin_counts(
+    frag_key: ti.types.ndarray(),
+    n: ti.i32,
+    num_bins: ti.i32,
+    counts: ti.types.ndarray(),
+    outside: ti.types.ndarray(),
+):
+    """Fragments per pixel bin (``counts`` PRE-ZEROED), bin = ``key >> 32``.
+
+    A key whose pixel falls outside ``[0, num_bins)`` is not counted; it sets
+    ``outside[0]`` instead so the caller can fall back to a comparison sort.
+    """
+    for i in range(n):
+        p = frag_key[i] >> 32
+        if p >= 0 and p < num_bins:
+            ti.atomic_add(counts[ti.cast(p, ti.i32)], 1)
+        else:
+            outside[0] = 1
+
+
+@ti.kernel
+def pixel_bin_scatter(
+    frag_key: ti.types.ndarray(),
+    n: ti.i32,
+    cursor: ti.types.ndarray(),
+    order: ti.types.ndarray(),
+):
+    """Scatter each fragment's index into its pixel bin's run of ``order``.
+
+    ``cursor`` holds each bin's first slot on entry. The order WITHIN a bin is
+    whatever the atomics made it; :func:`bin_run_order` then sorts every bin
+    by a total key ending in the original index, so it cannot leak out.
+    """
+    for i in range(n):
+        slot = ti.atomic_add(cursor[ti.cast(frag_key[i] >> 32, ti.i32)], 1)
+        order[slot] = i
+
+
+@ti.kernel
+def bin_run_order(
+    offsets: ti.types.ndarray(),
+    group: ti.types.ndarray(),
+    order: ti.types.ndarray(),
+    num_bins: ti.i32,
+):
+    """Sort each bin's run of ``order`` by (group, original position)."""
+    ti.loop_config(block_dim=128)
+    for b in range(num_bins):
+        start = ti.cast(offsets[b], ti.i32)
+        end = ti.cast(offsets[b + 1], ti.i32)
+        if end - start > 1:
+            _sort_run(start, end, order, group, group, False)
