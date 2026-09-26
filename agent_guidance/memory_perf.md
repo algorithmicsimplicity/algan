@@ -372,3 +372,48 @@ frame of scenes 1 and 12.
   unwelded grid's triangle soup is six stacked shifted views instead of an
   index gather, about 1.6x. These run on the prefetch worker for every batch
   of a deforming surface (the loss-landscape scenes' 193x193 grid).
+
+## HD stroke frames, fragment order, reclaim backoff, encoder queue (September 27)
+
+Measured on the backprop explainer at HD (1920x1080, analytic raster route),
+where a stroke-heavy chunk is one frame carrying ~8.9 M fragments. Each path
+keeps an `ALGAN_OPT_DISABLE` switch and was checked lossless and batch-pinned
+against the switch-off arm (scenes 0, 3, 4, 12 at PREVIEW, every frame; the
+first render of a process differs from later ones in every arm, so the check
+discards a warm-up render). Backprop scene 4 at HD: 911 s -> 404 s profiled.
+
+- **Stroke-only chunks (`strokesheets`).** Every bezier fragment is its own
+  group, so `compact_sheets` of a stream with no triangle fragment is the
+  identity: `_stroke_sheets` writes it, and the emission persists the sheet
+  record once straight from the sorted stream with the `frag_*` fields
+  aliasing it (only the viewer's fragment capture reads those). Scene 4's
+  compaction went 253 s -> 7 s.
+- **Mixed chunks (`strokepixels`, `solobands`).** Compaction is per pixel, so
+  only pixels holding a triangle fragment go through the general path; the
+  rest pass through and are interleaved back. Declined above 60% triangle-pixel
+  fragments and for batches with a closed-shell triangle: the solid-shell
+  ceiling's spend reads a stream-global f64 prefix, so its low bits depend on
+  every fragment in the chunk. With no class-mixed group and no rank pooling,
+  `_band_composite` and `_sibling_weights` are skipped (identity).
+- **Fragment order (`binfragsort`, `fusedbinkeys`, `packedfragsort`).** A
+  counting sort over the chunk's pixel ordinals plus a per-pixel sort of
+  (key, index) pairs replaces two stable radix sorts and a 64-bit gather: 77-83
+  ms -> 44 ms per real HD chunk. On CUDA torch evaluates `t / eps` as
+  `t * f32(1 / eps)` (true division differs in ~17% of values), which the
+  fused key kernel reproduces with one multiply; elsewhere the key comes from
+  the torch expressions. The packed single-sort key is the fallback.
+- **Host-pressure reclaim backoff (`hostbackoff`).** `release_torch_memory`
+  reclaimed at almost every HD chunk boundary because available host RAM sat
+  under 15% (other processes); each reclaim freed a median 1 MB and cost
+  ~50 ms (gc + `empty_cache`). Ineffective host-only reclaims now back off
+  exponentially (Windows telemetry only); GPU pressure and forced reclaims
+  never skip. `tests/conftest.py` pins the old policy for other tests.
+- **Encoder queue (`writerrepeats`, `writerview`).** A held frame is one queue
+  entry with a repeat count, so a hold no longer blocks the render thread on
+  the encoder, and frames are piped as the array's own buffer instead of
+  moviepy's `tobytes()` copy (1080p NVENC encode 140 -> 178 fps).
+
+Not done: the bezier count/write and resolve kernels are now most of a stroke
+frame; the resolve launch costs ~15 ms of host time even on the fast-launch
+path (inside the C++ launch); `ALGAN_PREFETCH_GPU_PREP=1` crashes at HD in
+`scene_builder._iter_primitive_source_tensors` (`shader_param_names` None).
