@@ -257,3 +257,17 @@ def test_encoder_failure_wakes_a_producer_waiting_on_a_full_queue(workers):
         worker.abort()
         if producer.ident is not None:
             producer.join(timeout=2)
+
+
+def test_a_held_frame_is_one_queue_entry_written_its_repeat_count(workers):
+    written = []
+    worker = render_loop._VideoWriter(
+        SimpleNamespace(write_frame=lambda array: written.append(array))
+    )
+    worker.start()
+    worker.put(_Frame(1))
+    # Far more repeats than the queue holds entries: must not block.
+    worker.put(_Frame(2), 500)
+    worker.put(_Frame(3))
+    worker.finish()
+    assert [int(a) for a in written] == [1] + [2] * 500 + [3]

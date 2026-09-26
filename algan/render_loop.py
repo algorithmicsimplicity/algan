@@ -323,10 +323,47 @@ class EmptySceneWarning(Warning):
 
 def write_frames_from_queue(queue, file_writer):
     while True:
-        frame = queue.get()
-        if frame is None:  # Sentinel value to signal the end
+        item = queue.get()
+        if item is None:  # Sentinel value to signal the end
             break
-        file_writer.write_frame(frame.numpy())
+        # ``(frame, copies)``: a held frame arrives once with its repeat count
+        # (``_VideoWriter.put``); a bare frame is written once.
+        frame, copies = item if isinstance(item, tuple) else (item, 1)
+        array = frame.numpy()
+        for _ in range(copies):
+            _write_frame(file_writer, array)
+
+
+def _write_frame(file_writer, array):
+    """Pipe one frame to the encoder.
+
+    moviepy's ``FFMPEG_VideoWriter.write_frame`` writes ``array.tobytes()``,
+    a full copy of the frame per write; the pipe takes the array's own buffer
+    just as well. Same bytes, same order: at 1080p that raised the encode's
+    throughput from 140 to 178 frames per second on the dev box, and the
+    encoder is what a hold-heavy scene waits on. Anything that is not
+    moviepy's writer, a non-contiguous array, or a failed write goes through
+    ``write_frame`` itself, which also produces moviepy's error report.
+    """
+    stdin = getattr(getattr(file_writer, "proc", None), "stdin", None)
+    if (
+        stdin is None
+        or not getattr(array, "flags", None)
+        or not array.flags["C_CONTIGUOUS"]
+        or _opt_disabled_render_loop("writerview")
+    ):
+        file_writer.write_frame(array)
+        return
+    try:
+        stdin.write(memoryview(array))
+    except OSError:
+        file_writer.write_frame(array)
+
+
+def _opt_disabled_render_loop(name):
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    return _opt_disabled(name)
 
 
 class _VideoWriter:
@@ -355,13 +392,24 @@ class _VideoWriter:
         if self._error is not None:
             raise self._error
 
-    def put(self, frame):
+    def put(self, frame, copies=1):
+        """Queue ``frame`` to be written ``copies`` times in a row.
+
+        A held frame (static-frame reuse) is ONE queue entry however many
+        times it repeats, so the bound limits distinct frames in flight --
+        the memory it exists for -- and a long hold no longer blocks the
+        render thread until the encoder has drained all but eight copies.
+        Measured at HD on the backprop explainer, render-thread time outside
+        every profiled stage was 0.25-0.4 s per second of video, over half
+        of a hold-heavy scene's render.
+        """
+        item = frame if copies == 1 or frame is None else (frame, int(copies))
         while True:
             self._raise_if_failed()
             try:
                 # Poll so a dead encoder cannot strand a full queue, and so
                 # Ctrl-C remains observable on Windows while waiting for space.
-                self.queue.put(frame, timeout=0.1)
+                self.queue.put(item, timeout=0.1)
                 break
             except Full:
                 pass
@@ -4484,16 +4532,23 @@ class RenderLoopMixin:
                 close_frames = getattr(batches, "close", None)
                 if close_frames is not None:
                     frame_cleanup.callback(close_frames)
+                from algan.animation_timeline.timeline import _opt_disabled
+
                 rendered = 0
                 for frame_batch in batches:
                     for frame in frame_batch:
                         copies = 1 if repeats is None else repeats[rendered]
                         rendered += 1
+                        if _opt_disabled("writerrepeats"):
+                            for _ in range(copies):
+                                writer.put(frame)
+                                report_frame()
+                            continue
+                        writer.put(frame, copies)
+                        # After the put: the queue is bounded and feeds the
+                        # encoder thread, so reporting first would run the
+                        # progress ahead of the actual encode.
                         for _ in range(copies):
-                            writer.put(frame)
-                            # After the put: the queue is bounded and feeds the
-                            # encoder thread, so reporting first would run the
-                            # progress ahead of the actual encode.
                             report_frame()
             self._drain_video_writer(writer)
         except BaseException:

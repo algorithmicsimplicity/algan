@@ -57,10 +57,10 @@ def _render(tmp_path, monkeypatch, name, reuse, updater=False):
     original_put = render_loop._VideoWriter.put
     original_get_frames = render_loop.RenderLoopMixin.get_frames
 
-    def put(writer, frame):
+    def put(writer, frame, copies=1):
         if frame is not None:
-            frames.append(frame.clone())
-        return original_put(writer, frame)
+            frames.extend(frame.clone() for _ in range(copies))
+        return original_put(writer, frame, copies)
 
     def get_frames(self, *args, **kwargs):
         windows.append(kwargs.get("frame_indices"))
