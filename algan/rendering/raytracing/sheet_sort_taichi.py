@@ -154,7 +154,7 @@ def pixel_bin_scatter(
     """Scatter each fragment's index into its pixel bin's run of ``order``.
 
     ``cursor`` holds each bin's first slot on entry. The order WITHIN a bin is
-    whatever the atomics made it; :func:`bin_run_order` then sorts every bin
+    whatever the atomics made it; :func:`bin_run_sort_pairs` then sorts every bin
     by a total key ending in the original index, so it cannot leak out.
     """
     for i in range(n):
@@ -162,17 +162,84 @@ def pixel_bin_scatter(
         order[slot] = i
 
 
+@ti.func
+def _pair_after(keys: ti.template(), order: ti.template(), i, key, idx):
+    """Whether slot ``i`` sorts after the pair ``(key, idx)``."""
+    k = keys[i]
+    return k > key or (k == key and order[i] > idx)
+
+
+@ti.func
+def _pair_sift(keys: ti.template(), order: ti.template(), start, root, size):
+    key = keys[start + root]
+    idx = order[start + root]
+    node = root
+    walking = True
+    while walking and 2 * node + 1 < size:
+        child = 2 * node + 1
+        if child + 1 < size:
+            if _pair_after(keys, order, start + child + 1, keys[start + child],
+                           order[start + child]):
+                child += 1
+        if _pair_after(keys, order, start + child, key, idx):
+            keys[start + node] = keys[start + child]
+            order[start + node] = order[start + child]
+            node = child
+        else:
+            walking = False
+    keys[start + node] = key
+    order[start + node] = idx
+
+
 @ti.kernel
-def bin_run_order(
+def bin_run_sort_pairs(
     offsets: ti.types.ndarray(),
-    group: ti.types.ndarray(),
+    keys: ti.types.ndarray(),
     order: ti.types.ndarray(),
     num_bins: ti.i32,
 ):
-    """Sort each bin's run of ``order`` by (group, original position)."""
+    """Sort each bin's run of ``(keys, order)`` pairs in place by (key, order).
+
+    ``keys`` is the run-local copy of each slot's sort key (``group[order]``),
+    so a run's comparisons read contiguous memory instead of chasing
+    ``order`` into a fragment-indexed table. ``order`` holds original
+    positions, which break key ties: the result is the stable order whatever
+    order the slots arrived in. Insertion sort for short runs, in-place
+    heapsort for long ones, as in :func:`_sort_run`.
+    """
     ti.loop_config(block_dim=128)
     for b in range(num_bins):
         start = ti.cast(offsets[b], ti.i32)
         end = ti.cast(offsets[b + 1], ti.i32)
-        if end - start > 1:
-            _sort_run(start, end, order, group, group, False)
+        size = end - start
+        if size > 1:
+            if size <= 16:
+                for i in range(start + 1, end):
+                    key = keys[i]
+                    idx = order[i]
+                    j = i
+                    walking = True
+                    while walking and j > start:
+                        if _pair_after(keys, order, j - 1, key, idx):
+                            keys[j] = keys[j - 1]
+                            order[j] = order[j - 1]
+                            j -= 1
+                        else:
+                            walking = False
+                    keys[j] = key
+                    order[j] = idx
+            else:
+                root = size // 2 - 1
+                while root >= 0:
+                    _pair_sift(keys, order, start, root, size)
+                    root -= 1
+                remaining = size - 1
+                while remaining > 0:
+                    last_key = keys[start + remaining]
+                    last_idx = order[start + remaining]
+                    keys[start + remaining] = keys[start]
+                    order[start + remaining] = order[start]
+                    keys[start] = last_key
+                    order[start] = last_idx
+                    _pair_sift(keys, order, start, 0, remaining)
+                    remaining -= 1

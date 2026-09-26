@@ -1335,7 +1335,7 @@ def _binned_fragment_order(
     counts, and scatter each fragment's index into its pixel's run
     (``sheet_sort_taichi.pixel_bin_counts`` / ``pixel_bin_scatter``). What is
     left is ordering each run by ``(depth bin, descending layer, original
-    index)``, which ``bin_run_order`` does in place per pixel -- a handful of
+    index)``, which ``bin_run_sort_pairs`` does in place per pixel -- a handful of
     fragments each -- with the original index as the comparator's last key, so
     the atomics' arbitrary order within a run cannot leak into the result. The
     run key packs the depth bin above ``0x7FFFFFFF - layer``, each non-negative
@@ -1361,7 +1361,7 @@ def _binned_fragment_order(
     ):
         return None
     from algan.rendering.raytracing.sheet_sort_taichi import (
-        bin_run_order,
+        bin_run_sort_pairs,
         pixel_bin_counts,
         pixel_bin_scatter,
     )
@@ -1380,7 +1380,12 @@ def _binned_fragment_order(
     order = torch.empty(n, dtype=torch.int64, device=device)
     pixel_bin_scatter(frag_key, n, cursor, order)
     del cursor
-    bin_run_order(offsets, group, order, num_bins)
+    # Each run sorts a contiguous copy of its keys beside ``order``: the
+    # comparisons then stay inside the run instead of gathering from a
+    # fragment-indexed table at every step.
+    run_keys = group.index_select(0, order)
+    del group
+    bin_run_sort_pairs(offsets, run_keys, order, num_bins)
     return order
 
 
