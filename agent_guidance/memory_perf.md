@@ -308,3 +308,67 @@ and which frames are rendered.
 All of these memos reproduce the uncached state bit for bit
 (`tests/unit_tests/test_authoring_memos.py`). The daemon keeps them warm
 between runs, so a script's second run through it reuses every glyph and frame.
+
+## Image backgrounds, narration mix, surface prep (September 26, later)
+
+Measured on the backprop explainer; each path keeps an `ALGAN_OPT_DISABLE`
+switch (read once per process) and reproduces the previous output byte for
+byte -- lossless whole-scene renders with batching pinned
+(`available_memory_override`, `ALGAN_PREFETCH_BATCHES=0`) matched on every
+frame of scenes 1 and 12.
+
+- **Still image backgrounds (`staticbg`).** `_prepare_background_for_chunk`
+  used to expand a one-frame image background to every frame of the chunk in
+  its own float dtype at the *requested* supersampling, then concatenate,
+  scale and convert it, and the tracer's `_downsample_background` made float
+  copies again -- all outside the render arena. At HD (3840x2160 before the
+  analytic route's downsample) a 25-frame chunk needed more than a gigabyte.
+  The CUDA OOM arrived after the arena preflight had approved the batch, so
+  `_note_render_arena_underestimate` set the margin to the batch's whole
+  unused arena and then doubled it, and the rest of the job rendered in
+  batches of about three frames: scene 12 at HD took 437-912 s. Now the chunk
+  gets a `scene_builder._StaticImageBackground` -- one frame's uint8 rows --
+  which `_downsample_background` averages once and `_prefill_background`
+  broadcasts (on CUDA it also converts one frame and broadcast-copies it; the
+  CPU's vectorized `pow` and its scalar tail round differently, so there every
+  frame is converted as before). Scene 12 at HD: 24 s, no under-modelled
+  batch; scene 1 at HD: 222 s against 1704 s in the same process. If an HD render
+  is mysteriously slow, look for "Arena preflight under-modeled" in its log.
+- **Preflight margin decay (`margindecay`).** A margin learned from a failure
+  while another holder of the device (another process, the display) had taken
+  more than max(256 MB, 1/12 of the device) since the render began now halves
+  after each clean batch, and a failure after a lowering doubles that wait (up
+  to 64 batches). A failure the render caused itself keeps its margin for the
+  job: with the per-frame background copies restored, decaying that margin was
+  slower on HD scene 12 (211/255 s against 195/195 s), because growing the
+  windows back reproduces the pressure and WDDM pages instead of failing, so
+  nothing raises the margin again. The external case is unit-tested only; a
+  live VRAM-hog A/B was not completed.
+- **Narration mix (`audiomix`, `audioprobe`).** `Scene.save_audio` writes the
+  composite through `audio_utils.write_composite_audio`: moviepy's chunk grid
+  and member `get_frame` calls in the same order, without its decorators
+  (every call bound its arguments through `inspect.signature`) or the
+  composite asking every member whether it plays in every chunk; the next few
+  speech decoders open on worker threads. Speech clips open their decoder
+  without re-probing the file (`_probed_audio_reader`, moviepy 2.1.2 only).
+  30 narrated sentences: 15.8 s -> ~4 s, on the critical path before the
+  first frame of every scene.
+- **Glossy route only where something reflects (`glossy_batch_gate`,
+  `ALGAN_GLOSSY_BATCH_GATE`).** The split-sum prefilter (glossy mode 3) cost
+  every frame of every batch -- two pyramid buffers, a scatter, a ten-level
+  reduction and a composite per frame, and accumulator rows twice as many and
+  twice as wide -- even in a 2-D scene with nothing reflective, where its
+  buffers stay empty. `tracer._batch_glossy_mode` resolves such a batch with
+  mode 0 (the same flags `_secondary_split_needed` reads, plus user
+  pipelines) and stores the decision in `merged["glossy_mode"]`, which the
+  resolve launch reads so kernel template and host layout agree. Lossless and
+  batch-pinned, scenes 1, 3 and 12 matched on every frame; alternating warm
+  PREVIEW renders: scene 1 median 28.6 s against 40.5 s, scene 3 no worse.
+  The first render compiles the mode-0 resolve variants once.
+- **Surface prep on the CPU (`gridcross`, `gridsoup`).** The four grid cross
+  products are written as elementwise products where that is bit-identical to
+  `torch.linalg.cross` on the running build (probed once per device type; the
+  CUDA kernel fuses and is left alone), about 3x faster on a dense grid; an
+  unwelded grid's triangle soup is six stacked shifted views instead of an
+  index gather, about 1.6x. These run on the prefetch worker for every batch
+  of a deforming surface (the loss-landscape scenes' 193x193 grid).

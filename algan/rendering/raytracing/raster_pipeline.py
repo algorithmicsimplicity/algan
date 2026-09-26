@@ -2721,7 +2721,10 @@ def shade_sparse_raster_coverage(
         1 if int(merged.get("num_circuits", 0)) > 0 else 0,
         sec_aa,
         float(rt_settings.analytic_aa_secondary_min_energy),
-        int(rt_settings.glossy_reflection_mode()),
+        # The batch's mode (tracer._batch_glossy_mode), which sized the
+        # accumulator rows this launch writes; the live mode where no batch
+        # decision was made.
+        int(merged.get("glossy_mode", rt_settings.glossy_reflection_mode())),
         1 if coverage.get("env_in_composite") else 0,
         int(rt_settings.direct_specular_lobe),
     )

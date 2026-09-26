@@ -111,6 +111,29 @@ class _DeferredBackground:
         self.frame_indices = frame_indices
 
 
+class _StaticImageBackground:
+    """One image background frame standing for every frame of a chunk.
+
+    ``rows`` is the uint8 row tensor a single frame prepares to -- a leading
+    padding row, then the frame's pixels -- and ``num_frames`` the number of
+    frames it stands for. It is what ``_prepare_background_for_chunk`` hands
+    over for a background that does not change from frame to frame, instead of
+    ``num_frames`` byte-identical copies: at a super-sampled HD resolution
+    those copies (and the float temporaries that built them) ran to more than
+    a gigabyte for a modest chunk, outside the render arena, which is what
+    made the arena preflight's safety margin ratchet up and the rest of the
+    job render a few frames at a time. :func:`_downsample_background` and
+    :func:`_prefill_background` accept it wherever they accept the rows, and
+    produce exactly what they produce from the copies.
+    """
+
+    __slots__ = ("rows", "num_frames")
+
+    def __init__(self, rows, num_frames):
+        self.rows = rows
+        self.num_frames = int(num_frames)
+
+
 def _projected_scene_device(primitives):
     """Device carrying a projected primitive batch's ray-tracing tensors."""
     preferred = (
@@ -2855,6 +2878,22 @@ def _prefill_background(out, background, frame_offset, device, background_frames
         return
 
     num_frames, num_pixels, C_out = out.shape
+    if (
+        isinstance(background, _StaticImageBackground)
+        and num_frames > 1
+        and out.device.type == "cuda"
+    ):
+        # Every frame of a still image converts to the same values, so convert
+        # one -- the sRGB decode and premultiply below are several full-size
+        # passes, which at HD cost more than the copy -- and broadcast it.
+        # CUDA only: its elementwise kernels evaluate every element with the
+        # same code, whereas the CPU's vectorized pow and its scalar tail round
+        # differently, so there an element's value depends on where in the
+        # tensor it sits and one frame would not reproduce N.
+        single = torch.empty((1, num_pixels, C_out), dtype=out.dtype, device=out.device)
+        _prefill_background(single, background, 0, device)
+        out.copy_(single.expand(num_frames, -1, -1))
+        return
     # Keep the background on its source device. ``Tensor.to(device)`` used to
     # materialize a full, untracked peer tensor on the rendering device before
     # writing the arena-backed output. ``copy_`` below performs device and dtype
@@ -2872,7 +2911,10 @@ def _prefill_background(out, background, frame_offset, device, background_frames
     # transparent it was. Opaque renders have no alpha channel to be
     # premultiplied against and are untouched.
     premultiply = C_out > 4
-    if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
+    static = isinstance(bg, _StaticImageBackground)
+    if static:
+        bg = bg.rows
+    if not static and (bg.dim() <= 1 or bg.shape[0] == 1):  # solid [0, 1] color
         vals = bg.float().flatten()[:5]
         # Whatever the buffer holds is what gets premultiplied -- the linear
         # value below, the encoded one in the else branch -- so this happens
@@ -2903,8 +2945,8 @@ def _prefill_background(out, background, frame_offset, device, background_frames
         _fill_unsupplied_background_channels(out, k, vals[-1], vals.shape[0])
     else:
         rows = bg.reshape(-1, bg.shape[-1])[1:]
-        if background_frames:
-            source_pixels = rows.shape[0] // int(background_frames)
+        if background_frames or static:
+            source_pixels = rows.shape[0] // (1 if static else int(background_frames))
             if source_pixels != num_pixels:
                 raise RuntimeError(
                     "background resolution does not match render output "
@@ -2912,10 +2954,15 @@ def _prefill_background(out, background, frame_offset, device, background_frames
                     "a super-sampled background must be averaged down with "
                     "_downsample_background first"
                 )
-        rows = rows[
-            frame_offset * num_pixels : (frame_offset + num_frames) * num_pixels
-        ]
-        rows = rows.view(num_frames, num_pixels, -1)
+        if static:
+            # The one frame, read for every frame of the chunk: a broadcast
+            # view, so the copies below are the only per-frame work.
+            rows = rows.view(1, num_pixels, -1).expand(num_frames, -1, -1)
+        else:
+            rows = rows[
+                frame_offset * num_pixels : (frame_offset + num_frames) * num_pixels
+            ]
+            rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
         # Per pixel, but the same contract as the solid color above: an image
         # background with an alpha channel owes the composite a premultiplied
@@ -2962,6 +3009,13 @@ def _downsample_background(background, aa, num_frames, screen_height, screen_wid
     returned unchanged.
     """
     bg = background
+    if isinstance(bg, _StaticImageBackground):
+        # Every frame is the same image, and the average pool below reads each
+        # frame on its own, so averaging the one frame is averaging them all.
+        single = _downsample_background(bg.rows, aa, 1, screen_height, screen_width)
+        if single is bg.rows:
+            return bg
+        return _StaticImageBackground(single, bg.num_frames)
     if not torch.is_tensor(bg) or bg.dim() <= 1 or bg.shape[0] == 1:
         return bg  # solid color
     # This is preparation for an arena-backed copy; do the resampling on the

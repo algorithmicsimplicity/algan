@@ -928,12 +928,20 @@ class Scene(RenderLoopMixin):
 
         from moviepy import CompositeAudioClip  # deferred: ~0.3 s of import algan
 
+        from algan.animation_timeline.timeline import _opt_disabled
+        from algan.utils.audio_utils import write_composite_audio
+
         audio_clip = CompositeAudioClip(clips_to_compose)
         # ``duration`` is moviepy's attribute name -- not Algan's ``runtime``.
         audio_clip.duration = self.animation_manager.context.timespan.original_end
-        audio_clip.write_audiofile(
-            file_path, fps=sample_rate, codec=codec, nbytes=nbytes
-        )
+        # The same samples either way (write_composite_audio says why it is
+        # faster); ALGAN_OPT_DISABLE=audiomix writes through moviepy for A/B.
+        if _opt_disabled("audiomix") or not write_composite_audio(
+            audio_clip, str(file_path), fps=sample_rate, nbytes=nbytes, codec=codec
+        ):
+            audio_clip.write_audiofile(
+                file_path, fps=sample_rate, codec=codec, nbytes=nbytes
+            )
         audio_clip.close()
         return file_path
 

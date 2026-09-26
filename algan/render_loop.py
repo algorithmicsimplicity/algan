@@ -117,6 +117,40 @@ _UNMEASURED_PROBE_FRAMES = 8
 _ARENA_FETCH_GROWTH_LIMIT = 1.6
 
 
+#: Clean batches in a row after which the arena preflight's learned safety
+#: margin halves, and the ceiling that wait doubles up to after each failure
+#: that follows a lowering (RenderLoopMixin._note_render_arena_success). One:
+#: while the margin is up the batches are a few frames long, so a slower start
+#: spends most of a scene recovering (HD scene 12: 36 batches of 3 frames).
+_ARENA_MARGIN_DECAY_BATCHES = 1
+_ARENA_MARGIN_DECAY_MAX_BATCHES = 64
+
+
+def _other_device_bytes(device):
+    """``(held by others, device total)`` in bytes, or None where unknown.
+
+    "Others" is everything but this process's PyTorch allocator -- other
+    processes, the display, driver and compiler runtimes: what
+    ``mem_get_info`` says is in use, less what PyTorch has reserved (the render
+    arena included).
+    """
+    device = torch.device(device)
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None
+    try:
+        free, total = torch.cuda.mem_get_info(device)
+        reserved = torch.cuda.memory_reserved(device)
+    except Exception:  # noqa: BLE001 -- telemetry only; None means "cannot say"
+        return None
+    return max(0, int(total) - int(free) - int(reserved)), int(total)
+
+
+#: How much more of the device other holders must have taken, since the render
+#: began, for an under-modelled batch to be blamed on them rather than on the
+#: render itself: the larger of 256 MB and 1/12 of the device.
+_OTHER_HOLDER_MIN_BYTES = 256 << 20
+
+
 def _next_arena_fetch_cap(duration, arena_frames):
     """Bound the next materialized window without shrinking what just fit."""
     return min(
@@ -538,6 +572,23 @@ def _prepare_background_for_chunk(
 
     if background.dim() > 1:
         if background.shape[0] == 1:
+            from algan.animation_timeline.timeline import _opt_disabled
+
+            if not _opt_disabled("staticbg"):
+                from algan.rendering.raytracing.scene_builder import (
+                    _StaticImageBackground,
+                )
+
+                # One frame's rows, standing for every frame of the chunk:
+                # the copies below would be byte-identical frame to frame,
+                # and at a super-sampled resolution the float temporaries
+                # that built them were the largest allocation of the render.
+                rows = background.reshape(-1, background.shape[-1])
+                rows = torch.cat((rows[:1], rows))
+                rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255)
+                return _StaticImageBackground(
+                    rows.to(torch.uint8), new_ind - current_ind
+                )
             background = background.expand(
                 new_ind - current_ind,
                 *[-1 for _ in range(background.dim() - 1)],
@@ -1546,10 +1597,85 @@ class RenderLoopMixin:
             need, remaining = last
             observed = max(0, int(remaining) - int(need)) + 1
         self._arena_unmodeled_bytes = max(prev * 2, observed, 8 << 20)
-        logger.warning(
-            "Arena preflight under-modeled the render; raising its safety "
-            "margin to %.1f MB for the rest of this job.",
+        # A failure after the margin was last lowered says the lowering was
+        # premature, so the next one waits twice as long: the margin settles
+        # where it holds instead of re-failing on a fixed period.
+        if getattr(self, "_arena_margin_decayed", False):
+            self._arena_margin_decay_after = min(
+                2
+                * getattr(
+                    self, "_arena_margin_decay_after", _ARENA_MARGIN_DECAY_BATCHES
+                ),
+                _ARENA_MARGIN_DECAY_MAX_BATCHES,
+            )
+        self._arena_margin_decayed = False
+        self._arena_margin_clean_batches = 0
+        # Only a failure another holder of the device can account for may be
+        # decayed away (see _note_render_arena_success). One the render caused
+        # itself -- an allocation outside the arena that grows with the window
+        # -- keeps its margin: growing the windows back only reproduced it, and
+        # on Windows the driver pages instead of failing, so nothing re-raises
+        # the margin (measured 195 s against 211-255 s on HD scene 12 with the
+        # per-frame background copies restored).
+        now = _other_device_bytes(render_device())
+        start = getattr(self, "_arena_other_bytes_at_start", None)
+        external = False
+        other_growth = 0
+        if now is not None and start is not None:
+            other_growth = now[0] - start[0]
+            external = other_growth > max(_OTHER_HOLDER_MIN_BYTES, now[1] // 12)
+        if not external:
+            self._arena_margin_persistent = True
+        if getattr(self, "_arena_margin_persistent", False):
+            logger.warning(
+                "Arena preflight under-modeled the render; raising its safety "
+                "margin to %.1f MB for the rest of this job.",
+                self._arena_unmodeled_bytes / 1e6,
+            )
+        else:
+            logger.warning(
+                "Arena preflight under-modeled the render while another holder "
+                "took %.1f MB more of the device; raising its safety margin to "
+                "%.1f MB until batches render cleanly again.",
+                other_growth / 1e6,
+                self._arena_unmodeled_bytes / 1e6,
+            )
+
+    def _note_render_arena_success(self):
+        """Let the preflight safety margin shrink back after clean batches.
+
+        The margin (:meth:`_note_render_arena_underestimate`) is learned from a
+        single failure. When another process took device memory the render had
+        counted on, that failure need not recur -- the other holder may let go
+        -- and a margin that never shrinks turns it into a job of tiny batches.
+        Such margins, and only those (a failure the render caused itself keeps
+        its margin for the job), shrink back: after
+        ``_arena_margin_decay_after`` batches in a row render without failing,
+        the margin halves (and drops to zero below 8 MB). A failure after a
+        decay doubles that wait (up to ``_ARENA_MARGIN_DECAY_MAX_BATCHES``), so
+        a margin the scene really needs is re-learned at most a few times.
+        ``ALGAN_OPT_DISABLE=margindecay`` keeps the old never-shrinking margin.
+        """
+        margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
+        if margin <= 0 or getattr(self, "_arena_margin_persistent", False):
+            return
+        from algan.animation_timeline.timeline import _opt_disabled
+
+        if _opt_disabled("margindecay"):
+            return
+        clean = getattr(self, "_arena_margin_clean_batches", 0) + 1
+        wait = getattr(self, "_arena_margin_decay_after", _ARENA_MARGIN_DECAY_BATCHES)
+        if clean < wait:
+            self._arena_margin_clean_batches = clean
+            return
+        self._arena_unmodeled_bytes = margin // 2 if margin // 2 >= (8 << 20) else 0
+        self._arena_margin_clean_batches = 0
+        self._arena_margin_decayed = True
+        logger.log(
+            PERF,
+            "Arena preflight safety margin lowered to %.1f MB after %d clean batches.",
             self._arena_unmodeled_bytes / 1e6,
+            wait,
         )
 
     def _reset_render_arena_after_failure(self):
@@ -3422,6 +3548,12 @@ class RenderLoopMixin:
         # under-estimated some allocation, so subsequent preflights must leave
         # at least this much slack (see _note_render_arena_underestimate).
         self._arena_unmodeled_bytes = 0
+        # How that margin shrinks back (see _note_render_arena_success).
+        self._arena_margin_clean_batches = 0
+        self._arena_margin_decay_after = _ARENA_MARGIN_DECAY_BATCHES
+        self._arena_margin_decayed = False
+        self._arena_margin_persistent = False
+        self._arena_other_bytes_at_start = _other_device_bytes(render_device())
         self._last_arena_preflight = None
         self._begin_batch_cost_measurement()
         # Frames the arena had room for in the last accepted batch, used to size
@@ -3932,6 +4064,7 @@ class RenderLoopMixin:
                             # and traceback frames that may own CUDA tensors.
                             self._reset_render_arena_after_failure()
                             continue
+                        self._note_render_arena_success()
                         # Drop this batch's arena-view caches before the arena
                         # is reset/reallocated: a rendered primitive's
                         # ``_rt_device_scene`` holds tensors carved from the

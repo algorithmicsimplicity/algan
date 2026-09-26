@@ -509,6 +509,54 @@ def _cached_audio_file_clip(file):
 
 _LAZY_AUDIO_FILE_CLIP = None
 
+#: moviepy releases whose ``FFMPEG_AudioReader.__init__`` sets exactly the
+#: attributes :func:`_probed_audio_reader` reproduces. Any other release is
+#: constructed normally; ``tests/unit_tests/test_audio_mixing.py`` compares
+#: the two constructions attribute for attribute.
+_PROBED_READER_MOVIEPY_VERSIONS = ("2.1.2",)
+
+
+def _probed_audio_reader(reader_class, filename, fps, duration):
+    """``reader_class(filename, decode_file=False, fps=fps, nbytes=2,
+    buffersize=200000)`` without its ``ffmpeg -i`` probe.
+
+    ``FFMPEG_AudioReader.__init__`` probes the file for the one value it needs
+    from it, the duration, which the clip already holds from its sidecar (it
+    *is* the reader's duration: ``AudioFileClip`` copies it from there). The
+    probe is a process start plus a ``communicate`` -- tens of milliseconds a
+    clip on Windows, once per narrated sentence of every render. Everything
+    else is the constructor's own assignments and its first two calls, so the
+    reader decodes the same bytes through the same ffmpeg command.
+    """
+    import moviepy
+
+    from algan.animation_timeline.timeline import _opt_disabled
+
+    version = getattr(moviepy, "__version__", None)
+    if version not in _PROBED_READER_MOVIEPY_VERSIONS or _opt_disabled("audioprobe"):
+        return reader_class(
+            filename, decode_file=False, fps=fps, nbytes=2, buffersize=200000
+        )
+    nbytes = 2
+    reader = reader_class.__new__(reader_class)
+    reader.filename = filename
+    reader.nbytes = nbytes
+    reader.fps = fps
+    reader.format = f"s{8 * nbytes}le"
+    reader.codec = f"pcm_s{8 * nbytes}le"
+    reader.nchannels = 2
+    reader.duration = duration
+    reader.bitrate = None
+    reader.infos = None
+    reader.proc = None
+    reader.n_frames = int(reader.fps * reader.duration)
+    reader.buffersize = min(reader.n_frames + 1, 200000)
+    reader.buffer = None
+    reader.buffer_startframe = 1
+    reader.initialize()
+    reader.buffer_around(1)
+    return reader
+
 
 def _lazy_audio_file_clip_class():
     """Build the lazy clip class on first use, so moviepy stays a deferred import."""
@@ -539,16 +587,16 @@ def _lazy_audio_file_clip_class():
             self.buffersize = info["buffersize"]
             self.frame_function = lambda t: self.reader.get_frame(t)
             self.nchannels = info["nchannels"]
+            # Opens the decoder ``frame_function`` reads through -- this
+            # original's, which copies share along with the closure itself.
+            # write_composite_audio calls it ahead of the mix, on a worker.
+            self.open_reader = lambda: self.reader
 
         @property
         def reader(self):
             if self._reader is None:
-                self._reader = FFMPEG_AudioReader(
-                    self.filename,
-                    decode_file=False,
-                    fps=self.fps,
-                    nbytes=2,
-                    buffersize=200000,
+                self._reader = _probed_audio_reader(
+                    FFMPEG_AudioReader, self.filename, self.fps, self.duration
                 )
             return self._reader
 
@@ -563,3 +611,136 @@ def _lazy_audio_file_clip_class():
 
     _LAZY_AUDIO_FILE_CLIP = LazyAudioFileClip
     return LazyAudioFileClip
+
+
+def write_composite_audio(composite, filename, fps, nbytes, codec, buffersize=2000):
+    """Write a ``CompositeAudioClip`` as its ``write_audiofile`` would, faster.
+
+    Produces the samples ``composite.write_audiofile(filename, fps=fps,
+    nbytes=nbytes, codec=codec, buffersize=buffersize)`` produces -- the same
+    chunk grid, the same ``get_frame`` calls on the same member clips in the
+    same order, the same mixing and quantization -- and hands them to the same
+    ffmpeg writer. Only moviepy's per-call overhead is gone: its decorators
+    bind every argument through ``inspect.signature``, and the composite asks
+    *every* member whether it is playing in *every* chunk, so a narrated scene
+    of a few dozen sentences spent seconds mixing a minute of audio before its
+    first frame could render. Here each chunk consults only the members whose
+    span it overlaps, found with the float comparisons ``Clip.is_playing``
+    makes, and the decoders of the next few members are opened on worker
+    threads while earlier ones mix (a speech clip's ``open_reader``; opening
+    one starts an ffmpeg process and waits for its first buffer, which is most
+    of what the mix itself costs).
+
+    Returns False without writing anything when the composite holds a member
+    this cannot vouch for (one that overrides ``is_playing``), or a chunk grid
+    moviepy itself would reject; the caller then writes it the moviepy way.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    import numpy as np
+    from moviepy.audio.io.ffmpeg_audiowriter import FFMPEG_AudioWriter
+    from moviepy.Clip import Clip
+
+    clips = list(composite.clips)
+    if any(type(clip).is_playing is not Clip.is_playing for clip in clips):
+        return False
+    total_size = int(fps * composite.duration)
+    nchunks = total_size // buffersize + 1
+    positions = np.linspace(0, total_size, nchunks + 1, endpoint=True, dtype=int)
+    if (np.diff(positions) <= 0).any():
+        return False
+    # Each chunk's ``t.min()`` and ``t.max()``: its times are ``(1 / fps) * k``
+    # for increasing ``k``, so these are its first and last, computed by the
+    # same product. A member is playing in chunk i unless ``tmin >= end`` or
+    # ``tmax < start`` (Clip.is_playing), and both bounds are monotone in i, so
+    # its chunks are one contiguous range found by bisection.
+    step = 1.0 / fps
+    chunk_tmin = step * positions[:-1]
+    chunk_tmax = step * (positions[1:] - 1)
+    ranges = []
+    for clip in clips:
+        first = int(np.searchsorted(chunk_tmax, clip.start, side="left"))
+        stop = (
+            nchunks
+            if clip.end is None
+            else int(np.searchsorted(chunk_tmin, clip.end, side="left"))
+        )
+        ranges.append((first, max(first, stop)))
+    order = sorted(
+        (k for k in range(len(clips)) if ranges[k][0] < ranges[k][1]),
+        key=lambda k: (ranges[k][0], k),
+    )
+
+    # One opener per distinct decoder, in order of first use.
+    openers = {}
+    opener_of = {}
+    for k in order:
+        opener = getattr(clips[k], "open_reader", None)
+        if callable(opener):
+            openers.setdefault(id(opener), opener)
+            opener_of[k] = id(opener)
+    queue = list(openers)
+    futures = {}
+    prefetch = 3
+
+    inttype = {1: "int8", 2: "int16", 4: "int32"}[nbytes]
+    scale = 2 ** (8 * nbytes - 1)
+    nchannels = composite.nchannels
+    logger.debug("Mixing %d audio clips into %s", len(clips), filename)
+    pool = ThreadPoolExecutor(max_workers=prefetch, thread_name_prefix="algan-audio")
+    writer = FFMPEG_AudioWriter(filename, fps, nbytes, nchannels, codec=codec)
+    try:
+
+        def top_up():
+            while queue and len(futures) < prefetch:
+                key = queue.pop(0)
+                futures[key] = pool.submit(openers[key])
+
+        top_up()
+        opened = set()
+        active = []
+        cursor = 0
+        pending = []
+        pending_samples = 0
+        for i in range(nchunks):
+            while cursor < len(order) and ranges[order[cursor]][0] <= i:
+                active.append(order[cursor])
+                cursor += 1
+            active = sorted(k for k in active if ranges[k][1] > i)
+            t = step * np.arange(positions[i], positions[i + 1])
+            sounds = []
+            for k in active:
+                clip = clips[k]
+                key = opener_of.get(k)
+                if key is not None and key not in opened:
+                    future = futures.pop(key, None)
+                    if future is None:
+                        # Not reached yet by the prefetch: open it here instead,
+                        # and never on a worker afterwards.
+                        queue.remove(key)
+                        openers[key]()
+                    else:
+                        future.result()
+                    opened.add(key)
+                    top_up()
+                start, end = clip.start, clip.end
+                part = 1 * (t >= start)
+                if end is not None:
+                    part *= t <= end
+                sounds.append(clip.get_frame(t - start) * np.array([part]).T)
+            # CompositeAudioClip.frame_function and AudioClip.to_soundarray.
+            frame = np.zeros((len(t), nchannels)) + sum(sounds)
+            frame = np.maximum(-0.99, np.minimum(0.99, frame))
+            pending.append((scale * frame).astype(inttype))
+            pending_samples += len(t)
+            if pending_samples >= 1 << 20:
+                writer.write_frames(np.concatenate(pending))
+                pending, pending_samples = [], 0
+        if pending:
+            writer.write_frames(np.concatenate(pending))
+    finally:
+        # Openers still queued or running are finished (not cancelled) so no
+        # decoder is left half-built behind a clip the caller will close.
+        pool.shutdown(wait=True, cancel_futures=True)
+        writer.close()
+    return True

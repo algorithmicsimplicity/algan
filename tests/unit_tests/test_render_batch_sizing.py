@@ -11,7 +11,10 @@ from algan.render_loop import (
     _prepare_background_for_chunk,
     _render_device_pool_bytes,
 )
-from algan.rendering.raytracing.scene_builder import _prefill_background
+from algan.rendering.raytracing.scene_builder import (
+    _prefill_background,
+    _StaticImageBackground,
+)
 from algan.settings import SETTINGS
 from algan.utils.memory_utils import InsufficientMemoryException
 
@@ -170,6 +173,12 @@ def test_background_image_quantization_stays_on_requested_device():
         ((image_expected + (0.5 / 255)) * 255).to(torch.uint8).clamp_max_(255)
     )
 
+    # A still image is handed over as one frame's rows standing for the chunk;
+    # spelled out per frame it is the same bytes.
+    assert isinstance(image_result, _StaticImageBackground)
+    assert image_result.num_frames == 2
+    rows = image_result.rows
+    image_result = torch.cat((rows[:1], rows[1:].repeat(image_result.num_frames, 1)))
     assert image_result.device.type == image_device
     assert torch.equal(image_result, image_expected)
 
@@ -202,6 +211,83 @@ def test_failed_render_retry_resets_arena_with_full_gc(monkeypatch):
     assert scene.memory.max_pointer == 0
     assert scene.memory.stack == []
     assert cache_calls == [True]
+
+
+def _margin_scene(monkeypatch, disabled=(), others_at_failure=3 << 30):
+    """A bare RenderLoopMixin whose device reports ``others_at_failure``.
+
+    That many bytes are held by other processes when a batch fails, against
+    none at the start.
+    """
+    import algan.animation_timeline.timeline as timeline_module
+
+    monkeypatch.setattr(timeline_module, "_OPT_DISABLED", frozenset(disabled))
+    monkeypatch.setattr(
+        render_loop_module,
+        "_other_device_bytes",
+        lambda device: (others_at_failure, 4 << 30),
+    )
+
+    class Scene(RenderLoopMixin):
+        pass
+
+    scene = Scene.__new__(Scene)
+    scene._arena_unmodeled_bytes = 0
+    scene._arena_other_bytes_at_start = (0, 4 << 30)
+    return scene
+
+
+def test_preflight_margin_shrinks_back_after_another_holder_let_go(monkeypatch):
+    # A margin learned while another process held the device used to stay for
+    # the rest of the job, leaving every later batch a few frames long.
+    mb = 1 << 20
+    scene = _margin_scene(monkeypatch)
+    scene._last_arena_preflight = (100 * mb, 740 * mb)
+    scene._note_render_arena_underestimate()
+    assert scene._arena_unmodeled_bytes == 640 * mb + 1
+
+    wait = render_loop_module._ARENA_MARGIN_DECAY_BATCHES
+    for _ in range(wait - 1):
+        scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 640 * mb + 1
+    scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 320 * mb
+
+    # Failing after a lowering doubles the wait before the next one.
+    scene._last_arena_preflight = (100 * mb, 90 * mb)
+    scene._note_render_arena_underestimate()
+    assert scene._arena_unmodeled_bytes == 640 * mb
+    for _ in range(2 * wait - 1):
+        scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 640 * mb
+    scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 320 * mb
+
+    # Halving below 8 MB clears the margin.
+    scene._arena_unmodeled_bytes = 12 * mb
+    for _ in range(2 * wait):
+        scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 0
+
+
+def test_preflight_margin_the_render_caused_is_kept(monkeypatch):
+    # Nobody else took the device: the render's own allocations outgrew the
+    # arena's slack, and growing the windows back would only repeat that.
+    scene = _margin_scene(monkeypatch, others_at_failure=0)
+    scene._last_arena_preflight = (1, 2)
+    scene._note_render_arena_underestimate()
+    for _ in range(100):
+        scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 8 << 20
+
+
+def test_preflight_margin_kill_switch_keeps_it(monkeypatch):
+    scene = _margin_scene(monkeypatch, disabled={"margindecay"})
+    scene._last_arena_preflight = (1, 2)
+    scene._note_render_arena_underestimate()
+    for _ in range(100):
+        scene._note_render_arena_success()
+    assert scene._arena_unmodeled_bytes == 8 << 20
 
 
 def test_chunk_peak_is_credited_to_the_window_that_actually_rendered():

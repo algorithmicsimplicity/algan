@@ -368,6 +368,35 @@ def _gloss_finish_frame(
     )
 
 
+def _batch_glossy_mode(merged):
+    """The glossy-lobe mode this batch resolves with.
+
+    ``rt_settings.glossy_reflection_mode()``, except that a batch with nothing
+    able to send a ray anywhere -- no reflective, refractive or
+    reflective-transparent geometry and no user pipeline -- resolves with mode
+    0. The split-sum route (mode 3) costs every frame of every batch: two
+    pyramid buffers, a scatter, a ten-level reduction and a composite per
+    frame, and accumulator rows twice as many and twice as wide, which halves
+    the primaries a tile holds. None of it can matter to a batch no reflection
+    is spawned in: mode 3 and mode 0 differ only in branches a reflector
+    takes, and the reflection buffer the route composites back stays empty.
+    ``glossy_batch_gate = False`` keeps every batch on the live mode.
+    """
+    mode = int(rt_settings.glossy_reflection_mode())
+    if mode == 0 or not rt_settings.glossy_batch_gate:
+        return mode
+    if (
+        merged.get("tri_has_reflective")
+        or merged.get("bez_has_reflective")
+        or merged.get("tex_has_reflective")
+        or merged.get("has_refl_transparent")
+        or merged.get("has_refractive")
+        or _scene_has_user_pipeline(merged)
+    ):
+        return mode
+    return 0
+
+
 def _secondary_split_needed(merged, analytic_raster=False):
     """Does analytic AA make this scene's reflectors a SPLITTING path?
 
@@ -3206,7 +3235,11 @@ def raytrace_render_wavefront(
                 # retry down to one covered pixel, which cannot help: a splitting
                 # batch holds the pool fixed across retries, so nothing but
                 # ``pix_accum`` shrinks.
-                gl_active = int(rt_settings.glossy_reflection_mode()) == 3
+                # Decided once per batch and read back by the resolve launch
+                # (raster_pipeline), so the kernel's template and the host's
+                # buffer layout cannot disagree.
+                merged["glossy_mode"] = _batch_glossy_mode(merged)
+                gl_active = merged["glossy_mode"] == 3
                 gl_main = gl_pyr = gl_levels = None
                 gl_sigma_max = 0.0
                 gl_bounds = None

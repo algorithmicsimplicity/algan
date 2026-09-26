@@ -3071,6 +3071,13 @@ glossy_prefilter = env_flag("ALGAN_GLOSSY_PREFILTER", True)
 # limit trades blur range for frame-local pyramid storage.
 glossy_prefilter_max_levels = env_int("ALGAN_GLOSSY_PREFILTER_LEVELS", 10)
 
+# A batch with nothing that can spawn a reflection (no reflective, refractive
+# or reflective-transparent geometry, no user pipeline) resolves on the plain
+# route even when the split-sum prefilter is on: its per-frame buffers and
+# passes, and its doubled accumulator rows, have nothing to carry there, and
+# the image is the same. See tracer._batch_glossy_mode.
+glossy_batch_gate = env_flag("ALGAN_GLOSSY_BATCH_GATE", True)
+
 
 def set_glossy_reflection(enabled, *, interleave=None, prefilter=None):
     """Toggle roughness-driven glossy reflections (see ``glossy_reflection``).

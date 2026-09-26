@@ -41,7 +41,7 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     active_scene_for_new_mob,
 )
-from algan.animation_timeline.timeline import EditRecord
+from algan.animation_timeline.timeline import EditRecord, _opt_disabled
 from algan.constants.color import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
@@ -440,7 +440,28 @@ def grid_to_triangle_vertices(grid, weld=(False, False, False)):
     fused = _gather_triangles_on_cpu(flat_grid, indices)
     if fused is not None:
         return fused
+    if not any(weld) and not _opt_disabled("gridsoup"):
+        return _unwelded_triangle_soup(grid)
     return flat_grid[..., indices, :]
+
+
+def _unwelded_triangle_soup(grid):
+    """``grid_to_triangle_vertices`` for an unwelded grid, as six slices.
+
+    Without a weld every cell ``(i, j)`` contributes the same two triangles,
+    ``(p10, p01, p00)`` and ``(p11, p01, p10)`` in the order
+    :func:`get_grid_to_triangle_indices` lists them, so the gather is six
+    shifted views of the grid stacked cell by cell. It copies exactly the
+    elements the index gather copies, into the same places, but as strided
+    block copies rather than one index lookup per row -- 1.6x faster on a
+    batch's dense landscape grid.
+    """
+    p00 = grid[..., :-1, :-1, :]
+    p01 = grid[..., :-1, 1:, :]
+    p10 = grid[..., 1:, :-1, :]
+    p11 = grid[..., 1:, 1:, :]
+    soup = torch.stack((p10, p01, p00, p11, p01, p10), dim=-2)
+    return soup.reshape(*grid.shape[:-3], -1, grid.shape[-1])
 
 
 def _cpu_prep_kernel(name):
@@ -534,9 +555,80 @@ def _grid_normals_paired():
     byte-identical prep optimizations, under the name ``gridnormals``, so the
     A/B script can run both arms in one process.
     """
-    from algan.animation_timeline.timeline import _opt_disabled
-
     return not _opt_disabled("gridnormals")
+
+
+_ELEMENTWISE_CROSS_MATCHES = {}
+
+
+def _elementwise_cross_matches(device_type):
+    """Whether :func:`_elementwise_cross` reproduces ``torch.linalg.cross``
+    bit for bit on this build and device type, probed once per process.
+
+    ``torch.linalg.cross`` on this machine's CPU build is the plain
+    ``a1 * b2 - a2 * b1`` expression, but a kernel that contracts it into a
+    fused multiply-add rounds differently -- the CUDA one does, and a CPU
+    build compiled with contraction would too. Rather than guess which build
+    this is, compare the two on random vectors (a contracting kernel disagrees
+    on a large fraction of them) and keep ``torch.linalg.cross`` wherever they
+    differ at all.
+    """
+    matches = _ELEMENTWISE_CROSS_MATCHES.get(device_type)
+    if matches is None:
+        generator = torch.Generator().manual_seed(0x5EED)
+        matches = True
+        # Contiguous and strided operands, since the kernel may dispatch the
+        # two differently; both at a size that engages its vectorized loop.
+        for shape in ((4099, 3), (7, 129, 3)):
+            a = torch.randn(shape, generator=generator)
+            b = torch.randn(shape, generator=generator)
+            if device_type != "cpu":
+                a, b = a.to(device_type), b.to(device_type)
+            for x, y in ((a, b), (a[:-1:2], b[1::2])):
+                reference = torch.linalg.cross(x, y, dim=-1)
+                if not torch.equal(
+                    _elementwise_cross(x, y).view(torch.int32),
+                    reference.view(torch.int32),
+                ):
+                    matches = False
+        _ELEMENTWISE_CROSS_MATCHES[device_type] = matches
+    return matches
+
+
+def _elementwise_cross(a, b):
+    """``a x b`` over the last axis as three products and differences.
+
+    The same arithmetic ``torch.linalg.cross``'s CPU kernel performs -- each
+    component is ``p - q`` of two separately rounded products -- written as
+    whole-tensor elementwise ops, which vectorize where the kernel's
+    per-element loop does not: about 3x faster on a batch's surface grid.
+    """
+    out = torch.empty(
+        torch.broadcast_shapes(a.shape, b.shape),
+        dtype=torch.promote_types(a.dtype, b.dtype),
+        device=a.device,
+    )
+    for i, (j, k) in enumerate(((1, 2), (2, 0), (0, 1))):
+        torch.mul(a[..., j], b[..., k], out=out[..., i])
+        out[..., i] -= a[..., k] * b[..., j]
+    return out
+
+
+def _grid_cross(a, b):
+    """The cross product of two same-shaped grids of 3-vectors: the
+    elementwise form where it is bit-identical (see
+    :func:`_elementwise_cross_matches`), ``torch.linalg.cross`` otherwise.
+    """
+    if (
+        not _opt_disabled("gridcross")
+        and a.shape == b.shape
+        and a.dtype == b.dtype
+        and a.dtype in (torch.float32, torch.float64)
+        and a.device == b.device
+        and _elementwise_cross_matches(a.device.type)
+    ):
+        return _elementwise_cross(a, b)
+    return broadcast_cross_product(a, b)
 
 
 def _wrapped_difference(grid, axis, shift):
@@ -628,10 +720,10 @@ def compute_grid_vertex_normals(grid):
         side_y_minus = _wrapped_difference(grid, -2, 1)
         side_x_plus = _wrapped_difference(grid, -3, -1)
         side_y_plus = _wrapped_difference(grid, -2, -1)
-        normals_xm_ym = broadcast_cross_product(side_x_minus, side_y_minus)
-        normals_ym_xp = broadcast_cross_product(side_y_minus, side_x_plus)
-        normals_xp_yp = broadcast_cross_product(side_x_plus, side_y_plus)
-        normals_yp_xm = broadcast_cross_product(side_y_plus, side_x_minus)
+        normals_xm_ym = _grid_cross(side_x_minus, side_y_minus)
+        normals_ym_xp = _grid_cross(side_y_minus, side_x_plus)
+        normals_xp_yp = _grid_cross(side_x_plus, side_y_plus)
+        normals_yp_xm = _grid_cross(side_y_plus, side_x_minus)
         # The same four boundary masks as below, addressed per triangle instead
         # of through a fancy index on the stacked axis. Corners are written by
         # two of these; both write zero, so the order does not matter.
