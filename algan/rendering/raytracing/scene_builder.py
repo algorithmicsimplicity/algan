@@ -215,10 +215,14 @@ def _iter_primitive_source_tensors(primitive, include_shader_params=True):
             and name not in _MERGE_SKIP_ATTRS
         ):
             yield name, value
-    if not include_shader_params or not hasattr(primitive, "shader_param_values"):
+    if not include_shader_params:
         return
-    for name, value in zip(primitive.shader_param_names, primitive.shader_param_values):
-        yield name, value
+    # Projection releases the parameter values to None (see
+    # _release_unpacked_geometry) but leaves their names behind.
+    values = getattr(primitive, "shader_param_values", None)
+    if values is None:
+        return
+    yield from zip(primitive.shader_param_names, values)
 
 
 def upload_primitive_source(primitive, device):
@@ -246,7 +250,7 @@ def upload_primitive_source(primitive, device):
             else value
             for name, value in seed.items()
         }
-    if not hasattr(primitive, "shader_param_values"):
+    if getattr(primitive, "shader_param_values", None) is None:
         return
     for i in range(len(primitive.shader_param_values)):
         value = primitive.shader_param_values[i]
@@ -260,10 +264,14 @@ def gpu_project_input_bytes(primitives):
     Feeds the projection's transient-peak estimate used by the render-arena
     preflight (see ``settings.project_gpu_peak_factor`` and
     ``RenderLoopMixin``). Already-projected primitives (source released) count
-    zero.
+    zero: a batch the prefetch worker projected but did not also merge reaches
+    the render thread's preflight still unstamped, and only its unprojected
+    remainder is left for that preflight to build.
     """
     total = 0
     for primitive in primitives:
+        if getattr(primitive, "_rt_projected", False):
+            continue
         for _name, value in _iter_primitive_source_tensors(primitive):
             total += value.numel() * value.element_size()
     return total

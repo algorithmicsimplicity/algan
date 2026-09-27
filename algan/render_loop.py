@@ -1043,6 +1043,8 @@ class RenderLoopMixin:
         total_frames,
         post_processes,
         transparent_background,
+        *,
+        known_failing=None,
     ):
         """Preflight slices of one fetched source batch and keep the largest.
 
@@ -1051,6 +1053,11 @@ class RenderLoopMixin:
         animation-device batch is fetched once.  Each probe is a shallow
         frame-window view uploaded independently for projection, so rejected
         probes cannot mutate it.
+
+        ``known_failing`` is a runtime already preflighted and rejected (the
+        prefetch worker's full-window build): the first probe is skipped when
+        it would repeat it, and the search continues exactly as if that probe
+        had just failed.
 
         Returns ``(primitives, runtime, render_state)`` or ``None`` when this
         batch cannot safely use the reuse path.
@@ -1102,15 +1109,18 @@ class RenderLoopMixin:
         # Test the largest runtime allowed by projection first.  It is often
         # already the final answer, turning the previous retry cascade into one
         # source fetch and one exact preflight.
-        result = probe(upper)
-        if result is not None:
-            logger.debug(
-                "Arena planner selected %s/%s fetched frames on its first "
-                "exact preflight.",
-                upper,
-                total_frames,
-            )
-            return result[0], upper, result[1]
+        if known_failing is not None and upper >= known_failing:
+            upper = int(known_failing)
+        else:
+            result = probe(upper)
+            if result is not None:
+                logger.debug(
+                    "Arena planner selected %s/%s fetched frames on its first "
+                    "exact preflight.",
+                    upper,
+                    total_frames,
+                )
+                return result[0], upper, result[1]
 
         if upper <= 1:
             raise OutOfRenderMemory(_one_frame_does_not_fit_message())
@@ -1344,7 +1354,38 @@ class RenderLoopMixin:
         # attempting it, with the OOM handler as the exact fallback.
         project_inputs = 0
         project_token = None
-        if not overlapped and rt_settings.project_on_gpu_active():
+        overlap_inputs = (
+            getattr(primitive_batch[0], "_rt_overlap_inputs", None)
+            if overlapped
+            else None
+        )
+        if overlap_inputs is not None:
+            # The builds are done, so their estimates are moot -- but the
+            # window-sizing cost terms are not. Noting them exactly as the
+            # un-overlapped preflight does bounds the next window's capacity
+            # by the same terms in both arms.
+            headroom = self._gpu_merge_headroom_bytes()
+            self._note_batch_cost(
+                "projection",
+                num_frames,
+                overlap_inputs[0],
+                self._project_peak_ratio.max_inputs_for(headroom),
+            )
+            self._note_batch_cost(
+                "merge",
+                num_frames,
+                overlap_inputs[1],
+                self._merge_peak_ratio.max_inputs_for(headroom),
+            )
+        # The worker may also have projected a batch without merging it (the
+        # merge estimate exceeded its derated headroom, or the merge ran out of
+        # memory). That batch arrives unstamped, so it is not ``overlapped``,
+        # but only its unprojected remainder -- possibly nothing -- is left to
+        # size and measure here.
+        projection_pending = not all(
+            getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
+        )
+        if projection_pending and rt_settings.project_on_gpu_active():
             # Read now: projecting releases the source geometry this sums.
             project_inputs = gpu_project_input_bytes(primitive_batch)
             estimated_project_peak = self._project_peak_ratio.predict(project_inputs)
@@ -3093,7 +3134,12 @@ class RenderLoopMixin:
                     scratch = ManualMemory(0, device=source_device, managed=False)
                     scratch_by_device[source_device] = scratch
                 primitive.memory = scratch
+                # Marked until it completes: a projection that raises part-way
+                # leaves its primitive half-transformed, which fetch_batch must
+                # not hand on for re-projection (see prewarm_batch there).
+                primitive._rt_projection_interrupted = True
                 primitive.project_to_screen(camera, lights)
+                primitive._rt_projection_interrupted = False
                 primitive._rt_projected = True
             finally:
                 primitive.memory = original_memory
@@ -3279,6 +3325,9 @@ class RenderLoopMixin:
             logger.debug("Overlapped scene merge ran out of memory (%r).", exc)
             return
         primitive_batch[0]._rt_prep_overlapped = True
+        # What the builds read, for the preflight's window-sizing cost terms:
+        # it notes them as for any batch, though it observes no peaks.
+        primitive_batch[0]._rt_overlap_inputs = (project_inputs, merge_inputs)
         logger.debug("Batch prepared on the prefetch worker (overlap).")
 
     def _materialize_render_state(self, start_ind, end_ind, *, frame_indices=None):
@@ -3650,94 +3699,152 @@ class RenderLoopMixin:
             # thread's do.
             grad_enabled = torch.is_grad_enabled()
 
+            def materialize_batch(time_ind, batch_end_ind):
+                while True:
+                    try:
+                        return self._get_batch_of_primitives(
+                            time_ind,
+                            batch_end_ind,
+                            actors,
+                            max_animate_mem,
+                            **(
+                                {"frame_indices": frame_indices}
+                                if frame_indices is not None
+                                else {}
+                            ),
+                        )
+                    except (
+                        InsufficientMemoryException,
+                        OutOfRenderMemory,
+                        MemoryError,
+                        RuntimeError,
+                    ) as prep_exc:
+                        if not isinstance(
+                            prep_exc,
+                            (
+                                InsufficientMemoryException,
+                                OutOfRenderMemory,
+                                MemoryError,
+                            ),
+                        ) and not is_cuda_oom(prep_exc):
+                            raise
+                        duration = batch_end_ind - time_ind
+                        if duration <= 1:
+                            raise
+                        batch_end_ind = time_ind + max(1, duration // 2)
+                    # Preparation allocates outside the arena: a dense
+                    # texture query can OOM before the render retry ever
+                    # sees a batch. Drop partial state and the exception's
+                    # traceback before retrying, on the same prep worker.
+                    self.timeline_manager.clear_buffers()
+                    release_torch_memory(force_gc=True)
+                    logger.log(
+                        PERF,
+                        "Batch preparation exceeded memory; retrying frames %s:%s.",
+                        time_ind,
+                        batch_end_ind,
+                    )
+
+            def prewarm_batch(batch, time_ind):
+                """Run whatever of the batch's builds belong on this thread.
+
+                Pre-run the ray tracer's vertex shade + packing
+                (project_to_screen) and merged-scene / STBVH build here (all
+                torch-only) so they ride the prefetch: batch b+1's prep runs on
+                the worker while batch b renders, turning seconds of
+                otherwise-serial render-thread CPU work into hidden time.
+                ALGAN_PREFETCH_MERGE=0 falls back to projecting + merging on the
+                render thread. When projection runs on the render device
+                (settings.project_on_gpu) it is deferred to the render thread
+                entirely -- GPU work on this worker would contend with the
+                in-flight render and pollute the transient-peak stats -- so
+                only the CPU-projection path prewarms here, unless
+                prefetch-gpu-prep is on, in which case _prepare_batch_on_worker
+                takes the GPU builds anyway (skipping their peak observations;
+                see its docstring).
+
+                The overlapped builds run on a full-window copy when the batch
+                can be sliced, keeping the fetched batch pristine beside it: a
+                window the arena then rejects is trimmed to a prefix on the
+                render thread, exactly as un-overlapped batches are, instead of
+                being refetched and rebuilt from scratch.
+
+                A failed build defers to the render thread, which finishes
+                whatever was left. Returns the batch to hand on, or ``None``
+                when that is unsafe: a projection that raised part-way can leave
+                its primitive half-transformed (vertex shading accumulates into
+                ``colors`` in place; PN dicing and stroke expansion replace
+                ``corners``), and projecting it again would apply those steps
+                twice.
+                """
+                from algan.rendering.raytracing import settings as rt_settings
+
+                source = None
+                # The gated overlap is consulted first: it requires the GPU
+                # builds itself (see _overlap_gpu_prep_active), so on a
+                # CPU-projection render this falls through to the legacy
+                # worker prewarm exactly as before.
+                if self._overlap_gpu_prep_active():
+                    build, what = self._prepare_batch_on_worker, "overlapped batch prep"
+                    duration = batch[1] - time_ind
+                    if self._can_slice_fetched_batch(batch[0], duration):
+                        source = batch
+                        built, built_state = self._slice_fetched_batch(
+                            batch[0], batch[2], duration, duration
+                        )
+                        batch = (built, batch[1], built_state)
+                elif not rt_settings.project_on_gpu_active():
+                    build, what = self._prewarm_render_batch, "render-batch prewarm"
+                else:
+                    return batch
+                try:
+                    build(batch[0], batch[2])
+                except Exception as e:
+                    logger.warning(
+                        f"{what} failed (deferring to the render thread): {e}"
+                    )
+                if source is not None:
+                    # Anything short of a fully projected copy (declined,
+                    # uncalibrated, interrupted) is discarded: the pristine
+                    # batch then takes the un-overlapped path unchanged.
+                    if not all(
+                        getattr(primitive, "_rt_projected", False)
+                        for primitive in batch[0]
+                    ):
+                        return source
+                    batch[0][0]._rt_overlap_source = (source[0], source[2])
+                    return batch
+                if any(
+                    getattr(primitive, "_rt_projection_interrupted", False)
+                    for primitive in batch[0]
+                ):
+                    return None
+                return batch
+
             def fetch_batch(time_ind, batch_end_ind=None):
                 if batch_end_ind is None:
                     batch_end_ind = end_time_ind
                 with torch.set_grad_enabled(grad_enabled):
-                    while True:
-                        try:
-                            batch = self._get_batch_of_primitives(
-                                time_ind,
-                                batch_end_ind,
-                                actors,
-                                max_animate_mem,
-                                **(
-                                    {"frame_indices": frame_indices}
-                                    if frame_indices is not None
-                                    else {}
-                                ),
-                            )
-                            break
-                        except (
-                            InsufficientMemoryException,
-                            OutOfRenderMemory,
-                            MemoryError,
-                            RuntimeError,
-                        ) as prep_exc:
-                            if not isinstance(
-                                prep_exc,
-                                (
-                                    InsufficientMemoryException,
-                                    OutOfRenderMemory,
-                                    MemoryError,
-                                ),
-                            ) and not is_cuda_oom(prep_exc):
-                                raise
-                            duration = batch_end_ind - time_ind
-                            if duration <= 1:
-                                raise
-                            batch_end_ind = time_ind + max(1, duration // 2)
-                        # Preparation allocates outside the arena: a dense
-                        # texture query can OOM before the render retry ever
-                        # sees a batch. Drop partial state and the exception's
-                        # traceback before retrying, on the same prep worker.
-                        self.timeline_manager.clear_buffers()
-                        release_torch_memory(force_gc=True)
-                        logger.log(
-                            PERF,
-                            "Batch preparation exceeded memory; retrying frames %s:%s.",
-                            time_ind,
-                            batch_end_ind,
-                        )
-                    # Pre-run the ray tracer's vertex shade + packing
-                    # (project_to_screen) and merged-scene / STBVH build here
-                    # (all torch-only) so they ride the prefetch: batch b+1's
-                    # prep runs on the worker while batch b renders, turning
-                    # seconds of otherwise-serial render-thread CPU work into
-                    # hidden time. ALGAN_PREFETCH_MERGE=0 falls back to
-                    # projecting + merging on the render thread. When projection
-                    # runs on the render device (settings.project_on_gpu) it is
-                    # deferred to the render thread entirely -- GPU work on this
-                    # worker would contend with the in-flight render and pollute
-                    # the transient-peak stats -- so only the CPU-projection
-                    # path prewarms here, unless prefetch-gpu-prep is on, in
-                    # which case _prepare_batch_on_worker takes the GPU builds
-                    # anyway (skipping their peak observations; see its
-                    # docstring).
-                    from algan.rendering.raytracing import settings as rt_settings
-
-                    if batch[0] and env_flag("ALGAN_PREFETCH_MERGE", True):
-                        # The gated overlap is consulted first: it requires the
-                        # GPU builds itself (see _overlap_gpu_prep_active), so
-                        # on a CPU-projection render this falls through to the
-                        # legacy worker prewarm exactly as before.
-                        if self._overlap_gpu_prep_active():
-                            try:
-                                self._prepare_batch_on_worker(batch[0], batch[2])
-                            except Exception as e:
-                                logger.warning(
-                                    f"overlapped batch prep failed (deferring "
-                                    f"to the render thread): {e}"
-                                )
-                        elif not rt_settings.project_on_gpu_active():
-                            try:
-                                self._prewarm_render_batch(batch[0], batch[2])
-                            except Exception as e:
-                                logger.warning(
-                                    f"render-batch prewarm failed (deferring to "
-                                    f"the render thread): {e}"
-                                )
-                    return batch
+                    batch = materialize_batch(time_ind, batch_end_ind)
+                    if not batch[0] or not env_flag("ALGAN_PREFETCH_MERGE", True):
+                        return batch
+                    prepared = prewarm_batch(batch, time_ind)
+                    if prepared is not None:
+                        return prepared
+                    # Rebuild the same window from the timeline rather than
+                    # hand a half-projected batch on, and leave the fresh one
+                    # wholly to the render thread.
+                    batch_end_ind = batch[1]
+                    del batch
+                    self.timeline_manager.clear_buffers()
+                    release_torch_memory(force_gc=True)
+                    logger.log(
+                        PERF,
+                        "Batch projection was interrupted; rebuilding frames %s:%s.",
+                        time_ind,
+                        batch_end_ind,
+                    )
+                    return materialize_batch(time_ind, batch_end_ind)
 
             def fetch_end_for(time_ind):
                 """End index to materialize up to, given what the arena took.
@@ -3838,6 +3945,17 @@ class RenderLoopMixin:
 
                     duration = new_time_ind - current_time_ind
                     planned_prefix = None
+                    # A batch the worker built under prefetch-gpu-prep is a
+                    # full-window copy; the pristine fetched batch rides along
+                    # so a window that does not fit can still be trimmed to a
+                    # prefix here instead of being refetched.
+                    overlap_source = (
+                        getattr(primitives[0], "_rt_overlap_source", None)
+                        if primitives
+                        else None
+                    )
+                    if overlap_source is not None:
+                        primitives[0]._rt_overlap_source = None
                     if (
                         retry_upper_duration is None
                         and primitives
@@ -3851,13 +3969,38 @@ class RenderLoopMixin:
                             )
                         )
                     ):
-                        planned_prefix = self._select_largest_fitting_fetched_prefix(
-                            primitives,
-                            render_state,
-                            duration,
-                            post_processes,
-                            transparent_background,
-                        )
+                        known_failing = None
+                        if overlap_source is not None:
+                            # The worker's build is the same full-window probe
+                            # the prefix search would start with.
+                            if self._prepared_batch_fits_render_arena(
+                                primitives,
+                                render_state,
+                                post_processes,
+                                transparent_background,
+                                require_estimates_fit=duration > 1,
+                                num_frames=duration,
+                            ):
+                                planned_prefix = (primitives, duration, render_state)
+                            else:
+                                self._release_preflight_candidate(primitives)
+                                primitives, render_state = overlap_source
+                                known_failing = duration
+                        if planned_prefix is None:
+                            planned_prefix = (
+                                self._select_largest_fitting_fetched_prefix(
+                                    primitives,
+                                    render_state,
+                                    duration,
+                                    post_processes,
+                                    transparent_background,
+                                    known_failing=known_failing,
+                                )
+                            )
+                    # The pristine batch is needed only to choose the window;
+                    # holding it through the render would keep its source
+                    # geometry alive for nothing.
+                    overlap_source = None
 
                     # Two budgets, one arena. What the frame count buys is
                     # bounded above by _batch_frame_capacity; what the batch's

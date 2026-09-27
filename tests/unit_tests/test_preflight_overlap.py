@@ -10,6 +10,7 @@ exercise the handover, the preflight's skip branches and the fallback-to-
 serial path against the real batching loop.
 """
 
+import copy
 import threading
 from types import SimpleNamespace
 
@@ -459,6 +460,79 @@ def test_preflight_of_overlapped_batch_skips_prewarm_peaks_and_estimates(
     assert scene._last_arena_preflight is not None
 
 
+def _release_like_projection(primitive):
+    """What project_to_screen leaves behind: source tensors dropped, shader
+    parameter values nulled but their names kept, one stray non-``_rt_``
+    tensor still attached.
+    """
+    primitive.corners = None
+    primitive.shader_param_names = ["emissive"]
+    primitive.shader_param_values = None
+    primitive.texture_opacity = torch.zeros(5)
+    primitive._rt_projected = True
+    return primitive
+
+
+def test_project_input_bytes_count_projected_primitives_as_zero():
+    from algan.rendering.raytracing.scene_builder import gpu_project_input_bytes
+
+    pending = _PreflightPrimitive(projected=False)
+    pending.shader_param_names = ["emissive"]
+    pending.shader_param_values = [torch.zeros(2)]
+    released = _release_like_projection(_PreflightPrimitive(projected=False))
+
+    # corners (3 x f32) + the one shader parameter (2 x f32).
+    assert gpu_project_input_bytes([pending]) == 20
+    # Used to raise TypeError zipping names against the released None.
+    assert gpu_project_input_bytes([released]) == 0
+    assert gpu_project_input_bytes([released, pending]) == 20
+
+    # Released values with no projection mark are tolerated too.
+    released._rt_projected = False
+    assert gpu_project_input_bytes([released]) == 20
+
+
+def test_preflight_of_worker_projected_unmerged_batch_builds_only_the_merge(
+    monkeypatch,
+):
+    # The worker projected the whole batch, then declined the merge against
+    # its derated headroom, so the batch arrives projected but not stamped
+    # overlapped. The preflight used to re-sum the released source geometry
+    # and crash at HD; it must merge on the render thread and feed the merge
+    # predictor, with no projection left to estimate or measure.
+    scene, observations = _make_preflight_driver(monkeypatch, overlapped=False)
+    primitives = [
+        _release_like_projection(_PreflightPrimitive(projected=True)) for _ in range(2)
+    ]
+
+    fits = scene._prepared_batch_fits_render_arena(
+        primitives, {"lights": []}, (), False, require_estimates_fit=True, num_frames=3
+    )
+
+    assert fits is True
+    assert observations["project"] == []
+    assert observations["merge"] == [(2 * 16, 777)]
+    assert set(scene._batch_costs) == {"merge", "arena"}
+
+
+def test_preflight_of_partly_projected_batch_sizes_only_the_remainder(monkeypatch):
+    # A worker projection that failed part-way leaves the projected prefix
+    # marked; the render thread projects the rest and measures only that.
+    scene, observations = _make_preflight_driver(monkeypatch, overlapped=False)
+    primitives = [
+        _release_like_projection(_PreflightPrimitive(projected=True)),
+        _PreflightPrimitive(projected=False),
+    ]
+
+    fits = scene._prepared_batch_fits_render_arena(
+        primitives, {"lights": []}, (), False, require_estimates_fit=True, num_frames=3
+    )
+
+    assert fits is True
+    assert observations["project"] == [(12, 12345)]
+    assert len(observations["merge"]) == 1
+
+
 def _make_loop_scene(monkeypatch, *, overlap_enabled):
     """Drive the real batching loop with prefetching and a faked overlap."""
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "1")
@@ -614,6 +688,265 @@ def test_rejected_overlapped_window_discards_work_and_finishes_serially(
     assert all(
         name.startswith("algan-batch-prep") for name in records["worker_threads"]
     )
+
+
+class _ExplodingPrimitive:
+    """Projects cleanly unless told to fail part-way through."""
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.memory = None
+        self.corners = torch.zeros(3)
+
+    def project_to_screen(self, _camera, _lights):
+        # Stands in for the in-place work a real projection does before it can
+        # fail (vertex shading accumulates into ``colors``).
+        self.corners += 1
+        if self.fail:
+            raise RuntimeError("CUDA out of memory")
+
+
+def test_prewarm_marks_a_projection_that_fails_part_way(monkeypatch):
+    from algan.rendering.raytracing import primitives as rt_primitives
+
+    monkeypatch.setattr(
+        rt_primitives, "RayTracedTrianglePrimitive", _ExplodingPrimitive
+    )
+    monkeypatch.setattr(
+        rt_primitives, "RayTracedBezierCircuitPrimitive", _ExplodingPrimitive
+    )
+    monkeypatch.setattr(rt_module, "project_on_gpu_active", lambda: False)
+    monkeypatch.setattr(rt_module, "merge_on_gpu_active", lambda: True)
+
+    class Scene(RenderLoopMixin):
+        pass
+
+    scene = Scene.__new__(Scene)
+    scene.video_settings = SimpleNamespace(supersampling=1)
+    scene.camera = SimpleNamespace(near=0.0)
+    scene.num_pixels_screen_width = 4
+    scene.num_pixels_screen_height = 4
+    render_state = {
+        "ray_origin": torch.zeros(1, 3),
+        "screen_point": torch.zeros(1, 3),
+        "screen_basis": torch.zeros(1, 3, 3),
+        "lights": [],
+    }
+    primitives = [
+        _ExplodingPrimitive(),
+        _ExplodingPrimitive(fail=True),
+        _ExplodingPrimitive(),
+    ]
+
+    with pytest.raises(RuntimeError):
+        scene._prewarm_render_batch(primitives, render_state)
+
+    assert primitives[0]._rt_projected is True
+    assert primitives[0]._rt_projection_interrupted is False
+    # Half-transformed: shaded once, not projected, and says so.
+    assert getattr(primitives[1], "_rt_projected", False) is False
+    assert primitives[1]._rt_projection_interrupted is True
+    # Never reached: pristine and unmarked.
+    assert not hasattr(primitives[2], "_rt_projection_interrupted")
+    assert torch.equal(primitives[2].corners, torch.zeros(3))
+
+
+def test_interrupted_worker_projection_rebuilds_the_window(monkeypatch):
+    scene, records, _ = _make_loop_scene(monkeypatch, overlap_enabled=True)
+
+    fetches = []
+    real_fetch = scene._get_batch_of_primitives
+
+    def recording_fetch(start_ind, end_ind, actors, max_memory):
+        batch = real_fetch(start_ind, end_ind, actors, max_memory)
+        fetches.append((start_ind, batch[1]))
+        return batch
+
+    interrupted = []
+
+    def interrupted_worker(primitive_batch, _render_state):
+        if interrupted:
+            return
+        # Dies mid-projection, as a worker build can beside a live render.
+        primitive_batch[0]._rt_projection_interrupted = True
+        interrupted.append(primitive_batch[0])
+        raise RuntimeError("CUDA out of memory")
+
+    preflighted = []
+    real_fits = scene._prepared_batch_fits_render_arena
+
+    def recording_fits(primitives, *args, **kwargs):
+        preflighted.append(primitives[0])
+        return real_fits(primitives, *args, **kwargs)
+
+    scene._get_batch_of_primitives = recording_fetch
+    scene._prepare_batch_on_worker = interrupted_worker
+    scene._prepared_batch_fits_render_arena = recording_fits
+
+    frames = list(scene.get_frames(0, 6, post_processes=(), manual_memory=False))
+
+    # Same windows as the serial schedule, every frame rendered once.
+    assert records["durations"] == [2, 2, 2]
+    assert [len(frame) for frame in frames] == [2, 2, 2]
+    # The interrupted window was materialized twice at the same bounds, and
+    # only the fresh copy reached the render thread.
+    assert len(interrupted) == 1
+    assert fetches.count((2, 4)) == 2
+    assert interrupted[0] not in preflighted
+    assert not any(getattr(p, "_rt_projection_interrupted", False) for p in preflighted)
+
+
+def test_prefix_search_skips_a_runtime_already_known_to_fail(monkeypatch):
+    class Scene(RenderLoopMixin):
+        pass
+
+    scene = Scene.__new__(Scene)
+    scene._begin_batch_cost_measurement()
+    probes = []
+    monkeypatch.setattr(Scene, "_gpu_merge_headroom_bytes", lambda self: 1 << 30)
+    scene._can_slice_fetched_batch = lambda batch, total: True
+    scene._slice_fetched_batch = lambda batch, state, duration, total: (
+        [SimpleNamespace(duration=duration)],
+        state,
+    )
+    scene._release_preflight_candidate = lambda batch: None
+
+    def fits(candidate, _state, *_args, num_frames=None, **_kwargs):
+        probes.append(num_frames)
+        return num_frames <= 3
+
+    scene._prepared_batch_fits_render_arena = fits
+
+    baseline = scene._select_largest_fitting_fetched_prefix(
+        [object()], {}, 8, (), False
+    )
+    assert probes[0] == 8
+    assert baseline[1] <= 3
+    baseline_probes = probes[1:]
+
+    # Told that 8 already failed, the search starts where it would have
+    # continued after that probe -- and makes the same choices.
+    probes.clear()
+    selected = scene._select_largest_fitting_fetched_prefix(
+        [object()], {}, 8, (), False, known_failing=8
+    )
+    assert selected[1] == baseline[1]
+    assert probes == baseline_probes
+
+    # A known failure above the projection's own bound changes nothing.
+    probes.clear()
+    scene._select_largest_fitting_fetched_prefix(
+        [object()], {}, 8, (), False, known_failing=9
+    )
+    assert probes[0] == 8
+
+
+def _make_sliceable_loop_scene(monkeypatch, *, calibrate=True):
+    """The batching loop with sliceable fake batches and a recording planner."""
+    scene, records, reject_first_overlapped = _make_loop_scene(
+        monkeypatch, overlap_enabled=True
+    )
+    if not calibrate:
+        # Predictors stay cold: the worker builds nothing.
+        real_fits = scene._prepared_batch_fits_render_arena
+
+        def fits_without_calibrating(primitives, *args, **kwargs):
+            ok = real_fits(primitives, *args, **kwargs)
+            records["calibrated"] = False
+            return ok
+
+        scene._prepared_batch_fits_render_arena = fits_without_calibrating
+    fetched = []
+    real_fetch = scene._get_batch_of_primitives
+
+    def recording_fetch(start_ind, end_ind, actors, max_memory):
+        batch = real_fetch(start_ind, end_ind, actors, max_memory)
+        fetched.append((start_ind, batch[0][0]))
+        return batch
+
+    def slice_batch(primitive_batch, render_state, duration, total_frames):
+        copies = []
+        for primitive in primitive_batch:
+            piece = copy.copy(primitive)
+            piece.source = primitive
+            piece.duration = duration
+            piece._rt_projected = False
+            piece._rt_prep_overlapped = False
+            copies.append(piece)
+        return copies, render_state
+
+    selections = []
+
+    def select(
+        primitive_batch,
+        render_state,
+        total_frames,
+        post_processes,
+        transparent_background,
+        *,
+        known_failing=None,
+    ):
+        selections.append((primitive_batch[0], total_frames, known_failing))
+        runtime = total_frames if known_failing is None else total_frames - 1
+        candidate, state = slice_batch(
+            primitive_batch, render_state, runtime, total_frames
+        )
+        # The planner preflights what it returns, as the real one does.
+        scene._prepared_batch_fits_render_arena(
+            candidate, state, post_processes, transparent_background
+        )
+        return candidate, runtime, state
+
+    released = []
+    scene._get_batch_of_primitives = recording_fetch
+    scene._can_slice_fetched_batch = lambda batch, total: total > 1 and not any(
+        p._rt_projected for p in batch
+    )
+    scene._slice_fetched_batch = slice_batch
+    scene._select_largest_fitting_fetched_prefix = select
+    scene._may_slice_across_spawns = lambda: True
+    scene._release_preflight_candidate = lambda batch: released.append(batch[0])
+    return scene, records, reject_first_overlapped, fetched, selections, released
+
+
+def test_worker_builds_a_copy_and_a_rejected_window_is_trimmed_not_refetched(
+    monkeypatch,
+):
+    scene, records, reject_first_overlapped, fetched, selections, released = (
+        _make_sliceable_loop_scene(monkeypatch)
+    )
+    reject_first_overlapped[0] = True
+
+    frames = list(scene.get_frames(0, 6, post_processes=(), manual_memory=False))
+
+    assert sum(records["durations"]) == 6
+    assert len(frames) == len(records["durations"])
+    assert records["rejected_overlapped"] == 1
+    # No window was fetched twice: the rejected one was trimmed from its
+    # pristine fetch, which the worker's build never touched.
+    starts = [start for start, _ in fetched]
+    assert len(starts) == len(set(starts))
+    assert fetched[1][1]._rt_projected is False
+    (rejected,) = released
+    assert rejected.source is fetched[1][1]
+    trimmed = [s for s in selections if s[2] is not None]
+    assert trimmed == [(fetched[1][1], 2, 2)]
+    assert records["durations"][1] == 1
+
+
+def test_worker_hands_on_the_pristine_batch_when_it_builds_nothing(monkeypatch):
+    scene, records, _, fetched, selections, released = _make_sliceable_loop_scene(
+        monkeypatch, calibrate=False
+    )
+
+    list(scene.get_frames(0, 6, post_processes=(), manual_memory=False))
+
+    # Every batch reached the planner as the object that was fetched: the
+    # worker's unbuilt copy was dropped, not handed on.
+    assert [s[0] for s in selections] == [primitive for _, primitive in fetched]
+    assert all(s[2] is None for s in selections)
+    assert released == []
+    assert records["durations"] == [2, 2, 2]
 
 
 def test_peak_ratio_model_survives_concurrent_observers_and_readers():
