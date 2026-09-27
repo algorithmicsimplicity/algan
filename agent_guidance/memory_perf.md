@@ -15,6 +15,28 @@ check those when changing geometry or ray-state storage. What always applies:
 - test one-frame and multi-frame windows;
 - test retry behavior rather than relying on host OOM exceptions.
 
+## Native-owned MPS arenas
+
+`rendering/mps_arena.py` routes only managed, nonempty Metal arenas to
+`_mps_arena_native`. The extension is built by `hatch_build.py` on macOS and
+shipped in platform wheels; it never imports Torch's C++ ABI or compiles at
+render time. Do not replace its `MTLDevice.newBufferWithLength` call with an
+`MTLHeap` allocation: heap cycling alone reproduces the hosted GPU hang.
+
+The DLPack capsule transfers its deleter to **Torch storage**. Every typed view
+and `_algan_storage` held by the zero-copy importer is an owner. Never add a
+`ManualMemory.__del__` that frees the buffer, attach ownership only to a tensor
+object, or keep a global strong registry of live tensors. Metal's ordinary
+retained-reference command buffers protect already-encoded work; the existing
+zero-copy wrapper still owns queue fencing. No new per-kernel fence is needed.
+
+Torch's live counter excludes external DLPack storage. Arena sizing and live
+allocation reporting add `mps_arena.allocated_bytes()`; the driver counter must
+not add it again. The counter does not initialize Metal, and follows the final
+storage owner rather than render teardown. Preserve the byte-addressing clamp,
+alignment, pointer scopes, OOM propagation, and the ordinary allocation path
+for other devices and unmanaged/empty arenas.
+
 ## Batch sizing fits a model to observed arena peaks
 
 `rendering/memory_model.py` fits `peak(n) = a + b*n` to the arena's own high-water mark over rendered chunks, and sizes the next chunk from it. New allocations made **through the arena** contribute to that measurement.

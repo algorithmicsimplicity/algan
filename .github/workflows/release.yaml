@@ -183,6 +183,28 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  build_macos:
+    name: Build native macOS wheel
+    needs: gate
+    if: ${{ !inputs.docs_only }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - run: uv build --wheel --out-dir dist
+      - run: uvx twine check dist/*
+      - run: python scripts/gate/verify_license_notices.py dist/*.whl
+      - name: Require the universal2 stable-ABI owner in the wheel
+        run: python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions-macos
+          path: dist/*
+          if-no-files-found: error
+
   # --------------------------------------------------------------------------
   # 3. Build the docs, examples and all.
   # --------------------------------------------------------------------------
@@ -252,7 +274,7 @@ jobs:
   # --------------------------------------------------------------------------
   promote:
     name: Promote to stable and tag
-    needs: [gate, build, docs]
+    needs: [gate, build, build_macos, docs]
     if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
@@ -338,7 +360,7 @@ jobs:
   # --------------------------------------------------------------------------
   github_release:
     name: GitHub release
-    needs: [gate, build, promote]
+    needs: [gate, build, build_macos, promote]
     if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     permissions:
@@ -346,7 +368,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: distributions
+          pattern: distributions*
+          merge-multiple: true
           path: dist
 
       # No baseline tarballs here on purpose. The heavy render baselines live
@@ -382,7 +405,7 @@ jobs:
   # --------------------------------------------------------------------------
   pypi:
     name: Publish to PyPI
-    needs: [gate, build, promote, publish_docs, github_release]
+    needs: [gate, build, build_macos, promote, publish_docs, github_release]
     if: ${{ !inputs.dry_run && !inputs.docs_only }}
     runs-on: ubuntu-latest
     environment:
@@ -393,7 +416,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: distributions
+          pattern: distributions*
+          merge-multiple: true
           path: dist
 
       # Trusted Publishing, same as quadrants_build.yaml's publish job. No

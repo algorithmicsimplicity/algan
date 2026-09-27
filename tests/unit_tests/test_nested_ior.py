@@ -26,7 +26,11 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 def _kernels():
     from algan.rendering.raytracing import wavefront_kernels_taichi as k
+    from algan.rendering.taichi_runtime import init_taichi
 
+    # These probes allocate ti.ndarray before their first guarded kernel call.
+    # Importing kernel definitions is lazy, not runtime initialization.
+    init_taichi()
     return k
 
 

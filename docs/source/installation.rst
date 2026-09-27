@@ -452,3 +452,25 @@ Everything above installs a released Algan for *writing animations*. To work on
 Algan itself, or to run a version newer than the latest release, clone the
 repository and install it from source instead, as described in :doc:`contributing/development`.
 
+
+
+Native MPS arena ownership
+--------------------------
+
+On macOS, managed render arenas use standalone Metal buffers rather than
+cycling large allocations through the PyTorch heap allocator. This avoids the
+GPU hangs reproduced during long runs on the hosted paravirtual Apple GPU.
+The tensors remain on MPS and use the existing zero-copy renderer path; there
+is no CPU staging or process restart.
+
+The macOS wheel includes the small native owner. Source and editable installs
+build it with Apple's Command Line Tools (``xcode-select --install``) and a
+macOS SDK. It uses CPython's stable ABI, not PyTorch's C++ ABI; no compiler is
+run when importing Algan or rendering a scene. Reinstall the source project
+after updating the native source, just as for any compiled extension.
+
+MPS rendering needs a PyTorch build with Metal DLPack import support. Algan's
+MPS CI uses PyTorch 2.13.0 with TorchAudio 2.11.0. The published minimum Torch
+version and the locked CPU/CUDA environment are unchanged. An incompatible
+Torch build or a missing native extension raises an actionable error rather
+than silently selecting the problematic heap allocation path.

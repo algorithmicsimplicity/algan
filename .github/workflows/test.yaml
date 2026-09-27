@@ -262,6 +262,31 @@ jobs:
       - name: Report the environment Algan resolved
         run: uv run algan check
 
+      # Keep the MPSGraph reclamation fix while CPU/CUDA retain the published
+      # minimums and uv.lock. The native arena owner avoids the separate large
+      # MTLHeap recycling defect; neither fix requires partitioning the suite.
+      - name: Install MPS PyTorch graph-cache fix
+        if: matrix.render_device == 'mps'
+        run: |
+          uv pip install --python .venv/bin/python \
+            "torch==2.13.0" "torchaudio==2.11.0"
+          .venv/bin/python - <<'PYTHON'
+          import torch
+          import torchaudio
+          from algan.rendering import mps_arena
+          assert torch.__version__.split("+", 1)[0] == "2.13.0"
+          assert torchaudio.__version__.split("+", 1)[0] == "2.11.0"
+          tensor = mps_arena.allocate(4096)
+          tensor.fill_(7)
+          assert tensor[:8].cpu().tolist() == [7] * 8
+          assert mps_arena.allocated_bytes() == 4096
+          del tensor
+          torch.mps.synchronize()
+          assert mps_arena.allocated_bytes() == 0
+          print("MPS CI: native-owned arena; torch", torch.__version__)
+          PYTHON
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+
       # Scoped to the two suites whose baselines survive a change of machine.
       # tests/full_renders is left out deliberately: measured on this runner
       # against baselines rendered elsewhere, five of its six scenes differed by

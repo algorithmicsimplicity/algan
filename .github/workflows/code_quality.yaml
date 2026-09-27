@@ -138,3 +138,40 @@ jobs:
         run: |
           cd "$(mktemp -d)"
           /tmp/wheel-env/bin/python -I /tmp/wheel-env/bin/algan check
+
+  macos_packaging:
+    name: Native macOS wheel builds and imports
+    runs-on: macos-latest
+    needs: [lock_file]
+    env:
+      ALGAN_RENDER_DEVICE: mps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: ./.github/actions/install-uv
+      - run: brew install pango cairo pkg-config
+      # Build through the sdist too: it must carry the hook and native source.
+      - run: uv build
+      - run: python scripts/gate/verify_license_notices.py dist/*.whl dist/*.tar.gz
+      - run: python scripts/gate/verify_mps_arena_wheel.py dist/*.whl
+      - name: Test the installed wheel outside the source checkout
+        run: |
+          uv venv "$RUNNER_TEMP/wheel-env"
+          uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
+          cp tests/unit_tests/test_mps_arena.py "$RUNNER_TEMP/test_mps_arena.py"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/scripts/gate/verify_installed_wheel.py"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I -m pytest -q test_mps_arena.py
+      # The same abi3 binary must load on the supported ceiling, not just the
+      # Python used to compile it. Do not rebuild it under the second Python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Reuse the identical wheel on Python 3.13
+        run: |
+          uv venv --python 3.13 "$RUNNER_TEMP/wheel-env313"
+          uv pip install --python "$RUNNER_TEMP/wheel-env313/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env313/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'

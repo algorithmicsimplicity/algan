@@ -6,6 +6,54 @@ as a placeholder for `.venv/bin/python` on Linux/macOS or
 See [../AGENTS.md](../AGENTS.md). Avoid bare `uv run` when using a locally built
 compiler wheel, because synchronization can replace it.
 
+## MPS arenas and the single-process CI gate
+
+The required MPS arm runs the complete portable suite in **one worker**, using
+Torch 2.13.0 and TorchAudio 2.11.0. CPU CI and the published dependency minimums
+remain unchanged; `uv.lock` is not overridden for CPU/CUDA. Reproduce the MPS
+job after installing the project with the Mac native build hook:
+
+```bash
+uv sync --locked --all-extras --dev
+uv pip install --python .venv/bin/python 'torch==2.13.0' 'torchaudio==2.11.0'
+.venv/bin/python -m pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+```
+
+Do not use bare `uv run` after the Torch override: it can restore the lock's
+older Torch. CI sets `UV_NO_SYNC=1`. There are no process batches or retries.
+
+Managed, nonempty MPS arenas use a standalone tracked `MTLBuffer`, imported by
+Torch through DLPack. The storage, not the `ManualMemory` wrapper, owns its
+native release. Typed slices and Quadrants imports therefore remain valid
+after the parent dies. External live bytes are included in arena sizing, but
+are not added to the driver counter (which already includes native buffers).
+Ordinary tensors and CPU/CUDA/unmanaged/empty arenas keep their original path.
+
+This avoids the large-heap recycling failure reproduced on the hosted Apple
+paravirtual GPU: repeated approximately 1.2 GB allocations fail even without
+Algan or Quadrants, while standalone buffers survive. The later Metal pipeline
+errors were downstream of a GPU hang, not evidence of invalid shader code.
+This does not claim to repair Apple's driver or Torch's general allocator.
+
+`test_mps_arena.py` covers native capsule ownership, offset/dtype views,
+Quadrants import lifetime, cross-thread destruction, pending GPU work,
+accounting, and **384 sequential large allocations**, beyond the original
+321–322-cycle failure. The test uses only one arena at a time and checks host
+headroom. Hardware checks run on the MPS arm, never by silently falling back to
+CPU. The normal macOS baseline opt-out is unchanged: a skipped image comparison
+must not be reported as pixel parity.
+
+Mac source/editable installs require Apple's Command Line Tools. Release wheels
+ship a CPython 3.10+ stable-ABI universal2 extension and require no compiler at
+runtime. `Native macOS wheel builds and imports` verifies the sdist build and
+tests the same wheel outside the checkout on Python 3.10 and 3.13. It must not
+ship an editable binary accidentally left in the source tree. A missing native
+owner or a Torch build without Metal DLPack support produces an explicit error;
+there is no fallback to the problematic heap path.
+
+Tests that allocate `ti.ndarray` before their first kernel call must initialize
+the runtime explicitly rather than depend on an earlier module's render.
+
 ## The fast suite — run this one
 
 ```bash

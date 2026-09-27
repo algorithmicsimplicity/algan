@@ -213,12 +213,18 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["algan"]
 # The console script's entry module, which lives outside the package on
 # purpose (see [project.scripts]). `packages` alone would not ship it.
 force-include = { "algan_cli.py" = "algan_cli.py" }
 exclude = [
+  # Never package a stale editable binary; the hook explicitly includes the
+  # binary built for this wheel. Non-Mac wheels contain no native code.
+  "algan/**/_mps_arena_native*.so",
   # Working-design notes, not user-facing documentation.
   "algan/**/DESIGN_*.md",
   # Sphinx extensions: they import sphinx and docutils, and nothing shipped
@@ -230,6 +236,7 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 include = [
   "/algan",
+  "/hatch_build.py",
   # The console script's entry module; see [project.scripts].
   "/algan_cli.py",
   "/tests",
@@ -244,6 +251,7 @@ include = [
   "/uv.lock",
 ]
 exclude = [
+  "algan/**/_mps_arena_native*.so",
   "tests/**/output_errors/",
   "tests/**/algan_outputs*/",
 ]
