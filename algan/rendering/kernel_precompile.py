@@ -31,14 +31,16 @@ The mechanism
    ``Kernel.launch_kernel`` -- writing each artifact to disk as soon as it is
    built (``Program.dump_cache_data_to_disk``). Longest first, so the batch
    finishes as early as the slowest single kernel allows.
-3. **Picking the work up.** A running render sees those artifacts without a
-   restart: the source-keyed index and the offline cache both look the file
-   up by key at the moment of the lookup, not in the index the program read at
-   ``init`` (measured: a process initialized before a worker compiled two
-   kernels loaded both as hits). And a render that reaches a kernel a worker is
-   still compiling waits for it (:func:`await_precompiled`, called from the
-   source-key miss path) instead of compiling it a second time; one that is
-   still queued is taken back and compiled by the render itself.
+3. **Picking the work up.** The compiler reads the offline cache's index once,
+   the first time a program uses it, and never again (measured on Quadrants
+   1.3: a process that had compiled one kernel did not see a second one that
+   another process dumped afterwards, through either the source-keyed index
+   or the offline cache, even after dumping its own). So a worker's artifact
+   helps a process only if it is on disk before that process's first
+   materialization -- and that is where a running pool is waited for
+   (:func:`before_first_materialization`). Authoring before that point
+   overlaps the workers; the wait itself is the parallel compile instead of
+   the serial one.
 
 Nothing here can make a render wrong. Every artifact is still found by the
 keys the render computes from its own arguments, settings and source -- a
@@ -50,25 +52,23 @@ When it runs
 ------------
 * At the end of ``import algan`` in a process that is plainly running a scene
   script (the daemon handoff's own test, so not the ``algan`` CLI, a test
-  runner, a notebook, ``python -c`` or ``-m``), and in the render daemon as it
-  starts: a background thread compares the manifest and the built-in list with
-  what this installation has confirmed as cached and, if anything is missing,
-  starts the pool while the script is still authoring.
-* At the start of the outermost render job, if no pool is running for the
-  settings the render uses -- the script may have changed ``SETTINGS`` since
-  import, and a pool compiling under old settings compiles artifacts this
-  render will not look up.
+  runner, a notebook, ``python -c`` or ``-m``), for the specializations *that
+  script* rendered before, when the cache does not have them for this
+  version: after an update, a kernel edit, or a cleared cache. The render
+  daemon does the same at the start of a run, while its program has not
+  touched the cache yet. Speculative work -- the built-in list, other
+  scripts' kernels -- is left to ``algan warmup``: measured, a pool compiling
+  kernels the render did not need only slowed the render's own compiles.
 * From ``algan warmup`` (``rendering/kernel_warmup.py``), for every spec on
-  record and the built-in common set.
+  record and the built-in common set, before any render needs them.
 
 When the process exits with work still queued, each worker finishes the spec
 it holds (and writes it to disk) and then exits; queued specs wait for the next
 process. A spec is "confirmed" when a process has seen it cached under the
 current **environment stamp** -- the compiler, the Python version and a
 signature of the installed ``algan`` sources. In steady state every spec is
-confirmed and the import-time check costs a directory ``stat`` walk on a
-background thread; after an update or a kernel edit the stamp moves and the
-recorded set is recompiled in parallel before the render reaches it.
+confirmed and the import-time check costs a manifest read and a directory
+``stat`` walk on a background thread.
 
 Switches
 --------
@@ -97,7 +97,7 @@ from pathlib import Path
 
 from algan.environment import env_flag, env_int, env_is_set, env_overrides, env_str
 
-_MANIFEST_SCHEMA = "algan-kernel-specs-v1"
+_MANIFEST_SCHEMA = "algan-kernel-specs-v2"
 _MANIFEST_FILENAME = "algan_kernel_specs.json"
 #: Enough for every variant a user renders; oldest-used entries go first.
 _MANIFEST_MAX_ENTRIES = 400
@@ -242,8 +242,8 @@ def encode_spec(kernel, args):
 
     ``{"kernel": "<module>:<qualname>", "args": [...]}`` where each argument is
     ``["T", value]`` for a template, ``["A", dtype, rank, element_shape]`` for
-    an array (a torch tensor; only its type reaches the IR) and ``["S", value]``
-    for a scalar. ``None`` when anything is not portable -- the kernel is not a
+    an array (a torch tensor; only its type reaches the IR) and ``["S", type]``
+    for a scalar (its value is a runtime input, not part of the specialization). ``None`` when anything is not portable -- the kernel is not a
     module-level ``algan`` kernel, an argument is not a torch tensor, a template
     value has no encoding.
     """
@@ -282,9 +282,13 @@ def encode_spec(kernel, args):
                     ]
                 )
             elif id(annotation) in primitive_types.type_ids:
+                # By type only. A scalar argument is a runtime value -- a
+                # count, a frame size -- and never selects a specialization,
+                # so its value must not be part of the spec's identity: two
+                # batches of one scene pass different counts to one kernel.
                 if type(value) not in (bool, int, float):
                     return None
-                encoded.append(["S", _encode(value)])
+                encoded.append(["S", type(value).__name__])
             else:
                 return None
     except Unportable:
@@ -332,9 +336,14 @@ def placeholder_args(spec, device):
             _, dtype, rank, element_shape = encoded
             shape = (1,) * (rank - len(element_shape)) + tuple(element_shape)
             args.append(torch.zeros(shape, dtype=getattr(torch, dtype), device=device))
+        elif kind == "S":
+            args.append(_SCALAR_PLACEHOLDERS[encoded[1]])
         else:
             args.append(_decode(encoded[1]))
     return tuple(args)
+
+
+_SCALAR_PLACEHOLDERS = {"bool": False, "int": 0, "float": 0.0}
 
 
 def kernel_display_name(spec_or_kernel):
@@ -522,7 +531,13 @@ _PENDING = {}
 _PENDING_CONTEXTS = {}
 
 
-def _note_entry(spec, context, *, seconds=None, confirmed=None, used=False):
+#: How many scripts a row remembers as having used it, most recent first.
+_SCRIPTS_PER_ROW = 8
+
+
+def _note_entry(
+    spec, context, *, seconds=None, confirmed=None, used=False, script=None
+):
     eid = entry_id(spec, context)
     cid = context_id(context)
     with _MANIFEST_LOCK:
@@ -534,8 +549,16 @@ def _note_entry(spec, context, *, seconds=None, confirmed=None, used=False):
         if used:
             row["last_used"] = time.time()
             row["uses"] = row.get("uses", 0) + 1
+        if script:
+            row["scripts"] = [script]
         _PENDING_CONTEXTS[cid] = context
     return eid
+
+
+def _merge_scripts(new, old):
+    merged = list(new)
+    merged.extend(path for path in old if path not in merged)
+    return merged[:_SCRIPTS_PER_ROW]
 
 
 def flush_manifest(path=None):
@@ -565,8 +588,11 @@ def flush_manifest(path=None):
             eid, {"spec": update["spec"], "context": update["context"]}
         )
         uses = update.pop("uses", 0)
+        scripts = update.pop("scripts", [])
         row.update({k: v for k, v in update.items() if k != "spec"})
         row["uses"] = row.get("uses", 0) + uses
+        if scripts:
+            row["scripts"] = _merge_scripts(scripts, row.get("scripts", []))
     manifest["contexts"].update(contexts)
     if len(entries) > _MANIFEST_MAX_ENTRIES:
         keep = sorted(
@@ -629,6 +655,19 @@ def _recording():
     return not env_flag("ALGAN_PRECOMPILE_WORKER", False)
 
 
+def current_script():
+    """The scene script this process is running, as a real path, or ``None``.
+
+    ``sys.argv[0]``, which the render daemon sets to the client's script for
+    the length of each run as well; ``None`` for ``python -c``, a REPL or a
+    notebook.
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0.endswith(".py") and os.path.isfile(argv0):
+        return os.path.realpath(argv0)
+    return None
+
+
 def note_materializing(kernel, args):
     """A new specialization is about to be materialized: remember what it is.
 
@@ -665,6 +704,7 @@ def note_materialized(token, *, seconds, compiled):
             seconds=seconds if compiled else None,
             confirmed=True,
             used=True,
+            script=current_script(),
         )
     except Exception:  # noqa: BLE001 -- recording must never fail a render
         pass
@@ -856,8 +896,7 @@ class _Job:
         self.context = context
         self.cid = context_id(context)
         self.expected = float(expected or _UNKNOWN_SECONDS)
-        #: queued -> running -> done | failed; or queued -> taken (the render
-        #: compiles it itself).
+        #: queued -> running -> done | failed.
         self.state = "queued"
         self.status = None
         self.seconds = 0.0
@@ -917,8 +956,8 @@ class PrecompilePool:
     """Worker processes compiling a list of jobs, longest first.
 
     Thread-safe: reader threads (one per worker) move jobs through their
-    states under one condition variable, and the render thread waits on it in
-    :meth:`claim`. ``listeners`` are called (under no lock) with each event.
+    states under one condition variable, which :meth:`wait` blocks on.
+    ``listeners`` are called (under no lock) with each event.
     """
 
     def __init__(self, jobs, workers, *, env=None, reason=""):
@@ -931,6 +970,8 @@ class PrecompilePool:
         self.reason = reason
         self.started = time.perf_counter()
         self.finished = None
+        #: Set by :meth:`terminate`: the pool was stopped, not finished.
+        self.stopped = False
         self.listeners = []
         self._stamp = environment_stamp()
         self._log = None
@@ -970,6 +1011,7 @@ class PrecompilePool:
 
     def terminate(self):
         """Stop every worker now; a spec in flight is lost, finished ones are on disk."""
+        self.stopped = True
         with self._condition:
             workers = list(self._workers)
             for job in self._queue:
@@ -1138,35 +1180,11 @@ class PrecompilePool:
             confirmed=self._stamp,
         )
 
-    # -- what the render asks ------------------------------------------------
-
-    def claim(self, eid):
-        """Settle who compiles ``eid``. Returns ``True`` when a worker has it on disk.
-
-        A queued job is taken back (the render compiles it now, rather than
-        wait behind longer ones); a running one is waited for; a finished one
-        answers at once. Unknown ids, failures and a pool with no live workers
-        answer ``False``, and the render compiles as it always did.
-        """
-        with self._condition:
-            job = self._jobs.get(eid)
-            if job is None:
-                return False
-            if job.state == "queued":
-                job.state = "taken"
-                return False
-            while (
-                job.state == "running" and job.worker is not None and job.worker.alive
-            ):
-                self._condition.wait(1.0)
-            return job.state == "done"
-
     def counts(self):
-        """``(finished, total)`` over the jobs the pool still owns (not ones taken back)."""
+        """``(finished, total)`` over the pool's jobs."""
         with self._condition:
-            owned = [job for job in self._jobs.values() if job.state != "taken"]
-            finished = sum(job.state in ("done", "failed") for job in owned)
-            return finished, len(owned)
+            jobs = list(self._jobs.values())
+            return sum(job.state in ("done", "failed") for job in jobs), len(jobs)
 
     def job_for(self, eid):
         return self._jobs.get(eid)
@@ -1229,14 +1247,14 @@ def skipped_reason():
 # ---------------------------------------------------------------------------
 
 
-def pending_jobs(context, *, include_builtin=True, manifest=None):
+def pending_jobs(context, *, include_builtin=True, manifest=None, script=None):
     """Jobs for ``context`` that this installation has not confirmed as cached.
 
-    Every manifest row recorded under ``context`` whose confirmation is not the
-    current stamp, then every built-in spec whose settings requirements
-    ``context`` meets and that is not already confirmed under it.
-    Specs recorded under *other* contexts are left alone: a render with other
-    settings would not look their artifacts up.
+    Every manifest row recorded under ``context`` (and, given ``script``, used
+    by that script) whose confirmation is not the current stamp, then every
+    built-in spec whose settings requirements ``context`` meets and that is not
+    already confirmed under it. Specs recorded under *other* contexts are left
+    alone: a render with other settings would not look their artifacts up.
     """
     manifest = manifest if manifest is not None else read_manifest()
     stamp = environment_stamp()
@@ -1244,6 +1262,8 @@ def pending_jobs(context, *, include_builtin=True, manifest=None):
     jobs = {}
     for row in manifest["entries"].values():
         if row.get("context") != cid:
+            continue
+        if script is not None and script not in row.get("scripts", ()):
             continue
         if row.get("confirmed") == stamp:
             jobs.setdefault(entry_id(row["spec"], context), None)
@@ -1280,23 +1300,22 @@ def active_pool():
     return _POOL
 
 
-#: Contexts already found to have nothing worth a worker in this process. What
-#: this process renders is recorded as confirmed, so the answer only changes
-#: when another process edits the manifest -- not worth re-reading it for at
-#: every render start of a long-lived daemon.
+#: ``(context id, script)`` pairs already found to have nothing worth a worker
+#: in this process: what this process renders is recorded as confirmed, so the
+#: answer only changes when another process edits the manifest.
 _SETTLED = set()
 
 
-def _start_pool(context, reason):
-    """Start the process pool for ``context`` if there is work worth a worker."""
+def _start_pool(context, reason, script):
+    """Start the process pool for ``script``'s specs under ``context``, if worth it."""
     global _POOL, _POOL_CONTEXT_ID
     cid = context_id(context)
-    if cid in _SETTLED:
+    if (cid, script) in _SETTLED:
         return None
-    jobs = pending_jobs(context)
+    jobs = pending_jobs(context, include_builtin=False, script=script)
     workers = worker_budget(len(jobs)) if worthwhile(jobs) else 0
     if workers <= 0:
-        _SETTLED.add(cid)
+        _SETTLED.add((cid, script))
         return None
     pool = PrecompilePool(jobs, workers, reason=reason)
     from algan.rendering import kernel_progress
@@ -1332,20 +1351,20 @@ def stop_implicit_pool():
     _stop_pool()
 
 
-def start_in_background(reason):
-    """Decide on a background thread whether to start the pool, and start it.
+def start_in_background(reason, script):
+    """Decide on a background thread whether to start the pool for ``script``, and start it.
 
     Reading the manifest and walking the sources for the stamp stays off the
     caller's critical path. Any failure is silent: this is an optimization,
     and the render compiles what it needs regardless.
     """
     global _STARTER
-    if skipped_reason() is not None:
+    if skipped_reason() is not None or not script or _program_touched():
         return
 
     def decide():
         with contextlib.suppress(Exception):
-            _start_pool(current_context(), reason)
+            _start_pool(current_context(), reason, script)
 
     _STARTER = threading.Thread(
         target=decide, name="algan-precompile-start", daemon=True
@@ -1358,9 +1377,10 @@ def start_at_import():
 
     Only in a process that is plainly running a scene script -- the same test
     the daemon handoff uses (``daemon_client.is_scene_script_run``), so not
-    the ``algan`` CLI, a test runner, a notebook, ``python -c`` or ``-m``. A
-    notebook still gets its pool, at its first render; the render daemon
-    starts one itself as it comes up (``daemon.main``).
+    the ``algan`` CLI, a test runner, a notebook, ``python -c`` or ``-m`` --
+    and only for the specializations *this script* used before. The render
+    daemon starts the same thing at the start of each run
+    (:func:`start_for_script`).
     """
     from algan.daemon_client import is_scene_script_run
 
@@ -1369,64 +1389,112 @@ def start_at_import():
             return
     except Exception:  # noqa: BLE001
         return
-    start_in_background("started with the script")
+    start_in_background("started with the script", current_script())
+
+
+def start_for_script(path):
+    """The render daemon is about to run ``path``: precompile what it used before.
+
+    Only while the daemon's program has not touched the kernel cache yet --
+    the first run after it starts, or after a reset; see
+    :func:`before_first_materialization` for why later is too late.
+    """
+    with contextlib.suppress(Exception):
+        start_in_background("started with the script", os.path.realpath(path))
 
 
 def on_render_start():
-    """The outermost render job is starting: make sure the pool matches its settings.
+    """The outermost render job is starting: a last chance to start a pool.
 
-    Waits for the import-time decision (it is milliseconds of work), then, if
-    no pool is running for the render's context, decides again under it -- the
-    script may have changed ``SETTINGS`` since import, and a pool compiling
-    under the old settings is compiling artifacts this render will not use.
+    For a script whose ``import algan`` could not tell it was one -- run by
+    ``algan render -q`` in the CLI's own process, say -- and that has not
+    touched the kernel cache yet. Otherwise the import-time decision stands.
     """
-    if skipped_reason() is not None:
+    if skipped_reason() is not None or _program_touched():
         return
     starter = _STARTER
     if starter is not None:
-        starter.join(timeout=5)
-    with contextlib.suppress(Exception):
-        context = current_context()
-        cid = context_id(context)
-        pool = _POOL
-        if pool is not None and pool.active:
-            if cid == _POOL_CONTEXT_ID:
-                return
-            _stop_pool()
-        _start_pool(context, "at render start")
+        starter.join(timeout=10)
+        return
+    script = current_script()
+    if script:
+        with contextlib.suppress(Exception):
+            _start_pool(current_context(), "started at render", script)
 
 
-def await_precompiled(kernel, args):
-    """Called on a source-key miss: ``True`` when a worker has just put this specialization on disk.
+# ---------------------------------------------------------------------------
+# The first touch
+# ---------------------------------------------------------------------------
 
-    The caller then retries the index lookup. ``False`` whenever the render
-    should compile it itself -- no pool, a pool for other settings, a spec the
-    pool does not hold, or one it had not started yet (taken back here).
-    """
-    pool = _POOL
-    if pool is None:
-        return False
+#: ``id`` of the compiler program whose kernel cache this process has touched.
+#: The compiler reads the offline cache's index the first time a program uses
+#: it and never again (measured on Quadrants 1.3: a process that had compiled
+#: one kernel did not see a second one another process dumped afterwards --
+#: not through the source-keyed index, not through the offline cache, not
+#: after dumping its own). So a worker's artifact helps this process only if
+#: it is on disk before this process's first materialization. An ``id``, not
+#: the object, so a program that is reset is not kept alive; a new program
+#: after a reset starts untouched.
+_TOUCHED_PROGRAM = None
+_TOUCH_LOCK = threading.Lock()
+
+
+def _program_touched():
+    from algan.taichi_compat import program
+
     try:
-        spec = encode_spec(kernel, args)
-        if spec is None:
-            return False
-        context = current_context()
-        if context_id(context) != _POOL_CONTEXT_ID:
-            return False
-        eid = entry_id(spec, context)
-        job = pool.job_for(eid)
-        if job is None:
-            return False
-        from algan.rendering import kernel_progress
-
-        waited = time.perf_counter()
-        running = job.state == "running"
-        ready = pool.claim(eid)
-        if running:
-            kernel_progress.waited_for_worker(job, time.perf_counter() - waited, ready)
-        return ready
-    except Exception:  # noqa: BLE001 -- the render compiles it itself instead
+        prog = program()
+    except Exception:  # noqa: BLE001
         return False
+    return prog is not None and id(prog) == _TOUCHED_PROGRAM
+
+
+def before_first_materialization():
+    """Called before every new specialization; waits for the pool before the first.
+
+    The first materialization of a program is the moment the compiler reads
+    the cache's index (see :data:`_TOUCHED_PROGRAM`), so this is where a
+    running pool for the same settings is waited for: whatever it has not
+    written by then this process could not use anyway. Authoring before this
+    point overlaps the workers; the wait itself is the parallel compile, not
+    the serial one it replaces. A pool for other settings (the script changed
+    ``SETTINGS`` after import) is stopped instead.
+    """
+    global _TOUCHED_PROGRAM
+    from algan.taichi_compat import program
+
+    try:
+        prog_id = id(program())
+    except Exception:  # noqa: BLE001
+        return
+    if prog_id == _TOUCHED_PROGRAM:
+        return
+    with _TOUCH_LOCK:
+        if prog_id == _TOUCHED_PROGRAM:
+            return
+        try:
+            _wait_for_pool()
+        except Exception:  # noqa: BLE001 -- the render compiles regardless
+            pass
+        finally:
+            _TOUCHED_PROGRAM = prog_id
+
+
+def _wait_for_pool():
+    starter = _STARTER
+    if starter is not None:
+        starter.join(timeout=10)
+    pool = _POOL
+    if pool is None or not pool.active:
+        return
+    if context_id(current_context()) != _POOL_CONTEXT_ID:
+        _stop_pool()
+        return
+    from algan.rendering import kernel_progress
+
+    kernel_progress.waiting_for_pool(pool)
+    pool.wait()
+    kernel_progress.waited_for_pool(pool)
 
 
 def _shutdown():

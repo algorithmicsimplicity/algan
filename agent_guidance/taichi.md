@@ -108,25 +108,39 @@ measured on Quadrants 1.3:
   `sheet_resolve_shade_arena`). Threads cannot overlap kernel compilation with
   anything; only processes can. That is also why the progress heartbeat cannot
   speak during a backend compile and a slow one is announced before it starts.
-* A running program sees artifacts another process dumped after its `init`,
-  through both the source-key index and the offline cache, and concurrent
+* A program reads the offline cache's index **once, at its first use of the
+  cache**, and never again: an artifact another process dumps after that is
+  invisible to it, through the source-key index and the offline cache alike,
+  even after dumping its own (`test_a_process_that_used_the_cache_does_not_see_later_artifacts`
+  pins this). Before that first use, it sees everything on disk; concurrent
   dumps from several processes do not clobber each other.
 * `device_memory_GB` is not in the C++ key; it is now excluded from the source
   key too (`_CONFIG_EXCLUDE_NAMES`), so CUDA workers run with a 0.25 GB pool.
 
 The worker's own variables (`ALGAN_PRECOMPILE_WORKER`, `ALGAN_PRECOMPILE_JOBS`)
 are in `_ENV_NOT_IN_KEY`; **anything a worker sets differently from the render
-must be left out of the key**, or its index entries never match. The render
-waits for a spec a worker is compiling from the source-key miss path
-(`await_precompiled`) and takes back one still queued. The pool starts at the
-end of `import algan` in a scene-script process (the daemon handoff's own test),
-at daemon start-up, and at the outermost render job if the settings moved; it
-runs only for specs not confirmed under the current environment stamp.
-Specs are portable only when everything in them is `algan.*` or plain data --
-a scene's own `@ti.func` stage keeps compiling at first launch.
+must be left out of the key**, or its index entries never match. Because of the
+read-once index, a process waits for a running pool at its **first**
+materialization (`before_first_materialization`) and never later -- mid-render
+handoff was built first and measured useless. The implicit pool is scoped to
+the running script's recorded specs under its current settings, and runs only
+for specs not confirmed under the current environment stamp: at the end of
+`import algan` in a scene-script process (the daemon handoff's own test), at
+the start of a daemon run while its program is untouched, and at render start
+for a script `import algan` could not recognise. It never compiles the built-in
+list or other scripts' kernels: measured, speculative work only slowed the
+render's own compiles on a 4-core box. Specs are portable only when everything
+in them is `algan.*` or plain data -- a scene's own `@ti.func` stage keeps
+compiling at first launch. **A spec's identity must contain only what selects a
+specialization**: template values, array dtypes and ranks, scalar *types*. The
+first version carried scalar values (counts, frame sizes) too; they differ
+between batches of one scene, so the render never recognised the work a worker
+held.
 
 `algan warmup` (`kernel_warmup.py`) runs the pool over every recorded spec and
-the built-in list, then renders the variant scenes in parallel. **When a
+the built-in list, then renders the variant scenes at 4 fps, about one per four
+cores (a render already uses every core; three at once on four cores took ~4x
+longer each). **When a
 kernel's signature or a pipeline's choice of kernels changes, regenerate the
 built-in list** with `scripts/generate_kernel_specs.py`;
 `test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
@@ -135,6 +149,6 @@ stale entry only costs parallelism, never correctness.
 **Progress** (`kernel_progress.py`) replaced the one-shot "several minutes"
 notice: a header on the first index miss of a render, a numbered line per real
 compile (`CompileResult.cache_hit` says which were served from the offline
-cache; the fd-2 capture remains only for the Taichi backend), worker waits, a
-heartbeat, and a summary. Tests run with `ALGAN_PRECOMPILE_JOBS=0`
+cache; the fd-2 capture remains only for the Taichi backend), the first-touch
+wait for a pool and the kernels it finishes, a heartbeat, and a summary. Tests run with `ALGAN_PRECOMPILE_JOBS=0`
 (`tests/conftest.py`).

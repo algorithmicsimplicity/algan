@@ -13,13 +13,14 @@ cores, in two phases:
    rendered before (the manifest beside the kernel cache) that is not
    confirmed as cached for this version. One kernel per worker process,
    longest first.
-2. **The variant scenes, in parallel.** One small scene per variant -- 2-D
-   shapes, 3-D solids under lights and PBR materials, the same with shadows,
-   glass and metal -- each rendered in its own process at the current video
-   settings. Everything phase 1 compiled is a cache hit here; anything it
-   could not know about (a kernel the built-in list does not cover on this
-   device) compiles now, in parallel across the scenes, and is recorded so the
-   next update's phase 1 covers it.
+2. **The variant scenes.** One small scene per variant -- 2-D shapes, 3-D
+   solids under lights and PBR materials, the same with shadows, glass and
+   metal -- each rendered in its own process at the current video settings
+   (at 4 fps: the frame rate selects no kernel), about one per four cores,
+   since a render already spreads over every core. Everything phase 1
+   compiled is a cache hit here; anything it could not know about (a kernel
+   the built-in list does not cover on this device) compiles now and is
+   recorded, so the next update's phase 1 covers it.
 
 The scenes render to a temporary directory that is removed afterwards. Nothing
 here changes what a later render draws: it only fills the cache that render
@@ -75,9 +76,8 @@ def _scene_2d():
 
 def _lights():
     from algan import (
-        IN,
         ORIGIN,
-        OUT,
+        OUTWARD,
         RIGHT,
         UP,
         WHITE,
@@ -90,11 +90,11 @@ def _lights():
     with Off():
         AmbientLight(color=WHITE, intensity=0.4).spawn(animate=False)
         DirectionalLight(
-            location=RIGHT * 4 + UP * 5 + OUT * 4, target=ORIGIN, intensity=1.0
+            location=RIGHT * 4 + UP * 5 + OUTWARD * 4, target=ORIGIN, intensity=1.0
         ).spawn(animate=False)
-        PointLight(
-            location=RIGHT * -3 + UP * 2 + OUT * 2 + IN * 0.5, intensity=1.5
-        ).spawn(animate=False)
+        PointLight(location=RIGHT * -3 + UP * 2 + OUTWARD * 1.5, intensity=1.5).spawn(
+            animate=False
+        )
 
 
 def _scene_3d():
@@ -182,6 +182,7 @@ _SCENES = {
     "shadows": _scene_3d,
     "glass": _scene_glass,
 }
+_WARMUP_FPS = 4
 
 
 def run_variant(name, output_directory):
@@ -192,6 +193,10 @@ def run_variant(name, output_directory):
     variant = VARIANTS[name]
     if variant.raytracing:
         SETTINGS.raytracing.set(**variant.raytracing)
+    # A few frames are enough: the frame rate is not an input to any kernel
+    # (checked: the 3d and glass scenes materialize the same specializations
+    # at 15 fps and 4), and every frame past the first only costs render time.
+    SETTINGS.video.set(frames_per_second=_WARMUP_FPS)
     _SCENES[name]()
     started = time.perf_counter()
     Scene.save_video(os.path.join(output_directory, f"warmup_{name}.mp4"))
@@ -313,8 +318,22 @@ def _run_pool(jobs, workers, echo):
     return statuses
 
 
+def _scene_concurrency(workers):
+    """How many warm-up scenes to render at once.
+
+    Not one per worker: after phase 1 a scene mostly *renders*, and a render
+    already spreads over every core (torch's intra-op threads, the CPU
+    kernels' own). Three scenes at once on a 4-core box took ~2 min each
+    against 29-45 s alone. About one scene per four cores keeps the parallel
+    win for a scene that does compile (single-threaded) without that
+    oversubscription.
+    """
+    return max(1, min(workers, (os.cpu_count() or 1) // 4))
+
+
 def _run_scenes(variants, workers, echo):
-    """Phase 2: each variant scene in its own process, ``workers`` at a time."""
+    """Phase 2: each variant scene in its own process, a few at a time."""
+    workers = _scene_concurrency(workers)
     from algan.environment import env_overrides
 
     output = tempfile.mkdtemp(prefix="algan_warmup_")

@@ -430,12 +430,14 @@ though, and that is what Algan does in parallel:
       algan warmup --list       # the scene kinds it covers
       algan warmup -j 2 --variants 2d,3d
 
-* **Automatically.** Algan records which kernels your renders use. When some of
-  them are missing from the cache -- after an update, typically -- a script
-  starts compiling them in background worker processes the moment it imports
-  Algan, while it is still building its scene, and the render daemon does the
-  same as it starts. A render that reaches a kernel a worker is still compiling
-  waits for it rather than compiling it a second time.
+* **Automatically, after an update.** Algan records which kernels each of
+  your scripts uses. When some of them are missing from the cache -- after an
+  update, typically -- the script starts compiling them in background worker
+  processes the moment it imports Algan, and its first kernel waits for them,
+  so they compile in parallel rather than one after another. The render
+  daemon does the same for the first script it runs. A script Algan has not
+  seen before, and the first render on a new machine, compile as usual; that
+  is what ``algan warmup`` is for.
 
 Each worker holds about 1.5 GB of memory while it compiles (and, on CUDA, a
 little over half a gigabyte of video memory), so the default number is one fewer

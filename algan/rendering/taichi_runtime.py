@@ -238,6 +238,10 @@ def _install_taichi_compile_logger():
             spec = kernel_precompile.note_materializing(
                 self, kwargs.get("py_args", kwargs.get("args"))
             )
+            # The program's first materialization is when the compiler reads
+            # the kernel cache's index, once: a running precompile pool is
+            # waited for here, or its work would be invisible to this process.
+            kernel_precompile.before_first_materialization()
             kernel_progress.materializing(self, name)
             started_wall = (
                 _datetime.datetime.now(_datetime.timezone.utc)

@@ -695,8 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         "every kernel specialization on record -- the built-in common set and "
         "whatever this installation has rendered before -- one per worker "
         "process, longest first; then one small scene per variant (2-D, 3-D, "
-        "shadows, glass), rendered in parallel, to catch anything the list "
-        "does not cover. Run it after installing or updating Algan. It uses "
+        "shadows, glass), to catch anything the list does not cover. Run it after installing or updating Algan. It uses "
         "the render device and settings the environment selects "
         "(ALGAN_RENDER_DEVICE).",
     )

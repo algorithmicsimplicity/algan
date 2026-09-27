@@ -15,10 +15,13 @@ claims held here:
 * the manifest merges, bounds itself and forgets confirmed work only when the
   environment stamp moves; built-in specs are filtered by the settings their
   variant needs;
-* the render's side of the pool takes back queued work, waits for running
-  work, and answers at once for finished work;
+* an implicit pool is scoped to the running script, and a process's first
+  kernel waits for a pool under its own settings (and stops one under
+  others) -- once, because the compiler reads the cache's index once;
 * end to end, a kernel a worker compiled is a source-key *hit* in the render,
-  with output identical to a locally compiled one.
+  with output identical to a locally compiled one, and a process that used
+  the cache before the worker wrote does not see it (the compiler behaviour
+  the first-touch wait is built around).
 
 The built-in list itself is checked against the live kernels, so a signature
 change shows up here rather than as a first render that quietly lost its
@@ -32,7 +35,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import types
 
 import pytest
@@ -117,6 +119,12 @@ def test_a_spec_is_a_fixed_point_of_its_placeholders():
     )
     assert spec["args"][0] == ["A", "float32", 4, []]
     assert spec["args"][2] == ["T", ["int", 1]]
+    # A scalar is keyed by type: its value is a runtime input, and two batches
+    # of one scene pass different values to one specialization.
+    assert spec["args"][3] == ["S", "float"]
+    other = list(_tonemap_args())
+    other[3] = 2.5
+    assert kp.encode_spec(kernel, tuple(other)) == spec
     assert kp.resolve_kernel(spec) is kernel
     placeholders = kp.placeholder_args(spec, torch.device("cpu"))
     assert all(t.numel() == 1 for t in placeholders[:2])
@@ -210,7 +218,7 @@ def manifest(tmp_path, monkeypatch):
 
 
 def _spec(n):
-    return {"kernel": f"algan.x:k{n}", "args": [["S", ["int", n]]]}
+    return {"kernel": f"algan.x:k{n}", "args": [["T", ["int", n]]]}
 
 
 def test_rows_merge_across_writers_and_the_file_is_bounded(manifest, monkeypatch):
@@ -300,70 +308,96 @@ def test_a_test_runner_never_starts_a_pool_at_import(monkeypatch):
     assert started == []
 
 
-# --- the render's side of the pool ------------------------------------------------
+# --- scoping and the first touch -------------------------------------------------
 
 
-def _unstarted_pool(states):
+def test_an_implicit_pool_is_scoped_to_the_script(manifest, monkeypatch):
+    monkeypatch.setattr(kp, "environment_stamp", lambda: "now")
     context = kp.current_context()
-    jobs = [kp._Job(_spec(n), context, 10.0) for n in range(len(states))]
-    pool = kp.PrecompilePool(jobs, 2)
-    worker = kp._Worker(types.SimpleNamespace(returncode=None), 0)
-    for job, state in zip(jobs, states):
-        job.state = state
-        if state == "running":
-            job.worker = worker
-    return pool, jobs
+    kp._note_entry(_spec(1), context, seconds=20.0, script="/a.py")
+    kp._note_entry(_spec(2), context, seconds=20.0, script="/b.py")
+    kp.flush_manifest()
+    kp._note_entry(_spec(2), context, script="/a.py")
+    kp.flush_manifest()
+    rows = {
+        row["spec"]["kernel"]: row for row in kp.read_manifest()["entries"].values()
+    }
+    assert rows["algan.x:k2"]["scripts"] == ["/a.py", "/b.py"]
+    mine = kp.pending_jobs(context, include_builtin=False, script="/a.py")
+    assert {job.spec["kernel"] for job in mine} == {"algan.x:k1", "algan.x:k2"}
+    theirs = kp.pending_jobs(context, include_builtin=False, script="/b.py")
+    assert {job.spec["kernel"] for job in theirs} == {"algan.x:k2"}
 
 
-def test_a_queued_job_is_taken_back_and_a_finished_one_answers_at_once():
-    pool, (queued, done, failed) = _unstarted_pool(["queued", "done", "failed"])
-    assert pool.claim(queued.eid) is False
-    assert queued.state == "taken"
-    assert pool.claim(done.eid) is True
-    assert pool.claim(failed.eid) is False
-    assert pool.claim("unknown") is False
-    assert pool.counts() == (2, 2)
+def test_scripts_are_remembered_most_recent_first_and_bounded():
+    merged = kp._merge_scripts(["/new.py"], [f"/{n}.py" for n in range(10)])
+    assert merged[0] == "/new.py"
+    assert len(merged) == kp._SCRIPTS_PER_ROW
 
 
-def test_a_running_job_is_waited_for():
-    pool, (running,) = _unstarted_pool(["running"])
+class _FakePool:
+    def __init__(self):
+        self.active = True
+        self.waited = False
+        self.terminated = False
+        self.listeners = []
+        self.jobs = []
 
-    def finish():
-        time.sleep(0.3)
-        with pool._condition:
-            running.state = "done"
-            pool._condition.notify_all()
+    def wait(self, timeout=None):
+        self.waited = True
+        self.active = False
+        return True
 
-    threading.Thread(target=finish).start()
-    started = time.perf_counter()
-    assert pool.claim(running.eid) is True
-    assert time.perf_counter() - started >= 0.25
+    def counts(self):
+        return 0, 2
 
-
-def test_a_running_job_whose_worker_dies_is_not_waited_for_forever():
-    pool, (running,) = _unstarted_pool(["running"])
-
-    def die():
-        time.sleep(0.2)
-        with pool._condition:
-            running.worker.alive = False
-            running.state = "failed"
-            pool._condition.notify_all()
-
-    threading.Thread(target=die).start()
-    assert pool.claim(running.eid) is False
+    def terminate(self):
+        self.terminated = True
+        self.active = False
 
 
-def test_without_a_pool_the_render_compiles_as_before(monkeypatch):
-    monkeypatch.setattr(kp, "_POOL", None)
-    assert kp.await_precompiled(_tonemap(), _tonemap_args()) is False
+@pytest.fixture
+def untouched(monkeypatch):
+    monkeypatch.setattr(kp, "_TOUCHED_PROGRAM", None)
+    monkeypatch.setattr(kp, "_STARTER", None)
+    fake_program = object()
+    import algan.taichi_compat as compat
+
+    monkeypatch.setattr(compat, "program", lambda: fake_program)
+    return fake_program
 
 
-def test_a_pool_for_other_settings_is_not_waited_on(monkeypatch):
-    pool, _ = _unstarted_pool(["running"])
+def test_the_first_materialization_waits_for_a_pool_under_the_same_settings(
+    untouched, monkeypatch
+):
+    pool = _FakePool()
+    monkeypatch.setattr(kp, "_POOL", pool)
+    monkeypatch.setattr(kp, "_POOL_CONTEXT_ID", kp.context_id(kp.current_context()))
+    kp.before_first_materialization()
+    assert pool.waited
+    # Only the first: the index is read once, so later waits would buy nothing.
+    again = _FakePool()
+    monkeypatch.setattr(kp, "_POOL", again)
+    kp.before_first_materialization()
+    assert not again.waited
+
+
+def test_a_pool_for_other_settings_is_stopped_not_waited_for(untouched, monkeypatch):
+    pool = _FakePool()
     monkeypatch.setattr(kp, "_POOL", pool)
     monkeypatch.setattr(kp, "_POOL_CONTEXT_ID", "some-other-context")
-    assert kp.await_precompiled(_tonemap(), _tonemap_args()) is False
+    kp.before_first_materialization()
+    assert pool.terminated
+    assert not pool.waited
+
+
+def test_a_touched_program_starts_no_pool(untouched, monkeypatch):
+    monkeypatch.setattr(kp, "_TOUCHED_PROGRAM", id(untouched))
+    monkeypatch.delenv("ALGAN_PRECOMPILE_JOBS", raising=False)
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: started.append(a))
+    kp.start_in_background("test", "/some/script.py")
+    assert started == []
 
 
 # --- end to end -------------------------------------------------------------------
@@ -384,20 +418,24 @@ out = torch.zeros((1, 8, 12, 3), dtype=torch.uint8)
 args = (frame, out, 1, 1.0, 0, 1, 0)
 mode = sys.argv[1]
 report = {}
-if mode == "pool":
+if mode == "touched":
+    # This process uses the cache before the worker writes: the compiler has
+    # read the index by then, and the worker's artifact must stay invisible.
+    from algan.rendering.raytracing.sheet_compact_taichi import opaque_prefix_keep
+    u8 = torch.zeros((4,), dtype=torch.uint8)
+    i64 = torch.zeros((4,), dtype=torch.int64)
+    opaque_prefix_keep(u8, i64, i64, 4, u8)
+if mode in ("pool", "touched"):
     spec = kp.encode_spec(tonemap_to_u8._primal, args)
     context = kp.current_context()
     pool = kp.PrecompilePool([kp._Job(spec, context, 30.0)], 1, reason="test")
     kp._POOL, kp._POOL_CONTEXT_ID = pool, kp.context_id(context)
     pool.start()
-    job = pool.jobs[0]
-    deadline = time.monotonic() + 120
-    while job.state == "queued" and time.monotonic() < deadline:
-        time.sleep(0.05)
-    report["state_before_launch"] = job.state
-# In "pool" mode this launch either waits for the running job or finds it done.
+    if mode == "touched":
+        pool.wait(120)
+# In "pool" mode this is the process's first kernel: it waits for the pool.
 tonemap_to_u8(*args)
-if mode == "pool":
+if mode in ("pool", "touched"):
     report["job"] = [pool.jobs[0].state, pool.jobs[0].status]
     pool.wait(60)
 report.update(hits=sk.STATS["hits"], misses=sk.STATS["misses"], out=out.flatten().tolist())
@@ -442,7 +480,27 @@ def test_a_worker_compiled_kernel_is_an_index_hit_with_identical_output(tmp_path
     assert "kernel 1: tonemap_to_u8 compiled in" in local["stderr"]
 
     pooled = _run("pool", tmp_path, "pooled")
-    assert pooled["state_before_launch"] in ("running", "done")
     assert pooled["job"] == ["done", "compiled"]
     assert (pooled["hits"], pooled["misses"]) == (1, 0)
     assert pooled["out"] == local["out"]
+    assert (
+        "waiting for 1 of 1 kernels compiling in background workers"
+        in (pooled["stderr"])
+    )
+
+
+@quadrants_only
+def test_a_process_that_used_the_cache_does_not_see_later_artifacts(tmp_path):
+    """The compiler behaviour the first-touch wait exists for, pinned.
+
+    Once a program has used the kernel cache, an artifact another process
+    writes afterwards is invisible to it (Quadrants 1.3 reads the index once).
+    If this ever starts to fail, a newer compiler refreshes its index, and the
+    precompile pool could hand kernels to a render mid-flight instead of
+    making its first kernel wait.
+    """
+    touched = _run("touched", tmp_path, "touched")
+    assert touched["job"] == ["done", "compiled"]
+    # tonemap_to_u8: the worker compiled and indexed it, and still a miss.
+    assert touched["hits"] == 0
+    assert touched["misses"] == 2

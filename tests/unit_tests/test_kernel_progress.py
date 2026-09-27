@@ -3,9 +3,10 @@
 The account replaced a single "several minutes" line that then said nothing
 for as long as the wait lasted. Held here without compiling anything: one
 header per render, a numbered line per real compile and none for a kernel the
-offline cache served, an announced long compile resolved either way, worker
-waits counted, a summary only when something was compiled, and a header seen
-while authoring not repeated by the render that follows.
+offline cache served, an announced long compile resolved either way, a wait
+for the precompile pool announced and its kernels reported, a summary only
+when something was compiled, and a header seen while authoring not repeated by
+the render that follows.
 """
 
 from __future__ import annotations
@@ -91,22 +92,35 @@ def test_a_long_compile_is_announced_and_resolved_either_way(lines):
     assert any("loaded from the kernel cache" in line for line in lines)
 
 
-def test_worker_waits_are_numbered_with_the_compiles(lines):
-    kp.render_started()
-    kp.compiled(_Kernel(), NAME, 3.0, cold=True)
-
+def test_a_wait_for_the_pool_is_announced_and_its_kernels_reported(lines):
     class Job:
         name = "wavefront_shade_arena"
+        state = "done"
+        status = "compiled"
+        seconds = 7.8
+        reason = None
 
-    kp.waited_for_worker(Job(), 4.5, ready=True)
-    kp.waited_for_worker(Job(), 1.0, ready=False)
+    class Pool:
+        listeners = []
+        jobs = [Job()]
+
+        def counts(self):
+            return 1, 3
+
+    pool = Pool()
+    kp.render_started()
+    kp.waiting_for_pool(pool)
+    for listener in list(pool.listeners):
+        listener(pool, "done", Job())
+    kp.waited_for_pool(pool)
     kp.render_finished()
+    assert any("waiting for 2 of 3 kernels compiling" in line for line in lines)
     assert any(
-        line.startswith(
-            "  kernel 2: wavefront_shade_arena compiled by a background worker"
-        )
+        "background worker: wavefront_shade_arena compiled in 7.8 s (1 of 3 done)"
+        in line
         for line in lines
     )
+    assert pool.listeners == []
     assert "1 from background workers" in lines[-1]
 
 

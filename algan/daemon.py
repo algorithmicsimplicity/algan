@@ -1264,16 +1264,6 @@ def main(argv=None):
         _say("scripts run normally -- `python scene.py` will find this daemon")
     watcher = _Watcher(events) if args.watch else None
     _start_stdin(events)
-    # A start-up pass: kernels this installation has rendered before, or the
-    # built-in common set, that the cache does not hold for this version yet
-    # (a first run, an update, a kernel edit) start compiling in background
-    # worker processes now, before the first script arrives -- see
-    # rendering/kernel_precompile.py. A no-op in steady state. Not reachable
-    # from `import algan` here: under `-m algan.daemon` the package is
-    # imported before this module can mark itself as the daemon.
-    from algan.rendering.kernel_precompile import start_in_background
-
-    start_in_background("as the render daemon started")
 
     run_count = 0
     # Includes editable startup dependencies outside site-packages. User
@@ -1353,6 +1343,16 @@ def main(argv=None):
         # why the call resets an unset variable to its default rather than
         # leaving it, and why one client's DEBUG does not follow the next.
         apply_environment_logging()
+        # Kernels this script used before that the cache does not hold for this
+        # version (an update, a kernel edit) start compiling in background
+        # worker processes now, and the run's first kernel waits for them --
+        # see rendering/kernel_precompile.py. Only while this daemon has not
+        # touched the kernel cache yet, which after the first run it has; a
+        # no-op in steady state. Not reachable from `import algan` here: under
+        # `-m algan.daemon` the package is imported before a script exists.
+        from algan.rendering.kernel_precompile import start_for_script
+
+        start_for_script(path)
         old_path = sys.path[:]
         _add_to_path(os.path.dirname(path))
         importlib.invalidate_caches()

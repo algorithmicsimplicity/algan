@@ -11,7 +11,8 @@ took. This module replaces it with an account of the wait:
   served), numbered, with its time and the time so far -- and, when a
   precompile pool is running (``kernel_precompile.py``), how far the
   background workers have got;
-* one line per kernel the render waited for a background worker to finish;
+* while a process waits for a running pool before its first kernel, one line
+  per kernel a background worker finishes;
 * a heartbeat every :data:`HEARTBEAT_SECONDS` while a single kernel is still
   compiling, so a three-minute megakernel is not three silent minutes;
 * a summary when the render ends, if it compiled anything, and one line each
@@ -62,6 +63,7 @@ class _State:
         "from_workers",
         "in_progress",
         "announced",
+        "waiting_for",
         "heartbeat",
         "last_beat",
     )
@@ -80,6 +82,8 @@ class _State:
         self.in_progress = {}
         #: Kernels whose backend compile was announced before it started.
         self.announced = set()
+        #: The pool this process is blocked on before its first kernel.
+        self.waiting_for = None
         self.heartbeat = None
         self.last_beat = {}
 
@@ -295,21 +299,42 @@ def compiled(kernel, name, seconds, cold):
 
 
 @_never_raises
-def waited_for_worker(job, waited, ready):
-    """The render waited ``waited`` s for a background worker to finish ``job``."""
-    if not ready:
-        return
+def waiting_for_pool(pool):
+    """The process is about to wait for a running pool before its first kernel."""
+    finished, total = pool.counts()
     with _LOCK:
         header = _show_header_locked()
-        _STATE.from_workers += 1
-        number = _STATE.compiled + _STATE.from_workers
+        _STATE.waiting_for = pool
     _log(
         [
             header,
-            f"  kernel {number}: {job.name} compiled by a background worker "
-            f"(waited {_format_seconds(waited)}{_pool_suffix()})",
+            f"  waiting for {total - finished} of {total} kernels compiling in "
+            "background workers, so this process can load them instead of "
+            "compiling them one at a time",
         ]
     )
+    pool.listeners.append(_report_while_waiting)
+
+
+def _report_while_waiting(pool, kind, job):
+    if kind != "done" or _STATE.waiting_for is not pool:
+        return
+    finished, total = pool.counts()
+    outcome = (
+        f"compiled in {_format_seconds(job.seconds)}"
+        if job.state == "done"
+        else f"not compiled ({job.reason})"
+    )
+    _log([f"  background worker: {job.name} {outcome} ({finished} of {total} done)"])
+
+
+@_never_raises
+def waited_for_pool(pool):
+    with _LOCK:
+        _STATE.waiting_for = None
+        _STATE.from_workers += sum(job.status == "compiled" for job in pool.jobs)
+    if _report_while_waiting in pool.listeners:
+        pool.listeners.remove(_report_while_waiting)
 
 
 def _short(name):
@@ -363,19 +388,18 @@ def pool_event(pool, kind, payload):
     if kind == "fatal":
         get_logger().warning(f"Background kernel compilation stopped: {payload}")
         return
-    if kind != "finished":
+    if kind != "finished" or pool.stopped:
+        # A pool stopped on purpose (settings changed, `algan warmup` taking
+        # over) has nothing to report; its replacement will.
         return
     jobs = pool.jobs
     compiled = sum(job.status == "compiled" for job in jobs)
     reused = sum(job.status in ("cached", "offline-hit") for job in jobs)
-    taken = sum(job.state == "taken" for job in jobs)
     failed = [job for job in jobs if job.state == "failed"]
     elapsed = (pool.finished or time.perf_counter()) - pool.started
     parts = [f"{compiled} compiled"]
     if reused:
         parts.append(f"{reused} already cached")
-    if taken:
-        parts.append(f"{taken} left to the render")
     if failed:
         parts.append(f"{len(failed)} not compiled")
     _log(

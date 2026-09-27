@@ -1678,15 +1678,6 @@ def _build_hooks(
         self.src_ll_cache_observations.cache_key_generated = True
         cache_value = src_hasher.load(fast_key)
         if cache_value is None:
-            # A precompile worker may be building exactly this specialization
-            # (`rendering/kernel_precompile.py`): wait for it rather than build
-            # it twice, then look again -- the entry lands on disk, and the
-            # index reads it at lookup time, not from a snapshot.
-            from algan.rendering.kernel_precompile import await_precompiled
-
-            if await_precompiled(self, args):
-                cache_value = src_hasher.load(fast_key)
-        if cache_value is None:
             STATS["misses"] += 1
             return None
         self.src_ll_cache_observations.cache_validated = True
