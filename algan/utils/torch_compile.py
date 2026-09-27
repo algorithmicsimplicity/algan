@@ -47,9 +47,14 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
+import json
+import os
+import platform
 import sys
 import threading
 import warnings
+from pathlib import Path
 
 import torch
 
@@ -71,6 +76,14 @@ _RECOMPILE_LIMIT = 64
 _lock = threading.RLock()
 _SUPPORT = None
 _CONFIGURED = False
+_VEC_ISA_SEEDED = False
+#: Where :func:`_remember_vec_isa_probe` keeps Inductor's verdict, under
+#: ``SETTINGS.paths.cache_directory``.
+_VEC_ISA_MEMO = ("torch_compile", "vec_isa.json")
+_VEC_ISA_SCHEMA = "algan-inductor-vec-isa-v1"
+#: One entry per (compiler, torch, CPU, interpreter); a handful covers every
+#: environment one machine plausibly switches between.
+_VEC_ISA_MAX_ENTRIES = 16
 #: Every :class:`_CompiledFunction` created, for diagnostics
 #: (:func:`compiled_functions`).
 _REGISTRY: list[_CompiledFunction] = []
@@ -172,6 +185,127 @@ def _configure_dynamo_once():
         pass
 
 
+def _remember_vec_isa_probe():
+    """Carry Inductor's CPU instruction-set probe from one process to the next.
+
+    Before its first CPU graph, Inductor decides which SIMD instruction sets
+    it may emit (``torch/_inductor/cpu_vec_isa.py``, ``valid_vec_isa_list``).
+    For each set the CPU reports, it builds a test program -- cached on disk --
+    and then loads it in a *fresh interpreter*, a subprocess that imports
+    torch, which nothing caches. Measured on a 4-core x86 box with AVX-512 and
+    AMX: four subprocesses, 7.2 s, in every fresh process that runs a compiled
+    function, even when every graph is an FX-cache hit. That was most of the
+    8 s a 3-D scene's construction spent in ``torch.compile``; with eager
+    construction it would only have moved to the first compiled call of the
+    render.
+
+    The verdict depends on the CPU, the C++ compiler and torch, so it is stored
+    under a fingerprint of exactly those -- Inductor's own
+    ``_get_isa_dry_compile_fingerprint`` (compiler version, torch version),
+    the CPU's instruction-set flags, and the interpreter and torch install --
+    and a later process with the same fingerprint gets the list the probe
+    returned. Only a probe that passed every set the CPU reports is stored: a
+    partial result may be a transient failure (a killed subprocess, a full
+    disk), and persisting that would quietly cost vectorization until the next
+    upgrade. Anything unexpected -- a torch that moved these internals, an
+    unreadable file -- leaves the probe as torch wrote it. Linux and Windows x86
+    only: elsewhere the probe builds nothing.
+    """
+    global _VEC_ISA_SEEDED
+    if _VEC_ISA_SEEDED or _BACKEND != "inductor":
+        return
+    _VEC_ISA_SEEDED = True
+    try:
+        if sys.platform not in ("linux", "win32") or platform.machine() not in (
+            "x86_64",
+            "AMD64",
+        ):
+            return
+        from torch._inductor import config as inductor_config
+        from torch._inductor import cpu_vec_isa
+
+        from algan.settings import SETTINGS
+
+        _seed_vec_isa_probe(
+            cpu_vec_isa,
+            inductor_config,
+            Path(SETTINGS.paths.cache_directory, *_VEC_ISA_MEMO),
+        )
+    except Exception:  # noqa: BLE001 -- a start-up saving is not worth a render
+        return
+
+
+def _seed_vec_isa_probe(cpu_vec_isa, inductor_config, path):
+    """The body of :func:`_remember_vec_isa_probe`, with torch's modules passed in."""
+    probe = cpu_vec_isa.valid_vec_isa_list
+    if (
+        not callable(getattr(probe, "cache_info", None))
+        or probe.cache_info().currsize
+        or inductor_config.cpp.vec_isa_ok is not None
+        or inductor_config.is_fbcode()
+    ):
+        return
+    cpu_flags = cpu_vec_isa.x86_isa_checker()
+    candidates = [
+        isa
+        for isa in cpu_vec_isa.supported_vec_isa_list
+        if all(flag in cpu_flags for flag in str(isa).split())
+    ]
+    names = [str(isa) for isa in candidates]
+    fingerprint = hashlib.sha256(
+        "\0".join(
+            (
+                _VEC_ISA_SCHEMA,
+                cpu_vec_isa._get_isa_dry_compile_fingerprint(""),
+                " ".join(cpu_flags),
+                sys.executable,
+                torch.__file__,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    if _read_vec_isa_memo(path).get(fingerprint) == names:
+        cpu_vec_isa.valid_vec_isa_list = functools.lru_cache(None)(lambda: candidates)
+        return
+
+    def probe_and_remember():
+        result = probe()
+        if [str(isa) for isa in result] == names:
+            _write_vec_isa_memo(path, fingerprint, names)
+        return result
+
+    cpu_vec_isa.valid_vec_isa_list = functools.lru_cache(None)(probe_and_remember)
+
+
+def _read_vec_isa_memo(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("schema") != _VEC_ISA_SCHEMA:
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _write_vec_isa_memo(path, fingerprint, names):
+    entries = _read_vec_isa_memo(path)
+    entries.pop(fingerprint, None)
+    entries[fingerprint] = names
+    while len(entries) > _VEC_ISA_MAX_ENTRIES:
+        entries.pop(next(iter(entries)))
+    staging = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging.write_text(
+            json.dumps({"schema": _VEC_ISA_SCHEMA, "entries": entries}),
+            encoding="utf-8",
+        )
+        os.replace(staging, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            staging.unlink()
+
+
 def _is_compile_failure(exc: BaseException) -> bool:
     """Whether ``exc`` came from Dynamo/Inductor rather than the function body.
 
@@ -251,6 +385,7 @@ class _CompiledFunction:
         with _lock:
             if self.compiled is None:
                 _configure_dynamo_once()
+                _remember_vec_isa_probe()
                 self.compiled = torch.compile(self.fn, backend=_BACKEND, **self.options)
             return self.compiled
 

@@ -2201,7 +2201,11 @@ class Surface(Mob):
             device=device,
             dtype=dtype,
         )
-        pn_points = evaluate_logical_pn(control_points, sample_uv)
+        # The eager arm: the sizing search evaluates small, differently shaped
+        # nets, so compiling here traced two graphs nothing else reuses. The
+        # arms are bit-identical (``logical_pn``'s module docstring), so the
+        # chosen grid is the same with torch.compile on and off.
+        pn_points = evaluate_logical_pn.eager(control_points, sample_uv)
         barycentric = torch.stack(
             (
                 1.0 - sample_uv[:, 0] - sample_uv[:, 1],
