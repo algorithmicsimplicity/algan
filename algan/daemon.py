@@ -1264,6 +1264,16 @@ def main(argv=None):
         _say("scripts run normally -- `python scene.py` will find this daemon")
     watcher = _Watcher(events) if args.watch else None
     _start_stdin(events)
+    # A start-up pass: kernels this installation has rendered before, or the
+    # built-in common set, that the cache does not hold for this version yet
+    # (a first run, an update, a kernel edit) start compiling in background
+    # worker processes now, before the first script arrives -- see
+    # rendering/kernel_precompile.py. A no-op in steady state. Not reachable
+    # from `import algan` here: under `-m algan.daemon` the package is
+    # imported before this module can mark itself as the daemon.
+    from algan.rendering.kernel_precompile import start_in_background
+
+    start_in_background("as the render daemon started")
 
     run_count = 0
     # Includes editable startup dependencies outside site-packages. User

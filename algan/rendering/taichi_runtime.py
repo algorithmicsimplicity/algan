@@ -63,8 +63,6 @@ from algan.taichi_compat import BACKEND, ti
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
-_COMPILE_NOTICE_CALLBACK = None
-_COMPILE_NOTICE_THREAD_ID = None
 
 
 def _compile_logging_enabled():
@@ -117,34 +115,6 @@ def _kernel_timing_name(kernel, key):
     instance = key[1] if len(key) > 1 else 0
     mode = getattr(kernel.autodiff_mode, "name", str(kernel.autodiff_mode))
     return f"{base}[specialization={instance}, autodiff={mode}]"
-
-
-def _set_compile_notice_callback(callback):
-    """Register the one-shot callback used for a real kernel compilation."""
-    global _COMPILE_NOTICE_CALLBACK, _COMPILE_NOTICE_THREAD_ID
-    with _COMPILE_LOG_LOCK:
-        _COMPILE_NOTICE_CALLBACK = callback
-        _COMPILE_NOTICE_THREAD_ID = threading.get_ident() if callback else None
-
-
-def _compile_notice_active():
-    with _COMPILE_LOG_LOCK:
-        return (
-            _COMPILE_NOTICE_CALLBACK is not None
-            and threading.get_ident() == _COMPILE_NOTICE_THREAD_ID
-        )
-
-
-def _notify_compile_notice():
-    global _COMPILE_NOTICE_CALLBACK, _COMPILE_NOTICE_THREAD_ID
-    with _COMPILE_LOG_LOCK:
-        if threading.get_ident() != _COMPILE_NOTICE_THREAD_ID:
-            return
-        callback = _COMPILE_NOTICE_CALLBACK
-        _COMPILE_NOTICE_CALLBACK = None
-        _COMPILE_NOTICE_THREAD_ID = None
-    if callback is not None:
-        callback()
 
 
 def _taichi_log_level():
@@ -260,6 +230,15 @@ def _install_taichi_compile_logger():
             _note_compiled_in_settings()
 
             name = _kernel_timing_name(self, key)
+            # Record what this specialization is, so a later process can
+            # compile it ahead of need (rendering/kernel_precompile.py), and
+            # tell the progress account a possibly slow step has begun.
+            from algan.rendering import kernel_precompile, kernel_progress
+
+            spec = kernel_precompile.note_materializing(
+                self, kwargs.get("py_args", kwargs.get("args"))
+            )
+            kernel_progress.materializing(self, name)
             started_wall = (
                 _datetime.datetime.now(_datetime.timezone.utc)
                 .astimezone()
@@ -277,6 +256,7 @@ def _install_taichi_compile_logger():
             try:
                 result = original_materialize(self, key=key, **kwargs)
             except Exception:
+                kernel_progress.materialized(self)
                 elapsed = time.perf_counter() - started
                 _emit_compile_record(
                     {
@@ -296,6 +276,7 @@ def _install_taichi_compile_logger():
             frontend_seconds = time.perf_counter() - started
             compiled = specializations.get(key)
             if compiled is None:
+                kernel_progress.materialized(self)
                 return result
             # A source-key hit (utils/taichi_source_key.py) loads the kernel
             # data inside materialize and never reaches compile_kernel, so
@@ -316,12 +297,18 @@ def _install_taichi_compile_logger():
                         "source_key": "hit",
                     }
                 )
+                kernel_progress.materialized(self)
+                kernel_precompile.note_materialized(
+                    spec, seconds=frontend_seconds, compiled=False
+                )
                 return result
             with _COMPILE_LOG_LOCK:
                 _COMPILE_FRONTEND[id(compiled)] = {
                     "kernel": name,
                     "frontend_seconds": frontend_seconds,
                     "started_perf": started,
+                    "spec": spec,
+                    "owner": self,
                 }
             return result
 
@@ -348,7 +335,24 @@ def _install_taichi_compile_logger():
         name = meta["kernel"]
         frontend_seconds = float(meta["frontend_seconds"])
         backend_started = time.perf_counter()
-        observe_cache = _compile_notice_active()
+        from algan.rendering import kernel_precompile, kernel_progress
+
+        # Quadrants says whether the offline cache served the compile
+        # (``CompileResult.cache_hit``). Taichi 1.7 does not, and the only
+        # signal there is the native debug log, captured around the call --
+        # fd 2 is process-wide, so only on the main thread and only while a
+        # render is what is waiting.
+        observe_cache = (
+            BACKEND == "taichi"
+            and render_is_active()
+            and threading.current_thread() is threading.main_thread()
+        )
+        kernel_progress.backend_starting(
+            meta["owner"],
+            name,
+            frontend_seconds,
+            kernel_precompile.expected_seconds(meta["spec"]),
+        )
         try:
             if observe_cache:
                 result, native_log = _compile_with_cache_observation(
@@ -357,6 +361,7 @@ def _install_taichi_compile_logger():
             else:
                 result = original_compile_kernel(self, *args, **kwargs)
         except Exception:
+            kernel_progress.materialized(meta["owner"])
             backend_seconds = time.perf_counter() - backend_started
             total_seconds = frontend_seconds + backend_seconds
             _emit_compile_record(
@@ -373,8 +378,9 @@ def _install_taichi_compile_logger():
                 }
             )
             raise
-        if observe_cache and not _loaded_from_offline_cache(native_log):
-            _notify_compile_notice()
+        cache_hit = getattr(result, "cache_hit", None)
+        if cache_hit is None:
+            cache_hit = observe_cache and _loaded_from_offline_cache(native_log)
         # This process built a specialization the source-key index could not
         # serve, so it holds kernel data the offline cache may not. Only
         # `flush_kernel_cache` reads this, and only to skip the flush entirely
@@ -395,6 +401,10 @@ def _install_taichi_compile_logger():
                 "backend_seconds": backend_seconds,
                 "total_seconds": total_seconds,
             }
+        )
+        kernel_progress.compiled(meta["owner"], name, total_seconds, not cache_hit)
+        kernel_precompile.note_materialized(
+            meta["spec"], seconds=total_seconds, compiled=not cache_hit
         )
         return result
 
@@ -757,6 +767,15 @@ def cpu_prep_kernel_enabled(name):
     return taichi_arch_is_cpu()
 
 
+#: ``ti.init`` keywords merged over Algan's config by :func:`taichi_init_kwargs`.
+#: Empty in every process but a precompile worker, which shrinks the device
+#: memory pool it will never launch into (``rendering/kernel_precompile.py``).
+#: Anything placed here must also be left out of the source key's config
+#: fingerprint (``taichi_source_key._CONFIG_EXCLUDE_NAMES``), or the worker's
+#: index entries would never match the keys a render computes.
+_INIT_OVERRIDES = {}
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 
@@ -825,6 +844,7 @@ def taichi_init_kwargs():
     opt_level = env_int("ALGAN_OPT_LEVEL", 0)
     if opt_level > 0:
         kwargs["opt_level"] = opt_level
+    kwargs.update(_INIT_OVERRIDES)
     if kwargs["arch"] == ti.metal:
         queue = _torch_mps_command_queue()
         if queue:
@@ -1097,11 +1117,28 @@ def render_job_holding_the_arch():
     """
     global _PRESSURE_RESET_PENDING, _RENDER_JOBS_ACTIVE
     _RENDER_JOBS_ACTIVE += 1
+    if _RENDER_JOBS_ACTIVE == 1:
+        # Optimizations and reporting: nothing here may fail a render, and an
+        # exception before the `try` would leave the job count stuck.
+        with contextlib.suppress(Exception):
+            from algan.rendering import kernel_precompile, kernel_progress
+
+            kernel_progress.render_started()
+            # The settings this render compiles under are final now: make sure
+            # a precompile pool, if one is worth running, runs for them.
+            kernel_precompile.on_render_start()
     try:
         yield
     finally:
         _RENDER_JOBS_ACTIVE -= 1
         if _RENDER_JOBS_ACTIVE == 0:
+            with contextlib.suppress(Exception):
+                from algan.rendering import kernel_precompile, kernel_progress
+
+                kernel_progress.render_finished()
+                # The specializations this job used, for the next process's
+                # pool and for `algan warmup` (rendering/kernel_precompile.py).
+                kernel_precompile.flush_manifest()
             # Release the MPS zero-copy import cache with the job that filled
             # it. Each entry holds a torch storage alive so Taichi cannot be
             # reading a buffer the caching allocator has recycled, and the
@@ -1114,9 +1151,16 @@ def render_job_holding_the_arch():
             clear_import_cache()
             # The source-keyed index's hit/miss/poison counters, beside the
             # per-kernel compile records they summarize.
-            from algan.utils.taichi_source_key import report_if_logging
+            from algan.utils.taichi_source_key import (
+                flush_source_memo,
+                report_if_logging,
+            )
 
             report_if_logging()
+            # What this job learned about source files, for the next process
+            # (``taichi_source_key._SourceMemo``). A no-op when nothing new
+            # was hashed, which is every warm job after the first.
+            flush_source_memo()
 
             # ``release_torch_memory`` can discover host pressure while this
             # job is still in a kernel-safe scope. Resetting there would race

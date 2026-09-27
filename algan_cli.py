@@ -1,7 +1,7 @@
 """Command-line interface for Algan animation engine.
 
 Provides commands for rendering scenes, managing the warm daemon, checking
-environment health, and scaffolding new scenes.
+environment health, precompiling render kernels, and scaffolding new scenes.
 
 **This module lives outside the ``algan`` package on purpose, and moving it
 back in would be a 40x regression on every cheap command.** Python imports a
@@ -186,6 +186,21 @@ def _cmd_check(_args: argparse.Namespace) -> int:
             "Every kernel a warm process has already compiled pays the full "
             "Python AST transform again."
         )
+    # Background precompiling rests on the source-keyed index, so it stands
+    # down with it; and ALGAN_PRECOMPILE_JOBS=0 turns it off on purpose. Either
+    # way the first render after an update compiles serially again, which is
+    # worth knowing before it happens.
+    from algan.rendering.kernel_precompile import skipped_reason as precompile_off
+    from algan.rendering.kernel_precompile import worker_budget
+
+    precompile_reason = precompile_off()
+    if precompile_reason is None:
+        print(
+            f"  Background kernel precompiling: ON (up to {worker_budget(64)} "
+            "worker processes); `algan warmup` precompiles the common set now"
+        )
+    else:
+        print(f"  [INFO] Background kernel precompiling is off: {precompile_reason}.")
     # Same shape of hazard for the early-return rewrite: version-gated to the
     # compiler it wraps, and when it is off the only symptom is a shader
     # stage that used to compile now failing with the compiler's own message.
@@ -313,6 +328,29 @@ def _daemon_home() -> str:
     from algan import daemon_client
 
     return daemon_client.algan_home()
+
+
+def _cmd_warmup(args: argparse.Namespace) -> int:
+    """Precompile the render kernels typical scenes need, in parallel."""
+    from algan.rendering.kernel_warmup import VARIANTS, warmup
+
+    if args.list:
+        for name, variant in VARIANTS.items():
+            extra = (
+                " (sets "
+                + ", ".join(f"{k}={v!r}" for k, v in variant.raytracing.items())
+                + ")"
+                if variant.raytracing
+                else ""
+            )
+            print(f"{name:8} {variant.description}{extra}")
+        return 0
+    variants = args.variants.split(",") if args.variants else None
+    try:
+        return warmup(jobs=args.jobs, variants=variants, scenes=not args.no_scenes)
+    except KeyboardInterrupt:
+        print("Warm-up interrupted; kernels finished so far stay cached.")
+        return 130
 
 
 def _cmd_new(args: argparse.Namespace) -> int:
@@ -649,6 +687,41 @@ def main(argv: list[str] | None = None) -> int:
         "check", help="Check system dependencies, acceleration, and paths"
     )
 
+    # warmup
+    warmup_parser = subparsers.add_parser(
+        "warmup",
+        help="Precompile the render kernels typical scenes need, in parallel",
+        description="Compile render kernels before a scene needs them. First "
+        "every kernel specialization on record -- the built-in common set and "
+        "whatever this installation has rendered before -- one per worker "
+        "process, longest first; then one small scene per variant (2-D, 3-D, "
+        "shadows, glass), rendered in parallel, to catch anything the list "
+        "does not cover. Run it after installing or updating Algan. It uses "
+        "the render device and settings the environment selects "
+        "(ALGAN_RENDER_DEVICE).",
+    )
+    warmup_parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=None,
+        help="Worker processes (default: one fewer than the CPUs, capped by "
+        "free memory; ALGAN_PRECOMPILE_JOBS sets the same default)",
+    )
+    warmup_parser.add_argument(
+        "--variants",
+        default=None,
+        help="Comma-separated variants to warm (default: all; see --list)",
+    )
+    warmup_parser.add_argument(
+        "--no-scenes",
+        action="store_true",
+        help="Only precompile the kernels on record; skip the warm-up scenes",
+    )
+    warmup_parser.add_argument(
+        "--list", action="store_true", help="List the variants and exit"
+    )
+
     # new
     new_parser = subparsers.add_parser("new", help="Scaffold a new scene script")
     new_parser.add_argument(
@@ -675,6 +748,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "check":
         return _cmd_check(args)
+    elif args.command == "warmup":
+        return _cmd_warmup(args)
     elif args.command == "new":
         return _cmd_new(args)
     elif args.command == "daemon":

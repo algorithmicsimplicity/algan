@@ -35,6 +35,12 @@ skips. It filters check-run names containing `Test` or `test`; inspect code-qual
 and documentation checks as well. See [tests/README.md](tests/README.md) for
 portable tests, GPU coverage and separately hosted render baselines.
 
+Before choosing the commit, check that the built-in kernel list is current:
+`scripts/generate_kernel_specs.py --check` (a few minutes of cold renders). It is
+what a new installation's first render and `algan warmup` precompile in parallel,
+so a stale list ships a slower first run rather than a broken one. Regenerate it
+without `--check` and commit the result if it reports differences.
+
 ## 2. Check publication prerequisites
 
 **Branch and tag permissions.** `promote` uses the workflow's `GITHUB_TOKEN` to

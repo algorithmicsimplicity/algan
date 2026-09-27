@@ -77,3 +77,64 @@ rules are documented in [api_settings.md](api_settings.md).
 Do not edit a kernel file while a process is preparing to compile it: source
 inspection occurs lazily, and mixing old imports with new source text can make a
 validation result meaningless.
+
+## Precompiling, progress, and the source memo
+
+Three pieces cut first-run and fresh-process start-up; all three are
+performance only and none may change a key or a pixel.
+
+**The source memo** (`taichi_source_key._SourceMemo`) persists what source
+retrieval and the bytecode walk produce -- the part of a source key that was
+~90 % of its cost -- in `algan_source_key_memo.json` beside the kernel cache,
+keyed by `(path, sha256 of the file's bytes, first line, qualname)`. Keyed by
+content, not mtime: a wheel install can give two versions of a file the same
+timestamp and size. An entry is stored only when re-deriving it from exactly
+those bytes gives the same answer (a private `linecache` entry for the source
+lines, a recompile of the module for the chains), so a file edited under a
+running process never leaves an entry a later process would trust. Keys are
+byte-identical with it on and off (`ALGAN_TAICHI_SOURCE_KEY_MEMO=0`);
+`tests/unit_tests/test_taichi_source_key_memo.py` holds that over every kernel
+body. Classes are not memoized (`inspect` finds them per-version).
+
+**The precompile pool** (`algan/rendering/kernel_precompile.py`) records every
+specialization a render materializes as a portable spec -- kernel path, array
+dtypes and ranks, template values -- in `algan_kernel_specs.json`, and compiles
+specs in worker processes (`python -m algan.rendering._precompile_worker`) with
+one-element placeholder tensors, never launching. Facts it rests on, all
+measured on Quadrants 1.3:
+
+* `Program.compile_kernel` and `load_fast_cache` **hold the GIL** for their
+  whole duration (a 20 s gap in a 50 ms ticker while the CPU backend compiled
+  `sheet_resolve_shade_arena`). Threads cannot overlap kernel compilation with
+  anything; only processes can. That is also why the progress heartbeat cannot
+  speak during a backend compile and a slow one is announced before it starts.
+* A running program sees artifacts another process dumped after its `init`,
+  through both the source-key index and the offline cache, and concurrent
+  dumps from several processes do not clobber each other.
+* `device_memory_GB` is not in the C++ key; it is now excluded from the source
+  key too (`_CONFIG_EXCLUDE_NAMES`), so CUDA workers run with a 0.25 GB pool.
+
+The worker's own variables (`ALGAN_PRECOMPILE_WORKER`, `ALGAN_PRECOMPILE_JOBS`)
+are in `_ENV_NOT_IN_KEY`; **anything a worker sets differently from the render
+must be left out of the key**, or its index entries never match. The render
+waits for a spec a worker is compiling from the source-key miss path
+(`await_precompiled`) and takes back one still queued. The pool starts at the
+end of `import algan` in a scene-script process (the daemon handoff's own test),
+at daemon start-up, and at the outermost render job if the settings moved; it
+runs only for specs not confirmed under the current environment stamp.
+Specs are portable only when everything in them is `algan.*` or plain data --
+a scene's own `@ti.func` stage keeps compiling at first launch.
+
+`algan warmup` (`kernel_warmup.py`) runs the pool over every recorded spec and
+the built-in list, then renders the variant scenes in parallel. **When a
+kernel's signature or a pipeline's choice of kernels changes, regenerate the
+built-in list** with `scripts/generate_kernel_specs.py`;
+`test_every_builtin_spec_still_matches_a_live_kernel` fails until you do. A
+stale entry only costs parallelism, never correctness.
+
+**Progress** (`kernel_progress.py`) replaced the one-shot "several minutes"
+notice: a header on the first index miss of a render, a numbered line per real
+compile (`CompileResult.cache_hit` says which were served from the offline
+cache; the fd-2 capture remains only for the Taichi backend), worker waits, a
+heartbeat, and a summary. Tests run with `ALGAN_PRECOMPILE_JOBS=0`
+(`tests/conftest.py`).

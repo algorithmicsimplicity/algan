@@ -563,3 +563,16 @@ __all__ = (
     *sorted(name for name, value in globals().items() if _is_root_export(name, value)),
     *_EXTRA_EXPORTS,
 )
+
+# Last, once the package is whole. In a process about to run a scene, compare
+# the kernel specializations this installation has on record with what its
+# cache has confirmed and, if any are missing (a first run, an update, a kernel
+# edit), start compiling them in background worker processes while the script
+# is still authoring -- see rendering/kernel_precompile.py. Decided on a
+# background thread, so it costs the import nothing, and a no-op in steady
+# state, under the CLI, in test runners and in the workers themselves.
+from algan.rendering.kernel_precompile import (  # noqa: E402
+    start_at_import as _start_kernel_precompile,
+)
+
+_start_kernel_precompile()

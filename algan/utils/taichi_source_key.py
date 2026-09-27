@@ -143,7 +143,7 @@ from algan.environment import env_flag, env_str
 
 #: Bumped whenever what this module puts in the key, or how it renders a
 #: component, changes -- an entry written by an older rule set must miss.
-_SCHEMA_VERSION = "algan-source-key-v2"
+_SCHEMA_VERSION = "algan-source-key-v3"
 
 _APPLIED = False
 _SKIPPED_REASON = None
@@ -517,6 +517,386 @@ def _hash_class(cls, ctx, depth):
 
 
 # ---------------------------------------------------------------------------
+# The source memo: source hashes and reference chains, across processes
+# ---------------------------------------------------------------------------
+
+
+class _SourceMemo:
+    r"""What source retrieval and the bytecode walk produced, keyed by file *content*.
+
+    Everything the key reads from a function's source -- the retrieved lines'
+    hash, the kernel fragment, the chains its bytecode loads -- is a pure
+    function of the bytes of the file it lives in and its position there. The
+    per-object memos above hold those results for one process; a fresh process
+    rebuilt them all, and that was most of the key's cost: Python's
+    ``getsourcelines`` tokenizes forward from the ``def`` to find the end of
+    the block, and the walk disassembles every code object it reaches. On a
+    GTX 1050 box a warm fresh process spent ~10 s there across 24 kernels.
+
+    So this memo persists them in the kernel cache directory, keyed by
+    ``(path, sha256 of the file's bytes, first line, qualified name)``. Keyed
+    by content and not by mtime on purpose: a wheel install can give two
+    versions of a file the same timestamp and size, and a stale entry here is
+    a stale *kernel*. Reading and hashing every file the walk reaches costs a
+    few milliseconds; the tokenizing it replaces costs the rest.
+
+    **An entry is only stored when it is provably a function of those bytes.**
+    The live function object may not have come from the file as it is now --
+    a file edited under a running process, which ``agent_guidance/taichi.md``
+    already forbids but which a long-lived daemon makes easy -- so each result
+    is checked against the exact bytes it is keyed by before it is written:
+
+    * a source hash, only if the retrieved lines are literally the lines of
+      those bytes at the retrieved position;
+    * a kernel fragment, on the same check (``hash_kernel`` then reads the file
+      itself, and does so from those bytes);
+    * a chain list, only if compiling those bytes gives a code object at the
+      same position whose chains are equal to the live one's.
+
+    A result that fails its check is still used by the process that computed
+    it -- it is what the non-memo path would have used -- and simply not
+    persisted. Keys are therefore byte-identical with the memo on and off,
+    which is what ``tests/unit_tests/test_taichi_source_key_memo.py`` holds it
+    to. ``ALGAN_TAICHI_SOURCE_KEY_MEMO=0`` turns it off.
+
+    A file whose bytes this process cannot read (a REPL, a notebook cell,
+    ``exec``'d code) is never memoized; its functions take the retrieval
+    exactly as before.
+    """
+
+    __slots__ = ("_entries", "_dirty", "_files", "_generation", "_loaded", "stats")
+
+    _SCHEMA = "algan-source-key-memo-v1"
+    _FILENAME = "algan_source_key_memo.json"
+    #: A generous ceiling; entries for superseded file contents are pruned on
+    #: every write anyway, so a steady tree holds one version per file.
+    _MAX_ENTRIES = 50_000
+
+    def __init__(self):
+        self._entries = {}
+        self._dirty = {}
+        #: ``path -> [sha, bytes, lines-or-None, (mtime_ns, size), generation]``
+        self._files = {}
+        #: Bumped at every key computation, so each file is re-``stat``ed once
+        #: per key: a daemon re-running an edited scene must see the edit.
+        self._generation = 0
+        self._loaded = False
+        self.stats = {"hits": 0, "stored": 0, "rejected": 0}
+
+    # -- the file behind the memo --------------------------------------------
+
+    @classmethod
+    def _header(cls):
+        from algan.taichi_compat import BACKEND, backend_version
+
+        return {
+            "schema": cls._SCHEMA,
+            "key_schema": _SCHEMA_VERSION,
+            "python": list(sys.version_info[:2]),
+            "compiler": [BACKEND, list(backend_version())],
+        }
+
+    @classmethod
+    def path(cls):
+        from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
+
+        return os.path.join(str(_TAICHI_CACHE_DIRECTORY), cls._FILENAME)
+
+    def _load(self):
+        if self._loaded:
+            return
+        self._loaded = True
+        stored = self._read()
+        if stored is not None:
+            self._entries.update(stored)
+
+    def _read(self):
+        """The entries on disk, or ``None`` when absent, unreadable or written by another setup."""
+        import json
+
+        try:
+            with open(self.path(), encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("header") != self._header():
+            return None
+        entries = data.get("entries")
+        return entries if isinstance(entries, dict) else None
+
+    def begin_key(self):
+        self._generation += 1
+        self._load()
+
+    def flush(self):
+        """Merge this process's new entries into the file on disk, atomically.
+
+        Read-merge-write rather than overwrite, so two processes finishing
+        together lose at most each other's newest entries, never the file.
+        Entries for a path this process read at a *different* content hash
+        are dropped on the way: they describe a version of the file that no
+        longer exists, and a tree under edit would otherwise grow the memo by
+        one version per save.
+        """
+        if not self._dirty:
+            return False
+        import json
+        import tempfile
+
+        dirty = dict(self._dirty)
+        merged = self._read() or {}
+        merged.update(dirty)
+        current = {path: state[0] for path, state in self._files.items() if state}
+        stale = [
+            key
+            for key in merged
+            if (parts := key.split("\x1f", 3))[1] in current
+            and parts[2] != current[parts[1]]
+        ]
+        for key in stale:
+            del merged[key]
+        if len(merged) > self._MAX_ENTRIES:
+            # Oldest-inserted first: dicts keep insertion order, and entries
+            # from this process were merged last.
+            for key in list(merged)[: len(merged) - self._MAX_ENTRIES]:
+                del merged[key]
+        path = self.path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(path), prefix=".source_key_memo.", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"header": self._header(), "entries": merged}, handle)
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError, UnboundLocalError):
+                os.unlink(tmp)
+            return False
+        self._entries.update(dirty)
+        for key in dirty:
+            self._dirty.pop(key, None)
+        self._release_contents()
+        return True
+
+    def _release_contents(self):
+        """Drop the file bytes, lines and compiled modules held for verification.
+
+        Only a store needs them, and stores come in a burst when a file's
+        content is new; a long-lived daemon should not keep megabytes of source
+        text for that. They are re-read on demand, against the hash.
+        """
+        for state in self._files.values():
+            if state:
+                state[1] = None
+                state[2] = None
+                del state[5:]
+
+    def _file(self, path):
+        """``[sha, bytes, lines, stat, generation, (module code)]`` for ``path`` now, or ``None``.
+
+        The bytes, lines and module code are released after every flush
+        (:meth:`_release_contents`) and rebuilt on demand.
+        """
+        state = self._files.get(path)
+        if state is not None and state[4] == self._generation:
+            return state
+        try:
+            stat = os.stat(path)
+        except (OSError, TypeError, ValueError):
+            self._files[path] = None
+            return None
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if state is not None and state[3] == signature:
+            state[4] = self._generation
+            return state
+        import hashlib
+
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            self._files[path] = None
+            return None
+        state = [
+            hashlib.sha256(data).hexdigest(),
+            data,
+            None,
+            signature,
+            self._generation,
+        ]
+        self._files[path] = state
+        return state
+
+    @staticmethod
+    def _bytes(state, path):
+        """The file's bytes, re-read if released; ``None`` if they no longer match the hash."""
+        if state[1] is None:
+            import hashlib
+
+            try:
+                with open(path, "rb") as handle:
+                    data = handle.read()
+            except OSError:
+                return None
+            if hashlib.sha256(data).hexdigest() != state[0]:
+                return None
+            state[1] = data
+        return state[1]
+
+    def _lines(self, state, path):
+        """The file's lines as ``linecache`` and ``inspect`` see them, or ``None``."""
+        if state[2] is None:
+            import io
+            import tokenize
+
+            data = self._bytes(state, path)
+            if data is None:
+                return None
+            encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+            text = io.TextIOWrapper(io.BytesIO(data), encoding=encoding, newline=None)
+            state[2] = text.readlines()
+        return state[2]
+
+    def _key(self, kind, path, state, line, name):
+        return "\x1f".join((kind, path, state[0], f"{line}:{name}"))
+
+    # -- lookups ----------------------------------------------------------------
+
+    def lookup(self, kind, path, line, name):
+        """``(key, value)``: the memoized value, or ``None``, and the key to store under."""
+        state = self._file(path) if path else None
+        if state is None:
+            return None, None
+        key = self._key(kind, path, state, line, name)
+        value = self._dirty.get(key)
+        if value is None:
+            value = self._entries.get(key)
+        if value is not None:
+            self.stats["hits"] += 1
+        return key, value
+
+    def store(self, key, value, valid):
+        if key is None:
+            return
+        if not valid:
+            self.stats["rejected"] += 1
+            return
+        self._dirty[key] = value
+        self.stats["stored"] += 1
+
+    def _module_code(self, state, path):
+        """``compile`` of the file's bytes, once per content version."""
+        if len(state) < 6:
+            data = self._bytes(state, path)
+            try:
+                code = (
+                    None
+                    if data is None
+                    else compile(data, path, "exec", dont_inherit=True)
+                )
+            except (SyntaxError, ValueError):
+                code = None
+            state.append(code)
+        return state[5]
+
+    def independent_source(self, code):
+        """``(start, end, lines)``: ``getsourcelines`` applied to the bytes, not to ``linecache``.
+
+        The process's own retrieval reads ``linecache`` and, through the
+        warm-start memo, may answer from an earlier version of the file; this
+        one reads exactly the bytes the entry would be keyed by. The file's
+        lines are lent to ``inspect`` under a private ``linecache`` name
+        (an entry with no mtime, which ``checkcache`` leaves alone) and handed
+        a copy of ``code`` pointing at that name -- the code object itself, not
+        a function over it, which would need cells for any free variables --
+        so the real file's entry is never touched. ``None`` when it cannot be
+        done.
+        """
+        import linecache
+
+        path = _code_path(code)
+        state = self._file(path) if path else None
+        if state is None:
+            return None
+        lines = self._lines(state, path)
+        if lines is None:
+            return None
+        fake = f"<algan-source-memo {state[0]} {path}>"
+        linecache.cache[fake] = (sum(map(len, lines)), None, lines, fake)
+        try:
+            lines, start = inspect.getsourcelines(code.replace(co_filename=fake))
+        except (OSError, TypeError, ValueError, IndexError):
+            return None
+        finally:
+            linecache.cache.pop(fake, None)
+        return start, start + len(lines) - 1, list(lines)
+
+    def utf8_lines(self, path):
+        """The file's lines as ``function_hasher._read_file`` reads them (UTF-8, universal newlines)."""
+        import io
+
+        state = self._file(path)
+        data = None if state is None else self._bytes(state, path)
+        if data is None:
+            return None
+        try:
+            return io.TextIOWrapper(
+                io.BytesIO(data), encoding="utf-8", newline=None
+            ).readlines()
+        except UnicodeDecodeError:
+            return None
+
+    def independent_chains(self, code):
+        """The chains of the code object compiled from the bytes at ``code``'s position.
+
+        ``None`` when the bytes do not compile or hold no such code object. The
+        compile is paid once per version of a file, and only to *store*.
+        """
+        path = _code_path(code)
+        state = self._file(path) if path else None
+        if state is None:
+            return None
+        module_code = self._module_code(state, path)
+        if module_code is None:
+            return None
+        wanted = (code.co_qualname, code.co_firstlineno)
+        pending = [module_code]
+        while pending:
+            candidate = pending.pop()
+            if (candidate.co_qualname, candidate.co_firstlineno) == wanted:
+                return _code_chains(candidate)
+            pending.extend(
+                c for c in candidate.co_consts if isinstance(c, types.CodeType)
+            )
+        return None
+
+
+_MEMO = _SourceMemo()
+#: Whether the key being computed may use :data:`_MEMO`; read once per key
+#: rather than once per function it reaches.
+_MEMO_ACTIVE = False
+
+
+def flush_source_memo():
+    """Persist this process's new source-memo entries (render-job end and exit)."""
+    if not _APPLIED:
+        return False
+    try:
+        return _MEMO.flush()
+    except Exception:  # noqa: BLE001 -- housekeeping must never fail a render
+        return False
+
+
+def _code_path(code):
+    """The file a code object was compiled from, when it is a real file."""
+    path = code.co_filename
+    if not path or path.startswith("<"):
+        return None
+    return path
+
+
+# ---------------------------------------------------------------------------
 # Source hashes, memoized per object
 # ---------------------------------------------------------------------------
 
@@ -532,25 +912,90 @@ def _function_source_hash(function):
     cached = getattr(function, "_algan_source_key_src", None)
     if cached is not None:
         return cached
-    from algan.taichi_compat import submodule
+    code = function.__code__
+    memo_key = None
+    if _MEMO_ACTIVE:
+        memo_key, value = _MEMO.lookup(
+            "src", _code_path(code), code.co_firstlineno, code.co_qualname
+        )
+        if value is not None:
+            cached = (value[0], value[1], value[2])
+    if cached is None:
+        from algan.taichi_compat import submodule
 
-    hash_iterable_strings = submodule(
-        "lang._fast_caching.hash_utils"
-    ).hash_iterable_strings
-    try:
-        info, src = _source_info_and_src()(function)
-    except (OSError, TypeError) as exc:
-        raise Poison(f"no source for {function.__qualname__}: {exc}") from None
-    cached = (info.filepath, info.start_lineno, hash_iterable_strings(src))
+        hash_iterable_strings = submodule(
+            "lang._fast_caching.hash_utils"
+        ).hash_iterable_strings
+        try:
+            info, src = _source_info_and_src()(function)
+        except (OSError, TypeError) as exc:
+            raise Poison(f"no source for {function.__qualname__}: {exc}") from None
+        cached = (info.filepath, info.start_lineno, hash_iterable_strings(src))
+        if memo_key is not None:
+            independent = _MEMO.independent_source(code)
+            _MEMO.store(
+                memo_key,
+                list(cached),
+                info.filepath == code.co_filename
+                and independent is not None
+                and independent[0] == info.start_lineno
+                and independent[2] == list(src),
+            )
     with contextlib.suppress(AttributeError, TypeError):
         function._algan_source_key_src = cached
     return cached
+
+
+def _kernel_fragment(function, function_hasher, hash_iterable_strings):
+    """``kernel:<file>:<line>:<hash>`` for the kernel's own body.
+
+    ``hash_kernel`` hashes lines it reads back from the file itself (one past
+    the block, by an off-by-one in its ``islice``), so the fragment is a
+    function of the file's bytes once the block's bounds are, and memoizable
+    on the same terms as a source hash: stored only when the bounds and the
+    hash both come out the same from the bytes the entry is keyed by.
+    """
+    code = function.__code__
+    memo_key = None
+    if _MEMO_ACTIVE:
+        memo_key, value = _MEMO.lookup(
+            "kernel", _code_path(code), code.co_firstlineno, code.co_qualname
+        )
+        if value is not None:
+            return value
+    info, src = _source_info_and_src()(function)
+    fragment = (
+        f"kernel:{info.filepath}:{info.start_lineno}:"
+        f"{function_hasher.hash_kernel(info)}"
+    )
+    if memo_key is not None:
+        independent = _MEMO.independent_source(code)
+        lines = _MEMO.utf8_lines(code.co_filename)
+        valid = (
+            info.filepath == code.co_filename
+            and independent is not None
+            and lines is not None
+            and independent[:2] == (info.start_lineno, info.end_lineno)
+            and independent[2] == list(src)
+        )
+        if valid:
+            start, end = independent[:2]
+            valid = fragment == (
+                f"kernel:{code.co_filename}:{start}:"
+                f"{hash_iterable_strings(lines[start : end + 1])}"
+            )
+        _MEMO.store(memo_key, fragment, valid)
+    return fragment
 
 
 _CLASS_SOURCE = {}
 
 
 def _class_source_hash(cls):
+    # Not in the source memo: `inspect` finds a class by walking the module's
+    # AST (3.12) or reading `__firstlineno__` (3.13), so an independent check
+    # would mean replicating per-version internals -- and the walk reaches a
+    # handful of classes, against hundreds of functions.
     cached = _CLASS_SOURCE.get(cls)
     if cached is not None:
         return cached
@@ -566,6 +1011,30 @@ def _class_source_hash(cls):
         raise Poison(f"no source for class {cls.__qualname__}: {exc}") from None
     cached = (filepath, lineno, hash_iterable_strings(lines))
     _CLASS_SOURCE[cls] = cached
+    return cached
+
+
+def _function_chains(function):
+    """:func:`_code_chains` of a function's code, through the source memo."""
+    code = function.__code__
+    cached = _CODE_CHAINS.get(code)
+    if cached is not None or not _MEMO_ACTIVE:
+        return _code_chains(code)
+    memo_key, value = _MEMO.lookup(
+        "chains", _code_path(code), code.co_firstlineno, code.co_qualname
+    )
+    if value is not None:
+        cached = tuple((kind, root, tuple(attrs)) for kind, root, attrs in value)
+        _CODE_CHAINS[code] = cached
+        return cached
+    cached = _code_chains(code)
+    if memo_key is not None:
+        independent = _MEMO.independent_chains(code)
+        _MEMO.store(
+            memo_key,
+            [[kind, root, list(attrs)] for kind, root, attrs in cached],
+            independent == cached,
+        )
     return cached
 
 
@@ -694,7 +1163,7 @@ def _hash_references(function, ctx, depth):
     module_globals = function.__globals__
     cells = _closure_cells(function)
     local_names = _code_local_names(code)
-    for kind, root, attrs in _code_chains(code):
+    for kind, root, attrs in _function_chains(function):
         if kind == "deref":
             if root in cells:
                 try:
@@ -762,12 +1231,17 @@ _ENV_NOT_IN_KEY = frozenset(
     {
         "ALGAN_TAICHI_SOURCE_KEY",
         "ALGAN_TAICHI_SOURCE_KEY_VERIFY",
+        "ALGAN_TAICHI_SOURCE_KEY_MEMO",
         "ALGAN_TAICHI_WARMSTART",
         "ALGAN_TAICHI_WARMSTART_VERIFY",
         "ALGAN_TAICHI_FAST_LAUNCH",
         "ALGAN_TAICHI_FAST_LAUNCH_VERIFY",
         "ALGAN_LOG_TAICHI_COMPILES",
         "ALGAN_TAICHI_COMPILE_LOG",
+        # Who compiles, not what: a precompile worker runs with the first set
+        # and must write entries under exactly the keys the render computes.
+        "ALGAN_PRECOMPILE_JOBS",
+        "ALGAN_PRECOMPILE_WORKER",
         # Exit-time housekeeping: it decides when the artifacts this index
         # points at are written to disk, never what any of them contain.
         "ALGAN_FLUSH_KERNEL_CACHE",
@@ -837,9 +1311,21 @@ def _settings_fingerprint(ctx):
 #: ``verbose`` field in, exactly as the compiler keeps it.
 _CONFIG_EXCLUDE_PREFIXES = ("_", "offline_cache", "print_", "verbose_")
 #: Process-local, not IR-relevant: the torch MPS queue's address (Quadrants
-#: #850 excluded it from the C++ key for the same reason).
+#: #850 excluded it from the C++ key for the same reason), and the size of the
+#: device memory pool the runtime preallocates. The pool is an allocation, not
+#: an input to any kernel's IR, and the C++ key leaves it out too (checked: one
+#: kernel compiled at ``device_memory_GB=1.0`` is an offline-cache hit at
+#: ``0.25`` and back). It is excluded so that a precompile worker
+#: (``rendering/kernel_precompile.py``) can run with a small pool -- at the
+#: default 1 GB each, three CUDA workers would hold three quarters of a 4 GB
+#: card -- and still write index entries the render's own keys find.
 _CONFIG_EXCLUDE_NAMES = frozenset(
-    {"external_metal_command_queue", "external_metal_command_queue_is_torch_queue"}
+    {
+        "external_metal_command_queue",
+        "external_metal_command_queue_is_torch_queue",
+        "device_memory_GB",
+        "device_memory_fraction",
+    }
 )
 
 
@@ -973,8 +1459,15 @@ def compute_key(kernel, args):
     """
     from algan.taichi_compat import BACKEND, submodule
 
+    global _MEMO_ACTIVE
     started = time.perf_counter()
     try:
+        # Read per key rather than once per process so the A/B arm can flip
+        # between two renders; never reset afterwards, because the batch-prep
+        # worker can be computing a key of its own on another thread.
+        _MEMO_ACTIVE = env_flag("ALGAN_TAICHI_SOURCE_KEY_MEMO", True)
+        if _MEMO_ACTIVE:
+            _MEMO.begin_key()
         fast_caching = submodule("lang._fast_caching.src_hasher")
         function_hasher = submodule("lang._fast_caching.function_hasher")
         hash_iterable_strings = submodule(
@@ -999,10 +1492,8 @@ def compute_key(kernel, args):
             f"classkernel={getattr(kernel, 'is_classkernel', False)}"
         )
 
-        kernel_source_info, _src = _source_info_and_src()(kernel.func)
         out.append(
-            f"kernel:{kernel_source_info.filepath}:{kernel_source_info.start_lineno}:"
-            f"{function_hasher.hash_kernel(kernel_source_info)}"
+            _kernel_fragment(kernel.func, function_hasher, hash_iterable_strings)
         )
         out.extend(_program_fingerprint())
 
@@ -1187,6 +1678,15 @@ def _build_hooks(
         self.src_ll_cache_observations.cache_key_generated = True
         cache_value = src_hasher.load(fast_key)
         if cache_value is None:
+            # A precompile worker may be building exactly this specialization
+            # (`rendering/kernel_precompile.py`): wait for it rather than build
+            # it twice, then look again -- the entry lands on disk, and the
+            # index reads it at lookup time, not from a snapshot.
+            from algan.rendering.kernel_precompile import await_precompiled
+
+            if await_precompiled(self, args):
+                cache_value = src_hasher.load(fast_key)
+        if cache_value is None:
             STATS["misses"] += 1
             return None
         self.src_ll_cache_observations.cache_validated = True
@@ -1277,6 +1777,10 @@ def apply():
         return
     _SKIPPED_REASON = None
     _APPLIED = bool(_apply_quadrants(tuple(backend_version())))
+    if _APPLIED:
+        import atexit
+
+        atexit.register(flush_source_memo)
 
 
 def is_applied():

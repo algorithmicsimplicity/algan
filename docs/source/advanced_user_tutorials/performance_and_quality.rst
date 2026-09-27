@@ -403,13 +403,60 @@ device afterwards anyway.
 rather than a generic unknown setting error, if you try to set the animation
 device at runtime.
 
+.. _kernel-compilation:
+
+Kernel Compilation
+==================
+
+The renderer runs on compiled kernels, and each is compiled the first time a
+render needs it. Which kernels a render needs depends on what is in the scene --
+2-D shapes, lit 3-D solids, shadows, glass -- so the first render on a machine,
+the first after an update, and the first with a new combination of features
+each compile something, which takes from under a minute to over ten on a
+CPU-only machine or an older GPU. Compiled kernels are cached, so every later
+render starts in seconds. While a render compiles, it prints each kernel as it
+finishes, and a line every 20 seconds for one that is still going.
+
+Kernels compile one after another inside a render, because each needs the
+data the previous one produced. Compiling only needs to know *which* kernels,
+though, and that is what Algan does in parallel:
+
+* **``algan warmup``** compiles the common set -- plus every kernel your own
+  renders have used before -- up front, one per worker process, then renders a
+  small scene of each kind to catch anything else. Run it once after installing
+  and after each update::
+
+      algan warmup              # everything, as many workers as fit
+      algan warmup --list       # the scene kinds it covers
+      algan warmup -j 2 --variants 2d,3d
+
+* **Automatically.** Algan records which kernels your renders use. When some of
+  them are missing from the cache -- after an update, typically -- a script
+  starts compiling them in background worker processes the moment it imports
+  Algan, while it is still building its scene, and the render daemon does the
+  same as it starts. A render that reaches a kernel a worker is still compiling
+  waits for it rather than compiling it a second time.
+
+Each worker holds about 1.5 GB of memory while it compiles (and, on CUDA, a
+little over half a gigabyte of video memory), so the default number is one fewer
+than your CPUs, reduced to what fits in the free memory.
+``ALGAN_PRECOMPILE_JOBS`` sets the number, and ``ALGAN_PRECOMPILE_JOBS=0`` turns
+background compilation off. Kernels that use your own ``@ti.func`` shader stages
+are always compiled at first use: only kernels built entirely from Algan's own
+code can be described to another process.
+
+None of this changes what a render draws. A kernel is only ever used when it
+matches exactly what the render asked for; anything a worker compiled that the
+render does not need is simply never used.
+
 Caching
 =======
 
 Algan caches aggressively. Everything lives under ``~/.algan/cache``:
 
-* **Compiled Taichi kernels.** Cold compilation takes minutes; after that it is
-  instant. Version-keyed and never invalidated by scene content.
+* **Compiled Taichi kernels.** Cold compilation takes minutes (see
+  :ref:`kernel-compilation`); after that it is instant. Version-keyed and never
+  invalidated by scene content.
 * **LaTeX and font glyph geometry.** Only the first render of a given string pays the
   LaTeX cost.
 * **Surface tessellations** and **audio**.

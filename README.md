@@ -40,6 +40,7 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 
 ```bash
 pip install algan
+algan warmup    # optional: compile the render kernels now, in parallel, instead of during your first render
 ```
 
 For installing optional extra features (GPU acceleration, LaTeX for formulas, speech), see the [Installation Guide](https://algorithmicsimplicity.github.io/algan/installation.html).

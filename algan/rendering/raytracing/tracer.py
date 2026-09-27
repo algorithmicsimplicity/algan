@@ -34,7 +34,6 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
-from functools import wraps
 from typing import Literal
 
 import torch
@@ -75,9 +74,6 @@ from algan.rendering.raytracing.truncation import (
     restore_truncations,
     snapshot_path_samples,
     snapshot_truncations,
-)
-from algan.rendering.taichi_runtime import (
-    _set_compile_notice_callback,
 )
 from algan.settings import SETTINGS
 
@@ -906,35 +902,6 @@ class _ArenaRayCompactor:
         return self.current[:size]
 
 
-_kernel_compile_notice_shown = False
-
-
-def _show_kernel_compile_notice():
-    global _kernel_compile_notice_shown
-    if _kernel_compile_notice_shown:
-        return
-    _kernel_compile_notice_shown = True
-    logger.info(
-        "Preparing render kernels. If this is the first render on this machine"
-        " (or after an update), compiling the GPU kernels can take several"
-        " minutes. Compiled kernels are cached, so subsequent renders start"
-        " immediately."
-    )
-
-
-def _observe_render_kernel_compiles(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        if not _kernel_compile_notice_shown:
-            _set_compile_notice_callback(_show_kernel_compile_notice)
-        try:
-            return function(*args, **kwargs)
-        finally:
-            _set_compile_notice_callback(None)
-
-    return wrapped
-
-
 def _append_env_texture(textures, env, intensity, device):
     """Append an equirect environment map to the shared flat texel buffer.
 
@@ -1209,7 +1176,6 @@ def _build_raster_tables(
     return tri_screen, tri_bounds, bez_bounds
 
 
-@_observe_render_kernel_compiles
 def render_batch_raytraced(
     primitives,
     scene,

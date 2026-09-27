@@ -44,6 +44,13 @@ from algan.scene_manager import SceneManager
 # and ``setdefault`` here leaves a deliberate ``QD_KERNEL_COVERAGE=1`` alone.
 os.environ.setdefault("QD_KERNEL_COVERAGE", "0")
 
+# No background precompile pool under the test runner (see
+# algan/rendering/kernel_precompile.py). A pool spawned by a render test would
+# compete with the suite for cores and memory and make its timings depend on
+# what the kernel cache happened to hold; the tests of the pool itself turn it
+# back on in the child processes they start.
+os.environ.setdefault("ALGAN_PRECOMPILE_JOBS", "0")
+
 # The render scenes name this family explicitly instead of taking Pango's
 # default, because ``Text`` resolves ``font=""`` through fontconfig and the
 # glyph advances then change with whatever the machine happens to have

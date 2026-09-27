@@ -405,6 +405,15 @@ If there is now a video at ``algan_outputs/example.mp4`` beside the script,
 your installation is complete! Continue on to :doc:`new_user_tutorials/getting_started`
 to learn how to use Algan.
 
+.. note::
+
+   The first render on a machine compiles Algan's render kernels, which can
+   take several minutes -- over ten on a CPU-only machine or an older GPU. The
+   render prints each kernel as it compiles, and compiled kernels are cached,
+   so later renders start in seconds. To pay that cost up front, spread across
+   all your cores, run ``algan warmup`` once after installing and after each
+   update. See :ref:`kernel-compilation`.
+
 Optional Typst typesetting
 ==========================
 
