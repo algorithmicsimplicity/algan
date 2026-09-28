@@ -860,16 +860,22 @@ class _SourceMemo:
         module_code = self._module_code(state, path)
         if module_code is None:
             return None
-        wanted = (code.co_qualname, code.co_firstlineno)
+        wanted = (_code_name(code), code.co_firstlineno)
+        found = None
         pending = [module_code]
         while pending:
             candidate = pending.pop()
-            if (candidate.co_qualname, candidate.co_firstlineno) == wanted:
-                return _code_chains(candidate)
+            if (_code_name(candidate), candidate.co_firstlineno) == wanted:
+                if found is not None:
+                    # Two code objects share the memo key (two lambdas on one
+                    # line, or same-named nested functions where 3.10 has no
+                    # `co_qualname`): neither answer may be stored under it.
+                    return None
+                found = candidate
             pending.extend(
                 c for c in candidate.co_consts if isinstance(c, types.CodeType)
             )
-        return None
+        return None if found is None else _code_chains(found)
 
 
 _MEMO = _SourceMemo()
@@ -886,6 +892,11 @@ def flush_source_memo():
         return _MEMO.flush()
     except Exception:  # noqa: BLE001 -- housekeeping must never fail a render
         return False
+
+
+def _code_name(code):
+    """The name a code object is memoized under: ``co_qualname``, or ``co_name`` before 3.11."""
+    return getattr(code, "co_qualname", code.co_name)
 
 
 def _code_path(code):
@@ -916,7 +927,7 @@ def _function_source_hash(function):
     memo_key = None
     if _MEMO_ACTIVE:
         memo_key, value = _MEMO.lookup(
-            "src", _code_path(code), code.co_firstlineno, code.co_qualname
+            "src", _code_path(code), code.co_firstlineno, _code_name(code)
         )
         if value is not None:
             cached = (value[0], value[1], value[2])
@@ -959,7 +970,7 @@ def _kernel_fragment(function, function_hasher, hash_iterable_strings):
     memo_key = None
     if _MEMO_ACTIVE:
         memo_key, value = _MEMO.lookup(
-            "kernel", _code_path(code), code.co_firstlineno, code.co_qualname
+            "kernel", _code_path(code), code.co_firstlineno, _code_name(code)
         )
         if value is not None:
             return value
@@ -1021,7 +1032,7 @@ def _function_chains(function):
     if cached is not None or not _MEMO_ACTIVE:
         return _code_chains(code)
     memo_key, value = _MEMO.lookup(
-        "chains", _code_path(code), code.co_firstlineno, code.co_qualname
+        "chains", _code_path(code), code.co_firstlineno, _code_name(code)
     )
     if value is not None:
         cached = tuple((kind, root, tuple(attrs)) for kind, root, attrs in value)

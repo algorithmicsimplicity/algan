@@ -53,6 +53,18 @@ def _bits(tensor):
     return tensor.contiguous().view(torch.int32)
 
 
+def _bits_up_to_nan(tensor):
+    """``_bits`` with every NaN replaced by one canonical NaN.
+
+    IEEE 754 leaves the sign and payload of an operation's NaN result
+    unspecified, and they do differ by instruction sequence: on arm64
+    ``torch.linalg.cross`` returns a NaN with the sign bit set where the
+    elementwise form returns a positive one. Which NaN is not a value the
+    renderer can observe; where the NaNs are, and every other bit, still are.
+    """
+    return _bits(torch.where(tensor.isnan(), math.nan, tensor))
+
+
 @pytest.mark.parametrize("grid", GRIDS)
 def test_elementwise_cross_is_bit_identical(grid):
     sides = [
@@ -74,8 +86,8 @@ def test_elementwise_cross_keeps_special_values():
         4, 1
     )
     assert torch.equal(
-        _bits(surface_module._elementwise_cross(a, b)),
-        _bits(torch.linalg.cross(a, b, dim=-1)),
+        _bits_up_to_nan(surface_module._elementwise_cross(a, b)),
+        _bits_up_to_nan(torch.linalg.cross(a, b, dim=-1)),
     )
 
 

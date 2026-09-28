@@ -14,7 +14,10 @@ from algan.rendering.raytracing.primitives import (
     LogicalPNTrianglePrimitive,
     _pn_criterion_inputs,
 )
-from algan.rendering.taichi_runtime import ensure_taichi_for_render
+from algan.rendering.taichi_runtime import (
+    ensure_taichi_for_render,
+    taichi_arch_is_cpu,
+)
 from algan.settings import SETTINGS
 from algan.settings._startup import render_device
 
@@ -78,6 +81,11 @@ def test_distant_camera_patches_converge_without_hitting_the_safety_cap(kernel):
     device = render_device() if kernel else torch.device("cpu")
     if kernel:
         ensure_taichi_for_render()
+        # The same arrangements ``pn_criterion_kernel_active`` accepts: the
+        # arch is the CPU, or projection runs on a CUDA render device. An MPS
+        # render device is neither, so the renderer never runs the kernels.
+        if not (taichi_arch_is_cpu() or device.type == "cuda"):
+            pytest.skip(f"the PN criterion kernels do not run on {device}")
     data, cam, sign, height = _capture(device)
     inputs = _pn_criterion_inputs(
         data["control_points"], data["edge_controls"], *cam, sign, data["slack"]

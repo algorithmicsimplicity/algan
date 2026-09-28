@@ -59,12 +59,23 @@ def test_packed_order_declines_off_gate():
 
 
 def _kernel_device():
-    """The device whose tensors the live Taichi arch launches on in place."""
+    """The device whose tensors the live Taichi arch launches on in place.
+
+    Skips on any other arch: the counting sort is gated to CUDA in the
+    renderer and reachable on the CPU arch only by forcing ``devices``, and
+    with Metal live (the MPS arm) neither a host nor a CUDA tensor launches
+    in place, so ``_binned_fragment_order`` declines before running anything.
+    """
     from algan.rendering.taichi_runtime import _live_arch, init_taichi
     from algan.taichi_compat import ti
 
     init_taichi()
-    return "cuda" if _live_arch() == ti.cuda else "cpu"
+    arch = _live_arch()
+    if arch == ti.cuda:
+        return "cuda"
+    if arch == ti.cpu:
+        return "cpu"
+    pytest.skip(f"the counting sort runs on the CPU or CUDA arch, not {arch}")
 
 
 @pytest.mark.parametrize(
