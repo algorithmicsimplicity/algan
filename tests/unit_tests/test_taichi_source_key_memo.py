@@ -89,9 +89,11 @@ def test_an_entry_is_stored_and_served_for_a_file_that_matches(tmp_path, memo):
     served = sk._SourceMemo()
     served.begin_key()
     code = module.reader.__code__
-    _, value = served.lookup("src", str(path), code.co_firstlineno, code.co_qualname)
+    _, value = served.lookup("src", str(path), code.co_firstlineno, sk._code_name(code))
     assert tuple(value) == computed
-    _, value = served.lookup("chains", str(path), code.co_firstlineno, code.co_qualname)
+    _, value = served.lookup(
+        "chains", str(path), code.co_firstlineno, sk._code_name(code)
+    )
     assert tuple((k, r, tuple(a)) for k, r, a in value) == chains
 
 
@@ -143,7 +145,7 @@ def test_entries_from_another_setup_are_ignored(tmp_path, memo, monkeypatch):
     other = sk._SourceMemo()
     other.begin_key()
     code = module.reader.__code__
-    _, value = other.lookup("src", str(path), code.co_firstlineno, code.co_qualname)
+    _, value = other.lookup("src", str(path), code.co_firstlineno, sk._code_name(code))
     assert value is None
 
 

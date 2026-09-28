@@ -82,7 +82,11 @@ def _grouped_offsets(
             ),
         )
 
-    order = torch.argsort(keys)
+    # Stable, so the edges within a bin keep their ascending edge order. What
+    # the kernels compute can depend on the order they visit a bin's edges,
+    # and an unstable sort orders equal keys by the whole batch's layout: the
+    # same frame rendered in a different batch moved a corner pixel.
+    order = torch.argsort(keys, stable=True)
     counts = torch.bincount(keys, minlength=num_keys).reshape(
         num_groups, bins_per_group
     )
