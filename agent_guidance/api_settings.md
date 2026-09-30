@@ -11,14 +11,14 @@ keyword-only parameters; they are not runnable calls:
 ```text
 scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=False,
                  background=None, animate_fade_out=None, post_processes=None,
-                 codec=None, audio_codec=None, ffmpeg_params=None)
+                 codec=None, audio_codec=None, ffmpeg_params=None, passes=None)
 scene.save_frame(file_path=None, video_settings=None, at=None, *,
-                 overwrite=True, background=None, post_processes=None)
+                 overwrite=True, background=None, post_processes=None, passes=None)
 ```
 
 `Scene.save_video` carries the user-facing signature and documentation; `algan.utils.algan_utils._render_scene_to_file` carries the implementation. Keep them in sync — do not push parameters back into `*args, **kwargs`, because that is what made the signature invisible to `help()`, IDEs and autodoc.
 
-Both return a `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`). `save_frame` returns a list of them only when `at` is a sequence.
+Both return a `RenderResult` (`status`, `output_path`, `walltime_seconds`, `render_plan`, `passes`). A field added to it goes last, with a default: callers construct it positionally. `save_frame` returns a list of them only when `at` is a sequence.
 
 `render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`../algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
 

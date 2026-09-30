@@ -242,7 +242,8 @@ drops a feature a renderer cannot honour.
      - Yes (thin lens)
    * - Auxiliary passes (depth, normal, object ID)
      - Yes
-     - Yes (identical: always one pinhole sample per pixel centre)
+     - Yes (identical to the analytic route: one pinhole sample per pixel
+       centre)
    * - Denoising (``denoise``, default on)
      - Not applicable (noise-free)
      - Yes

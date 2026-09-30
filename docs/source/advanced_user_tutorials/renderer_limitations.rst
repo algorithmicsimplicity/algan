@@ -1215,8 +1215,11 @@ Auxiliary passes
 
 ``save_video(passes=...)`` and ``save_frame(passes=...)`` write depth, normal
 and object-ID passes for compositing (see :ref:`saving-render-passes`). They
-come from a pass of their own rather than from either renderer's shading, which
-is why the two renderers produce identical passes. What that pass does not do:
+come from a trace of their own rather than from either renderer's shading, which
+is why the deterministic renderer's default route and the path tracer produce
+identical passes. The supersampled fallback can differ at the edges of curved
+shapes, which it tessellates for its finer sample grid. What that trace does
+not do:
 
 * **One sample per pixel, at its centre, through a pinhole.** Edges are aliased
   rather than anti-aliased, and neither depth of field nor supersampling
@@ -1228,10 +1231,11 @@ is why the two renderers produce identical passes. What that pass does not do:
   as a surface.
 * **Only primary visibility.** Nothing a mirror reflects or a lens refracts
   reaches a pass: the mirror's own surface does.
-* **2-D outlines are coverage-dilated like the frame's.** A filled shape's
-  region extends about 0.6 pixels past its outline, as it does in the
-  rendered frame, so a matte hugs the drawn shape rather than the exact
-  geometric boundary.
+* **Coverage is geometric.** A pixel belongs to a filled 2-D shape when its
+  centre is inside the outline; the rendered frame's anti-aliasing allowances
+  (a filled region dilated about 0.6 pixels, strokes kept at least 0.3 pixels
+  wide) are not applied, so a hairline thinner than a pixel can fall between
+  pixel centres and miss the passes entirely.
 * **Area-light panels are not in them.** Under the path tracer a
   :class:`~.RectAreaLight` is visible geometry; the passes skip it, as the
   deterministic renderer has no such geometry to report.

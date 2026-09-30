@@ -161,3 +161,26 @@ a nonzero-RGB/zero-alpha glow patch over known backdrops before production deliv
 Do not claim an editor-specific setup was tested unless it actually was.
 
 Source basis: [background and compositing sources](api-sources.md#backgrounds-and-compositing).
+
+## Depth, normal and object-ID passes
+
+For compositing in an editor, `save_video` and `save_frame` accept
+`passes=("depth", "normal", "object_id")` (any subset):
+
+```python
+result = Scene.save_video('renders/shot.mp4', passes=('depth', 'object_id'))
+print(result.passes)  # {'depth': .../shot.depth, 'object_id': .../shot.object_id}
+```
+
+A video gets one lossless image sequence per pass in `<stem>.<pass>/`, one image
+per video frame; a still gets `<stem>.<pass>.<ext>`. Depth is 32-bit float
+OpenEXR (planar camera depth in world units, background `1e10`), normals are
+16-bit PNG (camera space, `rgb = n * 0.5 + 0.5`, background black), object IDs
+are 8-bit PNG with one flat colour per object (background black).
+`<stem>.passes.json` documents the encodings and maps every colour to its Mob.
+An object is the highest Mob above the geometry that is not a plain `Group`;
+set `mob.pass_index = n` (1..65535, before rendering) to choose an ID, which
+descendants inherit. Passes take one pinhole sample per pixel centre, the first
+surface at least 50% opaque: they are not anti-aliased and ignore depth of
+field. Verify a pass by decoding it (FFmpeg decodes EXR and 16-bit PNG; Pillow
+reads 16-bit RGB PNG as 8-bit), not by viewing it.

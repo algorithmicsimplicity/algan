@@ -334,8 +334,8 @@ What every pass samples, and what that implies:
   not anti-aliased -- object edges are stair-stepped, which is what an ID matte
   needs (each pixel belongs to exactly one object) -- and they ignore
   ``camera.aperture``, so the depth pass stays sharp for depth-of-field done in
-  the editor. Both renderers produce identical passes, whatever
-  ``samples_per_pixel`` and ``supersampling`` are.
+  the editor. The default renderer and the path tracer produce identical
+  passes, whatever ``samples_per_pixel`` is.
 * **The first surface at least half opaque.** A surface below 50% opacity is
   looked through, like Blender's pass alpha threshold. Opacity is coverage, not
   transparency: a glass sphere is fully opaque here and is what the passes
