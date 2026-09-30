@@ -484,7 +484,10 @@ class Mob(
         not an animatable one, and the render reads its final value for every
         frame, including the frames a ``become()`` renders through internal
         stand-ins. Applies to this Mob and to every descendant that does not
-        set its own value.
+        set its own value. Through a ``become()`` the value stays with the
+        object: whatever takes this Mob's place is written with it unless a
+        part nearer the geometry sets its own, so the Mob ``become()`` returns
+        can read back a ``pass_index`` it received this way.
 
         Raises
         ------

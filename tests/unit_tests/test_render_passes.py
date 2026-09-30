@@ -568,6 +568,135 @@ def test_children_keep_their_ids_across_a_hierarchy_become(fresh_scene, tmp_path
         assert not lefts & rights, "two children must not collapse into one id"
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "group_to_member",
+        "group_to_member_tagged",
+        "group_and_member_tagged",
+        "leaf_kept_in_group",
+        "nested_group_tag",
+        "text_in_group_tag",
+        "piecewise_dissolve",
+        "piecewise_dissolve_tagged",
+    ],
+)
+def test_become_hands_structure_ids_to_what_replaces_it(fresh_scene, tmp_path, case):
+    """What a hierarchy ``become`` retires besides its primitives -- the root,
+    an inner Group, a Text inside a Group -- hands its ID and ``pass_index``
+    on to what took its place, and to nothing else: a Group that becomes one
+    of its members does not fold the other member into it, a member's own tag
+    outranks its group's, a leaf kept inside its result stays itself, and a
+    piecewise dissolve pairs its parts. Left half: the object on the left;
+    right half: the one on the right.
+    """
+    video = VIDEO.set(resolution=(64, 32), frames_per_second=4)
+    w, h = video.resolution
+
+    def circle(x, radius=0.5):
+        return Circle(radius=radius, add_to_scene=False).move_to(RIGHT * x)
+
+    with Scene(video_settings=video) as scene:
+        with Off():
+            a = Square(size=1.0).move_to(LEFT * 2)
+            b = Square(size=1.0).move_to(RIGHT * 2)
+        if case.startswith("group_"):
+            with Off():
+                group = Group(a, b).spawn()
+            if case != "group_to_member":
+                a.pass_index = 3
+            if case == "group_and_member_tagged":
+                group.pass_index = 5
+            group.wait(1)
+            result = group.become(circle(-2, 0.6))
+            assert result is a
+            assert a.pass_index == (None if case == "group_to_member" else 3)
+        elif case == "leaf_kept_in_group":
+            with Off():
+                leaf = Circle(radius=0.6).move_to(LEFT * 2).spawn()
+            leaf.wait(1)
+            result = leaf.become(
+                Group(
+                    circle(-2, 0.6),
+                    Square(size=1.0, add_to_scene=False).move_to(RIGHT * 2),
+                    add_to_scene=False,
+                )
+            )
+            assert result.children[0] is leaf
+            result.children[0].pass_index = 7
+            result.children[1].pass_index = 8
+        elif case == "nested_group_tag":
+            with Off():
+                near = Square(size=0.6).move_to(LEFT * 1.2)
+                far = Square(size=0.6).move_to(LEFT * 2.6)
+                inner = Group(far, near)
+                group = Group(inner, b).spawn()
+            inner.pass_index = 7
+            group.wait(1)
+            group.become(
+                Group(
+                    Group(circle(-2.6, 0.3), circle(-1.2, 0.3), add_to_scene=False),
+                    circle(2),
+                    add_to_scene=False,
+                )
+            )
+        elif case == "text_in_group_tag":
+            with Off():
+                text = Text("ab").scale(2).move_to(LEFT * 2)
+                group = Group(text, b).spawn()
+            text.pass_index = 6
+            group.wait(1)
+            group.become(
+                Group(
+                    Text("abc", add_to_scene=False).scale(2).move_to(LEFT * 2),
+                    circle(2),
+                    add_to_scene=False,
+                )
+            )
+        else:
+            with Off():
+                group = Group(a, b).spawn()
+            if case.endswith("tagged"):
+                a.pass_index = 1
+                b.pass_index = 2
+            group.wait(1)
+            group.become(
+                Group(circle(-2), circle(2), add_to_scene=False), strategy="dissolve"
+            )
+        scene.wait(1)
+        result = scene.save_video(tmp_path / "structure.mp4", passes="object_id")
+    from algan.rendering.pass_identity import AUTO_ID_BASE
+
+    halves = _ids_per_half(result, w, h)
+    lefts = set().union(*(left for left, _ in halves))
+    rights = set().union(*(right for _, right in halves))
+    seen = lefts | rights
+    first, last = halves[0], halves[-1]
+    if case.startswith("group_"):
+        # The surplus square shrinks toward the circle, into the left half, so
+        # the check is per object: two ids from the first frame to the last,
+        # the left square's the circle's throughout.
+        left_id = 3 if case != "group_to_member" else AUTO_ID_BASE + a.id
+        right_id = 5 if case == "group_and_member_tagged" else AUTO_ID_BASE + b.id
+        assert first == ({left_id}, {right_id}), halves
+        assert seen == {left_id, right_id}, halves
+        assert last[0] == {left_id}, halves
+    elif case == "leaf_kept_in_group":
+        assert first[0] == {7}, halves
+        assert last == ({7}, {8}), halves
+        assert seen == {7, 8}, halves
+    elif case == "nested_group_tag":
+        assert (lefts, rights) == ({7}, {AUTO_ID_BASE + b.id}), halves
+    elif case == "text_in_group_tag":
+        assert (lefts, rights) == ({6}, {AUTO_ID_BASE + b.id}), halves
+    elif case == "piecewise_dissolve_tagged":
+        assert (lefts, rights) == ({1}, {2}), halves
+    else:
+        # Untagged, each part keeps one id through the dissolve.
+        assert len(lefts) == len(rights) == 1, halves
+        assert not lefts & rights, halves
+
+
 def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
     with Scene(video_settings=VIDEO) as scene:
         with Off():
