@@ -721,6 +721,71 @@ def test_the_pair_grouping_survives_a_band_count_that_overflows_the_wide_key():
     assert torch.equal(got_band, want_band)
 
 
+def _lexsort_by_indexing(*keys):
+    """``device_sort.stable_lexsort``'s answer, composed without ``index_select``."""
+    order = torch.argsort(keys[-1], stable=True)
+    for key in reversed(keys[:-1]):
+        order = order[torch.argsort(key[order], stable=True)]
+    return order
+
+
+@pytest.mark.parametrize("sort_arm", ["torch", "device"])
+def test_the_pair_grouping_gathers_exactly_above_the_mps_ceiling(
+    computing_settings, monkeypatch, sort_arm
+):
+    """Every gather in the grouping's MPS arm survives MPS's integer rounding.
+
+    MPS's ``index_select`` returns an integer as ``float32(value)``, exact only
+    through 2**24 (``_MPS_EXACT_INT_BITS``). A shading class is documented as
+    ``[0, _SHADE_CLASS_BASE)`` with the base at 2**25, and a band id or a
+    fragment index in the sort order grows with the chunk, so all of them can
+    pass that ceiling -- and a rounded class or band merges groups that differ
+    only in their low bits, exactly the failure the grouping exists to prevent.
+
+    CPU gathers are exact, so this reproduces the measured defect by making
+    ``index_select`` round integers through a float32, and asks for the
+    wide-key answer anyway: that holds only if the arm gathers through
+    :func:`~algan.rendering.mps_compat.gather_exact`. Both sort arms, because
+    the torch fallback gathers the order and the band before the final two
+    gathers the device sort also reaches.
+    """
+    from algan.rendering.raytracing import device_sort
+
+    base = 1 << 25
+    g = torch.Generator().manual_seed(24)
+    n = 3000
+    ceiling = 1 << _MPS_EXACT_INT_BITS
+    band = torch.randint(-20, 20, (n,), generator=g, dtype=torch.int64) + ceiling
+    cls = torch.randint(-4, 5, (n,), generator=g, dtype=torch.int64) + ceiling
+    want_n, want_inverse, want_band = _wide_key_reference(band, cls, base)
+
+    exact = torch.Tensor.index_select
+
+    def rounding_index_select(self, dim, index):
+        out = exact(self, dim, index)
+        if out.dtype in (torch.int32, torch.int64):
+            out = out.to(torch.float32).to(out.dtype)
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "index_select", rounding_index_select)
+    monkeypatch.setattr(
+        device_sort,
+        "stable_lexsort",
+        _lexsort_by_indexing if sort_arm == "device" else lambda *keys: None,
+    )
+    probe = torch.arange(n)
+    assert not torch.equal(cls.index_select(0, probe), cls), (
+        "the simulated MPS rounding is not in effect, so this test proves nothing"
+    )
+
+    computing_settings.set(mps_friendly=True)
+    got_n, got_inverse, got_band = band_class_groups(band, cls, base)
+
+    assert got_n == want_n
+    assert torch.equal(got_inverse, want_inverse)
+    assert torch.equal(got_band, want_band)
+
+
 # ------------------------------------------------- the narrowed kernel arms
 
 
