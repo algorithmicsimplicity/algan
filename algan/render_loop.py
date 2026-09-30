@@ -1789,8 +1789,13 @@ class RenderLoopMixin:
         transparent_background=False,
         background=None,
         render_state=None,
+        aux_sink=None,
     ):
-        """Render one prepared primitive batch for a frame interval."""
+        """Render one prepared primitive batch for a frame interval.
+
+        With ``aux_sink`` the renderer also traces the aux passes, and each
+        chunk's passes go to ``aux_sink`` just before its frames are yielded.
+        """
         with torch.no_grad():
             camera = self.camera
             if render_state is None:
@@ -2032,7 +2037,10 @@ class RenderLoopMixin:
                 self.memory.max_pointer = chunk_base
                 self.memory.last_launch_frames = None
                 self.memory.last_chunk_capacity_limited = False
-                yield primitive_batch[0].render(
+                if aux_sink is not None:
+                    # Never hand on a stale batch's passes.
+                    self.__dict__.pop("_pending_aux_passes", None)
+                frames = primitive_batch[0].render(
                     primitive_batch,
                     self,
                     save_image,
@@ -2049,7 +2057,25 @@ class RenderLoopMixin:
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
+                    **({"aux_passes": True} if aux_sink is not None else {}),
                 )
+                if aux_sink is not None:
+                    # The renderer's side channel (render_batch_raytraced);
+                    # the frames themselves stay a plain tensor.
+                    aux = self.__dict__.pop("_pending_aux_passes", None)
+                    if aux is None:
+                        raise RuntimeError(
+                            "aux passes were requested but the render kernel "
+                            "produced none"
+                        )
+                    if int(aux["depth"].shape[0]) != len(frames):
+                        raise RuntimeError(
+                            f"the render kernel produced aux passes for "
+                            f"{int(aux['depth'].shape[0])} frames alongside "
+                            f"{len(frames)} rendered frames"
+                        )
+                    aux_sink(aux)
+                yield frames
                 # Control is back, so the caller has taken every frame up to
                 # ``new_ind``: those are final and a later chunk's failure
                 # must not re-render them.
@@ -2106,6 +2132,7 @@ class RenderLoopMixin:
         transparent_background=False,
         background=None,
         frame_indices=None,
+        aux_sink=None,
     ):
         """Yield background-only frame batches for ``[start_ind, end_ind)``.
 
@@ -2115,7 +2142,8 @@ class RenderLoopMixin:
         finalization -- background prefill into the render arena followed by
         the standard post-processing chain -- with the ray tracer itself
         skipped, so these frames match what the tracer produces when nothing
-        is visible.
+        is visible. With ``aux_sink``, each batch's aux passes (all misses:
+        nothing is there to record) go to it just before the batch is yielded.
         """
         from algan.rendering.post_processing.post_process import (
             post_process_frames,
@@ -2229,6 +2257,16 @@ class RenderLoopMixin:
                     signature, duration, max(0, self.memory.max_pointer - chunk_base)
                 )
             self.memory.set_pointers(original_pointers)
+            if aux_sink is not None:
+                from algan.rendering.raytracing.aux_passes import empty_aux_passes
+
+                aux_sink(
+                    empty_aux_passes(
+                        len(frames),
+                        self.num_pixels_screen_height,
+                        self.num_pixels_screen_width,
+                    )
+                )
             yield frames
             current_ind = new_ind
 
@@ -3493,6 +3531,8 @@ class RenderLoopMixin:
         *,
         frame_indices=None,
         _post_process_per_frame=False,
+        aux_passes: bool = False,
+        aux_sink=None,
     ):
         """Yield frames and always release per-render state on exit.
 
@@ -3501,10 +3541,24 @@ class RenderLoopMixin:
         frames are materialized and rendered; gaps cost no frame storage.
         Without it, start/end retain their ordinary timeline-index meaning.
 
+        With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
+        called exactly once per yielded batch, immediately before the batch is
+        yielded, with that batch's compositing passes: a dict of CPU tensors
+        (``"depth"``, ``"normal"``, ``"mob_id"``) whose leading dimension is
+        the batch's frame count (``algan.rendering.raytracing.aux_passes``
+        describes them). Background-only batches deliver passes that record
+        nothing; a live camera view's capture passes compute none. Off (the
+        default), nothing extra is allocated, traced or called.
+
         The wrapper is deliberately outside the implementation generator so
         its ``finally`` also runs for OOMs, worker failures, and callers that
         close the generator before consuming every frame.
         """
+        if aux_passes and not callable(aux_sink):
+            raise TypeError("aux_passes=True needs a callable aux_sink")
+        # Forwarded only when requested, so the implementation generators are
+        # called exactly as before when the passes are off.
+        aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
         if frame_indices is not None:
             import operator
 
@@ -3572,6 +3626,7 @@ class RenderLoopMixin:
                         post_processes=post_processes,
                         manual_memory=manual_memory,
                         frame_indices=frame_indices,
+                        **aux_kwargs,
                     )
                     return
                 with scene_excluded_from_gc():
@@ -3586,6 +3641,7 @@ class RenderLoopMixin:
                             if frame_indices is not None
                             else {}
                         ),
+                        **aux_kwargs,
                     )
             finally:
                 # _get_frames_impl has drained its prep worker before returning
@@ -3613,8 +3669,22 @@ class RenderLoopMixin:
         manual_memory=True,
         *,
         frame_indices=None,
+        aux_passes=False,
+        aux_sink=None,
     ):
+        # The aux passes' sink, or None when they are off (see get_frames).
+        aux_sink = aux_sink if aux_passes else None
         if end_time_ind <= start_time_ind:
+            if aux_sink is not None:
+                from algan.rendering.raytracing.aux_passes import empty_aux_passes
+
+                aux_sink(
+                    empty_aux_passes(
+                        0,
+                        self.num_pixels_screen_height,
+                        self.num_pixels_screen_width,
+                    )
+                )
             yield []
             return
 
@@ -4163,6 +4233,11 @@ class RenderLoopMixin:
                                 transparent_background,
                                 background,
                                 render_state=render_state,
+                                **(
+                                    {"aux_sink": aux_sink}
+                                    if aux_sink is not None
+                                    else {}
+                                ),
                             ):
                                 produced_output = True
                                 yield frame_batch
@@ -4315,6 +4390,7 @@ class RenderLoopMixin:
                                 if frame_indices is not None
                                 else {}
                             ),
+                            **({"aux_sink": aux_sink} if aux_sink is not None else {}),
                         ):
                             yield frame_batch
 

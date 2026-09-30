@@ -109,7 +109,12 @@ def _render_with_camera_views(
     post_processes,
     manual_memory,
     frame_indices=None,
+    aux_passes=False,
+    aux_sink=None,
 ):
+    # Aux passes belong to the main camera's frames only: the capture passes
+    # below are textures, and never trace them.
+    aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
     excluded_displays = {
         id(mob)
         for actor in scene.actors
@@ -177,6 +182,7 @@ def _render_with_camera_views(
                 post_processes=post_processes,
                 manual_memory=manual_memory,
                 frame_indices=indices,
+                **aux_kwargs,
             )
         ) as stream:
             for frames in stream:
