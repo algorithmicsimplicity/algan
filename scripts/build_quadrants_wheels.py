@@ -20,7 +20,7 @@ That builds all four platforms for the default Python (3.11), which is four
 wheels' worth of runner time and about 20-40 minutes of waiting. Narrower::
 
     uv run python scripts/build_quadrants_wheels.py --platforms macos
-    uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13
+    uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13,3.14
 
 Already have a run? Skip the dispatch and just fetch it::
 
@@ -34,7 +34,7 @@ And to put the wheel for *this* machine into the current environment::
 Where the wheels land
 ---------------------
 ``quadrants_wheels/`` in the repository root, which is **gitignored** except
-for its manifest. The wheels are 20-30 MiB each and a full matrix is sixteen of
+for its manifest. The wheels are 20-30 MiB each and a full matrix is twenty of
 them; this repository already refuses to carry binaries that size in git
 (``tests/README.md``, "Where the heavy baselines live" -- the render baselines
 are release assets for the same reason). What *is* committed is

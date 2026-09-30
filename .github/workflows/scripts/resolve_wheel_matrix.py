@@ -64,7 +64,7 @@ import sys
 # The tag stamped is the **container's policy**, not that measurement, and the
 # gap is deliberate: auditwheel said 2.27 and the wheel is stamped 2.28. A
 # release matrix needs a tag that is the same on every build --
-# `validate_quadrants_release.py` files sixteen wheels by it and
+# `validate_quadrants_release.py` files every release wheel by it and
 # `build_quadrants_wheels.py --install` matches on it -- whereas a measured
 # tag moves whenever a dependency reaches for a newer symbol. The cost is
 # glibc 2.27 exactly (Ubuntu 18.04, EOL); the gate still fails the build if
@@ -145,7 +145,7 @@ PLATFORMS: dict[str, dict[str, str]] = {
     # aarch64 needs nothing new from Quadrants itself: `qd_build/llvm.py`
     # already matches `("Linux", "aarch64")` and downloads
     # `taichi-llvm-22.1.0-linux-aarch64.zip`, `build_wheel` already has an
-    # aarch64 arm, and upstream ships aarch64 wheels for all four Pythons -- so
+    # aarch64 arm, and upstream ships aarch64 wheels for cp310-cp313 -- so
     # this is a configuration upstream builds too, not new ground. What it does
     # need is its own container, for the reason above.
     #
@@ -182,10 +182,14 @@ PLATFORMS: dict[str, dict[str, str]] = {
     },
 }
 
-# What both Algan and Quadrants declare in `requires-python` (>=3.10,<3.14).
-# A wheel is per-interpreter -- it carries a compiled extension module -- so
-# this is a real matrix dimension, not a formality.
-PYTHONS: tuple[str, ...] = ("3.10", "3.11", "3.12", "3.13")
+# What the *patched* Quadrants declares in `requires-python` (>=3.10,<3.15).
+# Upstream v1.3.0 stops at <3.14 and publishes no cp314 wheel; 3.14 is this
+# fork's addition, and `quadrants_patches/0009-python-3.14.patch` is what makes
+# it true rather than just a wider version range -- see its section in
+# `quadrants_patches/README.md`. A wheel is per-interpreter -- it carries a
+# compiled extension module -- so this is a real matrix dimension, not a
+# formality: a release is len(PLATFORMS) x len(PYTHONS) wheels.
+PYTHONS: tuple[str, ...] = ("3.10", "3.11", "3.12", "3.13", "3.14")
 
 DEFAULTS = {
     # Every platform, because the whole point of the fork is that each one
@@ -194,8 +198,9 @@ DEFAULTS = {
     "platforms": "linux,linux_arm64,macos,windows",
     # One Python by default. The build is ~15-20 minutes per wheel and cp311 is
     # what every other wheel in this repo is built for (`taichi_build.yaml`,
-    # the `run_on_mac.yaml` arms). Widen it deliberately -- "3.10,3.11,3.12,3.13"
-    # is a release matrix, sixteen builds, not an iteration.
+    # the `run_on_mac.yaml` arms). Widen it deliberately --
+    # "3.10,3.11,3.12,3.13,3.14" is a release matrix, twenty builds, not an
+    # iteration.
     "python_versions": "3.11",
 }
 
@@ -229,8 +234,8 @@ def resolve(env: dict[str, str]) -> dict[str, str]:
     bad = [v for v in pythons if v not in PYTHONS]
     if bad:
         raise SystemExit(
-            f"unsupported Python version(s) {bad}; Quadrants and Algan both "
-            f"declare >=3.10,<3.14, so: {list(PYTHONS)}"
+            f"unsupported Python version(s) {bad}; the patched Quadrants "
+            f"declares >=3.10,<3.15, so: {list(PYTHONS)}"
         )
 
     # Deduplicate while keeping the order asked for, so a repeated entry cannot

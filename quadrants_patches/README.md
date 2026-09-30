@@ -1,6 +1,6 @@
 # The Quadrants patches Algan carries
 
-Seven patches against **Quadrants v1.3.0** (`ab9a58ab5`, dated 2026-08-11 — the pinned upstream base, not a claim
+Nine patches against **Quadrants v1.3.0** (`ab9a58ab5`, dated 2026-08-11 — the pinned upstream base, not a claim
 about the latest upstream release),
 applied **in numeric order** onto a pristine checkout of that tag:
 
@@ -34,6 +34,8 @@ touching a patch.
 | `0005-cuda-max-reg.patch` | `qd.loop_config(max_reg=N)` carried through the frontend IR, `lower_ast`, `offload` and the CUDA codegen to a **per-kernel** PTX `.maxnreg`, and `qd.init(gpu_max_reg=N)` made real by finally passing it to `add_module` (`CU_JIT_MAX_REGISTERS` at module load). Not a port — new, and PLAN row 14. | none |
 | `0006-cuda-readonly-ndarray-ldg.patch` | A `readonly_ndarray_ldg` compile-config flag under which loads from ndarray arguments the offloaded task never writes go through `ld.global.nc`, the read-only-cache path read-only SNodes already take. Not a port — new, and PLAN row 15. | none |
 | `0007-cuda-fast-expf.patch` | Under `fast_math`, f32 `qd.exp` becomes `__nv_fast_expf` instead of `__nv_expf` — the branch shape `log`, `sin` and `cos` already have. Not a port — new, and PLAN row 18. | none |
+| `0008-aarch64-shared-libgcc.patch` | On aarch64 only, links the extension against the shared libgcc runtime instead of AlmaLinux 9's static one, whose `_dl_find_object` backport carries a `GLIBC_2.35` symbol version — so a wheel built on glibc 2.34 keeps that floor. `libstdc++` stays static. | none |
+| `0009-python-3.14.patch` | **Python 3.14.** Lifts `requires-python` to `<3.15` and drops the four reads of `ast.Str`, which 3.14 removed from the standard library — without that, a kernel with a docstring or an `assert` message fails to compile. Upstream v1.3.0 (and upstream `main` as of 2026-09-28) stops at 3.13. See "0009" below. | none |
 
 0005-0007 are CUDA codegen and were written in one sitting, after 0004 and
 **against a tree that did not have 0003 applied** (their `codegen_cuda.cpp` and
@@ -49,7 +51,7 @@ small, concrete form of "the fork's patch set shrinks on the newer base".
 
 ## Applying them
 
-**Numeric order, all seven, strict `git apply`** — no fuzz, no 3-way. That is
+**Numeric order, all of them, strict `git apply`** — no fuzz, no 3-way. That is
 what `scripts/gate/quadrants_linux_build.sh`,
 `scripts/gate/quadrants_macos_build.sh` and
 `.github/workflows/quadrants_build.yaml` all do: each globs
@@ -105,7 +107,7 @@ every wheel it produced into `quadrants_wheels/`. Narrower, when only one
 platform is in question, or wider, for a release:
 
     uv run python scripts/build_quadrants_wheels.py --platforms macos
-    uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13
+    uv run python scripts/build_quadrants_wheels.py --python 3.10,3.11,3.12,3.13,3.14
     uv run python scripts/build_quadrants_wheels.py --run-id <id> --install
 
 **All four platforms Algan supports** — `linux`, `linux_arm64`, `macos`,
@@ -890,6 +892,85 @@ because Algan already runs `fast_math=True`: expect a last-bit change in every
 kernel that calls f32 `exp`, and re-baseline `expected_outputs_cuda/`
 deliberately, after looking, when the first CUDA render on this wheel says so.
 
+## 0009 — Python 3.14
+
+**What it fixes.** Upstream v1.3.0 declares `requires-python = ">=3.10,<3.14"`
+and publishes cp310–cp313 only, and upstream `main` is no further along
+(`7e3b27b89`, 2026-09-28). The cap is not arbitrary: 3.14 removed `ast.Num`,
+`ast.Str`, `ast.Bytes`, `ast.NameConstant` and `ast.Ellipsis` (deprecated since
+3.8), and the frontend still names `ast.Str` at four sites. *Evaluating* the
+name raises, so on 3.14 an unpatched wheel does not miscompile a kernel that
+reaches one — it refuses it, as a `QuadrantsCompilationError` wrapping
+`AttributeError: module 'ast' has no attribute 'Str'`:
+
+| site | reached by |
+| --- | --- |
+| `ASTTransformer._is_string_mod_args` | every `assert cond, "..." % args` in a kernel — the `ast.Str` test comes before the `ast.Constant` one |
+| `ASTTransformer.build_Assert` | every `assert cond, msg` whose `msg` is not a plain constant, an f-string for one |
+| `FunctionDefTransformer._is_docstring` | every kernel using `qd.graph.do_while()` or a stream-parallel `with`, through their body validators — the tuple `(ast.Constant, ast.Str)` is built before `isinstance` runs |
+| `ASTTransformer.build_JoinedStr` | only an f-string part that is neither a `FormattedValue` nor a `Constant` — the error path, which raised `AttributeError` instead of its `QuadrantsSyntaxError` |
+
+**What it changes**, 3 files, +3/−8: `requires-python` to `<3.15` and a 3.14
+classifier in `pyproject.toml`; the three `ast.Str` branches deleted and the
+tuple narrowed to `ast.Constant`.
+
+**Why that is a no-op on 3.10–3.13.** Since 3.8 the parser emits `ast.Constant`
+for every literal, and `ast.Str` survived only as a deprecated alias whose
+`isinstance` meant "a `Constant` holding a `str`". Each deleted branch sits
+behind, or beside, an `ast.Constant` test that already accepts everything it
+could match, so none of them could be taken on any Python this wheel installs
+on. Nothing else needed changing: no C++, no build system. nanobind 2.13.0 —
+the newest under upstream's own `<2.14` cap — builds the extension *and* its
+stub on 3.14, and every runtime and `dev`-group dependency ships a cp314 wheel.
+Kernel annotations go through `inspect.signature(..., eval_str=True)`, which
+evaluates PEP 649's deferred annotations exactly as it evaluated eager ones.
+
+**What it does not do.** No free-threaded build: the matrix takes
+`/opt/python/cp314-cp314` and `actions/setup-python`'s default 3.14, both the
+GIL build, so there is no `cp314t` wheel. And `ast.Index` / `ast.ExtSlice` are
+still named (`build_Index`, `build_ExtSlice`): deprecated since 3.9 but present
+in 3.14, so they are 3.15's problem, not this patch's.
+
+**How it is gated.** `verify_python_314.py` beside this README compiles and
+launches one kernel per site on the CPU backend and exits nonzero if any fails.
+Every leg of `quadrants_build.yaml` runs it after installing its wheel, on
+every Python — it passes on 3.10–3.13 with or without the patch, so it costs
+nothing there and cannot be skipped by forgetting which Python a leg is on.
+
+**Verified — Linux x86-64 only, and not on the release runners (2026-09-30).**
+From a sandbox that cannot reach the prebuilt LLVM archive, so against
+apt.llvm.org's LLVM 22.1.8 and clang 22 rather than the pinned 22.1.0, and
+python-build-standalone's CPython 3.14.7 rather than a manylinux image's:
+
+* All nine patches apply strictly in order onto pristine `v1.3.0`, and 0009
+  also applies on its own. The build, with `QD_WITH_CUDA=ON`, produced a
+  21 MB `cp314-cp314` wheel with no C++ change.
+* `verify_python_314.py`: all four pass. With 0009's Python half reverted in
+  that same wheel, the first three fail with the `AttributeError` above and the
+  control passes — the measurement the table is from. On 3.11 against the
+  published `1.3.0.post2`, all four pass, as predicted.
+* Algan on that wheel, Python 3.14.7: `pytest -q --fast` — **645 passed**,
+  the pixel-compared fast render within tolerance of its committed baseline —
+  both in an ad-hoc environment and in one built by `uv sync --locked` from the
+  3.14 lock `PYPI.md`'s "Python 3.14" rehearses (torch 2.14.0, numpy 2.5.3,
+  the wheel rebranded to `algan-quadrants 1.3.0.post3`). Run twice there, it
+  went from 163 s cold to 83 s warm on a loaded box, so the kernel cache and
+  the warm-start glue work on 3.14 rather than being bypassed.
+* `scripts/rebrand_quadrants_wheel.py` accepts the cp314 wheel, and
+  `Requires-Python: <3.15,>=3.10` survives the rebrand.
+
+Algan's own kernels reach **none** of the four sites — they carry no `assert`
+message and no `graph.do_while` — so for Algan today the load-bearing half is
+the version range; the AST half is what makes the wheel a correct Quadrants for
+any kernel, including the first Algan kernel that adds an assert message.
+
+**Not yet verified:** the macOS, Windows and aarch64 builds on 3.14 (none of
+their toolchains is version-specific and all three use the same nanobind, but
+nothing has compiled them), and the CUDA arms on a cp314 wheel. The first
+`quadrants_build.yaml` run with `3.14` in `python_versions` settles the builds.
+That run also rebuilds the portable aarch64 LLVM once: its cache key hashes
+`resolve_wheel_matrix.py`, where 3.14 was added.
+
 ## Upstreaming
 
 0003 is written to be upstreamed rather than carried: minimal, no Algan-specific
@@ -908,3 +989,8 @@ changes compose, they do not fight.
 0002's `ContinueStmt` hunk is the next best candidate — it is a plain bug
 affecting any Metal or Vulkan user with a `continue` under a static gate. 0001
 is Algan-shaped and will likely stay a fork patch.
+
+0009 is the easiest of all to upstream, and the one whose absence upstream costs
+the most to carry: it deletes dead code and moves a version bound, and every
+Quadrants user on 3.14 needs it, not only Algan. Once upstream ships cp314
+wheels of its own, this fork's cp314 row stops being new ground.

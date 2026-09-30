@@ -1,0 +1,63 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 4fc37bd2a..4bf388b89 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -13,12 +13,13 @@ classifiers = [
+     "Programming Language :: Python :: 3.11",
+     "Programming Language :: Python :: 3.12",
+     "Programming Language :: Python :: 3.13",
++    "Programming Language :: Python :: 3.14",
+ ]
+ license = "Apache-2.0"
+ keywords = ["graphics", "simulation"]
+ dynamic = ["version"]
+ readme = "README.md"
+-requires-python = ">=3.10,<3.14"
++requires-python = ">=3.10,<3.15"
+ dependencies = [
+     "numpy>=1.26.0",
+     "colorama",
+diff --git a/python/quadrants/lang/ast/ast_transformer.py b/python/quadrants/lang/ast/ast_transformer.py
+index a4835e25e..43b514c1e 100644
+--- a/python/quadrants/lang/ast/ast_transformer.py
++++ b/python/quadrants/lang/ast/ast_transformer.py
+@@ -504,8 +504,6 @@ class ASTTransformer(Builder):
+                 args.append(build_stmt(ctx, sub_node))
+             elif isinstance(sub_node, ast.Constant):
+                 str_spec += sub_node.value
+-            elif isinstance(sub_node, ast.Str):
+-                str_spec += sub_node.s
+             else:
+                 raise QuadrantsSyntaxError("Invalid value for fstring.")
+ 
+@@ -1551,8 +1549,6 @@ class ASTTransformer(Builder):
+             return False
+         if not isinstance(msg.op, ast.Mod):
+             return False
+-        if isinstance(msg.left, ast.Str):
+-            return True
+         if isinstance(msg.left, ast.Constant) and isinstance(msg.left.value, str):
+             return True
+         return False
+@@ -1603,8 +1599,6 @@ class ASTTransformer(Builder):
+                 msg = build_stmt(ctx, node.msg)
+                 if isinstance(node.msg, ast.Constant):
+                     msg = str(msg)
+-                elif isinstance(node.msg, ast.Str):
+-                    pass
+                 elif isinstance(msg, collections.abc.Sequence) and len(msg) > 0 and msg[0] == "__qd_format__":
+                     msg, extra_args = ASTTransformer.qd_format_list_to_assert_msg(msg)
+                 else:
+diff --git a/python/quadrants/lang/ast/ast_transformers/function_def_transformer.py b/python/quadrants/lang/ast/ast_transformers/function_def_transformer.py
+index 3993b3716..821c0ffb8 100644
+--- a/python/quadrants/lang/ast/ast_transformers/function_def_transformer.py
++++ b/python/quadrants/lang/ast/ast_transformers/function_def_transformer.py
+@@ -712,7 +712,7 @@ class FunctionDefTransformer:
+ 
+     @staticmethod
+     def _is_docstring(stmt: ast.stmt, index: int) -> bool:
+-        return index == 0 and isinstance(stmt, ast.Expr) and isinstance(stmt.value, (ast.Constant, ast.Str))
++        return index == 0 and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+ 
+     @staticmethod
+     def _is_coverage_probe(stmt: ast.stmt) -> bool:
