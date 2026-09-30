@@ -216,8 +216,9 @@ class MobMaterialsMixin:
 
         Its texture maps are forwarded onto the geometry, which is what samples
         them: ``map``, ``normal_map``, ``roughness_map`` and ``metalness_map``
-        each take a file path or an ``[H, W, C]`` image and are sampled
-        bilinearly per fragment. That needs per-vertex UVs, so it reaches a
+        each take a file path or an ``[H, W, C]`` image and are sampled per
+        fragment (bilinearly, or through a mip chain when minified). That needs
+        per-vertex UVs, so it reaches a
         :class:`~algan.mobs.surfaces.surface.Surface` (a
         :class:`~algan.mobs.shapes_3d.Sphere`, :class:`~algan.mobs.shapes_3d.Cylinder`, :class:`~.ImageMob`, ...) or a
         :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` built with

@@ -379,6 +379,12 @@ geometric silhouettes*. Dropping to AA=1 therefore regresses:
     (`_sample_tex_vec5`), and a ray tracer has no screen-space derivatives, so
     a minified texture aliases. Ray differentials or a per-triangle LOD
     estimate would be a separate project.
+    **ADDRESSED later, outside this design** (2026-09, `texture_antialiasing`,
+    default on): UV maps carry a mip pyramid and every hit picks a level from
+    an isotropic pixel-cone footprint, grown along accumulated path length for
+    secondary rays -- no ray differentials. See `DESIGN_texture_antialiasing.md`
+    for what it does not cover (anisotropy, curved-mirror/refractive focusing,
+    environment maps).
   * **Reflections and refractions** — secondary rays remain one per pixel, so
     the *image inside* a mirror aliases even though the mirror's own outline
     does not. **CLOSED in §17**: a reflective or refractive hit now spawns
@@ -1197,7 +1203,9 @@ against ~40s for N=1. Time warm runs only.
     per shadow event in `raster_shadow_trace`) and is the next-most-visible
     item.
   * **Specular crawl and texture minification** — unchanged, and unaddressable by
-    ray count alone at reasonable cost.
+    ray count alone at reasonable cost. (Texture minification was later
+    addressed without extra rays by the UV mip chain in
+    `DESIGN_texture_antialiasing.md`; specular crawl is unaffected by it.)
   * **The classic wavefront primary path.** These jittered spawns live in
     `raster_first_shade`, so a batch that routes away from the raster front-end
     gets neither coverage nor this — the same §8.1 hole, unchanged.
