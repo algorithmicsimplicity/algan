@@ -975,12 +975,23 @@ message and no `graph.do_while` — so for Algan today the load-bearing half is
 the version range; the AST half is what makes the wheel a correct Quadrants for
 any kernel, including the first Algan kernel that adds an assert message.
 
-**Not yet verified:** the macOS, Windows and aarch64 builds on 3.14 (none of
-their toolchains is version-specific and all three use the same nanobind, but
-nothing has compiled them), and the CUDA arms on a cp314 wheel. The first
-`quadrants_build.yaml` run with `3.14` in `python_versions` settles the builds.
-That run also rebuilds the portable aarch64 LLVM once: its cache key hashes
-`resolve_wheel_matrix.py`, where 3.14 was added.
+**Then on the release runners** — `quadrants_build.yaml` run
+[`36667788543`](https://github.com/algorithmicsimplicity/algan/actions/runs/36667788543),
+2026-09-30, patched, `publish` off, `linux,macos,windows` × py3.14: all three
+legs green, each printing `0009 gate: all 4 passed on Python 3.14.7`. Linux
+built in the manylinux 2_28 container against the pinned LLVM 22.1.0 and was
+stamped `cp314-cp314-manylinux_2_28_x86_64` after `verify_wheel_tag.py`
+agreed, with 0004's IR arms and the 0005-0007 gates passing as on cp311;
+macOS produced `cp314-cp314-macosx_13_0_arm64`, Windows
+`cp314-cp314-win_amd64` (27 MiB).
+
+**Not yet verified:** the aarch64 leg on 3.14, and the CUDA arms on a cp314
+wheel. aarch64 was left out of that run on purpose: its portable LLVM's cache
+key hashes `resolve_wheel_matrix.py`, which adding 3.14 changed, so the next
+run that includes it rebuilds LLVM once (hours, not minutes) — and a cache
+made on a feature branch is not visible to the default branch the release is
+published from, so paying that here would have bought nothing for the
+release. The publish run pays it once and is the first aarch64 cp314 build.
 
 ## Upstreaming
 
