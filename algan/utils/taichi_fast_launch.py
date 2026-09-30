@@ -50,17 +50,24 @@ mirroring the compiler's own setter. Everything else falls back to the
 original path per call (keyword calls -- which on quadrants is also how
 ``qd_stream`` and checkpoint resumes arrive -- gradient-carrying /
 non-contiguous / foreign-device tensors, print-bearing kernels, active
-autodiff tapes, ``qd.Tensor`` wrappers, any ndarray argument that is not a
-torch tensor) or permanently per kernel (argpack / matrix / struct / texture
+autodiff tapes, ``qd.Tensor`` wrappers, unsupported external array types) or permanently per kernel (argpack / matrix / struct / texture
 / sparse / dataclass annotations, autodiff kernels, return values, graph and
 checkpoint kernels).
 
-**A non-torch ndarray argument always takes the original path.** That is what
-keeps quadrants' ``LaunchContextBufferCache`` and its Metal byte-offset logic
-in charge of ``Ndarray`` / ``ExternalMetalNdarray`` arguments, and it means
-the fast path disengages on MPS: a torch MPS tensor is a foreign-device tensor
-(the original path stages it through the host), and the zero-copy import
-(:mod:`algan.rendering.mps_zero_copy`) hands the kernel an ndarray.
+**Quadrants ndarrays, including imported Metal buffers, use bulk ndarray
+binding.** Their plan key reproduces the compiler's element type, rank,
+gradient, boundary and layout features and is distinct from a torch key.
+Every hit creates a fresh context and calls ``set_args_ndarray`` with the
+current arrays. The patched setter carries their current byte offsets and
+sizes; no buffer, shape, offset or scalar value is saved in a plan. The
+zero-copy wrapper stays outside this dispatcher and still owns storage
+lifetime and queue fences. Raw torch MPS tensors still take the original
+path, as do all non-torch arrays on the Taichi backend.
+
+``set_telemetry_enabled(True)`` enables per-kernel ``launch_report()`` outcomes:
+fast hit, Quadrants context-cache hit, recorded cold plan, fallback with a
+reason, or error. It observes actual cache returns, including nested launches
+on the batch-prep thread. Leave it off for timing measurements.
 
 Byte-identical by construction -- the same compiled kernel receives the same
 argument values; only redundant Python re-validation is skipped.
@@ -77,6 +84,7 @@ silent no-op reads exactly like a slow machine.
 from __future__ import annotations
 
 from algan.environment import env_flag
+from algan.utils import _launch_telemetry
 
 _APPLIED = False
 
@@ -87,6 +95,9 @@ _SKIPPED_REASON = None
 # Engagement telemetry: fast-path launches vs. launches that took the
 # original path (first launches, fallbacks). Read by the parity check so a
 # silently disengaged fast path can never produce a vacuous pass.
+# On Quadrants, "slow" counts *all* original-path dispatches, including
+# disabled/unsupported/error paths. These are dispatch counters, not a claim
+# about Quadrants cache misses. Opt-in launch_report() distinguishes outcomes.
 STATS = {"fast": 0, "slow": 0}
 
 # Runtime switch for in-process alternating A/B benchmarks (wall-clock
@@ -106,6 +117,16 @@ def set_enabled(enabled):
     """Toggle the fast path at runtime (see ``ENABLED``)."""
     global ENABLED
     ENABLED = bool(enabled)
+
+
+def set_telemetry_enabled(enabled=True):
+    """Enable per-kernel Quadrants accounting (off by default; change between jobs)."""
+    _launch_telemetry.set_enabled(enabled)
+
+
+def launch_report(*, reset=False):
+    """Snapshot launch outcomes/reasons, without retaining argument objects."""
+    return _launch_telemetry.report(reset=reset)
 
 
 def skipped_reason():
@@ -436,6 +457,7 @@ def _apply_quadrants(version):
         _kernel_mod = submodule("lang.kernel")
         _ndarray_type = submodule("types.ndarray_type")
         _enums = submodule("types.enums")
+        _ndarray_module = submodule("lang._ndarray")
     except Exception:
         return _skip("quadrants' launch internals are not where 1.3 keeps them")
     if version[:2] != (1, 3):
@@ -456,12 +478,15 @@ def _apply_quadrants(version):
         "AutodiffMode",
         "Arch",
         "KernelLaunchContext",
+        "LaunchContextBufferCache",
     )
     if (
         kernel_cls is None
         or any(not hasattr(_kernel_mod, name) for name in needed)
         or not hasattr(_ndarray_type, "NdarrayType")
         or not hasattr(_enums, "Layout")
+        or not hasattr(_ndarray_module, "Ndarray")
+        or not hasattr(_kernel_mod.KernelLaunchContext, "set_args_ndarray")
         or not hasattr(_kernel_mod.KernelLaunchContext, "set_args_int")
         or not hasattr(
             _kernel_mod.KernelLaunchContext, "set_arg_external_array_with_shape"
@@ -474,6 +499,8 @@ def _apply_quadrants(version):
     _impl = _kernel_mod.impl
     _template_t = _kernel_mod.template
     _ndarray_t = _ndarray_type.NdarrayType
+    _ndarray_base = _ndarray_module.Ndarray
+    _launch_telemetry.configure(_kernel_mod.LaunchContextBufferCache)
     _real_ids = _kernel_mod.primitive_types.real_type_ids
     _int_ids = _kernel_mod.primitive_types.integer_type_ids
     _type_ids = _kernel_mod.primitive_types.type_ids
@@ -542,66 +569,114 @@ def _apply_quadrants(version):
             t_kernel = self.materialized_kernels.get(ckey)
             compiled = self.compiled_kernel_data_by_key.get(ckey)
             if t_kernel is None or compiled is None or self.graph_do_while_levels:
-                return
+                return "plan_unavailable"
             fast["plans"][key] = (t_kernel, compiled)
-        except Exception:
+            return None
+        except Exception as exc:
             fast["meta"] = None  # permanently disable for this kernel
+            fast["reason"] = f"plan_record_failed:{type(exc).__name__}"
+            return fast["reason"]
+
+    def _slow_call(self, args, kwargs, reason, fast=None, key=None):
+        STATS["slow"] += 1
+        if not _launch_telemetry.ENABLED:
+            ret = _orig_call(self, *args, **kwargs)
+            if fast is not None:
+                _record_plan(self, fast, args, key)
+            return ret
+        with _launch_telemetry.original(self, reason) as event:
+            ret = _orig_call(self, *args, **kwargs)
+            if fast is not None:
+                problem = _record_plan(self, fast, args, key)
+                if problem is None:
+                    event["outcome"] = "cold"
+                else:
+                    event["reason"] = problem
+            return ret
 
     def _fast_call(self, *args, **kwargs):
         fast = self.__dict__.get("_algan_fast_plans")
         if fast is None:
-            fast = {"meta": False, "plans": {}}
-            self._algan_fast_plans = fast
+            # Publish once even if a second thread enters before compilation
+            # releases the GIL. Plans contain immutable handles, never contexts.
+            fast = self.__dict__.setdefault(
+                "_algan_fast_plans", {"meta": False, "plans": {}}
+            )
         meta = fast["meta"]
         if meta is False:
             meta = _build_meta(self)
             fast["meta"] = meta
         rt = self.runtime
-        if (
-            not ENABLED
-            or meta is None
-            or kwargs  # also how qd_stream and _qd_from_checkpoint arrive
-            or self.has_print
-            or self.use_checkpoints
-            or self.use_graph
-            or len(args) != len(self.arg_metas)
-            or rt.target_tape
-            or rt.fwd_mode_manager
-        ):
-            return _orig_call(self, *args, **kwargs)
+        if not ENABLED:
+            return _slow_call(self, args, kwargs, "disabled")
+        if meta is None:
+            return _slow_call(
+                self, args, kwargs, fast.get("reason", "unsupported_signature")
+            )
+        if kwargs:  # also how qd_stream and _qd_from_checkpoint arrive
+            return _slow_call(self, args, kwargs, "keyword")
+        if self.has_print:
+            return _slow_call(self, args, kwargs, "print")
+        if self.use_checkpoints:
+            return _slow_call(self, args, kwargs, "checkpoint")
+        if self.use_graph or self.graph_do_while_levels:
+            return _slow_call(self, args, kwargs, "graph")
+        if len(args) != len(self.arg_metas):
+            return _slow_call(self, args, kwargs, "argument_count")
+        if rt.target_tape or rt.fwd_mode_manager:
+            return _slow_call(self, args, kwargs, "autodiff")
         runtime = _impl.get_runtime()
         if runtime._arch == _arch_python:
-            return _orig_call(self, *args, **kwargs)
+            return _slow_call(self, args, kwargs, "python_arch")
         if _tensor_wrapper._any_tensor_constructed:
             for v in args:
                 if type(v) in _wrapper_types:
-                    return _orig_call(self, *args, **kwargs)
+                    return _slow_call(self, args, kwargs, "tensor_wrapper")
 
         arch_cuda = _state["arch_cuda"]
         key_parts = []
         for kind, _slot, i, extra in meta:
             if kind in (_EXT, _EXT_V):
                 v = args[i]
-                # isinstance, not exact type -- see the taichi branch: the
-                # engine passes torch.Tensor subclasses (Color) as arguments.
-                # Anything else (an Ndarray, a numpy array) is the original
-                # path's to marshal.
-                if (
-                    not isinstance(v, _tensor_t)
-                    or v.requires_grad
-                    or v.grad is not None
-                    or not v.is_contiguous()
-                ):
-                    return _orig_call(self, *args, **kwargs)
+                if isinstance(v, _ndarray_base):
+                    if v.grad is not None:
+                        return _slow_call(self, args, kwargs, "ndarray_gradient")
+                    if v.arr is None or v.shape is None:
+                        return _slow_call(self, args, kwargs, "reset_ndarray")
+                    # Exactly the Ndarray mapper features. Use a tagged tuple
+                    # so a torch representation can never hit this plan. Rank
+                    # is specialized; extents, identity and offsets are NOT.
+                    element_type = v.element_type
+                    type_id = id(element_type)
+                    if type_id in _type_ids:
+                        element_type = type_id
+                    key_parts.append(
+                        (
+                            "ndarray",
+                            element_type,
+                            len(v.shape),
+                            False,
+                            self.arg_metas[i].annotation.boundary,
+                            v._qd_layout,
+                        )
+                    )
+                    continue
+                # isinstance, not exact type: Color is a torch.Tensor subclass.
+                if not isinstance(v, _tensor_t):
+                    return _slow_call(self, args, kwargs, "unsupported_array")
+                if v.requires_grad or v.grad is not None:
+                    return _slow_call(self, args, kwargs, "torch_gradient")
+                if not v.is_contiguous():
+                    return _slow_call(self, args, kwargs, "non_contiguous")
                 dev = v.device.type
                 if dev == "cuda":
                     if arch_cuda is None:
                         arch_cuda = runtime.prog.config().arch == _arch_cuda
                         _state["arch_cuda"] = arch_cuda
                     if not arch_cuda:
-                        return _orig_call(self, *args, **kwargs)
+                        return _slow_call(self, args, kwargs, "foreign_device")
                 elif dev != "cpu":
-                    return _orig_call(self, *args, **kwargs)
+                    return _slow_call(self, args, kwargs, "foreign_device")
                 key_parts.append(v.dtype)
                 key_parts.append(v.dim())
                 if kind == _EXT_V:
@@ -613,23 +688,31 @@ def _apply_quadrants(version):
             elif kind == _TEMPLATE:
                 v = args[i]
                 if not _template_key_supported(v, nested=True):
-                    return _orig_call(self, *args, **kwargs)
+                    return _slow_call(self, args, kwargs, "unsupported_template")
                 key_parts.append(v)
             elif kind == _FLOAT:
                 if not isinstance(args[i], _float_ok):
-                    return _orig_call(self, *args, **kwargs)
+                    return _slow_call(self, args, kwargs, "scalar_type")
             else:  # _INT_S / _INT_U
                 if not isinstance(args[i], _int_ok):
-                    return _orig_call(self, *args, **kwargs)
+                    return _slow_call(self, args, kwargs, "scalar_type")
 
         key = tuple(key_parts)
         plan = fast["plans"].get(key)
         if plan is None:
-            STATS["slow"] += 1
-            ret = _orig_call(self, *args, **kwargs)
-            _record_plan(self, fast, args, key)
-            return ret
+            return _slow_call(self, args, kwargs, "cold_plan", fast, key)
         STATS["fast"] += 1
+        try:
+            _launch(self, plan, meta, args, runtime)
+        except BaseException:
+            if _launch_telemetry.ENABLED:
+                _launch_telemetry.fast(self, error=True)
+            raise
+        if _launch_telemetry.ENABLED:
+            _launch_telemetry.fast(self)
+        return None
+
+    def _launch(self, plan, meta, args, runtime):
         t_kernel, compiled = plan
 
         if VERIFY:
@@ -650,8 +733,13 @@ def _apply_quadrants(version):
         uint_vals = []
         float_slots = []
         float_vals = []
+        ndarray_slots = []
+        ndarray_vals = []
         for kind, slot, i, extra in meta:
-            if kind == _EXT:
+            if kind in (_EXT, _EXT_V) and isinstance(args[i], _ndarray_base):
+                ndarray_slots.append(slot)
+                ndarray_vals.append(args[i].arr)
+            elif kind == _EXT:
                 v = args[i]
                 launch_ctx.set_arg_external_array_with_shape(
                     slot, v.data_ptr(), v.element_size() * v.nelement(), v.shape, 0
@@ -677,6 +765,10 @@ def _apply_quadrants(version):
             elif kind == _INT_U:
                 uint_slots.append(slot)
                 uint_vals.append(int(args[i]))
+        if ndarray_slots:
+            # Includes ExternalMetalNdarray: the patched C++ bulk setter owns
+            # byte-offset/size binding. Never treat an MTLBuffer as a pointer.
+            launch_ctx.set_args_ndarray(ndarray_slots, ndarray_vals)
         if float_slots:
             launch_ctx.set_args_float(float_slots, float_vals)
         if int_slots:

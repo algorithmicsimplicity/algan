@@ -9,7 +9,7 @@ here against real kernels on whichever compiler is live:
   different dtype, ndim, element shape or template value misses the plan and
   takes the original path, which is the only place validation happens;
 * every argument the dispatcher does not replicate is routed to the original
-  ``__call__``, observably (``STATS`` does not move, or the original raises);
+  ``__call__``, observably (no fast hit, or the original raises);
 * ``VERIFY`` re-derives the compiler's instantiation on every hit and raises
   when a plan disagrees with it;
 * ``Kernel.reset`` drops the plans.
@@ -28,7 +28,7 @@ import pytest
 import torch
 
 from algan.rendering.taichi_runtime import init_taichi
-from algan.taichi_compat import ti
+from algan.taichi_compat import BACKEND, ti
 from algan.utils import taichi_fast_launch
 from algan.utils.taichi_fast_launch import STATS, skipped_reason
 
@@ -237,6 +237,10 @@ def test_unsupported_launches_take_the_original_path(kernels, case):
         add_scaled(out, torch.ones(4, requires_grad=True), 4, 1.0, (0, 0))
         assert torch.equal(out, torch.ones(4))
     elif case == "ndarray":
+        if BACKEND == "quadrants":
+            pytest.skip(
+                "supported on Quadrants; covered by test_quadrants_ndarray_launch"
+            )
         arr = ti.ndarray(ti.f32, shape=(4,))
         arr.fill(5.0)
         add_scaled(out, arr, 4, 1.0, (0, 0))
@@ -261,7 +265,7 @@ def test_disabling_routes_every_launch_to_the_original_and_keeps_the_plans(kerne
         before = _snapshot()
         add_scaled(out, torch.ones(4), 4, 4.0, (0, 0))
         assert _moved(before, "fast") == 0
-        assert _moved(before, "slow") == 0
+        assert _moved(before, "slow") == (1 if BACKEND == "quadrants" else 0)
         assert torch.equal(out, torch.full((4,), 4.0))
     finally:
         taichi_fast_launch.set_enabled(True)
