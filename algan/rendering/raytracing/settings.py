@@ -2466,8 +2466,10 @@ def set_sheet_shell_ceiling_kernel(enabled):
 # 7-9% short on three (specular highlights, a flat mirror's reflected image, a
 # lens's refracted image), where the residual is the CONTENT of a minified
 # secondary image. Read DESIGN_analytic_aa.md ss19 before dropping
-# ``supersampling`` to 1; what is still untouched is texture
-# minification (no mip chain).
+# ``supersampling`` to 1. Texture minification is outside coverage's reach and
+# is handled separately by the UV mip chain (``texture_antialiasing`` below,
+# DESIGN_texture_antialiasing.md); it filters UV maps only, not the geometry
+# inside a minified secondary image.
 analytic_aa = env_flag("ALGAN_ANALYTIC_AA", True)
 
 # Resolve a partially covered pixel in DISPLAY-referred terms rather than

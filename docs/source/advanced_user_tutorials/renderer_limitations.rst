@@ -75,11 +75,11 @@ row links to the section that explains it.
      - Triangles only
      - Triangles only
      - `Texture maps`_
-   * - Mip-mapped texture minification
-     - **No**
-     - **No**
-     - **No**
-     - `Texture maps`_
+   * - Mip-mapped texture minification (``texture_antialiasing``, default on)
+     - Yes (isotropic trilinear)
+     - Yes (isotropic trilinear)
+     - Yes (isotropic trilinear)
+     - `Minified textures`_
    * - Environment map (skybox + reflections)
      - Yes
      - Yes
@@ -523,9 +523,10 @@ before ``import algan`` to restore achromatic shadows.
 Texture maps
 ============
 
-Algan samples exactly three maps per triangle, bilinearly, in the render kernel.
-They live on the geometry. A material forwards ``map``, ``normal_map``,
-``roughness_map`` and ``metalness_map`` onto it (see
+Algan samples exactly three maps per triangle in the render kernel: bilinearly
+up close, and trilinearly from a mip chain once a map is minified (see
+`Minified textures`_ below). They live on the geometry. A material forwards
+``map``, ``normal_map``, ``roughness_map`` and ``metalness_map`` onto it (see
 :doc:`shaders_and_materials`), but only the geometry's own arguments reach every
 channel, and only they can be animated.
 
@@ -553,16 +554,16 @@ channel, and only they can be animated.
 
 Everything else about texturing:
 
-* **There is no mip chain and no anisotropic filtering.** A minified texture --
-  a detailed image on a small or steeply angled surface -- aliases and crawls as
-  the camera moves. Bilinear magnification is fine; minification is not
-  filtered at all. Pre-downsample the image to roughly the size it will occupy
-  on screen if this bites.
+* **Minified maps are mip-filtered, with no anisotropic filtering.** A texture
+  at a grazing angle comes out softer than it needs to rather than aliasing.
+  See `Minified textures`_ for what is and is not filtered.
 * **Bezier circuits carry a color grid, not a UV-mapped image.** A 2-D shape's
   ``grid_width`` x ``grid_height`` grid of color samples is
   laid over the shape's own frame. It is not an image sampler and it takes no
-  normal or material map. :class:`~.ImageMob` is a :class:`~algan.mobs.surfaces.surface.Surface`, so it is
-  the way to put a real image on screen.
+  normal or material map. It is sampled bilinearly with no mip chain, so a fine
+  grid on a shape that is small on screen can alias. :class:`~.ImageMob` is a
+  :class:`~algan.mobs.surfaces.surface.Surface`, so it is the way to put a real
+  image on screen.
 * **Imported models collapse two maps to a constant.** glTF base-color and
   normal maps are sampled per fragment; a packed **metallic-roughness** map and
   an **emissive** map are reduced to their *mean* and applied as per-primitive
@@ -578,6 +579,57 @@ Everything else about texturing:
   importance-samples the full map through a luminance table at every lit
   surface point, so a small bright sun lights the scene as a sun, with the
   correct sharp-soft shadows.
+
+.. _limits-texture-minification:
+
+Minified textures
+-----------------
+
+A map seen from far away, on a small or steeply angled surface, or in a mirror
+packs many texels into one pixel. Both renderers filter that through a **mip
+chain**, on by default (``SETTINGS.raytracing.texture_antialiasing``):
+
+* Every color, material and normal map gets a pyramid of successively halved
+  levels, built when a batch of frames is prepared. A hit picks a level from
+  how many texels its pixel covers -- the pixel's cone projected onto the
+  triangle through its UV mapping, so texture density and viewing angle both
+  count -- and blends the two nearest levels (trilinear filtering). Up close it
+  is the ordinary bilinear sample.
+* That covers primary hits, hits seen in a reflection or through a refraction,
+  and every path-tracer hit. A secondary hit's footprint grows with the whole
+  distance its ray has travelled from the camera, so a flat mirror's image is
+  filtered as though it were seen directly. No extra rays are traced.
+* Color is filtered in linear light and weighted by coverage, so transparent
+  texels do not bleed a halo into their opaque neighbours. Material maps are
+  averaged as data, and normal maps are renormalised after averaging.
+* ``SETTINGS.raytracing.set(texture_antialiasing=False)`` restores the old
+  bilinear-only sampler, including its older convention for where texels sit
+  on an open edge (see :doc:`images_and_textures`), from the next prepared
+  batch.
+
+It is a deliberately cheap approximation, with these limits:
+
+* **It is isotropic.** The footprint is a circle, so a texture at a grazing
+  angle -- a checkerboard floor running to the horizon -- is filtered for the
+  long axis of its footprint and comes out **softer** than it needs to, rather
+  than aliasing. There is no anisotropic filtering. The pixel cone is sized at
+  the centre of the frame, so a wide field of view filters slightly more than
+  necessary towards the edges.
+* **Curved mirrors and lenses are not tracked.** A secondary hit's footprint is
+  the one a flat mirror would give. A convex mirror shrinks what it reflects,
+  so a fine texture seen in one can still alias; a concave mirror or a
+  magnifying lens can show it softer than it should be.
+* **Only UV maps are filtered.** Environment maps have no mip chain, so a
+  detailed sky reflected in a small curved mirror can alias.
+  Shadow rays read a map's alpha at full resolution. A Bezier circuit's color
+  grid is not a UV map (above). Geometry is not a texture either: the edges of
+  shapes seen in a mirror are covered under
+  `Reflection, refraction and transmission`_.
+* **It costs memory and preparation time.** Reduced levels are stored as
+  32-bit floats: they add about a third of a float map's own size, and more
+  than the base image itself for an ordinary 8-bit image, which Algan stores
+  packed at four bytes a texel. An animated color map keeps reduced levels for
+  every frame of the batch, not just the images it interpolates between.
 
 
 Shadows
@@ -712,8 +764,11 @@ Reflection
   by continuation rays -- four sub-pixel positions at best, and only when the
   branch carries at least 0.12 of the pixel's energy
   (``SETTINGS.raytracing.experimental.analytic_aa_secondary_min_energy``). Below
-  that threshold it takes a single ray. A minified reflected image therefore
-  aliases where the surface holding it does not.
+  that threshold it takes a single ray. The geometry in a minified reflected
+  image -- the edges of the shapes it shows -- therefore aliases where the
+  surface holding it does not. UV textures in it are mip-filtered, with a
+  footprint grown along the ray's accumulated distance; see
+  `Minified textures`_ for where that estimate falls short.
 
 Refraction
 ----------
@@ -804,10 +859,13 @@ wherever shading varies smoothly across the region. Where it does not:
   pixel -- is split so each face shades with its own normal
   (``SETTINGS.raytracing.experimental.sheet_shade_split``, on by default).
   This case is handled.
-* A **high-frequency texture** minified into one pixel is not. The region is
-  shaded at one point, so a checkerboard smaller than a pixel resolves to
-  whichever texel that point lands on. This is the same missing mip chain as
-  above, seen from the shading side.
+* A **high-frequency texture** minified into one pixel is filtered rather than
+  resolved. The region is still shaded at one point, but that point's UV-map
+  lookups come from the mip level that matches the whole pixel's footprint, so
+  a checkerboard smaller than a pixel resolves to roughly its average rather
+  than to whichever texel the point lands on (see `Minified textures`_; with
+  ``texture_antialiasing`` off it is still that texel). A Bezier circuit's
+  color grid has no mip chain and is still sampled at that one point.
 
 What analytic coverage does and does not resolve
 ------------------------------------------------
@@ -818,7 +876,10 @@ What analytic coverage does and does not resolve
   Silhouette-against-silhouette error is bounded by the contrast divided by 8.
 * **Sampled at 4 sub-pixel positions:** shadow edges, reflected images,
   refracted images.
-* **Not resolved:** texture minification.
+* **Filtered, not resolved:** detail inside a UV-mapped texture, by the mip
+  chain -- isotropically, so a texture at a grazing angle is softened rather
+  than kept sharp (`Minified textures`_).
+* **Not resolved:** detail inside a Bezier circuit's color grid.
 
 Other anti-aliasing notes
 -------------------------

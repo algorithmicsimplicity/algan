@@ -207,8 +207,9 @@ Texture maps
 forwards the four image slots the renderer has a sampler for -- ``map``,
 ``normal_map``, ``roughness_map`` and ``metalness_map`` -- onto the geometry,
 which is where Algan's texture pipeline lives. Each takes a file path or an
-``[H, W, C]`` image, and is sampled bilinearly per fragment in the ray tracing
-kernel:
+``[H, W, C]`` image, and is sampled per fragment in the ray tracing kernel --
+bilinearly up close, and from a mip chain when minified (see
+:doc:`images_and_textures`):
 
 .. code-block:: python
 
