@@ -835,6 +835,7 @@ def test_become_keeps_ids_above_and_below_what_it_replaces(fresh_scene, tmp_path
         "wrapped_text_to_text_tagged_after",
         "outer_composite_tagged_after",
         "grown_part_beside_member_group",
+        "wrapper_judged_before_the_morph",
     ],
 )
 def test_become_ids_through_wrappers_composites_and_new_parts(
@@ -922,6 +923,32 @@ def test_become_ids_through_wrappers_composites_and_new_parts(
             outer.wait(1)
             result = inner.become(Group(circle(-2.4), circle(-1.0), add_to_scene=False))
             result.pass_index = 9
+        elif case == "wrapper_judged_before_the_morph":
+            # Once the morph has moved the kept members out, the source looks
+            # like a Group wrapped around the one composite left shrinking
+            # away; it was not one, so the inner Group's tag stays off the
+            # root the right-hand circle is under.
+            with Off():
+                surplus = _Molecule(
+                    Square(size=0.3).move_to(LEFT * 0.6),
+                    Square(size=0.3).move_to(LEFT * 0.2),
+                )
+                inner = Group(a, b, surplus)
+                group = Group(inner, Circle(radius=0.5).move_to(RIGHT * 2)).spawn()
+            inner.pass_index = 2
+            group.pass_index = 1
+            group.wait(1)
+            group.become(
+                _Molecule(
+                    Group(
+                        Square(size=0.8, add_to_scene=False).move_to(LEFT * 2.4),
+                        Square(size=0.8, add_to_scene=False).move_to(LEFT * 1.0),
+                        add_to_scene=False,
+                    ),
+                    circle(2),
+                    add_to_scene=False,
+                )
+            )
         else:
             with Off():
                 near = Square(size=0.6).move_to(LEFT * 0.4)
@@ -963,6 +990,8 @@ def test_become_ids_through_wrappers_composites_and_new_parts(
     elif case == "outer_composite_tagged_after":
         assert lefts == {9}, halves
         assert rights == {AUTO_ID_BASE + outer.id}, halves
+    elif case == "wrapper_judged_before_the_morph":
+        assert (lefts, rights) == ({2}, {1}), halves
     else:
         assert 7 in lefts, halves
         assert rights, halves

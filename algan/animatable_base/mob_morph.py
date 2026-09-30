@@ -1533,6 +1533,7 @@ class MobMorphMixin:
         paired,
         external_parents,
         grown_results=(),
+        source_object=None,
     ):
         """Record, for the object-ID pass, what the source's structure became.
 
@@ -1569,8 +1570,10 @@ class MobMorphMixin:
 
         ``paired`` is ``[(source primitive index, its result)]``;
         ``external_parents`` are the parents ``source`` had outside itself;
-        ``grown_results`` are the Mobs grown for surplus targets. Private
-        attributes only: nothing renders differently.
+        ``grown_results`` are the Mobs grown for surplus targets;
+        ``source_object`` is ``_lone_object(source)`` read before the morph
+        moved anything out of ``source``. Private attributes only: nothing
+        renders differently.
         """
         from algan.rendering.pass_identity import is_container
 
@@ -1622,7 +1625,6 @@ class MobMorphMixin:
         # object inside the source becomes the object of the result, and
         # depths below it are counted from there.
         depth_of = {id(node): depth for node, _, depth in structure}
-        source_object, _ = MobMorphMixin._lone_object(source)
         result_object, _ = MobMorphMixin._lone_object(final_root)
         through = (
             source_object is not source
@@ -1799,6 +1801,8 @@ class MobMorphMixin:
         structure = self._structural_members(
             source, source_primitives, source_hierarchy
         )
+        # Read now: the morph moves the members it keeps out of ``source``.
+        source_object, _ = self._lone_object(source)
         parent_slots = self._capture_parent_slots(source)
         external_parents = [slot[0] for slot in parent_slots]
         pair_specs = []
@@ -1936,6 +1940,7 @@ class MobMorphMixin:
                     ],
                     external_parents,
                     [results_by_target[index] for index in unmatched_targets],
+                    source_object,
                 )
                 obsolete_ids = {
                     id(mob) for mob in source_hierarchy if id(mob) not in final_ids
