@@ -424,6 +424,50 @@ def gather_exact(tensor: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     return tensor[index]
 
 
+def unique_consecutive_exact(keys: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``torch.unique_consecutive(keys, return_inverse=True)``, integer-exact.
+
+    ``sheets._unique_sorted_ids`` groups sorted sub-band keys,
+    ``pool_of_cid * 16 + rank``, and ``_sheet_rank_groups`` records that the
+    same composite reaches **2**25** on a 4K frame -- past
+    ``_MPS_EXACT_INT_BITS``. ``codex/metal-sheet-grouping`` reported MPSGraph's
+    ``unique`` merging adjacent distinct keys above 2**24, which is the
+    ``band_class_groups`` failure again: two sheets that differ only in their
+    low bits become one. That report is the branch's; it has not been
+    re-measured on an Apple GPU here.
+
+    So this never lets a key through anything that might round it. A group
+    starts wherever a key differs from the one before it, and comparing two
+    integers is exact at every width (see ``_MPS_EXACT_INT_BITS``). The
+    inverse is a running count of those starts, and the unique values are
+    gathered with advanced indexing ``v[i]``, the spelling
+    :func:`gather_exact` already relies on. The count runs in int32, which is
+    exact because it cannot exceed the row count; streams of 2**31 rows or more
+    are refused rather than wrapped.
+
+    For a one-dimensional ``keys``, returns what ``unique_consecutive``
+    returns: the values in ``keys``' own dtype, and an int64 inverse. There is
+    no mode dispatch here; the caller decides where the exact route is needed.
+    Off MPS the single ``unique_consecutive`` is cheaper and already exact.
+    """
+    n = keys.numel()
+    if not n:
+        return (
+            torch.empty(0, dtype=keys.dtype, device=keys.device),
+            torch.empty(0, dtype=torch.int64, device=keys.device),
+        )
+    if n >= 2**31:
+        raise ValueError(
+            f"unique_consecutive_exact counts groups in int32 and needs fewer "
+            f"than 2**31 rows, got {n}"
+        )
+    starts = torch.ones(n, dtype=torch.bool, device=keys.device)
+    starts[1:] = keys[1:] != keys[:-1]
+    inverse = torch.cumsum(starts, 0, dtype=torch.int32).to(torch.int64) - 1
+    unique = keys[torch.nonzero(starts).flatten()]
+    return unique, inverse
+
+
 def band_class_groups(band_of_frag, cls_eff, base):
     """Group the fragments by ``(band, shading class)``, without a wide key.
 

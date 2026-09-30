@@ -78,6 +78,7 @@ from algan.rendering.mps_compat import (
     mps_friendly,
     reduction_index_dtype,
     taichi_accumulate_dtype,
+    unique_consecutive_exact,
 )
 from algan.rendering.raytracing import device_sort
 from algan.rendering.raytracing import settings as rt_settings
@@ -547,13 +548,25 @@ def _sheet_walk_order(pix, position):
     return torch.argsort(position, stable=True)
 
 
+def _unique_is_inexact(keys):
+    """Whether ``keys`` live where ``unique`` may merge distinct wide integers.
+
+    That is MPS: the keys reach 2**25 (``_sheet_rank_groups``), past
+    ``mps_compat._MPS_EXACT_INT_BITS``. A function rather than an inline test
+    so the MPS route can be exercised on a machine without one.
+    """
+    return keys.device.type == "mps"
+
+
 def _unique_sorted_ids(keys):
     """Group nondecreasing integer IDs without sorting them a second time."""
-    # The validated Metal path also receives sorted IDs here. Keep its
-    # consecutive grouping while retaining the CPU/CUDA optimization gates.
-    if keys.device.type == "mps" or (
-        (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda")
-    ):
+    # Metal also receives sorted IDs here, and groups them consecutively too,
+    # but through integer compares rather than ``unique_consecutive``
+    # (``mps_compat.unique_consecutive_exact`` says why). CPU and CUDA keep
+    # their optimization gates.
+    if _unique_is_inexact(keys):
+        return unique_consecutive_exact(keys)
+    if (sheet_pixel_sort or sheet_group_reuse) and keys.device.type in ("cpu", "cuda"):
         return torch.unique_consecutive(keys, return_inverse=True)
     return torch.unique(keys, sorted=True, return_inverse=True)
 
