@@ -286,9 +286,7 @@ def test_pt_generate_near_clip_stays_planar_for_a_lens_origin(fresh_scene):
     co, sp, pbx, pby = _camera_arrays()
     fwd = torch.nn.functional.normalize(sp - co, dim=-1)
     near = 2.5
-    ro, rd, sca, _ = _generate(
-        co, sp, pbx, pby, torch.tensor([0.8, 9.0]), near=near
-    )
+    ro, rd, sca, _ = _generate(co, sp, pbx, pby, torch.tensor([0.8, 9.0]), near=near)
     depth = ((ro - co) @ fwd.T).squeeze(-1)
     assert torch.allclose(depth, torch.full_like(depth, near), atol=1e-4)
     t_near = sca[:, 4]
