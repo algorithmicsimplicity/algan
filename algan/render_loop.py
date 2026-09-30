@@ -4397,6 +4397,7 @@ class RenderLoopMixin:
         background=None,
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
+        passes=None,
     ):
         """Stream rendered frame batches to the configured video writer.
 
@@ -4406,6 +4407,10 @@ class RenderLoopMixin:
         so authoring can continue -- including inside a block that has not
         finished yet -- and render again. See
         :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
+
+        ``passes`` is an :class:`algan._render_passes.VideoPassJob` when
+        auxiliary passes were requested: its encoders run beside the video's
+        and its sequences are published right after the video file is.
         """
         ensure_taichi_for_render()
         # The encoder still owns queued CPU frames after get_frames exits.
@@ -4421,6 +4426,7 @@ class RenderLoopMixin:
                 background=background,
                 despawn_camera_and_lights=despawn_camera_and_lights,
                 preserve_authoring_state=preserve_authoring_state,
+                **({"passes": passes} if passes is not None else {}),
             )
 
     def _render_to_video_impl(
@@ -4432,6 +4438,7 @@ class RenderLoopMixin:
         background=None,
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
+        passes=None,
     ):
         previous_scene_times = (
             [list(pair) for pair in self.scene_times]
@@ -4447,6 +4454,7 @@ class RenderLoopMixin:
                     background,
                     despawn_camera_and_lights,
                     preserve_authoring_state,
+                    **({"passes": passes} if passes is not None else {}),
                 )
         finally:
             if previous_scene_times is not None:
@@ -4455,6 +4463,10 @@ class RenderLoopMixin:
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
+        if passes is not None:
+            # After the video, so the passes never describe a render whose
+            # video failed to publish.
+            passes.publish()
 
     def _static_frame_runs(self, start_ind, end_ind, background, post_processes):
         """Which of a video's frames to render, and how often to write each.
@@ -4606,8 +4618,13 @@ class RenderLoopMixin:
         background,
         despawn_camera_and_lights,
         preserve_authoring_state,
+        passes=None,
     ):
         writer = None
+        # The auxiliary-pass job (algan._render_passes.VideoPassJob), if any:
+        # its per-pass encoders receive every frame the video does, repeats
+        # included, from the batches get_frames delivers through its sink.
+        pass_job = passes
         try:
             self.scene_times.append(
                 [
@@ -4644,6 +4661,8 @@ class RenderLoopMixin:
             writer = _VideoWriter(file_writer)
             self.frame_queue = writer.queue
             writer.start()
+            if pass_job is not None:
+                pass_job.open(self, _VideoWriter)
             # The snapshot is taken here rather than around the whole render call:
             # the fade-out and the zero-runtime guard record on the timeline
             # first, and edits made after a snapshot would fall outside it.
@@ -4681,12 +4700,18 @@ class RenderLoopMixin:
                     )
                 # Explicitly close the generator on encoder failure too: its
                 # finally releases materialization buffers and prep workers.
+                aux = (
+                    {}
+                    if pass_job is None
+                    else {"aux_passes": True, "aux_sink": pass_job.sink}
+                )
                 batches = self.get_frames(
                     *frame_window,
                     background=background,
                     post_processes=post_processes,
                     manual_memory=True,
                     **sparse,
+                    **aux,
                 )
                 close_frames = getattr(batches, "close", None)
                 if close_frames is not None:
@@ -4695,24 +4720,35 @@ class RenderLoopMixin:
 
                 rendered = 0
                 for frame_batch in batches:
-                    for frame in frame_batch:
+                    encoded = (
+                        None if pass_job is None else pass_job.take(len(frame_batch))
+                    )
+                    for position, frame in enumerate(frame_batch):
                         copies = 1 if repeats is None else repeats[rendered]
                         rendered += 1
                         if _opt_disabled("writerrepeats"):
                             for _ in range(copies):
                                 writer.put(frame)
+                                if pass_job is not None:
+                                    pass_job.put(encoded, position)
                                 report_frame()
                             continue
                         writer.put(frame, copies)
+                        if pass_job is not None:
+                            pass_job.put(encoded, position, copies)
                         # After the put: the queue is bounded and feeds the
                         # encoder thread, so reporting first would run the
                         # progress ahead of the actual encode.
                         for _ in range(copies):
                             report_frame()
             self._drain_video_writer(writer)
+            if pass_job is not None:
+                pass_job.finish()
         except BaseException:
             if writer is not None:
                 writer.abort()
+            if pass_job is not None:
+                pass_job.abort()
             try:
                 file_writer.close()
             except Exception:
@@ -4720,3 +4756,6 @@ class RenderLoopMixin:
                 # cancellation. The worker is already joined before closing.
                 logger.debug("Video writer cleanup failed", exc_info=True)
             raise
+        finally:
+            if pass_job is not None:
+                pass_job.release(self)

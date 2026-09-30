@@ -185,11 +185,11 @@ row links to the section that explains it.
      - **No**
      - **No**
      - `Not implemented at all`_
-   * - Auxiliary passes (depth / normal / ID)
-     - **No**
-     - **No**
-     - **No**
-     - `Not implemented at all`_
+   * - Auxiliary passes (depth / normal / object ID)
+     - Yes
+     - Yes
+     - Yes
+     - `Auxiliary passes`_
 
 "Triangles only" means the feature applies to triangle geometry and not to
 Bezier circuits -- see :ref:`limits-lit`. "Falls back" means the batch is routed
@@ -1210,6 +1210,36 @@ traces, absorption uses the medium stack and is not applied again at the
 exit surface.
 
 
+Auxiliary passes
+================
+
+``save_video(passes=...)`` and ``save_frame(passes=...)`` write depth, normal
+and object-ID passes for compositing (see :ref:`saving-render-passes`). They
+come from a pass of their own rather than from either renderer's shading, which
+is why the two renderers produce identical passes. What that pass does not do:
+
+* **One sample per pixel, at its centre, through a pinhole.** Edges are aliased
+  rather than anti-aliased, and neither depth of field nor supersampling
+  affects them. There is no coverage-weighted matte (cryptomatte) and no
+  motion-vector pass.
+* **The first surface at least 50% opaque wins.** Everything less opaque is
+  looked through; a stack of translucent sheets that only adds up to opaque is
+  looked through entirely. Transmission is not opacity, so glass is recorded
+  as a surface.
+* **Only primary visibility.** Nothing a mirror reflects or a lens refracts
+  reaches a pass: the mirror's own surface does.
+* **2-D outlines are coverage-dilated like the frame's.** A filled shape's
+  region extends about 0.6 pixels past its outline, as it does in the
+  rendered frame, so a matte hugs the drawn shape rather than the exact
+  geometric boundary.
+* **Area-light panels are not in them.** Under the path tracer a
+  :class:`~.RectAreaLight` is visible geometry; the passes skip it, as the
+  deterministic renderer has no such geometry to report.
+* **The deterministic renderer may build what it would otherwise skip.** Its
+  analytic route defers the ray-tracing acceleration structure when nothing in
+  the batch needs it; a pass does, so a render with passes can use more memory
+  than the same render without.
+
 Not implemented at all
 ======================
 
@@ -1225,9 +1255,9 @@ Neither renderer does any of these, at any setting:
 * **Displacement mapping** or height-map tessellation. Geometry comes from the
   mob; a texture never moves a vertex.
 * **Wireframe rendering.**
-* **Auxiliary output passes.** There is no depth buffer, normal buffer, object
-  ID buffer, motion-vector buffer or cryptomatte to write out -- only the shaded
-  RGB(A) frame.
+* **Motion vectors or cryptomatte.** Depth, normal and object-ID passes are
+  written on request (see `Auxiliary passes`_), but there is no motion-vector
+  pass and no cryptomatte-style coverage matte.
 * **Temporal anti-aliasing** or temporal accumulation. Denoising exists, but
   only for the path tracer (``denoise``; see
   `Which renderer runs your scene`_) -- the deterministic renderer has no

@@ -284,6 +284,9 @@ A few things to know:
 * The **near-orthographic** mode puts the camera ``1e5`` units away, where any
   world-sized aperture subtends almost nothing: depth of field is effectively
   invisible there.
+* The auxiliary passes of :ref:`saving-render-passes` are always pinhole, so
+  a depth pass stays sharp for compositing even when the colour pass is
+  defocused.
 
 Screen Coordinates
 ==================

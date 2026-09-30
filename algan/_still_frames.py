@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +63,8 @@ class _StillBatch:
     overwrite: bool
     raytracing: dict
     environment: tuple
+    #: Auxiliary passes to write beside each still (``algan._render_passes``).
+    passes: tuple = ()
 
     @classmethod
     def capture(
@@ -75,8 +77,16 @@ class _StillBatch:
         overwrite,
         *,
         deferred=False,
+        passes=None,
     ):
+        from algan._render_passes import check_pass_encoders, normalize_passes
         from algan.render_loop import _check_post_processes
+
+        passes = normalize_passes(passes)
+        if passes:
+            # At capture, like every other option check: a missing encoder
+            # must not wait for a deferred project batch to render.
+            check_pass_encoders(passes)
 
         settings = scene._resolve_video_settings(video_settings)
         if not isinstance(settings, VideoSettings):
@@ -128,6 +138,7 @@ class _StillBatch:
                 scene.environment_ambient,
                 scene.premultiplied_over,
             ),
+            passes,
         )
 
     def compatible_with(self, other):
@@ -141,6 +152,7 @@ class _StillBatch:
             and self.raytracing == other.raytracing
             and self.environment[0] is other.environment[0]
             and self.environment[1:] == other.environment[1:]
+            and self.passes == other.passes
         )
 
     def deferred_results(self):
@@ -197,8 +209,6 @@ class _StillBatch:
             )
 
     def _write_frames(self):
-        from PIL import Image
-
         from algan.utils.algan_utils import RenderResult
 
         results = [None] * len(self.targets)
@@ -242,9 +252,34 @@ class _StillBatch:
         )
         if self.post_processes:
             extra["_post_process_per_frame"] = True
+        pending_aux = deque()
+        resolver = None
+        if self.passes:
+            from algan._render_passes import ObjectIdResolver
+
+            extra["aux_passes"] = True
+            extra["aux_sink"] = pending_aux.append
+            if "object_id" in self.passes:
+                self.scene._aux_id_registry = {}
+                resolver = ObjectIdResolver(self.scene._aux_id_registry)
+        try:
+            return self._write_frame_groups(
+                render_groups, extra, results, pending_aux, resolver
+            )
+        finally:
+            if resolver is not None and hasattr(self.scene, "_aux_id_registry"):
+                del self.scene._aux_id_registry
+
+    def _write_frame_groups(self, render_groups, extra, results, pending_aux, resolver):
+        from PIL import Image
+
+        from algan.utils.algan_utils import RenderResult
+
         started = time.perf_counter()
         rendered = []
         last_write = {}
+        last_pass_write = {}
+        pass_paths = {}
         for group in render_groups:
             indices = sorted(group)
             # Keep the one-frame route's established get_frames contract. Multiple
@@ -258,7 +293,14 @@ class _StillBatch:
             emitted = 0
             with torch.no_grad(), closing(frames):
                 for batch in frames:
-                    for frame in batch:
+                    aux = None
+                    if self.passes:
+                        if not pending_aux:
+                            raise RuntimeError(
+                                "the renderer yielded frames without their passes"
+                            )
+                        aux = pending_aux.popleft()
+                    for offset, frame in enumerate(batch):
                         if emitted >= len(indices):
                             raise RuntimeError(
                                 "More frames were produced than requested"
@@ -272,6 +314,21 @@ class _StillBatch:
                             if position > last_write.get(target.path, -1):
                                 image.save(str(target.path))
                                 last_write[target.path] = position
+                            if aux is not None and position > last_pass_write.get(
+                                target.path, -1
+                            ):
+                                from algan._render_passes import write_still_passes
+
+                                pass_paths[target.path] = write_still_passes(
+                                    self.scene,
+                                    self.passes,
+                                    target.path,
+                                    aux,
+                                    offset,
+                                    resolver,
+                                    target.resolved_time(),
+                                )
+                                last_pass_write[target.path] = position
                             rendered.append(
                                 (
                                     position,
@@ -286,6 +343,12 @@ class _StillBatch:
         walltime = (time.perf_counter() - started) / len(rendered)
         for position, plan in rendered:
             target = self.targets[position]
-            results[position] = RenderResult("rendered", target.path, walltime, plan)
+            results[position] = RenderResult(
+                "rendered",
+                target.path,
+                walltime,
+                plan,
+                passes=dict(pass_paths.get(target.path, {})),
+            )
             logger.info("Finished rendering %s in %.1f s", target.path, walltime)
         return results

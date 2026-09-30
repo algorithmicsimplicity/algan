@@ -240,6 +240,9 @@ drops a feature a renderer cannot honour.
    * - Depth of field (``camera.aperture > 0``)
      - **Refused** (``UnsupportedFeatureError``)
      - Yes (thin lens)
+   * - Auxiliary passes (depth, normal, object ID)
+     - Yes
+     - Yes (identical: always one pinhole sample per pixel centre)
    * - Denoising (``denoise``, default on)
      - Not applicable (noise-free)
      - Yes
