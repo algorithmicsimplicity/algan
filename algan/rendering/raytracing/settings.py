@@ -1384,8 +1384,9 @@ def set_rgb_shadow_tint(enabled):
 
 
 # Self-shadow rejection by identity (DESIGN_mesh_identity_open.md ssI). A
-# shadow ray currently rejects its own surface with min_hit_distance plus a
-# normal offset of 10 * min_hit_distance -- absolute world-space constants
+# shadow ray rejected its own surface with min_hit_distance plus a normal
+# offset of 10 * min_hit_distance (since replaced by the scale-aware
+# ``_offset_ray_origin``) -- absolute world-space constants
 # applied to EVERY hit, so a small object resting on a plane loses its contact
 # shadow within 1e-3 of the contact and grazing light on small geometry
 # produces acne. On the sheet route's shadow queue the event's source surface
@@ -1593,7 +1594,7 @@ def set_shadow_identity_reject(enabled):
 # Microfacet-Based Shadow Terminator", Ray Tracing Gems II ch. 4). A PN patch
 # or any smooth-shaded mesh reaches the renderer as FLAT triangles carrying a
 # smooth per-vertex normal field, and every shadow ray starts from the FACE
-# normal's fixed lift (``10 * min_hit_distance`` in ``raster_shadow_trace``).
+# normal's origin offset (``_offset_ray_origin`` in ``raster_shadow_trace``).
 # The facet is a chord BELOW the smooth surface it approximates, so
 # neighbouring facets rise above the plane the origin was lifted from: near
 # the terminator the shadow ray leaves almost tangentially and strikes a

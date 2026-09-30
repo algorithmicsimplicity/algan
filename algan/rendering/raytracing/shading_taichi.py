@@ -649,9 +649,9 @@ def _shadow_terminator_delta(f, prim, w0, a, b, p, snrm,
     tested on the raw interpolated vertex normal (never on a normal-mapped
     ``_tri_normal_g`` result).
 
-    The caller STILL adds the face-normal lift on top of this displacement
-    (``sorigin = spos + delta + fnrm * (10 * min_hit_distance)``); the lift
-    is what keeps flat facets working exactly as they always have.
+    The caller STILL adds the face-normal origin offset on top of this
+    displacement (``sorigin = _offset_ray_origin(spos, fnrm) + delta``); that
+    offset is what keeps a flat facet's shadow ray off its own plane.
     """
     tn = f % tri_norm.shape[0]
     tp = f % tri_pos.shape[0]

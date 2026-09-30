@@ -154,6 +154,16 @@ The path tracer has the same segment-local pairing rule but retains its own boun
 
 `transport_taichi.py` owns the scale-aware origin and shadow-endpoint offsets used by both renderers. Reflection keeps the outgoing geometric-side convention; transmission adds its existing forward guard. These offsets do not replace traversal minimum-hit tolerances or constitute an intersection error-bound proof.
 
+The offset is 256 ULPs (about 3e-5 at unit coordinates, 1/65536 near the origin), so it only works from a point **on the triangle being left**. Anything that re-derives a spawn point from a sub-pixel position must keep it on the triangle, not on the triangle's plane:
+
+- `_tri_surface_point` rebuilds a triangle sheet fragment's point from its projected barycentrics.
+- `_jittered_surface_sample` does the same for each secondary AA tap.
+- `_footprint_on_triangle` shrinks a shadow event's footprint until every sub-pixel origin it owns lies on the triangle.
+
+A fragment owns a tap or shadow position through any covered sample in the pixel, so along a mesh edge the position can lie past the edge. On a convex mesh the raw plane point there is above the neighbouring facet, where a transmitted ray re-enters. On a concave mesh it is behind the neighbour, which reflections and shadow rays then hit. The old fixed `10 * min_hit_distance` offset hid the shallow cases. The scale-aware offset exposed them as speckle networks along the edges of transmissive spheres and as shadow acne on concave meshes. `test_jittered_taps_spawn_from_the_triangle_they_shade` and `test_shadow_footprint_keeps_owned_positions_on_the_triangle` guard both.
+
+Not covered: Bezier circuits keep their centre-ray and plane points. That matters only for reflections between concave arrangements of circuits. Shadow rays from a point that is on its triangle can still hit a concave neighbour at grazing light, which is facet-level self-occlusion that the fixed lift used to mask.
+
 For deterministic built-in glass, compute `_relative_ior` before the Fresnel/continuation weights, not only at the Snell call. `_material_reflectance` takes an optional inside/outside ratio (including values below one). Both weight and direction use the same outward normal, falling back to the geometric normal when a shading normal disagrees about the interface side. Equal-index nested interfaces still cross the medium stack. Custom scatter's existing fixed signature and nested-medium limitations are unchanged.
 
 `shadow_anyhit` defaults to `"auto"`: `shadow_dispatch.py` selects opaque-only any-hit only when all four merged opacity facts prove it safe. Missing facts, physical transmission, translucent triangles/circuits, and uncertain texture alpha retain the ordered march. `False` selects the reference march, explicit `True` retains the experimental mixed prepass, and `"gather"` retains gather-march. The path tracer shares the opacity proof but keeps its own enable switch.

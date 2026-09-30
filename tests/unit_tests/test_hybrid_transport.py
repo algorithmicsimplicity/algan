@@ -26,6 +26,11 @@ from algan import (
     SceneManager,
 )
 from algan.rendering.raytracing import settings as rt_settings
+from algan.rendering.raytracing.raster_taichi import (
+    _footprint_on_triangle,
+    _jittered_surface_sample,
+    _sub_pixel_origin,
+)
 from algan.rendering.raytracing.shadow_dispatch import (
     _provably_opaque_shadow_batch,
     _select_shadow_mode,
@@ -183,6 +188,186 @@ def test_shared_offsets_cover_signed_large_coordinates_and_thin_gaps():
 
     assert _pt_offset_ray_origin is _offset_ray_origin
     assert _pt_shadow_tmax is _shadow_tmax
+
+
+# Two facets of a convex solid (interior at z < 0) sharing the edge x = 0,
+# y in [-10, 10]: A lies in z = 0 over x <= 0 and faces the camera, B bends
+# away beyond the edge. The camera at z = 5 looks down -z; one pixel spans
+# x, y in [-5, 5] on A's plane, so a tap at jx > 0.5 crosses the shared edge.
+_FACET_A = ((0.0, -10.0, 0.0), (0.0, 10.0, 0.0), (-10.0, 0.0, 0.0))
+_FACET_B_NORMAL = np.array([3.0, 0.0, 10.0]) / math.sqrt(109.0)
+
+
+@ti.kernel
+def _jitter_tap_probe(
+    taps: ti.types.ndarray(),
+    tri_pos: ti.types.ndarray(),
+    tri_norm: ti.types.ndarray(),
+    tri_uvs: ti.types.ndarray(),
+    tri_tex_meta: ti.types.ndarray(),
+    textures: ti.types.ndarray(),
+    cam_origin: ti.types.ndarray(),
+    screen_point: ti.types.ndarray(),
+    pixel_basis_x: ti.types.ndarray(),
+    pixel_basis_y: ti.types.ndarray(),
+    out: ti.types.ndarray(),
+):
+    for i in range(taps.shape[0]):
+        gen_meta = ti.math.vec4(0.5, 0.5, 0.5, 0.5)
+        face_n = ti.math.vec3(0.0, 0.0, 1.0)
+        rd, hp, nj, b1, b2 = _jittered_surface_sample(
+            0,
+            0,
+            0,
+            taps[i, 0],
+            taps[i, 1],
+            gen_meta,
+            False,
+            0,
+            ti.math.vec3(0.0, 0.0, 0.0),
+            face_n,
+            tri_pos,
+            tri_norm,
+            tri_uvs,
+            tri_tex_meta,
+            textures,
+            1,
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+        )
+        # An index-matched transmission continues straight on.
+        origin = _offset_transmitted_origin(hp, rd, face_n, nj)
+        for k in ti.static(range(3)):
+            out[i, k] = hp[k]
+            out[i, 3 + k] = rd[k]
+            out[i, 6 + k] = origin[k]
+        out[i, 9] = b1
+        out[i, 10] = b2
+
+
+def _jitter_taps(taps):
+    init_taichi()
+    tri_pos = np.array(_FACET_A, np.float32).reshape(1, 1, 9)
+    tri_norm = np.tile([0.0, 0.0, 1.0], 3).astype(np.float32).reshape(1, 1, 9)
+    tex_meta = np.zeros((1, 21), np.int32)
+    tex_meta[0, 6] = -1  # no normal map
+
+    def row(v):
+        return _array(np.array([v], np.float32))
+
+    out = ti.ndarray(ti.f32, shape=(len(taps), 11))
+    _jitter_tap_probe(
+        _array(np.array(taps, np.float32)),
+        _array(tri_pos),
+        _array(tri_norm),
+        _array(np.zeros((1, 1, 6), np.float32)),
+        _array(tex_meta, ti.i32),
+        _array(np.zeros((1, 1, 8), np.float32)),
+        row([0.0, 0.0, 5.0]),
+        row([0.0, 0.0, 4.0]),
+        row([1.0, 0.0, 0.0]),
+        row([0.0, 1.0, 0.0]),
+        out,
+    )
+    return out.to_numpy()
+
+
+def test_jittered_taps_spawn_from_the_triangle_they_shade():
+    """A secondary tap past its triangle's edge spawns from the triangle.
+
+    The raw ray-plane point of such a tap lies on A's plane beyond the shared
+    edge, i.e. outside the solid and above B, and a transmitted continuation
+    leaving it re-enters through B: with the scale-aware spawn offset that was
+    a bright speckle along every edge of a transmissive sphere.
+    """
+    got = _jitter_taps([[0.3, 0.5], [0.7, 0.5]])
+    v0, v1, v2 = (np.array(v) for v in _FACET_A)
+    eye = np.array([0.0, 0.0, 5.0])
+    for hp, rd, origin, (b1, b2) in zip(
+        got[:, 0:3], got[:, 3:6], got[:, 6:9], got[:, 9:11]
+    ):
+        # On the triangle: its own barycentrics rebuild it, and the ray that
+        # shades it passes through it.
+        np.testing.assert_allclose(
+            hp, (1 - b1 - b2) * v0 + b1 * v1 + b2 * v2, atol=1e-5
+        )
+        assert min(b1, b2, 1 - b1 - b2) >= 0
+        np.testing.assert_allclose(rd, (hp - eye) / np.linalg.norm(hp - eye), atol=1e-6)
+        # The continuation starts inside the solid, below BOTH facets.
+        assert origin[2] < 0
+        assert origin @ _FACET_B_NORMAL < 0
+    # A tap inside the triangle keeps its own ray-plane hit.
+    np.testing.assert_allclose(got[0, 0:3], [-2.0, 0.0, 0.0], atol=1e-5)
+
+
+@ti.kernel
+def _footprint_probe(
+    events: ti.types.ndarray(), tri_pos: ti.types.ndarray(), out: ti.types.ndarray()
+):
+    for i in range(events.shape[0]):
+        a = events[i, 0]
+        b = events[i, 1]
+        w0 = 1.0 - a - b
+        dpx = ti.math.vec3(events[i, 2], events[i, 3], 0.0)
+        dpy = ti.math.vec3(events[i, 4], events[i, 5], 0.0)
+        msk = ti.cast(events[i, 6], ti.i32)
+        spos = ti.math.vec3(0.0, 0.0, 0.0)
+        for k in ti.static(range(3)):
+            spos[k] = (
+                w0 * tri_pos[0, 0, k]
+                + a * tri_pos[0, 0, 3 + k]
+                + (b * tri_pos[0, 0, 6 + k])
+            )
+        sx, sy = _footprint_on_triangle(0, 0, w0, a, b, dpx, dpy, msk, tri_pos)
+        for s in ti.static(range(4)):
+            p = _sub_pixel_origin(spos, sx, sy, s)
+            for k in ti.static(range(3)):
+                out[i, 3 * s + k] = p[k]
+        for k in ti.static(range(3)):
+            out[i, 12 + k] = sx[k]
+            out[i, 15 + k] = sy[k]
+
+
+def _footprints(events):
+    init_taichi()
+    tri_pos = np.array(_FACET_A, np.float32).reshape(1, 1, 9)
+    out = ti.ndarray(ti.f32, shape=(len(events), 18))
+    _footprint_probe(_array(np.array(events, np.float32)), _array(tri_pos), out)
+    return out.to_numpy()
+
+
+def _facet_a_barycentrics(p):
+    v0, v1, v2 = (np.array(v) for v in _FACET_A)
+    m = np.stack([v1[:2] - v0[:2], v2[:2] - v0[:2]], axis=1)
+    c1, c2 = np.linalg.solve(m, p[:2] - v0[:2])
+    return np.array([1 - c1 - c2, c1, c2])
+
+
+def test_shadow_footprint_keeps_owned_positions_on_the_triangle():
+    """A shadow event near an edge must not spread origins past it.
+
+    Facet A's shared edge is x = 0. The event sits at x = -0.1 with a
+    footprint 1.0 wide, so the +1/4 grid column lands at x = +0.15, past the
+    edge: behind the neighbour on a concave mesh, where a shadow ray hits it.
+    """
+    # a, b chosen so the event point is (-0.1, 0, 0) on facet A.
+    near_edge = [0.495, 0.01, 1.0, 0.0, 0.0, 1.0]
+    got = _footprints(
+        [
+            near_edge + [0b1111],  # every position owned
+            near_edge + [0b0101],  # only the -1/4 column: already on A
+            [0.3, 0.3, 1.0, 0.0, 0.0, 1.0, 0b1111],  # interior: fits as is
+        ]
+    )
+    for s in range(4):
+        assert _facet_a_barycentrics(got[0, 3 * s : 3 * s + 3]).min() >= -1e-6
+    # Only as much shrink as the edge needs: the +x column now sits ON it.
+    assert abs(got[0, 3]) < 1e-5
+    # Positions a fragment does not own place no constraint on the ones it does.
+    np.testing.assert_allclose(got[1, 12:18], [1, 0, 0, 0, 1, 0], atol=1e-6)
+    np.testing.assert_allclose(got[2, 12:18], [1, 0, 0, 0, 1, 0], atol=1e-6)
 
 
 @ti.kernel

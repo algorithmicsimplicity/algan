@@ -2555,6 +2555,22 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
     of a silhouette pixel can fall outside the triangle, and extrapolated vertex
     normals are not safe on a coarse mesh.
 
+    The returned hit point is rebuilt from those projected barycentrics as well
+    (``_tri_surface_point``'s rule for the fragment itself), and ``rd`` is
+    re-aimed at it. A fragment owns a tap through any covered sample in the
+    pixel (``_sec_positions``), so along a mesh edge a tap's ray can miss the
+    triangle, and its raw ray-plane point then lies on the triangle's plane
+    PAST the shared edge. On a convex mesh that is outside the solid, above the
+    neighbouring facet, so a transmitted continuation re-enters through the
+    neighbour; on a concave one it is below the neighbour, so a reflection hits
+    it from behind. The fixed ``10 * min_hit_distance`` spawn offset hid the
+    shallower overshoots; the scale-aware ``_offset_ray_origin`` (256 ULPs,
+    about 3e-5 at unit coordinates) is far smaller and exposed them as a
+    bright speckle network along the mesh edges of transmissive spheres. Only
+    a point on the triangle meets that offset's precondition; rebuilt from the
+    vertices, it also sits on the plane to the vertices' rounding rather than
+    the ray-plane solve's.
+
     The jitter is an offset from whatever base sub-pixel position the pass uses
     (``gen_meta[0:2]``), so it composes with in-place supersampling rather than
     overriding it. A grazing or degenerate solve keeps the un-jittered hit --
@@ -2605,6 +2621,11 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
                         si = 1.0 / s
                         bj1 = c1 * si
                         bj2 = c2 * si
+                        # The spawn point is rebuilt from the projected
+                        # barycentrics too, not left on the plane: see the
+                        # docstring for why a point past an edge speckles.
+                        hp = (c0 * si) * v0 + bj1 * v1 + bj2 * v2
+                        rd = (hp - ro).normalized()
                         nj = _tri_normal_g(
                             0, f, prim, c0 * si, bj1, bj2, tri_norm,
                             tri_pos, tri_uvs, tri_tex_meta, textures,
@@ -2656,6 +2677,64 @@ def _pixel_footprint(f, px, py, gen_meta: ti.template(), hp, nrm,
     ym = _plane_pt(f, px, py, 0.5, 0.0, gen_meta, hp, nrm, hp, cam_origin,
                    screen_point, pixel_basis_x, pixel_basis_y)
     return xp - xm, yp - ym
+
+
+@ti.func
+def _footprint_on_triangle(f, prim, w0, a, b, dpx, dpy, pos_msk,
+                           tri_pos: ti.template()):
+    """Shrink a shadow event's footprint until every position it owns is on
+    its triangle.
+
+    ``_sub_pixel_origin`` spreads the shadow origins over a 2x2 grid at
+    +-1/4 of the footprint around the event's surface point, on the
+    triangle's PLANE. A fragment owns a position through any covered sample in
+    the pixel (``_sec_positions``), so along a mesh edge an owned position can
+    lie past the edge -- behind the neighbouring facet of a concave mesh, whose
+    back its shadow ray then hits: dark acne along the edges. The fixed
+    ``10 * min_hit_distance`` origin lift hid the shallow cases; the
+    scale-aware ``_offset_ray_origin`` is far smaller and exposes them.
+
+    Barycentrics are affine in position, so the largest ``k`` keeping an owned
+    position ``p + k * o`` on the triangle is ``min(c_i / -dc_i)`` over the
+    barycentrics ``o`` decreases. One ``k`` for all of them (the smallest)
+    keeps the grid a scaled copy, which is all two stored vectors can express.
+    ``(w0, a, b)`` are the event point's own barycentrics (it is
+    ``_tri_surface_point``, on the triangle), so ``k`` is in [0, 1] and a
+    fragment whose owned positions are all on its triangle keeps its footprint
+    unchanged. ``pos_msk`` is the event's 4-bit owned-position mask.
+    """
+    tp = f % tri_pos.shape[0]
+    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    e1 = v1 - v0
+    e2 = v2 - v0
+    gn = e1.cross(e2)
+    nn = gn.dot(gn)
+    k = 1.0
+    if nn > 1e-30:
+        inv = 1.0 / nn
+        # Rates of (c1, c2) along each footprint vector; c0 takes the rest.
+        x1 = gn.dot(dpx.cross(e2)) * inv
+        x2 = gn.dot(e1.cross(dpx)) * inv
+        y1 = gn.dot(dpy.cross(e2)) * inv
+        y2 = gn.dot(e1.cross(dpy)) * inv
+        c = ti.math.vec3(w0, a, b)
+        for s in ti.static(range(4)):
+            if (pos_msk >> s) & 1:
+                # _sub_pixel_origin's grid offsets for position s.
+                su = (s & 1) * 0.5 - 0.25
+                sv = ((s >> 1) & 1) * 0.5 - 0.25
+                d1 = su * x1 + sv * y1
+                d2 = su * x2 + sv * y2
+                dc = ti.math.vec3(-d1 - d2, d1, d2)
+                for i in ti.static(range(3)):
+                    if dc[i] < 0.0:
+                        k = ti.min(k, ti.max(c[i], 0.0) / -dc[i])
+    return dpx * k, dpy * k
 
 
 @ti.func

@@ -57,6 +57,7 @@ from algan.rendering.raytracing.raster_taichi import (
     _aa_dump_match,
     _aa_dump_terminal,
     _decode_bez_ref,
+    _footprint_on_triangle,
     _frag_t,
     _glossy_reflect,
     _glossy_rotation,
@@ -688,6 +689,9 @@ def sheet_resolve_shade_arena(
                                 f, px, py, gen_meta, surf_pos, fnrm,
                                 cam_origin, screen_point,
                                 pixel_basis_x, pixel_basis_y)
+                            dpx, dpy = _footprint_on_triangle(
+                                f, prim, w0, a, b, dpx, dpy, shadow_msk,
+                                tri_pos)
                             for k in ti.static(range(3)):
                                 event_dp[idx, k] = dpx[k]
                                 event_dp[idx, 3 + k] = dpy[k]
