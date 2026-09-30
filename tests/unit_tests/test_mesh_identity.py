@@ -39,7 +39,10 @@ from algan import (
     Sphere,
     Square,
 )
-from algan.rendering.raytracing.primitives import _mesh_ids_from_collection
+from algan.rendering.raytracing.primitives import (
+    _mesh_ids_from_collection,
+    _resolve_surface_identity,
+)
 
 
 def _ids_of(collection):
@@ -153,6 +156,30 @@ def test_shell_ids_are_renumbered_into_the_collections_namespace():
     ids, n, keys = _mesh_ids_from_collection([a, b], [4, 2])
     assert n == 4
     assert ids.tolist() == [0, 0, 1, 1, 2, 3]
+
+
+def test_each_surface_remembers_the_member_that_opened_it():
+    """What maps a surface to its Mob for the object-id pass.
+
+    A merged surface names its FIRST member, and every shell of a member names
+    that member.
+    """
+    members = [
+        _Member(2, mesh_key="a"),
+        _Member(2, mesh_key="a"),
+        _Member(3, mesh_ids=torch.tensor([0, 1, 0], dtype=torch.int32)),
+        _Member(1),
+        _Member(1, mesh_key="b"),
+    ]
+    counts = [2, 2, 3, 1, 1]
+    ids, n, keys, first = _resolve_surface_identity(members, counts, track_members=True)
+    assert n == 5
+    assert ids.tolist() == [0, 0, 0, 0, 1, 2, 1, 3, 4]
+    assert keys == ["a", None, None, None, "b"]
+    assert first == [0, 2, 2, 3, 4]
+    # Untracked by default, and the three-value wrapper is unchanged.
+    assert _resolve_surface_identity(members, counts)[3] is None
+    assert len(_mesh_ids_from_collection(members, counts)) == 3
 
 
 def test_mesh_ids_length_must_match_the_member():

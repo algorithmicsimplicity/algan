@@ -466,6 +466,42 @@ def _max_duration_that_fits(requested_frames, fits):
     return best
 
 
+def _aux_source_registry(scene):
+    """The armed object-id pass's ``{Mob.id: actor}`` registry, or ``None``.
+
+    The pass is armed for one render by setting ``scene._aux_id_registry`` to a
+    dict (and disarmed by deleting it); while armed, every primitive the batch
+    takes from an actor is stamped with that actor's ``Mob.id``
+    (:func:`_stamp_primitive_sources`), which the collections and the scene
+    merge carry into ``tri_obj_source_ids`` / ``circuit_source_ids``. See
+    :mod:`algan.rendering.pass_identity`. A camera-view pass is a copy of the
+    Scene's ``__dict__``, so it shares the very same dict.
+    """
+    registry = getattr(scene, "_aux_id_registry", None)
+    return registry if isinstance(registry, dict) else None
+
+
+def _stamp_primitive_sources(primitives, actor, registry):
+    """Record ``actor`` as the source of each of ``primitives``.
+
+    ``_source_mob_id`` is a plain int (not a tensor, so nothing uploads or
+    counts it; not ``_rt_``-prefixed, so ``slice_time_window`` keeps it). A
+    primitive that already names a source -- an aggregate that stamped its
+    parts more precisely (``Arrow3D``) -- keeps it. The actor itself goes into
+    ``registry`` so the ids resolve back to Mobs after the render; a packed
+    view shares its pack's id, which is why the actor (the pack, whose
+    ``parents`` chain is intact) is what is recorded.
+    """
+    mob_id = int(actor.id)
+    registry.setdefault(mob_id, actor)
+    for primitive in primitives:
+        if (
+            getattr(primitive, "_source_mob_id", None) is None
+            and getattr(primitive, "_circuit_source_ids", None) is None
+        ):
+            primitive._source_mob_id = mob_id
+
+
 def _primitive_source_device(primitive, fallback=None):
     """Device holding a not-yet-projected primitive's source geometry."""
     for name in (
@@ -2462,8 +2498,15 @@ class RenderLoopMixin:
             if key is None:
                 key = self._bezier_group_key(entry["actor"])
             groups.setdefault((key, entry.get("run", 0)), []).append(entry)
+        registry = _aux_source_registry(self)
         for entries in groups.values():
             mega = build_render_primitives_batched([e["actor"] for e in entries], self)
+            if registry is not None:
+                # One circuit per actor, in entry order (``_is_batchable_bezier``
+                # guarantees the single row), so the lane is the actors' ids.
+                for entry in entries:
+                    registry.setdefault(int(entry["actor"].id), entry["actor"])
+                mega._circuit_source_ids = [int(e["actor"].id) for e in entries]
             entries[0]["prebuilt"] = [mega]
 
     def _build_deferred_surfaces(self, deferred):
@@ -2485,6 +2528,7 @@ class RenderLoopMixin:
             )
             groups[key].append(entry)
 
+        registry = _aux_source_registry(self)
         for entries in groups.values():
             prims = get_render_primitives_batched([e["actor"] for e in entries])
             for entry, p in zip(entries, prims):
@@ -2492,6 +2536,8 @@ class RenderLoopMixin:
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
+                if registry is not None:
+                    _stamp_primitive_sources(entry["prims"], entry["actor"], registry)
 
     def _scene_has_renderable_actors(self, start_time_ind, end_time_ind):
         """Whether any spawned renderable actor's lifespan intersects the
@@ -2762,6 +2808,10 @@ class RenderLoopMixin:
         # as before, so what lands downstream is the same concatenation the
         # all-raw path produced.
         grouped_primitives = collections.defaultdict(list)
+        # The object-id pass's source registry, ``None`` unless that pass is
+        # armed for this render -- in which case every primitive taken from an
+        # actor below (and in the deferred builders) is stamped with its Mob.
+        aux_registry = _aux_source_registry(self)
         # Surfaces sharing a grid shape are not built one-by-one: their state
         # is materialized per-actor below (in anchor-priority order, exactly as
         # before), but the geometry build is deferred so all of them can run as
@@ -2819,6 +2869,8 @@ class RenderLoopMixin:
             if primitive is not None:
                 if not isinstance(primitive, list):
                     primitive = [primitive]
+                if aux_registry is not None:
+                    _stamp_primitive_sources(primitive, actor, aux_registry)
                 ordered_items.append(primitive)
 
         if deferred_surfaces:
@@ -2887,6 +2939,10 @@ class RenderLoopMixin:
                         entry["prims"] = (
                             primitive if isinstance(primitive, list) else [primitive]
                         )
+                        if aux_registry is not None:
+                            _stamp_primitive_sources(
+                                entry["prims"], entry["actor"], aux_registry
+                            )
                 else:
                     clean.append(entry)
             if clean:

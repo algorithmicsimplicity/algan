@@ -240,6 +240,14 @@ def _expand_stroke(primitive, camera):
         value = getattr(primitive, name, None)
         if value is not None:
             setattr(primitive, name, value.repeat_interleave(parts, dim=1))
+    # The object-id pass's per-circuit source lane (a host list, present only
+    # while that pass is armed) follows the same interleave. Rebound rather than
+    # extended in place: slice_time_window's shallow copies share the list.
+    sources = getattr(primitive, "_circuit_source_ids", None)
+    if sources is not None:
+        primitive._circuit_source_ids = [
+            source for source in sources for _ in range(parts)
+        ]
     primitive.stroke_color = torch.zeros_like(primitive.colors)
     primitive.stroke_width = torch.zeros_like(primitive.mob_center[..., :1])
     primitive.filled = True

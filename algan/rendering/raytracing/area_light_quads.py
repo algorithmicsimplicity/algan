@@ -30,6 +30,7 @@ emitters exactly as before.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from algan.logging.logger import PERF, get_logger
@@ -184,6 +185,27 @@ def _quad_geometry(light, num_frames, device):
     return pos, normal, radiance
 
 
+def _extend_source_ids_for_quads(new, obj_base, n_new):
+    """Give the emitter quads' surface ids no source in the object-id table.
+
+    The quads take ids ``obj_base .. obj_base + n_new - 1`` with ``obj_base =
+    tri_obj.max() + 1``, which can fall short of the table's length when some
+    surface id has no triangle; those entries are overwritten with ``-1`` (no
+    real triangle carries them), and the table grows to cover the rest. A
+    fresh array, never an in-place write: ``new`` is a shallow copy of the
+    merged dict. Absent table (no object-id pass armed): nothing to do.
+    """
+    from algan.rendering.raytracing.scene_builder import TRI_OBJ_SOURCE_IDS
+
+    table = new.get(TRI_OBJ_SOURCE_IDS)
+    if table is None:
+        return
+    extended = np.full(max(len(table), obj_base + n_new), -1, dtype=np.int32)
+    extended[: len(table)] = table
+    extended[obj_base : obj_base + n_new] = -1
+    new[TRI_OBJ_SOURCE_IDS] = extended
+
+
 def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
     """Return the widened scene and triangle BVH inputs, before tree building.
 
@@ -314,6 +336,7 @@ def build_area_light_quads(merged, light_sources, num_frames, bvh_inputs):
         obj_base, obj_base + n_new, dtype=obj_dtype, device=device
     ).view(1, n_new)
     new["tri_obj"] = _collapse_time(_cat("tri_obj", quad_obj))
+    _extend_source_ids_for_quads(new, obj_base, n_new)
     closed_dtype = f32
     if merged.get("tri_closed") is not None:
         closed_dtype = merged["tri_closed"].dtype
