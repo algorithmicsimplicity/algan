@@ -1243,6 +1243,16 @@ not do:
   analytic route defers the ray-tracing acceleration structure when nothing in
   the batch needs it; a pass does, so a render with passes can use more memory
   than the same render without.
+* **Object IDs follow the hierarchy you end with.** ``pass_index`` values and
+  groupings are read as they stand after the script, for every frame. So when a
+  ``become()`` merges or splits objects, the frames before it are written with
+  the IDs of what each part became: a plain Group that becomes one composite (a
+  Text, a Group subclass) is one object throughout, and a composite that becomes
+  a plain Group is several. When one object becomes several, its ID continues
+  only in the part it pairs with, and the new parts get IDs of their own. With
+  ``detach_history=False``, the replacement Group's members get new IDs, though
+  a tag on the source still reaches them. Members left shrinking away keep
+  their own IDs.
 
 Not implemented at all
 ======================
