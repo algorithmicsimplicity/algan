@@ -152,3 +152,24 @@ compile (`CompileResult.cache_hit` says which were served from the offline
 cache; the fd-2 capture remains only for the Taichi backend), the first-touch
 wait for a pool and the kernels it finishes, a heartbeat, and a summary. Tests run with `ALGAN_PRECOMPILE_JOBS=0`
 (`tests/conftest.py`).
+
+### Check disk-cache reuse in separate processes
+
+A first pass in a process is not necessarily a cold disk-cache pass. The scene
+profiler labels first/repeat passes and records `source_key_cache` deltas for
+both authoring and rendering. A source-key **hit** bypasses the Python AST
+transform; a **miss** rebuilds the frontend but may still hit the compiler's
+backend cache. Zero lookups on a repeat pass usually mean the specializations
+are already resident, not that disk caching is disabled. The `launch` column
+also includes cache loading and submission, so it is not a compilation timer.
+Use `ALGAN_LOG_TAICHI_COMPILES=1` for per-specialization timings.
+
+`python benchmarks/_taichi_source_key_check.py --arms warm,on,verify` runs
+three separate processes against one cache. It requires every warm lookup to
+hit and every verify lookup to re-derive the stored C++ key, as well as matching
+pixels; identical pixels alone cannot prove caching worked. It forces daemon
+use off and isolates verify mode from inherited environment settings. Use a
+fresh `ALGAN_CACHE_DIR` to measure an actually empty cache. Changing the scene,
+material-pipeline tuple, kernel source, compiler configuration or template
+arguments can legitimately need new variants. Test an identical repeat before
+calling a new variant a cache failure.

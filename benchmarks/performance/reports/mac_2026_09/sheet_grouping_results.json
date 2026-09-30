@@ -1,0 +1,198 @@
+[
+  {
+    "experiment": "cpu_pn_confirmation",
+    "run_id": 34364037169,
+    "artifact_zip_sha256": "2b1e52b35cfc8f7de1a053d51f33850173fb96a8ed8571f8b6d7221bf71caa2c",
+    "summary": {
+      "A": {
+        "seconds": [
+          142.06862379199993,
+          140.36720025,
+          178.32576008399997
+        ],
+        "median": 142.06862379199993,
+        "mean": 153.58719470866663
+      },
+      "B": {
+        "seconds": [
+          143.81351545799998,
+          138.41805350000004,
+          154.95509683299997
+        ],
+        "median": 143.81351545799998,
+        "mean": 145.728888597
+      },
+      "median_reduction_percent": -1.2282033987706775,
+      "arch": "Arch.metal"
+    },
+    "reference_base": "c2075083a49cb21bf8c7d6f46139eeb69d3e80ee",
+    "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/34364037169",
+    "mean_reduction_percent": 5.116511260312251,
+    "artifact_id": 10110242406
+  },
+  {
+    "experiment": "batch_growth",
+    "run_id": 34365755558,
+    "artifact_zip_sha256": "84daf0b3b7ca73b06e7a165d1c54e90cba38e1bb1f3b860e95202dff7765fdff",
+    "summary": {
+      "A": {
+        "seconds": [
+          134.542623541,
+          123.5831465
+        ],
+        "median": 129.0628850205,
+        "mean": 129.0628850205
+      },
+      "B": {
+        "seconds": [
+          104.2110831660001,
+          96.22236483300003
+        ],
+        "median": 100.21672399950006,
+        "mean": 100.21672399950006
+      },
+      "median_reduction_percent": 22.350469708172184,
+      "arch": "Arch.metal"
+    },
+    "parity": {
+      "frames": 30,
+      "max_channel_delta": 36,
+      "pixels_over_2_sum": 12,
+      "errors": [
+        "Frame 8: delta 24",
+        "Frame 9: delta 34",
+        "Frame 12: delta 36",
+        "Frame 14: delta 20",
+        "Frame 19: delta 36",
+        "Frame 20: delta 24",
+        "Frame 28: delta 34",
+        "Frame 29: delta 35"
+      ]
+    },
+    "reference_base": "c2075083a49cb21bf8c7d6f46139eeb69d3e80ee",
+    "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/34365755558",
+    "mean_reduction_percent": 22.350469708172184,
+    "artifact_id": 10110668156
+  },
+  {
+    "experiment": "grouping_only",
+    "run_id": 34414052733,
+    "artifact_zip_sha256": "dfb75f9138fc9a418dc6ebe2f2019550835c97c308ec49fe2bd6f6b49e830d5a",
+    "summary": {
+      "component": "both",
+      "parity_checked": true,
+      "A": {
+        "seconds": [
+          115.52041087500004,
+          161.18898112500005,
+          157.30134854099992
+        ],
+        "median": 157.30134854099992,
+        "mean": 144.67024684700002
+      },
+      "B": {
+        "seconds": [
+          133.34082191700008,
+          139.55752591599992,
+          167.80822687499995
+        ],
+        "median": 139.55752591599992,
+        "mean": 146.90219156933333
+      },
+      "median_reduction_percent": 11.280146540113833,
+      "arch": "Arch.metal",
+      "raw_frames": 30,
+      "max_channel_delta": 1
+    },
+    "parity": {
+      "frames": 30,
+      "max_channel_delta": 1,
+      "pixels_over_2_sum": 0,
+      "errors": []
+    },
+    "reference_base": "795044725a540687b1a34380b8a6046358e7cdbe",
+    "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/34414052733",
+    "mean_reduction_percent": -1.5427807520739023,
+    "artifact_id": 10129408096
+  },
+  {
+    "experiment": "grouping_and_metadata",
+    "run_id": 34416944976,
+    "artifact_zip_sha256": "3b8fa116d3140733b863970debf18846bc96e5701d780599b41d48a7ddcacdb3",
+    "summary": {
+      "component": "all",
+      "parity_checked": true,
+      "A": {
+        "seconds": [
+          122.88822820799999,
+          141.47440933299993,
+          95.3947142500001
+        ],
+        "median": 122.88822820799999,
+        "mean": 119.91911726366668
+      },
+      "B": {
+        "seconds": [
+          113.576420042,
+          116.8434514170001,
+          106.179652584
+        ],
+        "median": 113.576420042,
+        "mean": 112.19984134766669
+      },
+      "median_reduction_percent": 7.5774614882060725,
+      "arch": "Arch.metal",
+      "raw_frames": 30,
+      "max_channel_delta": 1
+    },
+    "parity": {
+      "frames": 30,
+      "max_channel_delta": 1,
+      "pixels_over_2_sum": 0,
+      "errors": []
+    },
+    "reference_base": "795044725a540687b1a34380b8a6046358e7cdbe",
+    "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/34416944976",
+    "mean_reduction_percent": 6.437068661060586,
+    "artifact_id": 10130100119
+  },
+  {
+    "experiment": "grouping_metadata_zero_copy",
+    "run_id": 34417861733,
+    "artifact_zip_sha256": "9e6965289d37f2e41763a8faeff65f29880ba66b8963103f00c88e5ae6e200de",
+    "summary": {
+      "component": "all",
+      "parity_checked": true,
+      "A": {
+        "seconds": [
+          95.80913933399995,
+          105.19741008299991
+        ],
+        "median": 100.50327470849993,
+        "mean": 100.50327470849993
+      },
+      "B": {
+        "seconds": [
+          126.15878833400006,
+          103.86655862500004
+        ],
+        "median": 115.01267347950005,
+        "mean": 115.01267347950005
+      },
+      "median_reduction_percent": -14.436742298281558,
+      "arch": "Arch.metal",
+      "raw_frames": 30,
+      "max_channel_delta": 1
+    },
+    "parity": {
+      "frames": 30,
+      "max_channel_delta": 1,
+      "pixels_over_2_sum": 0,
+      "errors": []
+    },
+    "reference_base": "795044725a540687b1a34380b8a6046358e7cdbe",
+    "run_url": "https://github.com/algorithmicsimplicity/algan/actions/runs/34417861733",
+    "mean_reduction_percent": -14.436742298281558,
+    "artifact_id": 10130271868
+  }
+]

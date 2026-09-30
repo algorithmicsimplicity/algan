@@ -369,17 +369,20 @@ So it is not a stale offset from an earlier launch. It is *no* offset: the first
 launch of a kernel binds each imported slice correctly, and **every launch after
 it binds that slice at the base of the arena**, silently.
 
-The cache is reachable only where Algan is: an `Ndarray` argument reports
-`cacheable=True` (`lang/_func_base.py:713-720`) where a torch tensor reports
-`False`, so this is the MPS-∩-Quadrants intersection again. Algan's import cache
-returns the *same* `ExternalMetalNdarray` object per slice
-(`mps_zero_copy.py:241`), so identity is stable and the hit rate is ~100 % after
-the first launch of each argument set. Of the 55 kernels, 25 take a float and
-are immune (a float is non-cacheable), 4 are unconditionally cacheable —
-`apply_glow_and_opacity`, `gloss_pyramid_level`, `bloom_conv1d_f32`,
-`bloom_upsample_bilinear_f32`, `grid_normals_sides_crosses` — and the rest are
-cacheable whenever their integer arguments fall in CPython's small-int table,
-which includes `compact_ray_slots` on the tail iterations of a wavefront.
+The original context cache can reuse `Ndarray` arguments, including imported
+Metal arrays, but not raw torch tensors. Reuse also requires identical argument
+objects and cacheable scalars: floats never qualify, and integer arguments must
+be in CPython's small-int range (-5 through 256). Counts of affected kernels
+change with their signatures; cache eligibility alone does not establish a hit.
+
+Algan's Quadrants fast-launch dispatcher now also accepts ndarrays. It caches
+specialization handles, not filled contexts or scalar values, and rebinds the
+current arrays with `set_args_ndarray` on every hit. That bulk setter already
+calls `set_arg_ndarray_buffer_offset` in **0001**. Runtime sizes, byte offsets
+and scalars are therefore refreshed even when array identities or values change.
+The `copy()` fix remains necessary for launches that use Quadrants' original
+context cache (including when Algan's fast dispatcher is disabled). See
+`../algan/rendering/DESIGN_mps_launch_cache.md` for validation and telemetry.
 
 The fix is two assignments and two asserts in `copy()`, and it belongs in 0001
 rather than a patch of its own: the maps exist only because 0001 created them.

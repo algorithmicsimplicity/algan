@@ -53,6 +53,7 @@ from algan.rendering.mps_compat import (
     reduction_index_sentinel,
     taichi_accumulate_dtype,
     taichi_reduction_index_dtype,
+    unique_consecutive_exact,
 )
 from algan.settings import SETTINGS
 from algan.taichi_compat import ti
@@ -719,6 +720,174 @@ def test_the_pair_grouping_survives_a_band_count_that_overflows_the_wide_key():
     assert got_n == want_n
     assert torch.equal(got_inverse, want_inverse)
     assert torch.equal(got_band, want_band)
+
+
+def _lexsort_by_indexing(*keys):
+    """``device_sort.stable_lexsort``'s answer, composed without ``index_select``."""
+    order = torch.argsort(keys[-1], stable=True)
+    for key in reversed(keys[:-1]):
+        order = order[torch.argsort(key[order], stable=True)]
+    return order
+
+
+@pytest.mark.parametrize("sort_arm", ["torch", "device"])
+def test_the_pair_grouping_gathers_exactly_above_the_mps_ceiling(
+    computing_settings, monkeypatch, sort_arm
+):
+    """Every gather in the grouping's MPS arm survives MPS's integer rounding.
+
+    MPS's ``index_select`` returns an integer as ``float32(value)``, exact only
+    through 2**24 (``_MPS_EXACT_INT_BITS``). A shading class is documented as
+    ``[0, _SHADE_CLASS_BASE)`` with the base at 2**25, and a band id or a
+    fragment index in the sort order grows with the chunk, so all of them can
+    pass that ceiling -- and a rounded class or band merges groups that differ
+    only in their low bits, exactly the failure the grouping exists to prevent.
+
+    CPU gathers are exact, so this reproduces the measured defect by making
+    ``index_select`` round integers through a float32, and asks for the
+    wide-key answer anyway: that holds only if the arm gathers through
+    :func:`~algan.rendering.mps_compat.gather_exact`. Both sort arms, because
+    the torch fallback gathers the order and the band before the final two
+    gathers the device sort also reaches.
+    """
+    from algan.rendering.raytracing import device_sort
+
+    base = 1 << 25
+    g = torch.Generator().manual_seed(24)
+    n = 3000
+    ceiling = 1 << _MPS_EXACT_INT_BITS
+    band = torch.randint(-20, 20, (n,), generator=g, dtype=torch.int64) + ceiling
+    cls = torch.randint(-4, 5, (n,), generator=g, dtype=torch.int64) + ceiling
+    want_n, want_inverse, want_band = _wide_key_reference(band, cls, base)
+
+    exact = torch.Tensor.index_select
+
+    def rounding_index_select(self, dim, index):
+        out = exact(self, dim, index)
+        if out.dtype in (torch.int32, torch.int64):
+            out = out.to(torch.float32).to(out.dtype)
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "index_select", rounding_index_select)
+    monkeypatch.setattr(
+        device_sort,
+        "stable_lexsort",
+        _lexsort_by_indexing if sort_arm == "device" else lambda *keys: None,
+    )
+    probe = torch.arange(n)
+    assert not torch.equal(cls.index_select(0, probe), cls), (
+        "the simulated MPS rounding is not in effect, so this test proves nothing"
+    )
+
+    computing_settings.set(mps_friendly=True)
+    got_n, got_inverse, got_band = band_class_groups(band, cls, base)
+
+    assert got_n == want_n
+    assert torch.equal(got_inverse, want_inverse)
+    assert torch.equal(got_band, want_band)
+
+
+# ------------------------------------------------- the sorted-id grouping
+
+
+def _adjacent_keys(dtype, base, seed):
+    """Sorted keys one apart around ``base``, each repeated one to three times."""
+    g = torch.Generator().manual_seed(seed)
+    values = torch.arange(-6, 7, dtype=torch.int64) + base
+    counts = torch.randint(1, 4, (values.numel(),), generator=g)
+    return values.repeat_interleave(counts).to(dtype)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (torch.int32, 1 << 24),
+        (torch.int32, (1 << 25) + 1),
+        (torch.int32, (1 << 31) - 7),
+        (torch.int64, 1 << 24),
+        (torch.int64, 1 << 31),
+        (torch.int64, (1 << 40) + 5),
+    ],
+    ids=["i32-2^24", "i32-2^25", "i32-max", "i64-2^24", "i64-2^31", "i64-2^40"],
+)
+def test_the_exact_unique_matches_unique_consecutive(dtype, base):
+    """``unique_consecutive_exact`` answers what ``unique_consecutive`` does.
+
+    Checked on the CPU, where ``unique_consecutive`` is exact, at the widths
+    the MPS one was reported to merge: adjacent keys one apart, straddling and
+    above 2**24, and for int64 at 2**31 and 2**40 as well. Values, inverse and
+    both dtypes, because the inverse indexes per-group tables downstream.
+    """
+    keys = _adjacent_keys(dtype, base, seed=base % 997)
+    want_values, want_inverse = torch.unique_consecutive(keys, return_inverse=True)
+
+    got_values, got_inverse = unique_consecutive_exact(keys)
+
+    assert got_values.dtype == keys.dtype
+    assert got_inverse.dtype == torch.int64
+    assert torch.equal(got_values, want_values)
+    assert torch.equal(got_inverse, want_inverse)
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("values", [[], [(1 << 24) + 1]], ids=["empty", "single"])
+def test_the_exact_unique_handles_empty_and_single_streams(dtype, values):
+    """A chunk can group nothing, or one sheet; neither may index past the end."""
+    keys = torch.tensor(values, dtype=dtype)
+    want_values, want_inverse = torch.unique_consecutive(keys, return_inverse=True)
+
+    got_values, got_inverse = unique_consecutive_exact(keys)
+
+    assert got_values.dtype == keys.dtype
+    assert got_inverse.dtype == torch.int64
+    assert torch.equal(got_values, want_values)
+    assert torch.equal(got_inverse, want_inverse)
+
+
+def test_the_mps_sorted_id_grouping_does_not_go_through_unique_consecutive(
+    monkeypatch,
+):
+    """``sheets._unique_sorted_ids``' MPS route survives a rounding unique.
+
+    ``codex/metal-sheet-grouping`` reported MPSGraph's ``unique`` merging
+    adjacent distinct keys above 2**24, and the keys reaching this function
+    are ``pool_of_cid * 16 + rank``, which reach 2**25 on a 4K frame. The CPU
+    cannot reproduce that, so this makes ``unique_consecutive`` round its keys
+    through a float32 and requires the exact answer anyway.
+
+    The route is chosen by the keys' device, not by the mode, so the gate is
+    forced through ``sheets._unique_is_inexact`` rather than a setting. The
+    CPU route is left alone and does see the rounding, which both confirms
+    the simulation is in effect and shows CPU grouping unchanged.
+    """
+    from algan.rendering.raytracing import sheets
+
+    keys = torch.cat(
+        (
+            _adjacent_keys(torch.int64, 1 << 25, seed=1),
+            _adjacent_keys(torch.int64, 1 << 40, seed=2),
+        )
+    )
+    want_values, want_inverse = torch.unique_consecutive(keys, return_inverse=True)
+    exact = torch.unique_consecutive
+
+    def rounding_unique_consecutive(input, *args, **kwargs):
+        return exact(input.to(torch.float32).to(input.dtype), *args, **kwargs)
+
+    monkeypatch.setattr(torch, "unique_consecutive", rounding_unique_consecutive)
+    with SETTINGS.raytracing.experimental.override(
+        sheet_pixel_sort=True, sheet_group_reuse=True
+    ):
+        cpu_values, _ = sheets._unique_sorted_ids(keys)
+        assert cpu_values.numel() < want_values.numel(), (
+            "the simulated MPS rounding is not in effect, so this test proves nothing"
+        )
+
+        monkeypatch.setattr(sheets, "_unique_is_inexact", lambda keys: True)
+        got_values, got_inverse = sheets._unique_sorted_ids(keys)
+
+    assert torch.equal(got_values, want_values)
+    assert torch.equal(got_inverse, want_inverse)
 
 
 # ------------------------------------------------- the narrowed kernel arms

@@ -17,6 +17,11 @@
 > the run sort is 23.5% of a warm UHD render on this box and 5.1% on a T4, and
 > the radix sort is a whole-render loss on both.
 
+> **Not merged: [`SHEET_GROUPING.md`](SHEET_GROUPING.md)** records opt-in Metal
+> sheet-grouping and metadata kernels from `codex/metal-sheet-grouping`: 12.75x
+> faster class grouping in isolation, but inconclusive whole-video A/Bs and a
+> final zero-copy retest 14.44% slower. Only its exact-gather fix was ported.
+
 Workload: `benchmarks/performance/nn_scene_UHD.py`, unchanged — 18 frames at
 3840×2160, `shadows=False`, `libx264 -preset ultrafast`. Box: the Mac harness
 (`agent_guidance/gpu_harnesses.md`), GitHub's Apple-silicon runner, a

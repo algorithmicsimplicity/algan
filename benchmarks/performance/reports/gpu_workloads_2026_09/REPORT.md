@@ -274,6 +274,15 @@ shorten the second explainer step's `sheet_resolve_shade` (59 s -> 45 s at
 UHD; `t4_explainer_uhd.log`). `../t4_2026_09/README.md` recorded the same
 and left it open.
 
+> **Later finding (2026-09-12, Mac only):** `../kernel_cache_2026_09/README.md`
+> checked cross-process reuse directly and found the disk cache **does** hit on
+> Metal: fresh processes reused every stored kernel, and PREVIEW-to-UHD reused
+> the shared source keys. It also found the profiler's first-pass label here
+> printed "cold (includes Taichi JIT compile)" unconditionally, so first-pass
+> and launch timings alone do not show a miss. The T4/CUDA result above was not
+> re-measured; confirm it with `benchmarks/_taichi_source_key_check.py --arms
+> warm,on,verify` before acting on 5.6 item 1.
+
 ## 5. The targets, in order
 
 Each item keeps the two things the renderer must keep: exact analytic
@@ -624,7 +633,9 @@ the number: 104 s cold against 1.75 s warm for a six-second PREVIEW clip.
    the same disk both compiled `sheet_resolve_shade` (59 s then 45 s). Find
    out whether the specialization key differs per preset (it should not for
    a resolution change) or the cache is not consulted, then fix that: it is
-   worth more than every warm optimization above for short clips.
+   worth more than every warm optimization above for short clips. (On Metal
+   the cache was later shown to hit across processes; see the note at the end
+   of 4.6.)
 2. **Ship compiled variants** for the common `(device, features)` keys with
    the wheel or build them at install (`benchmarks/_taichi_aot_build.py`
    exists), and fold the `torch.compile` of the PN dice into the same

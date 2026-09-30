@@ -174,7 +174,7 @@ def _whole_storage(sample):
 
 
 #: Offset/shape tables of recent ``pack`` calls, keyed by what they are a pure
-#: function of -- every bound tensor's data pointer, dtype and shape. A path
+#: function of -- every bound tensor's data pointer, dtype, shape and strides. A path
 #: tracer window launches the same tensor set for every one of its iterations
 #: (30 launches per frame at the shipped bounce count), and validating,
 #: offsetting and uploading the same tables each time measured 13 ms per
@@ -194,7 +194,10 @@ def clear_pack_cache():
 
 
 def _table_key(spec, tensors):
-    """The pure inputs of the tables: pointer, dtype and shape per tensor.
+    """The table inputs and validated layout, including strides per tensor.
+
+    A transpose can share pointers and shape with a contiguous tensor. It must
+    miss the cache and reach the contiguity check rather than reuse its tables.
 
     ``None`` when a tensor is not one (so ``pack`` raises its own message).
     """
@@ -211,6 +214,7 @@ def _table_key(spec, tensors):
                 t.untyped_storage().data_ptr(),
                 t.dtype,
                 tuple(t.shape),
+                tuple(t.stride()),
                 t.device,
             )
         )
@@ -236,7 +240,7 @@ def pack(spec, tensors):
     that has nothing to do with the array it was handed.
 
     The offset and shape tables are a pure function of the tensors' pointers,
-    dtypes and shapes and are cached on exactly that (``_table_cache``); the
+    dtypes, shapes and strides and are cached on exactly that (``_table_cache``); the
     validation runs on the first sight of a tensor set and the arena views are
     rebuilt per launch either way.
     """
