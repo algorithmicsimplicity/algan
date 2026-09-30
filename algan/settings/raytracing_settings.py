@@ -317,7 +317,7 @@ _IMPORT_FROZEN_FIELDS = {
 _POLYMORPHIC_FIELDS = frozenset(
     {
         "shadow_terminator",  # bool, plus "relax" for the third state
-        "shadow_anyhit",  # bool, plus "gather" for the kbuf gather-march
+        "shadow_anyhit",  # bool, "auto" (opaque proof), or "gather"
         "wf_gen_fused",  # str "auto", plus True/False forcing the mode
     }
 )
