@@ -8,9 +8,11 @@ that they now *report*: a WARNING naming the ceiling, and a count on the
 The four are not equally reachable, and the tests say so rather than pretending
 otherwise:
 
-* ``shadow_lights`` and ``sheet_layers`` are exercised by a real render of a
-  scene built to exceed them, which is the acceptance criterion the queue item
-  states.
+* ``shadow_lights`` is exercised by a real render of a scene built to exceed
+  it, which is the acceptance criterion the queue item states.
+* ``sheet_layers`` is retired: the sheet compaction no longer clamps the
+  conflict rank, so the same kind of render now checks that ranks past 15
+  survive and nothing is reported. The recorder tests below still read it.
 * ``surfaces_per_ray`` needs 257 surfaces stacked in one pixel, each thin
   enough that the ray's throughput has not already fallen under ``min_weight``
   by the 256th. That is a real render but a slow one, so it is checked here at
@@ -39,8 +41,8 @@ from algan.constants.color import BLUE
 from algan.logging.logger import PERF
 from algan.mobs.shapes_3d import Polyhedron
 from algan.rendering.lights import PointLight
+from algan.rendering.raytracing import sheets
 from algan.rendering.raytracing.shading_taichi import max_shadow_lights
-from algan.rendering.raytracing.sheets import SHEET_RANK_LIMIT
 from algan.rendering.raytracing.tracer import (
     ALLOC_NEXT,
     ALLOC_TRUNC_SURFACES,
@@ -394,7 +396,7 @@ def _stacked_faces(copies):
     A ``Polyhedron`` declares all of its faces as ONE surface, and 1e-4 keeps
     them inside a single depth band, so every pixel they share sees ``copies``
     overlapping layers of the same surface -- which is what the conflict rank
-    counts and what its four bits of the sheet key cannot hold past 16.
+    counts, and what four bits of the sheet key held only up to 16 of.
     """
     vertices, faces = [], []
     for i in range(copies):
@@ -405,10 +407,20 @@ def _stacked_faces(copies):
     return vertices, faces
 
 
-def test_a_stack_of_overlapping_faces_reports_the_sheet_layer_ceiling(
-    tmp_path, algan_logs
+def test_a_stack_of_overlapping_faces_keeps_ranks_past_sixteen(
+    tmp_path, algan_logs, monkeypatch
 ):
-    copies = SHEET_RANK_LIMIT + 9
+    copies = 24
+    deepest = []
+    original = sheets._sheet_rank_groups
+
+    def capture(*args, **kwargs):
+        groups, cid_band, rank_of_cid = original(*args, **kwargs)
+        if rank_of_cid.numel():
+            deepest.append(int(rank_of_cid.max()))
+        return groups, cid_band, rank_of_cid
+
+    monkeypatch.setattr(sheets, "_sheet_rank_groups", capture)
     SceneManager.reset()
     try:
         with Scene(video_settings=SMOKE_TEST) as scene:
@@ -424,8 +436,10 @@ def test_a_stack_of_overlapping_faces_reports_the_sheet_layer_ceiling(
     finally:
         SceneManager.reset()
 
-    assert result.render_plan.truncations.sheet_layers > 0
-    assert any(
+    assert deepest
+    assert max(deepest) >= copies - 1
+    assert result.render_plan.truncations.sheet_layers == 0
+    assert not any(
         record.levelno == logging.WARNING and "overlapped" in record.message
         for record in algan_logs.records
     ), [r.message for r in algan_logs.records]

@@ -987,9 +987,10 @@ Hard limits
        lights instead of summing them, authored-appearance materials
        included, and does not warn.
    * - Overlapping layers of one surface in one pixel
-     - 16
-     - Further layers merge into the last, and attenuate once between them
-       instead of once each. **Warns** (:ref:`limits-truncation`).
+     - No fixed cap
+     - Every layer attenuates once (earlier versions merged the 17th and
+       later layers into the 16th, which rendered too light). The limit on
+       surfaces composited along one primary ray still applies.
    * - Nested translucent closed-shell solids along one path-traced camera ray
      - 4
      - The surplus shell attenuates once per crossing instead of once per
@@ -1036,7 +1037,7 @@ time a render reaches it.
 Reading back what a render truncated
 ------------------------------------
 
-Three of the ceilings above degrade the image rather than raising, and a render
+The ceilings above that warn degrade the image rather than raising, and a render
 that reaches one says so once, at ``WARNING``, naming the ceiling and what it
 cost. They are warnings rather than the renderer's usual ``PERF`` budget
 messages because they change the picture: a batch split or a ray-pool retry is
@@ -1053,10 +1054,11 @@ check without reading logs::
 
 :class:`~.TruncationCounts` has one field per ceiling --
 ``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
-``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``. The
-counts are cumulative over the whole render, except ``shadow_lights``, which is
-a property of the scene rather than a tally of events and reports the worst
-batch.
+``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``.
+``sheet_layers`` counted the former 16-layer ceiling and now always reads
+zero; it is kept so earlier reports still read. The counts are cumulative over
+the whole render, except ``shadow_lights``, which is a property of the scene
+rather than a tally of events and reports the worst batch.
 
 Every counter is unconditional, so **a zero is a measurement**: it says the
 ceiling was watched and never reached, not that nothing was looking.

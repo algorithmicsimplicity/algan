@@ -19,10 +19,11 @@ The ceilings, and what each costs when it binds:
     *lit* -- they simply never cast.  Each :class:`~.RectAreaLight` emitter
     sample spends one slot, so a 4x4 area light fills the default cap alone.
 ``sheet_layers``
-    16 overlapping layers of one surface in one pixel (the conflict rank the
-    sheet compaction packs into the sheet key).  Layers past the 16th merge
-    into the last sub-band and attenuate once between them instead of once
-    each, so a self-overlapping morph renders too light.
+    Retired.  The sheet compaction used to clamp a fragment's conflict rank to
+    15, merging the 17th and later overlapping layers of one surface in one
+    pixel into the 16th, so a self-overlapping morph rendered too light.  It
+    now keeps every rank and never records this; the field and its message
+    stay so earlier reports and explicit recordings still read.
 ``dropped_continuations``
     A reflection/refraction continuation that could not reserve a slot in the
     tile's shared ray pool.  A *splitting* batch (``pool_ratio > 1``) discards
@@ -97,8 +98,8 @@ class TruncationCounts:
     #: over the cap in every batch they are spawned for -- so it is reduced
     #: with a maximum and reads as "this many lights went unshadowed".
     shadow_lights: int = 0
-    #: Fragments that were the 17th or later layer of their own surface in one
-    #: pixel, and so merged into the 16th sub-band.
+    #: Retired: fragments merged by the former 16-layer conflict-rank clamp.
+    #: The sheet compaction no longer clamps, so the renderer leaves it zero.
     sheet_layers: int = 0
     #: Reflection/refraction continuation rays that could not reserve a pool
     #: slot and were dropped.

@@ -379,7 +379,7 @@ derivation to `pt_sampler_probe` per pixel with no tolerance.
 
 ## The render path's fixed ceilings are counted, not silent
 
-`raytracing/truncation.py` counts surfaces per ray, shadowed lights, overlapping layers of one surface in a pixel, and dropped continuation rays. Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.
+`raytracing/truncation.py` counts surfaces per ray, shadowed lights, and dropped continuation rays (`sheet_layers`, the former 16-layer conflict-rank clamp, is retired and reads zero: the sheet compaction keeps every rank). Each warns **once per render job** at `WARNING` — these degrade the image, unlike the batch splits and pool retries that log at `PERF` because they are the memory model working — and the running totals ride on `RenderPlan.truncations`.
 
 The counters are unconditional, so a zero is a reading rather than a missing instrument; keep them that way when adding a ceiling.
 
