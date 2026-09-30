@@ -1503,8 +1503,11 @@ class Animatable:
                 # clone that other Mob's whole hierarchy besides.
                 "_pass_identity",
                 # The same for the parents a retired become() root resolves
-                # through (mob_morph._keep_pass_parents).
+                # through (mob_morph._keep_pass_parents) and the other
+                # identity routes a become() records.
                 "_pass_parents",
+                "_pass_tag_parents",
+                "_pass_owner_identity",
             ]:
                 continue
             if k in ["_parents"]:

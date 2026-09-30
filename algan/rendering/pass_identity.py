@@ -120,15 +120,24 @@ def auto_owner(mob: Mob) -> Mob:
     ...``: a glyph pack reports its ``Text``, a cap its ``Cylinder``, a
     triangulated fill its ``TriangulatedBezierCircuit``, a tick its
     ``NumberLine``, while ``Group(a, b)`` reports ``a`` and ``b`` separately.
-    If every node on the chain is a container, ``mob`` itself.
+    If every node on the chain is a container, the last drawn Mob ``mob``
+    stands for (``mob`` itself, a history clone's original): a stand-in for
+    a container keeps the identity it had, since the container has none of
+    its own to lend.
 
     Pass the actor the render registered (``scene._aux_id_registry[id]``), not
     a packed view: a view shares its pack's id but has no ``parents``.
     """
-    mob = render_identity(mob)
+    drawn, seen = mob, set()
+    step = mob
+    while step is not None and id(step) not in seen:
+        seen.add(id(step))
+        if not is_container(step):
+            drawn = step
+        step = getattr(step, "_pass_identity", None)
     owner = None
     seen = set()
-    node = mob
+    node = owner_identity(mob)
     while node is not None and id(node) not in seen:
         seen.add(id(node))
         if not is_container(node):
@@ -136,8 +145,22 @@ def auto_owner(mob: Mob) -> Mob:
         parents = pass_parents(node)
         # A parent spliced out by a become() is followed to the Mob that took
         # its place: the hierarchy the author sees in the end.
-        node = render_identity(parents[0]) if parents else None
-    return mob if owner is None else owner
+        node = owner_identity(parents[0]) if parents else None
+    return drawn if owner is None else owner
+
+
+def owner_identity(mob: Mob) -> Mob:
+    """:func:`render_identity`, then an ownership-only link if one is set.
+
+    A composite a ``become()`` retired whose result already carries a nearer
+    tag cannot stand for that result outright -- its other members would take
+    that tag -- but it is still the same object, so ``become`` records the
+    result in ``_pass_owner_identity`` (``mob_morph._hand_on_structure_identity``)
+    and only :func:`auto_owner` follows it.
+    """
+    mob = render_identity(mob)
+    successor = getattr(mob, "_pass_owner_identity", None)
+    return mob if successor is None else render_identity(successor)
 
 
 def pass_parents(mob: Mob):
@@ -147,7 +170,9 @@ def pass_parents(mob: Mob):
     parents without a Mob standing in its place -- a Group that became one of
     its own members, say -- the parents it had, which ``become`` records in
     ``_pass_parents`` (``mob_morph._keep_pass_parents``) so the members it
-    still holds keep reaching the tags and the owner above it.
+    still holds keep reaching the tags and the owner above it. The
+    ``pass_index`` search also walks ``_pass_tag_parents``, a tags-only route
+    (:func:`_resolved_pass_index`).
     """
     return getattr(mob, "parents", None) or getattr(mob, "_pass_parents", None) or ()
 
@@ -161,8 +186,7 @@ def resolve_pass_owner(mob: Mob) -> tuple[int, Mob]:
     :func:`auto_owner` of ``mob``. ``pass_id`` is always positive, so 0 stays
     free for the background.
     """
-    mob = render_identity(mob)
-    index, setter = _resolved_pass_index(mob)
+    index, setter = _resolved_pass_index(render_identity(mob))
     if index is not None:
         return int(index), setter
     owner = auto_owner(mob)
@@ -174,9 +198,11 @@ def _resolved_pass_index(mob: Mob):
 
     The same nearest-first, breadth-first search over ``parents``, except that
     every node visited is first followed to the Mob it stands for, so a tag on
-    a group still reaches a child whose parent a become() replaced, and that a
+    a group still reaches a child whose parent a become() replaced, that a
     become() root nothing stands in for continues through the parents it had
-    (:func:`pass_parents`).
+    (:func:`pass_parents`), and that a node's ``_pass_tag_parents`` -- the
+    source an unspliced dissolve replacement fades in for -- are searched
+    after its parents: tags reach through them, ownership does not.
     """
     queue = [mob]
     seen = set()
@@ -189,6 +215,7 @@ def _resolved_pass_index(mob: Mob):
         if index is not None:
             return index, node
         queue.extend(pass_parents(node))
+        queue.extend(getattr(node, "_pass_tag_parents", None) or ())
     return None, None
 
 

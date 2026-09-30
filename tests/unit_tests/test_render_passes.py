@@ -824,6 +824,151 @@ def test_become_keeps_ids_above_and_below_what_it_replaces(fresh_scene, tmp_path
         assert (lefts, rights) == ({6}, {5}), halves
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no_detach_into_group",
+        "lone_member_under_tagged_group",
+        "wrapped_composite_to_leaf",
+        "composite_dissolves_into_group",
+        "leaf_dissolves_into_wrapped_leaf",
+        "wrapped_text_to_text_tagged_after",
+        "outer_composite_tagged_after",
+        "grown_part_beside_member_group",
+    ],
+)
+def test_become_ids_through_wrappers_composites_and_new_parts(
+    fresh_scene, tmp_path, case
+):
+    """A Group wrapped around a single object is looked through on either
+    side, a composite is one object whichever side of a become it is on, a
+    replacement Group left beside its source (``detach_history=False``) keeps
+    its members apart, a tag set on the returned Mob afterwards reaches what
+    the source left behind, and a part grown for a surplus target never takes
+    a member group's tag. Left half: the object on the left; right half: the
+    right.
+    """
+    from algan.rendering.pass_identity import AUTO_ID_BASE
+
+    video = VIDEO.set(resolution=(64, 32), frames_per_second=4)
+    w, h = video.resolution
+
+    def circle(x, radius=0.5):
+        return Circle(radius=radius, add_to_scene=False).move_to(RIGHT * x)
+
+    with Scene(video_settings=video) as scene:
+        with Off():
+            a = Square(size=0.8).move_to(LEFT * 2.4)
+            b = Square(size=0.8).move_to(LEFT * 1.0)
+        if case == "no_detach_into_group":
+            with Off():
+                leaf = Circle(radius=0.5).move_to(LEFT * 2.4).spawn()
+            leaf.wait(1)
+            leaf.become(
+                Group(
+                    circle(-2.4),
+                    Square(size=0.8, add_to_scene=False).move_to(RIGHT * 2),
+                    add_to_scene=False,
+                ),
+                detach_history=False,
+            )
+        elif case == "lone_member_under_tagged_group":
+            with Off():
+                inner = Group(a)
+                group = Group(inner).spawn()
+            inner.pass_index = 7
+            group.pass_index = 5
+            group.wait(1)
+            group.become(circle(-2.4), strategy="dissolve")
+        elif case == "wrapped_composite_to_leaf":
+            with Off():
+                group = Group(_Molecule(a, b)).spawn()
+            group.wait(1)
+            group.become(circle(-2.4))
+        elif case == "composite_dissolves_into_group":
+            with Off():
+                molecule = _Molecule(a, b).spawn()
+            molecule.wait(1)
+            molecule.become(
+                Group(circle(-2.4), add_to_scene=False), strategy="dissolve"
+            )
+        elif case == "leaf_dissolves_into_wrapped_leaf":
+            with Off():
+                leaf = Circle(radius=0.5).move_to(LEFT * 2.4).spawn()
+            leaf.wait(1)
+            leaf.become(
+                Group(
+                    Square(size=0.8, add_to_scene=False).move_to(LEFT * 2.4),
+                    add_to_scene=False,
+                ),
+                strategy="dissolve",
+            )
+        elif case == "wrapped_text_to_text_tagged_after":
+            with Off():
+                text = Text("ab").scale(1.5).move_to(LEFT * 2)
+                group = Group(text).spawn()
+            text.pass_index = 6
+            group.wait(1)
+            result = group.become(
+                Text("abc", add_to_scene=False).scale(1.5).move_to(LEFT * 2)
+            )
+            assert result.pass_index == 6
+            result.pass_index = 9
+        elif case == "outer_composite_tagged_after":
+            with Off():
+                surplus = Square(size=0.6).move_to(LEFT * 0.3)
+                inner = Group(a, b, surplus)
+                outer = _Molecule(inner, Square(size=0.8).move_to(RIGHT * 2)).spawn()
+            outer.wait(1)
+            result = inner.become(Group(circle(-2.4), circle(-1.0), add_to_scene=False))
+            result.pass_index = 9
+        else:
+            with Off():
+                near = Square(size=0.6).move_to(LEFT * 0.4)
+                inner = Group(a, b)
+                group = Group(inner, near).spawn()
+            inner.pass_index = 7
+            group.wait(1)
+            group.become(
+                Group(
+                    Group(
+                        Group(circle(-2.4, 0.3), circle(2.5, 0.3), add_to_scene=False),
+                        circle(-1.0, 0.3),
+                        circle(-0.4, 0.3),
+                        add_to_scene=False,
+                    ),
+                    add_to_scene=False,
+                )
+            )
+        scene.wait(1)
+        result = scene.save_video(tmp_path / "wrapped.mp4", passes="object_id")
+    halves = _ids_per_half(result, w, h)
+    lefts = set().union(*(left for left, _ in halves))
+    rights = set().union(*(right for _, right in halves))
+    seen = lefts | rights
+    if case == "no_detach_into_group":
+        left, right = halves[-1]
+        assert len(left) == len(right) == 1, halves
+        assert not left & right, "two members of a plain Group share an id"
+    elif case == "lone_member_under_tagged_group":
+        assert seen == {7}, halves
+    elif case in (
+        "wrapped_composite_to_leaf",
+        "composite_dissolves_into_group",
+        "leaf_dissolves_into_wrapped_leaf",
+    ):
+        assert len(seen) == 1, halves
+    elif case == "wrapped_text_to_text_tagged_after":
+        assert seen == {9}, halves
+    elif case == "outer_composite_tagged_after":
+        assert lefts == {9}, halves
+        assert rights == {AUTO_ID_BASE + outer.id}, halves
+    else:
+        assert 7 in lefts, halves
+        assert rights, halves
+        assert 7 not in rights, "a grown part took the member group's tag"
+
+
 def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
     with Scene(video_settings=VIDEO) as scene:
         with Off():
