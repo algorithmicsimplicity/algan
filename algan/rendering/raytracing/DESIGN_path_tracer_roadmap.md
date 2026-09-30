@@ -194,7 +194,11 @@ These are not preferences; each is load-bearing and tested.
    place matching is worth having, because a user who fell back to the path
    tracer for a 3-D reason should not lose text and vector-graphics quality
    as collateral. A feature that would make unlit stacks stochastic is wrong
-   by construction here.
+   by construction here. The one deliberate exception is the camera's own
+   lens: with `camera.aperture > 0` a flat shape off the focus plane is
+   *meant* to blur, so its pixels sample the aperture (sampler pair 1) and are
+   flagged stochastic. At aperture 0 -- the default -- `pt_generate` takes the
+   untouched pinhole branch and this contract holds exactly.
 5. **The sampler dimension table** in `path_tracer_taichi.py`'s module
    docstring is the registry of who consumes randomness. Pairs
    `2 + 6b + 4, 5` are consumed by **medium free flights and HG directions** (§4).

@@ -170,7 +170,12 @@ row links to the section that explains it.
      - **No**
      - **No**
      - `Camera`_
-   * - Depth of field, motion blur
+   * - Depth of field (thin lens)
+     - **Refused**
+     - **Refused**
+     - Yes
+     - `Camera`_
+   * - Motion blur
      - **No**
      - **No**
      - **No**
@@ -188,11 +193,14 @@ row links to the section that explains it.
 
 "Triangles only" means the feature applies to triangle geometry and not to
 Bezier circuits -- see :ref:`limits-lit`. "Falls back" means the batch is routed
-off the analytic path onto the supersampled one. Nothing in this table is
-refused: where a renderer cannot honour a feature it says so here rather than
-dropping it silently, and if that ever changes Algan raises
-:class:`~algan.errors.UnsupportedFeatureError` naming the feature rather than
-rendering a wrong frame.
+off the analytic path onto the supersampled one. "Refused" means the renderer
+cannot draw the feature at all, so rather than render a wrong frame Algan
+raises :class:`~algan.errors.UnsupportedFeatureError` naming it (the
+``unsupported_feature_policy`` setting can downgrade that to a warning). Two
+features are refused by the deterministic renderer: depth of field, here, and
+homogeneous scattering media, described in
+`Homogeneous volumes and subsurface scattering`_. Everything else in this table
+that a renderer cannot honour is listed here rather than dropped silently.
 
 "Yes, as a delta lobe" is how the path tracer takes a **custom ray scatter**.
 Your function picks the direction; the path continues along the branch it
@@ -848,7 +856,13 @@ Camera
   geometry spanning a large depth range still converges slightly, and the
   extreme camera distance puts every world-space epsilon in
   :ref:`limits-scale` a long way from the geometry it is meant to separate.
-* **No depth of field**, no aperture, no focus distance. Everything is in focus.
+* **Depth of field is the path tracer's alone.** ``camera.aperture`` and
+  ``camera.focus_distance`` describe a thin lens (see
+  :ref:`camera-depth-of-field`); the path tracer samples it, and the
+  deterministic renderer, which has no lens model, refuses an open aperture.
+  The lens is ideal: a round, uniformly bright aperture, no vignetting, no
+  aberration, no bokeh shape and no focus breathing. The screen-space
+  background (a colour, image or callable) is not scenery and stays sharp.
 * **No motion blur.** Frames are instantaneous samples of the timeline.
 * **No lens distortion, no fisheye, no panoramic projection.**
 * ``camera.near > 0`` forces the supersampled fallback path for the whole batch.

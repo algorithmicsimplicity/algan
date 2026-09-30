@@ -550,6 +550,14 @@ def _slice_render_state(render_state, start, end, total_frames):
         "ray_origin": sliced(render_state["ray_origin"]),
         "screen_point": sliced(render_state["screen_point"]),
         "screen_basis": sliced(render_state["screen_basis"]),
+        # Optional: snapshots of cameras without a lens (test doubles) omit it,
+        # and a key missing here would silently drop the lens from every
+        # prefix retry and overlapped-prep window.
+        **(
+            {"camera_lens": sliced(render_state["camera_lens"])}
+            if "camera_lens" in render_state
+            else {}
+        ),
         "lights": [
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
@@ -2049,6 +2057,10 @@ class RenderLoopMixin:
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
+                    # Per-frame thin lens, passed explicitly rather than hung on
+                    # the live camera: only the path tracer reads it, and
+                    # projection never needs it.
+                    camera_lens=render_state.get("camera_lens"),
                 )
                 # Control is back, so the caller has taken every frame up to
                 # ``new_ind``: those are final and a later chunk's failure
@@ -3473,11 +3485,15 @@ class RenderLoopMixin:
                         None,
                     )
                 )
+        # ``[T, 1, 2]`` (aperture diameter, focus distance). getattr: the camera
+        # doubles some tests drive this mixin with have no lens.
+        lens_fn = getattr(camera, "_get_render_lens", None)
         return {
             **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera._get_render_screen_basis().to(device),
+            **({"camera_lens": lens_fn().to(device)} if lens_fn is not None else {}),
             "lights": lights,
             "light_objects": light_objects,
             "light_active": light_active,

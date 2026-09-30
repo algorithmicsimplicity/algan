@@ -10,7 +10,9 @@ It carries perspective projection, a field of view in degrees, and near/far
 clipping distances. ``set_near_orthographic`` approximates orthographic projection
 with a distant perspective camera; it is not a separate orthographic ray model. :meth:`Camera.center_on` frames a
 given Mob, and :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
-aims at a point.
+aims at a point. Its animatable ``aperture`` and ``focus_distance`` describe a
+thin lens, which the path tracer (``samples_per_pixel > 1``) renders as depth of
+field; :meth:`Camera.focus_at` racks the focus onto a Mob.
 
 Each Scene owns its own camera. The renderer consumes an immutable camera and
 light snapshot per frame batch, which is what lets batch preparation for the next
@@ -35,6 +37,7 @@ from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.utils.tensor_utils import (
     broadcast_gather,
     cast_to_direction,
+    cast_to_tensor,
     dot_product,
     squish,
     unsquish,
@@ -47,6 +50,48 @@ from algan.utils.tensor_utils import (
 #: which is what puts its screen between it and the ``ORIGIN`` rather than
 #: behind it.
 _CAMERA_BASIS = torch.stack((RIGHT, UP, INWARD))
+
+#: The thin-lens attributes, in the order the render snapshot packs them.
+_LENS_ATTRS = ("aperture", "focus_distance")
+
+#: Default distance of the plane in focus: the default Scene camera's distance
+#: from ``ORIGIN`` (``algan.manim_defaults.MANIM_FOCAL_DISTANCE``), so opening
+#: the aperture of a camera that has not been moved keeps ``ORIGIN`` sharp.
+DEFAULT_FOCUS_DISTANCE = 20.0
+
+#: Smallest focus distance the renderer is handed. ``focus_at`` a target at or
+#: behind the camera plane clamps here rather than inverting the lens.
+_MIN_FOCUS_DISTANCE = 1e-4
+
+
+def _validated_lens_value(name, value):
+    """Validate an ``aperture`` / ``focus_distance`` write.
+
+    Tensors are expected, not a defensive nicety: a materialized row is a
+    ``[T, 1, 1]`` tensor and ``Animatable.__deepcopy__`` copies every animatable
+    attribute through its setter.
+    """
+    if torch.is_tensor(value):
+        if not bool(torch.isfinite(value).all()):
+            raise AlganConfigurationError(f"{name} must be a finite number")
+        if name == "aperture" and bool((value < 0).any()):
+            raise AlganConfigurationError("aperture must be at least 0.0")
+        if name == "focus_distance" and bool((value <= 0).any()):
+            raise AlganConfigurationError("focus_distance must be greater than 0.0")
+        return value
+    if isinstance(value, bool):
+        raise AlganConfigurationError(f"{name} must be a finite number")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AlganConfigurationError(f"{name} must be a finite number") from exc
+    if not math.isfinite(result):
+        raise AlganConfigurationError(f"{name} must be a finite number")
+    if name == "aperture" and result < 0:
+        raise AlganConfigurationError("aperture must be at least 0.0")
+    if name == "focus_distance" and result <= 0:
+        raise AlganConfigurationError("focus_distance must be greater than 0.0")
+    return result
 
 
 class Camera(Mob):
@@ -82,6 +127,71 @@ class Camera(Mob):
     Alternatively :meth:`set_near_orthographic` flattens it almost completely --
     it is an approximation, not true parallel projection; see
     :doc:`/advanced_user_tutorials/renderer_limitations`.
+
+    Depth of field
+    --------------
+    The camera is a pinhole until ``aperture`` is opened. With an aperture the
+    path tracer (``SETTINGS.raytracing.samples_per_pixel > 1``) renders a thin
+    lens: points ``focus_distance`` in front of the camera are sharp, and
+    everything nearer or farther blurs by a disk that grows with its distance
+    from that plane. The deterministic renderer (``samples_per_pixel == 1``)
+    has no lens model, so a render there with an open aperture reports depth of
+    field as unsupported -- see
+    :ref:`renderer-capabilities <renderer-capabilities>`.
+
+    Parameters
+    ----------
+    orthographic
+        Whether to start in the near-orthographic approximation of
+        :meth:`set_near_orthographic`. Defaults to False.
+    screen_distance
+        Distance from the camera to its screen plane, in world units. Defaults
+        to ``5``. Ignored when ``fov`` is given.
+    screen_half_height
+        Half the height of the screen plane, in world units. Defaults to
+        ``2.5``.
+    fov
+        Vertical field of view in degrees, in (0, 180); fixes
+        ``screen_distance`` for the given screen size. Defaults to ``None``,
+        meaning ``screen_distance`` decides.
+    near
+        Near clip plane distance in world units along the forward axis. Defaults
+        to ``0.0``, meaning no near clipping.
+    far
+        Far clip distance in world units along each ray. Defaults to ``0.0``,
+        meaning no far clipping.
+    aperture
+        Initial lens aperture diameter, in world units. Defaults to ``0.0``,
+        a pinhole: everything in focus.
+    focus_distance
+        Initial distance of the plane in focus, in world units along the
+        camera's forward axis. Defaults to ``20.0``, the distance from the
+        default Scene camera to ``ORIGIN``.
+
+    Attributes
+    ----------
+    aperture
+        Diameter of the lens, in world units; a finite number of at least
+        ``0.0``. A point at distance ``d`` along the forward axis is blurred
+        into a disk whose diameter, measured on the plane in focus, is
+        ``aperture * |d - focus_distance| / d`` -- so an object at infinity blurs
+        by exactly the aperture's own size seen at the focus plane. ``0`` is a
+        pinhole. Only the path tracer renders it.
+    focus_distance
+        Distance from the camera to the plane in sharp focus, measured along
+        the forward axis (a plane parallel to the screen, not a sphere), in
+        world units; a finite number greater than ``0.0``. Has no visible
+        effect while ``aperture`` is ``0``.
+
+    Animation
+    ---------
+    ``aperture`` and ``focus_distance`` are animatable attributes: writing
+    ``camera.focus_distance = 12`` after spawn (the Scene's camera is always
+    spawned) is *recorded* and interpolates over the current context's runtime
+    (1 second by default), which is how a rack focus is animated. Wrap setup in
+    ``with Off():`` to apply it instantly. :meth:`focus_at` animates the focus
+    onto a Mob or point, following it while the camera or target moves.
+    ``near`` and ``far`` are configuration, not animation.
     """
 
     #: Width over height of the :class:`~.CameraView` capture this camera
@@ -98,6 +208,8 @@ class Camera(Mob):
         near=0.0,
         far=0.0,
         *args,
+        aperture=0.0,
+        focus_distance=DEFAULT_FOCUS_DISTANCE,
         **kwargs,
     ):
         # fov (vertical, degrees) is an alternative way to specify the
@@ -114,12 +226,26 @@ class Camera(Mob):
         self._near = self._validated_clip("near", near)
         self._far = self._validated_clip("far", far)
         self._validate_clip_order(self._near, self._far)
+        # Validated into locals: once the properties are attached, assigning
+        # self.aperture would route into set_animated_attribute before
+        # Animatable.__init__ has built the state it reads (the Light.intensity
+        # pattern).
+        aperture = _validated_lens_value("aperture", aperture)
+        focus_distance = _validated_lens_value("focus_distance", focus_distance)
+        # Registered before super().__init__() so Animatable's accessor
+        # generation installs set_aperture / get_focus_distance and friends.
+        self.register_attrs_as_animatable(list(_LENS_ATTRS), Camera)
         # Camera ownership is managed by Scene; tolerate the common generic
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
         kwargs.setdefault("basis", squish(_CAMERA_BASIS))
         super().__init__(*args, add_to_scene=False, **kwargs)
         self.animatable_attrs.remove("color")
+        # Before the screen exists: with no children, _init_default_attr
+        # allocates only the camera's own row instead of falling back to the
+        # recursive setter, which would give the screen a lens as well.
+        self._init_default_attr("aperture", cast_to_tensor(aperture))
+        self._init_default_attr("focus_distance", cast_to_tensor(focus_distance))
         with Off(animation_manager=self.animation_manager):
             self.orthographic = orthographic
             self.screen = Mob(
@@ -127,6 +253,9 @@ class Camera(Mob):
                 location=self.location + screen_distance * self.get_forward_direction(),
                 add_to_scene=False,
             )
+            # The screen is a projection proxy, not an optical element: a lens
+            # write on the camera must not allocate (or tween) rows on it.
+            self.screen._excluded_from_parent_attrs = frozenset(_LENS_ATTRS)
             self.screen.scale(
                 torch.tensor((1 / screen_half_height, 1 / screen_half_height, 1))
             )
@@ -141,6 +270,25 @@ class Camera(Mob):
         if orthographic:
             with Off(animation_manager=self.animation_manager):
                 self.set_near_orthographic()
+
+    def set_animated_attribute(self, attr, value, recursive=True):
+        """Animate one animatable attribute to a new value, by name.
+
+        As :meth:`~.Mob.set_animated_attribute`, and additionally the one place
+        a lens write is checked. Every route to ``aperture`` and
+        ``focus_distance`` -- assignment, ``set_aperture``, :meth:`~.Mob.set`
+        and :meth:`~.Mob.set_non_recursive` -- passes through here.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``attr`` is ``"aperture"`` and ``value`` is not a finite number
+            of at least ``0.0``, or ``"focus_distance"`` and ``value`` is not a
+            finite number greater than ``0.0``.
+        """
+        if attr in _LENS_ATTRS:
+            value = _validated_lens_value(attr, value)
+        return super().set_animated_attribute(attr, value, recursive=recursive)
 
     @property
     def pixel_height(self):
@@ -581,9 +729,7 @@ class Camera(Mob):
             Scene.save_video()
         """
         point = cast_to_direction("point", point)
-        depth = ((point - self.location) * self.get_forward_direction()).sum(
-            -1, keepdim=True
-        )
+        depth = self._depth_of(point)
         if not torch.isfinite(point).all() or (depth <= 0).any():
             raise AlganConfigurationError(
                 "point must be finite and in front of the camera"
@@ -594,6 +740,105 @@ class Camera(Mob):
             self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
         )
         return torch.cat((height * aspect, height), dim=-1)
+
+    def _depth_of(self, point):
+        """Distance of ``point`` in front of the camera along its forward axis.
+
+        The planar depth the near clip, :meth:`visible_size_at` and the thin
+        lens's focus plane all use: a point anywhere on the plane parallel to
+        the screen at depth ``d`` answers ``d``, not its slant range.
+        """
+        return ((point - self.location) * self.get_forward_direction()).sum(
+            -1, keepdim=True
+        )
+
+    def focus_at(self, target: Mob | torch.Tensor | tuple | list) -> Camera:
+        """Pull the camera's focus onto a Mob or a point.
+
+        Sets ``focus_distance`` to the target's depth: its distance in front of
+        the camera along the forward axis, so the plane in focus passes through
+        the target's centre. Only visible where depth of field is rendered --
+        with an open ``aperture`` under the path tracer
+        (``samples_per_pixel > 1``).
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default): the plane in focus travels from its current distance to
+        the target, the classic rack focus. The target's depth is measured
+        again on every frame of the pull, so a subject or a camera that moves
+        during it is sharp when the pull lands; afterwards the distance stays
+        at the value measured when the call was recorded, and a target that
+        keeps moving drifts out of focus (call ``focus_at`` again). Use
+        ``with Seq(runtime=2): ...`` to retime the pull or ``with Off(): ...``
+        to focus instantly. Changes only this camera's ``focus_distance``.
+
+        Parameters
+        ----------
+        target
+            The Mob to focus on (its centre), or a world-space point, a tensor
+            or sequence of shape ``(3,)``.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~.AlganConfigurationError`
+            If a point is not a finite 3-vector, or the target is not in front
+            of the camera when the call is recorded.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            SETTINGS.raytracing.set(samples_per_pixel=64)
+            near = Sphere(radius=0.5).move_to(LEFT * 2 + OUT * 4).spawn()
+            far = Cube().move_to(RIGHT * 2 + IN * 4).spawn()
+            camera = Scene.get_camera()
+            with Off():
+                camera.aperture = 0.8
+                camera.focus_at(near)
+            with Seq(runtime=2):
+                camera.focus_at(far)
+            Scene.save_video()
+        """
+        if not isinstance(target, Mob):
+            target = self._shot_point("target", target)
+            point = target
+        else:
+            point = target.get_center()
+        depth = self._depth_of(point)
+        if not bool(torch.isfinite(depth).all()) or bool((depth <= 0).any()):
+            raise AlganConfigurationError(
+                "focus_at target must be in front of the camera"
+            )
+        return self._focus_at(target)
+
+    @animated_function(animated_args={"interpolation": 0})
+    def _focus_at(self, target, interpolation=1):
+        point = target.get_center() if isinstance(target, Mob) else target
+        # During replay this is the frame's own camera and target, and a
+        # [T, 1, 1] interpolation; clamped so a target that passes behind the
+        # camera mid-pull never hands the renderer a non-positive distance.
+        depth = self._depth_of(point).clamp_min(_MIN_FOCUS_DISTANCE)
+        start = self.focus_distance
+        self.focus_distance = start * (1 - interpolation) + depth * interpolation
+        return self
+
+    def _get_render_lens(self):
+        """Per-frame ``(aperture, focus_distance)`` for the render snapshot.
+
+        Shape ``[T, 1, 2]`` after materialization (``[1, 1, 2]`` before), in
+        world units, the lens diameter first. Read by the render loop beside
+        :meth:`_get_render_screen_basis`; only the path tracer consumes it.
+        """
+        aperture = self.aperture
+        focus = self.focus_distance
+        aperture, focus = torch.broadcast_tensors(aperture, focus)
+        return torch.cat((aperture, focus), dim=-1)
 
     def _get_render_screen_basis(self):
         """Per-frame screen basis used by the renderers to project the scene.

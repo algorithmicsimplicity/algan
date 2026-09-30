@@ -155,7 +155,9 @@ next-event pairs it may draw, plus the lobe select every crossing draws:
 pair                           use
 =============================  ================================================
 0                              sub-pixel jitter (2D)
-1                              lens (2D) -- reserved for depth of field
+1                              lens (2D): a point on the thin lens's
+                               aperture disk (``pt_generate``; unused while
+                               the frame's aperture is 0)
 2 + 6b + 0                     bounce ``b``: y Russian roulette (x unused --
                                the roulette draw keeps one component)
 2 + 6b + 1                     bounce ``b``: BSDF direction (2D)
@@ -290,11 +292,20 @@ PT_ACC_WIDTH = 10
 _PT_ACC_LEFTOVER = 4
 _PT_ACC_ALPHA = 8
 #: 1.0 once the path has made any random choice beyond the sub-pixel jitter:
-#: a lit crossing (next-event estimation picks an emitter), an authored
+#: a lens sample (``pt_generate``, whenever the frame's aperture is open), a
+#: lit crossing (next-event estimation picks an emitter), an authored
 #: crossing or a custom scatter, or a lobe pick with more than the
 #: pass-through branch available. Sticky -- only ever written 1.0, and
-#: ``pt_acc`` is zeroed once per wave, so it survives the several ``pt_shade``
-#: launches one path takes.
+#: ``pt_acc`` is zeroed once per wave, before ``pt_generate``, so it survives
+#: the several ``pt_shade`` launches one path takes.
+#:
+#: The lens sample needs it as much as a light draw does: a small bright shape
+#: out of focus is hit by only a fraction of the lens positions, so the first
+#: few samples of a bokeh pixel can all miss it, agree at black, and freeze the
+#: pixel there. Flagged, every pixel of a depth-of-field frame runs to the
+#: ceiling (and is denoised); no rule narrower than "the aperture is open" is
+#: safe, because an escaping lens ray cannot know a neighbouring lens position
+#: would have hit something.
 #:
 #: A path that never sets it is deterministic GIVEN ITS JITTER: an unlit
 #: transparent stack (pass-through at probability 1), an unlit opaque absorb,
@@ -1794,6 +1805,27 @@ def pt_offset_probe(points: ti.types.ndarray(), normals: ti.types.ndarray(),
             out[i, k] = q[k]
 
 
+@ti.func
+def _pt_concentric_disk(u):
+    """Map a unit-square sample onto the unit disk (Shirley & Chiu 1997).
+
+    Area-preserving and continuous, so the stratification of the Sobol pair
+    that feeds it survives onto the aperture; the polar map ``r = sqrt(u)``
+    would tear the square's strata apart at the seam.
+    """
+    a = 2.0 * u[0] - 1.0
+    b = 2.0 * u[1] - 1.0
+    r = 0.0
+    phi = 0.0
+    if a * a > b * b:
+        r = a
+        phi = 0.7853981633974483 * (b / a)
+    elif b != 0.0:
+        r = b
+        phi = 1.5707963267948966 - 0.7853981633974483 * (a / b)
+    return ti.math.vec2(r * ti.cos(phi), r * ti.sin(phi))
+
+
 @ti.kernel
 def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 seed_root: ti.u32, animated_seed: ti.i32, time_start: ti.i32,
@@ -1805,7 +1837,8 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                 pix_list: ti.types.ndarray(),
                 rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
                 rs_sca: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
-                nee_meta: ti.types.ndarray()):
+                nee_meta: ti.types.ndarray(), lens: ti.types.ndarray(),
+                pt_acc: ti.types.ndarray()):
     """Write each slot's jittered primary ray.
 
     Slot layout: ``slot = k * tile_pixels + p_local`` holds wave sample
@@ -1841,8 +1874,22 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
     the one word (and the one table) both ends of the sampler have to agree
     on: ``_NM_BLUE_NOISE`` and, behind it, the blue-noise tile at
     ``_NM_BN_BASE``. An ordinary ndarray parameter rather than an arena
-    binding because this kernel is not arena-packed (it takes eight arrays,
+    binding because this kernel is not arena-packed (it takes a dozen arrays,
     not forty).
+
+    ``lens`` is the thin lens, ``[T_lens, 2]`` rows of (aperture RADIUS,
+    focus distance) in world units, indexed ``f % T_lens`` so one row serves a
+    static camera and the host's ``[1, 2]`` zero row serves a pinhole. Where a
+    frame's radius is positive the ray starts at a point of the aperture disk
+    (sampler pair ``PAIR_LENS``, Shirley-Chiu concentric mapping) and is aimed
+    at the point its pinhole ray meets the focus plane -- the plane
+    ``focus`` in front of the camera along its forward axis, parallel to the
+    screen, the same planar depth the near clip uses. The aperture disk lies
+    in that plane's parallel through the camera, so the near-clip advance
+    below stays exact for a lens origin. Such a path is flagged stochastic in
+    ``pt_acc`` (see ``_PT_ACC_STOCH``), which the host zeroes before this
+    launch. A zero radius leaves the pinhole arithmetic untouched, bit for
+    bit.
     """
     pixels_per_frame = width * height
     blue_noise = nee_meta[_NM_BLUE_NOISE] > 0.5
@@ -1869,6 +1916,30 @@ def pt_generate(num_slots: ti.i32, tile_pixels: ti.i32, sample_base: ti.i32,
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
                                pixel_basis_x, pixel_basis_y)
+        tl = f % lens.shape[0]
+        lens_r = lens[tl, 0]
+        if lens_r > 0.0:
+            # Thin lens. The lens basis is the camera's own: forward from the
+            # screen point (as the near clip builds it), right from the
+            # pixel basis, which is screen_half_height * right; the
+            # Gram-Schmidt step only guards a hand-built screen. The new
+            # direction is formed relative to the eye -- the pinhole ray
+            # scaled to the focus plane, minus the lens offset -- rather than
+            # from an absolute focus point, which would cost f32 digits at the
+            # 1e5-unit camera distance of the near-orthographic mode.
+            fwd_l = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                                  screen_point[f, 2]) - ro).normalized()
+            bx = ti.math.vec3(pixel_basis_x[f, 0], pixel_basis_x[f, 1],
+                              pixel_basis_x[f, 2])
+            ex = (bx - fwd_l * bx.dot(fwd_l)).normalized()
+            ey = fwd_l.cross(ex)
+            disk = _pt_concentric_disk(
+                pt_sample_2d_seeded(path_seed, PAIR_LENS, s)) * lens_r
+            off = ex * disk[0] + ey * disk[1]
+            t_focus = lens[tl, 1] / ti.max(rd.dot(fwd_l), 1e-6)
+            rd = (rd * t_focus - off).normalized()
+            ro = ro + off
+            pt_acc[slot, _PT_ACC_STOCH] = 1.0
         if near_clip > 0.0:
             # Near plane, identical to ``wavefront_generate_rays``: advance
             # the origin to the plane at ``near_clip`` along the camera's

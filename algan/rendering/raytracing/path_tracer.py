@@ -12,6 +12,8 @@ Structure per chunk::
         allocate per-slot state, pool = tile_pixels * wave_samples
         for wave of samples:                  # slot = (wave sample, wave pixel)
             pt_generate                       # jittered primaries, one per slot
+                                              # (thin-lens origins when the
+                                              # frame's aperture is open)
             while any path is active:
                 wavefront_traverse_events     # SHARED with the deterministic
                                               # renderer: same state layout, so
@@ -1147,6 +1149,7 @@ def path_trace_render(
     samples,
     env_meta=None,
     aovs=None,
+    lens=None,
     out,
     accum,
     accum_odd=None,
@@ -1176,6 +1179,12 @@ def path_trace_render(
     ``path_tracer_taichi``): the caller divides by ``samples`` and folds
     ``bg_weight`` with its own background colors (the kernel does not know
     them). ``None`` skips all AOV work.
+
+    ``lens``, when given, is the batch's per-frame thin lens: a ``[frames or
+    1, 2]`` float32 arena tensor of (aperture RADIUS, focus distance) in world
+    units, indexed by the same batch frame as ``cam_origin`` (see
+    ``pt_generate``). ``None`` is a pinhole: a one-row zero tensor stands in so
+    the kernel keeps a single variant.
 
     ``accum_odd`` is the adaptive sampler's stopping-rule buffer -- a zeroed
     ``[frames, pixels, 4]`` float32 tensor the caller allocates exactly when
@@ -1249,6 +1258,11 @@ def path_trace_render(
         gen_meta = _arena_values(
             memory, [0.5, 0.5, float(half_screen_w), float(half_screen_h)], f32
         )
+        if lens is None:
+            # A zero radius is the kernel's pinhole branch. Same dtype and
+            # rank as a real lens table, so pinhole and lens renders share
+            # one compiled pt_generate.
+            lens = _arena_values(memory, [0.0, 0.0], f32).view(1, 2)
     # The power-weighted next-event table + environment CDF for this call
     # (before the tile budget is taken, so their bytes are accounted).
     # Timed and logged at PERF: this is host work per chunk (the light tree
@@ -1406,6 +1420,10 @@ def path_trace_render(
                     rs_sca,
                     rs_pix,
                     nee_meta,
+                    lens,
+                    # After the zero_() above: pt_generate raises the path's
+                    # stochastic flag for a lens sample, and nothing clears it.
+                    pt_acc,
                 )
                 active = compactor.initial(slots)
                 it = 0

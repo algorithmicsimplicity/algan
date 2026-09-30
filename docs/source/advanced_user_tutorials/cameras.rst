@@ -209,6 +209,82 @@ from blocking the view when flying a camera deep into a scene.
     recorded on the timeline. Set them once, before spawning, and render separate
     videos if you need to show two different settings.
 
+.. _camera-depth-of-field:
+
+Depth of Field
+==============
+
+The camera is a pinhole by default: everything is in focus. Opening its
+``aperture`` turns it into a thin lens. The plane ``focus_distance`` in front
+of the camera stays sharp, and anything nearer or farther blurs into a disk
+that grows with its distance from that plane. Depth of field is rendered by the
+path tracer, so it needs ``samples_per_pixel > 1``:
+
+.. code-block:: python
+
+    from algan import *
+
+    SETTINGS.raytracing.set(samples_per_pixel=64)
+
+    subject = Sphere(radius=0.8, color=BLUE).spawn()
+    foreground = Cube(size=0.6, color=RED).move_to(LEFT * 1.5 + OUT * 8).spawn()
+    background = Cube(size=2, color=GREEN).move_to(RIGHT * 3 + IN * 12).spawn()
+
+    camera = Scene.get_camera()
+    with Off():
+        camera.aperture = 0.6        # lens diameter, world units
+        camera.focus_at(subject)     # focus_distance = the sphere's depth
+
+    Scene.wait(1)
+    with Seq(runtime=2):
+        camera.focus_at(foreground)  # rack focus to the red cube
+    Scene.wait(1)
+
+    Scene.save_video()
+
+Both values are in world units:
+
+* ``aperture`` is the lens **diameter**. A point at distance ``d`` along the
+  camera's forward axis blurs into a disk of diameter
+  ``aperture * |d - focus_distance| / d``, measured on the plane in focus: an
+  object at infinity blurs by exactly the aperture's size seen at that plane.
+  ``0`` (the default) is a pinhole.
+* ``focus_distance`` is measured along the forward axis, so the region in focus
+  is a plane parallel to the screen, not a sphere around the camera. It
+  defaults to ``20``, the default camera's distance to ``ORIGIN``: opening the
+  aperture of a camera you have not moved keeps the ``ORIGIN`` plane sharp.
+
+Unlike the clip planes, both are **animated attributes**. Writing either after
+the camera is spawned -- and the Scene's camera always is -- records a tween
+over the current context's runtime, which is how a rack focus is made; wrap
+setup in ``with Off():``, as above. :meth:`~algan.rendering.camera.Camera.focus_at`
+takes a Mob or a point and animates ``focus_distance`` onto its depth,
+re-measuring it on every frame of the pull so a moving subject is sharp when
+the pull lands. After the pull the distance stays put; a subject that keeps
+moving drifts out of focus until you call ``focus_at`` again.
+
+A few things to know:
+
+* **The deterministic renderer has no lens.** A render with an open aperture
+  and ``samples_per_pixel == 1`` raises
+  :class:`~algan.errors.UnsupportedFeatureError` naming depth of field. To
+  preview such a shot quickly as a pinhole, set
+  ``SETTINGS.raytracing.set(unsupported_feature_policy="warn")`` for the
+  preview and back to ``"error"`` for the final render.
+* **Blur costs samples.** Every lens position is a random choice, so adaptive
+  sampling never stops a depth-of-field pixel early: each one takes the full
+  ``samples_per_pixel`` (and the denoiser smooths what remains). Wide
+  apertures on bright, small, far-out-of-focus shapes need the most samples.
+* **Flat 2-D content blurs too.** Text and shapes are ordinary geometry at a
+  depth, so a caption far from the focus plane goes soft. Keep what must stay
+  legible near ``focus_distance``, or composite it separately.
+* **The background colour, image or callable stays sharp**: it is a
+  screen-space backdrop, not an object in the scene. An environment map is
+  scenery at infinity and blurs like any distant object.
+* The **near-orthographic** mode puts the camera ``1e5`` units away, where any
+  world-sized aperture subtends almost nothing: depth of field is effectively
+  invisible there.
+
 Screen Coordinates
 ==================
 
@@ -330,6 +406,7 @@ See Also
   moving subject.
 * :doc:`lighting_and_shadows` -- lights, and the rig that goes with a camera move.
 * :doc:`renderer_limitations` -- what the camera model does not do, including
-  true orthographic projection and depth of field.
+  true orthographic projection and motion blur, and which renderer draws depth
+  of field.
 * :doc:`performance_and_quality` -- what actually makes a render expensive, and what
   to do about it.

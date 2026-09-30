@@ -1008,10 +1008,30 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity, devic
     return light_pos, light_col, num_lights + 1
 
 
+def _lens_is_open(camera_lens):
+    """Whether any frame of a ``[T, 1, 2]`` lens snapshot has an aperture.
+
+    ``None`` -- a camera without a lens, or a caller that passes none -- is a
+    pinhole.
+    """
+    if camera_lens is None:
+        return False
+    return bool((camera_lens[..., 0] > 0).any())
+
+
 def _build_render_plan(
-    samples_per_pixel, scene_environment_map, merged, light_sources=()
+    samples_per_pixel,
+    scene_environment_map,
+    merged,
+    light_sources=(),
+    depth_of_field=False,
 ):
-    """Resolve the renderer route and feature compatibility for a batch."""
+    """Resolve the renderer route and feature compatibility for a batch.
+
+    ``depth_of_field`` is True when some frame of the batch has an open camera
+    aperture (see :func:`_lens_is_open`); it comes from the camera snapshot,
+    not from ``merged``.
+    """
     samples_requested = max(1, int(samples_per_pixel))
     backend = "path_tracer" if samples_requested > 1 else "deterministic_wavefront"
     requested = []
@@ -1034,6 +1054,12 @@ def _build_render_plan(
         for light in (light_sources or ())
     ):
         requested.append("extended lights")
+    if depth_of_field:
+        # The deterministic renderer has no lens model: it would draw a sharp
+        # pinhole frame where the author asked for defocus, so it says so.
+        requested.append("depth of field")
+        if samples_requested <= 1:
+            unsupported.append("depth of field")
     return RenderPlan(
         backend=backend,
         samples_per_pixel=samples_requested,
@@ -1043,22 +1069,28 @@ def _build_render_plan(
 
 
 def _validate_render_capabilities(
-    samples_per_pixel, scene_environment_map, merged, light_sources=()
+    samples_per_pixel,
+    scene_environment_map,
+    merged,
+    light_sources=(),
+    depth_of_field=False,
 ):
     """Apply the unsupported-feature policy to the selected renderer.
 
     Selection is explicit: one sample uses the deterministic renderer; more
     than one uses the path tracer. The capability checks here cover the feature
     metadata collected by ``_build_render_plan``, not every possible geometry,
-    user shader or allocation error. Homogeneous scattering currently requires
-    the path tracer. The policy raises by default; warning and ignore modes are
-    intended for controlled migration and comparisons, not silent fallbacks.
+    user shader or allocation error. Homogeneous scattering and depth of field
+    currently require the path tracer. The policy raises by default; warning
+    and ignore modes are intended for controlled migration and comparisons (a
+    pinhole preview of a depth-of-field shot, say), not silent fallbacks.
     """
     plan = _build_render_plan(
         samples_per_pixel,
         scene_environment_map,
         merged,
         light_sources,
+        depth_of_field=depth_of_field,
     )
     if plan.unsupported_features:
         feature_list = ", ".join(plan.unsupported_features)
@@ -1192,6 +1224,7 @@ def render_batch_raytraced(
     light_sources=(),
     memory=None,
     post_processes=(),
+    camera_lens=None,
     **kwargs,
 ):
     """Render a primitive batch through the selected hybrid or path tracer.
@@ -1202,6 +1235,11 @@ def render_batch_raytraced(
     structures, hit events, path/continuation state and post-processing scratch;
     it is not independent of scene complexity. The enclosing render loop owns
     frame-window retries, while renderer-specific tiling bounds transient work.
+
+    ``camera_lens`` is the batch's per-frame ``[T, 1, 2]`` (aperture diameter,
+    focus distance) snapshot, or None for a pinhole. Only the path tracer
+    renders it; the deterministic renderer reports an open aperture as an
+    unsupported feature.
     """
     # Read the user-toggleable settings *live* from the settings module.
     # These names used to be imported by value at module-import time, which
@@ -1218,6 +1256,7 @@ def render_batch_raytraced(
     env_source = env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
+    depth_of_field = _lens_is_open(camera_lens)
     if merged is None:
         merged_host = _merge_scene(primitives, light_sources=light_sources)
         # Validate on host metadata before reserving/copying the persistent
@@ -1228,6 +1267,7 @@ def render_batch_raytraced(
             scene_env_map,
             merged_host,
             light_sources,
+            depth_of_field=depth_of_field,
         )
         if env_map is not None:
             merged_host = dict(merged_host)
@@ -1245,6 +1285,7 @@ def render_batch_raytraced(
             scene_env_map,
             merged,
             light_sources,
+            depth_of_field=depth_of_field,
         )
     scene.last_render_plan = plan
 
@@ -1338,6 +1379,16 @@ def render_batch_raytraced(
     pixel_world_scale_host = (
         2.0 / clamp_floor(screen_height * aa * b1_norm * screen_dist, 1e-12)
     ).contiguous()
+    # The thin lens, for the path tracer only and only when some frame of the
+    # batch opens the aperture: a pinhole batch uploads nothing and takes the
+    # kernel's untouched pinhole branch. Radius, not diameter, is what the
+    # kernel scales its unit-disk sample by.
+    lens_host = None
+    if depth_of_field and int(samples_per_pixel) > 1:
+        lens_host = _expand_frames(
+            _flat_frames(_host_tensor(camera_lens), (2,)), num_frames
+        ) * torch.tensor([0.5, 1.0], dtype=torch.float32)
+        lens_host = lens_host.contiguous()
     # Camera and packed-light inputs cover the whole prepared batch and are
     # paid once, so they are one calibration scope even though the light copies
     # happen further down (nothing else allocates in between).
@@ -1347,6 +1398,7 @@ def render_batch_raytraced(
         pbx = _arena_copy(memory, pbx_host)
         pby = _arena_copy(memory, pby_host)
         pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
+        lens = _arena_copy(memory, lens_host) if lens_host is not None else None
 
     # An animated/image background arrives super-sampled at the *requested*
     # anti-alias level (Scene.set_background and
@@ -1859,6 +1911,7 @@ def render_batch_raytraced(
                         samples=samples_eff,
                         env_meta=env_meta,
                         aovs=aovs,
+                        lens=lens,
                         out=out,
                         accum=accum,
                         accum_odd=accum_odd,
