@@ -1056,8 +1056,36 @@ def _function_chains(function):
 #: Loads that begin a chain, by what the name means.
 _GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
 _DEREF_LOADS = frozenset({"LOAD_DEREF", "LOAD_CLASSDEREF", "LOAD_FROM_DICT_OR_DEREF"})
-_FAST_LOADS = frozenset({"LOAD_FAST", "LOAD_FAST_CHECK", "LOAD_FAST_AND_CLEAR"})
+#: 3.14's ``LOAD_FAST_BORROW`` is ``LOAD_FAST`` minus a refcount; left out of
+#: this set, every import-bound local read on 3.14 dropped out of the key.
+_FAST_LOADS = frozenset(
+    {"LOAD_FAST", "LOAD_FAST_CHECK", "LOAD_FAST_AND_CLEAR", "LOAD_FAST_BORROW"}
+)
 _ATTR_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
+
+#: The 3.13+ superinstructions over locals, each as the two plain instructions
+#: it fuses, in execution order. The walk reads them as those two, because each
+#: half means what it would alone: in ``LOAD_FAST_LOAD_FAST (a, b)`` ``a`` is a
+#: bare read whose chain ends there, and ``STORE_FAST_LOAD_FAST`` is what 3.13
+#: compiles ``import math as m; return m.pi`` to when both sit on one line --
+#: the binding *and* the read in one instruction.
+_FUSED_LOCALS = {
+    "LOAD_FAST_LOAD_FAST": ("LOAD_FAST", "LOAD_FAST"),
+    "LOAD_FAST_BORROW_LOAD_FAST_BORROW": ("LOAD_FAST", "LOAD_FAST"),
+    "STORE_FAST_LOAD_FAST": ("STORE_FAST", "LOAD_FAST"),
+    "STORE_FAST_STORE_FAST": ("STORE_FAST", "STORE_FAST"),
+}
+
+
+def _unfused(code):
+    """``(opname, argval)`` per instruction of ``code``, superinstructions split."""
+    for instruction in dis.get_instructions(code):
+        halves = _FUSED_LOCALS.get(instruction.opname)
+        if halves is None:
+            yield instruction.opname, instruction.argval
+        else:
+            yield from zip(halves, instruction.argval)
+
 
 _CODE_CHAINS = {}
 _CODE_LOCALS = {}
@@ -1072,12 +1100,15 @@ def _code_chains(code):
     is the ``LOAD_ATTR`` chain that immediately follows the load. Memoized per
     code object; the *values* are resolved fresh on every key computation.
 
-    The import forms, as CPython 3.11-3.13 compile them: ``import a.b`` is
+    The import forms, as CPython 3.11-3.14 compile them: ``import a.b`` is
     ``IMPORT_NAME a.b`` then ``STORE_FAST a`` and binds the *top* package;
     ``import a.b as c`` and ``from a import b as c`` both go through
     ``IMPORT_FROM b`` first and bind that attribute; ``from a import b, c``
     issues one ``IMPORT_FROM``/``STORE_FAST`` pair per name off the one module
-    left on the stack, which the closing ``POP_TOP`` drops.
+    left on the stack, which the closing ``POP_TOP`` drops. From 3.13 the
+    stores and loads may arrive fused into one superinstruction, and 3.14 adds
+    the ``_BORROW`` loads; :func:`_unfused` hands both to this loop as the plain
+    instructions they stand for.
     """
     cached = _CODE_CHAINS.get(code)
     if cached is not None:
@@ -1097,37 +1128,31 @@ def _code_chains(code):
                 chains.append(chain)
             current = None
 
-    for instruction in dis.get_instructions(code):
-        name = instruction.opname
+    for name, argval in _unfused(code):
         if name in _ATTR_LOADS and current is not None:
-            current[2].append(instruction.argval)
+            current[2].append(argval)
             continue
         flush()
         if name in _GLOBAL_LOADS:
-            current = ["global", instruction.argval, []]
+            current = ["global", argval, []]
         elif name in _DEREF_LOADS:
-            current = ["deref", instruction.argval, []]
+            current = ["deref", argval, []]
         elif name in _FAST_LOADS:
-            if instruction.argval in imports:
-                root, prefix = imports[instruction.argval]
-                current = ["import", root, list(prefix)]
-        elif name == "LOAD_FAST_LOAD_FAST":
-            second = instruction.argval[1]
-            if second in imports:
-                root, prefix = imports[second]
+            if argval in imports:
+                root, prefix = imports[argval]
                 current = ["import", root, list(prefix)]
         elif name == "IMPORT_NAME":
-            pending_import = (instruction.argval, [], False)
+            pending_import = (argval, [], False)
         elif name == "IMPORT_FROM" and pending_import is not None:
             module_name, attrs, _ = pending_import
-            pending_import = (module_name, [*attrs, instruction.argval], True)
+            pending_import = (module_name, [*attrs, argval], True)
         elif name == "STORE_FAST" and pending_import is not None:
             module_name, attrs, saw_from = pending_import
             if saw_from:
-                imports[instruction.argval] = (module_name, tuple(attrs))
+                imports[argval] = (module_name, tuple(attrs))
                 pending_import = (module_name, attrs[:-1], True)
             else:
-                imports[instruction.argval] = (module_name.split(".")[0], ())
+                imports[argval] = (module_name.split(".")[0], ())
                 pending_import = None
         elif name == "POP_TOP" and pending_import is not None:
             pending_import = None

@@ -101,6 +101,23 @@ def _reads_imports_locally():
     return m.pi, sep
 
 
+# 3.13+ compiles the binding and the read here into one STORE_FAST_LOAD_FAST --
+# but only while they share a line, hence the fence that keeps them there.
+# fmt: off
+def _reads_an_import_on_its_own_line():
+    import math as m; return m.pi  # noqa: E702, I001
+# fmt: on
+
+
+# 3.13+ loads `sep` as the *first* half of a LOAD_FAST_LOAD_FAST (3.14:
+# LOAD_FAST_BORROW_LOAD_FAST_BORROW), whose second half is an unrelated local.
+def _reads_an_import_first_in_a_pair(suffix):
+    from os import sep
+
+    tail = suffix
+    return sep + tail
+
+
 def _reads_in_a_comprehension():
     return [_PROBE_CONSTANT + i for i in range(3)]
 
@@ -333,6 +350,25 @@ def test_locally_imported_modules_are_followed():
         "`import math as m; m.pi` must resolve through the import"
     )
     assert f"str:{os.sep!r}" in out, "`from os import sep` must bind the attribute"
+
+
+@quadrants_only
+def test_imports_read_through_superinstructions_are_followed():
+    # The 3.13+ fused forms and 3.14's _BORROW loads. On 3.11/3.12 these compile
+    # to the plain instructions the test above already covers, so they pass
+    # there trivially; on 3.14 the missing LOAD_FAST_BORROW dropped *every*
+    # import-bound read from the key, which is a stale kernel, not an error.
+    out = _walk(_reads_an_import_on_its_own_line)
+    assert f"float:{math.pi!r}" in out, "a one-line `import m; m.pi` was dropped"
+    out = _walk(_reads_an_import_first_in_a_pair)
+    assert f"str:{os.sep!r}" in out, "the first half of a fused load was dropped"
+
+
+def test_every_fused_local_splits_into_two_known_instructions():
+    for fused, halves in sk._FUSED_LOCALS.items():
+        assert len(halves) == 2, fused
+        for half in halves:
+            assert half == "STORE_FAST" or half in sk._FAST_LOADS, (fused, half)
 
 
 @quadrants_only

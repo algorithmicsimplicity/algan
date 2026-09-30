@@ -956,6 +956,17 @@ python-build-standalone's CPython 3.14.7 rather than a manylinux image's:
   the wheel rebranded to `algan-quadrants 1.3.0.post3`). Run twice there, it
   went from 163 s cold to 83 s warm on a loaded box, so the kernel cache and
   the warm-start glue work on 3.14 rather than being bypassed.
+* CI's portable subset, `tests/unit_tests tests/fast`, on the same wheel and
+  3.14.7: 5127 passed, 220 skipped, and **one real failure, which was
+  Algan's** — `test_locally_imported_modules_are_followed`. 3.14 compiles most
+  local reads to the new `LOAD_FAST_BORROW`, which
+  `algan/utils/taichi_source_key.py`'s bytecode walk did not know, so a module
+  imported *inside* a kernel helper dropped out of the kernel cache key: a
+  stale kernel, not an error. Fixed alongside, together with the 3.13
+  superinstructions the same walk half-read (`LOAD_FAST_LOAD_FAST` kept only
+  its second name; `STORE_FAST_LOAD_FAST` lost the binding outright). On
+  3.10-3.12 the walk's output is unchanged, so no existing kernel key moves
+  there.
 * `scripts/rebrand_quadrants_wheel.py` accepts the cp314 wheel, and
   `Requires-Python: <3.15,>=3.10` survives the rebrand.
 
