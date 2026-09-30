@@ -1502,6 +1502,9 @@ class Animatable:
                 # a clone is a new object, and deep-copying the reference would
                 # clone that other Mob's whole hierarchy besides.
                 "_pass_identity",
+                # The same for the parents a retired become() root resolves
+                # through (mob_morph._keep_pass_parents).
+                "_pass_parents",
             ]:
                 continue
             if k in ["_parents"]:

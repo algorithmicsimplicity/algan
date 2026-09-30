@@ -697,6 +697,133 @@ def test_become_hands_structure_ids_to_what_replaces_it(fresh_scene, tmp_path, c
         assert not lefts & rights, halves
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "outer_tag",
+        "outer_tag_dissolve",
+        "outer_composite",
+        "dissolve_surplus_part",
+        "nested_dissolve",
+        "lone_member_dissolve",
+        "leaf_tag_reaches_its_group",
+        "no_detach_into_group",
+        "text_tag_stays_on_text",
+    ],
+)
+def test_become_keeps_ids_above_and_below_what_it_replaces(fresh_scene, tmp_path, case):
+    """The members a ``become`` leaves behind keep reaching what is above the
+    Mob it replaced -- an outer group's tag, an outer composite's id -- a
+    dissolve pairs parts one to one at every depth, and a tag stays with the
+    object it was set on: a leaf's reaches the Group it became, a Text's stays
+    on the Text. Left half: the object on the left; right half: the right.
+    """
+    from algan.rendering.pass_identity import AUTO_ID_BASE
+
+    video = VIDEO.set(resolution=(64, 32), frames_per_second=4)
+    w, h = video.resolution
+
+    def circle(x, radius=0.5):
+        return Circle(radius=radius, add_to_scene=False).move_to(RIGHT * x)
+
+    with Scene(video_settings=video) as scene:
+        with Off():
+            a = Square(size=0.8).move_to(LEFT * 2.4)
+            b = Square(size=0.8).move_to(LEFT * 1.0)
+            x = Square(size=0.8).move_to(RIGHT * 2)
+        if case.startswith("outer_"):
+            with Off():
+                inner = Group(a, b)
+                outer = (_Molecule if case == "outer_composite" else Group)(
+                    inner, x
+                ).spawn()
+            if case != "outer_composite":
+                outer.pass_index = 4
+            outer.wait(1)
+            inner.become(
+                circle(-2.4),
+                strategy="dissolve" if case.endswith("dissolve") else "auto",
+            )
+        elif case == "dissolve_surplus_part":
+            with Off():
+                group = Group(a, x).spawn()
+            a.pass_index = 1
+            x.pass_index = 2
+            group.wait(1)
+            group.become(Group(circle(-2.4), add_to_scene=False), strategy="dissolve")
+        elif case == "nested_dissolve":
+            with Off():
+                group = Group(Group(a, b), x).spawn()
+            a.pass_index = 1
+            group.wait(1)
+            group.become(
+                Group(
+                    Group(circle(-2.4, 0.3), circle(-1.0, 0.3), add_to_scene=False),
+                    circle(2),
+                    add_to_scene=False,
+                ),
+                strategy="dissolve",
+            )
+        elif case == "lone_member_dissolve":
+            with Off():
+                group = Group(a).spawn()
+            group.wait(1)
+            group.become(circle(-2.4), strategy="dissolve")
+        elif case in ("leaf_tag_reaches_its_group", "no_detach_into_group"):
+            with Off():
+                leaf = Circle(radius=0.5).move_to(LEFT * 2.4).spawn()
+            leaf.pass_index = 7
+            leaf.wait(1)
+            leaf.become(
+                Group(
+                    circle(-2.4),
+                    Square(size=0.8, add_to_scene=False).move_to(RIGHT * 2),
+                    add_to_scene=False,
+                ),
+                detach_history=case == "leaf_tag_reaches_its_group",
+            )
+        else:
+            with Off():
+                text = Text("ab").scale(1.5).move_to(LEFT * 2)
+                group = Group(text).spawn()
+            text.pass_index = 6
+            group.pass_index = 5
+            group.wait(1)
+            group.become(
+                Group(
+                    Text("abc", add_to_scene=False).scale(1.5).move_to(LEFT * 2),
+                    circle(2),
+                    add_to_scene=False,
+                )
+            )
+        scene.wait(1)
+        result = scene.save_video(tmp_path / "around.mp4", passes="object_id")
+    halves = _ids_per_half(result, w, h)
+    lefts = set().union(*(left for left, _ in halves))
+    rights = set().union(*(right for _, right in halves))
+    seen = lefts | rights
+    if case in ("outer_tag", "outer_tag_dissolve"):
+        assert seen == {4}, halves
+    elif case == "outer_composite":
+        assert seen == {AUTO_ID_BASE + outer.id}, halves
+    elif case == "dissolve_surplus_part":
+        # The right square fades toward the one circle on the left: another
+        # object, it keeps its own tag rather than the circle's.
+        assert halves[0] == ({1}, {2}), halves
+        assert seen == {1, 2}, halves
+    elif case == "nested_dissolve":
+        assert 1 in lefts, halves
+        assert len(lefts) == 2, "a keeps its tag, b one id of its own"
+        assert len(rights) == 1, halves
+        assert not lefts & rights, halves
+    elif case == "lone_member_dissolve":
+        assert len(seen) == 1, halves
+    elif case in ("leaf_tag_reaches_its_group", "no_detach_into_group"):
+        assert seen == {7}, halves
+    else:
+        assert (lefts, rights) == ({6}, {5}), halves
+
+
 def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
     with Scene(video_settings=VIDEO) as scene:
         with Off():

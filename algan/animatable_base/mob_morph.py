@@ -65,7 +65,7 @@ def _identity_contains(values, item):
     return any(value is item for value in values)
 
 
-def _link_stand_in(stand_in, author, *, carry_tag=True):
+def _link_stand_in(stand_in, author, *, carry_tag=True, allow_container=False):
     """Record that ``stand_in`` draws on behalf of ``author`` (object-ID pass).
 
     A morph renders through Mobs the author never holds -- a triangle-soup
@@ -73,27 +73,49 @@ def _link_stand_in(stand_in, author, *, carry_tag=True):
     dissolve's replacement -- and
     :func:`algan.rendering.pass_identity.render_identity` follows these links
     so one object keeps one ID across a ``become``. The first link wins (a
-    history clone's is set by ``detach_history``). A pure grouping node is
-    never linked to a drawn Mob: it has no identity of its own to hand on,
-    and linked, every member still hanging from it -- a surplus child
-    shrinking away -- would be reported as part of that Mob. With
-    ``carry_tag`` an explicit ``pass_index`` on ``stand_in`` moves to
-    ``author``, overriding the author's own: the Mob that becomes something
-    is still the one the author tagged, as on the same-kind route. Callers
-    whose author may already hold a nearer source's tag check that first
-    (:meth:`MobMorphMixin._hand_on_structure_identity`). Private attributes
-    only: nothing renders differently.
+    history clone's is set by ``detach_history``). Returns whether
+    ``stand_in`` now draws for ``author``.
+
+    A pure grouping node is not linked to anything that is, or sits inside, a
+    drawn object: it has no identity of its own to hand on, and linked, every
+    member still hanging from it -- a surplus child shrinking away -- would be
+    reported as part of that object. ``allow_container`` lifts that for a
+    stand-in that is a fresh clone of the target, which holds nothing but
+    what ``author`` became.
+
+    With ``carry_tag`` an explicit ``pass_index`` on ``stand_in`` moves to
+    ``author`` (linked or not), overriding the author's own: the Mob that
+    becomes something is still the one the author tagged, as on the
+    same-kind route. Callers whose author may already hold a nearer source's
+    tag check that first (:meth:`MobMorphMixin._hand_on_structure_identity`).
+    Private attributes only: nothing renders differently.
     """
-    from algan.rendering.pass_identity import is_container
+    from algan.rendering.pass_identity import auto_owner, is_container
 
     if stand_in is author:
-        return
+        return True
     if getattr(stand_in, "_pass_identity", None) is None and (
-        is_container(author) or not is_container(stand_in)
+        allow_container
+        or not is_container(stand_in)
+        or is_container(auto_owner(author))
     ):
         stand_in._pass_identity = author
     if carry_tag and getattr(stand_in, "_pass_index", None) is not None:
         author._pass_index = stand_in._pass_index
+    return getattr(stand_in, "_pass_identity", None) is author
+
+
+def _keep_pass_parents(root, parents):
+    """Let a ``become()`` root that nothing stands in for resolve upward.
+
+    The morph takes ``root`` out of ``parents`` (its place goes to the
+    result), but a root no Mob draws for -- a Group that became one of its own
+    members -- still holds members, the ones shrinking away, and those must
+    still reach the tags and the owner above it
+    (:func:`algan.rendering.pass_identity.pass_parents`).
+    """
+    if getattr(root, "_pass_identity", None) is None and parents:
+        root._pass_parents = tuple(parents)
 
 
 class MobMorphMixin:
@@ -1052,9 +1074,11 @@ class MobMorphMixin:
         is False only where ``source`` is a target-side template being swapped
         for the morph result that already carries the source's identity.
         """
+        parents = list(source.parents)
         if carry_identity:
             _link_stand_in(source, replacement)
-        for parent in list(source.parents):
+            _keep_pass_parents(source, parents)
+        for parent in parents:
             children = [
                 replacement if child is source else child for child in parent.children
             ]
@@ -1172,31 +1196,58 @@ class MobMorphMixin:
     def _link_dissolve_parts(source, replacement, *, spliced):
         """Pair a piecewise dissolve's parts for the object-ID pass.
 
-        The same pairing the dissolve animates: source part ``i`` of ``S``
-        fades toward replacement part ``i * R // S``. Spliced, each source
-        part is linked to its counterpart and hands it its ``pass_index`` (the
-        first tagged part to reach a counterpart wins); unspliced, the
-        replacement stays beside ``source``, so each of its parts is linked to
-        the source part it grows from instead. See :func:`_link_stand_in`.
+        The pairing the dissolve animates -- source part ``i`` of ``S`` fades
+        toward replacement part ``i * R // S`` -- made one-to-one: the first
+        source part to reach a replacement part is paired with it, and a
+        surplus part on either side is another object, keeping its own ID and
+        ``pass_index`` as a hierarchy morph's sinks and surrogates do. Spliced,
+        each source part is linked to its counterpart and hands it its
+        ``pass_index``; unspliced, the replacement stays beside ``source``, so
+        the counterpart is linked to the source part instead. Pairs that are
+        both structural (no morph family, parts of their own) are paired the
+        same way one level down, so a member keeps its ID at any depth. See
+        :func:`_link_stand_in`.
         """
-        source_parts = source.get_non_component_children()
-        replacement_parts = replacement.get_non_component_children()
-        if not spliced:
-            for index, part in enumerate(replacement_parts):
-                origin = source_parts[
-                    (index * len(source_parts)) // len(replacement_parts)
+        pending = [(source, replacement)]
+        while pending:
+            source_node, replacement_node = pending.pop()
+            source_parts = source_node.get_non_component_children()
+            replacement_parts = replacement_node.get_non_component_children()
+            if not source_parts or not replacement_parts:
+                continue
+            paired = set()
+            for index, part in enumerate(source_parts):
+                counterpart = replacement_parts[
+                    (index * len(replacement_parts)) // len(source_parts)
                 ]
-                _link_stand_in(part, origin, carry_tag=False)
-            return
-        tagged = set()
-        for index, part in enumerate(source_parts):
-            counterpart = replacement_parts[
-                (index * len(replacement_parts)) // len(source_parts)
-            ]
-            carry = id(counterpart) not in tagged
-            _link_stand_in(part, counterpart, carry_tag=carry)
-            if carry and getattr(part, "_pass_index", None) is not None:
-                tagged.add(id(counterpart))
+                if id(counterpart) in paired:
+                    continue
+                paired.add(id(counterpart))
+                if spliced:
+                    _link_stand_in(part, counterpart)
+                else:
+                    _link_stand_in(
+                        counterpart, part, carry_tag=False, allow_container=True
+                    )
+                if part._morph_family is None and counterpart._morph_family is None:
+                    pending.append((part, counterpart))
+
+    @staticmethod
+    def _lone_object(source):
+        """The one object a pure grouping ``source`` holds, or ``None``.
+
+        Walks down through pure grouping nodes only; ``None`` when ``source``
+        is not one, or holds none or several objects.
+        """
+        from algan.rendering.pass_identity import is_container
+
+        if not is_container(source):
+            return None
+        found, pending = [], [source]
+        while pending and len(found) < 2:
+            for child in pending.pop().get_non_component_children():
+                (pending if is_container(child) else found).append(child)
+        return found[0] if len(found) == 1 else None
 
     def _record_dissolve(
         self,
@@ -1215,12 +1266,25 @@ class MobMorphMixin:
                 self._link_dissolve_parts(
                     source, replacement, spliced=replacement_allowed
                 )
+            # A Group holding one object that dissolves whole into something:
+            # that object is what the result continues.
+            lone = None if piecewise else self._lone_object(source)
             if replacement_allowed:
                 self._splice_replacement(source, replacement)
+                if lone is not None:
+                    # After the splice, so the member's own tag outranks the
+                    # group's that the splice carried.
+                    _link_stand_in(lone, replacement)
             else:
                 # Unspliced, the replacement fades in beside ``source`` and
-                # stays: it is still the object ``source`` is.
-                _link_stand_in(replacement, source, carry_tag=False)
+                # stays: it is still the object ``source`` is. A fresh clone
+                # of the target, it holds nothing else, so even a Group links.
+                _link_stand_in(
+                    replacement,
+                    source if lone is None else lone,
+                    carry_tag=False,
+                    allow_container=True,
+                )
 
         with Seq(animation_manager=am):
             with (
@@ -1375,16 +1439,18 @@ class MobMorphMixin:
     def _structural_members(source, source_primitives, source_hierarchy):
         """The structural nodes strictly between ``source`` and its primitives.
 
-        ``[(node, {primitive indices below it})]``, deepest first, read before
-        the morph rearranges anything. Each primitive is walked up through the
-        parent that belongs to ``source``'s hierarchy, so a Mob also parented
-        elsewhere is still counted where the author put it in ``source``.
+        ``[(node, {primitive indices below it}, depth)]``, deepest first, read
+        before the morph rearranges anything; ``depth`` counts the steps up to
+        ``source``. Each primitive is walked up through the parent that
+        belongs to ``source``'s hierarchy, so a Mob also parented elsewhere is
+        still counted where the author put it in ``source``.
         """
         hierarchy_ids = {id(mob) for mob in source_hierarchy}
         members = {}
+        depths = {}
         for index, primitive in enumerate(source_primitives):
-            node, seen = primitive, {id(primitive)}
-            while node is not source:
+            chain, node = [], primitive
+            while node is not None and node is not source:
                 node = next(
                     (
                         parent
@@ -1393,21 +1459,31 @@ class MobMorphMixin:
                     ),
                     None,
                 )
-                if node is None or node is source or id(node) in seen:
+                if node is None or _identity_contains(chain, node):
+                    chain = None
                     break
-                seen.add(id(node))
+                if node is not source:
+                    chain.append(node)
+            for steps, node in enumerate(reversed(chain or ()), start=1):
                 members.setdefault(id(node), set()).add(index)
+                depths.setdefault(id(node), steps)
         # A parent precedes its descendants in a traversal, so the reverse
         # lists every node after all of those below it.
         return [
-            (node, members[id(node)])
+            (node, members[id(node)], depths[id(node)])
             for node in reversed(source_hierarchy)
             if id(node) in members
         ]
 
     @staticmethod
     def _hand_on_structure_identity(
-        source, final_root, final_ids, structure, source_primitives, paired
+        source,
+        final_root,
+        final_ids,
+        structure,
+        source_primitives,
+        paired,
+        external_parents,
     ):
         """Record, for the object-ID pass, what the source's structure became.
 
@@ -1415,23 +1491,29 @@ class MobMorphMixin:
         source primitive's ``pass_index``. What a hierarchy morph also retires
         is structure -- ``source`` and the nodes between it and its primitives
         (an inner Group, a Text inside a Group) -- in favour of the target's
-        nesting. Each such node goes to the lowest final node holding its
-        primitives' results, provided no other source's results share it, and
-        its ``pass_index`` goes along unless a nearer source's tag (a
-        primitive's own, a deeper node's) already holds that node. Deepest
-        first, so the nearest tag wins, as it did in the source. A node whose
-        results land among others' links nowhere and puts its tag on each
-        result instead.
+        nesting. Deepest first, so the nearest tag wins as it did in the
+        source, each such node goes to its counterpart: the final node at its
+        own depth when all its results share that node and no other source's
+        results lie below it, else the lowest final node below the root that
+        holds only its results. Its ``pass_index`` goes along unless a nearer
+        source's tag (a primitive's own, a deeper node's) already holds the
+        counterpart. A node with no counterpart -- its results land among
+        others' -- links nowhere and puts its tag on the highest nodes below
+        the root that hold only its results instead, and a node still parented
+        outside ``source`` has not been retired, so only its tag moves.
 
-        ``source`` itself goes to ``final_root`` on the same terms, except
-        when ``source`` is still inside the result (a leaf that became a Group
-        of its own kind and one more) -- it did not stop existing. A Group
-        that became one of its own members is not linked either
-        (:func:`_link_stand_in` never links a pure grouping node to a drawn
-        Mob): the members left shrinking away in it are other objects.
+        ``source`` itself goes to ``final_root``: its tag, unless a nearer
+        source's already holds it, and a link unless ``source`` is still in
+        the result (a leaf kept in the Group it became did not stop existing).
+        :func:`_link_stand_in` declines the link for a Group that became a
+        drawn Mob -- the members left shrinking away in it are other objects
+        -- and then, like a root left unlinked because a nearer tag holds the
+        result, it keeps resolving through the parents it was taken out of
+        (:func:`_keep_pass_parents`).
 
-        ``paired`` is ``[(source primitive index, its result)]``. Private
-        attributes only: nothing renders differently.
+        ``paired`` is ``[(source primitive index, its result)]``;
+        ``external_parents`` are the parents ``source`` had outside itself.
+        Private attributes only: nothing renders differently.
         """
 
         def final_parent(node):
@@ -1466,48 +1548,82 @@ class MobMorphMixin:
             for node in path:
                 below.setdefault(id(node), set()).add(source_index)
 
-        for node, members in structure:
+        structural_ids = {id(source)} | {id(node) for node, _, _ in structure}
+        for node, members, depth in structure:
             covered = [paths[index] for index in sorted(members) if index in paths]
             if not covered:
                 # Every primitive below it shrinks away still hanging from it.
                 continue
-            shared = set.intersection(
-                *({id(step) for step in path} for path in covered)
-            )
-            path = covered[0]
-            level = next(
-                (index for index, step in enumerate(path) if id(step) in shared), None
-            )
-            if level is not None and below[id(path[level])] <= members:
-                # Up to the highest node still holding only this node's
-                # results -- a Text's own counterpart rather than the
-                # structural Mob its glyphs hang from -- but never past a tag
-                # (the target's, which this source's overrides, or a nearer
-                # source's, which stands).
+            counterpart = None
+            level = {
+                id(path[len(path) - 1 - depth]): path[len(path) - 1 - depth]
+                for path in covered
+                if len(path) > depth and path[-1] is final_root
+            }
+            if len(level) == 1 and all(
+                len(path) > depth and path[-1] is final_root for path in covered
+            ):
+                (candidate,) = level.values()
+                if below[id(candidate)] <= members:
+                    counterpart = candidate
+            if counterpart is None:
+                shared = set.intersection(
+                    *({id(step) for step in path} for path in covered)
+                )
+                lowest = next((step for step in covered[0] if id(step) in shared), None)
+                if (
+                    lowest is not None
+                    and lowest is not final_root
+                    and below[id(lowest)] <= members
+                ):
+                    counterpart = lowest
+            tag = getattr(node, "_pass_index", None)
+            if counterpart is not None:
+                if id(counterpart) not in claimed:
+                    if any(
+                        id(parent) not in structural_ids
+                        for parent in getattr(node, "parents", None) or ()
+                    ):
+                        if tag is not None:
+                            counterpart._pass_index = tag
+                    else:
+                        _link_stand_in(node, counterpart)
+                    if tag is not None:
+                        claimed.add(id(counterpart))
+                continue
+            if tag is None:
+                continue
+            # The tag goes on the highest node below the root holding only
+            # this node's results, not on each result: a deeper node linked to
+            # its own counterpart hands its leftover members on through that
+            # counterpart, so they must meet the tag on its way up. A
+            # target-side tag stops the climb and is overridden.
+            for path in covered:
+                level = 0
                 while (
-                    level + 1 < len(path)
-                    and getattr(path[level], "_pass_index", None) is None
+                    level + 2 < len(path)
+                    and not (
+                        getattr(path[level], "_pass_index", None) is not None
+                        and id(path[level]) not in claimed
+                    )
                     and below[id(path[level + 1])] <= members
                 ):
                     level += 1
-                counterpart = path[level]
-                if id(counterpart) not in claimed:
-                    _link_stand_in(node, counterpart)
-                    if getattr(node, "_pass_index", None) is not None:
-                        claimed.add(id(counterpart))
-                continue
-            tag = getattr(node, "_pass_index", None)
-            if tag is None:
-                continue
-            for path in covered:
-                if not any(
-                    id(step) in claimed for step in path if step is not final_root
-                ):
-                    path[0]._pass_index = tag
-                    claimed.add(id(path[0]))
+                if id(path[level]) not in claimed:
+                    path[level]._pass_index = tag
+                    claimed.add(id(path[level]))
 
-        if id(source) not in final_ids and id(final_root) not in claimed:
-            _link_stand_in(source, final_root)
+        kept = id(source) in final_ids
+        if id(final_root) not in claimed:
+            if not kept:
+                _link_stand_in(source, final_root)
+            elif (
+                source is not final_root
+                and getattr(source, "_pass_index", None) is not None
+            ):
+                final_root._pass_index = source._pass_index
+        if not kept:
+            _keep_pass_parents(source, external_parents)
 
     def _record_primitive_hierarchy_morph(
         self,
@@ -1717,6 +1833,7 @@ class MobMorphMixin:
                         (source_index, results_by_target[target_index])
                         for source_index, target_index in pairs
                     ],
+                    external_parents,
                 )
                 obsolete_ids = {
                     id(mob) for mob in source_hierarchy if id(mob) not in final_ids

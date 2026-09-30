@@ -133,11 +133,23 @@ def auto_owner(mob: Mob) -> Mob:
         seen.add(id(node))
         if not is_container(node):
             owner = node
-        parents = getattr(node, "parents", None) or ()
+        parents = pass_parents(node)
         # A parent spliced out by a become() is followed to the Mob that took
         # its place: the hierarchy the author sees in the end.
         node = render_identity(parents[0]) if parents else None
     return mob if owner is None else owner
+
+
+def pass_parents(mob: Mob):
+    """The parents identification continues through from ``mob``.
+
+    Its ``parents``; or, for a ``become()`` root that was taken out of its
+    parents without a Mob standing in its place -- a Group that became one of
+    its own members, say -- the parents it had, which ``become`` records in
+    ``_pass_parents`` (``mob_morph._keep_pass_parents``) so the members it
+    still holds keep reaching the tags and the owner above it.
+    """
+    return getattr(mob, "parents", None) or getattr(mob, "_pass_parents", None) or ()
 
 
 def resolve_pass_owner(mob: Mob) -> tuple[int, Mob]:
@@ -162,7 +174,9 @@ def _resolved_pass_index(mob: Mob):
 
     The same nearest-first, breadth-first search over ``parents``, except that
     every node visited is first followed to the Mob it stands for, so a tag on
-    a group still reaches a child whose parent a become() replaced.
+    a group still reaches a child whose parent a become() replaced, and that a
+    become() root nothing stands in for continues through the parents it had
+    (:func:`pass_parents`).
     """
     queue = [mob]
     seen = set()
@@ -174,7 +188,7 @@ def _resolved_pass_index(mob: Mob):
         index = getattr(node, "_pass_index", None)
         if index is not None:
             return index, node
-        queue.extend(getattr(node, "parents", None) or ())
+        queue.extend(pass_parents(node))
     return None, None
 
 
