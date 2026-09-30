@@ -279,18 +279,18 @@ Any subset, in any order, works; ``passes="depth"`` asks for one.
 
    * - File
      - Contents
-   * - ``shot.depth/shot.depth.00000.exr`` ...
+   * - ``shot.mp4.depth/shot.mp4.depth.00000.exr`` ...
      - **Depth.** 32-bit float OpenEXR, one channel. The distance from the
        camera to the surface along the camera's forward axis (planar depth, not
        ray length), in world units. Pixels that hit nothing hold ``1e10``,
        Blender's convention for "infinitely far".
-   * - ``shot.normal/shot.normal.00000.png`` ...
+   * - ``shot.mp4.normal/shot.mp4.normal.00000.png`` ...
      - **Normal.** 16-bit RGB PNG. The surface's unit shading normal in
        **camera space** -- x toward screen right, y toward screen up, z toward
        the camera -- encoded ``rgb = n * 0.5 + 0.5`` (so a surface facing the
        camera is ``(0.5, 0.5, 1.0)``, the familiar lavender). Decode with
        ``n = rgb * 2 - 1``. Pixels that hit nothing are black.
-   * - ``shot.object_id/shot.object_id.00000.png`` ...
+   * - ``shot.mp4.object_id/shot.mp4.object_id.00000.png`` ...
      - **Object ID.** 8-bit RGB PNG. Every object is one flat colour, so a
        keyer matching that exact value isolates it; black is nothing. The
        colours are hashed from the IDs, so they are distinct but arbitrary --
@@ -306,8 +306,10 @@ into DaVinci Resolve, Premiere, After Effects, Final Cut, Nuke or Blender, and
 set it to the video's frame rate if the editor asks. Image sequences are
 lossless, carry 16-bit and float data that video codecs cannot, and every editor
 reads them. A still writes one file per pass instead: ``shot.png`` gains
-``shot.depth.exr``, ``shot.normal.png``, ``shot.object_id.png`` and
-``shot.png.passes.json``. The paths also come back on the result, as
+``shot.png.depth.exr``, ``shot.png.normal.png``, ``shot.png.object_id.png`` and
+``shot.png.passes.json``. Every name includes the output's own extension, so a
+still and a video sharing a stem never share passes. The paths also come back
+on the result, as
 ``result.passes`` (``{"depth": Path(...), ...}``).
 
 **Which object gets which ID.** An object is the highest Mob above a piece of

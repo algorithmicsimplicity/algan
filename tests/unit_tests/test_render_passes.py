@@ -219,36 +219,36 @@ def test_video_sequences_publish_one_image_per_frame(tmp_path):
     job, scene = _fake_job(tmp_path, ("depth", "normal"), frames=3)
     # Nothing is visible until the video is published.
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        "clip.depth_temp",
-        "clip.normal_temp",
+        "clip.mp4.depth_temp",
+        "clip.mp4.normal_temp",
     ]
-    (tmp_path / "clip.depth").mkdir()
-    for stale in ("clip.depth.00007.exr", "clip.depth.00012.exr"):
-        (tmp_path / "clip.depth" / stale).write_bytes(b"old")
-    (tmp_path / "clip.depth" / "notes.txt").write_text("mine")
+    (tmp_path / "clip.mp4.depth").mkdir()
+    for stale in ("clip.mp4.depth.00007.exr", "clip.mp4.depth.00012.exr"):
+        (tmp_path / "clip.mp4.depth" / stale).write_bytes(b"old")
+    (tmp_path / "clip.mp4.depth" / "notes.txt").write_text("mine")
 
     paths = job.publish()
     job.release(scene)
 
     assert paths == {
-        "depth": tmp_path / "clip.depth",
-        "normal": tmp_path / "clip.normal",
+        "depth": tmp_path / "clip.mp4.depth",
+        "normal": tmp_path / "clip.mp4.normal",
     }
     # A held frame is written once per repeat: 2 + 1 + 1 images.
-    assert sorted(p.name for p in (tmp_path / "clip.depth").iterdir()) == [
-        "clip.depth.00000.exr",
-        "clip.depth.00001.exr",
-        "clip.depth.00002.exr",
-        "clip.depth.00003.exr",
+    assert sorted(p.name for p in (tmp_path / "clip.mp4.depth").iterdir()) == [
+        "clip.mp4.depth.00000.exr",
+        "clip.mp4.depth.00001.exr",
+        "clip.mp4.depth.00002.exr",
+        "clip.mp4.depth.00003.exr",
         "notes.txt",
     ]
-    assert len(list((tmp_path / "clip.normal").iterdir())) == 4
-    assert not (tmp_path / "clip.depth_temp").exists()
+    assert len(list((tmp_path / "clip.mp4.normal").iterdir())) == 4
+    assert not (tmp_path / "clip.mp4.depth_temp").exists()
     meta = json.loads((tmp_path / "clip.mp4.passes.json").read_text())
     assert meta["frame_count"] == 4
     assert meta["resolution"] == [6, 4]
     assert meta["output"] == "clip.mp4"
-    assert meta["passes"]["depth"]["path"] == "clip.depth"
+    assert meta["passes"]["depth"]["path"] == "clip.mp4.depth"
     assert meta["passes"]["depth"]["background"] == DEPTH_BACKGROUND
     assert set(meta["passes"]) == {"depth", "normal"}
 
@@ -273,7 +273,7 @@ def test_a_mismatched_aux_batch_is_an_error(tmp_path):
 
 
 def test_a_file_in_the_way_of_a_pass_directory_fails_before_rendering(tmp_path):
-    (tmp_path / "clip.depth").write_text("not a directory")
+    (tmp_path / "clip.mp4.depth").write_text("not a directory")
     with pytest.raises(AlganConfigurationError, match="in the way"):
         VideoPassJob.create("depth", tmp_path / "clip.mp4")
 
@@ -290,16 +290,23 @@ def test_a_failed_publish_keeps_the_encoded_frames(tmp_path, monkeypatch):
         return real_replace(src, dst)
 
     monkeypatch.setattr(passes_module.os, "replace", locked)
-    with pytest.raises(RuntimeError, match="clip.normal_temp"):
+    with pytest.raises(RuntimeError, match="clip.mp4.normal_temp"):
         job.publish()
     job.discard()  # what the render's cleanup does next
     job.release(scene)
-    assert len(list((tmp_path / "clip.depth").iterdir())) == 3
-    assert len(list((tmp_path / "clip.normal_temp").iterdir())) == 3
+    assert len(list((tmp_path / "clip.mp4.depth").iterdir())) == 3
+    assert len(list((tmp_path / "clip.mp4.normal_temp").iterdir())) == 3
 
 
-def test_an_unrunnable_ffmpeg_fails_before_the_still_renders(fresh_scene, tmp_path):
-    SETTINGS.paths.set(ffmpeg_binary=str(tmp_path / "no-such-ffmpeg"))
+@pytest.mark.parametrize("kind", ["missing", "not_executable"])
+def test_an_unrunnable_ffmpeg_fails_before_the_still_renders(
+    fresh_scene, tmp_path, kind
+):
+    binary = tmp_path / "ffmpeg"
+    if kind == "not_executable":
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o644)  # exists, but cannot be run
+    SETTINGS.paths.set(ffmpeg_binary=str(binary))
     with Scene(video_settings=VIDEO) as scene:
         Square().spawn()
         with pytest.raises(AlganConfigurationError, match="Cannot run FFmpeg"):
@@ -336,10 +343,10 @@ def test_a_percent_sign_in_the_path_survives_the_sequence_pattern(
             Square().spawn()
         result = scene.save_video(folder / "take%d.mp4", passes="depth")
     directory = result.passes["depth"]
-    assert directory == folder / "take%d.depth"
+    assert directory == folder / "take%d.mp4.depth"
     names = sorted(p.name for p in directory.iterdir())
     assert names
-    assert names[0] == "take%d.depth.00000.exr"
+    assert names[0] == "take%d.mp4.depth.00000.exr"
 
 
 def _object_colours(meta):
@@ -371,7 +378,7 @@ def test_save_video_writes_every_pass_in_step_with_the_video(fresh_scene, tmp_pa
 
     w, h = VIDEO.resolution
     depth = _decode(
-        result.passes["depth"] / "clip.depth.%05d.exr", "grayf32le", w, h, "<f4", 1
+        result.passes["depth"] / "clip.mp4.depth.%05d.exr", "grayf32le", w, h, "<f4", 1
     )
     centre = depth[:, h // 2, w // 2 - int(w * 2 / 8)]
     # The square moves toward the camera, so its depth falls, then holds.
@@ -379,7 +386,12 @@ def test_save_video_writes_every_pass_in_step_with_the_video(fresh_scene, tmp_pa
     assert depth[0, 0, 0] == DEPTH_BACKGROUND
 
     ids = _decode(
-        result.passes["object_id"] / "clip.object_id.%05d.png", "rgb24", w, h, "u1", 3
+        result.passes["object_id"] / "clip.mp4.object_id.%05d.png",
+        "rgb24",
+        w,
+        h,
+        "u1",
+        3,
     )
     colours = _object_colours(meta)
     hit = ids[-1, h // 2, w // 2 - int(w * 2 / 8)]
@@ -423,7 +435,7 @@ def _ids_per_frame(result, width, height):
     from algan.rendering.pass_identity import pass_ids_from_colors
 
     rgb = _decode(
-        result.passes["object_id"] / f"{result.output_path.stem}.object_id.%05d.png",
+        result.passes["object_id"] / f"{result.output_path.name}.object_id.%05d.png",
         "rgb24",
         width,
         height,
@@ -469,6 +481,93 @@ def test_an_object_keeps_its_id_across_become(fresh_scene, tmp_path, case):
     assert all(frame == seen for frame in frames), frames
 
 
+def _ids_per_half(result, width, height):
+    """Per frame, the object ids seen in the left and in the right half."""
+    from algan.rendering.pass_identity import pass_ids_from_colors
+
+    rgb = _decode(
+        result.passes["object_id"] / f"{result.output_path.name}.object_id.%05d.png",
+        "rgb24",
+        width,
+        height,
+        "u1",
+        3,
+    )
+    ids = pass_ids_from_colors(torch.from_numpy(rgb.copy()))
+    half = width // 2
+    return [
+        (
+            set(frame[:, :half].unique().tolist()) - {0},
+            set(frame[:, half:].unique().tolist()) - {0},
+        )
+        for frame in ids
+    ]
+
+
+class _Molecule(Group):
+    """A composite that is an object of its own (not a pure container)."""
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["group_tag", "child_tags", "composite", "both_tagged", "no_detach"],
+)
+def test_children_keep_their_ids_across_a_hierarchy_become(fresh_scene, tmp_path, case):
+    """A Group become()s child by child: each child morphs through its own
+    stand-ins and is spliced out for its replacement. Links are positional,
+    so a tag on the group reaches every child on every frame, per-child tags
+    stay per child, a composite stays one object, and the source's explicit
+    tag wins over the target's.
+    """
+    from algan import Sphere
+
+    video = VIDEO.set(resolution=(64, 32), frames_per_second=4)
+    w, h = video.resolution
+    with Scene(video_settings=video) as scene:
+        with Off():
+            a = Square(size=1.2).move_to(LEFT * 2)
+            b = Square(size=1.2).move_to(RIGHT * 2)
+            holder = (_Molecule if case == "composite" else Group)(a, b).spawn()
+        if case == "group_tag":
+            holder.pass_index = 6
+        elif case in ("child_tags", "no_detach"):
+            a.pass_index = 1
+            b.pass_index = 2
+        target_a = Sphere(radius=0.6, add_to_scene=False).move_to(LEFT * 2)
+        target_b = (
+            Square(size=1.2, add_to_scene=False)
+            if case == "no_detach"
+            else Sphere(radius=0.6, add_to_scene=False)
+        ).move_to(RIGHT * 2)
+        # A composite becomes a composite; a plain Group, a plain Group.
+        target_group = (_Molecule if case == "composite" else Group)(
+            target_a, target_b, add_to_scene=False
+        )
+        if case == "both_tagged":
+            a.pass_index = 6
+            target_a.pass_index = 9
+        holder.wait(1)
+        holder.become(target_group, detach_history=case != "no_detach")
+        scene.wait(1)
+        result = scene.save_video(tmp_path / "hier.mp4", passes="object_id")
+    halves = _ids_per_half(result, w, h)
+    lefts = set().union(*(left for left, _ in halves))
+    rights = set().union(*(right for _, right in halves))
+    if case == "group_tag":
+        assert lefts == rights == {6}, halves
+    elif case == "child_tags":
+        assert (lefts, rights) == ({1}, {2}), halves
+    elif case == "composite":
+        assert len(lefts) == 1, halves
+        assert lefts == rights, "a composite is one object"
+    elif case == "both_tagged":
+        assert lefts == {6}, "the source's explicit tag wins, as on the same-kind route"
+    elif case == "no_detach":
+        assert 1 in lefts, halves
+        assert 2 in rights, halves
+        assert not lefts & rights, "two children must not collapse into one id"
+
+
 def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
     with Scene(video_settings=VIDEO) as scene:
         with Off():
@@ -482,10 +581,10 @@ def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
     assert skipped.status == "skipped"
     assert skipped.passes == {}
     for result in results:
-        stem = result.output_path.with_suffix("")
+        name = result.output_path.name
         assert result.passes == {
-            "depth": stem.with_name(stem.name + ".depth.exr"),
-            "normal": stem.with_name(stem.name + ".normal.png"),
+            "depth": result.output_path.with_name(name + ".depth.exr"),
+            "normal": result.output_path.with_name(name + ".normal.png"),
         }
         for path in result.passes.values():
             assert path.exists()

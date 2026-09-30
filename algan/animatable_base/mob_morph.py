@@ -65,6 +65,28 @@ def _identity_contains(values, item):
     return any(value is item for value in values)
 
 
+def _link_stand_in(stand_in, author, *, carry_tag=True):
+    """Record that ``stand_in`` draws on behalf of ``author`` (object-ID pass).
+
+    A morph renders through Mobs the author never holds -- a triangle-soup
+    stand-in, a target-class replacement spliced into a source's slot, a
+    dissolve's replacement -- and
+    :func:`algan.rendering.pass_identity.render_identity` follows these links
+    so one object keeps one ID across a ``become``. The first link wins (a
+    history clone's is set by ``detach_history``). With ``carry_tag`` an
+    explicit ``pass_index`` on ``stand_in`` moves to ``author``, overriding
+    the author's own: the Mob that becomes something is still the one the
+    author tagged, as on the same-kind route. Private attributes only: nothing
+    renders differently.
+    """
+    if stand_in is author:
+        return
+    if getattr(stand_in, "_pass_identity", None) is None:
+        stand_in._pass_identity = author
+    if carry_tag and getattr(stand_in, "_pass_index", None) is not None:
+        author._pass_index = stand_in._pass_index
+
+
 class MobMorphMixin:
     """``become`` plus the structural helpers used to align arbitrary Mobs."""
 
@@ -1013,7 +1035,16 @@ class MobMorphMixin:
                 mine._adopt_structural_attrs(theirs)
         return mine
 
-    def _splice_replacement(self, source, replacement):
+    def _splice_replacement(self, source, replacement, *, carry_identity=True):
+        """Put ``replacement`` in every slot ``source`` holds in its parents.
+
+        ``carry_identity`` also records that ``replacement`` now stands where
+        ``source`` stood, for the object-ID pass (:func:`_link_stand_in`). It
+        is False only where ``source`` is a target-side template being swapped
+        for the morph result that already carries the source's identity.
+        """
+        if carry_identity:
+            _link_stand_in(source, replacement)
         for parent in list(source.parents):
             children = [
                 replacement if child is source else child for child in parent.children
@@ -1143,6 +1174,10 @@ class MobMorphMixin:
             self._register_hierarchy_for_render(replacement)
             if replacement_allowed:
                 self._splice_replacement(source, replacement)
+            else:
+                # Unspliced, the replacement fades in beside ``source`` and
+                # stays: it is still the object ``source`` is.
+                _link_stand_in(replacement, source, carry_tag=False)
 
         with Seq(animation_manager=am):
             with (
@@ -1237,6 +1272,9 @@ class MobMorphMixin:
 
         self._register_hierarchy_for_render(source_soup)
         self._register_hierarchy_for_render(replacement)
+        # The soup draws the morph frames of ``source``, which the splice
+        # below hands on to ``replacement``: one object throughout.
+        _link_stand_in(source_soup, source, carry_tag=False)
         self._splice_replacement(source, replacement)
 
         source_has_border = (
@@ -1479,7 +1517,9 @@ class MobMorphMixin:
                     if target_primitive is target:
                         final_root = result
                     else:
-                        self._splice_replacement(target_primitive, result)
+                        self._splice_replacement(
+                            target_primitive, result, carry_identity=False
+                        )
 
                 self._fill_captured_parent_slots(parent_slots, final_root)
                 final_ids = {id(mob) for mob in final_root.get_descendants()}
@@ -1682,7 +1722,6 @@ class MobMorphMixin:
             )
 
         am = self.animation_manager
-        actors_before = len(self.scene.actors)
         with Off(animation_manager=am):
             source = self
             if detach_history:
@@ -1712,29 +1751,7 @@ class MobMorphMixin:
                 strategy=strategy,
                 replacement_allowed=detach_history,
             )
-        self._link_render_identity(result, actors_before)
+        # A replaced root (a hierarchy morph's final root, a cross-kind
+        # replacement) takes this Mob's place; see _link_stand_in.
+        _link_stand_in(self, result)
         return result
-
-    def _link_render_identity(self, result, actors_before):
-        """Name ``result`` as the Mob this become()'s stand-ins draw for.
-
-        A morph renders through Mobs the author never holds -- a triangle-soup
-        stand-in, per-primitive surrogates and sinks -- and a cross-kind become
-        replaces this Mob with a target-class clone. For an object-ID pass
-        (:func:`algan.rendering.pass_identity.render_identity`) every actor
-        published during the call, outside ``result``'s own subtree, stands
-        for ``result``; so does this Mob when it was replaced, and an explicit
-        ``pass_index`` it carried moves to its replacement. History clones
-        already point at their originals (``detach_history``). Private
-        attributes only: nothing renders differently.
-        """
-        if result is not self:
-            if getattr(self, "_pass_identity", None) is None:
-                self._pass_identity = result
-            if result._pass_index is None and self._pass_index is not None:
-                result._pass_index = self._pass_index
-        own = {id(mob) for mob in result.get_descendants(include_self=True)}
-        for actor in self.scene.actors[actors_before:]:
-            if id(actor) in own or getattr(actor, "_pass_identity", None) is not None:
-                continue
-            actor._pass_identity = result

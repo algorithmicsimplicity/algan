@@ -125,6 +125,7 @@ def auto_owner(mob: Mob) -> Mob:
     Pass the actor the render registered (``scene._aux_id_registry[id]``), not
     a packed view: a view shares its pack's id but has no ``parents``.
     """
+    mob = render_identity(mob)
     owner = None
     seen = set()
     node = mob
@@ -133,7 +134,9 @@ def auto_owner(mob: Mob) -> Mob:
         if not is_container(node):
             owner = node
         parents = getattr(node, "parents", None) or ()
-        node = parents[0] if parents else None
+        # A parent spliced out by a become() is followed to the Mob that took
+        # its place: the hierarchy the author sees in the end.
+        node = render_identity(parents[0]) if parents else None
     return mob if owner is None else owner
 
 
@@ -147,11 +150,32 @@ def resolve_pass_owner(mob: Mob) -> tuple[int, Mob]:
     free for the background.
     """
     mob = render_identity(mob)
-    index, setter = mob._resolved_pass_index()
+    index, setter = _resolved_pass_index(mob)
     if index is not None:
         return int(index), setter
     owner = auto_owner(mob)
     return AUTO_ID_BASE + int(owner.id), owner
+
+
+def _resolved_pass_index(mob: Mob):
+    """``Mob._resolved_pass_index`` through :func:`render_identity` links.
+
+    The same nearest-first, breadth-first search over ``parents``, except that
+    every node visited is first followed to the Mob it stands for, so a tag on
+    a group still reaches a child whose parent a become() replaced.
+    """
+    queue = [mob]
+    seen = set()
+    while queue:
+        node = render_identity(queue.pop(0))
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        index = getattr(node, "_pass_index", None)
+        if index is not None:
+            return index, node
+        queue.extend(getattr(node, "parents", None) or ())
+    return None, None
 
 
 def render_identity(mob: Mob) -> Mob:
@@ -159,11 +183,13 @@ def render_identity(mob: Mob) -> Mob:
 
     Several internal Mobs render frames of a Mob the author holds: the hidden
     clone :meth:`~algan.animatable_base.mob.Mob.detach_history` hands the
-    earlier frames to, and the stand-ins and target-class replacement
-    :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` renders a
-    morph through. Each records whom it stands for in ``_pass_identity``;
-    following that chain to its end names the Mob in the final hierarchy, so
-    one object keeps one ID -- and its ``pass_index`` -- across a ``become``.
+    earlier frames to, a triangle-soup stand-in, a dissolve's replacement,
+    and a source a ``become`` spliced out of its parents in favour of its
+    replacement. Each records whom it stands for in ``_pass_identity``
+    (``mob_morph._link_stand_in``); following that chain to its end names
+    the Mob in the final hierarchy. :func:`auto_owner` and the ``pass_index``
+    search apply it at every node they visit, so one object keeps one ID --
+    and its ``pass_index`` -- across a ``become``, and children keep theirs.
     """
     seen = set()
     while id(mob) not in seen:

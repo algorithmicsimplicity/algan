@@ -16,8 +16,10 @@ module turns that data into files a compositor or video editor imports:
   id (:func:`algan.rendering.pass_identity.pass_id_color`), black for nothing.
 
 A video writes each pass as a numbered image sequence in its own directory
-(``intro.depth/intro.depth.00000.exr`` ...), which every editor imports and
-no container can garble; a still writes one file per pass (``shot.depth.exr``).
+(``intro.mp4.depth/intro.mp4.depth.00000.exr`` ...), which every editor imports
+and no container can garble; a still writes one file per pass
+(``shot.png.depth.exr``). Names include the output's extension, so outputs
+sharing a stem never share passes.
 Each render also writes ``<output file name>.passes.json`` (``intro.mp4.passes.json``),
 describing the encodings and
 listing every object id with the Mob it names.
@@ -261,11 +263,31 @@ def _ffmpeg_binary():
 _ENCODERS_OF = {}
 
 
+def _can_execute(binary) -> bool:
+    """Whether ``binary`` starts at all: missing, not executable and built for
+    another CPU all fail here, where an encoder list that merely could not be
+    read does not.
+    """
+    try:
+        subprocess.run(
+            [binary, "-hide_banner", "-version"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return True  # it ran; a slow start is not a missing FFmpeg
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def check_pass_encoders(names) -> str:
     """The FFmpeg binary to encode ``names`` with; fail early if it cannot.
 
-    The binary's encoder list is asked for once per process (a subprocess
-    each time would tax every still of a contact sheet).
+    A successful answer is remembered for the process (a subprocess each
+    time would tax every still of a contact sheet); a failed probe is retried
+    on the next call.
     """
     from algan.utils.video_encoding import _listed_encoders
 
@@ -278,7 +300,7 @@ def check_pass_encoders(names) -> str:
             # Only a real answer is remembered: an FFmpeg that could not be
             # asked this time may be installed before the next render.
             _ENCODERS_OF[binary] = available
-        elif shutil.which(binary) is None and not Path(binary).is_file():
+        elif not _can_execute(binary):
             raise AlganConfigurationError(
                 f"Cannot run FFmpeg ({binary!r}), which writes the requested "
                 "render passes. Install FFmpeg, or point "
@@ -390,32 +412,30 @@ class PassEncoder:
         self._stderr.close()
 
 
-def _stem(path: Path) -> Path:
-    return Path(path).with_suffix("")
+# Every pass file, directory and sidecar is named after the WHOLE output file
+# name, extension included, so outputs sharing a stem (a still and a video,
+# an .mp4 and a .mov) never share -- or contradict -- one another's passes.
 
 
 def still_pass_paths(image_path: Path, names) -> dict[str, Path]:
-    """``shot.png`` -> ``{"depth": shot.depth.exr, ...}``."""
-    stem = _stem(image_path)
+    """``shot.png`` -> ``{"depth": shot.png.depth.exr, ...}``."""
+    image_path = Path(image_path)
     return {
-        name: stem.with_name(f"{stem.name}.{name}.{_FORMATS[name].extension}")
+        name: image_path.with_name(
+            f"{image_path.name}.{name}.{_FORMATS[name].extension}"
+        )
         for name in names
     }
 
 
 def video_pass_dirs(video_path: Path, names) -> dict[str, Path]:
-    """``intro.mp4`` -> ``{"depth": intro.depth/, ...}``."""
-    stem = _stem(video_path)
-    return {name: stem.with_name(f"{stem.name}.{name}") for name in names}
+    """``intro.mp4`` -> ``{"depth": intro.mp4.depth/, ...}``."""
+    video_path = Path(video_path)
+    return {name: video_path.with_name(f"{video_path.name}.{name}") for name in names}
 
 
 def sidecar_path(output_path: Path) -> Path:
-    """``intro.mp4`` -> ``intro.mp4.passes.json``.
-
-    Named after the whole file name, extension included: a still and a video
-    of the same stem (``save_frame()`` and ``save_video()`` with the default
-    name, say) each keep their own description.
-    """
+    """``intro.mp4`` -> ``intro.mp4.passes.json``."""
     output_path = Path(output_path)
     return output_path.with_name(f"{output_path.name}.passes.json")
 
@@ -509,8 +529,8 @@ def _write_json(path: Path, payload):
 class VideoPassJob:
     """The passes of one ``save_video`` call, from the first frame to publish.
 
-    Frames are encoded into ``<stem>.<pass>_temp/`` beside the destination and
-    moved into ``<stem>.<pass>/`` only after the video itself is published, so
+    Frames are encoded into ``<video>.<pass>_temp/`` beside the destination and
+    moved into ``<video>.<pass>/`` only after the video itself is published, so
     a failed render leaves the previous passes (and the video) alone.
     """
 

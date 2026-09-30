@@ -169,11 +169,12 @@ For compositing in an editor, `save_video` and `save_frame` accept
 
 ```python
 result = Scene.save_video('renders/shot.mp4', passes=('depth', 'object_id'))
-print(result.passes)  # {'depth': .../shot.depth, 'object_id': .../shot.object_id}
+print(result.passes)  # {'depth': .../shot.mp4.depth, 'object_id': .../shot.mp4.object_id}
 ```
 
-A video gets one lossless image sequence per pass in `<stem>.<pass>/`, one image
-per video frame; a still gets `<stem>.<pass>.<ext>`. Depth is 32-bit float
+A video gets one lossless image sequence per pass in `<output>.<pass>/` (e.g.
+`shot.mp4.depth/`), one image per video frame; a still gets
+`<output>.<pass>.<ext>` (e.g. `shot.png.depth.exr`). Depth is 32-bit float
 OpenEXR (planar camera depth in world units, background `1e10`), normals are
 16-bit PNG (camera space, `rgb = n * 0.5 + 0.5`, background black), object IDs
 are 8-bit PNG with one flat colour per object (background black).
