@@ -1682,6 +1682,7 @@ class MobMorphMixin:
             )
 
         am = self.animation_manager
+        actors_before = len(self.scene.actors)
         with Off(animation_manager=am):
             source = self
             if detach_history:
@@ -1697,16 +1698,43 @@ class MobMorphMixin:
                 or not target.is_primitive
             )
         ):
-            return self._record_primitive_hierarchy_morph(
+            result = self._record_primitive_hierarchy_morph(
                 source,
                 target,
                 minimize_movement=minimize_movement,
                 strategy=strategy,
             )
-        return self._dispatch_become(
-            source,
-            target,
-            minimize_movement=minimize_movement,
-            strategy=strategy,
-            replacement_allowed=detach_history,
-        )
+        else:
+            result = self._dispatch_become(
+                source,
+                target,
+                minimize_movement=minimize_movement,
+                strategy=strategy,
+                replacement_allowed=detach_history,
+            )
+        self._link_render_identity(result, actors_before)
+        return result
+
+    def _link_render_identity(self, result, actors_before):
+        """Name ``result`` as the Mob this become()'s stand-ins draw for.
+
+        A morph renders through Mobs the author never holds -- a triangle-soup
+        stand-in, per-primitive surrogates and sinks -- and a cross-kind become
+        replaces this Mob with a target-class clone. For an object-ID pass
+        (:func:`algan.rendering.pass_identity.render_identity`) every actor
+        published during the call, outside ``result``'s own subtree, stands
+        for ``result``; so does this Mob when it was replaced, and an explicit
+        ``pass_index`` it carried moves to its replacement. History clones
+        already point at their originals (``detach_history``). Private
+        attributes only: nothing renders differently.
+        """
+        if result is not self:
+            if getattr(self, "_pass_identity", None) is None:
+                self._pass_identity = result
+            if result._pass_index is None and self._pass_index is not None:
+                result._pass_index = self._pass_index
+        own = {id(mob) for mob in result.get_descendants(include_self=True)}
+        for actor in self.scene.actors[actors_before:]:
+            if id(actor) in own or getattr(actor, "_pass_identity", None) is not None:
+                continue
+            actor._pass_identity = result

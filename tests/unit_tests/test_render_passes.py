@@ -244,7 +244,7 @@ def test_video_sequences_publish_one_image_per_frame(tmp_path):
     ]
     assert len(list((tmp_path / "clip.normal").iterdir())) == 4
     assert not (tmp_path / "clip.depth_temp").exists()
-    meta = json.loads((tmp_path / "clip.passes.json").read_text())
+    meta = json.loads((tmp_path / "clip.mp4.passes.json").read_text())
     assert meta["frame_count"] == 4
     assert meta["resolution"] == [6, 4]
     assert meta["output"] == "clip.mp4"
@@ -272,9 +272,74 @@ def test_a_mismatched_aux_batch_is_an_error(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_a_file_in_the_way_of_a_pass_directory_fails_before_rendering(tmp_path):
+    (tmp_path / "clip.depth").write_text("not a directory")
+    with pytest.raises(AlganConfigurationError, match="in the way"):
+        VideoPassJob.create("depth", tmp_path / "clip.mp4")
+
+
+def test_a_failed_publish_keeps_the_encoded_frames(tmp_path, monkeypatch):
+    import algan._render_passes as passes_module
+
+    job, scene = _fake_job(tmp_path, ("depth", "normal"), frames=2)
+    real_replace = passes_module.os.replace
+
+    def locked(src, dst):
+        if "normal" in str(src):
+            raise PermissionError("locked by an editor")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(passes_module.os, "replace", locked)
+    with pytest.raises(RuntimeError, match="clip.normal_temp"):
+        job.publish()
+    job.discard()  # what the render's cleanup does next
+    job.release(scene)
+    assert len(list((tmp_path / "clip.depth").iterdir())) == 3
+    assert len(list((tmp_path / "clip.normal_temp").iterdir())) == 3
+
+
+def test_an_unrunnable_ffmpeg_fails_before_the_still_renders(fresh_scene, tmp_path):
+    SETTINGS.paths.set(ffmpeg_binary=str(tmp_path / "no-such-ffmpeg"))
+    with Scene(video_settings=VIDEO) as scene:
+        Square().spawn()
+        with pytest.raises(AlganConfigurationError, match="Cannot run FFmpeg"):
+            scene.save_frame(tmp_path / "x.png", passes="depth")
+    assert not (tmp_path / "x.png").exists()
+
+
 # ---------------------------------------------------------------------------
 # End to end
 # ---------------------------------------------------------------------------
+
+
+def test_a_still_and_a_video_of_one_stem_keep_their_own_sidecars(fresh_scene, tmp_path):
+    with Scene(video_settings=VIDEO) as scene:
+        with Off():
+            Square().spawn()
+        scene.save_frame(tmp_path / "intro.png", passes=("depth", "object_id"))
+        scene.save_video(tmp_path / "intro.mp4", passes="depth")
+    still = json.loads((tmp_path / "intro.png.passes.json").read_text())
+    video = json.loads((tmp_path / "intro.mp4.passes.json").read_text())
+    assert still["output"] == "intro.png"
+    assert set(still["passes"]) == {"depth", "object_id"}
+    assert video["output"] == "intro.mp4"
+    assert set(video["passes"]) == {"depth"}
+
+
+def test_a_percent_sign_in_the_path_survives_the_sequence_pattern(
+    fresh_scene, tmp_path
+):
+    folder = tmp_path / "50%off"
+    folder.mkdir()
+    with Scene(video_settings=VIDEO) as scene:
+        with Off():
+            Square().spawn()
+        result = scene.save_video(folder / "take%d.mp4", passes="depth")
+    directory = result.passes["depth"]
+    assert directory == folder / "take%d.depth"
+    names = sorted(p.name for p in directory.iterdir())
+    assert names
+    assert names[0] == "take%d.depth.00000.exr"
 
 
 def _object_colours(meta):
@@ -301,7 +366,7 @@ def test_save_video_writes_every_pass_in_step_with_the_video(fresh_scene, tmp_pa
         assert count >= frames - 1, (name, count)
     counts = {len(list(d.iterdir())) for d in result.passes.values()}
     assert len(counts) == 1, "the passes disagree on the frame count"
-    meta = json.loads((tmp_path / "clip.passes.json").read_text())
+    meta = json.loads((tmp_path / "clip.mp4.passes.json").read_text())
     assert meta["frame_count"] == counts.pop()
 
     w, h = VIDEO.resolution
@@ -339,7 +404,7 @@ def test_object_ids_follow_owners_and_pass_index(fresh_scene, tmp_path):
             marked.pass_index = 7
         result = scene.save_frame(tmp_path / "shot.png", passes="object_id")
     assert set(result.passes) == {"object_id"}
-    meta = json.loads((tmp_path / "shot.passes.json").read_text())
+    meta = json.loads((tmp_path / "shot.png.passes.json").read_text())
     objects = meta["passes"]["object_id"]["objects"]
     by_class = {}
     for entry in objects:
@@ -352,6 +417,56 @@ def test_object_ids_follow_owners_and_pass_index(fresh_scene, tmp_path):
     assert all(i >= AUTO_ID_BASE for i in by_class["Text"] | by_class["Circle"])
     assert title.id + AUTO_ID_BASE in by_class["Text"]
     assert {c.id + AUTO_ID_BASE for c in pair.children} == by_class["Circle"]
+
+
+def _ids_per_frame(result, width, height):
+    from algan.rendering.pass_identity import pass_ids_from_colors
+
+    rgb = _decode(
+        result.passes["object_id"] / f"{result.output_path.stem}.object_id.%05d.png",
+        "rgb24",
+        width,
+        height,
+        "u1",
+        3,
+    )
+    ids = pass_ids_from_colors(torch.from_numpy(rgb.copy()))
+    return [set(frame.unique().tolist()) - {0} for frame in ids]
+
+
+@pytest.mark.parametrize("case", ["untagged", "group_tag", "self_tag_cross_family"])
+def test_an_object_keeps_its_id_across_become(fresh_scene, tmp_path, case):
+    """``become`` hands the earlier frames to a hidden history clone and, for
+    a cross-kind morph, renders through stand-ins and a target-class
+    replacement. None of that is the author's business: the object keeps one
+    ID -- and its ``pass_index`` -- on every frame.
+    """
+    from algan import Sphere
+
+    video = VIDEO.set(frames_per_second=4)
+    w, h = video.resolution
+    with Scene(video_settings=video) as scene:
+        with Off():
+            square = Square(size=1.5).spawn()
+            group = Group(square).spawn()
+        if case == "group_tag":
+            group.pass_index = 6
+        elif case == "self_tag_cross_family":
+            square.pass_index = 6
+        square.wait(1)
+        square.become(
+            Sphere(radius=0.8, add_to_scene=False)
+            if case.endswith("cross_family")
+            else Circle(add_to_scene=False)
+        )
+        scene.wait(1)
+        result = scene.save_video(tmp_path / "morph.mp4", passes="object_id")
+    frames = _ids_per_frame(result, w, h)
+    seen = set().union(*frames)
+    assert len(seen) == 1, f"one object, several ids over the shot: {frames}"
+    if case != "untagged":
+        assert seen == {6}
+    assert all(frame == seen for frame in frames), frames
 
 
 def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
@@ -380,6 +495,10 @@ def test_save_frame_writes_one_file_per_pass(fresh_scene, tmp_path):
         assert abs(int(normal[h // 2, w // 2, 2]) - 65535) <= 1
         assert abs(int(normal[h // 2, w // 2, 0]) - 32768) <= 64
         assert normal[0, 0].tolist() == [0, 0, 0]
-        meta = json.loads(stem.with_name(stem.name + ".passes.json").read_text())
+        meta = json.loads(
+            result.output_path.with_name(
+                result.output_path.name + ".passes.json"
+            ).read_text()
+        )
         assert meta["timestamp"] == 0.0
         assert set(meta["passes"]) == {"depth", "normal"}

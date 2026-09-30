@@ -177,10 +177,15 @@ per video frame; a still gets `<stem>.<pass>.<ext>`. Depth is 32-bit float
 OpenEXR (planar camera depth in world units, background `1e10`), normals are
 16-bit PNG (camera space, `rgb = n * 0.5 + 0.5`, background black), object IDs
 are 8-bit PNG with one flat colour per object (background black).
-`<stem>.passes.json` documents the encodings and maps every colour to its Mob.
-An object is the highest Mob above the geometry that is not a plain `Group`;
-set `mob.pass_index = n` (1..65535, before rendering) to choose an ID, which
-descendants inherit. Passes take one pinhole sample per pixel centre, the first
+`<output file name>.passes.json` (e.g. `shot.mp4.passes.json`) documents the encodings and maps every colour to its Mob.
+An object is the highest Mob above the geometry that is not a pure grouping
+container (exact classes only: a bare `Mob`, `Group`, the Manim-compat
+`VGroup`/`Group`/`VDict`, `PGroup`, `OpenGLSurfaceGroup`; a subclass such as
+`Paragraph` or a user's `class Molecule(Group)` is one object). Set
+`mob.pass_index = n` (1..65535, before rendering) to choose an ID, which
+descendants inherit; it has no effect on a part of a single drawn object (a
+glyph of a `Text`, a face of a `Cube`). IDs survive `become()`. ID colours are
+arbitrary hash colours: key by exact value and read them from the sidecar. Passes take one pinhole sample per pixel centre, the first
 surface at least 50% opaque: they are not anti-aliased and ignore depth of
 field. Verify a pass by decoding it (FFmpeg decodes EXR and 16-bit PNG; Pillow
 reads 16-bit RGB PNG as 8-bit), not by viewing it.

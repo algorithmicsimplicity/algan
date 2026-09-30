@@ -134,12 +134,14 @@ def _validate_pass_index(value):
     """``None`` or the whole number ``value`` as an ``int`` in [1, 65535].
 
     ``operator.index`` is the test for "whole number": it takes ``int`` and
-    NumPy / torch integer scalars and refuses ``3.0`` and ``"3"``. ``bool`` is
-    refused explicitly, since ``True`` would otherwise pass as 1.
+    NumPy / torch integer scalars and refuses ``3.0`` and ``"3"``. Booleans
+    are refused explicitly -- Python's, NumPy's and a torch bool tensor's --
+    since ``True`` would otherwise pass as 1.
     """
     if value is None:
         return None
-    if isinstance(value, bool):
+    dtype = getattr(value, "dtype", None)
+    if isinstance(value, bool) or (dtype is not None and "bool" in str(dtype)):
         raise AlganConfigurationError(
             f"pass_index must be a whole number from 1 to {_PASS_INDEX_MAX}, "
             f"or None; got {value!r}."
@@ -468,15 +470,21 @@ class Mob(
         mask or one Mob can keep a stable number across scenes. ``None`` (the
         default) means not set: the Mob takes the value of its nearest ancestor
         that sets one -- so ``group.pass_index = 3`` covers the whole group --
-        and a Mob with no such ancestor gets an automatic identifier of its own
-        instead. An ordinary render ignores it.
+        and a Mob with no such ancestor gets the automatic identifier of the
+        object it is part of. An ordinary render ignores it.
+
+        It takes effect on Mobs that are drawn as objects of their own and on
+        their ancestors. A part of a single drawn object -- one glyph of a
+        ``Text``, one face of a ``Cube``, a ``Cylinder``'s cap -- is drawn by
+        that object, so a ``pass_index`` set on the part alone has no effect.
 
         Animation
         ---------
         Takes effect immediately and is not animated: it is a plain attribute,
         not an animatable one, and the render reads its final value for every
-        frame. Applies to this Mob and to every descendant that does not set
-        its own value.
+        frame, including the frames a ``become()`` renders through internal
+        stand-ins. Applies to this Mob and to every descendant that does not
+        set its own value.
 
         Raises
         ------
@@ -2155,6 +2163,9 @@ class Mob(
                 # re-spawned at the current time below).
                 clone.lifespan.start = orig.lifespan.start
                 timeline.register_spawn(clone, clone.lifespan)
+                # The clone draws the original's earlier frames: an object-ID
+                # pass must name the original (algan.rendering.pass_identity).
+                clone._pass_identity = orig
             clone_mob.despawn(animate=False)
             self.refresh_history()
             self.spawn(animate=False)

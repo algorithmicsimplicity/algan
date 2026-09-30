@@ -43,6 +43,7 @@ from algan import (
     SceneManager,
     Seq,
     Square,
+    Sync,
 )
 from algan.errors import (
     AlganConfigurationError,
@@ -184,6 +185,78 @@ def test_focus_at_racks_onto_the_target_depth(fresh_scene):
             tm.clear_buffers()
         assert float(focus[0]) == pytest.approx(20.0)
         assert float(focus[-1]) == pytest.approx(12.0)
+
+
+def _lens_over(scene, extra_mobs=(), seconds=1.0):
+    """The materialized ``camera_lens`` over ``seconds`` (+ a couple of frames)."""
+    camera = scene.get_camera()
+    fps = scene.video_settings.frames_per_second
+    n = int(fps * seconds) + 3
+    tm = scene.timeline_manager
+    tm.set_state_to_times(
+        torch.arange(n) / fps,
+        active_mobs=[camera, camera.screen, *scene.actors, *extra_mobs],
+    )
+    try:
+        return scene._materialize_render_state(0, n)["camera_lens"][:, 0]
+    finally:
+        tm.clear_buffers()
+
+
+def test_focus_at_follows_a_move_recorded_before_it(fresh_scene):
+    """In one ``Sync``, a move written before ``focus_at`` is replayed before
+    it, so the pull re-measures the moving subject every frame and lands on
+    it (the documented order; a move written after it is not seen).
+    """
+    with Scene(video_settings=VIDEO) as scene:
+        camera = scene.get_camera()
+        subject = Circle(radius=0.3).move_to(OUT * 5).spawn(animate=False)
+        with Sync(runtime=1):
+            subject.move(OUT * 5)  # depth 15 -> 10
+            camera.focus_at(subject)
+        focus = _lens_over(scene, [subject])[:, 1]
+        assert float(camera.focus_distance) == pytest.approx(10.0)
+    assert float(focus[0]) == pytest.approx(DEFAULT_FOCUS_DISTANCE)
+    assert float(focus[-1]) == pytest.approx(10.0)
+
+
+def test_overshooting_easings_never_hand_the_renderer_a_bad_lens(fresh_scene):
+    """An easing like ``ease_out_back`` takes the interpolation past 1, so a
+    blend between two valid distances can dip below zero. Neither a pull nor a
+    plain tween may abort the render or reach the kernel negative.
+    """
+    from algan import easings
+
+    with Scene(video_settings=VIDEO) as scene:
+        camera = scene.get_camera()
+        near = Circle(radius=0.2).move_to(OUT * 19.2).spawn(animate=False)
+        with Seq(runtime=1, easing=easings.ease_out_back):
+            camera.focus_at(near)  # 20 -> 0.8, overshooting below zero
+        pulled = _lens_over(scene, [near])
+    assert torch.all(pulled[:, 1] > 0)
+    SceneManager.reset()
+    with Scene(video_settings=VIDEO) as scene:
+        camera = scene.get_camera()
+        with Off():
+            camera.aperture = 0.1
+        with Sync(runtime=1, easing=easings.ease_out_back):
+            camera.focus_distance = 0.8
+            camera.aperture = 0.0  # overshoots below zero too
+        tweened = _lens_over(scene)
+    assert torch.all(tweened[:, 1] > 0)
+    assert torch.all(tweened[:, 0] >= 0)
+
+
+def test_near_orthographic_keeps_the_plane_in_focus(fresh_scene):
+    with Scene() as scene:
+        camera = scene.get_camera()
+        with Off():
+            camera.set_near_orthographic()
+        # The eye backed off ~1.6e5 units; the focus followed it, so the
+        # ORIGIN plane that was in focus still is.
+        depth = float(camera._depth_of(torch.zeros(3)))
+        assert depth > 1e5
+        assert float(camera.focus_distance) == pytest.approx(depth, rel=1e-5)
 
 
 def test_a_default_camera_view_copies_the_lens(fresh_scene):

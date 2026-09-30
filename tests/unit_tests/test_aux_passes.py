@@ -297,6 +297,44 @@ def test_path_traced_area_light_panels_are_not_recorded(monkeypatch):
     assert centre == pytest.approx(square - 1.0, abs=1e-3)
 
 
+def test_a_skipped_panel_does_not_expose_a_surface_hidden_behind_it():
+    """The gather that meets an opaque panel stops accepting hits behind it,
+    but keeps whatever it buffered before finding the panel -- here a slanted
+    triangle whose box is entered first. Draining on past the skipped panel
+    would record that triangle over the nearer square; the trace regathers
+    from the panel instead, so both renderers still agree.
+    """
+    from algan.mobs.shapes_2d import TriangleTriangulated
+
+    def build(scene):
+        corners = torch.tensor(
+            [[[-1.0, -2.0, -2.25], [-1.0, 2.0, -2.25], [3.0, 0.0, 2.75]]]
+        )
+        TriangleTriangulated(corners).spawn(animate=False)
+        Square(size=1.0, color=BLUE).spawn(animate=False)
+        RectAreaLight(
+            location=OUT * 1.0,
+            width=1.0,
+            height=1.0,
+            samples=4,
+            color=WHITE,
+            intensity=2.0,
+            target=OUT * 5.0,
+        ).spawn(animate=False)
+
+    _f, det, info = _render(build, rt={"samples_per_pixel": 1})
+    _f, traced, _ = _render(
+        build,
+        rt={"samples_per_pixel": 4},
+        experimental={"pt_area_light_quads": True},
+    )
+    det, traced = _joined(det), _joined(traced)
+    square = _planar(info, (0.0, 0.0, 0.0))
+    assert det["depth"][0, CY, CX].item() == pytest.approx(square, abs=1e-3)
+    for key in aux_module.AUX_PASS_KEYS:
+        assert torch.equal(det[key], traced[key]), key
+
+
 def test_the_supersampled_route_records_what_the_analytic_route_records(monkeypatch):
     decisions = []
     real_decision = tracer.analytic_raster_route_active

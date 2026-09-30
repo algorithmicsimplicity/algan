@@ -356,8 +356,10 @@ class Camera(Mob):
         current positions over the current context's runtime (1 second by
         default), preserving the reference frame throughout. Use
         ``with Seq(runtime=3): ...`` to change the duration, or ``with Off():``
-        for an immediate change. Only the camera and its screen move. May be
-        called before or after spawning scene objects.
+        for an immediate change. Only the camera and its screen move; the
+        camera's ``focus_distance`` grows with the move, so the plane in focus
+        stays where it was. May be called before or after spawning scene
+        objects.
 
         Parameters
         ----------
@@ -407,6 +409,18 @@ class Camera(Mob):
         with Sync(animation_manager=self.animation_manager):
             self.set_non_recursive(location=location)
             self.screen.set_non_recursive(location=screen_location)
+            # The plane in focus stays where it was in the world: the eye
+            # backs away along the forward axis, so the focus distance grows
+            # by the same amount (and, both tweened linearly together, the
+            # plane holds still during the move). Left at a perspective-scale
+            # value, any open aperture would blur the whole frame away.
+            # (Clamped for a move TOWARD the scene past the focus plane,
+            # which cannot keep it in front of the eye.)
+            self.set_non_recursive(
+                focus_distance=(self.focus_distance - depth * scale_change).clamp_min(
+                    _MIN_FOCUS_DISTANCE
+                )
+            )
         return self
 
     def get_fov(self):
@@ -766,12 +780,16 @@ class Camera(Mob):
         Recorded as an animation over the current context's runtime (1 second
         by default): the plane in focus travels from its current distance to
         the target, the classic rack focus. The target's depth is measured
-        again on every frame of the pull, so a subject or a camera that moves
-        during it is sharp when the pull lands; afterwards the distance stays
-        at the value measured when the call was recorded, and a target that
-        keeps moving drifts out of focus (call ``focus_at`` again). Use
-        ``with Seq(runtime=2): ...`` to retime the pull or ``with Off(): ...``
-        to focus instantly. Changes only this camera's ``focus_distance``.
+        again on every frame of the pull, so a subject or a camera move that
+        runs alongside it is followed -- provided that move is recorded
+        *before* ``focus_at`` in the same block (``with Sync(): subject.move(...);
+        camera.focus_at(subject)``): animations replay in the order they were
+        recorded, so a move recorded after the pull is not seen by it.
+        Afterwards the distance stays at the value measured when the call was
+        recorded, and a target that keeps moving drifts out of focus (call
+        ``focus_at`` again). Use ``with Seq(runtime=2): ...`` to retime the
+        pull or ``with Off(): ...`` to focus instantly. Changes only this
+        camera's ``focus_distance``.
 
         Parameters
         ----------
@@ -821,11 +839,15 @@ class Camera(Mob):
     def _focus_at(self, target, interpolation=1):
         point = target.get_center() if isinstance(target, Mob) else target
         # During replay this is the frame's own camera and target, and a
-        # [T, 1, 1] interpolation; clamped so a target that passes behind the
-        # camera mid-pull never hands the renderer a non-positive distance.
+        # [T, 1, 1] interpolation. Both the target depth and the blend are
+        # clamped: a target passing behind the camera, or an overshooting
+        # easing (ease_out_back takes the interpolation past 1), must not
+        # write a non-positive distance, which the setter would refuse in the
+        # middle of a render.
         depth = self._depth_of(point).clamp_min(_MIN_FOCUS_DISTANCE)
         start = self.focus_distance
-        self.focus_distance = start * (1 - interpolation) + depth * interpolation
+        blended = start * (1 - interpolation) + depth * interpolation
+        self.focus_distance = blended.clamp_min(_MIN_FOCUS_DISTANCE)
         return self
 
     def _get_render_lens(self):
@@ -835,8 +857,13 @@ class Camera(Mob):
         world units, the lens diameter first. Read by the render loop beside
         :meth:`_get_render_screen_basis`; only the path tracer consumes it.
         """
-        aperture = self.aperture
-        focus = self.focus_distance
+        # Writes are validated, but a recorded tween is interpolated by the
+        # timeline without the setter: an overshooting easing can carry
+        # either value past its bound between two valid endpoints. A negative
+        # focus would turn every lens ray around, so both are clamped here,
+        # where every render reads them.
+        aperture = cast_to_tensor(self.aperture).clamp_min(0.0)
+        focus = cast_to_tensor(self.focus_distance).clamp_min(_MIN_FOCUS_DISTANCE)
         aperture, focus = torch.broadcast_tensors(aperture, focus)
         return torch.cat((aperture, focus), dim=-1)
 

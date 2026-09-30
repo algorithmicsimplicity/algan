@@ -266,6 +266,12 @@ def aux_trace_arena(
                         skipped_opaque = 1
                         t_prev = t_hit
                         layer_prev = hit_layer
+                        # _collect_hits stopped accepting at this opaque
+                        # panel, but hits it buffered BEFORE finding the
+                        # panel (a slanted triangle whose box was entered
+                        # first) survive behind it: what is left of this
+                        # buffer is an incomplete set. Regather from here.
+                        drained = num_hits
                     else:
                         seam_t = t_hit if edge_hit == 1 else -1e30
                         w0 = 1.0 - a - b

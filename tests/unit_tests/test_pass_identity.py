@@ -82,7 +82,21 @@ def test_pass_index_defaults_to_none_and_accepts_whole_numbers():
 
 
 @pytest.mark.parametrize(
-    "value", [True, False, 0, -1, 65536, 1.0, 2.5, "3", [1], float("nan")]
+    "value",
+    [
+        True,
+        False,
+        np.True_,
+        torch.tensor(True),
+        0,
+        -1,
+        65536,
+        1.0,
+        2.5,
+        "3",
+        [1],
+        float("nan"),
+    ],
 )
 def test_pass_index_rejects_everything_else(value):
     with Scene(), Off():

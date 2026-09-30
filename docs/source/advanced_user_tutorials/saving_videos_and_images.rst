@@ -291,9 +291,11 @@ Any subset, in any order, works; ``passes="depth"`` asks for one.
        camera is ``(0.5, 0.5, 1.0)``, the familiar lavender). Decode with
        ``n = rgb * 2 - 1``. Pixels that hit nothing are black.
    * - ``shot.object_id/shot.object_id.00000.png`` ...
-     - **Object ID.** 8-bit RGB PNG. Every object is one flat, fully saturated
-       colour, so any colour keyer isolates it exactly; black is nothing.
-   * - ``shot.passes.json``
+     - **Object ID.** 8-bit RGB PNG. Every object is one flat colour, so a
+       keyer matching that exact value isolates it; black is nothing. The
+       colours are hashed from the IDs, so they are distinct but arbitrary --
+       some pale, grey or dark -- and ``shot.mp4.passes.json`` lists each one.
+   * - ``shot.mp4.passes.json``
      - What the files contain: the encodings above, the resolution, frame rate
        and frame count, and every object ID with its colour and the Mob it
        stands for.
@@ -305,7 +307,7 @@ set it to the video's frame rate if the editor asks. Image sequences are
 lossless, carry 16-bit and float data that video codecs cannot, and every editor
 reads them. A still writes one file per pass instead: ``shot.png`` gains
 ``shot.depth.exr``, ``shot.normal.png``, ``shot.object_id.png`` and
-``shot.passes.json``. The paths also come back on the result, as
+``shot.png.passes.json``. The paths also come back on the result, as
 ``result.passes`` (``{"depth": Path(...), ...}``).
 
 **Which object gets which ID.** An object is the highest Mob above a piece of
@@ -323,10 +325,14 @@ Mob before rendering:
 
 A ``pass_index`` is an integer from 1 to 65535. It applies to the Mob and every
 descendant that does not set its own, so it merges several objects into one
-matte or splits a part out of one. IDs without an explicit ``pass_index`` are
-derived from the object's Mob and stay the same from one render of the same
-script to the next. ``shot.passes.json`` lists each ID's colour, so you can
-key an object by colour or look one up by name.
+matte, or gives one member of a group a matte of its own. It works on Mobs drawn
+as objects of their own: one glyph of a ``Text`` or one face of a ``Cube`` is
+drawn by its object, so tagging the part alone has no effect. IDs without an
+explicit ``pass_index`` are derived from the object's Mob and stay the same from
+one render of the same script to the next. An object keeps its ID through a
+``become()``, including a morph into a different kind of shape.
+The sidecar lists each ID's colour, so you can key an object by
+colour or look one up by name.
 
 What every pass samples, and what that implies:
 

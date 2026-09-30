@@ -146,11 +146,33 @@ def resolve_pass_owner(mob: Mob) -> tuple[int, Mob]:
     :func:`auto_owner` of ``mob``. ``pass_id`` is always positive, so 0 stays
     free for the background.
     """
+    mob = render_identity(mob)
     index, setter = mob._resolved_pass_index()
     if index is not None:
         return int(index), setter
     owner = auto_owner(mob)
     return AUTO_ID_BASE + int(owner.id), owner
+
+
+def render_identity(mob: Mob) -> Mob:
+    """The Mob ``mob`` is drawing on behalf of, for identification.
+
+    Several internal Mobs render frames of a Mob the author holds: the hidden
+    clone :meth:`~algan.animatable_base.mob.Mob.detach_history` hands the
+    earlier frames to, and the stand-ins and target-class replacement
+    :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` renders a
+    morph through. Each records whom it stands for in ``_pass_identity``;
+    following that chain to its end names the Mob in the final hierarchy, so
+    one object keeps one ID -- and its ``pass_index`` -- across a ``become``.
+    """
+    seen = set()
+    while id(mob) not in seen:
+        seen.add(id(mob))
+        successor = getattr(mob, "_pass_identity", None)
+        if successor is None:
+            break
+        mob = successor
+    return mob
 
 
 def pass_id_table(registry: dict) -> tuple[np.ndarray, dict]:

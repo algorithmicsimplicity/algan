@@ -1543,7 +1543,7 @@ class Scene(RenderLoopMixin):
             any of ``"depth"``, ``"normal"`` and ``"object_id"``, as one name or
             a sequence. ``shot.png`` gains ``shot.depth.exr``,
             ``shot.normal.png``, ``shot.object_id.png`` and a
-            ``shot.passes.json`` describing them; see
+            ``shot.png.passes.json`` describing them; see
             :ref:`saving-render-passes`. Defaults to ``None``, writing no
             passes.
 
@@ -1922,7 +1922,7 @@ class Scene(RenderLoopMixin):
             image sequence in its own directory -- ``intro.mp4`` gains
             ``intro.depth/intro.depth.00000.exr``,
             ``intro.normal/intro.normal.00000.png`` and so on, one image per
-            video frame -- plus an ``intro.passes.json`` describing the
+            video frame -- plus an ``intro.mp4.passes.json`` describing the
             encodings and naming each object id's Mob. Every pass takes one
             pinhole sample at each pixel centre, so it is identical under both
             renderers and unaffected by depth of field; see

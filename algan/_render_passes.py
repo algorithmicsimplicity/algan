@@ -18,7 +18,8 @@ module turns that data into files a compositor or video editor imports:
 A video writes each pass as a numbered image sequence in its own directory
 (``intro.depth/intro.depth.00000.exr`` ...), which every editor imports and
 no container can garble; a still writes one file per pass (``shot.depth.exr``).
-Each render also writes ``<stem>.passes.json``, describing the encodings and
+Each render also writes ``<output file name>.passes.json`` (``intro.mp4.passes.json``),
+describing the encodings and
 listing every object id with the Mob it names.
 
 Encoding runs through FFmpeg (the binary Algan already uses for video), one
@@ -270,9 +271,19 @@ def check_pass_encoders(names) -> str:
 
     binary = _ffmpeg_binary()
     needed = sorted({_FORMATS[name].codec for name in names})
-    if binary not in _ENCODERS_OF:
-        _ENCODERS_OF[binary] = _listed_encoders(binary)
-    available = _ENCODERS_OF[binary]
+    available = _ENCODERS_OF.get(binary)
+    if available is None:
+        available = _listed_encoders(binary)
+        if available is not None:
+            # Only a real answer is remembered: an FFmpeg that could not be
+            # asked this time may be installed before the next render.
+            _ENCODERS_OF[binary] = available
+        elif shutil.which(binary) is None and not Path(binary).is_file():
+            raise AlganConfigurationError(
+                f"Cannot run FFmpeg ({binary!r}), which writes the requested "
+                "render passes. Install FFmpeg, or point "
+                "SETTINGS.paths.ffmpeg_binary at an FFmpeg executable."
+            )
     if available is not None:
         missing = [codec for codec in needed if codec not in available]
         if missing:
@@ -293,10 +304,14 @@ class PassEncoder:
     zero-copy pipe write drive it unchanged.
     """
 
-    def __init__(self, binary, name, width, height, fps, target, *, still):
+    def __init__(
+        self, binary, name, width, height, fps, target, *, still, display=None
+    ):
         fmt = _FORMATS[name]
         self.name = name
-        self.target = Path(target)
+        # ``target`` is what FFmpeg is given (a sequence pattern has its
+        # literal ``%`` doubled); ``display`` is the path messages name.
+        self.target = Path(display if display is not None else target)
         command = [
             binary, "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", fmt.input_format,
@@ -310,16 +325,20 @@ class PassEncoder:
             command += ["-frames:v", "1", "-update", "1"]
         else:
             command += ["-f", "image2", "-start_number", "0"]
-        command.append(str(self.target))
+        command.append(str(target))
         # stderr to a file, not a pipe: several encoders run at once, and a
         # pipe nobody drains can deadlock one of them.
         self._stderr = tempfile.TemporaryFile()  # noqa: SIM115 -- closed in close/abort
-        self.proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=self._stderr,
-        )
+        try:
+            self.proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=self._stderr,
+            )
+        except BaseException:
+            self._stderr.close()
+            raise
 
     def write_frame(self, array):
         try:
@@ -391,13 +410,25 @@ def video_pass_dirs(video_path: Path, names) -> dict[str, Path]:
 
 
 def sidecar_path(output_path: Path) -> Path:
-    stem = _stem(output_path)
-    return stem.with_name(f"{stem.name}.passes.json")
+    """``intro.mp4`` -> ``intro.mp4.passes.json``.
+
+    Named after the whole file name, extension included: a still and a video
+    of the same stem (``save_frame()`` and ``save_video()`` with the default
+    name, say) each keep their own description.
+    """
+    output_path = Path(output_path)
+    return output_path.with_name(f"{output_path.name}.passes.json")
 
 
 def _sequence_pattern(directory: Path, name: str) -> str:
+    """The FFmpeg image2 target for ``directory``'s frames.
+
+    image2 reads every ``%`` in the whole path as a printf directive, so the
+    literal parts have theirs doubled; only the frame counter is one.
+    """
     stem = directory.name.removesuffix("_temp")
-    return f"{stem}.%05d.{_FORMATS[name].extension}"
+    literal = str(directory / stem).replace("%", "%%")
+    return f"{literal}.%05d.{_FORMATS[name].extension}"
 
 
 def _sequence_file_regex(directory_stem: str, name: str):
@@ -492,6 +523,7 @@ class VideoPassJob:
     resolver: ObjectIdResolver | None = None
     pending: deque = field(default_factory=deque)
     frames_written: int = 0
+    keep_temporaries: bool = False
     width: int = 0
     height: int = 0
     fps: float = 0.0
@@ -503,6 +535,15 @@ class VideoPassJob:
             return None
         job = cls(names, Path(video_path), check_pass_encoders(names))
         job.directories = video_pass_dirs(job.video_path, names)
+        for name, directory in job.directories.items():
+            # Before rendering, not at publish: a file where a pass directory
+            # must go would otherwise fail after the video had been replaced.
+            if directory.exists() and not directory.is_dir():
+                raise AlganConfigurationError(
+                    f"Cannot write the {name} pass to {directory}: a file of "
+                    "that name is in the way. Move it, or render to another "
+                    "name."
+                )
         job.temporaries = {
             name: path.with_name(path.name + "_temp")
             for name, path in job.directories.items()
@@ -532,8 +573,9 @@ class VideoPassJob:
                 self.width,
                 self.height,
                 self.fps,
-                temporary / _sequence_pattern(temporary, name),
+                _sequence_pattern(temporary, name),
                 still=False,
+                display=temporary,
             )
             writer = video_writer_cls(encoder)
             writer.start()
@@ -590,6 +632,8 @@ class VideoPassJob:
         self.discard()
 
     def discard(self):
+        if self.keep_temporaries:
+            return
         for temporary in self.temporaries.values():
             shutil.rmtree(temporary, ignore_errors=True)
 
@@ -598,21 +642,38 @@ class VideoPassJob:
             del scene._aux_id_registry
 
     def publish(self):
-        """Move the finished sequences into place and write the sidecar."""
-        for name in self.names:
-            temporary = self.temporaries[name]
-            directory = self.directories[name]
-            directory.mkdir(parents=True, exist_ok=True)
-            stale = _sequence_file_regex(directory.name, name)
-            # Replace only what an earlier render of these passes wrote: a
-            # longer earlier video must not leave frames past this one's end.
-            for existing in directory.iterdir():
-                if existing.is_file() and stale.match(existing.name):
-                    existing.unlink()
-            for produced in sorted(temporary.iterdir()):
-                os.replace(produced, directory / produced.name)
-            shutil.rmtree(temporary, ignore_errors=True)
-            logger.info("Wrote the %s pass to %s", name, directory)
+        """Move the finished sequences into place and write the sidecar.
+
+        Runs after the video is published. If a move fails (a file locked by an
+        editor, say), the sequences not yet in place are kept in their
+        ``_temp`` directories -- they are fully encoded -- and the error names
+        them rather than deleting them.
+        """
+        published = []
+        try:
+            for name in self.names:
+                temporary = self.temporaries[name]
+                directory = self.directories[name]
+                directory.mkdir(parents=True, exist_ok=True)
+                stale = _sequence_file_regex(directory.name, name)
+                # Replace only what an earlier render of these passes wrote: a
+                # longer earlier video must not leave frames past this one's end.
+                for existing in directory.iterdir():
+                    if existing.is_file() and stale.match(existing.name):
+                        existing.unlink()
+                for produced in sorted(temporary.iterdir()):
+                    os.replace(produced, directory / produced.name)
+                shutil.rmtree(temporary, ignore_errors=True)
+                published.append(name)
+                logger.info("Wrote the %s pass to %s", name, directory)
+        except OSError as exc:
+            self.keep_temporaries = True
+            left = [str(self.temporaries[n]) for n in self.names if n not in published]
+            raise RuntimeError(
+                f"The video was written, but moving its render passes into "
+                f"place failed ({exc}). The encoded frames not yet in place "
+                f"are kept in: {', '.join(left)}."
+            ) from exc
         _write_json(
             sidecar_path(self.video_path),
             _sidecar(

@@ -260,8 +260,11 @@ over the current context's runtime, which is how a rack focus is made; wrap
 setup in ``with Off():``, as above. :meth:`~algan.rendering.camera.Camera.focus_at`
 takes a Mob or a point and animates ``focus_distance`` onto its depth,
 re-measuring it on every frame of the pull so a moving subject is sharp when
-the pull lands. After the pull the distance stays put; a subject that keeps
-moving drifts out of focus until you call ``focus_at`` again.
+the pull lands. Record that move first: animations replay in the order they
+were written, so in ``with Sync(): subject.move(OUT * 3); camera.focus_at(subject)``
+the pull follows the subject, while a move written after ``focus_at`` is not
+seen by it. After the pull the distance stays put; a subject that keeps moving
+drifts out of focus until you call ``focus_at`` again.
 
 A few things to know:
 
@@ -281,9 +284,11 @@ A few things to know:
 * **The background colour, image or callable stays sharp**: it is a
   screen-space backdrop, not an object in the scene. An environment map is
   scenery at infinity and blurs like any distant object.
-* The **near-orthographic** mode puts the camera ``1e5`` units away, where any
-  world-sized aperture subtends almost nothing: depth of field is effectively
-  invisible there.
+* The **near-orthographic** mode backs the camera far away (``distance``, the
+  eye-to-screen distance, is ``1e5`` by default) and moves ``focus_distance``
+  out with it, so the plane in focus stays where it was. From that far, any
+  world-sized aperture blurs by a tiny angle: depth of field is effectively
+  invisible there. (Call ``focus_at`` again if you move the focus afterwards.)
 * The auxiliary passes of :ref:`saving-render-passes` are always pinhole, so
   a depth pass stays sharp for compositing even when the colour pass is
   defocused.
