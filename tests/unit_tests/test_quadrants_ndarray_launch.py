@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from algan.rendering.taichi_runtime import init_taichi
+from algan.rendering.taichi_runtime import ensure_taichi_for_render
 from algan.taichi_compat import BACKEND, ti
 from algan.utils import taichi_fast_launch as fast
 
@@ -21,7 +21,11 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def verify(monkeypatch):
-    init_taichi()
+    # Not ``init_taichi``: that leaves the launch arch guard armed, and a
+    # program an earlier test left baking other compiled-in settings is then
+    # rebuilt by the first launch -- ``from_numpy``'s, inside ``array()`` --
+    # and ``ti.init`` resets the ndarray that launch was filling.
+    ensure_taichi_for_render()
     monkeypatch.setattr(fast, "VERIFY", True)
     monkeypatch.setattr(fast, "ENABLED", True)
     yield
