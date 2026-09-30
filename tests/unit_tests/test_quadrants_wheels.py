@@ -164,10 +164,18 @@ class TestResolveWheelMatrix:
         assert all(out[name] == "true" for name in resolver.PLATFORMS)
 
     def test_a_full_python_matrix(self, resolver):
-        out = resolver.resolve({"IN_PYTHONS": "3.10,3.11,3.12,3.13"})
-        assert json.loads(out["pythons"]) == ["3.10", "3.11", "3.12", "3.13"]
+        out = resolver.resolve({"IN_PYTHONS": "3.10,3.11,3.12,3.13,3.14"})
+        assert json.loads(out["pythons"]) == ["3.10", "3.11", "3.12", "3.13", "3.14"]
         expected = len(resolver.PLATFORMS) * len(resolver.PYTHONS)
         assert f"{expected} wheel(s)" in out["summary"]
+
+    def test_the_release_matrix_includes_python_3_14(self, resolver):
+        # Upstream Quadrants v1.3.0 stops at cp313; cp314 is this fork's own
+        # (0009). Dropping it from the table would silently shrink the next
+        # release -- the publish gate compares against the table, so it would
+        # still pass -- and strand every 3.14 user on a version with no wheel.
+        assert resolver.PYTHONS[-1] == "3.14"
+        assert (REPO_ROOT / "quadrants_patches" / "0009-python-3.14.patch").is_file()
 
     def test_whitespace_and_newlines_are_separators(self, resolver):
         out = resolver.resolve(
@@ -191,7 +199,7 @@ class TestResolveWheelMatrix:
         with pytest.raises(SystemExit, match="unknown platform"):
             resolver.resolve({"IN_PLATFORMS": "linux,solaris"})
 
-    @pytest.mark.parametrize("version", ["3.9", "3.14", "2.7", "311"])
+    @pytest.mark.parametrize("version", ["3.9", "3.15", "2.7", "311"])
     def test_an_unsupported_python_is_refused(self, resolver, version):
         with pytest.raises(SystemExit, match="unsupported Python"):
             resolver.resolve({"IN_PYTHONS": version})
