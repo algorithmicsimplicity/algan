@@ -285,13 +285,15 @@ def test_medium_table_keeps_cavities_and_does_not_mutate_shared_absorption(
     memory, merged, opacity = packed_media
     merged["tri_mat"][0, 0, 34:37] = 1
     # Third object is not closed, but has no scattering and retains its
-    # existing surface-chord treatment. Second is a zero-density cavity.
+    # existing surface-chord treatment. Second is a zero-density cavity: it
+    # is tracked, but as a non-scattering shell it keeps its chord too, so
+    # the shadow march treats it exactly as a scene without media would.
     merged["tri_mat"][0, 2, 38] = 0
     shells, extra, offset = _prepare_media(memory, merged, opacity)
     assert offset == 3
     assert shells.tolist() == [[-1, -1, -1, 10, 20, -1]]
-    assert not extra[..., :2, 12:15].any()
-    assert extra[..., 2, 12:15].eq(1).all()
+    assert not extra[..., 0, 12:15].any()
+    assert extra[..., 1:, 12:15].eq(1).all()
     assert merged["tri_extra"].eq(1).all(), "shared merge must survive retries"
 
 
@@ -612,3 +614,98 @@ def test_medium_coverage_matches_rgb_mean_ballistic_transmittance(
     assert float(image[..., 3].float().mean()) / 255 == pytest.approx(
         expected, abs=0.008
     )
+
+
+def _glass_shadow(tmp_path, name, blocker, remote_fog, shadows=False):
+    """A point light shining through a refracting blocker onto a Lambert
+    floor, optionally with an unrelated fog prism far off screen whose only
+    effect is to switch on medium tracking for the whole scene.
+    """
+    from test_path_tracer import _render_scene_exp
+
+    from algan import RIGHT, MeshLambertMaterial
+
+    def build(scene):
+        Scene.clear_lights()
+        scene.set_background(BLACK)
+        PointLight(location=OUT * 5, color=WHITE, intensity=1.5, decay=0).spawn(
+            animate=False
+        )
+        floor = Prism(width=8, height=8, depth=0.1)
+        floor.set_material(MeshLambertMaterial(color=WHITE))
+        floor.spawn(animate=False)
+        slab = Prism(width=2, height=2, depth=0.6)
+        slab.set_material(blocker)
+        slab.move(OUT * 1.5)
+        slab.spawn(animate=False)
+        if remote_fog:
+            fog = Prism(width=0.1, height=0.1, depth=0.1)
+            fog.set_material(MeshPhysicalMaterial(transmission=1, ior=1, sigma_s=0.1))
+            fog.move_to(RIGHT * 100)
+            fog.spawn(animate=False)
+
+    return _render_scene_exp(
+        tmp_path,
+        name,
+        build,
+        32,
+        video=SMOKE_TEST,
+        max_bounces=2,
+        shadows=shadows,
+        experimental={"pt_error_target": 0, "pt_firefly_clamp": 0},
+    ).float()
+
+
+@pytest.mark.parametrize("shadows", [False, True], ids=["unshadowed", "shadowed"])
+@pytest.mark.parametrize(
+    "attenuation", [None, ((0.4, 0.7, 1.0), 0.6)], ids=["clear", "absorbing"]
+)
+def test_glass_casts_the_same_shadow_with_or_without_unrelated_media(
+    tmp_path, attenuation, shadows
+):
+    """Medium tracking is switched on for the whole scene by any scattering
+    object, and once on it gives every closed physical shell an identity --
+    plain glass included, because glass inside fog must stop the fog's
+    scattering at its surface. Its straight light connections used to stop
+    at every index change as well, so a fog prism a hundred units away
+    turned a glass block's tinted shadow black.
+
+    Non-scattering shells are now left to the ordinary shadow march on those
+    connections, exactly as in a scene without media: no stop at their index
+    change, and their surface tint and chord absorption follow ``shadows``
+    as they always have. So with surface shadows on or off, clear or
+    absorbing, the remote fog must not move the frame.
+    """
+    kwargs = {"color": WHITE, "transmission": 1, "ior": 1.5, "roughness": 0}
+    if attenuation is not None:
+        kwargs["attenuation_color"], kwargs["attenuation_distance"] = attenuation
+    alone = _glass_shadow(
+        tmp_path, "glass_alone.png", MeshPhysicalMaterial(**kwargs), False, shadows
+    )
+    with_fog = _glass_shadow(
+        tmp_path, "glass_fog.png", MeshPhysicalMaterial(**kwargs), True, shadows
+    )
+    centre = (slice(12, 20), slice(12, 20))
+    assert float(alone[centre][..., :3].mean()) > 20, "the glass must pass light"
+    diff = (alone[..., :3] - with_fog[..., :3]).abs()
+    assert float(diff.mean()) < 0.5, float(diff.mean())
+    assert float(diff.max()) <= 2, float(diff.max())
+
+
+def test_a_scattering_interior_still_stops_straight_shadow_connections(tmp_path):
+    """The other side of the rule above: behind an index change into a
+    scattering interior the straight connection still stops, because the
+    bent path into the medium is the BSDF walk's to sample. Under a point
+    light that leaves the shadow of a subsurface block far darker than the
+    tinted shadow of the same block in clear glass.
+    """
+    glass = MeshPhysicalMaterial(color=WHITE, transmission=1, ior=1.5, roughness=0)
+    jade = MeshPhysicalMaterial(
+        color=WHITE, transmission=1, ior=1.5, roughness=0, sigma_s=4
+    )
+    clear = _glass_shadow(tmp_path, "clear.png", glass, True)
+    dense = _glass_shadow(tmp_path, "dense.png", jade, True)
+    centre = (slice(12, 20), slice(12, 20))
+    lit = float(clear[centre][..., :3].mean())
+    blocked = float(dense[centre][..., :3].mean())
+    assert blocked < 0.5 * lit, (blocked, lit)

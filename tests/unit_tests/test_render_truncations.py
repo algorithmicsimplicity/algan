@@ -174,7 +174,7 @@ def test_the_shadow_light_warning_names_the_path_tracer_switch(recorder, algan_l
     for (DESIGN_path_tracer_roadmap.md section 0.3), so the warning at the
     failure names the switch rather than leaving the user to find the docs.
     """
-    from algan.render_loop import PATH_TRACER_FALLBACK_SPELLING
+    from algan.rendering.raytracing.truncation import PATH_TRACER_FALLBACK_SPELLING
 
     recorder.record("shadow_lights", 5, cap=16)
     recorder.report()
@@ -188,16 +188,63 @@ def test_the_one_frame_oom_message_names_the_switch_only_for_the_deterministic_r
     """The hint is for a user whose deterministic render did not fit; the
     path tracer's own out-of-memory must not tell them to switch to it.
     """
-    from algan.render_loop import (
-        PATH_TRACER_FALLBACK_SPELLING,
-        _one_frame_does_not_fit_message,
-    )
+    from algan.render_loop import _one_frame_does_not_fit_message
+    from algan.rendering.raytracing.truncation import PATH_TRACER_FALLBACK_SPELLING
     from algan.settings import SETTINGS
 
     with SETTINGS.raytracing.override(samples_per_pixel=1):
         assert PATH_TRACER_FALLBACK_SPELLING in _one_frame_does_not_fit_message()
     with SETTINGS.raytracing.override(samples_per_pixel=4):
         assert PATH_TRACER_FALLBACK_SPELLING not in _one_frame_does_not_fit_message()
+
+
+#: Out-of-memory raises that deliberately carry no path-tracer hint, keyed by a
+#: phrase of their message: one the path tracer alone can reach, and one that
+#: reports a broken planner invariant rather than a scene too large to fit.
+_OOM_RAISES_WITHOUT_THE_HINT = (
+    "per-launch path budget",
+    "fit was not monotone",
+)
+
+
+def test_every_deterministic_oom_raise_names_the_path_tracer_switch():
+    """Every place a render can run out of memory for good must name the
+    fallback, because that failure -- above all the single-pixel shared-pool
+    overflow -- is what the path tracer exists for, and the docs promise the
+    error says so. Read from the source rather than provoked, so a raise
+    added later fails here the moment it is written.
+    """
+    import ast
+    import inspect
+
+    import algan.render_loop
+    import algan.rendering.raytracing.tracer
+
+    hint_calls = {"path_tracer_fallback_hint", "_one_frame_does_not_fit_message"}
+    checked = 0
+    for module in (algan.render_loop, algan.rendering.raytracing.tracer):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Raise)
+                and isinstance(node.exc, ast.Call)
+                and getattr(node.exc.func, "id", None) == "OutOfRenderMemory"
+            ):
+                continue
+            text = ast.get_source_segment(inspect.getsource(module), node)
+            if any(phrase in text for phrase in _OOM_RAISES_WITHOUT_THE_HINT):
+                continue
+            called = {
+                getattr(call.func, "id", None)
+                for call in ast.walk(node.exc)
+                if isinstance(call, ast.Call)
+            }
+            assert called & hint_calls, (
+                f"{module.__name__}:{node.lineno} raises OutOfRenderMemory "
+                "without the path-tracer hint"
+            )
+            checked += 1
+    assert checked >= 10, f"only {checked} raises found; did the call sites move?"
 
 
 def test_reset_zeroes_the_counts_and_rearms_the_warning(recorder, algan_logs):

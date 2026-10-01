@@ -53,13 +53,16 @@ def _prepare_media(memory, merged, opacity_shells):
         (opacity_shells.expand(rows, n), identities.expand(rows, n)), dim=1
     ).contiguous()
     # The legacy shadow marcher treats absorption as paired surface chords.
-    # The medium walk integrates exact partial/nested chords instead, so remove
-    # those coefficients in a PT-private copy. Never mutate the shared merge:
-    # deterministic rendering and retries can reuse it.
-    rows_extra = max(extra.shape[0], closed.shape[0])
+    # Inside a SCATTERING interior the medium walk integrates exact
+    # partial/nested chords instead, so remove those coefficients in a
+    # PT-private copy. Non-scattering shells (glass, cavities) keep their
+    # chord: the walk leaves them to the marcher so they shadow exactly as in
+    # a scene without media (``_pt_medium_transmittance``). Never mutate the
+    # shared merge: deterministic rendering and retries can reuse it.
+    rows_extra = max(extra.shape[0], active.shape[0])
     shadow_extra = extra.expand(rows_extra, -1, -1).clone()
     shadow_extra[..., 12:15] = torch.where(
-        closed.expand(rows_extra, n).unsqueeze(-1),
+        active.expand(rows_extra, n).unsqueeze(-1),
         0.0,
         shadow_extra[..., 12:15],
     )
