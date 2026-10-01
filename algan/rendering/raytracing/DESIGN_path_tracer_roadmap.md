@@ -7,8 +7,9 @@ each feature costs to land in this codebase specifically. It is the plan of
 record for the path tracer's remaining scope — update it when one of these
 lands. The repository-level `TODO.md` prioritizes remaining work across the
 engine; this document retains the detailed path-tracer rationale and acceptance
-criteria. Status was checked against `master` at `f10cc230a108863d02980fc27079254473ae7de3`
-on 2026-09-09; historical measurements below remain tied to their named runs.
+criteria. Status was re-checked against `master` at `7e2ffc02173a1f4120c40e51eb0f65d5d4f79cc2`
+on 2026-10-01 (previously `f10cc230`, 2026-09-09); historical measurements below
+remain tied to their named runs.
 
 
 ## What the path tracer is for
@@ -134,7 +135,8 @@ be as fast as it can be, is:
    built and measured (+2..4%, inside the noise), and ships off; what would
    make it pay is a per-dimension tile, which that section scopes.
 7. §1 and §4 are not fallback work at all (each section says why) and sit
-   behind everything above.
+   behind everything above. §4's homogeneous v1 has since **LANDED**
+   (2026-09-09); §1 and §4's explicitly deferred extensions remain.
 
 
 ## The contract every one of these must land under
@@ -425,11 +427,19 @@ sampling improvement:
   user's other settings on `set(source=...)`, and the settings system has
   no partial-preset concept to add one to. A spelling the docs and the
   failure messages all agree on is the same affordance without a new type.
-* **The failures name the switch** — LANDED. The 16-light shadow
-  truncation warning and every one-frame `OutOfRenderMemory` now end with
-  that spelling (the OOM hint is dropped when the path tracer is already
-  the renderer that failed). The message at the failure is the
-  documentation the user actually reads.
+* **The failures name the switch** — PARTLY LANDED. The 16-light shadow
+  truncation warning and the render loop's one-frame `OutOfRenderMemory`
+  messages (`_one_frame_does_not_fit_message` and the batch-shrink failure
+  in `render_loop.py`) end with that spelling (the OOM hint is dropped when
+  the path tracer is already the renderer that failed). The message at the
+  failure is the documentation the user actually reads. **Still open
+  (re-checked 2026-10-01):** the raises inside `tracer.py` itself carry no
+  hint — "Insufficient memory to ray trace a single frame" and the
+  single-pixel "deterministic ray tree exceeded the shared [wavefront] pool"
+  overflows — and the render loop re-raises them unchanged at a one-frame
+  window. The pool overflow is precisely the split-pool failure this
+  renderer exists for, and `renderer_limitations.rst` tells the user that a
+  failure of either kind names the switch.
 * **The user docs described a quality upgrade "at dramatically higher
   cost", never a fallback** — FIXED. `renderer_limitations.rst` and
   `performance_and_quality.rst` told the user to reach for the path tracer
@@ -676,22 +686,33 @@ Four readings to carry forward.
   of linear radiance, which is why the metric needs no perceptual transform
   (a *relative* metric is invariant under any power law, so sqrt or a PU
   curve would only rescale it).
-* **`tests/path_traced` at the shipped default is 1 failed, 3 passed.**
-  `lit_and_shadowed` and `environment_and_refraction` now match their
-  baselines within tolerance; `translucency_and_order` differs by up to 28
-  counts on 65 pixels of 46080 (mean 0.011), every one on a translucent
-  square's edge, because that scene renders at 8 spp so its edges get the
-  floor of 4 where the baseline got 8. The baselines were deliberately not
-  regenerated; the arm that must stay green is `ALGAN_PT_ERROR_TARGET=0`.
+* **`tests/path_traced` at the shipped default was 1 failed, 3 passed** when
+  this landed. `lit_and_shadowed` and `environment_and_refraction` matched
+  their baselines within tolerance; `translucency_and_order` differed by up
+  to 28 counts on 65 pixels of 46080 (mean 0.011), every one on a
+  translucent square's edge, because that scene renders at 8 spp so its
+  edges get the floor of 4 where the baseline got 8. The baselines were
+  deliberately not regenerated at the time. **Since superseded:** both
+  device sets have been re-recorded at the default target (CUDA `37dcc1b`,
+  2026-09-05; CPU most recently `7cbd375`, 2026-09-09), and the suite pins
+  no adaptive setting, so it now compares the shipped default rather than
+  the `ALGAN_PT_ERROR_TARGET=0` arm.
 
-**What the T4 will measure**, and what this box cannot: §0.1's 2-D arm spent
-0.30 s of kernel time per five 720p frames re-peeling zero-variance content
-16 times, and this box's 320x180 render is too small for per-launch cost to
-be read (`agent_guidance/gpu_harnesses.md`). The two numbers to take there
-are the 720p `text_2d` wall against the target-0 arm — where the peel is
-large and the ~2x extra launches are amortised — and whether the doubling
+**What the T4 was to measure**, and what this box cannot: §0.1's 2-D arm
+spent 0.30 s of kernel time per five 720p frames re-peeling zero-variance
+content 16 times, and this box's 320x180 render is too small for per-launch
+cost to be read (`agent_guidance/gpu_harnesses.md`). The two numbers to take
+there were the 720p `text_2d` wall against the target-0 arm — where the peel
+is large and the ~2x extra launches are amortised — and whether the doubling
 schedule's extra waves cost anything on `lit` at 720p, where they were
-neutral here.
+neutral here. **Measured 2026-09-05**
+(`benchmarks/performance/reports/t4_2026_09/pt_adaptive_1.md`, five frames,
+16 spp, denoiser on): `text_2d` is 1.35x faster end to end at 720p (1.011 →
+0.750 s, 4.37 mean spp) and 1.52x at 1080p (1.976 → 1.301 s); its transport
+kernels drop 3.4x for three times the launches, so the extra waves are
+amortised. `lit` at 720p is 3% faster (1.646 → 1.597 s, kernels −28%), so
+the doubling schedule costs nothing there. The residual 2-D cost that report
+named, the denoiser, was then removed by the pass-through in §0.1.
 
 
 ## 3. Temporal stability
@@ -1190,10 +1211,13 @@ times entry count exceeds `PER_FRAME_BUILD_BUDGET` falls back to exactly the
 union tree this section argues against — looser, still unbiased, and the
 thing that keeps a host-side build from costing seconds on a long chunk of
 genuinely moving emitters. `test_light_tree_follows_a_light_that_moves_
-between_frames` is the guard. The per-frame *power* is still frame-0's: an
-entry's weight is the number the flat table gives it, so which emitters are
-sampleable at all did not change, and the "frame-animated emitters" gap in
-the final section stays open.
+between_frames` is the guard. The per-frame *power* did not change with it:
+an entry's weight is the number the flat table gives it — the maximum over
+the chunk's frames for light rows and `RectAreaLight` quads, frame 0's
+emission for every other emissive triangle — so which emitters are
+sampleable at all did not change. Weighting each frame's entries by that
+frame's power is still open for every emitter kind; see "Frame-animated
+emitters" in the final section.
 
 ### 6a-bis. Two loops that were linear in light count — LANDED
 
@@ -1423,7 +1447,10 @@ rather than `N` triangles, it is built host-side in torch inside
 `_build_nee_tables` — which already computes per-triangle power and area — and
 it is rebuilt per render call, not per frame. Production renderers all build a
 separate light tree for these reasons, and they unify analytic lights into it;
-here, per 6a, the light rows do not need to be in a tree at all.
+here, per 6a, the light rows do not need to be in a tree at all. (This
+paragraph predates the build. As shipped, the tree is built host-side in numpy
+in `light_tree.py`, once per distinct frame (§6a-quater), and the finite light
+rows are in it (§6a).)
 
 **The one substantive cost: the MIS pdf becomes a query, not a lookup.**
 Today both ends of the emissive MIS pair read one constant,
@@ -1446,7 +1473,9 @@ per-path state at all. Wanting the shading-normal term too would need three
 more floats: `rs_sca` is width 12 with columns 0–5 used by the path tracer, 6
 free, and 7–11 owned by the nested-IOR stack, so one free column exists and a
 widening would cost `_PT_BYTES_PER_SLOT` +12 bytes and a slightly smaller
-tile. Start position-only.
+tile. Start position-only. (Since §10's rough dielectric, column 6 holds the
+inverse accumulated eta factor, `_SCA_ETA_SCALE`, so no free column remains
+and a normal term would need the full widening.)
 
 **What shipped: position-only at both ends, and the normal term dropped
 outright.** The tempting half-measure is to use PBRT's receiver-cosine bound
@@ -1498,7 +1527,12 @@ cost is ~10 ms per chunk. Numbers in
 `benchmarks/performance/reports/t4_2026_09/pt_lighttree_1.md`. The same
 profile showed the one explicit `gc.collect()` in `scene_excluded_from_gc`
 costing 220–260 ms of a 2.3 s render on both arms — a §0 host item worth
-its own look.
+its own look. **Still open (2026-10-01):** the collect is unchanged in
+`memory_utils.py`, and since multi-camera views (`4c2a974`) it runs once
+per camera pass, because each pass enters its own scope.
+`benchmarks/performance/reports/gpu_workloads_2026_09/REPORT.md` measured it
+independently at 0.28–0.42 s per deterministic render (24% of the explainer
+PREVIEW render), so it is not specific to the path tracer.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
@@ -1673,16 +1707,29 @@ cheapest is not the famous one:
    `pt_shade`.
 
    Caveat, and the reason this is "measure first" rather than "do this next":
-   the deterministic renderer keeps its shadow walks inline too, and that was
+   the deterministic renderer kept its shadow walks inline too, and that was
    a considered choice there. The queue trades kernel simplicity for a
    round-trip through global memory per shadow ray, and at Algan's light
    counts the inline version may well win. Profile before building it.
+   **Update (2026-10-01):** the deterministic renderer has since gained
+   bounded light-major shadow queues (`shadow_queue.py`, `b116338` and
+   `3ed3fdb`; `shadow_light_major` is on by default but gated to CUDA queues
+   of at least 16,384 events over more than one light). The T4 measured
+   12–27% on large matched queues and regressions on small, launch-bound
+   ones. That is evidence about queue scheduling, not about this renderer:
+   none of it reaches `pt_shade`, whose `_pt_nee_visibility` still walks
+   inline.
 
    And note where the wavefront overhead actually is today: not in the
    inline walk but in the host sync every iteration (§0.2-bis). A queue
    adds launches and syncs to a loop whose problem is launches and syncs.
    The sync fix comes first, and only a profile taken after it can say
-   whether the shade kernel's register pressure is the next limit.
+   whether the shade kernel's register pressure is the next limit. (§0.2-bis
+   has since measured that sync as hidden behind the kernels at the default
+   memory budget, so in practice the gate is a `pt_shade` profile that
+   separates the shadow walk from the rest of the kernel. No such profile
+   exists yet; `pt_baseline_1.md` and `pt_longvideo_1.md` report `pt_shade`
+   as one number.)
 
 2. **A dielectric split pool.** At a glass surface the path picks
    reflect-or-refract stochastically (`w_spec` vs `w_trans`); the
@@ -1767,9 +1814,10 @@ rows and must change together); `_PT_BYTES_PER_SLOT` grows by the pool ratio,
 which shrinks the tile and must stay honest or the OOM retry mis-sizes; the
 split factor needs a hard ceiling so no scene can drive it unboundedly; the
 sampler needs a per-branch decorrelation term in the pair key so split
-siblings do not reuse one sequence; and `tests/path_traced/` moves to the
-statistical criterion in `agent_guidance/memory_perf.md` rather than exact
-pixel comparison.
+siblings do not reuse one sequence; and `tests/path_traced/` moves to a
+statistical criterion rather than exact pixel comparison. That criterion has
+not been written yet; `agent_guidance/memory_perf.md`, where this sentence
+used to point, does not contain one.
 
 **Path guiding** (SD-tree, Müller et al. 2017) stays deferred, on the survey's
 own advice: it pays off on indirect-dominated transport, and the survey says
@@ -1876,14 +1924,17 @@ outright, one silently inert):
   `renderer_limitations.rst` and `performance_and_quality.rst` say which
   materials get what.
 
-* **The failures do not point at the fallback.** `record_truncation
-  ("shadow_lights", ...)` warns that lights past the cap cast no shadow and
-  stops there; `OutOfRenderMemory` at a one-frame window says the frame did
-  not fit and stops there. Neither names `samples_per_pixel`, so the user
-  who hits exactly the failure this renderer exists for is not told it
-  exists. The fix is a sentence in each message (§0.3); the docs fix is
-  the same sentence in `renderer_limitations.rst`'s hard-limits table and
-  in `performance_and_quality.rst`'s "when to use" paragraph.
+* **The failures do not point at the fallback — PARTLY FIXED (§0.3).**
+  `record_truncation("shadow_lights", ...)` warned that lights past the cap
+  cast no shadow and stopped there; `OutOfRenderMemory` at a one-frame
+  window said the frame did not fit and stopped there. Neither named
+  `samples_per_pixel`, so the user who hit exactly the failure this renderer
+  exists for was not told it exists. The fix is a sentence in each message
+  (§0.3); the docs fix is the same sentence in `renderer_limitations.rst`'s
+  hard-limits table and in `performance_and_quality.rst`'s "when to use"
+  paragraph. The warning and the render loop's one-frame messages now carry
+  it. The raises inside `tracer.py`, among them the single-pixel shared-pool
+  overflow, still do not.
 
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says
@@ -1990,8 +2041,9 @@ Tracked here so they are one search away, in rough order of effort:
   face is not — a grazing indirect hit — where the lobe used to be rejected
   and now reflects; a recovered sample of 48 is the right size for the
   move. `translucency_and_order` is byte-identical. **Both moved baselines
-  still need re-recording** (`ALGAN_UPDATE_PATH_TRACED_BASELINES=1`, then
-  `scripts/package_baselines.py`).
+  have since been re-recorded**: CPU in the fix's own commit `81f63c4` (and
+  again in `0c4e30c` and `7cbd375`), CUDA first recorded after it in
+  `37dcc1b` (2026-09-05).
 
   **The remaining TIR energy loss is also fixed (2026-09-07).** Reflection
   sampling and BSDF evaluation share `_pt_fresnel`, using Snell's thin-side
@@ -2002,9 +2054,12 @@ Tracked here so they are one search away, in rough order of effort:
   Fresnel term to the exact dielectric equations, distinguish glass-to-air
   from glass-to-water, and render an unsaturated uniform environment through
   an interior TIR followed by an exit.
-* **Frame-animated emitters — now tested.** The NEE table samples frame-0
-  emission power (dark-at-frame-0 emitters stay unbiased through the BSDF
-  path, weight 1), and the MIS pdf evaluates per-frame area. Pinned by
+* **Frame-animated emitters — tested; per-frame weighting still open.**
+  Emissive meshes enter the NEE table at frame 0's emission power
+  (dark-at-frame-0 emitters stay unbiased through the BSDF path, weight 1),
+  light rows and `RectAreaLight` quads at their maximum over the render
+  chunk's frames, and the MIS pdf evaluates per-frame area. No emitter kind
+  is yet weighted by each frame's own power (§6a-quater). Pinned by
   `test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on`
   (`tests/unit_tests/test_path_tracer.py`): an emissive quad beside a Lambert
   floor, stepped instantaneously between frames of ONE render job (both frames
@@ -2022,14 +2077,25 @@ Tracked here so they are one search away, in rough order of effort:
   included, clears it. A reflected unlit translucent box therefore applies
   opacity once, while refraction still evaluates both interfaces. Memory
   stays fixed and overflow keeps its existing counter. The deterministic
-  bounce-loop gap remains separate. `test_mirror_preserves_closed_shell_opacity`
+  bounce-loop gap has since been closed separately: `7314aaf` (merged
+  2026-09-30) pairs crossings on every straight segment of the
+  deterministic wavefront (`shell_alpha.py`, `solid_shell_alpha`, default
+  on), tested by `test_deterministic_mirror_preserves_authored_shell_opacity`
+  in `test_hybrid_transport.py`. `test_mirror_preserves_closed_shell_opacity`
   checks a half-opacity reflected box against its opaque control.
 * **CUDA baselines for `tests/path_traced/` — RECORDED.** On the Kaggle T4
   (`pt-cudabase-1`): all four scenes, byte-identical on a re-render in the
   same session and again in a second session. `environment_and_refraction`
   and `translucency_and_order` are byte-identical to the CPU set;
   `lit_and_shadowed` and `authored_under_many_lights` differ by a few
-  counts. Procedure in `tests/README.md`.
+  counts. Procedure in `tests/README.md`. **Not re-recorded since
+  (re-checked 2026-10-01):** changes after `37dcc1b`, including the
+  path-tracer kernel commits `7acc3bb`, `354685d` and `75a28ab`, moved three
+  of four CPU scenes by 8, 12 and 161 counts and forced the CPU re-baseline
+  in `7cbd375`. That commit
+  and `b870cbb` carried `path_traced/cuda` forward unchanged (a hash check,
+  not a re-render). The CUDA set is therefore expected to be stale; this is
+  inferred from history, not observed on a T4.
 * **Self-intersection offsetting was a fixed world-space epsilon —
   FIXED in the path tracer.** Every spawned ray left along the geometric
   normal by `10 * min_hit_distance` (1e-3 world units, five sites in
@@ -2052,6 +2118,12 @@ Tracked here so they are one search away, in rough order of effort:
   re-baseline batch. Porting it to `wavefront_kernels_taichi` /
   `sheet_resolve_taichi` would re-baseline every committed frame in the
   repository on both devices, which is a change to make on its own.
+  **Ported since:** `7314aaf` (2026-09-13, merged 2026-09-30) moved the
+  deterministic kernels (`wavefront_kernels_taichi`, `sheet_resolve_taichi`,
+  `raster_taichi`) onto the shared scale-aware spawn arithmetic in
+  `transport_taichi.py` (`_offset_ray_origin`, `_shadow_tmax`).
+  `5679022` keeps sub-pixel spawn points on their triangle, which removed
+  the speckle the smaller offset had exposed.
 
 
 ## 10. Design improvements identified during the correctness follow-up
@@ -2085,8 +2157,11 @@ Tracked here so they are one search away, in rough order of effort:
   conservative neutral-component extraction preserves tint and absorption.
   A VNDF/cosine mixture has the same evaluated PDF at both MIS ends and uses
   the existing remapped branch scalar. No path splits, extra random dimensions,
-  kernel arguments or scene-dependent variants are added. The fixed 296,208-byte
-  f32 lookup reuses the old area-falloff arena slot. This is an approximate
+  kernel arguments or scene-dependent variants are added. The fixed lookup
+  reuses the old area-falloff arena slot: 33 roughness × 33 IOR × 66 cosine
+  rows × 2 columns, 574,992 bytes as f32 on the device (the first version,
+  17 roughness rows at 296,208 bytes, was refined in `f9e6d73`). It ships
+  as a 16-bit delta-coded asset. This is an approximate
   broad compensation model, not an exact microscopic random walk; the full
   derivation and validation are in `DESIGN_rough_glass_energy.md`. Custom scatter and
   thin Bezier panes retain their authored delta behavior. Transparent shadow
@@ -2100,7 +2175,7 @@ Tracked here so they are one search away, in rough order of effort:
   an emitter behind glass, occlusion, and entry/exit with early roulette.
   PBRT's [rough dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Rough_Dielectric_BSDF)
   supplies the reference formulation. This completes the interface model
-  needed before the caustic work in section 4.
+  needed before the caustic work in section 1.
 * **Receiver-independent area-light radiance — implemented (2026-09-08).**
   Both emission endpoints now use the same distance-independent radiance.
   `RectAreaLight` accepts only the physical falloff keywords `decay=2,
