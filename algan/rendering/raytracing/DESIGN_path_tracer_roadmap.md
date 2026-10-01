@@ -1235,12 +1235,12 @@ union tree this section argues against — looser, still unbiased, and the
 thing that keeps a host-side build from costing seconds on a long chunk of
 genuinely moving emitters. `test_light_tree_follows_a_light_that_moves_
 between_frames` is the guard. The per-frame *power* did not change with it:
-an entry's weight is the number the flat table gives it — the maximum over
-the chunk's frames for light rows and `RectAreaLight` quads, frame 0's
-emission for every other emissive triangle — so which emitters are
-sampleable at all did not change. Weighting each frame's entries by that
-frame's power is still open for every emitter kind; see "Frame-animated
-emitters" in the final section.
+an entry's weight is the number the flat table gives it, which is every
+emitter's power on its brightest frame of the chunk (light rows and, since
+2026-10-01, every emissive triangle; until then a mesh took frame 0's
+emission). Weighting each frame's entries by that frame's power is still
+open for every emitter kind; see "Frame-animated emitters" in the final
+section.
 
 ### 6a-bis. Two loops that were linear in light count — LANDED
 
@@ -2093,23 +2093,32 @@ Tracked here so they are one search away, in rough order of effort:
   Fresnel term to the exact dielectric equations, distinguish glass-to-air
   from glass-to-water, and render an unsaturated uniform environment through
   an interior TIR followed by an exit.
-* **Frame-animated emitters — tested; per-frame weighting still open.**
-  Emissive meshes enter the NEE table at frame 0's emission power
-  (dark-at-frame-0 emitters stay unbiased through the BSDF path, weight 1),
-  light rows and `RectAreaLight` quads at their maximum over the render
-  chunk's frames, and the MIS pdf evaluates per-frame area. No emitter kind
-  is yet weighted by each frame's own power (§6a-quater). Pinned by
+* **Frame-animated emitters — dark-at-frame-0 meshes are sampled
+  (2026-10-01); per-frame weighting still open.** Every emitter now enters
+  the NEE table at its power on its brightest frame of the chunk: light rows
+  at the maximum of their radiance, emissive triangles (`RectAreaLight`
+  quads included) at the maximum over frames of emission times area, and the
+  MIS pdf evaluates per-frame area. Only triangles that emit on some frame
+  are expanded per frame, so the build allocates nothing scene-sized; a
+  static emitter's weight is bit-identical to the old frame-0 one (rounding
+  is monotonic under a positive factor), so scenes whose emitters do not
+  animate render as before. No emitter kind is yet weighted by each frame's
+  own power (§6a-quater): on frames where an emitter is dark, the shadow
+  rays aimed at it return nothing.
+
+  Before this change an emissive mesh took frame 0's emission, so one that
+  was dark at frame 0 never entered the table and lit later frames through
+  BSDF hits alone: unbiased (measured −0.5% at 128 spp), but noisy. Pinned by
   `test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on`
   (`tests/unit_tests/test_path_tracer.py`): an emissive quad beside a Lambert
   floor, stepped instantaneously between frames of ONE render job (both frames
-  in one chunk, so one table built from frame 0), against a static control lit
-  on every frame. Measured at 128 spp, 64x36: dark at frame 0 takes **0**
-  emissive table entries and still lights frame 1 to 131.97 against the
-  control's 132.64 (**−0.5%**, all of it through BSDF hits at weight 1), while
-  its own frame 0 reads exactly 0.00; bright at frame 0 takes 12 entries,
-  matches the control at frame 0 bit for bit, and reads exactly 0.00 at frame
-  1 — no frame-0 power leaks through the table into a frame whose emitter is
-  off.
+  in one chunk, so one table), against a static control lit on every frame.
+  Measured at 64x36: all three arms now hold the same 12 entries; the rising
+  arm's lit frame is **byte-identical** to the control's at 8 and 128 spp
+  (same table, per-pixel seed), where at 8 spp its RMS error against a
+  512-spp reference falls from 46.1 to 12.5 counts (mean error −1.97 → −0.23);
+  and every frame whose emitter is off still reads exactly 0.00, so no other
+  frame's power leaks through the table.
 * **A mirror's image of a translucent closed shell — FIXED in the path tracer.**
   The existing four-entry ring now pairs shell crossings on each straight
   segment. Pass-throughs retain it; each real scatter, custom scatters

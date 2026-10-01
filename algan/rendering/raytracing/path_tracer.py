@@ -702,12 +702,12 @@ def _build_nee_tables(
 
     One flat CDF over everything a shadow ray can aim at -- delta and
     area-cell light rows (ambient-like rows are the kernel's deterministic
-    fill and never enter), emissive lit triangles (frame-0 peak luminance
-    times area; an emitter dark at frame 0 is simply never NEE-sampled and
-    reaches the image through BSDF hits at weight 1, which stays unbiased),
-    and one environment entry when a map is present and ``pt_env_nee`` is
-    on. Light-row weights take the max over frames so a light dark at frame
-    0 but lit later is still sampled (rows have no MIS backstop).
+    fill and never enter), emissive lit triangles (peak luminance times area
+    on the triangle's brightest frame), and one environment entry when a map
+    is present and ``pt_env_nee`` is on. Light rows and emissive triangles
+    alike take their maximum over the frames, so an emitter dark at frame 0
+    but lit later is still sampled: a row has no MIS backstop, and a
+    triangle would otherwise be reachable only through BSDF hits.
 
     Under ``pt_light_tree`` (the default) that flat CDF stops being how a
     finite entry is *chosen* -- a light tree over the same entries is
@@ -813,24 +813,36 @@ def _build_nee_tables(
     if n_tri > 0 and int(tri_mat.shape[2]) > 3:
         pid = merged["tri_mat_id"][0].to(i64)
         lit = (pid >= _MID_LAMBERT) & (pid <= _MID_PHYSICAL)
-        em = tri_mat[0, :, 0:3].amax(-1).clamp_min(0) * tri_mat[0, :, 3].clamp_min(0)
-        if quad_base is not None and tri_mat.shape[0] > 1:
-            # A light row's table weight is its MAX over the chunk's frames,
-            # so a light dark at frame 0 but lit later is still sampled (a row
-            # has no MIS backstop). The quads inherit that rule for the light
-            # they stand for -- everything else keeps frame 0's emission, as
-            # emissive meshes always have.
-            qb = int(quad_base)
-            em_q = (
-                tri_mat[:, qb:, 0:3].amax(-1).clamp_min(0)
-                * tri_mat[:, qb:, 3].clamp_min(0)
-            ).amax(0)
-            em = torch.cat((em[:qb], em_q))
-        p9 = merged["tri_pos"][0].to(acc)
-        area = 0.5 * torch.linalg.cross(
-            p9[:, 3:6] - p9[:, 0:3], p9[:, 6:9] - p9[:, 0:3], dim=-1
-        ).norm(dim=-1)
-        p_e = torch.where(lit, em.to(acc) * area * math.pi, torch.zeros_like(area))
+        # An emissive triangle's table weight is its emitted power on its
+        # BRIGHTEST frame -- the same rule a light row follows -- so an
+        # emitter dark at frame 0 and lit later is still next-event sampled,
+        # not left to BSDF hits alone. Frames where it is dark or smaller just
+        # aim some shadow rays at it for nothing; any positive weight is
+        # unbiased so long as both MIS ends read this one table. Only the
+        # triangles that emit on some frame are expanded per frame, so no
+        # [frames, triangles] float tensor is ever built.
+        emits = (tri_mat[:, :, 3] > 0).any(0)
+        cand = (lit & emits).nonzero(as_tuple=False).flatten()
+        p_e = torch.zeros(lit.shape[0], dtype=acc, device=tri_mat.device)
+        if cand.numel():
+            em_f = tri_mat[:, cand, 0:3].amax(-1).clamp_min(0) * tri_mat[
+                :, cand, 3
+            ].clamp_min(0)
+            p9 = merged["tri_pos"][:, cand].to(acc)
+            area_f = 0.5 * torch.linalg.cross(
+                p9[..., 3:6] - p9[..., 0:3], p9[..., 6:9] - p9[..., 0:3], dim=-1
+            ).norm(dim=-1)
+            # Rows pair up the way the kernel reads them, ``f % rows``, which
+            # also covers a static (one-row) material or position.
+            frames = torch.arange(
+                max(em_f.shape[0], area_f.shape[0]), device=tri_mat.device
+            )
+            per_frame = (
+                em_f[frames % em_f.shape[0]].to(acc)
+                * area_f[frames % area_f.shape[0]]
+                * math.pi
+            )
+            p_e[cand] = per_frame.amax(0)
         e_idx = (p_e > 0).nonzero(as_tuple=False).flatten()
         if e_idx.numel():
             powers.append(p_e[e_idx])
