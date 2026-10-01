@@ -6,34 +6,18 @@ feature. Unmerged branches are not counted as implemented. Update or remove an
 entry when its acceptance criteria land; keep historical measurements in the
 relevant design or benchmark report.
 
+The review's item 1, filtering minified textures on primary and secondary hits,
+landed in `7bcc19c` (default-on UV mip anti-aliasing,
+[`DESIGN_texture_antialiasing.md`](algan/rendering/raytracing/DESIGN_texture_antialiasing.md))
+and was removed on 2026-09-30; the items after it each moved up one number.
+Its deliberate limits are listed under later design work below.
+
 The ordering favors visible correctness and image quality, then validation and
 measured performance. It is an engineering priority judgment, not a benchmark
 prediction. [RENDERER_WORK_QUEUE.md](RENDERER_WORK_QUEUE.md) maps the older renderer
 item numbers to their current status.
 
-## 1. Filter minified textures on primary and secondary hits
-
-**Current gap.** The UV texture samplers in
-[`wavefront_kernels_taichi.py`](algan/rendering/raytracing/wavefront_kernels_taichi.py)
-and [`shading_taichi.py`](algan/rendering/raytracing/shading_taichi.py) use bilinear
-sampling without a mip level or a texture footprint. Geometric analytic AA does
-not filter detail *inside* a textured surface. Small or oblique textures can
-alias in both the deterministic renderer and the path tracer.
-
-**Work.** Add a compact mip representation and inexpensive footprint/LOD selection
-for raster primaries and reflected/refracted paths. A sheet's screen area alone
-is insufficient: the footprint must account for the UV mapping and ray spread.
-Keep color-space, opacity, normal-map and scalar-property filtering semantics
-explicit. The glossy-reflection pyramid in
-[`DESIGN_glossy_prefilter.md`](algan/rendering/raytracing/DESIGN_glossy_prefilter.md)
-is a useful implementation precedent, not a UV-texture pyramid to reuse blindly.
-
-**Done when.** Checkerboards, thin alpha features and material/normal maps remain
-stable under minification, grazing views, camera motion and reflections on both
-renderers. Include odd texture sizes, wrap seams and animated texture windows;
-measure build cost, extra memory and warm render cost on representative hardware.
-
-## 2. Improve antialiasing where surfaces cross inside a pixel
+## 1. Improve antialiasing where surfaces cross inside a pixel
 
 **Current gap.** Sheet compaction already computes per-sample depth information.
 That repairs which surface wins samples, but it is not an exact area blend of an
@@ -51,7 +35,7 @@ supersampled reference without breaking silhouette/tiling fixtures. Reproduce
 video defects with multi-frame renders as well as stills: frame-window slicing
 has previously changed identity and hidden failures from still-only probes.
 
-## 3. Define closed-solid opacity consistently for deterministic continuations
+## 2. Define closed-solid opacity consistently for deterministic continuations
 
 **Current gap.** Primary sheet compositing and the path tracer have closed-shell
 accounting, but the deterministic wavefront's treatment of a solid encountered
@@ -68,7 +52,7 @@ Do not equate artistic shell opacity with Beer–Lambert absorption.
 reflected and nested views, with explicit controls for thin/open surfaces and
 physical glass. Validate continuation retries and surface-limit reporting too.
 
-## 4. Make renderer-audit inputs equivalent before drawing new conclusions
+## 3. Make renderer-audit inputs equivalent before drawing new conclusions
 
 **Current gap.** The comparison bridges in
 [`algan_render.py`](benchmarks/renderer_audit/algan_render.py) and
@@ -89,7 +73,7 @@ coverage merely because their files still exist.
 the bridges, deliberately non-equivalent panels are labeled, and referenced
 acceptance harnesses import and run against the current API.
 
-## 5. Make release and documentation validation reproducible
+## 4. Make release and documentation validation reproducible
 
 **Current gap.** Structural Sphinx checks, directive checks and pixel suites exist,
 but historical reports are not proof that the next release candidate passes.
@@ -111,7 +95,7 @@ local documentation links and obsolete public examples fail validation. See
 [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md) and [`tests/README.md`](tests/README.md).
 Do not regenerate baselines merely to hide an environment/toolchain mismatch.
 
-## 6. Profile and reduce avoidable CPU memory reclamation
+## 5. Profile and reduce avoidable CPU memory reclamation
 
 **Current gap.** [`_gpu_memory_pressure`](algan/utils/memory_utils.py) falls back to
 `True` without GPU telemetry, so `release_torch_memory(force_gc=False)` can still
@@ -128,7 +112,7 @@ selection as well as device availability when evaluating the predicate.
 are bounded, cyclic garbage is still reclaimed, and low-memory/retry tests pass.
 Do not treat the older profiling percentages as the current bottleneck ranking.
 
-## 7. Remove confirmed legacy render experiments in a separate code change
+## 6. Remove confirmed legacy render experiments in a separate code change
 
 **Current gap.** [`bloom.py`](algan/rendering/post_processing/bloom.py) still contains
 unused `bloom_filter_old`/`bloom_filter_conv` experiments and a compatibility probe
@@ -155,6 +139,17 @@ Custom fragment scatter currently preserves the parent medium rather than
 declaring a nested-medium transition. Extending that injection signature needs
 a separate contract and tests; it is not the already-completed built-in nested
 IOR work.
+
+UV texture minification filtering is implemented and on by default
+(`SETTINGS.raytracing.texture_antialiasing`). Its footprint is a deliberately
+cheap isotropic pixel cone, grown along the accumulated camera-path length.
+Anisotropic filtering for grazing views (which the isotropic filter overblurs),
+ray differentials that track curved-mirror magnification and refractive
+focusing, and prefiltered environment-map lookups (environment maps are still
+sampled at full resolution) are extensions with their own cost and quality
+criteria, not a missing filter. The repository records no GPU measurement of
+the mip chain's build, memory or warm-render cost (the design defers to its
+PR's validation notes), so measure before tuning it.
 
 Planar circuits are intentionally unlit; use `TriangulatedBezierCircuit` when a
 vector shape needs surface lighting. A native lit-circuit path is a product

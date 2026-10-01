@@ -27,8 +27,8 @@ Texture maps
 ``set_material`` forwards the image slots the renderer has a sampler for --
 ``map``, ``normal_map``, ``roughness_map`` and ``metalness_map`` -- onto the
 geometry, which is where Algan's texture pipeline lives. Each one takes a path
-or an ``[H, W, C]`` image and is sampled bilinearly per fragment in the trace
-kernel::
+or an ``[H, W, C]`` image and is sampled per fragment in the trace kernel
+(bilinearly, or through a mip chain when minified)::
 
     Sphere().set_material(
         MeshStandardMaterial(map="earth.png", roughness_map="ocean_gloss.png")
@@ -124,8 +124,8 @@ DoubleSide = Side.DOUBLE
 # Image slots the renderer has a sampler for. ``set_material`` forwards these
 # onto the geometry (``Mob._accept_material_textures``), which is where Algan's
 # texture pipeline lives: a Surface or a TriangleMesh carries the UVs, and the
-# maps are then sampled bilinearly per fragment inside the trace kernel. The
-# value each one drives is named beside it.
+# maps are then sampled per fragment inside the trace kernel (bilinear, and
+# mip-filtered when minified). The value each one drives is named beside it.
 #
 # Three.js reads ``roughnessMap`` from an image's GREEN channel and
 # ``metalnessMap`` from its BLUE one, so one packed occlusion/roughness/

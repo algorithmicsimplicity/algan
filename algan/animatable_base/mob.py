@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import difflib
 import functools
-from collections import defaultdict
+import operator
+from collections import defaultdict, deque
 from collections.abc import Callable
 
 import torch
@@ -120,6 +121,45 @@ def _validate_opacity(value, *, given=None):
     both spellings of "make this half transparent" report the same way.
     """
     return reject_outside_unit_interval("opacity", value, given=given)
+
+
+#: The largest :attr:`Mob.pass_index` a user may set. The object-index pass
+#: reserves everything above it for the identifiers it assigns automatically
+#: (``algan.rendering.pass_identity.AUTO_ID_BASE`` is one more than this), so
+#: an authored index can never collide with an automatic one.
+_PASS_INDEX_MAX = 65535
+
+
+def _validate_pass_index(value):
+    """``None`` or the whole number ``value`` as an ``int`` in [1, 65535].
+
+    ``operator.index`` is the test for "whole number": it takes ``int`` and
+    NumPy / torch integer scalars and refuses ``3.0`` and ``"3"``. Booleans
+    are refused explicitly -- Python's, NumPy's and a torch bool tensor's --
+    since ``True`` would otherwise pass as 1.
+    """
+    if value is None:
+        return None
+    dtype = getattr(value, "dtype", None)
+    if isinstance(value, bool) or (dtype is not None and "bool" in str(dtype)):
+        raise AlganConfigurationError(
+            f"pass_index must be a whole number from 1 to {_PASS_INDEX_MAX}, "
+            f"or None; got {value!r}."
+        )
+    try:
+        index = operator.index(value)
+    except TypeError:
+        raise AlganConfigurationError(
+            f"pass_index must be a whole number from 1 to {_PASS_INDEX_MAX}, "
+            f"or None; got {value!r} of type {type(value).__name__}."
+        ) from None
+    if not 1 <= index <= _PASS_INDEX_MAX:
+        raise AlganConfigurationError(
+            f"pass_index must be from 1 to {_PASS_INDEX_MAX}, or None; got {index}. "
+            "0 is the background's and larger values are reserved for the "
+            "identifiers the pass assigns automatically."
+        )
+    return int(index)
 
 
 def _coerce_if_color(attr, value):
@@ -416,6 +456,89 @@ class Mob(
     #: exceptions: all three still cast.
     receives_shadows = True
 
+    # Backing store for :attr:`pass_index`; ``None`` until a value is set.
+    _pass_index = None
+
+    @property
+    def pass_index(self) -> int | None:
+        """The number this Mob is written as in an object-index render pass.
+
+        An object-index pass is an extra per-pixel output that says which
+        object each pixel shows, for masking and compositing a render
+        afterwards (the Cycles "object index"). Setting ``pass_index`` picks
+        the number used for this Mob there, so that several Mobs can share one
+        mask or one Mob can keep a stable number across scenes. ``None`` (the
+        default) means not set: the Mob takes the value of its nearest ancestor
+        that sets one -- so ``group.pass_index = 3`` covers the whole group --
+        and a Mob with no such ancestor gets the automatic identifier of the
+        object it is part of. An ordinary render ignores it.
+
+        It takes effect on Mobs that are drawn as objects of their own and on
+        their ancestors. A part of a single drawn object -- one glyph of a
+        ``Text``, one face of a ``Cube``, a ``Cylinder``'s cap -- is drawn by
+        that object, so a ``pass_index`` set on the part alone has no effect.
+
+        Animation
+        ---------
+        Takes effect immediately and is not animated: it is a plain attribute,
+        not an animatable one, and the render reads its final value for every
+        frame, including the frames a ``become()`` renders through internal
+        stand-ins. Applies to this Mob and to every descendant that does not
+        set its own value. Through a ``become()`` the value stays with the
+        object: whatever takes this Mob's place is written with it unless a
+        part nearer the geometry sets its own, so the Mob ``become()`` returns
+        can read back a ``pass_index`` it received this way.
+
+        Raises
+        ------
+        :class:`~algan.errors.AlganConfigurationError`
+            If set to anything other than ``None`` or a whole number from 1 to
+            65535 inclusive (``True``/``False``, 0 and negatives are rejected).
+
+        Examples
+        --------
+        Give a solid and a group of labels their own index each:
+
+        .. code-block:: python
+
+            from algan import *
+
+            cube = Cube().spawn()
+            cube.pass_index = 1
+            labels = Group(Text("a"), Text("b")).spawn()
+            labels.pass_index = 2  # both Texts are written as 2
+        """
+        return self._pass_index
+
+    @pass_index.setter
+    def pass_index(self, value: int | None) -> None:
+        self._pass_index = _validate_pass_index(value)
+
+    def _resolved_pass_index(self):
+        """``(pass_index, the Mob that set it)`` for this Mob, or ``(None, None)``.
+
+        The nearest setter wins: this Mob's own value, else the first ancestor
+        that sets one in breadth-first order over ``parents`` (a DAG, so
+        several parents are visited in their list order before any
+        grandparent). Mirrors :meth:`_resolved_shadow_flags`: the Mob a user
+        tags is very often not the one that builds the geometry.
+        """
+        own = getattr(self, "pass_index", None)
+        if own is not None:
+            return own, self
+        seen = {id(self)}
+        queue = deque(getattr(self, "parents", None) or ())
+        while queue:
+            node = queue.popleft()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            value = getattr(node, "pass_index", None)
+            if value is not None:
+                return value, node
+            queue.extend(getattr(node, "parents", None) or ())
+        return None, None
+
     #: Opaque hashable identifying the SURFACE this Mob's geometry belongs to,
     #: stamped onto the primitives it builds. Parts of one solid that carry the
     #: same key -- a ``Cylinder``'s tube and its two end discs -- merge into a
@@ -543,6 +666,11 @@ class Mob(
     #: of the two Mobs' ``animatable_attrs`` -- carried none of them: a morph
     #: ended with the target's geometry wearing the source's shading and
     #: sidedness. Subclasses extend the tuple rather than overriding the method.
+    #:
+    #: ``pass_index`` is deliberately absent: it names the Mob in an
+    #: object-index pass rather than describing what it draws, and the Mob that
+    #: ``become``\s something is still the Mob the author tagged -- adopting the
+    #: target's value (usually ``None``) would silently drop the tag.
     _MORPH_ADOPTED_ATTRS = (
         "shader",
         "two_sided",
@@ -2038,6 +2166,9 @@ class Mob(
                 # re-spawned at the current time below).
                 clone.lifespan.start = orig.lifespan.start
                 timeline.register_spawn(clone, clone.lifespan)
+                # The clone draws the original's earlier frames: an object-ID
+                # pass must name the original (algan.rendering.pass_identity).
+                clone._pass_identity = orig
             clone_mob.despawn(animate=False)
             self.refresh_history()
             self.spawn(animate=False)

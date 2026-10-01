@@ -161,3 +161,32 @@ a nonzero-RGB/zero-alpha glow patch over known backdrops before production deliv
 Do not claim an editor-specific setup was tested unless it actually was.
 
 Source basis: [background and compositing sources](api-sources.md#backgrounds-and-compositing).
+
+## Depth, normal and object-ID passes
+
+For compositing in an editor, `save_video` and `save_frame` accept
+`passes=("depth", "normal", "object_id")` (any subset):
+
+```python
+result = Scene.save_video('renders/shot.mp4', passes=('depth', 'object_id'))
+print(result.passes)  # {'depth': .../shot.mp4.depth, 'object_id': .../shot.mp4.object_id}
+```
+
+A video gets one lossless image sequence per pass in `<output>.<pass>/` (e.g.
+`shot.mp4.depth/`), one image per video frame; a still gets
+`<output>.<pass>.<ext>` (e.g. `shot.png.depth.exr`). Depth is 32-bit float
+OpenEXR (planar camera depth in world units, background `1e10`), normals are
+16-bit PNG (camera space, `rgb = n * 0.5 + 0.5`, background black), object IDs
+are 8-bit PNG with one flat colour per object (background black).
+`<output file name>.passes.json` (e.g. `shot.mp4.passes.json`) documents the encodings and maps every colour to its Mob.
+An object is the highest Mob above the geometry that is not a pure grouping
+container (exact classes only: a bare `Mob`, `Group`, the Manim-compat
+`VGroup`/`Group`/`VDict`, `PGroup`, `OpenGLSurfaceGroup`; a subclass such as
+`Paragraph` or a user's `class Molecule(Group)` is one object). Set
+`mob.pass_index = n` (1..65535, before rendering) to choose an ID, which
+descendants inherit; it has no effect on a part of a single drawn object (a
+glyph of a `Text`, a face of a `Cube`). IDs survive `become()`. ID colours are
+arbitrary hash colours: key by exact value and read them from the sidecar. Passes take one pinhole sample per pixel centre, the first
+surface at least 50% opaque: they are not anti-aliased and ignore depth of
+field. Verify a pass by decoding it (FFmpeg decodes EXR and 16-bit PNG; Pillow
+reads 16-bit RGB PNG as 8-bit), not by viewing it.

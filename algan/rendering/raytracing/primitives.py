@@ -265,14 +265,57 @@ _APEX_OF_EDGE = torch.tensor([OPPOSITE_EDGE.index(edge) for edge in range(3)])
 
 
 def _mesh_ids_from_collection(members, counts):
+    """``(ids, n, keys)`` of :func:`_resolve_surface_identity`.
+
+    The historical three-value shape its callers (and ``test_mesh_identity.py``)
+    unpack.
+    """
+    ids, n, keys, _first = _resolve_surface_identity(members, counts)
+    return ids, n, keys
+
+
+def _member_source_id(member):
+    """The ``Mob.id`` the render loop stamped on ``member``, or -1 for none.
+
+    ``_source_mob_id`` is a plain int written by
+    ``RenderLoopMixin._get_batch_of_primitives`` only while an object-id pass is
+    armed (``scene._aux_id_registry``); see :mod:`algan.rendering.pass_identity`.
+    """
+    source = getattr(member, "_source_mob_id", None)
+    return -1 if source is None else int(source)
+
+
+def _carries_source_ids(member):
+    """Whether a collection built over ``member`` first should carry source ids.
+
+    Stamping is all-or-nothing per render -- the render loop stamps every
+    primitive it takes from an actor while the pass is armed, and none
+    otherwise -- so the first member decides. That keeps the unarmed collection
+    build free of even a per-member attribute probe; a member left unstamped
+    among stamped ones still resolves, to -1.
+    """
+    return (
+        getattr(member, "_source_mob_id", None) is not None
+        or getattr(member, "_circuit_source_ids", None) is not None
+    )
+
+
+def _resolve_surface_identity(members, counts, *, track_members=False):
     """Resolve a triangle collection's per-triangle SURFACE ids.
 
-    Returns ``(ids, n, keys)`` where ``ids`` is an int32 ``[Ntri]`` tensor of
-    collection-local surface indices, ``n`` the number of distinct ones and
-    ``keys`` a list of ``n`` mesh keys naming the mob each surface came from
+    Returns ``(ids, n, keys, first_member)`` where ``ids`` is an int32 ``[Ntri]``
+    tensor of collection-local surface indices, ``n`` the number of distinct ones
+    and ``keys`` a list of ``n`` mesh keys naming the mob each surface came from
     (``None`` for a surface whose member declared no key), or
-    ``(None, None, None)`` when no member declares identity -- in which case the
-    caller's per-member ``counts`` already say it and nothing changes.
+    ``(None, None, None, None)`` when no member declares identity -- in which
+    case the caller's per-member ``counts`` already say it and nothing changes.
+
+    ``first_member`` is, when ``track_members`` is set, a list of ``n`` member
+    indices -- the member that opened each surface -- and ``None`` otherwise.
+    It maps a surface back to the Mob that built it for the object-id pass
+    (:mod:`algan.rendering.pass_identity`): a surface merged from several keyed
+    members (a ``Cylinder``'s tube and its caps) reports the first, which the
+    parent-first actor walk makes the body itself.
 
     ``keys`` is what lets a tool map a rendered surface back to the Mob that
     authored it: the mobs stamp ``("trimob", mob.id)`` and friends, and without
@@ -302,11 +345,12 @@ def _mesh_ids_from_collection(members, counts):
         or getattr(m, "mesh_ids", None) is not None
         for m in members
     ):
-        return None, None, None
+        return None, None, None, None
 
     device = members[0].corners.device
     blocks = []
     keys = []
+    first_member = [] if track_members else None
     next_id = 0
     prev_key = None
     for i, member in enumerate(members):
@@ -325,6 +369,8 @@ def _mesh_ids_from_collection(members, counts):
             # Every shell of one member came from the same mob, so they all
             # carry that member's key (if it declared one).
             keys.extend([getattr(member, "mesh_key", None)] * int(uniq.shape[0]))
+            if first_member is not None:
+                first_member.extend([i] * int(uniq.shape[0]))
             next_id += int(uniq.shape[0])
             prev_key = None
             continue
@@ -336,9 +382,11 @@ def _mesh_ids_from_collection(members, counts):
             surface = next_id
             next_id += 1
             keys.append(key)
+            if first_member is not None:
+                first_member.append(i)
         blocks.append(torch.full((n_tri,), surface, dtype=torch.int32, device=device))
         prev_key = key
-    return torch.cat(blocks).contiguous(), next_id, keys
+    return torch.cat(blocks).contiguous(), next_id, keys, first_member
 
 
 def _declares_no_shadow_cast(primitive):
@@ -450,6 +498,22 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     stbvh_tightness = env_float("ALGAN_STBVH_TIGHTNESS", 1.0)
 
+    # Object-id pass bookkeeping (:mod:`algan.rendering.pass_identity`), all
+    # host-side plain Python and all ``None`` unless the render loop is stamping
+    # sources (``scene._aux_id_registry``). ``_source_mob_id`` is the stamp on a
+    # raw primitive; the collection resolves it into one list per surface
+    # numbering (``_obj_count_sources`` / ``_obj_ids_sources``, aligned with
+    # ``_obj_count_keys`` / ``_obj_ids_keys``); the dice records which numbering
+    # it used (``_logical_pn_obj_src``); and the pack leaves ``_obj_sources``,
+    # aligned with this primitive's local surface ids 0.._rt_tri_obj_n-1, for
+    # the scene merge's ``tri_obj_source_ids``. None carries the ``_rt_``
+    # prefix, for the slice_time_window reason given at ``_obj_counts``.
+    _source_mob_id = None
+    _obj_count_sources = None
+    _obj_ids_sources = None
+    _logical_pn_obj_src = None
+    _obj_sources = None
+
     # Renderer-internal transport channels, shared with
     # ``RayTracedBezierCircuitPrimitive``. ``reflectivity`` stores material
     # metalness for historical packed-layout compatibility; a negative value
@@ -560,14 +624,35 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # into per-triangle shells -- which ``_mesh_ids_from_collection``
             # resolves into explicit per-triangle ids. ``None`` keeps the
             # per-member counts, so a mob that declares nothing is unchanged.
-            self._obj_ids, self._obj_ids_n, self._obj_ids_keys = (
-                _mesh_ids_from_collection(triangle_collection, self._obj_counts)
+            track_sources = _carries_source_ids(triangle_collection[0])
+            (
+                self._obj_ids,
+                self._obj_ids_n,
+                self._obj_ids_keys,
+                first_member,
+            ) = _resolve_surface_identity(
+                triangle_collection, self._obj_counts, track_members=track_sources
             )
             # The fallback table, for a collection that declares nothing and is
             # therefore identified by ``_obj_counts`` -- one surface per member.
             self._obj_count_keys = [
                 getattr(t, "mesh_key", None) for t in triangle_collection
             ]
+            if track_sources:
+                # The object-id pass: which Mob each surface came from, in both
+                # numberings the pack may choose between (``_obj_ids`` or the
+                # per-member counts), aligned exactly as ``_obj_ids_keys`` and
+                # ``_obj_count_keys`` are. Plain lists of ints, unprefixed for
+                # the same slice_time_window reason as the tables above; built
+                # only while the render loop is stamping sources.
+                self._obj_count_sources = [
+                    _member_source_id(t) for t in triangle_collection
+                ]
+                self._obj_ids_sources = (
+                    None
+                    if first_member is None
+                    else [self._obj_count_sources[m] for m in first_member]
+                )
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
             # line up -- except along time: the references are sliced to a
@@ -1235,6 +1320,35 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._shade_vertex_colors(camera, light_sources)
         return self._pack_projected_flat_geometry(camera)
 
+    def _surface_source_ids(self, numbering):
+        """Source ``Mob.id`` per local surface id, or ``None`` if none is known.
+
+        Aligned with ``_rt_tri_obj``'s values ``0 .. _rt_tri_obj_n - 1``: entry
+        ``k`` is the Mob whose primitive opened surface ``k`` (``-1`` for a
+        member the render loop did not stamp). ``numbering`` is the surface
+        numbering the pack (or the dice) used -- ``"ids"`` for the members'
+        ``mesh_key`` / ``mesh_ids`` resolution, ``"counts"`` for one surface per
+        member, ``None`` for the single-surface fallback.
+
+        A lone primitive (no collection) is every one of its surfaces' source
+        itself. Returns ``None`` -- nothing for the merge to record -- whenever
+        the render loop was not stamping, which is every render without an
+        object-id pass.
+        """
+        n = int(self._rt_tri_obj_n)
+        if getattr(self, "_obj_counts", None) is None:
+            own = self._source_mob_id
+            return None if own is None else [int(own)] * n
+        if numbering == "ids":
+            table = self._obj_ids_sources
+        elif numbering == "counts":
+            table = self._obj_count_sources
+        else:
+            table = None
+        if table is None or len(table) != n:
+            return None
+        return table
+
     def _pack_projected_flat_geometry(self, camera):
         corners = self.corners.float()
         normals = self.normals.float()
@@ -1291,10 +1405,14 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # The dice numbers patches in its own space, which nothing maps back
             # to a declaring member, so this branch names no mobs.
             self._obj_keys = None
+            # ...except that it does record which numbering it resolved, which
+            # is all the object-id pass needs to name the surfaces' sources.
+            numbering = getattr(self, "_logical_pn_obj_src", None)
         elif obj_ids is not None:
             self._rt_tri_obj = obj_ids.view(1, -1).to(corners.device).contiguous()
             self._rt_tri_obj_n = int(self._obj_ids_n)
             self._obj_keys = getattr(self, "_obj_ids_keys", None)
+            numbering = "ids"
         elif counts:
             self._rt_tri_obj = (
                 torch.repeat_interleave(
@@ -1306,12 +1424,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             )
             self._rt_tri_obj_n = len(counts)
             self._obj_keys = getattr(self, "_obj_count_keys", None)
+            numbering = "counts"
         else:
             self._rt_tri_obj = torch.zeros(
                 (1, corners.shape[1]), dtype=torch.int32, device=corners.device
             )
             self._rt_tri_obj_n = 1
             self._obj_keys = None
+            numbering = None
+        self._obj_sources = self._surface_source_ids(numbering)
 
         uvs = self._stash_texture_maps()
         self._rt_tri_uvs = uvs.to(corners.device) if uvs is not None else None
@@ -2359,18 +2480,25 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # (its ``corners`` are patch corners), which is the granularity wanted
         # here; the searchsorted below carries them to the diced rows.
         obj_ids = getattr(self, "_obj_ids", None) if rt_settings.mesh_id else None
+        # Which numbering this dice resolved, recorded so the pack can name the
+        # surfaces' source Mobs for the object-id pass (``_surface_source_ids``):
+        # the ids below ARE the ``_obj_ids_keys`` / ``_obj_count_keys``
+        # numbering, so only the choice between them was ever missing.
         if obj_ids is not None:
             patch_source = obj_ids.reshape(-1).to(device=device, dtype=torch.int32)
             self._logical_pn_tri_obj_n = int(self._obj_ids_n)
+            self._logical_pn_obj_src = "ids"
         elif counts_src:
             patch_source = torch.repeat_interleave(
                 torch.arange(len(counts_src), dtype=torch.int32, device=device),
                 torch.tensor(counts_src, dtype=torch.int64, device=device),
             )
             self._logical_pn_tri_obj_n = len(counts_src)
+            self._logical_pn_obj_src = "counts"
         else:
             patch_source = torch.zeros((num_patches,), dtype=torch.int32, device=device)
             self._logical_pn_tri_obj_n = 1
+            self._logical_pn_obj_src = None
         if patch_source.shape[0] != num_patches:
             raise RuntimeError(
                 "logical PN patch/source mismatch: "

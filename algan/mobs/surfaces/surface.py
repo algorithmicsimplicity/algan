@@ -978,15 +978,17 @@ class Surface(Mob):
         is given.
     color_texture
         Optional color texture map ``[W, H, 5]`` -- one image, sampled
-        bilinearly in-kernel by the ray tracer. It is an ordinary animatable
+        in-kernel by the ray tracer: bilinearly up close, and trilinearly from
+        a mip chain when minified (``SETTINGS.raytracing.texture_antialiasing``,
+        on by default). It is an ordinary animatable
         attribute: assign a new map of the same shape to animate it.
         :mod:`~algan.mobs.surfaces.procedural_textures` generates the common
         patterns, so a checkerboard is
         ``color_texture=get_checkerboard((BLUE, WHITE))``.
     reflectivity_texture, roughness_texture, refractive_index_texture
         Optional per-texel material property maps, each ``[W, H, 1]`` (or
-        ``[W, H]``). Like ``color_texture`` they are
-        sampled bilinearly per fragment inside the ray tracing kernel (only
+        ``[W, H]``). Like ``color_texture`` they are sampled per fragment,
+        with the same mip filtering, inside the ray tracing kernel (only
         the general wavefront tracer implements this; batches containing such
         maps are routed to it automatically, for both flat and curved PN
         triangles). Properties without a map keep the per-vertex system. Maps
@@ -1020,8 +1022,9 @@ class Surface(Mob):
 
         These colors are the surface's albedo, interpolated across each triangle
         from its corners. Setting a :attr:`color_texture` replaces them as the
-        albedo source, which is then sampled bilinearly from the texture's texels
-        instead; shading itself is per-fragment either way. The grid's resolution
+        albedo source, which is then sampled from the texture's texels instead
+        (bilinearly, or through its mip chain when minified); shading itself is
+        per-fragment either way. The grid's resolution
         is fixed at construction and a texture's is not, which is why the two are
         kept separate.
 

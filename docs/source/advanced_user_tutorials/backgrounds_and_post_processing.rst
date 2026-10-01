@@ -177,7 +177,7 @@ is bright *and* local, narrow the tail and pay for it in strength:
 Anti-aliasing
 -------------
 
-Algan supports three anti-aliasing techniques:
+Algan supports four anti-aliasing techniques:
 
 * **Supersampling (SSAA):** ``SETTINGS.video.supersampling``
   (default ``2``) renders at 2x resolution and downsamples. It is written
@@ -187,6 +187,11 @@ Algan supports three anti-aliasing techniques:
 * **FXAA:** ``SETTINGS.video.fxaa`` (off by default) is a cheap post-pass that
   smooths remaining edges. Useful when you have had to drop the supersampling
   level for speed.
+* **Texture filtering:** ``SETTINGS.raytracing.texture_antialiasing`` (on by
+  default) mip-maps UV-mapped color, material and normal maps, so a detailed
+  image on a small, distant or reflected surface is filtered instead of
+  aliasing. It is isotropic, so a texture at a grazing angle comes out slightly
+  soft; see :ref:`limits-texture-minification` for its other limits.
 
 .. code-block:: python
 

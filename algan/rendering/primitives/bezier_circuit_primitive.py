@@ -61,6 +61,38 @@ def _circuit_z_index(primitive):
     return lane
 
 
+def _circuit_source_lane(members):
+    """The collection's per-circuit source ``Mob.id`` lane, or ``None``.
+
+    The object-id pass's counterpart of the ``z_index`` lane: one plain int per
+    circuit, concatenated in member order exactly as ``num_segments_per_object``
+    is, so entry ``c`` names the Mob that built circuit ``c``. A member carries
+    either a lane of its own (``_circuit_source_ids``, already per circuit) or
+    the render loop's per-primitive stamp (``_source_mob_id``), which covers
+    every circuit it holds -- all the glyphs of a packed ``Text``, all the runs
+    of a nonplanar stroke. ``-1`` marks a member nobody stamped.
+
+    ``None`` unless the first member carries a source: the render loop stamps
+    every primitive while an object-id pass is armed and none otherwise, so an
+    ordinary render pays one attribute read per collection for this.
+    """
+    first = members[0]
+    if (
+        getattr(first, "_source_mob_id", None) is None
+        and getattr(first, "_circuit_source_ids", None) is None
+    ):
+        return None
+    lane = []
+    for member in members:
+        own = getattr(member, "_circuit_source_ids", None)
+        if own is None:
+            source = getattr(member, "_source_mob_id", None)
+            count = member.num_segments_per_circuit.view(-1).shape[0]
+            own = [-1 if source is None else int(source)] * count
+        lane.extend(own)
+    return lane
+
+
 #: Maximum screen-space curve-to-chord error, in pixels, that a circuit is
 #: flattened to. Named because two builders have to agree on it: the per-actor
 #: path takes it as this constructor's default, and
@@ -77,6 +109,14 @@ chord_tolerance_pixels = env_float("ALGAN_CHORD_TOLERANCE_PIXELS", 0.5)
 
 
 class BezierCircuitPrimitive(RenderPrimitive):
+    # Object-id pass bookkeeping (:mod:`algan.rendering.pass_identity`):
+    # ``_source_mob_id`` is the render loop's stamp on a raw primitive and
+    # ``_circuit_source_ids`` a collection's per-circuit list of them (see
+    # ``_circuit_source_lane``). Plain Python, unprefixed so
+    # ``slice_time_window`` keeps them, and ``None`` unless the pass is armed.
+    _source_mob_id = None
+    _circuit_source_ids = None
+
     def __init__(
         self,
         corners=None,
@@ -150,6 +190,9 @@ class BezierCircuitPrimitive(RenderPrimitive):
             self.z_index = torch.cat(
                 [_circuit_z_index(t) for t in triangle_collection], -2
             ).to(device)
+            # Per-circuit source Mob ids for the object-id pass; host lists,
+            # never tensors, and ``None`` on every render without that pass.
+            self._circuit_source_ids = _circuit_source_lane(triangle_collection)
             border_colors = [
                 triangle.stroke_color.unsqueeze(-2)
                 if triangle.stroke_color.dim() == 3

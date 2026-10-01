@@ -200,9 +200,10 @@ What each renderer supports
 Raising ``samples_per_pixel`` is not a pure quality dial: it changes renderer.
 The path tracer refuses nothing -- it is the fallback, so every feature the
 deterministic renderer accepts renders there too -- but several are *reached*
-differently, which the table below spells out. Algan still checks compatibility
-before it allocates anything, and would refuse rather than silently drop a
-feature it could not honour.
+differently, which the table below spells out. Two features exist only in the
+path tracer: homogeneous scattering media and depth of field. Algan checks
+compatibility before it allocates anything, and refuses rather than silently
+drops a feature a renderer cannot honour.
 
 .. list-table::
    :header-rows: 1
@@ -233,6 +234,16 @@ feature it could not honour.
    * - Global illumination, emissive surfaces as lights
      - No
      - Yes
+   * - Homogeneous scattering media, random-walk subsurface scattering
+     - **Refused** (``UnsupportedFeatureError``)
+     - Yes
+   * - Depth of field (``camera.aperture > 0``)
+     - **Refused** (``UnsupportedFeatureError``)
+     - Yes (thin lens)
+   * - Auxiliary passes (depth, normal, object ID)
+     - Yes
+     - Yes (identical to the analytic route: one pinhole sample per pixel
+       centre)
    * - Denoising (``denoise``, default on)
      - Not applicable (noise-free)
      - Yes
@@ -247,18 +258,21 @@ scatter surface is outside next-event estimation, so light reaches it only
 through the sampled continuation and it converges more slowly than a
 physically-integrated material in the same place.
 
-No feature reaches this today, but the mechanism stands: were a scene to request
-one a renderer could not honour, Algan raises
-:class:`~algan.errors.UnsupportedFeatureError` naming the features rather than
-dropping them. Either set ``samples_per_pixel`` back to ``1``, remove the
-feature, or opt into the older behaviour explicitly:
+When a scene requests a feature the selected renderer cannot honour -- today a
+scattering medium or an open camera aperture at ``samples_per_pixel == 1`` --
+Algan raises :class:`~algan.errors.UnsupportedFeatureError` naming the features
+rather than dropping them. Either raise ``samples_per_pixel`` above ``1``,
+remove the feature, or discard it deliberately (a quick pinhole preview of a
+depth-of-field shot, say):
 
 .. code-block:: python
 
     SETTINGS.raytracing.set(unsupported_feature_policy="warn")    # or "ignore"
 
-The default is ``"error"``. ``RenderResult.render_plan`` records which backend ran
-and which features were requested, if you want to check programmatically.
+The default is ``"error"``, and the policy covers every such feature at once.
+``RenderResult.render_plan`` records which backend ran, which features were
+requested and which could not be honoured, if you want to check
+programmatically.
 
 This table covers only the split between the two renderers.
 :doc:`renderer_limitations` is the complete list of what the renderer does not

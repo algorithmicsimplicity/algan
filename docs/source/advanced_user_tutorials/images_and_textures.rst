@@ -198,10 +198,13 @@ The available texture arguments:
      - ``[W, H, 1]``
      - Glow strength, per texel.
 
-Color and the three material property maps are sampled **bilinearly per fragment,
-inside the ray tracing kernel**, for both flat and curved (PN) triangles. A property
-without a map keeps the ordinary per-vertex value, and maps of different resolutions
-are resampled to a common one.
+Color, normal and the three material property maps are sampled **per fragment,
+inside the ray tracing kernel**, for both flat and curved (PN) triangles:
+bilinearly up close and, by default, trilinearly from a mip chain once the map is
+minified, as described above. A property without a map keeps the ordinary
+per-vertex value, and material property maps of different resolutions are
+resampled to a common one. :ref:`limits-texture-minification` lists what the mip
+filter does not cover.
 
 Wrapping around a closed surface
 --------------------------------
@@ -221,8 +224,11 @@ which axes close from the geometry, so a surface of your own written with
 :class:`~algan.mobs.surfaces.surface.Surface` and a ``coord_function`` wraps too, without saying so.
 
 An **open** surface -- a flat plane, an :class:`~.ImageMob`, the pole-to-pole
-``v`` axis of a sphere -- has no far side to blend into, so its first and last
-texels sit exactly on its two edges and the edge value carries beyond them.
+``v`` axis of a sphere -- has no far side to blend into. Each texel still covers
+exactly ``1 / W`` of it: the first and last texel centres sit half a texel in
+from its two edges, and the edge texels' values carry out to the edges. With
+``SETTINGS.raytracing.texture_antialiasing`` off, the older convention returns
+and the first and last texel centres sit exactly on the edges.
 
 Building a map from world positions
 -----------------------------------

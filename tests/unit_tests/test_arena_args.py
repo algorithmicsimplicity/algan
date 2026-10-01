@@ -51,6 +51,7 @@ CONVERTED = [
     ("algan.rendering.raytracing.raster_taichi", "raster_shadow_trace"),
     ("algan.rendering.raytracing.raster_taichi", "shadow_queue_trace"),
     ("algan.rendering.raytracing.path_tracer_taichi", "pt_shade"),
+    ("algan.rendering.raytracing.aux_passes_taichi", "aux_trace"),
 ]
 
 
@@ -214,6 +215,7 @@ STATICALLY_COUNTABLE = {
     "wavefront_traverse_events",
     "raster_shadow_trace",
     "pt_shade",
+    "aux_trace",
 }
 
 

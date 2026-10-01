@@ -250,6 +250,111 @@ must replace the plate, and the zero-alpha patch must add its decoded light.
 Check the partial-alpha edge numerically too: preserving the halo alone does
 not prove the input color transform is correct.
 
+.. _saving-render-passes:
+
+Render passes for compositing
+=============================
+
+Pass ``passes`` to write **auxiliary passes** beside the video: per-pixel
+depth, surface normals and object IDs that a compositor or video editor can use
+for fog, depth-driven blur, relighting and per-object mattes.
+
+.. code-block:: python
+
+    from algan import *
+
+    title = Text("Depth").move_to(UP * 2).spawn()
+    Sphere(color=BLUE).spawn()
+    Cube(size=0.8, color=RED).move_to(RIGHT * 2.5 + IN * 2).spawn()
+
+    Scene.save_video("shot", passes=("depth", "normal", "object_id"))
+
+Any subset, in any order, works; ``passes="depth"`` asks for one.
+:meth:`~algan.scene.Scene.save_frame` takes the same argument. Next to
+``shot.mp4`` this writes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - File
+     - Contents
+   * - ``shot.mp4.depth/shot.mp4.depth.00000.exr`` ...
+     - **Depth.** 32-bit float OpenEXR, one channel. The distance from the
+       camera to the surface along the camera's forward axis (planar depth, not
+       ray length), in world units. Pixels that hit nothing hold ``1e10``,
+       Blender's convention for "infinitely far".
+   * - ``shot.mp4.normal/shot.mp4.normal.00000.png`` ...
+     - **Normal.** 16-bit RGB PNG. The surface's unit shading normal in
+       **camera space** -- x toward screen right, y toward screen up, z toward
+       the camera -- encoded ``rgb = n * 0.5 + 0.5`` (so a surface facing the
+       camera is ``(0.5, 0.5, 1.0)``, the familiar lavender). Decode with
+       ``n = rgb * 2 - 1``. Pixels that hit nothing are black.
+   * - ``shot.mp4.object_id/shot.mp4.object_id.00000.png`` ...
+     - **Object ID.** 8-bit RGB PNG. Every object is one flat colour, so a
+       keyer matching that exact value isolates it; black is nothing. The
+       colours are hashed from the IDs, so they are distinct but arbitrary --
+       some pale, grey or dark -- and ``shot.mp4.passes.json`` lists each one.
+   * - ``shot.mp4.passes.json``
+     - What the files contain: the encodings above, the resolution, frame rate
+       and frame count, and every object ID with its colour and the Mob it
+       stands for.
+
+Each video pass is a numbered **image sequence** in its own directory, one image
+per video frame, numbered from ``00000``: select the first file to import it
+into DaVinci Resolve, Premiere, After Effects, Final Cut, Nuke or Blender, and
+set it to the video's frame rate if the editor asks. Image sequences are
+lossless, carry 16-bit and float data that video codecs cannot, and every editor
+reads them. A still writes one file per pass instead: ``shot.png`` gains
+``shot.png.depth.exr``, ``shot.png.normal.png``, ``shot.png.object_id.png`` and
+``shot.png.passes.json``. Every name includes the output's own extension, so a
+still and a video sharing a stem never share passes. The paths also come back
+on the result, as
+``result.passes`` (``{"depth": Path(...), ...}``).
+
+**Which object gets which ID.** An object is the highest Mob above a piece of
+geometry that is not just a grouping container: a ``Text`` is one object, not
+one per glyph; a ``Cube`` is one object, not six faces; and a ``Group(a, b)``
+is two objects, ``a`` and ``b``. To choose yourself, set ``pass_index`` on a
+Mob before rendering:
+
+.. code-block:: python
+
+    equation = MathTex(r"e^{i\pi} + 1 = 0").spawn()
+    equation.pass_index = 1                 # the whole equation is object 1
+    labels = Group(Text("a"), Text("b")).spawn()
+    labels.pass_index = 2                   # both labels share object 2
+
+A ``pass_index`` is an integer from 1 to 65535. It applies to the Mob and every
+descendant that does not set its own, so it merges several objects into one
+matte, or gives one member of a group a matte of its own. It works on Mobs drawn
+as objects of their own: one glyph of a ``Text`` or one face of a ``Cube`` is
+drawn by its object, so tagging the part alone has no effect. IDs without an
+explicit ``pass_index`` are derived from the object's Mob and stay the same from
+one render of the same script to the next. An object keeps its ID through a
+``become()``, including a morph into a different kind of shape.
+The sidecar lists each ID's colour, so you can key an object by
+colour or look one up by name.
+
+What every pass samples, and what that implies:
+
+* **One ray through each pixel's centre, from the pinhole camera.** Passes are
+  not anti-aliased -- object edges are stair-stepped, which is what an ID matte
+  needs (each pixel belongs to exactly one object) -- and they ignore
+  ``camera.aperture``, so the depth pass stays sharp for depth-of-field done in
+  the editor. The default renderer and the path tracer produce identical
+  passes, whatever ``samples_per_pixel`` is.
+* **The first surface at least half opaque.** A surface below 50% opacity is
+  looked through, like Blender's pass alpha threshold. Opacity is coverage, not
+  transparency: a glass sphere is fully opaque here and is what the passes
+  record, not what shows through it.
+* **The background is not a surface.** A background colour, image or
+  environment map leaves depth at ``1e10``, the normal black and the ID ``0``.
+
+Passes cost one extra ray per output pixel per frame, one FFmpeg encoder per
+pass, and some extra render memory. The 16-bit normal pass is the slowest to
+encode -- a fast render at 1080p can end up waiting on it.
+
 Working with projects
 =====================
 
@@ -275,5 +380,7 @@ See Also
 * :doc:`multi_scene_projects` -- rendering a video made of many scenes.
 * :doc:`transparent_backgrounds` -- rendering with an alpha channel, and why
   that changes the container.
+* :doc:`cameras` -- depth of field, which the render passes deliberately leave
+  out.
 * :doc:`backgrounds_and_post_processing` -- ``background`` and
   ``post_processes``.

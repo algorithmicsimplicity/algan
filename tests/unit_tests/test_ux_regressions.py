@@ -1380,6 +1380,7 @@ def test_skip_save_frame_is_not_a_settings_section():
         "extended_light",
         "environment_map",
         "custom_scatter",
+        "depth_of_field",
     ],
 )
 def test_lifted_path_tracer_features_render(feature, tmp_path):
@@ -1436,10 +1437,17 @@ def test_lifted_path_tracer_features_render(feature, tmp_path):
             sphere = Sphere(radius=0.6, color=BLUE)
             sphere.set_fragment_shader(forced_mirror_scatter)
             sphere.spawn()
+        elif feature == "depth_of_field":
+            Sphere(radius=0.6, color=BLUE).spawn()
+            with algan.Off():
+                scene.camera.aperture = 0.5
+                scene.camera.focus_distance = 12.0
 
         result = scene.save_frame(tmp_path / f"pt_{feature}.png", overwrite=True)
         assert result.render_plan.backend == "path_tracer"
         assert not result.render_plan.unsupported_features
+        if feature == "depth_of_field":
+            assert "depth of field" in result.render_plan.requested_features
 
 
 def test_arrow3d_endpoints_follow_the_arrow():

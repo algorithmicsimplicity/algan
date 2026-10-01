@@ -29,7 +29,7 @@ As seen on [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicit
 ## Key Features
 
 - **Manim Feature Parity**: Everything you know and love from Manim.
-- **GPU Ray Tracing**: High-fidelity optical effects including depth of field, area lights, glossy reflections, refractive glass, and soft shadows.
+- **GPU Ray Tracing**: High-fidelity optical effects including area lights, glossy reflections, refractive glass, soft shadows, and depth of field (path tracer).
 - **Declarative Timeline Contexts**: Intuitive animation staging with `Seq()`, `Sync()`, `Lag()`, `Off()`, and `Speech()` blocks makes animation code modular and re-usable.
 - **Unified 2D/3D Geometry**: Seamless morphing and interpolation between 2D Bézier circuits and 3D meshes with `become()`.
 - **Audio & Speech Alignment**: Automatic word-level forced alignment to synchronize on-screen animations with narration.

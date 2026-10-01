@@ -55,12 +55,13 @@ Scene.save_video("my_video", HD)
 A value of 1 selects the deterministic hybrid raster/ray tracer. A value greater
 than 1 selects the Monte Carlo path tracer; it is an explicit choice, not an
 automatic fallback after a memory failure. The path tracer supports refractive
-materials, environment maps, authored/custom fragment pipelines and homogeneous
-scattering inside supported closed solids. Custom appearance stages and physical
-BSDF materials do not necessarily have the same lighting semantics.
+materials, environment maps, authored/custom fragment pipelines, homogeneous
+scattering inside supported closed solids, and depth of field (an open
+`camera.aperture`). Custom appearance stages and physical BSDF materials do not
+necessarily have the same lighting semantics.
 
-Homogeneous scattering and random-walk subsurface scattering require the path
-tracer. Unsupported combinations are reported according to the configured
+Homogeneous scattering, random-walk subsurface scattering and depth of field
+require the path tracer. Unsupported combinations are reported according to the configured
 unsupported-feature policy. Increasing the sample count does not eliminate
 ordinary geometry, configuration or memory errors. See {ref}`renderer-capabilities`.
 

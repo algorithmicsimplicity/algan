@@ -11,14 +11,14 @@ keyword-only parameters; they are not runnable calls:
 ```text
 scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=False,
                  background=None, animate_fade_out=None, post_processes=None,
-                 codec=None, audio_codec=None, ffmpeg_params=None)
+                 codec=None, audio_codec=None, ffmpeg_params=None, passes=None)
 scene.save_frame(file_path=None, video_settings=None, at=None, *,
-                 overwrite=True, background=None, post_processes=None)
+                 overwrite=True, background=None, post_processes=None, passes=None)
 ```
 
 `Scene.save_video` carries the user-facing signature and documentation; `algan.utils.algan_utils._render_scene_to_file` carries the implementation. Keep them in sync — do not push parameters back into `*args, **kwargs`, because that is what made the signature invisible to `help()`, IDEs and autodoc.
 
-Both return a `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`). `save_frame` returns a list of them only when `at` is a sequence.
+Both return a `RenderResult` (`status`, `output_path`, `walltime_seconds`, `render_plan`, `passes`). A field added to it goes last, with a default: callers construct it positionally. `save_frame` returns a list of them only when `at` is a sequence.
 
 `render_plan` is the last batch's `RenderPlan`, also left on `scene.last_render_plan`: which renderer ran, what it could not honor, and `truncations` — a `TruncationCounts` of how often each of the render path's four fixed ceilings bound (`../algan/rendering/raytracing/truncation.py`). Those counters are unconditional and render-job-scoped, so a zero is a reading rather than a missing instrument, and each ceiling warns **once per render** at `WARNING` — not `PERF`, which is for the budget events (batch splits, pool retries) that are the memory model working as designed. A truncation moves the image.
 
@@ -127,7 +127,7 @@ A field may declare **aliases**, and `SETTINGS.video` is the one section that do
 
 Aliases are fine wherever they make Algan easier to write. These two exist because the abbreviations are what the rest of the world calls them, and `settings_aliases` is the way to add another. Library code writes the declared name.
 
-`SETTINGS.raytracing` is split by stability. Directly on the section are the settings that describe what the renderer *produces* — `_PUBLIC_FIELDS` in `algan/settings/raytracing_settings.py` is the list of record: `samples_per_pixel`, `max_bounces`, `shadows`, `glossy_reflection`, `glossy_prefilter`, `analytic_aa`, `denoise`, `linear_color_space`, `tonemapping`, `tonemap_method`, `tonemap_exposure`, `unsupported_feature_policy`. Every other switch is a kernel/performance gate and lives on `SETTINGS.raytracing.experimental`; writing one through the parent raises an error naming the right location. **Reads are deliberately unrestricted** — engine modules bind `rt_settings = SETTINGS.raytracing` once and read experimental switches off it on the hot path — so only mutation is gated. `to_dict()`, `as_preset()`, `_restore()` and `SETTINGS.snapshot()` continue to cover every field.
+`SETTINGS.raytracing` is split by stability. Directly on the section are the settings that describe what the renderer *produces* — `_PUBLIC_FIELDS` in `algan/settings/raytracing_settings.py` is the list of record: `texture_antialiasing`, `samples_per_pixel`, `max_bounces`, `shadows`, `glossy_reflection`, `glossy_prefilter`, `analytic_aa`, `denoise`, `linear_color_space`, `tonemapping`, `tonemap_method`, `tonemap_exposure`, `unsupported_feature_policy`. Every other switch is a kernel/performance gate and lives on `SETTINGS.raytracing.experimental`; writing one through the parent raises an error naming the right location. **Reads are deliberately unrestricted** — engine modules bind `rt_settings = SETTINGS.raytracing` once and read experimental switches off it on the hot path — so only mutation is gated. `to_dict()`, `as_preset()`, `_restore()` and `SETTINGS.snapshot()` continue to cover every field.
 
 Adding a renderer toggle is one edit: declare it as a lowercase module-level value with an environment default, in whichever storage module owns that subsystem (`_STORAGE_MODULES` in `algan/settings/raytracing_settings.py` lists them — the toggles module plus the BVH builders, the kernels, the raster and sheet passes, the scene builder, the tracer and the memory model, each keeping its settings beside the code and the comment that explain them). `SETTINGS.raytracing` derives its field set from those modules, so the toggle is reachable with nothing else to register — leave it out of `_PUBLIC_FIELDS` unless it changes rendered output in a way users are meant to control, and it lands on `.experimental`. Two rules follow from the derivation: the value must be a scalar, and **no helper function may share a field's name** — the later `def` silently takes the name over and the field disappears (`test_settings_api.py` pins both).
 

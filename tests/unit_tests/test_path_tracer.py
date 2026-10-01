@@ -2434,7 +2434,8 @@ def test_the_fallback_refuses_nothing():
     machine-checkable form of that rule, and it is built by enumerating the
     features ``_build_render_plan`` actually inspects -- an environment map,
     ``has_refractive``, a user fragment pipeline, a custom scatter override
-    on it, and an extended light -- rather than by listing scenes, so a
+    on it, an extended light and an open camera aperture -- rather than by
+    listing scenes, so a
     rejection added to that function fails this test the moment it is
     written. Every feature is set at once *and* one at a time: a refusal
     conditioned on a combination has to fail here too.
@@ -2457,6 +2458,7 @@ def test_the_fallback_refuses_nothing():
         "extended_light": lambda kw: kw["light_sources"].append(
             SimpleNamespace(_render_aux=object())
         ),
+        "depth_of_field": lambda kw: kw.update(depth_of_field=True),
     }
 
     def plan_for(names):
@@ -2464,6 +2466,7 @@ def test_the_fallback_refuses_nothing():
             "scene_environment_map": None,
             "merged": {},
             "light_sources": [],
+            "depth_of_field": False,
         }
         for name in names:
             features[name](kwargs)
@@ -2472,6 +2475,7 @@ def test_the_fallback_refuses_nothing():
             kwargs["scene_environment_map"],
             kwargs["merged"],
             kwargs["light_sources"],
+            depth_of_field=kwargs["depth_of_field"],
         )
 
     everything = plan_for(features)
@@ -2495,6 +2499,7 @@ def test_the_fallback_refuses_nothing():
         "refractive materials",
         "custom fragment-shader pipelines",
         "extended lights",
+        "depth of field",
     }
 
 

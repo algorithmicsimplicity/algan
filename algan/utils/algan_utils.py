@@ -3,8 +3,8 @@
 :class:`RenderResult` is the value returned by
 :meth:`~algan.scene.Scene.save_video` and
 :meth:`~algan.scene.Scene.save_frame`: its ``status``, ``output_path``,
-``walltime_seconds`` and ``render_plan`` describe what was written and how it was
-rendered.
+``walltime_seconds``, ``render_plan`` and ``passes`` describe what was written
+and how it was rendered.
 
 The rest is scene-level tooling: ``algan_scene`` for declaring a renderable
 scene, ``combine_scenes`` and ``concatenate_videos`` for assembling a long video
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -139,12 +139,18 @@ class RenderResult:
     render_plan
         The last batch's :class:`~algan.rendering.raytracing.RenderPlan`: which
         renderer ran, what it could not honor, and how often each ceiling bound.
+    passes
+        The auxiliary passes written beside the output, as ``{pass name:
+        absolute path}``: a still's pass files, or the directories holding a
+        video's pass image sequences. Empty unless ``passes`` was requested and
+        the render ran. See :ref:`saving-render-passes`.
     """
 
     status: Literal["rendered", "skipped", "deferred"]
     output_path: Path
     walltime_seconds: float = 0.0
     render_plan: object | None = None
+    passes: dict[str, Path] = field(default_factory=dict, hash=False)
 
     @property
     def rendered(self) -> bool:
@@ -363,6 +369,7 @@ def _render_scene_to_file(
     background=None,
     ffmpeg_params=None,
     animate_fade_out=None,
+    passes=None,
     **kwargs,
 ):
     """Render ``scene`` to a video file.
@@ -370,6 +377,11 @@ def _render_scene_to_file(
     This is the implementation behind :meth:`algan.scene.Scene.save_video`,
     which carries the user-facing signature and documentation.
     """
+    from algan._render_passes import VideoPassJob, normalize_passes
+
+    # Validated before anything else, including an overwrite=False skip: a
+    # misspelt pass name should not wait for the file to be deleted to surface.
+    passes = normalize_passes(passes)
     # The Scene's own settings outrank SETTINGS.video when it was given them:
     # ``Scene(video_settings=...)`` and ``set_video_settings`` used to have no
     # effect here at all, while ``save_frame`` on the same Scene honoured them.
@@ -386,6 +398,7 @@ def _render_scene_to_file(
     temp_file_path = None
     audio_file_path = None
     file_writer = None
+    pass_job = None
     render_started = False
     scene_finalized = False
 
@@ -411,6 +424,9 @@ def _render_scene_to_file(
 
         if destination.exists() and not overwrite:
             return RenderResult("skipped", destination)
+        # Checks the pass encoders now, like the codec check below, rather
+        # than after the frames are rendered.
+        pass_job = VideoPassJob.create(passes, destination)
 
         suffix = destination.suffix.lower()
         if scene.background_is_transparent():
@@ -557,6 +573,7 @@ def _render_scene_to_file(
             # not consume the derived state a later render depends on. With
             # reset=True the timeline is rebuilt anyway.
             preserve_authoring_state=not reset,
+            **({"passes": pass_job} if pass_job is not None else {}),
             **kwargs,
         )
         walltime = time.perf_counter() - start_time
@@ -564,8 +581,18 @@ def _render_scene_to_file(
         # The absolute path, not the bare name: "Finished rendering out.mp4"
         # left the reader to guess which directory it landed in.
         logger.info("Finished rendering %s in %.1f s", destination, walltime)
-        return RenderResult("rendered", destination, walltime, plan)
+        return RenderResult(
+            "rendered",
+            destination,
+            walltime,
+            plan,
+            passes=dict(pass_job.directories) if pass_job is not None else {},
+        )
     finally:
+        if pass_job is not None:
+            # A no-op after a successful publish; after a failure it removes
+            # the partial sequences, leaving any earlier render's passes.
+            pass_job.discard()
         if file_writer is not None:
             try:
                 file_writer.close()

@@ -466,6 +466,42 @@ def _max_duration_that_fits(requested_frames, fits):
     return best
 
 
+def _aux_source_registry(scene):
+    """The armed object-id pass's ``{Mob.id: actor}`` registry, or ``None``.
+
+    The pass is armed for one render by setting ``scene._aux_id_registry`` to a
+    dict (and disarmed by deleting it); while armed, every primitive the batch
+    takes from an actor is stamped with that actor's ``Mob.id``
+    (:func:`_stamp_primitive_sources`), which the collections and the scene
+    merge carry into ``tri_obj_source_ids`` / ``circuit_source_ids``. See
+    :mod:`algan.rendering.pass_identity`. A camera-view pass is a copy of the
+    Scene's ``__dict__``, so it shares the very same dict.
+    """
+    registry = getattr(scene, "_aux_id_registry", None)
+    return registry if isinstance(registry, dict) else None
+
+
+def _stamp_primitive_sources(primitives, actor, registry):
+    """Record ``actor`` as the source of each of ``primitives``.
+
+    ``_source_mob_id`` is a plain int (not a tensor, so nothing uploads or
+    counts it; not ``_rt_``-prefixed, so ``slice_time_window`` keeps it). A
+    primitive that already names a source -- an aggregate that stamped its
+    parts more precisely (``Arrow3D``) -- keeps it. The actor itself goes into
+    ``registry`` so the ids resolve back to Mobs after the render; a packed
+    view shares its pack's id, which is why the actor (the pack, whose
+    ``parents`` chain is intact) is what is recorded.
+    """
+    mob_id = int(actor.id)
+    registry.setdefault(mob_id, actor)
+    for primitive in primitives:
+        if (
+            getattr(primitive, "_source_mob_id", None) is None
+            and getattr(primitive, "_circuit_source_ids", None) is None
+        ):
+            primitive._source_mob_id = mob_id
+
+
 def _primitive_source_device(primitive, fallback=None):
     """Device holding a not-yet-projected primitive's source geometry."""
     for name in (
@@ -550,6 +586,14 @@ def _slice_render_state(render_state, start, end, total_frames):
         "ray_origin": sliced(render_state["ray_origin"]),
         "screen_point": sliced(render_state["screen_point"]),
         "screen_basis": sliced(render_state["screen_basis"]),
+        # Optional: snapshots of cameras without a lens (test doubles) omit it,
+        # and a key missing here would silently drop the lens from every
+        # prefix retry and overlapped-prep window.
+        **(
+            {"camera_lens": sliced(render_state["camera_lens"])}
+            if "camera_lens" in render_state
+            else {}
+        ),
         "lights": [
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
@@ -1789,8 +1833,13 @@ class RenderLoopMixin:
         transparent_background=False,
         background=None,
         render_state=None,
+        aux_sink=None,
     ):
-        """Render one prepared primitive batch for a frame interval."""
+        """Render one prepared primitive batch for a frame interval.
+
+        With ``aux_sink`` the renderer also traces the aux passes, and each
+        chunk's passes go to ``aux_sink`` just before its frames are yielded.
+        """
         with torch.no_grad():
             camera = self.camera
             if render_state is None:
@@ -2032,7 +2081,10 @@ class RenderLoopMixin:
                 self.memory.max_pointer = chunk_base
                 self.memory.last_launch_frames = None
                 self.memory.last_chunk_capacity_limited = False
-                yield primitive_batch[0].render(
+                if aux_sink is not None:
+                    # Never hand on a stale batch's passes.
+                    self.__dict__.pop("_pending_aux_passes", None)
+                frames = primitive_batch[0].render(
                     primitive_batch,
                     self,
                     save_image,
@@ -2049,7 +2101,29 @@ class RenderLoopMixin:
                     light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
+                    # Per-frame thin lens, passed explicitly rather than hung on
+                    # the live camera: only the path tracer reads it, and
+                    # projection never needs it.
+                    camera_lens=render_state.get("camera_lens"),
+                    **({"aux_passes": True} if aux_sink is not None else {}),
                 )
+                if aux_sink is not None:
+                    # The renderer's side channel (render_batch_raytraced);
+                    # the frames themselves stay a plain tensor.
+                    aux = self.__dict__.pop("_pending_aux_passes", None)
+                    if aux is None:
+                        raise RuntimeError(
+                            "aux passes were requested but the render kernel "
+                            "produced none"
+                        )
+                    if int(aux["depth"].shape[0]) != len(frames):
+                        raise RuntimeError(
+                            f"the render kernel produced aux passes for "
+                            f"{int(aux['depth'].shape[0])} frames alongside "
+                            f"{len(frames)} rendered frames"
+                        )
+                    aux_sink(aux)
+                yield frames
                 # Control is back, so the caller has taken every frame up to
                 # ``new_ind``: those are final and a later chunk's failure
                 # must not re-render them.
@@ -2106,6 +2180,7 @@ class RenderLoopMixin:
         transparent_background=False,
         background=None,
         frame_indices=None,
+        aux_sink=None,
     ):
         """Yield background-only frame batches for ``[start_ind, end_ind)``.
 
@@ -2115,7 +2190,8 @@ class RenderLoopMixin:
         finalization -- background prefill into the render arena followed by
         the standard post-processing chain -- with the ray tracer itself
         skipped, so these frames match what the tracer produces when nothing
-        is visible.
+        is visible. With ``aux_sink``, each batch's aux passes (all misses:
+        nothing is there to record) go to it just before the batch is yielded.
         """
         from algan.rendering.post_processing.post_process import (
             post_process_frames,
@@ -2229,6 +2305,16 @@ class RenderLoopMixin:
                     signature, duration, max(0, self.memory.max_pointer - chunk_base)
                 )
             self.memory.set_pointers(original_pointers)
+            if aux_sink is not None:
+                from algan.rendering.raytracing.aux_passes import empty_aux_passes
+
+                aux_sink(
+                    empty_aux_passes(
+                        len(frames),
+                        self.num_pixels_screen_height,
+                        self.num_pixels_screen_width,
+                    )
+                )
             yield frames
             current_ind = new_ind
 
@@ -2462,8 +2548,15 @@ class RenderLoopMixin:
             if key is None:
                 key = self._bezier_group_key(entry["actor"])
             groups.setdefault((key, entry.get("run", 0)), []).append(entry)
+        registry = _aux_source_registry(self)
         for entries in groups.values():
             mega = build_render_primitives_batched([e["actor"] for e in entries], self)
+            if registry is not None:
+                # One circuit per actor, in entry order (``_is_batchable_bezier``
+                # guarantees the single row), so the lane is the actors' ids.
+                for entry in entries:
+                    registry.setdefault(int(entry["actor"].id), entry["actor"])
+                mega._circuit_source_ids = [int(e["actor"].id) for e in entries]
             entries[0]["prebuilt"] = [mega]
 
     def _build_deferred_surfaces(self, deferred):
@@ -2485,6 +2578,7 @@ class RenderLoopMixin:
             )
             groups[key].append(entry)
 
+        registry = _aux_source_registry(self)
         for entries in groups.values():
             prims = get_render_primitives_batched([e["actor"] for e in entries])
             for entry, p in zip(entries, prims):
@@ -2492,6 +2586,8 @@ class RenderLoopMixin:
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
+                if registry is not None:
+                    _stamp_primitive_sources(entry["prims"], entry["actor"], registry)
 
     def _scene_has_renderable_actors(self, start_time_ind, end_time_ind):
         """Whether any spawned renderable actor's lifespan intersects the
@@ -2762,6 +2858,10 @@ class RenderLoopMixin:
         # as before, so what lands downstream is the same concatenation the
         # all-raw path produced.
         grouped_primitives = collections.defaultdict(list)
+        # The object-id pass's source registry, ``None`` unless that pass is
+        # armed for this render -- in which case every primitive taken from an
+        # actor below (and in the deferred builders) is stamped with its Mob.
+        aux_registry = _aux_source_registry(self)
         # Surfaces sharing a grid shape are not built one-by-one: their state
         # is materialized per-actor below (in anchor-priority order, exactly as
         # before), but the geometry build is deferred so all of them can run as
@@ -2819,6 +2919,8 @@ class RenderLoopMixin:
             if primitive is not None:
                 if not isinstance(primitive, list):
                     primitive = [primitive]
+                if aux_registry is not None:
+                    _stamp_primitive_sources(primitive, actor, aux_registry)
                 ordered_items.append(primitive)
 
         if deferred_surfaces:
@@ -2887,6 +2989,10 @@ class RenderLoopMixin:
                         entry["prims"] = (
                             primitive if isinstance(primitive, list) else [primitive]
                         )
+                        if aux_registry is not None:
+                            _stamp_primitive_sources(
+                                entry["prims"], entry["actor"], aux_registry
+                            )
                 else:
                     clean.append(entry)
             if clean:
@@ -3473,11 +3579,15 @@ class RenderLoopMixin:
                         None,
                     )
                 )
+        # ``[T, 1, 2]`` (aperture diameter, focus distance). getattr: the camera
+        # doubles some tests drive this mixin with have no lens.
+        lens_fn = getattr(camera, "_get_render_lens", None)
         return {
             **({"frame_indices": frame_indices} if frame_indices is not None else {}),
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera._get_render_screen_basis().to(device),
+            **({"camera_lens": lens_fn().to(device)} if lens_fn is not None else {}),
             "lights": lights,
             "light_objects": light_objects,
             "light_active": light_active,
@@ -3493,6 +3603,8 @@ class RenderLoopMixin:
         *,
         frame_indices=None,
         _post_process_per_frame=False,
+        aux_passes: bool = False,
+        aux_sink=None,
     ):
         """Yield frames and always release per-render state on exit.
 
@@ -3501,10 +3613,24 @@ class RenderLoopMixin:
         frames are materialized and rendered; gaps cost no frame storage.
         Without it, start/end retain their ordinary timeline-index meaning.
 
+        With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
+        called exactly once per yielded batch, immediately before the batch is
+        yielded, with that batch's compositing passes: a dict of CPU tensors
+        (``"depth"``, ``"normal"``, ``"mob_id"``) whose leading dimension is
+        the batch's frame count (``algan.rendering.raytracing.aux_passes``
+        describes them). Background-only batches deliver passes that record
+        nothing; a live camera view's capture passes compute none. Off (the
+        default), nothing extra is allocated, traced or called.
+
         The wrapper is deliberately outside the implementation generator so
         its ``finally`` also runs for OOMs, worker failures, and callers that
         close the generator before consuming every frame.
         """
+        if aux_passes and not callable(aux_sink):
+            raise TypeError("aux_passes=True needs a callable aux_sink")
+        # Forwarded only when requested, so the implementation generators are
+        # called exactly as before when the passes are off.
+        aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
         if frame_indices is not None:
             import operator
 
@@ -3572,6 +3698,7 @@ class RenderLoopMixin:
                         post_processes=post_processes,
                         manual_memory=manual_memory,
                         frame_indices=frame_indices,
+                        **aux_kwargs,
                     )
                     return
                 with scene_excluded_from_gc():
@@ -3586,6 +3713,7 @@ class RenderLoopMixin:
                             if frame_indices is not None
                             else {}
                         ),
+                        **aux_kwargs,
                     )
             finally:
                 # _get_frames_impl has drained its prep worker before returning
@@ -3613,8 +3741,22 @@ class RenderLoopMixin:
         manual_memory=True,
         *,
         frame_indices=None,
+        aux_passes=False,
+        aux_sink=None,
     ):
+        # The aux passes' sink, or None when they are off (see get_frames).
+        aux_sink = aux_sink if aux_passes else None
         if end_time_ind <= start_time_ind:
+            if aux_sink is not None:
+                from algan.rendering.raytracing.aux_passes import empty_aux_passes
+
+                aux_sink(
+                    empty_aux_passes(
+                        0,
+                        self.num_pixels_screen_height,
+                        self.num_pixels_screen_width,
+                    )
+                )
             yield []
             return
 
@@ -4163,6 +4305,11 @@ class RenderLoopMixin:
                                 transparent_background,
                                 background,
                                 render_state=render_state,
+                                **(
+                                    {"aux_sink": aux_sink}
+                                    if aux_sink is not None
+                                    else {}
+                                ),
                             ):
                                 produced_output = True
                                 yield frame_batch
@@ -4315,6 +4462,7 @@ class RenderLoopMixin:
                                 if frame_indices is not None
                                 else {}
                             ),
+                            **({"aux_sink": aux_sink} if aux_sink is not None else {}),
                         ):
                             yield frame_batch
 
@@ -4381,6 +4529,7 @@ class RenderLoopMixin:
         background=None,
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
+        passes=None,
     ):
         """Stream rendered frame batches to the configured video writer.
 
@@ -4390,6 +4539,10 @@ class RenderLoopMixin:
         so authoring can continue -- including inside a block that has not
         finished yet -- and render again. See
         :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
+
+        ``passes`` is an :class:`algan._render_passes.VideoPassJob` when
+        auxiliary passes were requested: its encoders run beside the video's
+        and its sequences are published right after the video file is.
         """
         ensure_taichi_for_render()
         # The encoder still owns queued CPU frames after get_frames exits.
@@ -4405,6 +4558,7 @@ class RenderLoopMixin:
                 background=background,
                 despawn_camera_and_lights=despawn_camera_and_lights,
                 preserve_authoring_state=preserve_authoring_state,
+                **({"passes": passes} if passes is not None else {}),
             )
 
     def _render_to_video_impl(
@@ -4416,6 +4570,7 @@ class RenderLoopMixin:
         background=None,
         despawn_camera_and_lights=True,
         preserve_authoring_state=False,
+        passes=None,
     ):
         previous_scene_times = (
             [list(pair) for pair in self.scene_times]
@@ -4431,6 +4586,7 @@ class RenderLoopMixin:
                     background,
                     despawn_camera_and_lights,
                     preserve_authoring_state,
+                    **({"passes": passes} if passes is not None else {}),
                 )
         finally:
             if previous_scene_times is not None:
@@ -4439,6 +4595,10 @@ class RenderLoopMixin:
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
+        if passes is not None:
+            # After the video, so the passes never describe a render whose
+            # video failed to publish.
+            passes.publish()
 
     def _static_frame_runs(self, start_ind, end_ind, background, post_processes):
         """Which of a video's frames to render, and how often to write each.
@@ -4590,8 +4750,13 @@ class RenderLoopMixin:
         background,
         despawn_camera_and_lights,
         preserve_authoring_state,
+        passes=None,
     ):
         writer = None
+        # The auxiliary-pass job (algan._render_passes.VideoPassJob), if any:
+        # its per-pass encoders receive every frame the video does, repeats
+        # included, from the batches get_frames delivers through its sink.
+        pass_job = passes
         try:
             self.scene_times.append(
                 [
@@ -4628,6 +4793,8 @@ class RenderLoopMixin:
             writer = _VideoWriter(file_writer)
             self.frame_queue = writer.queue
             writer.start()
+            if pass_job is not None:
+                pass_job.open(self, _VideoWriter)
             # The snapshot is taken here rather than around the whole render call:
             # the fade-out and the zero-runtime guard record on the timeline
             # first, and edits made after a snapshot would fall outside it.
@@ -4665,12 +4832,18 @@ class RenderLoopMixin:
                     )
                 # Explicitly close the generator on encoder failure too: its
                 # finally releases materialization buffers and prep workers.
+                aux = (
+                    {}
+                    if pass_job is None
+                    else {"aux_passes": True, "aux_sink": pass_job.sink}
+                )
                 batches = self.get_frames(
                     *frame_window,
                     background=background,
                     post_processes=post_processes,
                     manual_memory=True,
                     **sparse,
+                    **aux,
                 )
                 close_frames = getattr(batches, "close", None)
                 if close_frames is not None:
@@ -4679,24 +4852,35 @@ class RenderLoopMixin:
 
                 rendered = 0
                 for frame_batch in batches:
-                    for frame in frame_batch:
+                    encoded = (
+                        None if pass_job is None else pass_job.take(len(frame_batch))
+                    )
+                    for position, frame in enumerate(frame_batch):
                         copies = 1 if repeats is None else repeats[rendered]
                         rendered += 1
                         if _opt_disabled("writerrepeats"):
                             for _ in range(copies):
                                 writer.put(frame)
+                                if pass_job is not None:
+                                    pass_job.put(encoded, position)
                                 report_frame()
                             continue
                         writer.put(frame, copies)
+                        if pass_job is not None:
+                            pass_job.put(encoded, position, copies)
                         # After the put: the queue is bounded and feeds the
                         # encoder thread, so reporting first would run the
                         # progress ahead of the actual encode.
                         for _ in range(copies):
                             report_frame()
             self._drain_video_writer(writer)
+            if pass_job is not None:
+                pass_job.finish()
         except BaseException:
             if writer is not None:
                 writer.abort()
+            if pass_job is not None:
+                pass_job.abort()
             try:
                 file_writer.close()
             except Exception:
@@ -4704,3 +4888,6 @@ class RenderLoopMixin:
                 # cancellation. The worker is already joined before closing.
                 logger.debug("Video writer cleanup failed", exc_info=True)
             raise
+        finally:
+            if pass_job is not None:
+                pass_job.release(self)

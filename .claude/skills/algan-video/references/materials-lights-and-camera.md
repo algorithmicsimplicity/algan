@@ -201,8 +201,14 @@ tracking = camera.add_updater(lambda mob, t: mob.look_at(subject.location))
 camera; do not call it mathematically exact orthographic projection.
 `set_near(...)` and `set_far(...)` configure clip distances; they are not
 animated timeline controls. Establish them during setup, not as purported
-mid-shot keyframes. Do not guess depth-of-field or other camera parameter names;
-inspect the installed Camera API when the requested shot needs those features.
+mid-shot keyframes. Depth of field is `camera.aperture` (lens diameter, world
+units, default 0 = pinhole) and `camera.focus_distance` (planar depth along the
+camera's forward axis, default 20); both are animated attributes, so set them
+inside `with Off():` for setup, and use `camera.focus_at(mob_or_point)` for a
+rack focus. It renders only under the path tracer
+(`SETTINGS.raytracing.set(samples_per_pixel=...)` above 1); at 1 an open
+aperture raises `UnsupportedFeatureError`. Do not guess other camera parameter
+names; inspect the installed Camera API when the requested shot needs them.
 
 Screen-relative placement resolves the camera when recorded. It does not pin a
 caption throughout a later camera move. Use camera parenting or a replay-safe

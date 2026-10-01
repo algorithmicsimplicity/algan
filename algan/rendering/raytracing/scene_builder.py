@@ -4,6 +4,7 @@ into contiguous tensor data-structures, ready to be shipped to ray tracing kerne
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -1388,6 +1389,62 @@ def _densify_frag_pipeline_ids(scene):
     scene["tri_material_ids"] = present
 
 
+#: Merged-scene keys of the object-id pass's host tables (see
+#: :func:`_attach_source_id_tables`). Named once so the path tracer's emitter
+#: quads (``area_light_quads``) extend the same key the merge writes.
+TRI_OBJ_SOURCE_IDS = "tri_obj_source_ids"
+CIRCUIT_SOURCE_IDS = "circuit_source_ids"
+
+
+def _attach_source_id_tables(scene, tri_blocks, tri_surface_total, beziers):
+    """Add the object-id pass's surface -> Mob and circuit -> Mob tables.
+
+    Only when some primitive carries sources -- the render loop stamps them
+    while ``scene._aux_id_registry`` is armed (:mod:`algan.rendering.pass_identity`)
+    -- and otherwise not at all, so an ordinary merge is unchanged, key for key.
+
+    ``scene[TRI_OBJ_SOURCE_IDS]``
+        int32 numpy array indexed by a GLOBAL surface id (a value of
+        ``scene["tri_obj"]``), of length ``max(1, surface-id total)``: the
+        ``Mob.id`` whose primitive opened that surface, ``-1`` for none. The
+        length-1 floor keeps the empty batch's placeholder ``tri_obj`` (a
+        single 0) indexable.
+    ``scene[CIRCUIT_SOURCE_IDS]``
+        int32 numpy array of length ``scene["num_circuits"]``, indexed by a
+        merged circuit (a column of ``circuit_meta``): its source ``Mob.id``,
+        ``-1`` for none. Empty when the batch has no circuits.
+
+    NumPy rather than torch on purpose: the arena upload
+    (``copy_merged_scene_to_arena``) copies every tensor reachable from the
+    merged dict and passes everything else through by reference, so these stay
+    on the host, cost no arena bytes and survive the prefetched
+    ``_rt_device_scene`` path unchanged.
+    """
+    circuit_lanes = [getattr(p, "_circuit_source_ids", None) for p in beziers]
+    circuit_owners = [getattr(p, "_source_mob_id", None) for p in beziers]
+    if (
+        not tri_blocks
+        and all(lane is None for lane in circuit_lanes)
+        and all(owner is None for owner in circuit_owners)
+    ):
+        return
+    tri_table = np.full(max(1, int(tri_surface_total)), -1, dtype=np.int32)
+    for base, count, sources in tri_blocks:
+        tri_table[base : base + count] = np.asarray(sources, dtype=np.int32)[:count]
+    counts = [int(p._rt_circuit_meta.shape[1]) for p in beziers]
+    circuit_table = np.full(sum(counts), -1, dtype=np.int32)
+    offset = 0
+    for count, lane, owner in zip(counts, circuit_lanes, circuit_owners):
+        if lane is not None and len(lane) == count:
+            circuit_table[offset : offset + count] = lane
+        elif lane is None and owner is not None:
+            # A lone primitive merged uncollected: all its circuits are its own.
+            circuit_table[offset : offset + count] = int(owner)
+        offset += count
+    scene[TRI_OBJ_SOURCE_IDS] = tri_table
+    scene[CIRCUIT_SOURCE_IDS] = circuit_table
+
+
 def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
@@ -1747,6 +1804,11 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     # consumed at the end by ``_finalize_bvhs`` (which either builds the trees
     # or, for batches that provably never traverse one, defers them).
     tri_bvh_inputs = bez_bvh_inputs = None
+    # Object-id pass: ``(id base, id count, per-surface source ids)`` for each
+    # triangle primitive that carries sources, and the batch's surface-id total.
+    # Consumed by ``_attach_source_id_tables`` below; empty on ordinary renders.
+    _tri_source_blocks = []
+    _tri_surface_total = 0
     if triangles:
         # Constant-property promotion: triangles whose color + material params
         # are constant across their corners (and frames) are rendered from a
@@ -1851,7 +1913,13 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
             p._rt_tri_obj_global = p._rt_tri_obj + _obj_base
             _obj_n = int(getattr(p, "_rt_tri_obj_n", 1))
             _obj_sources.append((_obj_base, _obj_n, getattr(p, "_obj_keys", None)))
+            # The object-id pass's per-surface source Mob ids (``None`` on any
+            # render without that pass), placed at this primitive's id block.
+            _src = getattr(p, "_obj_sources", None)
+            if _src is not None:
+                _tri_source_blocks.append((_obj_base, _obj_n, _src))
             _obj_base += _obj_n
+        _tri_surface_total = _obj_base
         scene["tri_obj_sources"] = _obj_sources
         scene["tri_obj"] = (
             _cat_collections(_geom("_rt_tri_obj_global"), 1, "triangle merge")
@@ -2369,6 +2437,10 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
             torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0), dtype=torch.bool, device=device),
         )
+
+    # Read before the per-primitive tables are released below, which drops
+    # each bezier primitive's ``_rt_circuit_meta`` (its circuit count).
+    _attach_source_id_tables(scene, _tri_source_blocks, _tri_surface_total, beziers)
 
     scene["num_frames"] = num_frames
     # Host-side render classification.  The uploaded material-id tensors are

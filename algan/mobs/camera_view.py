@@ -55,7 +55,8 @@ class CameraView(ImageMob):
     ----------
     camera
         A camera belonging to this Scene. Defaults to ``None``, creating an
-        independent camera with the main camera's current position and lens.
+        independent camera with the main camera's current position, field of
+        view, clip planes, ``aperture`` and ``focus_distance``.
     resolution
         Capture size in pixels, ``(width, height)``. Its aspect ratio also sets
         the display's initial proportions. Defaults to ``(640, 360)``.
@@ -151,6 +152,10 @@ class CameraView(ImageMob):
                     screen_half_height=main.screen_half_height,
                     near=main.near,
                     far=main.far,
+                    # The lens too, so a path-traced inset of the main view
+                    # keeps its depth of field (a copy, like the placement).
+                    aperture=main.aperture,
+                    focus_distance=main.focus_distance,
                 )
                 camera.screen.location = main.screen.location
                 camera.screen.basis = main.screen.basis

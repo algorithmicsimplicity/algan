@@ -1574,7 +1574,11 @@ class Project:
                 "stop_early needs a frames selection to know what to stop after"
             )
         if mode == "screenshots":
-            unknown = set(save_video_kwargs) - {"background", "post_processes"}
+            unknown = set(save_video_kwargs) - {
+                "background",
+                "post_processes",
+                "passes",
+            }
             if unknown:
                 raise AlganConfigurationError(
                     f"Unsupported screenshot options: {', '.join(sorted(unknown))}"

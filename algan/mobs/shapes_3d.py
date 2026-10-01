@@ -1280,11 +1280,21 @@ class Arrow3D(Mob):
         # thing that asks them to build. Emitting each part's discs directly
         # after it is what makes their shared _mesh_key merge.
         primitives = []
+        # An armed object-id pass (``scene._aux_id_registry``) names each part
+        # as its own source rather than the arrow as a whole, so a
+        # ``pass_index`` set on the shaft or the tip -- which are not Scene
+        # actors -- still reaches the pass. The render loop keeps these stamps.
+        registry = getattr(self.scene, "_aux_id_registry", None)
         for part in self._renderable_descendants():
             primitive = part.get_render_primitives()
             if primitive is None:
                 continue
-            primitives.extend(primitive if isinstance(primitive, list) else [primitive])
+            primitive = primitive if isinstance(primitive, list) else [primitive]
+            if isinstance(registry, dict):
+                from algan.render_loop import _stamp_primitive_sources
+
+                _stamp_primitive_sources(primitive, part, registry)
+            primitives.extend(primitive)
         return primitives or None
 
     def get_start(self):

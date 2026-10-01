@@ -185,7 +185,8 @@ have closed, when block durations have been resolved.
 The public parameter is `video_settings`, not `render_settings`; there is no
 module-level `render_to_file` or substitute `RenderSettings` API. `save_video`
 also accepts `background`, `post_processes`, `codec`, `audio_codec`,
-`ffmpeg_params`, `overwrite`, `reset`, and `animate_fade_out`. Read the installed
+`ffmpeg_params`, `overwrite`, `reset`, `animate_fade_out`, and `passes` (see
+the compositing reference). Read the installed
 signature before using policy-style options such as overwrite behavior.
 
 A bare name goes under the configured output directory, normally

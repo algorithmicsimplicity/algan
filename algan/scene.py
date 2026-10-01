@@ -1481,6 +1481,7 @@ class Scene(RenderLoopMixin):
         overwrite: bool = True,
         background: Color | str | torch.Tensor | Callable | None = None,
         post_processes=None,
+        passes: str | Sequence[str] | None = None,
     ) -> RenderResult | list[RenderResult]:
         """Render one or more still frames from this Scene.
 
@@ -1537,22 +1538,32 @@ class Scene(RenderLoopMixin):
             :meth:`~.Scene.save_video`. Defaults to ``None``, meaning bloom.
             Pass ``()`` for no post-processing, or a tuned pass such as
             ``partial(bloom_filter, glow_spread=0.015)`` to narrow the glow.
+        passes
+            Auxiliary render passes to write beside each still for compositing:
+            any of ``"depth"``, ``"normal"`` and ``"object_id"``, as one name or
+            a sequence. ``shot.png`` gains ``shot.png.depth.exr``,
+            ``shot.png.normal.png``, ``shot.png.object_id.png`` and a
+            ``shot.png.passes.json`` describing them; see
+            :ref:`saving-render-passes`. Defaults to ``None``, writing no
+            passes.
 
         Returns
         -------
         RenderResult or list of RenderResult
             One result per still, with ``status`` (``"rendered"``, ``"skipped"``
-            or ``"deferred"``), ``output_path`` and ``walltime_seconds``. A list
-            is returned only when ``at`` is a sequence, in the input's order.
-            Batched wall time is shared evenly among the rendered files.
-            Inside a project screenshot pass, the result is ``"deferred"``;
-            the project's return value contains the completed results.
+            or ``"deferred"``), ``output_path``, ``walltime_seconds`` and the
+            ``passes`` it wrote. A list is returned only when ``at`` is a
+            sequence, in the input's order. Batched wall time is shared evenly
+            among the rendered files. Inside a project screenshot pass, the
+            result is ``"deferred"``; the project's return value contains the
+            completed results.
 
         Raises
         ------
         AlganConfigurationError
-            If a timestamp is invalid, output format is unsupported, or render
-            settings or post-processing passes are invalid.
+            If a timestamp is invalid, output format is unsupported, render
+            settings or post-processing passes are invalid, a render pass name
+            is unknown, or FFmpeg cannot encode the requested passes.
 
         Examples
         --------
@@ -1562,6 +1573,7 @@ class Scene(RenderLoopMixin):
             Scene.save_frame("shot.png", at=2.5)
             Scene.save_frame("previous.png", at=-0.5)
             Scene.save_frame("contact_sheet", at=[0, 1, 2])
+            Scene.save_frame("shot.png", passes=("depth", "object_id"))
         """
         _note_render_requested()
         project_run = self._project_run
@@ -1609,6 +1621,8 @@ class Scene(RenderLoopMixin):
                 background = options.get("background")
             if post_processes is None:
                 post_processes = options.get("post_processes")
+            if passes is None:
+                passes = options.get("passes")
         batch = _StillBatch.capture(
             self,
             targets,
@@ -1617,6 +1631,7 @@ class Scene(RenderLoopMixin):
             post_processes,
             overwrite,
             deferred=project_run is not None,
+            passes=passes,
         )
         if project_run is None:
             results = batch.render()
@@ -1834,6 +1849,7 @@ class Scene(RenderLoopMixin):
         codec: str | None = None,
         audio_codec: str | None = None,
         ffmpeg_params: list[str] | None = None,
+        passes: str | Sequence[str] | None = None,
     ) -> RenderResult:
         """Render everything recorded on this Scene to a video file.
 
@@ -1899,13 +1915,34 @@ class Scene(RenderLoopMixin):
             ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
             plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
             at all and is refused before the render.
+        passes
+            Auxiliary render passes to write beside the video for compositing
+            in an editor: any of ``"depth"``, ``"normal"`` and
+            ``"object_id"``, as one name or a sequence. Each is a lossless
+            image sequence in its own directory -- ``intro.mp4`` gains
+            ``intro.mp4.depth/intro.mp4.depth.00000.exr``,
+            ``intro.mp4.normal/intro.mp4.normal.00000.png`` and so on, one image per
+            video frame -- plus an ``intro.mp4.passes.json`` describing the
+            encodings and naming each object id's Mob. Every pass takes one
+            pinhole sample at each pixel centre, so it is identical under both
+            renderers and unaffected by depth of field; see
+            :ref:`saving-render-passes`. Defaults to ``None``, writing no
+            passes.
 
         Returns
         -------
         RenderResult
             Metadata with ``status`` (``"rendered"`` or ``"skipped"``),
-            ``output_path``, ``walltime_seconds`` and the resolved
-            ``render_plan``.
+            ``output_path``, ``walltime_seconds``, the resolved
+            ``render_plan``, and ``passes``: the directory of each pass
+            written.
+
+        Raises
+        ------
+        AlganConfigurationError
+            If the output container, codec or settings are invalid, a render
+            pass name is unknown, or FFmpeg cannot encode the requested passes.
+            All are checked before rendering starts.
 
         Examples
         --------
@@ -1914,6 +1951,7 @@ class Scene(RenderLoopMixin):
             Scene.save_video("my_video")  # LD into algan_outputs/
             Scene.save_video("my_video", HD)  # one-off quality override
             Scene.save_video("renders/final.mov")  # explicit directory
+            Scene.save_video("shot", passes=("depth", "normal", "object_id"))
         """
         _note_render_requested()
         project_run = self._project_run
@@ -1936,6 +1974,8 @@ class Scene(RenderLoopMixin):
         # _render_to_video owns the post-processing default, so only forward an
         # explicit choice rather than restating it here.
         extra = {} if post_processes is None else {"post_processes": post_processes}
+        if passes is not None:
+            extra["passes"] = passes
         with (
             SceneManager.instance().activating(self),
             animation_manager_context(self.animation_manager),
