@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex when working with code in this repository.
+This file provides guidance to all AI agents when working with code in this repository.
 
 This file is the operational quick-start: commands, hazards, and the API shape. It is short on purpose — the detail
 lives in `agent_guidance/`, split by topic so you read only what your task touches:
@@ -16,7 +16,6 @@ lives in `agent_guidance/`, split by topic so you read only what your task touch
 | measuring on a GPU (Mac runner, Kaggle T4) | `agent_guidance/gpu_harnesses.md` |
 | `*_taichi.py` | `agent_guidance/taichi.md` |
 | kernel cache, precompiling, compile progress, `algan warmup` | `agent_guidance/taichi.md` |
-| publishing changes through the ChatGPT GitHub connector | `agent_guidance/github_connector_pushes.md` |
 
 When the docs disagree, the source code wins.
 
@@ -61,7 +60,7 @@ identify the patch set.
 - **A test you add is outside it unless you mark it.** Mark `fast` only when a change *elsewhere* in the codebase is liable to break the test — the timeline, the Mob base, the Scene, anything that records or materializes state. A test that only fails when its own module changes is a feature test: leave it unmarked. Being cheap is not a reason. `tests/README.md` lists what is in and why.
 - What is in: the timeline (recording/replay/state query/materialization), lifespans, rate functions, Mob transforms + hierarchy + layout, Scene containment, `SETTINGS`, the public authoring surface (`test_ux_regressions.py`), and **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is most of the budget.
 - **Separate cold compilation from warm test time.** The first test to use a kernel variant pays its compile or cache-load cost. Repeat representative runs before changing fast-suite membership; test counts and timings vary with the checkout, backend and cache state.
-- Run the **full** suite after touching the renderer, and before pushing. CI runs the portable subset, `tests/unit_tests tests/fast`, without `--fast`; it does not run the heavy full-render and path-traced baseline suites.
+- Run the **full** suite after touching the renderer. CI runs the portable subset, `tests/unit_tests tests/fast`, without `--fast`; it does not run the heavy full-render and path-traced baseline suites.
 - Renders are compared **pixel-wise** against device/mode-specific baselines: the fast baseline is committed, while heavy suites resolve their release-hosted assets. See `tests/README.md` for baseline selection. Any channel deviation > 2 fails; diff videos land in the suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
@@ -96,7 +95,7 @@ Scene.save_video("example")  # -> algan_outputs/example.mp4
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params, passes)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background, post_processes, passes)`. Both return `RenderResult`; `passes` (any of `"depth"`, `"normal"`, `"object_id"`) writes compositing passes beside the output (`algan/_render_passes.py`; `agent_guidance/rendering.md`); `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.
 - By default, rendering preserves authored state so you can render again. `save_video(reset=True)` explicitly resets the Scene; requested fade-out and the zero-duration video guard can record timeline events. See `agent_guidance/api_settings.md` for the preservation contract. A one-off quality override is `Scene.save_video("example", HD)`; `Scene.view()` opens the interactive viewer instead of writing a video.
-- **Viewer**: `Scene.view(video_settings=None, *, port, open_browser, block)` — inspect one Scene; `Project.view(scenes=None, *, video_settings, port, open_browser, block)` opens one viewer with scene tabs, initially unselected. Scene construction and authoring happen only on first tab selection; unvisited scenes never run and revisits reuse their recordings. There is deliberately **no module-level `view`**: the name is far too general to spend on a star-import, and `algan.__all__` is a curated namespace a user dumps into their own. `scene.view(...)` and `Scene.view(...)` are the same method. It serves a local page that plays the Scene, shows its mob hierarchy and attributes at the playhead, and reports the depth-sorted fragment list behind any pixel. Frames render lazily, nothing is written to disk, and the Scene is left as authored. It renders at `PREVIEW`'s resolution but the Scene's own frame rate, so the frame indices it reports are the video's. `block=True` (the default) serves until Ctrl-C — on the warm daemon that occupies it for the duration, since the daemon runs one script at a time.
+- **Viewer**: `Scene.view(video_settings=None, *, port, open_browser, block)` — reached from the Scene only. There is deliberately **no module-level `view`**: the name is far too general to spend on a star-import, and `algan.__all__` is a curated namespace a user dumps into their own. `scene.view(...)` and `Scene.view(...)` are the same method. It serves a local page that plays the Scene, shows its mob hierarchy and attributes at the playhead, and reports the depth-sorted fragment list behind any pixel. Frames render lazily, nothing is written to disk, and the Scene is left as authored. It renders at `PREVIEW`'s resolution but the Scene's own frame rate, so the frame indices it reports are the video's. `block=True` (the default) serves until Ctrl-C — on the warm daemon that occupies it for the duration, since the daemon runs one script at a time.
 - **Settings**: one process-global `SETTINGS` with sections `video`, `style`, `paths`, `computing`, `raytracing`. Sections have stable identity — mutate with `SETTINGS.video.set(HD)`, never `SETTINGS.video = HD`. Presets (`PREVIEW`, `LD`, `MD`, `HD`, `PRODUCTION`, `UHD`, `THUMBNAIL`, `SMOKE_TEST`) are immutable; `HD.set(frames_per_second=60)` returns a copy. `SETTINGS.video`'s fields are `resolution`, `frames_per_second` (`fps`/`FPS`), `supersampling` (`ssaa`/`SSAA`), `fxaa` and `audio_sample_rate`.
 - **`SETTINGS.raytracing`** holds what the renderer *produces* (`samples_per_pixel`, `max_bounces`, `shadows`, lighting, tonemapping). The kernel/performance switches live on `SETTINGS.raytracing.experimental` and setting them on the parent raises with a pointer. Engine code still *reads* everything off `SETTINGS.raytracing` directly — only writes are gated.
 - **`Scene.foo(...)` and `scene.foo(...)`** are the same method: `active_scene_method` binds to an instance, or resolves the active Scene when called on the class.
@@ -127,7 +126,7 @@ Some variables are **initialization-only** (set before `import algan`, no runtim
 - `algan/mobs/` — all renderable object classes; `manim_compat` and friends implement the compatibility layer, `manim_adapters` gives a curated subset a native root spelling
 - `algan/manim/` — the public face of that layer, reached as `import algan.manim as mn`
 - `algan/rendering/` — camera, lights, ray tracer + Taichi kernels, shaders, post-processing
-- `algan/viewer/` — `Scene.view()` / `Project.view()`: the interactive GUI (a local web app), its lazy frame service and its per-pixel fragment inspector
+- `algan/viewer/` — `Scene.view()`: the interactive GUI (a local web app), its lazy frame service and its per-pixel fragment inspector
 - `algan/rendering/memory_model.py` — runtime chunk-peak model that sizes render batches
 - `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, easing curves (`easings`)
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
