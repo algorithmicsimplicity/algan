@@ -223,3 +223,15 @@ pyobjc/pywin32/nvidia sets and `taichi`, which the marker excludes. In that
 environment `pytest -q --fast` passed, 645 of 645, fast render included. The lock
 itself was not kept: it records the local `--find-links` directory rather than
 PyPI's file hashes, which is exactly what step 2 must not commit.
+
+**Performed** (2026-10-01).
+[Run 36802622527](https://github.com/algorithmicsimplicity/algan/actions/runs/36802622527)
+published all twenty post3 wheels from `master`; the aarch64 ones are tagged
+`manylinux_2_34_aarch64`. `uv lock` against PyPI then lost only
+`algan-quadrants 1.3.0.post2`. Each of the 33 `(name, version)` pairs it added
+is reached only through an edge marked `python_full_version >= '3.14'` (apart
+from `algan-quadrants 1.3.0.post3` itself), so no 3.10–3.13 pin moved. The
+3.14 fork took torch 2.14.1 with torchaudio 2.11.0, which declares no torch
+requirement at all. `uv lock --locked` passes with both uv 0.4.25 (the
+`install-uv` pin) and 0.7.9. The 3.14 test arm in `test.yaml` is the first run
+of this lock on 3.14; it was not synced locally before pushing.
