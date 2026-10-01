@@ -150,3 +150,31 @@ def test_deterministic_shadows_accumulate_every_blocker_opacity(
         0.5 * (one_blocker + opaque_blocker),
         abs=tolerance,
     )
+
+
+@pytest.mark.parametrize("hybrid_raster", [True, False], ids=("raster", "wavefront"))
+def test_automatic_opaque_shadows_match_the_ordered_march(
+    tmp_path, monkeypatch, hybrid_raster
+):
+    from algan.rendering.raytracing import tracer
+
+    modes = []
+    select = tracer._select_shadow_mode
+
+    def recording(*args, **kwargs):
+        mode = select(*args, **kwargs)
+        modes.append(mode)
+        return mode
+
+    monkeypatch.setattr(tracer, "_select_shadow_mode", recording)
+    SETTINGS.raytracing.set(shadows=True, tonemapping=False)
+    SETTINGS.raytracing.experimental.set(
+        hybrid_raster=hybrid_raster, shadow_anyhit="auto"
+    )
+    automatic = _render_shadow_luminance(tmp_path, "automatic_opaque", (1.0,))
+    assert 3 in modes, "the scene must actually select opaque-only any-hit"
+    modes.clear()
+    SETTINGS.raytracing.experimental.set(shadow_anyhit=False)
+    reference = _render_shadow_luminance(tmp_path, "ordered_opaque", (1.0,))
+    assert set(modes) == {1}
+    assert float(np.max(np.abs(automatic - reference))) <= 2.0
