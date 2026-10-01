@@ -1,9 +1,13 @@
 {
   "_comment": "The push entry point of .github/workflows/run_on_mac.yaml. Editing this file and pushing launches a run on GitHub's Apple-silicon runner -- the way in for a branch whose workflow file has not reached master yet, where workflow_dispatch does not exist. Once it has, prefer the dispatch: it leaves no commit behind. See agent_guidance/gpu_harnesses.md. NOTE: the run step is `bash -e`, so chain diagnostic commands with `|| true` or the first non-zero exit takes the rest of the round with it.",
-  "command": "uv run pytest -q -n 1 -rfEX --tb=line -p no:cacheprovider tests/unit_tests tests/fast || true",
+  "_request": "issue-132-original-mps-still-16.225",
+  "command": "uv pip install --python .venv/bin/python torch==2.13.0 torchaudio==2.11.0 && .venv/bin/python benchmarks/_issue132_mps_repro.py",
   "arms": ["mac-mps"],
-  "env": {},
+  "env": {
+    "ALGAN_TAICHI_FAST_LAUNCH": "0",
+    "ALGAN_USE_DAEMON": "0"
+  },
   "latex": true,
   "taichi_wheel_run_id": "none",
-  "timeout_minutes": 120
+  "timeout_minutes": 40
 }
