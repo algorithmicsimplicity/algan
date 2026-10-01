@@ -42,7 +42,7 @@ Run the venv interpreter directly — `.venv/Scripts/python.exe` on Windows,
 replace that build with the version in `uv.lock`. Use the environment's Python
 or `uv run --no-sync`; the GPU harnesses also set `UV_NO_SYNC=1`.
 
-The locked distribution is **`algan-quadrants==1.3.0.post2`**; the import name
+The locked distribution is **`algan-quadrants==1.3.0.post3`**; the import name
 remains `quadrants`. That published distribution already contains Algan's
 patches. Diagnostic builds can instead have the distribution name `quadrants`.
 Do not install both distributions over the same import package. Follow

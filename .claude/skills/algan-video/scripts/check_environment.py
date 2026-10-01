@@ -102,8 +102,8 @@ def main(argv: list[str] | None = None) -> int:
                 problems.append(f"Requested LaTeX support but {name} is not on PATH.")
     if args.require_ffprobe and not executables["ffprobe"]:
         problems.append("Requested FFprobe verification but ffprobe is not on PATH.")
-    if sys.version_info[:2] < (3, 10) or sys.version_info[:2] > (3, 13):
-        warnings.append("This interpreter is outside the source-checked Python 3.10–3.13 range; verify current package support.")
+    if sys.version_info[:2] < (3, 10) or sys.version_info[:2] > (3, 14):
+        warnings.append("This interpreter is outside the source-checked Python 3.10–3.14 range; verify current package support.")
     if packages["algan"]["discoverable"] and not packages["algan"]["version"]:
         warnings.append("Algan source is discoverable without distribution metadata; record its checkout revision.")
     if executables["algan"]:

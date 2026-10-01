@@ -43,9 +43,8 @@ jobs:
       # explicit makes the device visible in the PR check name and avoids an
       # accidental Cartesian product when another device or Python is added.
       #
-      # 3.10 is the floor because Quadrants publishes cp310-cp313 wheels and no
-      # cp39 -- it moved there from 3.9 when Quadrants became the kernel
-      # compiler. Testing the floor is not a formality: it is the version whose
+      # 3.10 is the floor because `algan-quadrants` publishes no cp39 wheel --
+      # it moved there from 3.9 when Quadrants became the kernel compiler. Testing the floor is not a formality: it is the version whose
       # standard library is missing things a contributor's editor will happily
       # offer, and Ruff guards only the annotations (`target-version = "py310"`
       # plus a mandatory `from __future__ import annotations`). `zip(strict=)`
@@ -55,7 +54,12 @@ jobs:
       # `tests/baseline_store.py`, and nothing but this arm guards that the
       # package still imports and runs there.
       #
-      # 3.13 is the ceiling below `<3.14`, and it is not a formality either:
+      # 3.14 is the ceiling below `<3.15`, and it is not a formality either.
+      # It is the one Python on which Quadrants is this repository's own build
+      # rather than upstream's (cp314 comes from `quadrants_patches/0009`), on
+      # which the `taichi` extra is a marked no-op, and on which uv.lock forks
+      # to the newer torch/numpy/scipy floors in `[tool.uv]
+      # constraint-dependencies` -- none of which the 3.10 arm can see. And
       # pydub -- reached at import time through manim's scene_file_writer --
       # imports `audioop`, which was REMOVED from the standard library in 3.13.
       # What makes that work is `audioop-lts`, which uv.lock carries with a
@@ -67,7 +71,7 @@ jobs:
             python_version: "3.10"
             render_device: auto
           - os: ubuntu-latest
-            python_version: "3.13"
+            python_version: "3.14"
             render_device: auto
           - os: macos-latest
             python_version: "3.10"
@@ -353,8 +357,8 @@ jobs:
       #
       # The Python version is pinned in this condition as well as the OS, and
       # has to be: `runner.os == 'Linux'` alone was a single job when the
-      # matrix held one Python, and became two the moment the 3.13 leg was
-      # added.
+      # matrix held one Python, and became two the moment the ceiling leg
+      # was added.
       - name: Upload coverage to Codecov
         if: runner.os == 'Linux' && matrix.python_version == '3.10'
         uses: codecov/codecov-action@v4

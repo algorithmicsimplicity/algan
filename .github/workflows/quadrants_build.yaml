@@ -46,9 +46,9 @@ concurrency:
 
 env:
   QUADRANTS_REF: v1.3.0
-  # Build-side next revision only. pyproject.toml/uv.lock intentionally remain
-  # on published post2 until post3 exists; quadrants_patches/PYPI.md documents
-  # the two-stage release order.
+  # The published revision pyproject.toml/uv.lock consume. A new revision bumps
+  # this (and rebrand_quadrants_wheel.py) first and the consumer side only
+  # after it is on PyPI; quadrants_patches/PYPI.md documents that order.
   ALGAN_QUADRANTS_VERSION: 1.3.0.post3
 
 jobs:

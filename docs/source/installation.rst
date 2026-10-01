@@ -4,7 +4,7 @@ Installation
 
 .. _installation:
 
-Algan is available in **Python 3.10 through 3.13**.
+Algan is available in **Python 3.10 through 3.14**.
 Algan can be installed from `PyPI <https://pypi.org/project/algan/>`__ with ``pip``,
 like any other Python package:
 
@@ -69,7 +69,7 @@ select the tab for your operating system below and follow the instructions there
       .. dropdown:: Don't have Python yet? Install it first.
          :icon: download
 
-         Download Python 3.13 from `python.org/downloads
+         Download Python 3.14 from `python.org/downloads
          <https://www.python.org/downloads/>`__ and run the installer.
          **Tick "Add python.exe to PATH"** on the first screen.
 
@@ -170,13 +170,13 @@ select the tab for your operating system below and follow the instructions there
       .. dropdown:: Don't have Python yet? Install it first.
          :icon: download
 
-         macOS ships a Python that is best left alone. Install your own 3.13
+         macOS ships a Python that is best left alone. Install your own 3.14
          from `python.org/downloads <https://www.python.org/downloads/>`__, or
          with `Homebrew <https://brew.sh>`__:
 
          .. code-block:: bash
 
-            brew install python@3.13
+            brew install python@3.14
 
       .. rubric:: 1. Install Algan
 
@@ -255,10 +255,10 @@ select the tab for your operating system below and follow the instructions there
             sudo dnf install python3                  # Fedora
             sudo pacman -S python                     # Arch
 
-         If your distribution's Python is older than 3.10 or newer than 3.13,
+         If your distribution's Python is older than 3.10 or newer than 3.14,
          get a supported one from `deadsnakes
          <https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa>`__, `pyenv
-         <https://github.com/pyenv/pyenv>`__ or ``uv python install 3.13``, and
+         <https://github.com/pyenv/pyenv>`__ or ``uv python install 3.14``, and
          use it in place of ``python3`` below.
 
       .. rubric:: 1. Install Algan

@@ -23,17 +23,20 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Natural Language :: English",
     ]
 
-# Both bounds are the kernel compiler's. Quadrants publishes cp310-cp313
+# Both bounds are the kernel compiler's. `algan-quadrants` publishes cp310-cp314
 # wheels: no cp39 (which is why the floor moved up from 3.9 -- the maintainer
 # confirmed no user is on it, and `algan` is not on PyPI yet, so nobody can
-# have installed it there through the documented channel) and no cp314 yet.
-# cp314 is this repository's own addition (`quadrants_patches/0009`) and first
-# ships in `algan-quadrants` 1.3.0.post3; the ceiling moves to <3.15 when that
-# is on PyPI, not before -- `quadrants_patches/PYPI.md`, "Python 3.14".
-requires-python = ">=3.10,<3.14"
+# have installed it there through the documented channel). Upstream Quadrants
+# stops at cp313; cp314 is this repository's own addition
+# (`quadrants_patches/0009`), first shipped in `algan-quadrants` 1.3.0.post3,
+# which is why the pin below is that revision. Raising the ceiling again waits
+# on a published cp315 wheel the same way -- `quadrants_patches/PYPI.md`,
+# "Python 3.14".
+requires-python = ">=3.10,<3.15"
 
 dependencies = [
     # Needed by the vendored Manim geometry subset in
@@ -68,7 +71,7 @@ dependencies = [
     # a thing to read the diff for, not to pick up silently. The upstream
     # policy this pin follows is to track public releases (no pinned commits,
     # no vendored fork), so lifting the cap is a deliberate, tested edit.
-    "algan-quadrants==1.3.0.post2",
+    "algan-quadrants==1.3.0.post3",
     "pyttsx3>=2.0",
     "moviepy>=2.2.0",
     "dendroid>=1.6.0",
@@ -471,9 +474,8 @@ docstring-code-format = true
 exclude = ["**/*_taichi.py"]
 
 [tool.uv]
-# Floors that apply to Python 3.14 alone, and are inert until `requires-python`
-# admits it -- which waits on a published `algan-quadrants` with cp314 wheels
-# (`quadrants_patches/PYPI.md`, "Python 3.14").
+# Floors that apply to Python 3.14 alone (`quadrants_patches/PYPI.md`,
+# "Python 3.14").
 #
 # Each is the first release of that package with cp314 wheels. Without them uv
 # keeps this lock's older pins for 3.14 too: their metadata allows it, but torch
