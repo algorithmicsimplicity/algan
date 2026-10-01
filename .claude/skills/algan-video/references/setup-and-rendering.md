@@ -25,7 +25,7 @@ python -m pip install algan
 algan check
 ```
 
-The source-checked installation guide supports Python 3.10–3.13. Verify wheel
+The source-checked installation guide supports Python 3.10–3.14. Verify wheel
 availability before selecting a newer interpreter. Algan's package dependencies
 supply its matching compiler; do not independently install an arbitrary Taichi
 or Quadrants version. Custom shader code should import the compiler facade with

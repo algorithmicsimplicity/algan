@@ -101,7 +101,7 @@ only for experiments that intentionally replace that supported dependency.
   Installed on every Mac arm and pins `ALGAN_TAICHI_BACKEND=quadrants` for the
   run; it wins over the Taichi wheel when both are given. It also sets
   `UV_NO_SYNC=1` for the rest of the job, because a local replacement wheel can differ from the locked
-  `algan-quadrants==1.3.0.post2` distribution. A dependency sync can replace the
+  `algan-quadrants==1.3.0.post3` distribution. A dependency sync can replace the
   experimental compiler, so verify both installed metadata and import location. A script that
   installs its own wheel must use `.venv/bin/python`, as the gate scripts do.
   `quadrants_patches/README.md` ("Getting a patched wheel") is how one gets

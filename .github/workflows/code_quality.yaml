@@ -168,10 +168,10 @@ jobs:
       # Python used to compile it. Do not rebuild it under the second Python.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-      - name: Reuse the identical wheel on Python 3.13
+          python-version: "3.14"
+      - name: Reuse the identical wheel on Python 3.14
         run: |
-          uv venv --python 3.13 "$RUNNER_TEMP/wheel-env313"
-          uv pip install --python "$RUNNER_TEMP/wheel-env313/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
+          uv venv --python 3.14 "$RUNNER_TEMP/wheel-env314"
+          uv pip install --python "$RUNNER_TEMP/wheel-env314/bin/python" dist/*.whl "torch==2.13.0" "pytest==8.4.1"
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-env313/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'
+          "$RUNNER_TEMP/wheel-env314/bin/python" -I -m pytest -q test_mps_arena.py -k 'not large_arena_allocation_churn'

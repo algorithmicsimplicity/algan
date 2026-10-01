@@ -5,12 +5,11 @@ name `algan-quadrants`. The installed Python package is still named
 `quadrants`, so Algan continues to use `import quadrants` and
 `algan.taichi_compat` does not change.
 
-The repository currently consumes `algan-quadrants==1.3.0.post2`; the build
-workflow is staged for `1.3.0.post3`, which is also the first revision with
-cp314 wheels (see "Python 3.14" below). The recorded post2 publication on
-2026-09-06 contained sixteen wheels; post1 contained twelve; post3 is twenty.
-Check actual PyPI availability
-before changing the consumer pin or attempting a new publication. The
+The repository consumes `algan-quadrants==1.3.0.post3`, the first revision
+with cp314 wheels (see "Python 3.14" below). post3 is twenty wheels; the
+recorded post2 publication on 2026-09-06 contained sixteen; post1 contained
+twelve. Check actual PyPI availability before changing the consumer pin or
+attempting a new publication. The
 `post` suffix identifies Algan's patched build of upstream Quadrants v1.3.0
 and keeps it distinct from the upstream `quadrants==1.3.0` release.
 
@@ -127,15 +126,14 @@ between those two versions (RHEL 8, Ubuntu 20.04, Debian 11) install it and
 fail at `import quadrants`. `post2`'s x86-64 wheels measure 2.27 for real, so
 those three now work rather than being told a comfortable lie.
 
-## Next revision: portable aarch64 LLVM and glibc 2.34
+## post3: portable aarch64 LLVM and glibc 2.34
 
-The build side is prepared for `algan-quadrants==1.3.0.post3`, but that version
-is **not** consumed by Algan until it actually exists on PyPI. Following the
-two-stage procedure above, `.github/workflows/quadrants_build.yaml` and
-`scripts/rebrand_quadrants_wheel.py` target post3 while `pyproject.toml` and
-`uv.lock` remain on the published post2 release. Do not move the consumer side
-early. Diagnostic validation uses `publish=false`; do not publish post3 merely
-to test this path.
+`algan-quadrants==1.3.0.post3` followed the two-stage procedure above:
+`.github/workflows/quadrants_build.yaml` and `scripts/rebrand_quadrants_wheel.py`
+targeted post3 while `pyproject.toml` and `uv.lock` stayed on the published
+post2 release, and the consumer side moved only once post3 was on PyPI.
+Diagnostic validation uses `publish=false`; do not publish a revision merely to
+test a build path.
 
 Run 34036846316 proved that using GCC 11 only for the Quadrants compile/link
 still leaves `_dl_find_object@GLIBC_2.35`, isolating the reference to the
@@ -179,9 +177,9 @@ the publish gate demand one — five Pythons × four platforms, twenty wheels.
 Nothing about publishing changes: dispatch the list above, from the default
 branch, with `publish` enabled.
 
-The consumer side follows the same two-stage rule as every other revision, and
-**most of it is already in place**, because the parts that do not depend on
-post3 existing are inert until `requires-python` admits 3.14:
+The consumer side followed the same two-stage rule as every other revision.
+Two parts of it landed before post3 existed, because they are inert until
+`requires-python` admits 3.14:
 
 - the `taichi` extra is marked `python_version < '3.14'` (taichi 1.7.4 has no
   cp314 wheel and no sdist, so unmarked it makes `algan[dev]` uninstallable
@@ -189,9 +187,10 @@ post3 existing are inert until `requires-python` admits 3.14:
 - `[tool.uv] constraint-dependencies` in `pyproject.toml` carries a floor for
   every locked binary package whose pinned version has no cp314 wheel, scoped
   to 3.14 by marker. That marker is what makes uv fork the resolution at 3.14,
-  so 3.10–3.13 keep exactly the versions they are locked to now.
+  so 3.10–3.13 keep exactly the versions they were locked to before.
 
-What waits for post3 to be on PyPI, as one change:
+What waited for post3 to be on PyPI landed as one change. It is also the
+recipe for the next ceiling:
 
 1. `pyproject.toml`: `requires-python = ">=3.10,<3.15"`, the
    `Programming Language :: Python :: 3.14` classifier, and
@@ -203,7 +202,9 @@ What waits for post3 to be on PyPI, as one change:
    uv that `.github/actions/install-uv` pins.
 3. `.github/workflows/test.yaml`: move the Linux ceiling arm from `3.13` to
    `3.14`, and rewrite the comment that explains the ceiling (its `audioop-lts`
-   reasoning still holds — the marker is `>= '3.13'`).
+   reasoning still holds — the marker is `>= '3.13'`). `code_quality.yaml`'s
+   `macos_packaging` job reinstalls the built abi3 wheel on "the supported
+   ceiling" too; move that step with it.
 4. The user-facing ranges: `docs/source/installation.rst` ("3.10 through
    3.13", and its `brew install python@3.13` / `uv python install 3.13` hints),
    `.claude/skills/algan-video/references/setup-and-rendering.md` and

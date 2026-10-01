@@ -81,7 +81,7 @@ trying to replace a published wheel.
 ## 3. Keep compiler publication separate
 
 The current `pyproject.toml` and `uv.lock` consume
-`algan-quadrants==1.3.0.post2`. Its Python import remains `quadrants`.
+`algan-quadrants==1.3.0.post3`. Its Python import remains `quadrants`.
 The compiler build workflow may target a newer version without changing what
 Algan installs. Read [quadrants_patches/PYPI.md](quadrants_patches/PYPI.md) before
 changing that dependency.
