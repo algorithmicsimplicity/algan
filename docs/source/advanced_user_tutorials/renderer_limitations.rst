@@ -66,8 +66,8 @@ row links to the section that explains it.
      - Triangles only
      - `Shadows`_
    * - Soft shadows
-     - Yes (8-ray fan)
-     - Yes (8-ray fan)
+     - Yes (budgeted ray fan)
+     - Yes (budgeted ray fan)
      - Yes (sampled per path)
      - `Shadows`_
    * - Color / material / normal maps
@@ -101,13 +101,13 @@ row links to the section that explains it.
      - Yes
      - `Reflection, refraction and transmission`_
    * - Refraction (glass)
-     - Yes, single medium
-     - Yes, single medium
-     - Yes, nested media
+     - Yes
+     - Yes
+     - Yes, rough glass blurs
      - `Reflection, refraction and transmission`_
    * - Nested media (glass in glass)
-     - **No**
-     - **No**
+     - Yes (Fresnel uses the material's own index)
+     - Yes (Fresnel uses the material's own index)
      - Yes
      - `Reflection, refraction and transmission`_
    * - Transmission through a 2-D shape
@@ -180,7 +180,12 @@ row links to the section that explains it.
      - **No**
      - **No**
      - `Camera`_
-   * - Volumetrics, ambient occlusion, displacement
+   * - Homogeneous volumes and subsurface scattering
+     - **Refused**
+     - **Refused**
+     - Yes
+     - `Homogeneous volumes and subsurface scattering`_
+   * - Heterogeneous volumes, ambient occlusion, displacement
      - **No**
      - **No**
      - **No**
@@ -238,10 +243,15 @@ noisy. See :ref:`renderer-settings` in the performance guide.
 Five further consequences of the split, not covered there:
 
 * The path tracer shades **per fragment**, like the deterministic renderer's
-  fragment route. Direct light comes from sampling one entry of a
-  power-weighted table per lit surface point -- delta and area lights,
-  emissive triangles and the environment map together -- while the
-  direction-less ambient and hemisphere lights keep their deterministic fill.
+  fragment route. Direct light comes from sampling one emitter per lit surface
+  point -- delta and area lights, emissive triangles and the environment map
+  together -- chosen through a light tree that weighs each emitter's power by
+  its distance and orientation from that point, so a dim light beside a
+  surface is picked over a bright one across the room
+  (``SETTINGS.raytracing.experimental.pt_light_tree``; off selects in
+  proportion to power alone). Directional lights and the environment map are
+  picked by power. The direction-less ambient and hemisphere lights keep
+  their deterministic fill.
   What it does not reproduce is the deterministic renderer's screen-space
   glossy prefilter: real sampled glossy transport replaces it.
 * **Lit surfaces are not as bright here, and they answer to one BSDF.** The
@@ -693,15 +703,26 @@ Limits and approximations
   (``SETTINGS.raytracing.experimental.analytic_aa_secondary_samples``). Shadow edges are
   therefore resolved at four positions per pixel, not analytically -- they are
   the softest edges in an otherwise exactly-antialiased frame.
-* **Soft shadows use a fixed fan of 8 rays** per light per shaded point
+* **Soft shadows use a small, budgeted fan of rays.** A single soft light (a
+  point or spot light with ``shadow_radius``, a directional light with
+  ``shadow_angle``) fires 8 rays per shaded point
   (``ALGAN_SOFT_SHADOW_SAMPLES``, baked into the kernels, so it must be set
-  before ``import algan``). A wide emitter with 8 samples bands rather than
-  blurs.
-* **Contact shadows have a world-space floor.** A shadow ray starts 1e-3 world
-  units off the surface along its face normal, and stops 2e-3 short of the
-  light. An object resting on a plane loses its shadow within about that
-  distance of the contact. Both offsets are absolute, so what they cost you
-  depends on your scene's scale: see :ref:`limits-scale`.
+  before ``import algan``). A :class:`~.RectAreaLight`'s cells share a budget
+  of 16 (``SETTINGS.raytracing.experimental.shadow_ray_budget``), so a 4x4
+  light spends one ray per cell, and a point seen in a reflection or through
+  glass gets one ray per light, or per area-light cell
+  (``shadow_bounce_rays``). The fan is rotated
+  from one shaded point to the next, so a wide emitter's penumbra dithers
+  rather than bands; ``shadow_ray_budget=0`` restores the fixed, unrotated
+  8-ray fan.
+* **Contact shadows have a small floor.** A shadow ray starts just off the
+  surface and stops just short of the light. The offset is 256
+  floating-point steps of the hit point's coordinates -- 1.5e-5 to 3e-5 of
+  their magnitude, and a fixed 1.5e-5 world units within 1/32 of the origin -- so it
+  tracks the float precision your scene is authored at rather than a fixed
+  distance. An object resting on a plane loses its shadow only within about
+  that distance of the contact, or within the absolute minimum hit distance
+  (1e-4), whichever is larger: see :ref:`limits-scale`.
 * **A curved surface's shadow terminator is corrected, and a flat one's is not
   in need of it.** A sphere, cylinder, cone, torus or parametric
   :class:`~algan.mobs.surfaces.surface.Surface` is diced to flat triangles under
@@ -722,7 +743,10 @@ Limits and approximations
   silhouette, and everything its interior does to the light crossing it --
   opacity, albedo tint, absorption over the chord -- happens along a straight
   line. The path tracer's shadow rays travel the same straight line, so this
-  holds under both renderers; see `Not implemented at all`_.
+  holds under both renderers; see `Not implemented at all`_. The one
+  exception is the refracting boundary of a scattering medium, where the path
+  tracer's shadow ray stops instead (see
+  `Homogeneous volumes and subsurface scattering`_).
 
 
 Reflection, refraction and transmission
@@ -847,7 +871,9 @@ Continuation rays for reflection and refraction are allocated from a shared pool
 sized from an estimate of how many the batch will need. Exceeding the estimate
 costs a discarded and re-rendered tile, which shows up as render time rather
 than as an error. A **single pixel** whose ray tree exceeds the whole pool
-raises ``OutOfRenderMemory``; lowering ``max_bounces`` is the fix.
+raises ``OutOfRenderMemory``. Lowering ``max_bounces`` is one fix; the other is
+the path tracer, whose rays never split, so its memory per path does not grow
+with reflective or transparent geometry. The error names that switch.
 
 
 Anti-aliasing
@@ -1022,16 +1048,15 @@ fractions of the scene's own size:
    * - Triangle edge epsilon
      - 2e-4
      - When two hits on a shared mesh edge are merged into one.
-   * - Shadow-ray origin offset
-     - 1e-3
-     - How far off a surface a shadow ray starts (and it stops 2e-3 short of
-       the light).
 
 Algan's default camera sits 7 units back and frames about 7 world units of
-height at the origin, so all four are far below a pixel at ordinary scales. A
+height at the origin, so all three are far below a pixel at ordinary scales. A
 scene authored a thousand times larger will show z-fighting and merged surfaces;
-one authored a thousand times smaller will lose contact shadows and
-self-shadowing. **Scale the scene, not the camera** -- and note that
+one authored a thousand times smaller will merge surfaces that should be
+distinct, and lose contact shadows within the minimum hit distance. The offset
+a bounced or shadow ray starts from is *not* on this list: both renderers scale
+it with the hit point's own coordinates (see the contact-shadow note under
+`Shadows`_). **Scale the scene, not the camera** -- and note that
 :meth:`~.Camera.set_near_orthographic` moves the camera 1e5 units out, which is
 the same problem arriving from the other direction.
 
@@ -1070,6 +1095,16 @@ Hard limits
      - 4
      - The surplus shell attenuates once per crossing instead of once per
        entry/exit pair, rendering slightly too opaque. **Warns**
+       (:ref:`limits-truncation`).
+   * - Nested closed physical interiors tracked along one path-traced path
+       (scenes with a scattering medium)
+     - 4
+     - The path or light connection is absorbed rather than leaked. **Warns**
+       (:ref:`limits-truncation`); see
+       `Homogeneous volumes and subsurface scattering`_.
+   * - Surfaces one medium containment or extinction query may cross
+     - 256 (``max_surfaces_per_ray``)
+     - The query is absorbed rather than treated as empty space. **Warns**
        (:ref:`limits-truncation`).
    * - Frames in one render batch
      - 32767
@@ -1129,7 +1164,8 @@ check without reading logs::
 
 :class:`~.TruncationCounts` has one field per ceiling --
 ``surfaces_per_ray``, ``shadow_lights``, ``sheet_layers``,
-``dropped_continuations`` and ``closed_shell_ring`` -- plus ``total``.
+``dropped_continuations``, ``closed_shell_ring``, ``medium_stack`` and
+``medium_query`` -- plus ``total``.
 ``sheet_layers`` counted the former 16-layer ceiling and now always reads
 zero; it is kept so earlier reports still read. The counts are cumulative over
 the whole render, except ``shadow_lights``, which is a property of the scene
@@ -1182,8 +1218,8 @@ Both require consistently wound, watertight triangle geometry declared
 meshes and flat circuits do not enclose a medium. Density is uniform inside
 each shell, including when its shape or scattering parameters animate. A
 camera may start inside the medium. Surface-shadow switches do not disable
-extinction through matter. Denoising uses scatter-albedo and zero-normal
-guides at medium vertices.
+extinction through a scattering medium. Denoising uses scatter-albedo and
+zero-normal guides at medium vertices.
 
 Important limits:
 
@@ -1198,18 +1234,26 @@ Important limits:
   bounces and samples; too shallow a depth truncates multiple scattering and
   can look dark. Invisible index-matched boundaries do not spend bounces.
   The path does not split or allocate a variable-length walk history.
-* Direct-light connections integrate extinction through index-matched
-  boundaries, but stop at an index-changing interface. Refraction must be
+* Direct-light connections integrate a scattering medium's extinction through
+  index-matched boundaries, but stop at an index-changing interface into or
+  out of a scattering interior: the bent path into a subsurface object must be
   sampled by the actual Fresnel/BSDF walk, not approximated with an unbent
-  transparent shadow ray. This avoids double-counting energy inside glass.
-  Delta-light refractive caustics, heterogeneous density fields, and
-  accelerated diffusion profiles remain future work.
+  transparent shadow ray, which would double-count energy inside it. Point,
+  spot and directional lights, which no sampled ray can hit, therefore never
+  reach a subsurface object's interior; area lights, emissive meshes and the
+  environment map do, through sampled refraction. Glass that does not scatter
+  -- clear, or tinted with ``attenuation_color`` -- is unaffected: it casts
+  the same straight, tinted shadow it does in a scene without any medium, and
+  honours ``shadows`` and ``casts_shadows`` the same way. Glass sitting
+  *inside* fog is the exception, because its boundary is then the boundary of
+  a scattering region. Delta-light refractive caustics, heterogeneous density
+  fields, and accelerated diffusion profiles remain future work.
 
 A nonzero scattering coefficient on the deterministic renderer is reported
 as unsupported, with instructions to set ``samples_per_pixel > 1``. Its
 existing glass absorption remains unchanged. In scattering-enabled path
-traces, absorption uses the medium stack and is not applied again at the
-exit surface.
+traces, absorption along camera and bounced paths uses the medium stack and
+is not applied again at the exit surface.
 
 
 Auxiliary passes
@@ -1285,8 +1329,8 @@ Neither renderer does any of these, at any setting:
   Scale a light with its own ``intensity=`` and add an
   :class:`~algan.rendering.lights.AmbientLight` for ambient.
 
-For the path tracer's share of this list -- caustics, adaptive sampling,
-temporal stability, and heterogeneous volumes -- the engineering side
+For the path tracer's share of this list -- caustics, temporal accumulation
+and heterogeneous volumes -- the engineering side
 (status, remaining scope, and the renderer's sampling and kernel contracts) is written up in
 ``algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md``, which is the
 plan of record for that remaining scope.

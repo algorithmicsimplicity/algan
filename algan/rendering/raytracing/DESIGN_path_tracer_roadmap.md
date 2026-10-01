@@ -417,7 +417,8 @@ sampling improvement:
   is the better artifact for video. This was §3's tier 1, promoted from a
   switch to the default.
 * **"Turn on path tracing" has one spelling** — LANDED as
-  `render_loop.PATH_TRACER_FALLBACK_SPELLING`:
+  `truncation.PATH_TRACER_FALLBACK_SPELLING` (it moved there from
+  `render_loop.py` so `tracer.py` can name it too):
   `SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)`. Before,
   it meant "pick a `samples_per_pixel`" with `max_bounces` left at 8 and
   roulette from bounce 3 — the settings of a GI render, paid by a
@@ -427,19 +428,21 @@ sampling improvement:
   user's other settings on `set(source=...)`, and the settings system has
   no partial-preset concept to add one to. A spelling the docs and the
   failure messages all agree on is the same affordance without a new type.
-* **The failures name the switch** — PARTLY LANDED. The 16-light shadow
-  truncation warning and the render loop's one-frame `OutOfRenderMemory`
-  messages (`_one_frame_does_not_fit_message` and the batch-shrink failure
-  in `render_loop.py`) end with that spelling (the OOM hint is dropped when
-  the path tracer is already the renderer that failed). The message at the
-  failure is the documentation the user actually reads. **Still open
-  (re-checked 2026-10-01):** the raises inside `tracer.py` itself carry no
-  hint — "Insufficient memory to ray trace a single frame" and the
-  single-pixel "deterministic ray tree exceeded the shared [wavefront] pool"
-  overflows — and the render loop re-raises them unchanged at a one-frame
-  window. The pool overflow is precisely the split-pool failure this
-  renderer exists for, and `renderer_limitations.rst` tells the user that a
-  failure of either kind names the switch.
+* **The failures name the switch** — LANDED. The 16-light shadow
+  truncation warning and every out-of-memory raise a deterministic render
+  can end on append `truncation.path_tracer_fallback_hint()`, which is
+  empty when the path tracer is already the renderer that failed. The
+  message at the failure is the documentation the user actually reads. The
+  render loop's one-frame messages carried it first; the raises inside
+  `tracer.py` itself (the single-frame failure and the single-pixel
+  shared-pool overflows, precisely the split-pool failure this renderer
+  exists for) followed on 2026-10-01. The render loop re-raises those
+  unchanged at a one-frame window, so they must carry the hint themselves.
+  `test_every_deterministic_oom_raise_names_the_path_tracer_switch` reads
+  every `raise OutOfRenderMemory(...)` in `render_loop.py` and `tracer.py`
+  from the source, so a raise added without the hint fails the moment it is
+  written; the two exemptions it lists are the path-tracer-only launch
+  budget and the planner's monotonicity invariant.
 * **The user docs described a quality upgrade "at dramatically higher
   cost", never a fallback** — FIXED. `renderer_limitations.rst` and
   `performance_and_quality.rst` told the user to reach for the path tracer
@@ -807,16 +810,36 @@ interiors. An unrelated object's exit cannot pop the SSS shell.
 A bounded forward probe initializes containment at the actual near-clipped
 camera point, including cameras inside nested media. Shadow connections
 integrate `exp(-integral(sigma_a + sigma_s) ds)` piecewise through the same
-shell identities, including partial chords when a light is inside a medium.
-Tracked shells have their legacy chord-absorption fields zeroed in a
-PT-private `tri_extra` copy to avoid double attenuation; the shared scene
-and deterministic renderer's arrays are not mutated. Extinction remains
-active with surface shadows or `casts_shadows` disabled. Surface visibility
-passes index-matched boundaries, but stops at an index-changing interface.
-Those connections require an actual Fresnel/BSDF continuation: pretending
-that they are straight transparent shadows double-counts paths when the
-specular event resets MIS state, and adds energy in dense glass. Delta-light
-refractive caustics still require the future caustic work.
+shell identities while a SCATTERING medium is on top of the stack, including
+partial chords when a light is inside a medium. Scattering shells have their
+legacy chord-absorption fields zeroed in a PT-private `tri_extra` copy to
+avoid double attenuation; the shared scene and deterministic renderer's
+arrays are not mutated. That extinction remains active with surface shadows
+or `casts_shadows` disabled. A connection stops at an index-changing
+interface into or out of a scattering interior: it requires an actual
+Fresnel/BSDF continuation, and pretending it is a straight transparent
+shadow double-counts paths when the specular event resets MIS state, and
+adds energy in a dense medium. Delta-light refractive caustics still require
+the future caustic work.
+
+**Non-scattering shells are the shadow march's (2026-10-01).** Medium
+tracking is switched on for the whole scene by any scattering object, and it
+gives every closed physical shell an identity, plain glass included, because
+glass inside fog must stop the fog's scattering at its surface. The first
+version also stopped every straight connection at every index change, so a
+fog prism a hundred units away turned a glass block's tinted shadow black.
+Now an index change between two non-scattering regions does not stop the
+connection, the walk integrates nothing while a non-scattering shell is on
+top, and such shells keep their legacy chord in the shadow `tri_extra`: clear
+and absorbing glass shadow exactly as in a scene without media, `shadows`
+and `casts_shadows` included. Glass inside fog still stops, because its
+boundary then borders a scattering region.
+`test_glass_casts_the_same_shadow_with_or_without_unrelated_media` (clear and
+absorbing, shadows on and off) and
+`test_a_scattering_interior_still_stops_straight_shadow_connections` pin both
+sides. One consequence is unchanged and documented: a point, spot or
+directional light never reaches a subsurface interior, since only NEE can
+reach a delta light.
 
 ### Contracts and diagnostics
 
@@ -1527,12 +1550,29 @@ cost is ~10 ms per chunk. Numbers in
 `benchmarks/performance/reports/t4_2026_09/pt_lighttree_1.md`. The same
 profile showed the one explicit `gc.collect()` in `scene_excluded_from_gc`
 costing 220–260 ms of a 2.3 s render on both arms — a §0 host item worth
-its own look. **Still open (2026-10-01):** the collect is unchanged in
-`memory_utils.py`, and since multi-camera views (`4c2a974`) it runs once
-per camera pass, because each pass enters its own scope.
-`benchmarks/performance/reports/gpu_workloads_2026_09/REPORT.md` measured it
-independently at 0.28–0.42 s per deterministic render (24% of the explainer
-PREVIEW render), so it is not specific to the path tracer.
+its own look. `benchmarks/performance/reports/gpu_workloads_2026_09/REPORT.md`
+measured it independently at 0.28–0.42 s per deterministic render (24% of
+the explainer PREVIEW render) and proposed freezing without it.
+
+**Looked at (2026-10-01): the collection is load-bearing, and what it was
+collecting was a leak.** Each render job, and each multi-camera pass, sizes
+a fresh `ManualMemory` arena from the memory free at that moment, just after
+this collection. Measured on the explainer benchmark (PREVIEW, CPU, three
+renders in one process), the full walk took 0.13–0.39 s and found **2.7 GB
+of tensor storage in cyclic garbage before the second render and 5.4 GB
+before the third** (each arena was 2.7 GB), with the previous job's
+`ManualMemory` among it, kept alive by a reference cycle that a
+generation-0/1 collection does not reach. Freezing without collecting would
+have left that storage allocated while the next arena was sized. The cycle was
+`render_batch_raytraced`'s nested `render_chunk`, which calls itself and so
+closes over its own cell, capturing `memory`. It now clears that cell in a
+`finally`, the arena is freed by reference counting when the render returns,
+and the same measurement finds no tensor storage in the garbage at all
+(`test_a_finished_render_leaves_no_closure_cycle_holding_its_arena`). The
+walk itself is unchanged: it still costs 0.28–0.31 s on renders after the
+first and now finds only ~1,000 small objects there. Dropping it is the
+remaining decision, and it is a bet that nothing else -- another route's
+cycle, or user code -- leaves device memory in cyclic garbage.
 
 
 ## 7. Sampler quality: stratified lobe selection, blue noise
@@ -1924,7 +1964,7 @@ outright, one silently inert):
   `renderer_limitations.rst` and `performance_and_quality.rst` say which
   materials get what.
 
-* **The failures do not point at the fallback — PARTLY FIXED (§0.3).**
+* **The failures do not point at the fallback — FIXED (§0.3).**
   `record_truncation("shadow_lights", ...)` warned that lights past the cap
   cast no shadow and stopped there; `OutOfRenderMemory` at a one-frame
   window said the frame did not fit and stopped there. Neither named
@@ -1932,9 +1972,8 @@ outright, one silently inert):
   exists for was not told it exists. The fix is a sentence in each message
   (§0.3); the docs fix is the same sentence in `renderer_limitations.rst`'s
   hard-limits table and in `performance_and_quality.rst`'s "when to use"
-  paragraph. The warning and the render loop's one-frame messages now carry
-  it. The raises inside `tracer.py`, among them the single-pixel shared-pool
-  overflow, still do not.
+  paragraph. The warning and every deterministic out-of-memory raise now
+  carry it, `tracer.py`'s single-pixel shared-pool overflows included.
 
 **The standing rule this section implies:** when the deterministic renderer
 gains a feature, the question is not "does the path tracer match it" (§5 says
