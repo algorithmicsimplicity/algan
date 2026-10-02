@@ -1301,7 +1301,7 @@ class Animatable:
             key, self.id, include_descendants if _scope is None else _scope
         )
         if default is not None and replay_inds is None:
-            self._prepare_buffers(key, default)
+            self._prepare_buffers(key, default, include_descendants=include_descendants)
         inds = (
             replay_inds
             if replay_inds is not None
