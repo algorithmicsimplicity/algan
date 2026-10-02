@@ -102,6 +102,7 @@ render:
 | --- | --- |
 | `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
 | `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
+| `test_opacity_roundtrip_and_pulses.py` | Timeline replay, descendant-row allocation, packing and component-alpha propagation must agree when colors pulse or subtree opacity values are assigned back. Changes to those shared mechanisms can corrupt transparency or detach existing animation history. Tensor-only checks; no render. |
 | `test_easings.py` | Every animation is evaluated through one of these curves. |
 | `test_mob_movement.py`, `test_mob_orientation.py`, `test_parent_child_basis.py`, `test_mob_layout.py` | Transforms, the path a move traces, parent→child propagation, and screen-relative placement (which composes the bounding box, the basis and the camera). |
 | `test_short_authoring_regressions.py` (packed movement tests) | Whole-pack and member transforms must distribute over nested cylinder caps in buffer order, including timeline replay. This crosses the Mob hierarchy, packing and timeline indexing. |
