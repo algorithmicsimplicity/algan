@@ -1832,6 +1832,7 @@ class Animatable:
         opacity = timeline.attr_to_timeline.get("opacity")
         if opacity is None or not hasattr(self, "_apply_change"):
             return
+        standard_fades = None
         by_id = defaultdict(list)
         for node in self.get_descendants():
             if node.id in opacity.mob_id_to_inds:
@@ -1857,6 +1858,25 @@ class Animatable:
                     targets = opacity.get(rows).clone()
                     remaining = torch.ones_like(selected)
                     timeline._pending_packed_spawns[mob_id] = (targets, remaining)
+                    if standard_fades is None:
+                        standard_fades = {
+                            id(member)
+                            for member in self._collatable_members(
+                                "on_create", lambda n: n.lifespan.start() < 0
+                            )
+                        }
+                    if not any(id(member) in standard_fades for member in nodes):
+                        # A custom entrance owns this subtree's animation.
+                        # Hide unselected rows, but leave the selected targets
+                        # and lifespan for that hook and the usual spawn walk.
+                        # Fading here too doubles DecimalNumber's decimal fade.
+                        initial = targets.clone()
+                        initial[:, ~selected.to(targets.device)] = 0
+                        timeline.modify_attribute("opacity", rows, initial)
+                        remaining[selected] = False
+                        if not bool(remaining.any()):
+                            del timeline._pending_packed_spawns[mob_id]
+                        continue
                     # No member has spawned: establish the hidden initial state
                     # before starting the shared lifespan and recording reveals.
                     timeline.modify_attribute(

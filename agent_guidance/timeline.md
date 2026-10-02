@@ -98,6 +98,10 @@ but reveals only the selected opacity rows. `_pending_packed_spawns` retains the
 remaining members' opacity targets; spawning another selection or the whole pack
 records their reveals on the same rows. Merely indexing must never spawn a view.
 This is opacity-based visibility, not independent lifespans for packed members.
+When a custom `on_create` owns the subtree, preparation only hides unselected
+rows; the hook keeps control of the entrance and the ordinary spawn walk starts
+the lifespan. Adding an automatic fade there would animate the same rows twice
+(for example, the decimal point selected from a `DecimalNumber`'s placeholder).
 
 ### Why `reset=False` is safe
 

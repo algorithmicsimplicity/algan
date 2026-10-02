@@ -20,6 +20,7 @@ from algan import (
     BezierCircuitCubic,
     Circle,
     Cube,
+    DecimalNumber,
     DirectionalLight,
     Group,
     HemisphereLight,
@@ -352,6 +353,29 @@ def test_overlapping_packed_spawns_keep_each_members_opacity(
                 ]
             ),
         )
+
+
+@pytest.mark.fast
+@pytest.mark.parametrize("collate", [False, True])
+def test_custom_spawn_hook_fades_packed_descendants_only_once(collate, monkeypatch):
+    if not collate:
+        monkeypatch.setenv("ALGAN_OPT_DISABLE", "collate")
+    with Scene() as scene:
+        number = DecimalNumber(0, decimal_places=1, integer_places=2)
+        decimal_parts = [
+            (node, node.opacity.clone())
+            for node in number.decimal.get_descendants()
+            if node.is_primitive
+        ]
+        with Seq(easing=easings.identity):
+            number.spawn()
+        times = torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0])
+        scene.timeline_manager.set_state_to_times(times)
+        for node, target in decimal_parts:
+            assert torch.allclose(node.opacity, times[:, None, None] * target)
+        digit = number.digit_mobs[-1].character_mobs[0]
+        assert torch.allclose(digit.opacity[:, 0, 0], times)
+        assert torch.count_nonzero(number.negative_sign.opacity) == 0
 
 
 @pytest.mark.fast
