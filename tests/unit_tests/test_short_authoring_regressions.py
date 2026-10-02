@@ -246,12 +246,14 @@ def test_mob_initialization_preserves_subclass_name():
 
 @pytest.mark.fast
 @pytest.mark.parametrize("runtime", [2.0, 4.0])
-def test_sync_runtime_stretches_move_alongside_tex_fade(runtime):
+def test_equalized_sync_stretches_move_alongside_tex_fade(runtime):
+    # A Tex despawn fades its glyphs in sequence, so it outlasts a 1-second
+    # move; equalize_runtimes makes the move span the whole block anyway.
     with Scene() as scene:
         with Off():
             mover = Square().spawn(False)
             label = Tex("x+y").spawn(False)
-        with Sync(runtime=runtime, easing=easings.identity):
+        with Sync(runtime=runtime, easing=easings.identity, equalize_runtimes=True):
             mover.move(RIGHT * 4)
             label.despawn()
         scene.timeline_manager.set_state_to_times(
@@ -378,9 +380,9 @@ def test_custom_spawn_hook_fades_packed_descendants_only_once(collate, monkeypat
 @pytest.mark.fast
 @pytest.mark.parametrize(
     ("runtime", "equalize", "expected"),
-    [(None, None, 4.0), (4, False, 4.0), (4, True, 2.0)],
+    [(None, None, 4.0), (4, None, 4.0), (4, False, 4.0), (4, True, 2.0)],
 )
-def test_sync_retains_relative_durations_when_requested(runtime, equalize, expected):
+def test_sync_keeps_relative_durations_unless_equalized(runtime, equalize, expected):
     with Scene() as scene:
         with Off():
             short = Square().spawn(False)
