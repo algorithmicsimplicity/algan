@@ -2,10 +2,9 @@
 
 A single JSON document describing one still frame, rendered by two independent
 back ends (`algan_render.py`, `three_render.mjs`) so their images can be
-compared pixel-wise. This is a small comparison format, not a guarantee that
-the translators produce identical geometry, camera state or material defaults.
-The limitations below must be controlled before attributing a difference to
-shading or transport. Checked against both back ends on 2026-09-09.
+compared pixel-wise. Both translators normalize omitted render, camera and
+material fields using [scene_defaults.json](scene_defaults.json). The geometry
+and shading limitations below still matter when interpreting image differences.
 
 Conventions shared by both back ends:
 
@@ -75,23 +74,28 @@ Geometry types:
 | `sphere` | `radius`, `segments` (default 64)     | Three.js `SphereGeometry(radius, segments, segments/2)`; Algan `Sphere(radius=...)` |
 | `box`    | `size` `[x, y, z]`                    | Three.js `BoxGeometry`; Algan `Prism(width=, height=, depth=)` |
 
-The JSON above is an example, not a complete shared-default contract. In the
-current translators, an omitted material `type` selects **physical in Algan but
-standard in Three.js**; an omitted `color` selects **white in Algan but
-`[0.5, 0.5, 0.54]` in Three.js**. Supply both explicitly in comparison fixtures.
-Most other listed material defaults agree, including roughness `0.85` and the
-mapping of nonpositive attenuation distance to no absorption. Unrecognized or
+The JSON above is an example. The shared defaults select a **physical**, **white**
+material with roughness `0.85`, and map nonpositive attenuation distance to no
+absorption. Unknown camera fields are rejected by both translators. Unrecognized or
 irrelevant fields can be ignored rather than rejected, so a successfully parsed
 scene is not proof that every requested feature reached both engines.
 
 ### Geometry and camera limits
 
 `sphere.segments` controls Three.js tessellation only. Algan constructs a `Sphere`
-and uses its own surface dicing, so the triangles need not match. The Algan bridge
-sets camera position, target and FOV but does **not** apply the JSON camera's
-`up`, `near` or `far`; Three.js applies all three. Avoid roll/clipping-dependent
-comparisons until those fields are mapped and tested. These are harness gaps,
-not renderer limitations; see [TODO.md](../../TODO.md).
+and uses its own surface dicing, so the triangles need not match. Both bridges
+apply camera position, target, up, vertical FOV, near and far. The default camera
+looks from `[0, 0, 12]` toward the origin with Y up, FOV 40 degrees, near 0.1 and
+far 200. Algan's far limit is distance along the ray; Three.js clips at a plane
+perpendicular to the viewing direction. Keep objects comfortably inside the far
+limit when comparing off-axis geometry.
+
+A positive near plane selects Algan's classic deterministic renderer, which
+does not use the sheet glossy prefilter. This applies to the shared default
+near value of 0.1. Algan-only prefilter tests explicitly set near to 0 (disabled);
+that override is not a Three.js camera-parity fixture. The Algan bridge records
+this limitation in its output metadata when a clipped camera requests that
+prefilter.
 
 ## Material types
 
@@ -108,10 +112,9 @@ Existing types: `basic`, `standard`, `physical`. Additional types:
 
 Notes the back ends must respect:
 
-* **toon `bands`.** The two engines do not share a mechanism. three.js's default
-  toon shading (no `bands`) is a 2-step smoothstep at `dotNL·0.5+0.5 = 0.7`
-  mixing 0.7 → 1.0; its documented way to get N bands is a `gradientMap`, so
-  when `bands` **is given** the three.js back end builds a
+* **toon `bands`.** Both bridges default to three bands, but the two engines
+  do not share a mechanism. Three.js's documented way to get N bands is a
+  `gradientMap`, so the three.js back end builds a
   `THREE.DataTexture` of N texels ramping 0..1 (texel *i* = round(i/(N−1)·255))
   with `NearestFilter` on both min and mag, `needsUpdate = true`, colorSpace
   left at its default — that translation is what the audit measures. Algan

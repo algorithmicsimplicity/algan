@@ -107,3 +107,10 @@ Targeted, asserted, one dropped reference each:
     extra. It has to: `Text` is `Brace`'s default label class and `Paragraph`
     is `Table`'s default entry class, and both are imported at module level by
     modules that have nothing to do with Pango.
+    The text cache hash also includes substring gradients (`t2g`), so changing
+    a gradient cannot reuse an SVG containing the previous colors.
+13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
+    imported fill/stroke coverage. Embedded rasters use the authored image
+    width and height before the SVG's overall size normalization. Group
+    opacity is applied per shape; overlapping shapes do not form an isolated
+    SVG compositing layer.

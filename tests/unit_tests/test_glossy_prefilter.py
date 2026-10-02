@@ -296,17 +296,26 @@ def test_blur_sigma_matches_the_design_formula():
 # ---------------------------------------------------------------------------
 
 
+def _unclipped_calibration(out_dir):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    spec = json.loads(_CALIB_SCENE.read_text())
+    spec["camera"]["near"] = 0
+    scene_path = out_dir / "calib_glossy_unclipped.json"
+    scene_path.write_text(json.dumps(spec))
+    return scene_path
+
+
 def _render_calib_arm(out_dir, suffix, *, glossy, prefilter):
     """Render ``calib_glossy`` once in a FRESH interpreter; return its png.
 
-    Drives the audit's own render script rather than re-authoring the scene,
-    so these frames sit on exactly the geometry and camera REPORT.md §4.5's
-    numbers were measured on -- at the cost of depending on the benchmark
-    tree (declared in the module docstring). Resolution stays at the scene's
-    480x360: smaller frames quarter an already-cheap render but move every
+    Drives the audit's own render script and geometry, with near clipping
+    explicitly disabled: the sheet prefilter requires that route. The bridge
+    previously ignored the scene JSON's near plane, so this preserves the
+    actual camera used for REPORT.md §4.5's measurements. Resolution stays at
+    the scene's 480x360: smaller frames quarter an already-cheap render but move every
     number away from the table this file cites.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
+    scene_path = _unclipped_calibration(out_dir)
     env = dict(os.environ)
     # Nothing may leak in from the pytest process: an inherited ALGAN_GLOSSY_*
     # would quietly override what the caller asked this arm to be.
@@ -325,7 +334,7 @@ def _render_calib_arm(out_dir, suffix, *, glossy, prefilter):
     cmd = [
         sys.executable,
         str(_AUDIT_DIR / "algan_render.py"),
-        str(_CALIB_SCENE),
+        str(scene_path),
         "--out",
         str(out_dir),
         "--suffix",
@@ -614,7 +623,7 @@ def test_half_pixel_camera_nudge_does_not_crawl_the_reflection(tmp_path):
             "--crawl",
             "0.008",
             "--scene",
-            str(_CALIB_SCENE),
+            str(_unclipped_calibration(tmp_path)),
         ],
         capture_output=True,
         text=True,

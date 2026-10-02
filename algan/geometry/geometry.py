@@ -544,12 +544,21 @@ def get_2d_polygon_mask2(polygon_vertices, grid_points, eps=1e-6):
 
 def map_global_to_local_coords(location, basis, global_coords):
     basis = unsquish(basis, -1, 3)
-    scale = basis.norm(p=2, dim=-1)
-    basis = F.normalize(basis, p=2, dim=-1)
-    return (
-        dot_product(basis, (global_coords - location).unsqueeze(-2), -1, keepdim=False)
-        / scale
+    offset = (global_coords - location).unsqueeze(-2)
+    normalized = F.normalize(basis, p=2, dim=-1)
+    gram = normalized @ normalized.transpose(-2, -1)
+    identity = torch.eye(3, device=basis.device, dtype=basis.dtype)
+    orthogonal = (gram - identity).abs().amax(dim=(-2, -1)) <= (
+        4 * torch.finfo(basis.dtype).eps
     )
+    # Keep established rounding for orthogonal frames (including rotation
+    # round-off): changing it can move a raster edge across a pixel boundary.
+    # Sheared frames require the actual inverse, not row projections.
+    projected = dot_product(normalized, offset, -1, keepdim=False) / basis.norm(
+        p=2, dim=-1
+    )
+    inverted = (offset @ invert_row_basis(basis)).squeeze(-2)
+    return torch.where(orthogonal.unsqueeze(-1), projected, inverted)
 
 
 def map_local_to_global_coords(location, basis, local_coords):

@@ -435,6 +435,8 @@ class _RunJob:
 
     def __init__(self, request, stream):
         self.request = request
+        self.request_id = request.get("request_id")
+        self.cancelled = False
         self.script = request["script"]
         self.argv = list(request.get("argv", ()))
         self.cwd = request.get("cwd") or os.getcwd()
@@ -876,7 +878,8 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             self._handle_run()
             return
         if command == "cancel":
-            self._handle_cancel(token)
+            token, _, request_id = token.partition(" ")
+            self._handle_cancel(token, request_id or None)
             return
         if command not in ("render", "ping", "quit"):
             self.wfile.write(b"err: expected run | cancel | render | ping | quit\n")
@@ -964,8 +967,21 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
             return
 
         job = _RunJob(request, self.wfile)
-        depth = self.server.events.qsize()
-        self.server.events.put(("run", job))
+        if (
+            not isinstance(job.request_id, str)
+            or not job.request_id
+            or len(job.request_id) > 128
+        ):
+            _refuse(self.wfile, "missing or invalid request ID")
+            return
+        with self.server.cancel_lock:
+            if job.request_id in self.server.jobs:
+                _refuse(self.wfile, "duplicate request ID")
+                return
+            self.server.jobs[job.request_id] = job
+            job.send(_dc.FRAME_ACCEPT)
+            depth = self.server.events.qsize()
+            self.server.events.put(("run", job))
         if depth or self.server.busy.is_set():
             job.info(f"queued behind {depth + 1} run(s) -- waiting")
         # ThreadingTCPServer gives this connection its own thread, so blocking
@@ -973,11 +989,22 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
         # anything else.
         job.done.wait()
 
-    def _handle_cancel(self, token):
+    def _handle_cancel(self, token, request_id=None):
         if not secrets.compare_digest(str(token), self.server.state.token):
             self.wfile.write(b"err: bad token\n")
             return
         with self.server.cancel_lock:
+            if request_id is not None:
+                job = self.server.jobs.get(request_id)
+                if job is None or job.done.is_set():
+                    self.wfile.write(b"idle\n")
+                    return
+                job.cancelled = True
+                if job is not self.server.active_job or not self.server.busy.is_set():
+                    self.server.jobs.pop(request_id, None)
+                    job.finish(130)
+                    self.wfile.write(b"ok\n")
+                    return
             if self.server.busy.is_set():
                 # Atomically check the active run and coalesce requests, so a
                 # late request cannot land in cleanup after busy was cleared.
@@ -1011,6 +1038,8 @@ class _TriggerServer(socketserver.ThreadingTCPServer):
     def __init__(self, *args, **kwargs):
         self.cancel_lock = threading.Lock()
         self.cancel_pending = False
+        self.jobs = {}
+        self.active_job = None
         super().__init__(*args, **kwargs)
 
 
@@ -1316,7 +1345,7 @@ def main(argv=None):
                 with server.cancel_lock:
                     server.cancel_pending = False
 
-    def execute(path, script_args, cwd, reason):
+    def execute(path, script_args, cwd, reason, job=None):
         """Run one script to completion. Returns its exit code."""
         nonlocal run_count
         run_count += 1
@@ -1366,7 +1395,10 @@ def main(argv=None):
             with contextlib.suppress(OSError):
                 os.chdir(cwd)
             renders_before = scene_module.renders_requested()
-            set_busy(True)
+            with server.cancel_lock if server is not None else contextlib.nullcontext():
+                if job is not None and job.cancelled:
+                    raise KeyboardInterrupt
+                busy.set()
             runpy.run_path(path, run_name="__main__")
             scene_module.warn_if_nothing_rendered(path, renders_before)
             _say(f"run #{run_count} finished in {time.perf_counter() - started:.1f} s")
@@ -1425,6 +1457,9 @@ def main(argv=None):
                 busy.set()
             else:
                 busy.clear()
+                if server is not None and server.active_job is not None:
+                    server.jobs.pop(server.active_job.request_id, None)
+                    server.active_job = None
 
     def do_local(reason):
         target = last["script"]
@@ -1440,11 +1475,15 @@ def main(argv=None):
             release_after_run()
 
     def do_job(job):
+        with server.cancel_lock:
+            if job.cancelled or job.done.is_set():
+                return
+            server.active_job = job
         job.send(_dc.FRAME_START)
         last.update(script=job.script, args=job.argv, cwd=job.cwd)
         try:
             with _run_context(job):
-                code = execute(job.script, job.argv, job.cwd, "client")
+                code = execute(job.script, job.argv, job.cwd, "client", job=job)
         except BaseException:
             code = 1
             # The client's streams are already unhooked -- _run_context
@@ -1470,6 +1509,7 @@ def main(argv=None):
             # Standing down makes that self-healing instead of permanent.
             events.put(("quit", "the daemon failed outside a script"))
         finally:
+            set_busy(False)
             # Release the client first: the tidy-up below is the daemon's own
             # housekeeping and the script has nothing left to wait for.
             job.finish(code)

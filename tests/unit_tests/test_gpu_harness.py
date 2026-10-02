@@ -42,6 +42,18 @@ def _shell_command(*args: object) -> str:
 def _pid_exists(pid: int) -> bool:
     """Return whether ``pid`` is still live without signalling it on Windows."""
     if os.name != "nt":
+        if sys.platform.startswith("linux"):
+            # Container PID 1 may leave a killed grandchild unreaped. A zombie
+            # holds no GPU resources, but kill(pid, 0) still sees its PID.
+            try:
+                status = Path(f"/proc/{pid}/status").read_text()
+            except OSError:
+                pass
+            else:
+                if any(
+                    line.split()[:2] == ["State:", "Z"] for line in status.splitlines()
+                ):
+                    return False
         try:
             os.kill(pid, 0)
         except OSError:

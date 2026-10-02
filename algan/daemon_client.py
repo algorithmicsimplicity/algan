@@ -96,7 +96,9 @@ from algan.environment import (
 #: 3 -- every trigger verb (``render``/``ping``/``quit``, not just
 #: ``run``/``cancel``) carries the state file's token, and the state file
 #: records the interpreter, prefix, package path and version of the daemon.
-PROTOCOL_VERSION = 3
+#: 4 -- run requests have an ID; Ctrl-C cancels only that request, including
+#: queued jobs. The acceptance frame closes the enqueue/cancel race.
+PROTOCOL_VERSION = 4
 
 
 def connect_timeout():
@@ -118,6 +120,7 @@ FRAME_STDERR = b"E"
 FRAME_INFO = b"I"  # daemon chatter (queue position); utf-8, shown on stderr
 FRAME_REFUSE = b"R"  # handshake rejected; utf-8 reason; client falls back
 FRAME_START = b"S"  # the script is now executing -- fallback is no longer safe
+FRAME_ACCEPT = b"A"  # the request is registered and can be cancelled by ID
 FRAME_EXIT = b"X"  # payload is a 4-byte big-endian signed exit code
 
 #: Environment variables consumed while Torch and Taichi initialise. The daemon
@@ -556,8 +559,11 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
     """
     out = out if out is not None else _binary(sys.stdout)
     err = err if err is not None else _binary(sys.stderr)
+    import uuid
+
     request = {
         "protocol": PROTOCOL_VERSION,
+        "request_id": uuid.uuid4().hex,
         "token": state["token"],
         "cwd": cwd if cwd is not None else os.getcwd(),
         "script": script,
@@ -580,15 +586,16 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
         raise DaemonUnreachable(f"could not reach the daemon ({exc})") from exc
 
     started = False
-    with sock:
+    with sock, contextlib.ExitStack() as cleanup:
         sock.settimeout(None)
         stream = sock.makefile("rwb")
         payload = json.dumps(request).encode("utf-8")
         # The request needs no kind byte -- only the daemon's replies are
         # multiplexed -- so it is a bare 4-byte length and that many bytes.
+        accepted, restore = _install_cancel_handler(state, request["request_id"])
+        cleanup.callback(restore)
         stream.write(b"run\n" + struct.pack("!I", len(payload)) + payload)
         stream.flush()
-        _install_cancel_handler(state)
         for kind, data in read_frames(stream):
             if kind is None:
                 if started:
@@ -600,8 +607,11 @@ def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
                 raise DaemonUnreachable("the daemon closed the connection")
             if kind == FRAME_REFUSE:
                 raise DaemonUnavailable(data.decode("utf-8", "replace"))
+            if kind == FRAME_ACCEPT:
+                accepted()
             if kind == FRAME_START:
                 started = True
+                accepted()
             elif kind == FRAME_INFO:
                 err.write(b"[algan-daemon] " + data + b"\n")
                 _flush(err)
@@ -852,7 +862,7 @@ def _isatty(stream):
         return False
 
 
-def _install_cancel_handler(state):
+def _install_cancel_handler(state, request_id):
     """Forward Ctrl-C to the daemon instead of orphaning a live render.
 
     Killing the client alone would leave the daemon rendering, and on Windows
@@ -862,19 +872,39 @@ def _install_cancel_handler(state):
     import signal
 
     seen = []
+    ready = False
+    sent = False
+    previous = signal.getsignal(signal.SIGINT)
+
+    def send_cancel():
+        nonlocal sent
+        if sent or not ready or not seen:
+            return
+        sent = True
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", int(state["port"])), connect_timeout()
+            ) as sock:
+                sock.sendall(f"cancel {state['token']} {request_id}\n".encode("ascii"))
+        except OSError:
+            raise KeyboardInterrupt from None
 
     def handler(signum, frame):
         seen.append(1)
         if len(seen) > 1:
             raise KeyboardInterrupt
-        try:
-            with socket.create_connection(
-                ("127.0.0.1", int(state["port"])), connect_timeout()
-            ) as sock:
-                sock.sendall(b"cancel " + state["token"].encode("ascii") + b"\n")
-        except OSError:
-            raise KeyboardInterrupt from None
+        send_cancel()
+
+    def accepted():
+        nonlocal ready
+        ready = True
+        send_cancel()
+
+    def restore():
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(signal.SIGINT, previous)
 
     # ValueError/OSError: not the main thread, or no signal support here.
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGINT, handler)
+    return accepted, restore

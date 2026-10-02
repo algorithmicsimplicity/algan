@@ -24,6 +24,7 @@ animatable per-corner ``location``.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -529,7 +530,14 @@ class Model3D(Mob):
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
-    def play_animation(self, name=None, runtime=None, fps=30, loop=1, easing=identity):
+    def play_animation(
+        self,
+        name: str | None = None,
+        runtime: float | None = None,
+        fps: float = 30,
+        loop: int = 1,
+        easing: Callable[[torch.Tensor], torch.Tensor] = identity,
+    ) -> Model3D:
         """Play a baked node-keyframe animation on the timeline.
 
         The clip is baked to per-frame world corners (see
@@ -539,20 +547,53 @@ class Model3D(Mob):
         with authored normals are switched to per-frame smooth-normal
         recomputation so shading stays correct as the geometry moves.
 
+        Animation
+        ---------
+        Spawn the model first. Playback records the mesh geometry over
+        ``runtime`` seconds per loop, preserving the spacing between baked
+        samples. Each loop starts at the clip's first pose. Compose playback
+        with other recorded motion using ``Sync()`` or ``Seq()``.
+
         Parameters
         ----------
-        name : str, optional
-            Clip name; defaults to the first clip.
-        runtime : float, optional
-            Playback runtime in seconds (per loop). Defaults to the clip's
-            authored runtime.
-        fps : int
-            Sampling rate for baking (higher = smoother rotation, since corners
-            are linearly interpolated between baked poses).
-        loop : int
-            Number of times to repeat the clip.
-        easing : callable
-            Timeline rate function; defaults to linear playback.
+        name
+            Clip name. Defaults to ``None``, selecting the first clip.
+        runtime
+            Playback duration in seconds per loop. Defaults to ``None``, using
+            the clip's authored runtime.
+        fps
+            Baking samples per second. Higher values give smoother rotation
+            between baked poses. Defaults to ``30``.
+        loop
+            Number of repetitions, with values below one treated as one.
+            Defaults to ``1``.
+        easing
+            Timeline rate function. Defaults to ``easings.identity`` for
+            linear playback.
+
+        Returns
+        -------
+        :class:`~.Model3D`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        :class:`~algan.errors.AlganConfigurationError`
+            If the model has no animation clips.
+        KeyError
+            If ``name`` does not identify an available clip.
+
+        Examples
+        --------
+        Play a clip from an imported model twice, four seconds per loop:
+
+        .. code-block:: python
+
+            from algan import Model3D, Scene
+
+            model = Model3D("walking.glb").spawn()
+            model.play_animation("Walk", runtime=4, loop=2)
+            Scene.save_video()
         """
         clip = self._resolve_clip(name)
         times, corners = self.precompute_animation(name, fps=fps)
@@ -570,17 +611,20 @@ class Model3D(Mob):
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
         # Seq sequences the steps (rescaled to runtime).
-        with Off(animation_manager=self.animation_manager):
-            for mob in self.mesh_mobs:
-                mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
             with Seq(
                 runtime=runtime,
                 easing=easing,
                 animation_manager=self.animation_manager,
             ):
+                with Off(animation_manager=self.animation_manager):
+                    for mob in self.mesh_mobs:
+                        mob.grid.set_location(corners[mob][0])
                 for k in range(1, len(times)):
-                    with Sync(animation_manager=self.animation_manager):
+                    with Sync(
+                        runtime=times[k] - times[k - 1],
+                        animation_manager=self.animation_manager,
+                    ):
                         for mob in self.mesh_mobs:
                             mob.grid.set_location(corners[mob][k])
         return self

@@ -58,6 +58,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { normalizeSpec, SCENE_DEFAULTS } from './scene_contract.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -208,17 +209,7 @@ const col = (c) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpa
 
 function buildMaterial(m) {
   // Spec defaults (SPEC.md): every field optional, these are the defaults both back ends apply.
-  const d = {
-    color: [0.5, 0.5, 0.54], roughness: 0.85, metalness: 0.0, ior: 1.5, transmission: 0.0,
-    clearcoat: 0.0, clearcoat_roughness: 0.0, sheen: 0.0, sheen_roughness: 1.0,
-    sheen_color: [0, 0, 0], emissive: [0, 0, 0], emissive_intensity: 1.0,
-    specular_intensity: 1.0, specular_color: [1, 1, 1], opacity: 1.0,
-    attenuation_color: [1, 1, 1], attenuation_distance: 0,
-    // phong / toon / depth fields (SPEC.md). phong's specular default is
-    // three's own 0x111111; depth's near/far exist only on the Algan side --
-    // three derives depth from the camera and takes no such fields.
-    specular: [0.067, 0.067, 0.067], shininess: 30, bands: 3, near: 0.1, far: 100,
-  };
+  const d = ${JSON.stringify(SCENE_DEFAULTS.material)};
   const p = { ...d, ...(m || {}) };
   let mat;
   if (p.type === 'physical') mat = new THREE.MeshPhysicalMaterial();
@@ -563,7 +554,7 @@ window.dispatchEvent(new Event('three-ready'));
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const spec = JSON.parse(fs.readFileSync(args.scenePath, 'utf8'));
+  const spec = normalizeSpec(JSON.parse(fs.readFileSync(args.scenePath, 'utf8')));
   const name = spec.name || path.basename(args.scenePath, '.json');
   const outDir = path.resolve(args.out || '.');
   fs.mkdirSync(outDir, { recursive: true });

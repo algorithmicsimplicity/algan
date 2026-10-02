@@ -759,12 +759,6 @@ class AnimationContext:
             def rescale(x, b=self.timespan.original_start, s=1):
                 return (x - b) * s + b
 
-            def rescale_runtime(context, scale):
-                for child in context.get_descendants(include_self=True):
-                    child.timespan.start = rescale(child.timespan.start, s=scale)
-                    child.timespan.end = rescale(child.timespan.end, s=scale)
-                return False
-
             if self.equalize_runtimes:
                 runtimes = [
                     child.timespan.end - child.timespan.start
@@ -772,11 +766,29 @@ class AnimationContext:
                 ]
                 positive_runtimes = [runtime for runtime in runtimes if runtime > 0]
                 max_runtime = max(positive_runtimes, default=0)
+                shift = 0.0
                 for child, runtime in zip(self.child_contexts, runtimes):
                     # Empty / Off child contexts already have the desired zero
                     # runtime and must not cause a division by zero.
+                    start = child.timespan.start
+                    scale = max_runtime / runtime if runtime > 0 else 1.0
+                    for descendant in child.get_descendants(include_self=True):
+                        span = descendant.timespan
+                        span.start = (span.start - start) * scale + start + shift
+                        span.end = (span.end - start) * scale + start + shift
+                        span.current_time = (
+                            (span.current_time - start) * scale + start + shift
+                        )
                     if runtime > 0:
-                        rescale_runtime(child, max_runtime / runtime)
+                        shift += (max_runtime - runtime) * self.lag_ratio
+                self.timespan.original_end = max(
+                    self.timespan.original_end + shift,
+                    max(
+                        (child.timespan.end for child in self.child_contexts),
+                        default=self.timespan.original_end,
+                    ),
+                )
+                self.timespan.current_time += shift
 
             if self.runtime is not None:
                 my_runtime = max(

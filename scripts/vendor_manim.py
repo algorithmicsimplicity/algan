@@ -377,6 +377,11 @@ def apply_targeted_patches(text: str, module: str) -> str:
         )
 
     elif module == "mobject.text.text_mobject":
+        cut(
+            "        settings += str(self.gradient)\n",
+            "        settings += str(self.gradient)\n"
+            "        settings += repr(sorted((key, tuple(str(c) for c in colors)) for key, colors in self.t2g.items()))\n",
+        )
         # manimpango is the optional `algan[pango]` extra, but this module has
         # to import even without it: `Text` and `Paragraph` are the default
         # `label_constructor` / `element_to_mobject` of Brace, Table and the
@@ -404,6 +409,36 @@ def apply_targeted_patches(text: str, module: str) -> str:
         )
 
     elif module == "mobject.svg.svg_mobject":
+        cut(
+            '            "fill-opacity",\n',
+            '            "fill-opacity",\n            "opacity",\n',
+        )
+        cut(
+            "        stack: list[tuple[se.SVGElement, int]] = []\n"
+            "        stack.append((svg, 1))\n",
+            "        stack: list[tuple[se.SVGElement, int, float]] = []\n"
+            "        stack.append((svg, 1, 1.0))\n",
+        )
+        cut(
+            "            element, depth = stack.pop()\n",
+            "            element, depth, opacity = stack.pop()\n"
+            "            own_opacity = element.values.get('attributes', {}).get('opacity', 1.0)\n"
+            "            opacity *= max(0.0, min(1.0, float(own_opacity)))\n",
+        )
+        cut(
+            "                stack.extend((subelement, depth + 1) for subelement in element[::-1])\n",
+            "                stack.extend((subelement, depth + 1, opacity) for subelement in element[::-1])\n",
+        )
+        cut(
+            "                    if mob is not None:\n                        result.append(mob)\n",
+            "                    if mob is not None:\n"
+            "                        if isinstance(mob, VMobject):\n"
+            "                            mob.set_fill(opacity=mob.get_fill_opacity() * opacity, family=False)\n"
+            "                            mob.set_stroke(opacity=mob.get_stroke_opacity() * opacity, family=False)\n"
+            "                        elif hasattr(mob, 'set_opacity'):\n"
+            "                            mob.set_opacity(opacity)\n"
+            "                        result.append(mob)\n",
+        )
         cut(
             '__all__ = ["SVGMobject", "VMobjectFromSVGPath"]\n',
             '__all__ = ["SVGMobject", "VMobjectFromSVGPath", "SVG_GLOBALS"]\n\n\n'
@@ -452,6 +487,8 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "            os.remove(temp_file)\n"
             "        except OSError:\n"
             "            pass\n"
+            "        mob.stretch_to_fit_width(float(img.width))\n"
+            "        mob.stretch_to_fit_height(float(img.height))\n"
             "        mob.shift(\n"
             "            _convert_point_to_3d(img.x + img.width / 2, img.y + img.height / 2)\n"
             "        )\n"
@@ -1358,6 +1395,13 @@ Targeted, asserted, one dropped reference each:
     extra. It has to: `Text` is `Brace`'s default label class and `Paragraph`
     is `Table`'s default entry class, and both are imported at module level by
     modules that have nothing to do with Pango.
+    The text cache hash also includes substring gradients (`t2g`), so changing
+    a gradient cannot reuse an SVG containing the previous colors.
+13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
+    imported fill/stroke coverage. Embedded rasters use the authored image
+    width and height before the SVG's overall size normalization. Group
+    opacity is applied per shape; overlapping shapes do not form an isolated
+    SVG compositing layer.
 """
 
 

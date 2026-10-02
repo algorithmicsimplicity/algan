@@ -140,7 +140,7 @@ def _positive_sample_count(value):
 
 
 def _as_direction_target(target):
-    t = target
+    t = target.location if isinstance(target, Mob) else target
     if not torch.is_tensor(t):
         t = torch.tensor(t, dtype=torch.float32)
     return t.float().reshape(-1)[:3]

@@ -1283,8 +1283,6 @@ class Surface(Mob):
         self._material_prop_textures = {
             k: v for k, v in material_prop_textures.items() if v is not None
         }
-        if self._material_prop_textures:
-            self._rebuild_material_texture()
         if normal_texture is not None:
             self.normal_texture = self._normalize_texture_shape(normal_texture, 3).to(
                 self.location.device
@@ -1360,6 +1358,8 @@ class Surface(Mob):
         self.grid = Mob(**kwargs)
         self.add_children(self.grid)
         self.components = [self.grid]
+        if self._material_prop_textures:
+            self._rebuild_material_texture()
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
@@ -3196,7 +3196,13 @@ class Surface(Mob):
         """
         from algan.rendering.shaders.materials import _pack_material_texture
 
-        return _pack_material_texture(textures_dict, self.location.device)
+        return _pack_material_texture(
+            textures_dict,
+            self.location.device,
+            closed_axes=surface_closed_axes(
+                self._reshape_grid_for_render(self.grid.location)
+            ),
+        )
 
     def _rebuild_material_texture(self):
         """Repack ``self._material_prop_textures`` into the material texture."""
@@ -4019,6 +4025,11 @@ class Surface(Mob):
         in an :meth:`~algan.animatable_base.animatable.Animatable.add_updater`
         callback for a texture that stays locked to world space.
 
+        Open axes use texel centers half a texel inside the domain when
+        ``SETTINGS.raytracing.texture_antialiasing`` is enabled (the default),
+        and endpoint samples when it is disabled. Closed axes always place
+        texel ``i`` at ``i / size`` so the final cell wraps to the first texel.
+
         Animation
         ---------
         A query, not a change: nothing is recorded and the surface is untouched.
@@ -4120,12 +4131,18 @@ class Surface(Mob):
         # A closed axis is wrap-padded at render time, putting texel i at
         # i / W rather than i / (W - 1) (see wrap_pad_texture).
         closed_u, closed_v = surface_closed_axes(grid)
-        u = torch.arange(width, device=grid.device, dtype=grid.dtype) / (
-            width if closed_u and width > 1 else max(width - 1, 1)
-        )
-        v = torch.arange(height, device=grid.device, dtype=grid.dtype) / (
-            height if closed_v and height > 1 else max(height - 1, 1)
-        )
+        from algan.rendering.raytracing import settings as rt_settings
+
+        def texel_coordinates(size, closed):
+            indices = torch.arange(size, device=grid.device, dtype=grid.dtype)
+            if closed:
+                return indices / size
+            if rt_settings.texture_antialiasing:
+                return (indices + 0.5) / size
+            return indices / max(size - 1, 1)
+
+        u = texel_coordinates(width, closed_u)
+        v = texel_coordinates(height, closed_v)
 
         rows = max(1, _TEXTURE_LOCATION_CHUNK_TEXELS // height)
         locations = torch.cat(

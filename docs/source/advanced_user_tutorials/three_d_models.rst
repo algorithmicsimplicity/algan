@@ -145,7 +145,14 @@ Playing Baked Animations
 ========================
 
 If the file carries animation clips, :meth:`~algan.mobs.three_d_models.model_mob.Model3D.play_animation` records
-one onto Algan's timeline:
+one onto Algan's timeline.
+
+glTF clips must use ``LINEAR`` interpolation. ``STEP`` and ``CUBICSPLINE``
+channels raise :class:`~algan.errors.UnsupportedFeatureError` during import;
+export a baked ``LINEAR`` clip to use those animations. Playback preserves the
+spacing of baked sample times and restarts from the first pose on each loop.
+
+For example:
 
 .. code-block:: python
 

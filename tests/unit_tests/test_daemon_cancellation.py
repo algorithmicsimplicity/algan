@@ -1,17 +1,177 @@
 """Cancellation must discard compiler state before the next warm-daemon job."""
 
 import io
+import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from algan import daemon
 from algan.rendering import taichi_runtime as runtime
+
+
+def test_early_ctrl_c_waits_for_acceptance_and_restores_signal_handler(monkeypatch):
+    from algan import daemon_client
+
+    sent = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def sendall(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr(
+        daemon_client.socket, "create_connection", lambda *_args: Connection()
+    )
+    previous = signal.getsignal(signal.SIGINT)
+    accepted, restore = daemon_client._install_cancel_handler(
+        {"port": 1234, "token": "secret"}, "queued-job"
+    )
+    try:
+        signal.raise_signal(signal.SIGINT)
+        assert sent == []
+        accepted()
+        accepted()
+        assert sent == [b"cancel secret queued-job\n"]
+        with pytest.raises(KeyboardInterrupt):
+            signal.raise_signal(signal.SIGINT)
+    finally:
+        restore()
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+def test_scoped_cancel_does_not_interrupt_a_different_active_job(monkeypatch):
+    interrupts = []
+    monkeypatch.setattr(daemon._thread, "interrupt_main", lambda: interrupts.append(1))
+    active = daemon._RunJob({"script": "a.py", "request_id": "a"}, io.BytesIO())
+    queued = daemon._RunJob({"script": "b.py", "request_id": "b"}, io.BytesIO())
+    server = SimpleNamespace(
+        state=SimpleNamespace(token="secret"),
+        busy=threading.Event(),
+        cancel_lock=threading.Lock(),
+        cancel_pending=False,
+        jobs={"a": active, "b": queued},
+        active_job=active,
+    )
+    server.busy.set()
+    handler = object.__new__(daemon._TriggerHandler)
+    handler.server, handler.wfile = server, io.BytesIO()
+    handler._handle_cancel("wrong", "b")
+    assert not queued.done.is_set()
+    handler._handle_cancel("secret", "b")
+    handler._handle_cancel("secret", "b")
+    handler._handle_cancel("secret", "unknown")
+    assert queued.cancelled
+    assert queued.done.is_set()
+    assert interrupts == []
+    assert not active.cancelled
+    handler._handle_cancel("secret", "a")
+    handler._handle_cancel("secret", "a")
+    assert interrupts == [1]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="SIGINT process delivery is POSIX-only"
+)
+def test_cancelling_queued_remote_client_preserves_active_job(tmp_path):
+    """Real daemon, production clients, private socket and owned processes."""
+    state_dir = tmp_path / "daemon-home"
+    env = {
+        **os.environ,
+        "ALGAN_HOME": str(state_dir),
+        "ALGAN_USE_DAEMON": "0",
+        "ALGAN_DAEMON_CHILD": "1",
+        "ALGAN_PRECOMPILE_JOBS": "0",
+    }
+    a = tmp_path / "a.py"
+    a.write_text(
+        "from pathlib import Path\nimport time\n"
+        "folder = Path(__file__).parent\n"
+        "(folder / 'a-started').touch()\n"
+        "while not (folder / 'release-a').exists(): time.sleep(0.02)\n"
+        "(folder / 'a-finished').touch()\n"
+    )
+    b = tmp_path / "b.py"
+    b.write_text(
+        "from pathlib import Path\nPath(__file__).with_suffix('.ran').touch()\n"
+    )
+    client_code = (
+        "import json, sys\nfrom algan.daemon_client import run_remote\n"
+        "with open(sys.argv[1]) as f: state = json.load(f)\n"
+        "sys.exit(run_remote(state, sys.argv[2], argv=[]))\n"
+    )
+    processes = []
+
+    def wait_until(predicate):
+        deadline = time.monotonic() + 40
+        while not predicate():
+            assert time.monotonic() < deadline, (
+                "daemon/client did not reach the expected state"
+            )
+            time.sleep(0.025)
+
+    with (
+        (tmp_path / "daemon.log").open("w") as daemon_log,
+        (tmp_path / "b.log").open("w") as b_log,
+    ):
+        try:
+            server = subprocess.Popen(
+                [sys.executable, "-m", "algan.daemon", "--port", "0"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=daemon_log,
+                stderr=daemon_log,
+            )
+            processes.append(server)
+            state_file = state_dir / "daemon.json"
+            wait_until(state_file.exists)
+            # Verify that setup published an actual ephemeral socket.
+            assert json.loads(state_file.read_text())["port"] > 0
+            active = subprocess.Popen(
+                [sys.executable, "-c", client_code, str(state_file), str(a)],
+                env=env,
+                stdout=daemon_log,
+                stderr=daemon_log,
+            )
+            processes.append(active)
+            wait_until((tmp_path / "a-started").exists)
+            queued = subprocess.Popen(
+                [sys.executable, "-c", client_code, str(state_file), str(b)],
+                env=env,
+                stdout=b_log,
+                stderr=b_log,
+            )
+            processes.append(queued)
+            wait_until(lambda: "queued behind" in (tmp_path / "b.log").read_text())
+            queued.send_signal(signal.SIGINT)
+            assert queued.wait(timeout=15) == 130
+            assert active.poll() is None
+            (tmp_path / "release-a").touch()
+            assert active.wait(timeout=15) == 0
+            assert (tmp_path / "a-finished").exists()
+            assert not b.with_suffix(".ran").exists()
+        finally:
+            (tmp_path / "release-a").touch()
+            for process in reversed(processes):
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
 
 
 def test_cancel_is_authenticated_idle_aware_and_idempotent(monkeypatch):

@@ -97,10 +97,7 @@ rp.precompute_triangle_screen_bounds = _probe(
 )
 rp._frame_bez_pairs = _probe("bez_legacy", rp._frame_bez_pairs)
 rp._frame_pairs = _probe("tri_legacy", rp._frame_pairs)
-rp.raster_iteration_zero = _probe("raster", rp.raster_iteration_zero)
-# The default route is the sparse covered-pixel lifecycle
-# (raster_sparse_coverage); raster_iteration_zero is the dense fallback. Either
-# one counts as the raster front-end having engaged.
+# The sheet route enters through the sparse covered-pixel lifecycle.
 rp.prepare_sparse_raster_coverage = _probe("raster", rp.prepare_sparse_raster_coverage)
 
 

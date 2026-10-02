@@ -1,0 +1,14 @@
+{
+  "render": {"width": 640, "height": 480, "background": [0, 0, 0], "samples_per_pixel": 1},
+  "camera": {"position": [0, 0, 12], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 40, "near": 0.1, "far": 200},
+  "material": {
+    "type": "physical", "color": [1, 1, 1], "roughness": 0.85,
+    "metalness": 0, "ior": 1.5, "transmission": 0, "clearcoat": 0,
+    "clearcoat_roughness": 0, "sheen": 0, "sheen_roughness": 1,
+    "sheen_color": [0, 0, 0], "emissive": [0, 0, 0], "emissive_intensity": 1,
+    "specular_intensity": 1, "specular_color": [1, 1, 1], "opacity": 1,
+    "attenuation_color": [1, 1, 1], "attenuation_distance": 0,
+    "specular": [0.067, 0.067, 0.067], "shininess": 30, "bands": 3,
+    "near": 0.1, "far": 100
+  }
+}

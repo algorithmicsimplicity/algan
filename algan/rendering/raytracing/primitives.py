@@ -1204,7 +1204,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 # exactly as it did when the premultiplied map's amax went to
                 # zero (a non-negative scalar multiply commutes with amax).
                 alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
-            texture_visible = alpha_amax > min_alpha
+            texture_visible = (alpha_amax > min_alpha).to(visible.device)
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )
