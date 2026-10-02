@@ -41,6 +41,14 @@ does not support. Setting the field to ``True`` skips that check and tries
 anyway, falling back per function as above; ``False`` is off everywhere.
 ``ALGAN_TORCH_COMPILE`` overrides the field, which is how an A/B script flips
 arms between two renders in one process.
+
+Inductor's graph cache must also distinguish CPU vector widths. PyTorch 2.7
+keys the generated graph on compiler options but leaves the automatically
+selected CPU ISA out. Reusing an AVX-512 graph on an AVX2 host then compiles
+16-lane loops against 8-lane vector types, leaving parts of intermediate
+arrays unwritten. Resolve ``cpp.simdlen`` before handing options to Inductor
+so cached graphs and the C++ compiler agree, including after a cache moves
+between machines.
 """
 
 from __future__ import annotations
@@ -368,6 +376,31 @@ def _plain_tensor(value):
     return value
 
 
+def _inductor_compile_options(compile_options):
+    """Put the effective CPU vector width into Inductor's graph-cache key."""
+    from torch._inductor import config, cpu_vec_isa, list_mode_options
+
+    result = dict(compile_options)
+    mode = result.pop("mode", None)
+    options = dict(result.get("options") or {})
+    if mode is not None:
+        if result.get("options") is not None:
+            # Preserve torch.compile's diagnostic for mutually exclusive inputs.
+            return compile_options
+        options.update(list_mode_options(mode, dynamic=result.get("dynamic")))
+
+    # Select under the caller's overrides, then spell out the actual width.
+    # An unsupported requested width selects scalar code (width 0), just as
+    # Inductor normally does. Do not change the process-global configuration.
+    overrides = {
+        key: options[key] for key in ("cpp.simdlen", "cpp.vec_isa_ok") if key in options
+    }
+    with config.patch(overrides):
+        options["cpp.simdlen"] = cpu_vec_isa.pick_vec_isa().bit_width()
+    result["options"] = options
+    return result
+
+
 class _CompiledFunction:
     """One pipeline function, compiled lazily and demoted to eager on failure."""
 
@@ -386,7 +419,12 @@ class _CompiledFunction:
             if self.compiled is None:
                 _configure_dynamo_once()
                 _remember_vec_isa_probe()
-                self.compiled = torch.compile(self.fn, backend=_BACKEND, **self.options)
+                options = (
+                    _inductor_compile_options(self.options)
+                    if _BACKEND == "inductor"
+                    else self.options
+                )
+                self.compiled = torch.compile(self.fn, backend=_BACKEND, **options)
             return self.compiled
 
     def _demote(self, exc):

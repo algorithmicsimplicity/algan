@@ -244,19 +244,20 @@ def _transform_matching(
             incoming = (
                 _copy_parts(unmatched_target, mob.scene) if unmatched_target else None
             )
-            if (
-                unmatched_source
-                and unmatched_target
-                and (transform_mismatches or fade_transform_mismatches)
-            ):
-                transitions.append(
-                    (
-                        outgoing,
-                        incoming,
-                        "dissolve" if fade_transform_mismatches else "auto",
-                    )
-                )
+            if unmatched_source and unmatched_target and transform_mismatches:
+                transitions.append((outgoing, incoming, "auto"))
                 outgoing = incoming = None
+            mismatch_shift = None
+            if (
+                outgoing is not None
+                and incoming is not None
+                and fade_transform_mismatches
+            ):
+                # Translate the unmatched groups together while cross-fading.
+                # become(strategy="dissolve") fits individual bounding boxes,
+                # which stretches a wide glyph into a narrow one mid-fade.
+                mismatch_shift = incoming.get_center() - outgoing.get_center()
+                incoming.move(-mismatch_shift)
             transient = [source for source, _, _ in transitions]
             transient.extend(part for part in (outgoing, incoming) if part is not None)
             incoming_opacities = []
@@ -277,9 +278,13 @@ def _transform_matching(
             for source, target, strategy in transitions:
                 cleanup.append(source.become(target, strategy=strategy))
             if outgoing is not None:
+                if mismatch_shift is not None:
+                    outgoing.move(mismatch_shift)
                 outgoing.opacity = 0
                 cleanup.append(outgoing)
             if incoming is not None:
+                if mismatch_shift is not None:
+                    incoming.move(mismatch_shift)
                 for node, opacity in incoming_opacities:
                     node.set_non_recursive(opacity=opacity)
                 cleanup.append(incoming)
@@ -340,7 +345,8 @@ def TransformMatchingTex(
         Morph the remaining unmatched terms into one another. Defaults to
         ``False`` (fade them independently).
     fade_transform_mismatches
-        Cross-dissolve remaining terms while fitting their positions and sizes.
+        Cross-fade remaining terms while moving between their group centers,
+        preserving each glyph's size and shape.
         Mutually exclusive with ``transform_mismatches``. Defaults to ``False``.
     runtime
         Total animation time, in seconds. Defaults to ``None``, inheriting the
@@ -434,7 +440,8 @@ def TransformMatchingShapes(
         Morph remaining unmatched shapes into one another. Defaults to ``False``
         (fade them independently).
     fade_transform_mismatches
-        Cross-dissolve remaining shapes while fitting their positions and sizes.
+        Cross-fade remaining shapes while moving between their group centers,
+        preserving each shape's size and proportions.
         Mutually exclusive with ``transform_mismatches``. Defaults to ``False``.
     runtime
         Total animation time, in seconds. Defaults to ``None``, inheriting the

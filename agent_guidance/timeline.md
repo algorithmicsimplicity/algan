@@ -93,6 +93,12 @@ Attributes opted in via `enable_segment_windows` (only `Surface.color_texture`'s
 
 Every mob has a `Lifespan` — a `[spawn, despawn)` interval exposed as `Animatable.lifespan` and queried via `is_spawned()` / `is_despawned()`. Sub-mobs created by indexing (`mob[i]`) share their source's id and therefore its rows and lifespan; clones get a new id. Opacity is zeroed outside a mob's lifespan during materialization.
 
+Spawning a selection of a previously unspawned pack starts that shared lifespan,
+but reveals only the selected opacity rows. `_pending_packed_spawns` retains the
+remaining members' opacity targets; spawning another selection or the whole pack
+records their reveals on the same rows. Merely indexing must never spawn a view.
+This is opacity-based visibility, not independent lifespans for packed members.
+
 ### Why `reset=False` is safe
 
 Render-state preservation and `timeline_manager.clear_buffers()` restore authored

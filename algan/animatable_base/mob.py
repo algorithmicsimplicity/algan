@@ -1012,6 +1012,24 @@ class Mob(
         if recursive:
             change1 = spread(change1)
             change2 = spread(change2)
+        if key == "color" and not relative:
+            # Named colors carry alpha=1 even when only RGB/glow was chosen.
+            # Preserve each part's translucency, including alpha authored in
+            # Color itself rather than through fill_opacity.
+            def keep_alpha(target):
+                target = target.expand(
+                    torch.broadcast_shapes(target.shape, current_value.shape)
+                ).clone()
+                target[..., -1:] = torch.where(
+                    target[..., -1:] == 1,
+                    current_value[..., -1:],
+                    target[..., -1:],
+                )
+                return target
+
+            change1 = keep_alpha(change1)
+            if change2 is not None:
+                change2 = keep_alpha(change2)
         if relative:
             change1 = current_value * cast_to_tensor(change1)
             change2 = (
@@ -1082,6 +1100,9 @@ class Mob(
         A two-stage animation: the color travels out to ``color`` by the halfway
         point and back to ``new_color`` by the end. Good for drawing the eye to
         one part of a diagram without leaving it recolored.
+
+        Existing color alpha, including explicit fill and stroke opacities, is
+        preserved. A color carrying an alpha below 1 still changes it.
 
         Animation
         ---------
@@ -2562,7 +2583,7 @@ class Mob(
             raise TypeError("Mob object is not iterable")
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
-            add_to_scene=False, clone_data=False, recursive=True, animate_creation=False
+            add_to_scene=False, clone_data=False, recursive=True, spawn=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
         cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)

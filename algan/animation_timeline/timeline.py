@@ -2506,6 +2506,9 @@ class AnimationTimeline:
         self.attr_to_timeline = {}
         self.function_timeline = FunctionTimeline()
         self.mob_id_to_lifespan = {}
+        # Packed members share one lifespan. Partial spawns hide the remaining
+        # opacity rows and retain their targets until those members are spawned.
+        self._pending_packed_spawns = {}
         # Edit attribution state: a global execution counter for edits, the
         # function application the currently-executing animated function was
         # recorded as (edits made while it runs attach to it), and the most

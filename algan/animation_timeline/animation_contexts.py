@@ -1164,15 +1164,25 @@ class Lag(AnimationContext):
 class Sync(Lag):
     """Play the block's animations all at the same time.
 
-    Everything inside starts together, so the block takes as long as the longest
-    animation component animation rather than the sum of them.
+    Everything inside starts together. With an explicit ``runtime``, each
+    nonzero child animation stretches to that duration, including nested
+    sequences. Without one, each child keeps its duration and the block ends
+    when the longest child finishes.
+
+    Animation
+    ---------
+    Controls the timing of animations recorded inside the block. Instantaneous
+    changes inside ``Off()`` stay instantaneous.
 
     Parameters
     ----------
     runtime
-        Passed to :class:`~.AnimationContext` .
+        Duration in seconds for every child animation. Must be finite and
+        non-negative. Defaults to ``None``, keeping each child's own duration.
     **kwargs
-        Passed to :class:`~.Lag` with ``ratio=0`` .
+        Passed to :class:`~.Lag` with ``ratio=0``. Set
+        ``equalize_runtimes=False`` to preserve relative child durations when
+        rescaling the block to an explicit ``runtime``.
 
     Examples
     --------
@@ -1185,6 +1195,7 @@ class Sync(Lag):
 
     def __init__(self, runtime: float | None = None, **kwargs):
         _reject_fixed_lag_ratio("Sync", 0, kwargs)
+        kwargs.setdefault("equalize_runtimes", runtime is not None)
         super().__init__(ratio=0, runtime=runtime, **kwargs)
 
 
