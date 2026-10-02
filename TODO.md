@@ -54,18 +54,16 @@ physical glass. Validate continuation retries and surface-limit reporting too.
 
 ## 3. Make renderer-audit inputs equivalent before drawing new conclusions
 
-**Current gap.** The comparison bridges in
+**Completed in the October bug-audit fixes.** The comparison bridges in
 [`algan_render.py`](benchmarks/renderer_audit/algan_render.py) and
-[`three_render.mjs`](benchmarks/renderer_audit/three_render.mjs) disagree when a
-material omits its type or color. The Algan bridge ignores the JSON camera's
-`up`, `near` and `far`, and sphere tessellation is not shared. The corrected
-[`SPEC.md`](benchmarks/renderer_audit/SPEC.md) documents these limitations instead
-of promising identical scenes.
+[`three_render.mjs`](benchmarks/renderer_audit/three_render.mjs) now share render,
+camera and material defaults. Both apply camera `up`, `near` and `far`, and reject
+unknown camera keys. Python/JavaScript normalization and camera construction have
+regression coverage. [`SPEC.md`](benchmarks/renderer_audit/SPEC.md) records the
+remaining differences in tessellation, far clipping and material semantics.
 
-**Work.** Define shared defaults, validate the input format, map supported camera
-fields, and distinguish intentional geometry/material differences from missing
-translation. Test the bridge outputs before using new renders to rank defects.
-Also repair or retire `_prespawn_invisibility_check.py`, which imports the removed
+**Remaining work.** Broaden schema validation for geometry and material fields.
+Repair or retire `_prespawn_invisibility_check.py`, which imports the removed
 `memory_utils.empty_cache` name; do not treat old probe commands as acceptance
 coverage merely because their files still exist.
 

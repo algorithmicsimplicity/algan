@@ -240,6 +240,7 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
         style_keys = (
             "fill",
             "fill-opacity",
+            "opacity",
             "stroke",
             "stroke-opacity",
             "stroke-width",
@@ -283,14 +284,16 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
             The parsed SVG file.
         """
         result: list[VMobject] = []
-        stack: list[tuple[se.SVGElement, int]] = []
-        stack.append((svg, 1))
+        stack: list[tuple[se.SVGElement, int, float]] = []
+        stack.append((svg, 1, 1.0))
         group_id_number = 0
         vgroup_stack: list[str] = ["root"]
         vgroup_names: list[str] = ["root"]
         vgroups: dict[str, VGroup] = {"root": VGroup()}
         while len(stack) > 0:
-            element, depth = stack.pop()
+            element, depth, opacity = stack.pop()
+            own_opacity = element.values.get('attributes', {}).get('opacity', 1.0)
+            opacity *= max(0.0, min(1.0, float(own_opacity)))
             # Reduce stack heights
             vgroup_stack = vgroup_stack[0:(depth)]
             try:
@@ -304,7 +307,7 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
             vgroups[group_name] = vg
 
             if isinstance(element, (se.Group, se.Use)):
-                stack.extend((subelement, depth + 1) for subelement in element[::-1])
+                stack.extend((subelement, depth + 1, opacity) for subelement in element[::-1])
             # Add element to the parent vgroup
             try:
                 if isinstance(
@@ -323,6 +326,11 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
                 ):
                     mob = self.get_mob_from_shape_element(element)
                     if mob is not None:
+                        if isinstance(mob, VMobject):
+                            mob.set_fill(opacity=mob.get_fill_opacity() * opacity, family=False)
+                            mob.set_stroke(opacity=mob.get_stroke_opacity() * opacity, family=False)
+                        elif hasattr(mob, 'set_opacity'):
+                            mob.set_opacity(opacity)
                         result.append(mob)
                         for parent_name in vgroup_stack[:-1]:
                             vgroups[parent_name].add(mob)
@@ -433,6 +441,8 @@ class SVGMobject(VMobject, metaclass=ConvertToOpenGL):
             os.remove(temp_file)
         except OSError:
             pass
+        mob.stretch_to_fit_width(float(img.width))
+        mob.stretch_to_fit_height(float(img.height))
         mob.shift(
             _convert_point_to_3d(img.x + img.width / 2, img.y + img.height / 2)
         )

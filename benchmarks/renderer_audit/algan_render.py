@@ -34,6 +34,40 @@ _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent.parent
 sys.path.insert(0, str(_ROOT))
 
+_SCENE_DEFAULTS = json.loads((_HERE / "scene_defaults.json").read_text())
+
+
+def _normalize_spec(spec):
+    unknown = set(spec.get("camera", {})) - _SCENE_DEFAULTS["camera"].keys()
+    if unknown:
+        raise ValueError(f"Unsupported camera fields: {', '.join(sorted(unknown))}")
+    return {
+        **spec,
+        "render": {**_SCENE_DEFAULTS["render"], **spec.get("render", {})},
+        "camera": {**_SCENE_DEFAULTS["camera"], **spec.get("camera", {})},
+        "objects": [
+            {**obj, "material": {**_SCENE_DEFAULTS["material"], **(obj.get("material") or {})}}
+            for obj in spec.get("objects", [])
+        ],
+    }
+
+
+def _configure_camera(camera, spec):
+    import torch
+    import torch.nn.functional as F
+
+    position, target, up = (_vec(spec[key]) for key in ("position", "target", "up"))
+    forward = F.normalize(target - position, dim=-1)
+    right = F.normalize(torch.linalg.cross(forward, up), dim=-1)
+    if not bool(right.norm() > 0):
+        raise ValueError("Camera target and up must define a nondegenerate orientation")
+    up = torch.linalg.cross(right, forward)
+    camera.set_fov(float(spec["fov"]))
+    camera.far = float(spec["far"])
+    camera.near = float(spec["near"])
+    camera.move_to(position)
+    camera.basis = torch.stack((right, up, forward)).reshape(9)
+
 # Deterministic, comparable renders: no daemon reuse of a previous run's
 # adaptive state (the benchmarks in this tree do the same).
 os.environ.setdefault("ALGAN_USE_DAEMON", "0")
@@ -75,7 +109,8 @@ def _build_material(mat):
         MeshToonMaterial,
     )
 
-    kind = mat.get("type", "physical")
+    mat = {**_SCENE_DEFAULTS["material"], **(mat or {})}
+    kind = mat["type"]
     color = _color(mat.get("color"), (1.0, 1.0, 1.0))
     opacity = mat.get("opacity", 1.0)
 
@@ -273,7 +308,7 @@ def render(
     bounces: int | None = None,
     shadows: bool = True,
 ):
-    spec = json.loads(Path(spec_path).read_text())
+    spec = _normalize_spec(json.loads(Path(spec_path).read_text()))
 
     from algan import SETTINGS, Camera, Off, Scene, SceneManager, VideoSettings
     from algan.constants.spatial import CAMERA_ORIGIN
@@ -312,15 +347,18 @@ def render(
             _build_object(obj).spawn(animate=False)
 
         camera = Scene.get_camera()
-        camera.set_fov(float(cam_spec.get("fov", 40.0)))
-        camera.move_to(_vec(cam_spec["position"]))
-        camera.look_at(_vec(cam_spec.get("target", (0, 0, 0))))
+        _configure_camera(camera, cam_spec)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{spec.get('name', spec_path.stem)}.{suffix}.png"
     t0 = time.time()
     Scene.save_frame(str(out_path), video)
     seconds = time.time() - t0
+    limitations = []
+    if glossy and float(cam_spec["near"]) > 0 and SETTINGS.raytracing.glossy_prefilter:
+        limitations.append(
+            "Positive near clipping selects the classic renderer; the sheet glossy prefilter is unavailable."
+        )
     print(
         json.dumps(
             {
@@ -331,6 +369,8 @@ def render(
                 "anti_alias_level": aa,
                 "tonemap": tonemap,
                 "glossy_reflection": glossy,
+                "camera": cam_spec,
+                "limitations": limitations,
                 "shadows": shadows,
                 "seconds": round(seconds, 2),
             }

@@ -162,6 +162,8 @@ class Color(torch.Tensor):
         eighth digit for alpha), a CSS color name (``"teal"``), an
         ``(r, g, b)`` sequence in ``[0, 1]``, an ``(r, g, b, a)`` or
         ``(r, g, b, glow, a)`` sequence, or a tensor of any of those widths.
+        Tensors and NumPy arrays keep their leading batch dimensions and use
+        their final axis for channels, returning shape ``(*, 5)``.
         A four- or five-wide value supplies ``opacity`` (and ``glow``) itself.
     glow
         Additive emissive brightness, fed to the bloom accumulator. Unbounded
@@ -184,7 +186,8 @@ class Color(torch.Tensor):
     Raises
     ------
     :class:`.InvalidColorError`
-        If a string is neither a hex code nor a known CSS color name.
+        If a string is neither a hex code nor a known CSS color name, or an
+        array's final axis does not have three, four or five channels.
 
     See Also
     --------
@@ -233,21 +236,21 @@ class Color(torch.Tensor):
             elif len(rgb) == 3:
                 rgb = tuple(rgb)
         elif isinstance(rgb, (torch.Tensor, np.ndarray)):
-            # `as_tensor` is zero-copy on an ndarray, so the NumPy case costs
-            # nothing and does not need a branch of its own. Without it an
-            # ndarray fell through every branch and was splatted unconverted,
-            # which is how `to_rgba()` output reached the tuple below.
-            t = torch.as_tensor(rgb).reshape(-1)
-            if t.numel() == 5:
-                rgb, glow, opacity = (
-                    (float(t[0]), float(t[1]), float(t[2])),
-                    float(t[3]),
-                    float(t[4]),
+            # Preserve batches; only the last axis contains color channels.
+            # Clone before applying overrides so caller-owned arrays stay intact.
+            t = torch.as_tensor(
+                rgb, dtype=torch.get_default_dtype(), device=_ANIMATION_DEVICE
+            )
+            if t.ndim == 0 or t.shape[-1] not in (3, 4, 5):
+                raise InvalidColorError(
+                    "Color tensors must have 3, 4 or 5 channels on the last axis."
                 )
-            elif t.numel() == 4:
-                rgb, opacity = (float(t[0]), float(t[1]), float(t[2])), float(t[3])
-            elif t.numel() == 3:
-                rgb = (float(t[0]), float(t[1]), float(t[2]))
+            channels = Color.add_defaults(t).clone()
+            if t.shape[-1] < 5:
+                channels[..., 3] = glow
+            if t.shape[-1] == 3:
+                channels[..., 4] = opacity
+            return super().__new__(cls, channels, *args, **kwargs)
         return (
             super()
             .__new__(cls, (*rgb, glow, opacity), *args, **kwargs)
@@ -320,6 +323,7 @@ class Color(torch.Tensor):
         # change the shape every existing caller gets back.
         if any(size > 1 for size in value.shape[:-1]):
             out = unsqueeze_left(out, value)
+        value = unsqueeze_left(value, out)
         out = broadcast(out, value, [-1]).contiguous()
         return out
 

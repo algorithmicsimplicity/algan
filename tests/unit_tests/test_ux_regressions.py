@@ -798,7 +798,8 @@ def test_render_plan_describes_supported_deterministic_route():
     assert plan.as_dict()["unsupported_features"] == []
 
 
-def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
+@pytest.mark.parametrize("as_module", [False, True])
+def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch, as_module):
     import types
 
     module_name = "_algan_scene_registry_test"
@@ -818,7 +819,9 @@ def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     module.entry_point = entry_point
     monkeypatch.setitem(sys.modules, module_name, module)
 
-    results = algan_utils.render_all_funcs(module_name, smoke_test=True)
+    results = algan_utils.render_all_funcs(
+        module if as_module else module_name, smoke_test=True
+    )
 
     assert calls == ["scene"]
     assert results == []

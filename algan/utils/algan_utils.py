@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -690,7 +691,10 @@ def render_all_funcs(
             output_root = SETTINGS.paths.output_root
         if output_directory is None:
             output_directory = SETTINGS.paths.output_directory
-        output_directory = os.path.join(output_directory, module_name)
+        output_directory = os.path.join(
+            output_directory,
+            module_name if isinstance(module_name, str) else module_name.__name__,
+        )
         start = start_index + len(scene_funcs) if start_index < 0 else start_index
         end = len(scene_funcs) if max_rendered < 0 else start + max_rendered
 
@@ -753,29 +757,57 @@ def profile_func(func):
 
 
 def concatenate_videos(
-    directory: str,
-    threads: int = None,
+    directory: str | Path,
+    threads: int | None = None,
     reencode: bool = False,
-    output_file="output.mp4",
-    input_files=None,
-):
-    """
-    Concatenate all .mp4 files in a directory into output.mp4.
+    output_file: str | Path = "output.mp4",
+    input_files: Iterable[str | Path] | None = None,
+) -> Path | None:
+    """Join MP4 clips into one video using FFmpeg.
 
-    Files are sorted by their numeric prefix (e.g., 1_intro.mp4, 2_scene.mp4).
-    Uses ffmpeg with multithreading support.
+    An explicit manifest is validated before encoding or replacing the output,
+    and its order is preserved. Without a manifest, clips are sorted by their
+    numeric filename prefix, such as ``1_intro.mp4`` then ``2_scene.mp4``.
 
-    Args:
-        directory: Path to directory containing .mp4 files
-        threads: Number of threads for ffmpeg (default: CPU count)
-        reencode: If True, re-encode videos with multithreading.
-                 If False, use stream copy (faster, no re-encoding)
-        input_files: Optional explicit iterable of videos to concatenate. Paths
-                     default to ``directory`` when relative. When omitted, all
-                     MP4 files directly inside ``directory`` are used.
+    Parameters
+    ----------
+    directory
+        Directory containing the clips; relative paths resolve from here.
+    threads
+        FFmpeg encoder thread count. Defaults to ``None``, using the CPU count.
+    reencode
+        Re-encode to H.264/AAC instead of copying streams. Defaults to ``False``;
+        stream copying requires compatible input codecs and stream layouts.
+    output_file
+        Output path, absolute or relative to ``directory``. Defaults to
+        ``"output.mp4"``. An existing output is overwritten when FFmpeg runs.
+    input_files
+        Ordered iterable of clip paths. Defaults to ``None``, selecting all MP4
+        files directly in ``directory`` except the output itself.
 
-    Returns:
-        Path to output file if successful, None otherwise
+    Returns
+    -------
+    pathlib.Path or None
+        Absolute output path on success, or ``None`` when no clips were found
+        or FFmpeg failed.
+
+    Raises
+    ------
+    FileNotFoundError
+        If an explicitly listed clip is missing, or FFmpeg is unavailable.
+    ValueError
+        If an explicit input is not an MP4, names the output itself, or a path
+        contains a newline that FFmpeg's concat format cannot represent.
+
+    Examples
+    --------
+    Join two previously rendered clips in the requested order:
+
+    .. code-block:: python
+
+        from algan import concatenate_videos
+
+        concatenate_videos("algan_outputs", input_files=["intro.mp4", "end.mp4"])
     """
     # Default to CPU count
     if threads is None:
@@ -794,10 +826,26 @@ def concatenate_videos(
     if input_files is None:
         candidates = dir_path.glob("*.mp4")
     else:
-        candidates = (
+        candidates = [
             path if (path := Path(file)).is_absolute() else dir_path / path
             for file in input_files
-        )
+        ]
+        missing = [path for path in candidates if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "Cannot concatenate videos; missing input files: "
+                + ", ".join(str(path) for path in missing)
+            )
+        invalid = [
+            path
+            for path in candidates
+            if path.suffix.lower() != ".mp4" or path.resolve() == output_path
+        ]
+        if invalid:
+            raise ValueError(
+                "Invalid concat inputs (expected MP4 clips distinct from the output): "
+                + ", ".join(str(path) for path in invalid)
+            )
     mp4_files = [
         path
         for path in candidates
@@ -818,7 +866,9 @@ def concatenate_videos(
         # Files without numeric prefix go to end, maintain alphabetical order
         return float("inf")  # , file_path.name)
 
-    sorted_files = sorted(mp4_files, key=get_prefix_number)
+    sorted_files = (
+        sorted(mp4_files, key=get_prefix_number) if input_files is None else mp4_files
+    )
 
     # Create concat list file for ffmpeg
     concat_file = dir_path / "ffmpeg_concat_list.txt"
@@ -828,6 +878,9 @@ def concatenate_videos(
                 # Use absolute path with proper escaping for ffmpeg
                 # Replace backslashes with forward slashes for ffmpeg on Windows
                 abs_path = str(video_file.resolve()).replace("\\", "/")
+                if "\n" in abs_path or "\r" in abs_path:
+                    raise ValueError("FFmpeg concat paths cannot contain newlines")
+                abs_path = abs_path.replace("'", "'\\''")
                 f.write(f"file '{abs_path}'\n")
 
         # Build ffmpeg command

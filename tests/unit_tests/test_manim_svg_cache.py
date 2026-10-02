@@ -178,7 +178,7 @@ def test_pre_emoji_recipe_tag_is_reparsed():
 
     assert groups is None
     assert nodes == old
-    assert svg_cache._RECIPE_TAG == "algan-manim-svg-recipe-v3"
+    assert svg_cache._RECIPE_TAG == "algan-manim-svg-recipe-v4"
 
 
 def test_untagged_recipes_are_reparsed_when_the_group_map_is_needed():

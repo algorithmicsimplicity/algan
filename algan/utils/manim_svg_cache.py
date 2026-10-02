@@ -72,7 +72,8 @@ _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
 # ``<image>`` elements (color emoji). Those recipes can contain the vector
 # letters while permanently omitting the raster glyph even though the source
 # SVG on disk is now parseable correctly.
-_RECIPE_TAG = "algan-manim-svg-recipe-v3"
+# v4 preserves inherited SVG opacity and authored image viewport dimensions.
+_RECIPE_TAG = "algan-manim-svg-recipe-v4"
 
 # Process-local memo of already-loaded recipes, keyed by the stable hash. This
 # replaces Manim's SVG_HASH_TO_MOB_MAP for the patched path: a cache hit rebuilds

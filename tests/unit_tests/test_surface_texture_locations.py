@@ -25,6 +25,7 @@ Feature tests for the texture path: unmarked, so outside the fast suite.
 import pytest
 import torch
 
+from algan import SETTINGS
 from algan.constants.spatial import RIGHT
 from algan.mobs.shapes_3d import Sphere, Torus
 from algan.mobs.surfaces import surface as surface_module
@@ -38,6 +39,20 @@ from algan.rendering.logical_pn import (
     logical_pn_control_points,
 )
 from algan.scene_manager import SceneManager
+
+
+@pytest.fixture(autouse=True, params=[True, False], ids=["antialiased", "legacy"])
+def antialiasing(request):
+    with SETTINGS.raytracing.override(texture_antialiasing=request.param):
+        yield request.param
+
+
+def _open_coordinates(size, antialiasing):
+    return (
+        (torch.arange(size) + 0.5) / size
+        if antialiasing
+        else torch.linspace(0, 1, size)
+    )
 
 
 def _mesh(surface):
@@ -93,7 +108,7 @@ def test_every_texel_lands_on_the_surface_it_is_drawn_on():
     )
 
 
-def test_texel_positions_match_the_renderers_own_triangles():
+def test_texel_positions_match_the_renderers_own_triangles(antialiasing):
     """The closed-form cell lookup must agree with a brute-force search over
     the very triangles the renderer is handed.
     """
@@ -104,13 +119,15 @@ def test_texel_positions_match_the_renderers_own_triangles():
 
     # u is wrap-padded (the sphere closes on it), v is not.
     for i, j in ((0, 0), (7, 5), (13, 17), (31, 23), (20, 0)):
-        expected = _renderer_position(sphere, i / width, j / (height - 1))
+        expected = _renderer_position(
+            sphere, i / width, _open_coordinates(height, antialiasing)[j]
+        )
         assert torch.allclose(locations[i, j], expected, atol=1e-5), (
             f"texel {(i, j)} disagrees with the triangle the renderer samples it on"
         )
 
 
-def test_a_flat_surface_reports_its_exact_analytic_positions():
+def test_a_flat_surface_reports_its_exact_analytic_positions(antialiasing):
     """With no curvature to interpolate there is one right answer, and the
     coordinate function gives it.
     """
@@ -121,15 +138,15 @@ def test_a_flat_surface_reports_its_exact_analytic_positions():
 
     base = torch.stack(
         (
-            torch.linspace(0, 1, 16).view(-1, 1).expand(-1, 9),
-            torch.linspace(0, 1, 9).view(1, -1).expand(16, -1),
+            _open_coordinates(16, antialiasing).view(-1, 1).expand(-1, 9),
+            _open_coordinates(9, antialiasing).view(1, -1).expand(16, -1),
         ),
         -1,
     )
     assert torch.allclose(locations, plane.coord_function(base), atol=1e-6)
 
 
-def test_a_closed_axis_leaves_room_for_the_wrap():
+def test_a_closed_axis_leaves_room_for_the_wrap(antialiasing):
     """Texel ``W-1`` of a closed axis sits one step short of the seam, because
     the map is wrap-padded before it is sampled -- clamping instead would put
     it *on* the seam and squash the map by a texel.
@@ -154,14 +171,17 @@ def test_a_closed_axis_leaves_room_for_the_wrap():
 
     plane = Surface(grid_width=5, grid_height=5)
     open_axis = plane.get_texture_locations((width, 5))
+    first, last = _open_coordinates(width, antialiasing)[[0, -1]]
     assert torch.allclose(
-        open_axis[0, :, 0], plane.coord_function(torch.zeros(1, 2))[..., 0], atol=1e-6
-    ), "an open axis puts its first texel on the domain edge"
+        open_axis[0, :, 0],
+        plane.coord_function(torch.tensor([[first, 0.0]]))[..., 0],
+        atol=1e-6,
+    )
     assert torch.allclose(
         open_axis[-1, :, 0],
-        plane.coord_function(torch.tensor([[1.0, 0.0]]))[..., 0],
+        plane.coord_function(torch.tensor([[last, 0.0]]))[..., 0],
         atol=1e-6,
-    ), "and its last texel on the other edge"
+    )
 
 
 def test_positions_come_from_the_grid_not_the_coordinate_function():
@@ -195,7 +215,7 @@ def test_positions_follow_the_surface_when_it_moves():
     assert torch.allclose(after - before, torch.tensor([3.0, 0.0, 0.0]), atol=1e-5)
 
 
-def test_ignoring_normals_reports_the_flat_triangles_that_are_drawn():
+def test_ignoring_normals_reports_the_flat_triangles_that_are_drawn(antialiasing):
     """``ignore_normals`` leaves the renderer with no vertex normals, so it
     draws flat triangles; the reported positions have to be flat too.
     """
@@ -208,7 +228,7 @@ def test_ignoring_normals_reports_the_flat_triangles_that_are_drawn():
 
     # Plain barycentric interpolation over the same two triangles per cell.
     u = torch.arange(17.0) / 17  # u closes, so it is wrap-padded
-    v = torch.arange(13.0) / 12
+    v = _open_coordinates(13, antialiasing)
     fu = (u * (width - 1)).view(-1, 1)
     fv = (v * (height - 1)).view(1, -1)
     i = fu.floor().clamp(0, width - 2)

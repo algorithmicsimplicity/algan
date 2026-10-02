@@ -15,11 +15,14 @@ through one shared path.
 
 from __future__ import annotations
 
+import io
 import os
+import warnings
 
 import numpy as np
 import torch
 
+from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 from algan.mobs.three_d_models import animation as _anim
 from algan.mobs.three_d_models.scene_data import (
     AnimationData,
@@ -165,6 +168,9 @@ def _convert_mesh(geom, material_index, name):
         vertex_colors=vertex_colors,
         material_index=material_index,
         name=name or "",
+        source_mesh_index=getattr(geom, "metadata", {}).get(
+            "_algan_gltf_mesh_index", -1
+        ),
     )
 
 
@@ -229,39 +235,17 @@ def _node_local_transform(node):
     return _anim.compose_trs(translation, rotation, scale)
 
 
-def _gltf_mesh_counts(gltf, blob):
-    """Per glTF-mesh (vertex_count, face_count) from its first primitive, to map
-    glTF meshes onto the trimesh-built :class:`MeshData` list by shape.
-    """
-    counts = []
-    for mesh in gltf.meshes or []:
-        vc = fc = -1
-        if mesh.primitives:
-            prim = mesh.primitives[0]
-            pos = getattr(prim.attributes, "POSITION", None)
-            if pos is not None:
-                vc = gltf.accessors[pos].count
-            if prim.indices is not None:
-                fc = gltf.accessors[prim.indices].count // 3
-        counts.append((vc, fc))
-    return counts
-
-
 def _map_gltf_meshes(gltf, meshes, blob):
-    """Map each glTF mesh index to a unique built ``MeshData`` index by matching
-    (vertex_count, face_count). Returns ``None`` if any glTF mesh is ambiguous
-    or unmatched (caller then falls back to the flat static nodes).
-    """
-    our = [(m.vertices.shape[0], m.faces.shape[0]) for m in meshes]
-    counts = _gltf_mesh_counts(gltf, blob)
-    mapping = {}
-    used = set()
-    for gi, key in enumerate(counts):
-        matches = [i for i, k in enumerate(our) if k == key and i not in used]
-        if len(matches) != 1:
+    """Map stable glTF mesh IDs to every imported primitive of that mesh."""
+    mapping = {index: [] for index in range(len(gltf.meshes or []))}
+    for index, mesh in enumerate(meshes):
+        if mesh.source_mesh_index not in mapping:
             return None
-        mapping[gi] = matches[0]
-        used.add(matches[0])
+        mapping[mesh.source_mesh_index].append(index)
+    for index, mesh in enumerate(gltf.meshes or []):
+        triangles = sum(primitive.mode in (None, 4) for primitive in mesh.primitives)
+        if len(mapping[index]) != triangles:
+            return None
     return mapping
 
 
@@ -301,7 +285,7 @@ def _build_hierarchy(gltf, meshes, blob):
     for g in order:
         n = gnodes[g]
         mesh_indices = (
-            [mesh_map[n.mesh]] if n.mesh is not None and n.mesh in mesh_map else []
+            list(mesh_map[n.mesh]) if n.mesh is not None and n.mesh in mesh_map else []
         )
         out.append(
             NodeData(
@@ -334,6 +318,13 @@ def _parse_animations(gltf, blob):
             if target is None or target.node is None:
                 continue
             sampler = anim.samplers[chan.sampler]
+            interpolation = sampler.interpolation or "LINEAR"
+            if interpolation != "LINEAR":
+                raise UnsupportedFeatureError(
+                    f"glTF animation {anim.name or ai!r} uses {interpolation} "
+                    f"interpolation for {target.path}; Model3D currently supports "
+                    "LINEAR channels. Export a baked LINEAR clip instead."
+                )
             times = _accessor_array(gltf, sampler.input, blob).float().reshape(-1)
             values = _accessor_array(gltf, sampler.output, blob).float()
             runtime = max(runtime, float(times[-1]) if times.numel() else 0.0)
@@ -362,8 +353,11 @@ def _parse_animations(gltf, blob):
 def _augment_with_animations(file_path, meshes, static_nodes):
     """When ``file_path`` carries glTF animations, return ``(nodes, animations)``
     with the real hierarchy and parsed clips; otherwise return the static nodes
-    and no animations. Fully defensive: any failure degrades to static.
+    and no animations. Unsupported interpolation or ambiguous binding raises;
+    other parse failures warn before falling back to static geometry.
     """
+    if os.path.splitext(file_path)[1].lower() not in (".gltf", ".glb"):
+        return static_nodes, []
     try:
         from pygltflib import GLTF2
     except ImportError:
@@ -371,10 +365,6 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         # install is broken (or a downstream packager stripped it), not that
         # the feature is optional -- say so by name instead of silently
         # degrading like the defensive except below.
-        import warnings
-
-        from algan.errors import UnsupportedFeatureWarning
-
         warnings.warn(
             "glTF animation needs the 'pygltflib' package, which is not "
             "installed (pip install pygltflib); loading this model as static.",
@@ -394,11 +384,19 @@ def _augment_with_animations(file_path, meshes, static_nodes):
         nodes = _build_hierarchy(gltf, meshes, blob)
         animations = _parse_animations(gltf, blob)
         if nodes is None:
-            # Couldn't map meshes to the real hierarchy; keep flat static nodes
-            # (animations still bind to directly-animated leaf nodes by name).
-            return static_nodes, animations
+            raise UnsupportedFeatureError(
+                "Cannot bind glTF animation: imported primitives do not match "
+                "the source mesh hierarchy."
+            )
         return nodes, animations
-    except Exception:
+    except UnsupportedFeatureError:
+        raise
+    except Exception as exc:
+        warnings.warn(
+            f"Could not load glTF animation ({exc}); loading the model as static.",
+            UnsupportedFeatureWarning,
+            stacklevel=2,
+        )
         return static_nodes, []
 
 
@@ -414,7 +412,30 @@ def load_scene(file_path):
 
     # process=False keeps the authored vertex/UV/normal arrays aligned (no
     # vertex merging), which matters for textured meshes.
-    loaded = trimesh.load(file_path, process=False, force="scene")
+    source, load_options = file_path, {}
+    suffix = os.path.splitext(file_path)[1].lower()
+    if suffix in (".glb", ".gltf"):
+        from pygltflib import GLTF2
+
+        gltf = GLTF2().load(file_path)
+        if gltf.animations:
+            # trimesh preserves mesh extras on every primitive. Carry identity
+            # through that boundary instead of guessing from vertex/face counts
+            # or names (neither of which need be unique). The input file is untouched.
+            for index, mesh in enumerate(gltf.meshes):
+                mesh.extras = {**(mesh.extras or {}), "_algan_gltf_mesh_index": index}
+            payload = (
+                b"".join(gltf.save_to_bytes())
+                if suffix == ".glb"
+                else gltf.to_json().encode("utf-8")
+            )
+            source = io.BytesIO(payload)
+            load_options = {
+                "file_type": suffix[1:],
+                "resolver": trimesh.resolvers.FilePathResolver(file_path),
+                "merge_primitives": False,
+            }
+    loaded = trimesh.load(source, process=False, force="scene", **load_options)
 
     meshes: list[MeshData] = []
     materials: list[MaterialData] = []

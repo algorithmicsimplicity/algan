@@ -773,7 +773,7 @@ class ManimCompatMob(ManimMob):
         # structure exactly follows the backing Manim object.
         target_non_components = target.get_non_component_children()
         self.children[:] = list(self.components) + target_non_components
-        self.submobjects = target_non_components
+        self.submobjects = target.submobjects
         self._exposed_manim_baseline = None
         self._note_hierarchy_change()
         if isinstance(self, _TypstSelection):
@@ -832,6 +832,10 @@ class ManimCompatMob(ManimMob):
             # bound method captured by ``__getattr__``.
             self._sync_manim_from_algan()
             before_source = self.manim_mobject.copy()
+            before_topology = tuple(
+                (id(mob), tuple(id(child) for child in mob.submobjects))
+                for mob in self.manim_mobject.get_family()
+            )
             current_attribute = getattr(self.manim_mobject, name)
             result = current_attribute(
                 *(to_manim(arg) for arg in args),
@@ -843,6 +847,12 @@ class ManimCompatMob(ManimMob):
             if result is None:
                 self.sync_from_manim(before_source=before_source)
                 return None
+            after_topology = tuple(
+                (id(mob), tuple(id(child) for child in mob.submobjects))
+                for mob in self.manim_mobject.get_family()
+            )
+            if after_topology != before_topology:
+                self.sync_from_manim(before_source=before_source)
             return self._convert_delegated_result(result)
 
         return delegated
