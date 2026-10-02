@@ -312,6 +312,44 @@ in between when you change it:
 needs more integer digits, the display grows automatically; the extra slots remain
 available so its width stays stable afterwards.
 
+Use ``significant_figures`` to select significant digits instead. This overrides
+``decimal_places`` and ``integer_places``; omitting it preserves the default
+decimal-place formatting. The formatted number is centered on the Mob and may
+change width as its notation changes.
+
+.. algan:: TextSignificantFigures
+
+    from algan import *
+
+    counter = DecimalNumber(0, significant_figures=3).scale(2).spawn()
+    with Seq(runtime=3):
+        counter.value = 12000
+
+    Scene.save_video()
+
+Rounding uses Python's general (``g``) format on the stored floating-point value:
+nearest, with exact ties to an even last digit. For example, two figures show
+``1.25`` as ``1.2`` and ``1.75`` as ``1.8``; negatives round symmetrically.
+The sign does not count toward precision. Binary floating-point storage can
+affect values that appear to be decimal ties.
+
+Trailing zeros show the requested precision: three figures give ``12.0``,
+``0.00120``, and ``0.00`` for zero. Negative zero is displayed as zero. One
+figure displays zero as ``0``. After rounding, an exponent below ``-4`` or at
+least the requested precision selects scientific notation: three figures give
+``0.000100``, ``1.00e-05``, and ``1.00e+03`` for ``0.0001``, ``0.00001``, and
+``1000``. Exponents include a sign and at least two digits. Each animation frame
+uses these same rules on its interpolated value, even when crossing zero or
+changing notation.
+
+``significant_figures`` must be a positive integer or ``None``. Zero and negative
+precision raise ``ValueError``; booleans, floats (including ``3.0``), and other
+non-integers raise ``TypeError``. Significant-figures mode requires finite values.
+
+Assigning ``value`` before spawning prepares the number without showing it or
+adding animation time. Updates driven by another animation or updater also
+respect the number's spawn and despawn times.
+
 See Also
 ========
 
