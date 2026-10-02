@@ -642,7 +642,8 @@ class Tex(Mob):
 
         Segments are the pieces the text was constructed from, so a ``Tex`` built from
         several strings can have each one animated separately -- the usual way to
-        highlight one term of an equation.
+        highlight one term of an equation. Calling ``spawn()`` on the segment
+        reveals only its glyphs; other segments can be spawned later.
 
         Parameters
         ----------

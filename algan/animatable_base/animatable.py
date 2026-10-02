@@ -26,6 +26,7 @@ import copy
 import inspect
 import warnings
 from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from functools import wraps
 
@@ -150,27 +151,65 @@ def _rejecting_timing_kwargs(func):
     return wrapper
 
 
-def animated_function(function=None, *, animated_args=None, unique_args=()):
-    """Decorator that turns a function into an animated function. The animation is created by interpolating
-    all args named in the animated_args dict from the value provided in this dict the value passed as an actual argument
-    when the function is called. Most commonly, animated_args will just be {'t': 0}, and the function
-    will be called with t=1.
+def animated_function(
+    function: Callable | None = None,
+    *,
+    animated_args: Mapping | None = None,
+    unique_args: Sequence[str] = (),
+) -> Callable:
+    """Turn a function taking a Mob into an animation.
+
+    The first argument identifies the Mob to animate. Arguments listed in
+    ``animated_args`` interpolate from their specified starting values to the
+    values passed when calling the function. Other arguments stay fixed.
+
+    Animation
+    ---------
+    Calling the decorated function records an animation when the Mob or one
+    of its descendants has spawned. It runs over the current context's runtime
+    (1 second by default); use ``with Seq(runtime=3):`` to change the duration
+    or ``with Off():`` to apply the change instantly. The function's own writes
+    determine which descendants change.
 
     Parameters
     ----------
     function
-        The function to be decorated. It MUST accept a :class:`~.Mob` as its first argument, and any arguments
-        given in `animated_args` or `unique_args` must also be arguments of this function.
-
+        Function accepting a :class:`~.Mob` or :class:`~.Animatable` as its first
+        positional argument. Defaults to ``None`` when configuring the decorator
+        with parentheses.
     animated_args
-        A dictionary with strings as keys and floats as values. The strings are names of arguments which will
-        be animated. The arguments will be animated by linearly interpolating their values from the corresponding
-        value provided in the animated_args dict to the value they have when the function is called.
-
+        Mapping of parameter names to initial numeric values, typically
+        ``{"t": 0}`` for a function called with ``t=1``. The function must accept
+        tensor values for these parameters, including a batch of frame times.
+        Defaults to ``None``, meaning no interpolated parameters.
     unique_args
-        A list of strings. This is only for batching, when the function is called with different values for a unique
-        argument, they will be batched as two entirely separate functions. Any arguments named in `unique_args` MUST
-        only accept string values.
+        Names of string-valued parameters that distinguish separate animation
+        calls for batching. Defaults to an empty tuple.
+
+    Returns
+    -------
+    Callable
+        The decorated function, or a decorator if ``function`` is omitted.
+
+    Raises
+    ------
+    TypeError
+        When the decorated function is called with a first argument that is
+        not a Mob or Animatable.
+
+    Examples
+    --------
+    .. algan:: ExampleAnimatedFunction
+
+        from algan import *
+
+        @animated_function(animated_args={"t": 0})
+        def slide(mob, t=1):
+            mob.move(RIGHT * t)
+
+        square = Square().spawn()
+        slide(square)
+        Scene.save_video()
     """
     if animated_args is None:
         animated_args = {}
@@ -179,6 +218,12 @@ def animated_function(function=None, *, animated_args=None, unique_args=()):
         @animation_manager_bound
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
+            if not isinstance(self, Animatable):
+                raise TypeError(
+                    f"{func.__name__}() is an animated_function: its first argument "
+                    f"must be a Mob (or Animatable), got {type(self).__name__}. "
+                    "Pass the Mob to animate before the animation parameters."
+                )
             # Every animated method funnels through here, including the ones
             # with no **kwargs of their own (rotate, scale, spawn, become,
             # ...). Checking here rather than inside the wrapped function is
@@ -313,7 +358,8 @@ class Animatable:
         A label for this object, used to identify it in ``repr()`` and in any
         warning or error that mentions it -- so ``Square(name="title box")``
         turns "Square" into "Square 'title box'" wherever Algan reports a
-        problem with it. Defaults to ``None``, meaning the class name alone.
+        problem with it. Defaults to ``None``, preserving a name supplied by a
+        subclass, or using the class name alone when no name has been supplied.
     animation_manager
         The :class:`~.AnimationManager` controlling animations applied to this
         object. Defaults to ``None``, meaning the Scene's own.
@@ -390,7 +436,8 @@ class Animatable:
         self.animation_manager = animation_manager
         if add_to_scene:
             animation_manager.context.add_mob(self)
-        self.name = name
+        if name is not None or not hasattr(self, "name"):
+            self.name = name
 
         self.anchor_priority = 0
 
@@ -1051,6 +1098,16 @@ class Animatable:
         """
         return self.lifespan.end() >= 0
 
+    def _has_pending_spawn_rows(self):
+        timeline = self.scene.timeline_manager
+        pending = timeline._pending_packed_spawns.get(self.id)
+        if pending is None:
+            return False
+        opacity = timeline.attr_to_timeline["opacity"]
+        rows = opacity.mob_id_to_inds[self.id]
+        selected = attr_ranges_for_mob(opacity, self).tensor()
+        return bool((pending[1] & torch.isin(rows, selected)).any())
+
     def _setattr_and_record_modification(
         self, key, value, include_descendants: bool = False, _scope=None
     ):
@@ -1647,7 +1704,9 @@ class Animatable:
         :class:`~algan.animation_timeline.animation_contexts.AnimationContext`.
 
         Spawning is recursive: children spawn with their parent. Spawning a Mob that
-        is already spawned does nothing.
+        is already spawned does nothing. Spawning a packed selection, such as
+        ``tex.get_segment(0)``, reveals only those members. Spawning another
+        selection or the whole pack later reveals its remaining members.
 
         Animation
         ---------
@@ -1692,6 +1751,8 @@ class Animatable:
                     DespawnedMobWarning,
                     stacklevel=2,
                 )
+            elif not self.animation_manager.context.spawn_at_end:
+                self._spawn_packed_rows(animate)
             return self
         self._create_recursive(animate)
         self.animation_manager.context.on_create(self)
@@ -1736,6 +1797,100 @@ class Animatable:
         return members
 
     def _create_recursive(self, animate=True):
+        with Sync(animation_manager=self.animation_manager):
+            self._spawn_packed_rows(animate)
+            return self._create_recursive_with_hooks(animate)
+
+    def _spawn_packed_rows(self, animate):
+        """Reveal selected members without opening the rest of their pack.
+
+        The shared lifespan starts with the first selection. Later selections
+        get ordinary opacity edits on their own rows, so sparse and backwards
+        replay need no special visibility path in the renderer.
+        """
+        timeline = self.scene.timeline_manager
+        opacity = timeline.attr_to_timeline.get("opacity")
+        if opacity is None or not hasattr(self, "_apply_change"):
+            return
+        standard_fades = None
+        by_id = defaultdict(list)
+        for node in self.get_descendants():
+            if node.id in opacity.mob_id_to_inds:
+                by_id[node.id].append(node)
+        with Sync(animation_manager=self.animation_manager):
+            for mob_id, nodes in by_id.items():
+                node = nodes[0]
+                if node.is_despawned():
+                    continue
+                pending = timeline._pending_packed_spawns.get(mob_id)
+                if pending is None and (
+                    node.is_spawned() or any(n.data_sub_inds is None for n in nodes)
+                ):
+                    continue
+                rows = opacity.mob_id_to_inds[mob_id]
+                selected = torch.isin(
+                    rows,
+                    torch.cat(
+                        [attr_ranges_for_mob(opacity, n).tensor() for n in nodes]
+                    ),
+                )
+                if pending is None:
+                    targets = opacity.get(rows).clone()
+                    remaining = torch.ones_like(selected)
+                    timeline._pending_packed_spawns[mob_id] = (targets, remaining)
+                    if standard_fades is None:
+                        standard_fades = {
+                            id(member)
+                            for member in self._collatable_members(
+                                "on_create", lambda n: n.lifespan.start() < 0
+                            )
+                        }
+                    if not any(id(member) in standard_fades for member in nodes):
+                        # A custom entrance owns this subtree's animation.
+                        # Hide unselected rows, but leave the selected targets
+                        # and lifespan for that hook and the usual spawn walk.
+                        # Fading here too doubles DecimalNumber's decimal fade.
+                        initial = targets.clone()
+                        initial[:, ~selected.to(targets.device)] = 0
+                        timeline.modify_attribute("opacity", rows, initial)
+                        remaining[selected] = False
+                        if not bool(remaining.any()):
+                            del timeline._pending_packed_spawns[mob_id]
+                        continue
+                    # No member has spawned: establish the hidden initial state
+                    # before starting the shared lifespan and recording reveals.
+                    timeline.modify_attribute(
+                        "opacity", rows, torch.zeros_like(targets)
+                    )
+                    node.lifespan.start = (
+                        self.animation_manager.context.get_current_time()
+                    )
+                    timeline.register_spawn(node, node.lifespan)
+                else:
+                    targets, remaining = pending
+                selected = selected & remaining
+                if not bool(selected.any()):
+                    continue
+                remaining[selected] = False
+                selected_rows = rows[selected]
+                scope = RowRanges.from_contiguous_blocks([selected_rows])
+                if scope is None:
+                    scope = RowRanges(None, tensor=selected_rows)
+                target = targets[:, selected.to(targets.device)]
+                if animate:
+                    current = node.get_animated_attribute("opacity", _scope=scope)
+                    node._apply_change(
+                        "opacity", target - current, recursive=False, scope=scope
+                    )
+                else:
+                    with Off(animation_manager=self.animation_manager):
+                        node._setattr_and_record_modification(
+                            "opacity", target, _scope=scope
+                        )
+                if not bool(remaining.any()):
+                    del timeline._pending_packed_spawns[mob_id]
+
+    def _create_recursive_with_hooks(self, animate=True):
         if animate and not _opt_disabled("collate") and hasattr(self, "_apply_change"):
             with Sync(animation_manager=self.animation_manager):
                 fresh = self._collatable_members(

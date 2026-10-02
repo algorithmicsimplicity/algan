@@ -1087,6 +1087,10 @@ class Mob(
         point and back to ``new_color`` by the end. Good for drawing the eye to
         one part of a diagram without leaving it recolored.
 
+        Alpha set through ``fill_opacity`` or ``stroke_opacity`` is preserved,
+        as it is by an ordinary ``color`` assignment. A color carrying an alpha
+        below 1 still changes it.
+
         Animation
         ---------
         Recorded as an animation over the current context's runtime (1 second by
@@ -2583,7 +2587,7 @@ class Mob(
             raise TypeError("Mob object is not iterable")
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
-            add_to_scene=False, clone_data=False, recursive=True, animate_creation=False
+            add_to_scene=False, clone_data=False, recursive=True, spawn=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
         cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)

@@ -1031,10 +1031,11 @@ class BezierCircuitCubic(Mob):
         self.border_grid = Mob(texture_triangle_vertices, **border_texture_kwargs)
         self.border_grid.exclude_from_boundary = True
         self.border_grid.is_primitive = True
-        # ``color`` on the circuit means fill color.  The border grid remains a
-        # child so it follows transforms and participates in waves/cloning, but
-        # it must not inherit ordinary fill-color writes from an ancestor.
-        self.border_grid._excluded_from_parent_attrs = frozenset({"color"})
+        # Filled shapes keep an independent border. An unfilled path has only
+        # a stroke, so ordinary color writes (including a parent's) reach it.
+        self.border_grid._excluded_from_parent_attrs = (
+            frozenset({"color"}) if self.filled else frozenset()
+        )
         self.add_children(self.border_grid)
 
         self.control_points = Mob(control_points, **fill_texture_kwargs)
@@ -1433,8 +1434,9 @@ class BezierCircuitCubic(Mob):
     def stroke_color(self):
         """The color of the circuit's border stroke.
 
-        Separate from :attr:`~algan.animatable_base.mob.Mob.color`, which is the
-        *fill*: setting one never changes the other, and on a filled circuit the
+        On filled circuits, separate from :attr:`~algan.animatable_base.mob.Mob.color`,
+        which changes only the fill. On unfilled paths such as Line, setting
+        ``color`` also changes the stroke. On a filled circuit the
         border is drawn inside the outline unless
         ``SETTINGS.style.border_placement`` is ``"centered"``. Accepts anything a color attribute
         does -- a :class:`~algan.constants.color.Color`, a named constant, a hex

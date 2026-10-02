@@ -158,7 +158,10 @@ class Group(Mob):
         if (
             self._link_children
             and initial_mobs
-            and all(mob.is_spawned() for mob in initial_mobs)
+            and all(
+                mob.is_spawned() and not mob._has_pending_spawn_rows()
+                for mob in initial_mobs
+            )
         ):
             self.spawn(animate=False)
 
@@ -183,6 +186,18 @@ class Group(Mob):
             )
         )
         return midpoint(locations) if locations else ORIGIN
+
+    def _get_bounding_box_recursive(self, lower_corner, upper_corner, axes=None):
+        # A Group's anchor is a transform pivot, not geometry. Its members
+        # can move through another parent (including a packed Text owner)
+        # without moving this pivot, so measure only their live bounds.
+        if not self.children:
+            return super()._get_bounding_box_recursive(lower_corner, upper_corner, axes)
+        for child in self.children:
+            lower_corner, upper_corner = child._get_bounding_box_recursive(
+                lower_corner, upper_corner, axes
+            )
+        return lower_corner, upper_corner
 
     def _get_mob_midpoint(self) -> torch.Tensor:
         """Get the middle of the Group's members' combined extent.
