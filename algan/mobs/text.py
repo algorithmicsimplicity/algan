@@ -65,6 +65,20 @@ _LATEX_BINARIES = ("latex", "dvisvgm")
 _LATEX_TOOLCHAIN_FOUND = None
 
 
+def _escape_plain_text(text):
+    # One pass: inserted TeX commands must never be escaped a second time.
+    replacements = {char: "\\" + char for char in "#$%&_{}"}
+    replacements.update(
+        {
+            "\\": r"\textbackslash{}",
+            "~": r"\textasciitilde{}",
+            "^": r"\textasciicircum{}",
+            "\n": r"\\",
+        }
+    )
+    return "".join(replacements.get(char, char) for char in str(text))
+
+
 def _require_latex_toolchain():
     """Raise before anything is written when there is no TeX distribution.
 
@@ -628,7 +642,8 @@ class Tex(Mob):
 
         Segments are the pieces the text was constructed from, so a ``Tex`` built from
         several strings can have each one animated separately -- the usual way to
-        highlight one term of an equation.
+        highlight one term of an equation. Calling ``spawn()`` on the segment
+        reveals only its glyphs; other segments can be spawned later.
 
         Parameters
         ----------
@@ -1092,12 +1107,7 @@ class Text(Tex):
                 **kwargs,
             )
         else:
-            import re
-
-            escaped = re.sub(r"([#$%&_{}])", r"\\\1", self.text)
-            escaped = escaped.replace("~", r"\textasciitilde{}")
-            escaped = escaped.replace("^", r"\textasciicircum{}")
-            escaped = escaped.replace("\n", r"\\")
+            escaped = _escape_plain_text(self.text)
             super().__init__(
                 rf"\text{{{escaped}}}",
                 font_size=font_size,
@@ -1147,12 +1157,8 @@ class TextTriangulated(TexTriangulated):
     def __init__(self, text, **kwargs):
         # Reuse Text's fallback preprocessing, then construct the triangulated
         # TeX representation directly.
-        import re
-
         font_size = kwargs.pop("font_size", 48)
-        escaped = re.sub(r"([#$%&_{}])", r"\\\1", str(text))
-        escaped = escaped.replace("~", r"\textasciitilde{}")
-        escaped = escaped.replace("^", r"\textasciicircum{}")
+        escaped = _escape_plain_text(text)
         super().__init__(rf"\text{{{escaped}}}", font_size=font_size, **kwargs)
         self.text = str(text)
         self.latex = False

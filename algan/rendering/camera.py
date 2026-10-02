@@ -251,6 +251,10 @@ class Camera(Mob):
             self.screen = Mob(
                 scene=self.scene,
                 location=self.location + screen_distance * self.get_forward_direction(),
+                basis=squish(
+                    unsquish(self.basis, -1, 3)
+                    * self.basis.new_tensor([1, 1, -1]).view(3, 1)
+                ),
                 add_to_scene=False,
             )
             # The screen is a projection proxy, not an optical element: a lens

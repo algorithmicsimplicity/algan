@@ -72,8 +72,35 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 
 from algan.logging.logger import PERF, get_logger
+from algan.settings import SETTINGS
 
 logger = get_logger("raytracing")
+
+
+#: The spelling the failure messages point a user at. The path tracer is the
+#: renderer for the scenes the deterministic one cannot do (too many lights, a
+#: split pool that exhausts memory, global illumination --
+#: ``raytracing/DESIGN_path_tracer_roadmap.md``), and the message at the
+#: failure is the documentation the user actually reads, so each failure that
+#: the fallback exists for names the switch. Two bounces is the fallback's
+#: budget for direct lighting; a user who needs GI raises it from there.
+PATH_TRACER_FALLBACK_SPELLING = (
+    "SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)"
+)
+
+
+def path_tracer_fallback_hint():
+    """The sentence a deterministic-renderer memory failure appends, or
+    nothing when the path tracer is already the renderer that failed.
+    """
+    if int(SETTINGS.raytracing.samples_per_pixel) > 1:
+        return ""
+    return (
+        " Alternatively render with the path tracer, whose memory per path "
+        "is fixed and does not grow with reflective or transparent geometry: "
+        + PATH_TRACER_FALLBACK_SPELLING
+        + "."
+    )
 
 
 @dataclass(frozen=True)
@@ -150,7 +177,8 @@ _CEILING_MESSAGES = {
         "ALGAN_MAX_SHADOW_LIGHTS before 'import algan', use fewer / "
         "coarser-sampled lights, or render with the path tracer, which "
         "samples lights instead of summing them and has no shadow cap: "
-        "SETTINGS.raytracing.set(samples_per_pixel=16, max_bounces=2)."
+        + PATH_TRACER_FALLBACK_SPELLING
+        + "."
     ),
     "sheet_layers": (
         "{count} fragment(s) overlapped their own surface more than {cap} "

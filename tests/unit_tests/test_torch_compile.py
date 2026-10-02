@@ -10,6 +10,7 @@ function itself raises propagates untouched, and the switch is read live.
 from __future__ import annotations
 
 import sys
+import types
 import warnings
 
 import pytest
@@ -131,6 +132,91 @@ def test_decorator_keyword_form_and_eager_attribute():
     assert _wrapped_state(f).options["dynamic"] is True
     SETTINGS.computing.set(torch_compile=True)
     assert f(torch.ones(5)) == 5
+
+
+@pytest.mark.parametrize("width", [0, 128, 256, 512])
+def test_inductor_graph_cache_keys_the_resolved_cpu_vector_width(monkeypatch, width):
+    """A cache moved between CPUs must not reuse loops with another lane count."""
+    from torch._inductor import config, cpu_vec_isa
+
+    calls = []
+
+    def compile_stub(fn, **kwargs):
+        calls.append(kwargs)
+        return fn
+
+    monkeypatch.setattr(tc, "_BACKEND", "inductor")
+    monkeypatch.setattr(tc, "_remember_vec_isa_probe", lambda: None)
+    monkeypatch.setattr(torch, "compile", compile_stub)
+    monkeypatch.setattr(
+        cpu_vec_isa,
+        "pick_vec_isa",
+        lambda: types.SimpleNamespace(bit_width=lambda: width),
+    )
+
+    @tc.compiled(dynamic=True)
+    def project(x):
+        return x + 1
+
+    with config.patch({"cpp.simdlen": None}):
+        SETTINGS.computing.set(torch_compile=True)
+        assert torch.equal(project(torch.zeros(3)), torch.ones(3))
+        assert config.cpp.simdlen is None
+
+    assert calls == [
+        {
+            "backend": "inductor",
+            "dynamic": True,
+            "fullgraph": False,
+            "options": {"cpp.simdlen": width},
+        }
+    ]
+
+
+def test_vector_width_resolution_respects_compile_overrides(monkeypatch):
+    from torch._inductor import config, cpu_vec_isa
+
+    seen = []
+
+    def pick():
+        seen.append((config.cpp.simdlen, config.cpp.vec_isa_ok))
+        return types.SimpleNamespace(bit_width=lambda: 256)
+
+    monkeypatch.setattr(cpu_vec_isa, "pick_vec_isa", pick)
+    requested = {
+        "dynamic": True,
+        "options": {"cpp.simdlen": 256, "cpp.vec_isa_ok": True, "max_autotune": True},
+    }
+    with config.patch({"cpp.simdlen": None, "cpp.vec_isa_ok": None}):
+        result = tc._inductor_compile_options(requested)
+        assert (config.cpp.simdlen, config.cpp.vec_isa_ok) == (None, None)
+    assert seen == [(256, True)]
+    assert result == requested
+    assert result is not requested
+    assert result["options"] is not requested["options"]
+
+
+def test_vector_width_resolution_preserves_compile_modes(monkeypatch):
+    from torch._inductor import cpu_vec_isa, list_mode_options
+
+    monkeypatch.setattr(
+        cpu_vec_isa,
+        "pick_vec_isa",
+        lambda: types.SimpleNamespace(bit_width=lambda: 256),
+    )
+    requested = {"mode": "reduce-overhead", "dynamic": False, "fullgraph": True}
+    result = tc._inductor_compile_options(requested)
+    assert result == {
+        "dynamic": False,
+        "fullgraph": True,
+        "options": {
+            **list_mode_options("reduce-overhead", dynamic=False),
+            "cpp.simdlen": 256,
+        },
+    }
+    assert requested["mode"] == "reduce-overhead"
+    invalid = {"mode": "default", "options": {}}
+    assert tc._inductor_compile_options(invalid) == invalid
 
 
 def test_a_compile_failure_warns_once_and_runs_eagerly(monkeypatch):

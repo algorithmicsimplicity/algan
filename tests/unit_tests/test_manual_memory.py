@@ -681,3 +681,37 @@ def test_projection_cleanup_does_not_defer_another_threads_requests(monkeypatch)
         worker.join()
         assert events == ["gc"]
     assert events == ["gc", "gc"]
+
+
+def test_a_finished_render_leaves_no_closure_cycle_holding_its_arena(tmp_path):
+    """``render_batch_raytraced`` splits a batch with a nested ``render_chunk``
+    that calls itself, and a self-recursive closure is a reference cycle. It
+    captured the job's ``ManualMemory``, so every finished render left its
+    whole arena reachable only through cyclic garbage: on the explainer
+    benchmark a second render found the first one's 2.7 GB arena still
+    allocated, freed only by the full ``gc.collect()`` before the next job.
+    The render must break that cycle itself.
+    """
+    import gc
+
+    from test_path_tracer import _render_scene_exp
+
+    from algan import SMOKE_TEST, WHITE, Square
+
+    def build(scene):
+        Square().set_color(WHITE).spawn(animate=False)
+
+    gc.collect()
+    _render_scene_exp(tmp_path, "cycle.png", build, 1, video=SMOKE_TEST)
+    gc.set_debug(gc.DEBUG_SAVEALL)
+    try:
+        gc.collect()
+        leaked = [
+            o
+            for o in gc.garbage
+            if isinstance(o, types.FunctionType) and o.__name__ == "render_chunk"
+        ]
+    finally:
+        gc.set_debug(0)
+        gc.garbage.clear()
+    assert not leaked, "render_chunk survived the render inside a reference cycle"

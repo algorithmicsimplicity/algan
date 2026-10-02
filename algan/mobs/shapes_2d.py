@@ -375,8 +375,62 @@ class Line(BezierCircuitCubic):
             ((points - start) * chord).sum(-1, keepdim=True) / length_squared
         ).clamp(0.0, 1.0)
 
-    def put_start_and_end_on(self, start, end):
-        target = Line(start, end, scene=self.scene, add_to_scene=False)
+    def put_start_and_end_on(
+        self,
+        start: torch.Tensor | tuple[float, float, float],
+        end: torch.Tensor | tuple[float, float, float],
+    ) -> Line:
+        """Move the line's endpoints while preserving its appearance.
+
+        Animation
+        ---------
+        For a spawned line, record the endpoint change over the current
+        context's runtime (1 second by default). Use ``Sync(runtime=2)`` to
+        change the duration or ``Off()`` to apply it immediately. Stroke color,
+        opacity, width, caps, joins and draw order are preserved.
+
+        Parameters
+        ----------
+        start
+            New start point in world units, shape ``(*, 3)``.
+        end
+            New end point in world units, shape ``(*, 3)``.
+
+        Returns
+        -------
+        :class:`~.Line`
+            This Mob, so calls can be chained.
+
+        Examples
+        --------
+        Turn a thick red line upright:
+
+        .. algan:: Example1LinePutStartAndEndOn
+
+            from algan import *
+
+            line = Line(LEFT, RIGHT, color=RED, stroke_width=10).spawn()
+            line.put_start_and_end_on(DOWN, UP)
+            Scene.save_video()
+        """
+        target = Line(
+            start,
+            end,
+            scene=self.scene,
+            add_to_scene=False,
+            color=self.color,
+            stroke_color=self.stroke_color,
+            stroke_width=self.stroke_width,
+            opacity=self.opacity,
+            grid_width=self.grid_width,
+            grid_height=self.grid_height,
+            cap_style=self.cap_style,
+            joint_type=self.joint_type,
+            miter_limit=self.miter_limit,
+            z_index=self.z_index,
+            shade_in_3d=self.shade_in_3d,
+        )
+        target.z_index = self.z_index
         return self.become(target, detach_history=False)
 
 

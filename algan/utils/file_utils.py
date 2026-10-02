@@ -46,17 +46,18 @@ def resolve_asset_path(file_path):
 
 
 def get_image(file_path):
-    if isinstance(file_path, str):
+    if isinstance(file_path, (str, os.PathLike)):
         # Imported here, not at module scope, to keep PIL off algan's import-time
         # critical path.
         from PIL import Image
 
         with Image.open(resolve_asset_path(file_path)) as pil_image:
-            array = np.array(pil_image)
-        if array.ndim == 2:
-            # Grayscale: PIL/numpy drop the channel axis entirely; put it back
-            # so downstream code always sees [H, W, C].
-            array = array[:, :, None]
+            mode = (
+                "RGBA"
+                if "A" in pil_image.getbands() or "transparency" in pil_image.info
+                else "RGB"
+            )
+            array = np.array(pil_image.convert(mode))
         file_path = torch.from_numpy(array).to(_ANIMATION_DEVICE)
         file_path = file_path.float() / 255
     elif not torch.is_tensor(file_path):

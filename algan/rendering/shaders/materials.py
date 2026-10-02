@@ -218,7 +218,7 @@ def _as_texture_stack(tex, channels):
     return tex
 
 
-def _pack_material_texture(properties, device):
+def _pack_material_texture(properties, device, *, closed_axes=(False, False)):
     """Combine per-property maps into one ``[T, W, H, 5]`` material texture at
     the finest common resolution, plus the bitmask of which channels are
     texture-driven.
@@ -228,7 +228,37 @@ def _pack_material_texture(properties, device):
     channels without a map keep their per-vertex value in-kernel.
     """
     import torch
-    import torch.nn.functional as F
+
+    from algan.rendering.raytracing import settings as rt_settings
+
+    def resize_axis(tex, axis, size, closed):
+        source_size = tex.shape[axis]
+        if source_size == size:
+            return tex
+        indices = torch.arange(size, device=tex.device, dtype=tex.dtype)
+        if closed:
+            positions = indices * (source_size / size)
+        elif rt_settings.texture_antialiasing:
+            positions = (indices + 0.5) * (source_size / size) - 0.5
+        else:
+            positions = indices * ((source_size - 1) / max(size - 1, 1))
+        lower = positions.floor().long()
+        fraction = positions - lower
+        upper = lower + 1
+        if closed:
+            lower, upper = lower.remainder(source_size), upper.remainder(source_size)
+        else:
+            lower, upper = (
+                lower.clamp(0, source_size - 1),
+                upper.clamp(0, source_size - 1),
+            )
+        shape = [1] * tex.ndim
+        shape[axis] = size
+        return torch.lerp(
+            tex.index_select(axis, lower),
+            tex.index_select(axis, upper),
+            fraction.view(shape),
+        )
 
     texs = {k: _as_texture_stack(v, 1).to(device) for k, v in properties.items()}
     T = max(t.shape[0] for t in texs.values())
@@ -238,12 +268,8 @@ def _pack_material_texture(properties, device):
     flags = 0
     for name, t in texs.items():
         if t.shape[1:3] != (W, H):
-            t = F.interpolate(
-                t.permute(0, 3, 1, 2),
-                size=(W, H),
-                mode="bilinear",
-                align_corners=True,
-            ).permute(0, 2, 3, 1)
+            t = resize_axis(t, 1, W, closed_axes[0])
+            t = resize_axis(t, 2, H, closed_axes[1])
         slot = _MATERIAL_TEXTURE_CHANNELS[name]
         combined[..., slot] = t.expand(T, W, H, 1)[..., 0]
         flags |= 1 << slot

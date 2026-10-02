@@ -1550,8 +1550,8 @@ def _emissive_step_frames(first, second, samples_per_pixel=128):
 
     Both frames come out of ONE render job (``get_frames``, not two
     ``save_frame`` stills), which is what puts them in one chunk under one
-    next-event table -- and that table's emissive entries are chosen from the
-    chunk's FIRST frame's emission, which is the thing under test. Raw frames,
+    next-event table -- and that table weights each emissive triangle by its
+    BRIGHTEST frame in the chunk, which is the thing under test. Raw frames,
     no post-processing and no colour management, so pixel values are linear
     radiance times 255.
 
@@ -1629,33 +1629,31 @@ def test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on():
     """An emitter whose emission changes between frames lights each frame at
     that frame's power, whichever side of the step the table was built on.
 
-    The two directions exercise different halves of the estimator. **Dark at
-    frame 0** keeps the emitter out of the next-event table entirely (the
-    table's emissive weights are frame-0 luminance times area), so at frame 1
-    every one of its photons has to arrive through a BSDF-sampled hit at MIS
-    weight 1 -- unbiased if the pdf bookkeeping agrees that the triangle is
-    unsampled, low if the missing strategy is silently dropped. **Bright at
-    frame 0** puts it in the table, so at frame 1 next-event samples still aim
-    at it and must come back with the frame's own emission, which is zero: a
-    table that carried frame-0 power into the shading would leak light into a
-    frame whose emitter is off.
+    The table weights an emissive triangle by its power on its brightest
+    frame, so every direction of the step puts the emitter in the table and
+    next-event estimation aims at it on every frame. That is what each arm
+    checks. **Dark at frame 0** used to keep it out of the table entirely
+    (weights were frame-0 luminance), leaving the lit frame to BSDF hits
+    alone: unbiased, but at 8 spp its RMS error against a 512-spp reference
+    was 46 counts where it is now 12. **Bright at frame 0, dark at frame 1**
+    and the rising arm's own dark frame aim next-event samples at an emitter
+    that is off, and they must come back with that frame's emission, which is
+    zero: a table that carried the bright frame's power into the shading
+    would leak light into a frame whose emitter is off.
 
     Both are checked against a static control lit at ``_EMITTER_ON`` on every
-    frame, which is the same physical configuration, so the two must agree to
-    within sampling noise.
+    frame. The rising arm builds the very same table as the control and the
+    sampler is seeded per pixel, not per frame, so on its lit frame it must
+    reproduce the control's frame, not merely agree with it within noise.
     """
     rise, rise_entries = _emissive_step_frames(0.0, _EMITTER_ON)
     fall, fall_entries = _emissive_step_frames(_EMITTER_ON, 0.0)
     static, static_entries = _emissive_step_frames(_EMITTER_ON, _EMITTER_ON)
 
-    assert rise_entries == 0, (
-        f"an emitter dark at frame 0 took {rise_entries} next-event entries; "
-        f"the table weights emissive triangles by frame-0 emission, so it "
-        f"should hold none and the arm should light purely through BSDF hits"
-    )
-    assert min(fall_entries, static_entries) > 0, (
-        f"a bright-at-frame-0 emitter is missing from the next-event table "
-        f"(fall {fall_entries}, static {static_entries} entries)"
+    assert rise_entries == fall_entries == static_entries > 0, (
+        f"an emitter that is bright on any frame must be in the next-event "
+        f"table whichever frame it is bright on (rise {rise_entries}, fall "
+        f"{fall_entries}, static {static_entries} entries)"
     )
 
     lit = _center_patch_mean(static[0], half=6)
@@ -1672,6 +1670,13 @@ def test_a_frame_animated_emitter_lights_exactly_the_frames_it_is_on():
             f"mean {patch:.2f}, frame mean {whole:.2f} (the other frame's "
             f"emission is leaking through the next-event table)"
         )
+
+    same = int((rise[1] - static[1]).abs().max())
+    assert same <= 1, (
+        f"an emitter dark at frame 0 lights its bright frame differently from "
+        f"the static control (max difference {same}): it should be sampled "
+        f"from the same next-event table"
+    )
 
     for label, measured in (
         ("dark at frame 0, bright at frame 1", _center_patch_mean(rise[1], half=6)),

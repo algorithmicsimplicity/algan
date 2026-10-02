@@ -1012,6 +1012,10 @@ class Mob(
         if recursive:
             change1 = spread(change1)
             change2 = spread(change2)
+        if key == "color" and not relative:
+            change1 = self._keep_explicit_alpha(change1, current_value, recursive)
+            if change2 is not None:
+                change2 = self._keep_explicit_alpha(change2, current_value, recursive)
         if relative:
             change1 = current_value * cast_to_tensor(change1)
             change2 = (
@@ -1082,6 +1086,10 @@ class Mob(
         A two-stage animation: the color travels out to ``color`` by the halfway
         point and back to ``new_color`` by the end. Good for drawing the eye to
         one part of a diagram without leaving it recolored.
+
+        Alpha set through ``fill_opacity`` or ``stroke_opacity`` is preserved,
+        as it is by an ordinary ``color`` assignment. A color carrying an alpha
+        below 1 still changes it.
 
         Animation
         ---------
@@ -1404,7 +1412,7 @@ class Mob(
         finally:
             context.timespan.current_time = cursor
 
-    def _prepare_buffers(self, key, value):
+    def _prepare_buffers(self, key, value, include_descendants=False):
         tm = self.scene.timeline_manager
         tm.add_mob_attr(self, key, value, add_mob=False)
         tl = tm.attr_to_timeline[key]
@@ -1413,6 +1421,23 @@ class Mob(
             return self
         current_inds = tl.mob_id_to_inds[self.id]
         value = cast_to_tensor(value)
+        if include_descendants and value.shape[-2] > 1:
+            # A subtree read is already in buffer-row order. Feeding those
+            # values back must not expand the parent's own rows to the size
+            # of the whole subtree (which also detaches its recorded history).
+            # Only take this path when every relevant row already exists;
+            # lazy allocation and genuine per-member expansion keep the
+            # original preparation path below.
+            descendants = [
+                mob
+                for mob in self.get_descendants(include_self=True)
+                if mob is self
+                or key not in getattr(mob, "_excluded_from_parent_attrs", ())
+            ]
+            if all(mob.id in tl.mob_id_to_inds for mob in descendants):
+                ranges = self._get_attr_ranges(key, include_descendants=True)
+                if ranges.numel == value.shape[-2]:
+                    return self
         shared_view_has_full_buffer = (
             self.data_sub_inds is not None and current_inds.shape[0] == self.batch_size
         )
@@ -2562,7 +2587,7 @@ class Mob(
             raise TypeError("Mob object is not iterable")
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
-            add_to_scene=False, clone_data=False, recursive=True, animate_creation=False
+            add_to_scene=False, clone_data=False, recursive=True, spawn=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
         cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)

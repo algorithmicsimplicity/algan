@@ -68,6 +68,7 @@ from algan.rendering.raytracing.truncation import (
     TruncationCounts,
     attach_render_stats,
     attach_truncations,
+    path_tracer_fallback_hint,
     record_truncation,
     report_truncations,
     restore_path_samples,
@@ -750,7 +751,7 @@ def _wavefront_state_bytes_per_primary(
 # Only wavefront *tile* sizing reads these, and the arena bounds the result, so
 # an inaccuracy here costs tile efficiency and at worst an out-of-memory retry;
 # it is not what sizes a render batch. To re-measure, render with
-# ``ALGAN_WAVEFRONT_TILE_AUTO=0`` at two values of ``ALGAN_WAVEFRONT_TILE_RAYS``
+# ``ALGAN_WAVEFRONT_TILE_AUTO=0`` at two values of ``ALGAN_WAVEFRONT_TILE``
 # and difference the arena's high-water mark.
 _WAVEFRONT_BYTES_PER_POOL_SLOT = 100
 _WAVEFRONT_BYTES_PER_PRIMARY = 28
@@ -2059,11 +2060,22 @@ def render_batch_raytraced(
                 raise OutOfRenderMemory(
                     "Insufficient memory to ray trace a single frame. "
                     "Please lower the resolution or anti-alias level."
+                    + path_tracer_fallback_hint()
                 ) from None
             middle = (start + end) // 2
             return render_chunk(start, middle) + render_chunk(middle, end)
 
-    chunks = render_chunk(time_start, time_end)
+    try:
+        chunks = render_chunk(time_start, time_end)
+    finally:
+        # ``render_chunk`` calls itself, so it closes over its own cell: a
+        # reference cycle that holds everything it captured -- ``memory``, the
+        # job's whole arena, among it -- until a FULL collection walks the
+        # process. Measured on a second render of the explainer benchmark: the
+        # previous job's 2.7 GB arena was still allocated when the next job
+        # sized its own. Clearing the cell lets reference counting free it
+        # here, on success or on an out-of-memory unwind.
+        render_chunk = None
     # Whatever the batch truncated is reported now -- once the frames exist and
     # before the caller can act on them -- and the running totals are grafted
     # onto the plan the Scene hands back, so a script can assert on them
@@ -2335,8 +2347,10 @@ def _run_wavefront_tiles(
                             raise OutOfRenderMemory(
                                 "A single pixel's deterministic ray tree "
                                 f"exceeded the shared wavefront pool of {pool} "
-                                "slots. Lower MAX_BOUNCES / transparency "
-                                "complexity, or increase WAVEFRONT_TILE_RAYS."
+                                "slots. Lower SETTINGS.raytracing.max_bounces "
+                                "or the number of reflective and transparent "
+                                "surfaces overlapping in that pixel."
+                                + path_tracer_fallback_hint()
                             )
                         next_primary = _overflow_retry_primary(
                             attempt_primary, alloc[ALLOC_NEXT], pool
@@ -3467,7 +3481,7 @@ def raytrace_render_wavefront(
                             raise OutOfRenderMemory(
                                 "Sparse raster state did not fit for one "
                                 "covered pixel. Lower the resolution or "
-                                "transparency complexity."
+                                "transparency complexity." + path_tracer_fallback_hint()
                             ) from exc
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
@@ -3508,7 +3522,10 @@ def raytrace_render_wavefront(
                             raise OutOfRenderMemory(
                                 "A single covered pixel's deterministic ray "
                                 f"tree exceeded the shared pool of {pool} "
-                                "slots."
+                                "slots. Lower SETTINGS.raytracing.max_bounces "
+                                "or the number of reflective and transparent "
+                                "surfaces overlapping in that pixel."
+                                + path_tracer_fallback_hint()
                             )
                         next_primary = _overflow_retry_primary(
                             attempt_primary, int(rs_alloc[ALLOC_NEXT].item()), pool
@@ -3547,7 +3564,7 @@ def raytrace_render_wavefront(
                             raise OutOfRenderMemory(
                                 "Sparse raster bounce scratch did not fit for "
                                 "one covered pixel. Lower the resolution or "
-                                "transparency complexity."
+                                "transparency complexity." + path_tracer_fallback_hint()
                             ) from exc
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
@@ -3569,7 +3586,10 @@ def raytrace_render_wavefront(
                             raise OutOfRenderMemory(
                                 "A single covered pixel's deterministic ray "
                                 f"tree exceeded the shared pool of {pool} "
-                                "slots."
+                                "slots. Lower SETTINGS.raytracing.max_bounces "
+                                "or the number of reflective and transparent "
+                                "surfaces overlapping in that pixel."
+                                + path_tracer_fallback_hint()
                             )
                         next_primary = _overflow_retry_primary(
                             attempt_primary, alloc[ALLOC_NEXT], pool

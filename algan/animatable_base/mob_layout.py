@@ -92,13 +92,19 @@ class MobLayoutMixin:
         location = self.location
         if axes is not None:
             location = location @ axes.transpose(-1, -2)
-        corners = self._box_corners(
-            *self._get_bounding_box_recursive(
-                location.amin(-2, keepdim=True),
-                location.amax(-2, keepdim=True),
-                axes,
-            )
+        lower, upper = self._get_bounding_box_recursive(
+            torch.full_like(location[..., :1, :], float("inf")),
+            torch.full_like(location[..., :1, :], -float("inf")),
+            axes,
         )
+        # If every point is excluded, keep the empty Mob's anchor as fallback.
+        lower = torch.where(
+            torch.isfinite(lower), lower, location.amin(-2, keepdim=True)
+        )
+        upper = torch.where(
+            torch.isfinite(upper), upper, location.amax(-2, keepdim=True)
+        )
+        corners = self._box_corners(lower, upper)
         return corners if axes is None else corners @ axes
 
     def get_bounding_box(self) -> torch.Tensor:

@@ -91,6 +91,8 @@ class MeshData:
     # Morph / blend-shape targets: each a full [V, 3] vertex-position set.
     morph_targets: list[torch.Tensor] = field(default_factory=list)
     morph_names: list[str] = field(default_factory=list)
+    # Stable glTF mesh identity shared by all of its primitives; -1 for other importers.
+    source_mesh_index: int = -1
 
 
 @dataclass

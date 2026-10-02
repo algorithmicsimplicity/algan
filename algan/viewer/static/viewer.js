@@ -258,11 +258,12 @@ async function play() {
   }
 }
 
-function stop() {
+function stop(refreshAttributes = true) {
   state.playing = false;
   state.playRequest++;
   audio.pause();
   el("play").textContent = "Play";
+  if (refreshAttributes && state.selected !== null) void showAttributes();
 }
 
 async function tick(request = state.playRequest) {
@@ -271,8 +272,9 @@ async function tick(request = state.playRequest) {
   // Keep the final picture until the actual scene end, including the last
   // fraction of a frame's audio when duration * fps is not an integer.
   if (seconds >= (state.duration || state.totalFrames / state.fps)) {
-    stop();
+    stop(false);
     await showFrame(state.totalFrames - 1);
+    if (state.selected !== null) void showAttributes();
     return;
   }
   const target = Math.min(Math.floor(seconds * state.fps), state.totalFrames - 1);
@@ -295,7 +297,7 @@ async function tick(request = state.playRequest) {
 async function seek(index) {
   if (!state.sceneReady || state.switching) return;
   const generation = state.generation;
-  stop();
+  stop(false);
   index = Math.max(0, Math.min(Math.round(index), state.totalFrames - 1));
   fetch(api(`/api/prefetch?frame=${index}`)).catch(() => {});
   const drawn = await showFrame(index);
@@ -310,7 +312,10 @@ async function seek(index) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  if (generation === state.generation) refreshPixel();
+  if (generation === state.generation && state.frame === index) {
+    refreshPixel();
+    if (state.selected !== null) void showAttributes();
+  }
 }
 
 /* ---------- pixel inspection ---------- */
@@ -645,7 +650,7 @@ function syncScenes(data) {
 }
 
 function clearScene() {
-  stop();
+  stop(false);
   audio.reset();
   state.hasAudio = false;
   state.sceneReady = false;
@@ -743,7 +748,7 @@ function syncResolution(data) {
 
 async function changeResolution(name) {
   if (!state.sceneReady || state.switching) return;
-  stop();
+  stop(false);
   const generation = state.generation;
   const select = el("resolution");
   select.disabled = true;
@@ -768,6 +773,7 @@ async function changeResolution(name) {
     if (generation === state.generation) setStatus(err.message, "error");
   } finally {
     select.disabled = false;
+    if (generation === state.generation && state.selected !== null) void showAttributes();
   }
 }
 
@@ -837,10 +843,11 @@ async function refreshState() {
   try {
     const data = await getJSON("/api/state");
     if (state.switching || generation !== state.generation) return;
-    if (data.epoch !== undefined && data.epoch !== state.epoch) {
+    const epochChanged = data.epoch !== undefined && data.epoch !== state.epoch;
+    if (epochChanged) {
       // Something else changed the resolution (another tab, a restart): drop
       // frames of the old size rather than drawing them at the new one.
-      stop();
+      stop(false);
       state.epoch = data.epoch;
       state.images.clear();
       state.drawn = false;
@@ -858,6 +865,7 @@ async function refreshState() {
     if (!el("tree").children.length) loadHierarchy();
     if (!transcriptLoaded) loadTranscript();
     if (!state.drawn) showFrame(state.frame);
+    if (epochChanged && state.selected !== null) void showAttributes();
   } catch (err) {
     if (!state.switching && generation === state.generation) setStatus(err.message, "error");
   }

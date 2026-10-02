@@ -1205,6 +1205,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 # zero (a non-negative scalar multiply commutes with amax).
                 alpha_amax = alpha_amax * top.view(-1, 1).to(alpha_amax.device)
             texture_visible = alpha_amax > min_alpha
+            # Texture maps may stay on a different device from geometry.
+            # Move only the reduced coverage mask, before time broadcasting.
+            texture_visible = texture_visible.to(visible.device)
             (visible, texture_visible), _ = _unify_time(
                 [visible, texture_visible], error_context
             )

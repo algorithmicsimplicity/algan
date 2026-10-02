@@ -19,6 +19,7 @@ frame-level acceptance harness.
 
 import math
 
+import pytest
 import torch
 
 from algan import Scene, Surface
@@ -26,6 +27,7 @@ from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.mobs.image_mob import ImageMob
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
+from algan.rendering.raytracing.raytrace_kernels_taichi import min_alpha
 from algan.scene_manager import SceneManager
 from algan.utils.color_space import srgb_to_linear
 from algan.utils.tensor_utils import texture_u8_provenance
@@ -175,6 +177,109 @@ def test_faded_out_frames_still_leave_the_bvh():
     frame_visible = (p._rt_frame_hi >= p._rt_frame_lo).all(-1)
     assert bool(frame_visible[0, 0]), "opaque frame was culled"
     assert not bool(frame_visible[1, 0]), "faded-out frame stayed in the BVH"
+
+
+@pytest.mark.parametrize(
+    ("geometry_device", "texture_device"),
+    [
+        ("cpu", "cpu"),
+        pytest.param(
+            "cuda",
+            "cpu",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA unavailable"
+            ),
+        ),
+        pytest.param(
+            "cpu",
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA unavailable"
+            ),
+        ),
+        pytest.param(
+            "mps",
+            "cpu",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS unavailable"
+            ),
+        ),
+        pytest.param(
+            "cpu",
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS unavailable"
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("representation", ["static", "dense", "endpoints"])
+@pytest.mark.parametrize("opacity", ["none", "zero", "animated"])
+@pytest.mark.parametrize("color_frames", [1, 4])
+def test_texture_visibility_preserves_device_placement(
+    geometry_device, texture_device, representation, opacity, color_frames
+):
+    """Only reduced coverage crosses devices; BVH data follows geometry.
+
+    Exercise both time-broadcast directions and both mixed-device directions:
+    CPU textures with accelerator geometry (issue #132), and wide attributes
+    materialized on the render device with CPU geometry.
+    """
+    p = object.__new__(RayTracedTrianglePrimitive)
+    p.uvs = torch.zeros(1, 2, 3, 2, device=geometry_device)
+    p.texture_lerp = None
+    if representation == "static":
+        tex = torch.zeros(1, 2, 2, 5, device=texture_device)
+        tex[:, 0, 0, 4] = 1.0
+        coverage = torch.ones(4)
+    else:
+        coverage = torch.tensor([0.0, 0.5, 1.0, 0.5])
+        if representation == "dense":
+            tex = torch.zeros(4, 2, 2, 5, device=texture_device)
+            tex[:, 0, 0, 4] = coverage.to(texture_device)
+        else:
+            tex = torch.zeros(1, 2, 2, 2, 5, device=texture_device)
+            tex[0, 1, 0, 0, 4] = 1.0
+            # The negative weight must conservatively retain the last frame.
+            p.texture_lerp = torch.tensor(
+                [[0, 1, 0], [0, 1, 0.5], [0, 1, 1], [0, 1, -0.5]],
+                device=geometry_device,
+            )
+    p.texture_map = tex
+    factors = {"none": None, "zero": [0.0], "animated": [1.0, min_alpha / 2, 0.0, 1.0]}[
+        opacity
+    ]
+    p.texture_opacity = (
+        None if factors is None else torch.tensor(factors, device=geometry_device)
+    )
+    p._stash_texture_maps()
+    colors = torch.zeros(color_frames, 2, 3, 5, device=geometry_device)
+    # The first triangle relies on texture alone. The second also has corner
+    # coverage, which must survive even when texture coverage is absent.
+    colors[::2, 1, :, -1] = 1.0
+    lo = torch.zeros(1, 2, 3, device=geometry_device)
+    hi = torch.ones(4, 2, 3, device=geometry_device)
+    p._pack_frame_visibility(lo, hi, colors, "mixed-device texture visibility")
+
+    expected_texture = (
+        coverage * (1.0 if factors is None else torch.tensor(factors)) > min_alpha
+    )
+    expected = colors[..., -1].amax(-1).cpu().expand(4, -1) > min_alpha
+    expected = expected | expected_texture[:, None]
+    assert torch.equal((p._rt_frame_hi >= p._rt_frame_lo).all(-1).cpu(), expected)
+    for packed in (
+        p._rt_frame_lo,
+        p._rt_frame_hi,
+        p._rt_frame_opaque,
+        p._rt_frame_casts,
+    ):
+        assert packed.device == colors.device
+        assert packed.is_contiguous()
+    assert not p._rt_frame_opaque.any(), (
+        "cut-out textures must not prune hits behind them"
+    )
+    assert p._rt_texture_map.device == tex.device
+    assert p._rt_texture_map.data_ptr() == tex.data_ptr(), "the full map was copied"
 
 
 def test_u8_lane_packing_round_trips():
