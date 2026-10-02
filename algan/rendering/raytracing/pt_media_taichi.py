@@ -340,11 +340,23 @@ def _pt_medium_transmittance(
 ):
     """Straight-connection transport through null interfaces and nested media.
 
-    A refracting boundary is not a null collision: this NEE strategy cannot
-    sample the bent path or its directional Jacobian. Stop the connection
-    there and let the ordinary Fresnel/BSDF walk sample it. Allowing the legacy
-    straight transparent shadow approximation here double-counts paths whose
-    specular boundary resets prev_pdf, and creates energy in dense glass.
+    A refracting boundary into or out of a SCATTERING interior is not a null
+    collision: this NEE strategy cannot sample the bent path or its
+    directional Jacobian. Stop the connection there and let the ordinary
+    Fresnel/BSDF walk sample it. Allowing the legacy straight transparent
+    shadow approximation there double-counts paths whose specular boundary
+    resets prev_pdf, and creates energy in dense media.
+
+    Non-scattering shells (air, clear or absorbing glass, zero-density
+    cavities) are left to the ordinary shadow march exactly as in a scene
+    without media: an index change between two of them does not stop the
+    connection, and this walk integrates extinction only while a SCATTERING
+    medium is on top of the stack. The march keeps the glass's surface tint
+    and its chord absorption (``_prepare_media`` strips the legacy chord from
+    scattering shells only), so both follow ``shadows`` and ``casts_shadows``
+    as they always have. Medium tracking is switched on for the whole scene
+    by any scattering object, so treating glass any other way here would make
+    one glass block's shadow depend on unrelated fog elsewhere.
     """
     media = stack
     result = ti.math.vec3(1.0, 1.0, 1.0)
@@ -375,7 +387,8 @@ def _pt_medium_transmittance(
         if found != 0:
             end = ti.min(t, max_t)
         sa, ss, _g = _pt_medium_coeff(tri_mat, f, _pt_medium_top(media))
-        result *= ti.exp(-(sa + ss) * ti.max(end - t_prev, 0.0))
+        if ss.max() > 0.0:
+            result *= ti.exp(-(sa + ss) * ti.max(end - t_prev, 0.0))
         if (found == 0) or (t >= max_t):
             finished = 1
             break
@@ -400,9 +413,12 @@ def _pt_medium_transmittance(
                 if following >= 0:
                     nt = tri_mat[f % tri_mat.shape[0], following, 12]
                 if ti.abs(ni / ti.max(nt, 1e-6) - 1.0) >= 1e-4:
-                    result = ti.math.vec3(0.0, 0.0, 0.0)
-                    finished = 1
-                    break
+                    _sa0, ss_before, _g0 = _pt_medium_coeff(tri_mat, f, previous)
+                    _sa1, ss_after, _g1 = _pt_medium_coeff(tri_mat, f, following)
+                    if ti.max(ss_before.max(), ss_after.max()) > 0.0:
+                        result = ti.math.vec3(0.0, 0.0, 0.0)
+                        finished = 1
+                        break
     if (overflow != 0) or (finished == 0):
         result = ti.math.vec3(0.0, 0.0, 0.0)
     return result, overflow, 1 - finished

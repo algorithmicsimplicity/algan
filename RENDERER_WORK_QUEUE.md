@@ -1,8 +1,9 @@
 # Renderer work queue
 
-Current-status index, checked against `master` at
-`f10cc230a108863d02980fc27079254473ae7de3` on 2026-09-09; item 4 was
-re-checked on 2026-09-30 against the texture anti-aliasing commit `7bcc19c`.
+Current-status index, re-checked against `master` at
+`7e2ffc02173a1f4120c40e51eb0f65d5d4f79cc2` on 2026-10-01 (first checked at
+`f10cc230`, 2026-09-09; item 4 was re-checked on 2026-09-30 against the texture
+anti-aliasing commit `7bcc19c`).
 [TODO.md](TODO.md) is the prioritized backlog. This file preserves the original
 item numbers so references from design documents and code remain meaningful.
 
@@ -26,15 +27,15 @@ reimplement features or regenerate baselines today.
 | 8. Inert settings and the old unwired path tracer | Removed/replaced | `light_intensity`/`ambient_light` inert fields and the old physical kernel were deleted. Current path tracing uses `path_tracer.py` and `path_tracer_taichi.py`. |
 | 9. Resolve twice for shadowed sheets | Still a design tradeoff | Event/shade passes share transport; the optional `sheet_resolve_memo` arm exists and is off by default. Profile current end-to-end cost before changing it. |
 | 10. Timeline query preparation cost | Optimized since the audit | Current row-query path and caches replace the old untargeted-work claim. Further work needs a fresh profile. |
-| 11. Sparse discovery and sorting | Several optimized paths implemented | Fused compaction, packed keys, rank groups and MPS pixel sorting have separate gates. General `device_radix_sort` is not the same setting as `pixel_sort`. |
+| 11. Sparse discovery and sorting | Several optimized paths implemented | Fused compaction, packed keys, rank groups and MPS pixel sorting have separate gates. The general device radix sort (`ALGAN_DEVICE_RADIX_SORT`, `device_sort.py`, default off) is not the same switch as the sheet route's `sheet_pixel_sort` (`ALGAN_SHEET_PIXEL_SORT`, default on). |
 | 12. Batched geometry builds | Multiple optimizations implemented | See `agent_guidance/mobs_geometry.md`; profile the actual preparation stage and test geometry/AA output. |
-| 13. CPU reclamation | Still worth measuring | The current function is `release_torch_memory`, not Algan's removed `empty_cache`; MPS has telemetry, CPU-only fallback still reports pressure. TODO item 5. |
+| 13. CPU reclamation | Main gap fixed; measurement and one decision remain | The current function is `release_torch_memory`, not Algan's removed `empty_cache`. `b284532` stopped a CPU render reporting GPU pressure (`test_an_unpressured_cpu_reclaim_skips_gc`), and a finished render no longer leaves its arena in cyclic garbage (`test_a_finished_render_leaves_no_closure_cycle_holding_its_arena`). The warm A/B is unrecorded, and the pre-render full collection is load-bearing. TODO item 5. |
 | 14. Dead render experiments | Some remain | Legacy bloom helpers and unwired SMAA need caller-checked code cleanup. TODO item 6. |
-| 15. Stale renderer documentation | Audited in this change | Module descriptions now distinguish sheet/wavefront/path transport, per-fragment defaults, texture support and backend-specific behavior. |
+| 15. Stale renderer documentation | Audited 2026-09-09; `renderer_limitations.rst` re-checked 2026-10-01 | Module descriptions distinguish sheet/wavefront/path transport, per-fragment defaults, texture support and backend-specific behavior. The limitations page was brought up to date in `e70a334` (feature matrix, light-tree selection, scale-aware offsets, media, truncation counters). |
 | 16. Inaccessible experimental fields | Old mapping defect resolved | `raytracing_settings.py` discovers storage modules and rejects writes to initialization-only fields deliberately. |
-| 17. CPU baseline debt | Old failure report, not live CI status | Validate the exact SHA/backend/baseline key. Do not rebaseline from an old report or a missing-tool mismatch. |
+| 17. CPU baseline debt | Old failure report, not live CI status | Validate the exact SHA/backend/baseline key. Do not rebaseline from an old report or a missing-tool mismatch. Separately, `path_traced/cuda` has not been re-rendered since `37dcc1b` (2026-09-05), although later path-tracer kernel changes forced the CPU set's re-baseline in `7cbd375`; expect it to be stale, which is inferred from history, not observed on a T4. |
 | 18. Missing tracked implementation file | Historical incident | Test an installed wheel/source archive and required files; clean-checkout/package validation belongs in the release gates. |
-| 19. Other design items | Mixed; inspect individually | Closed-shell continuations and crossing AA remain; old default-shader and retired fragment-walk tasks are not current work. |
+| 19. Other design items | Mixed; inspect individually | Closed-shell continuations landed (`7314aaf`; TODO item 2); crossing AA remains (TODO item 1). Old default-shader and retired fragment-walk tasks are not current work. |
 | 20. Shadow-terminator offset | Implemented, default on | `shadow_terminator`, `_shadow_terminator_offset` and `test_shadow_terminator.py`; retain flat-geometry and smooth-surface controls. |
 
 Paths in the evidence column are under `algan/rendering/raytracing/` or
@@ -63,17 +64,22 @@ curved-mirror/refractive focusing or environment-map anti-aliasing.
 
 Per-sample sheet depth ownership is already implemented. What remains is a
 better blend at within-pixel surface crossings, not the first implementation of
-a sample depth buffer. Primary shell opacity and path-tracer shell handling also
-do not automatically establish a common closed-solid contract for deterministic
-reflected rays. See TODO items 1–2 and the detailed
-[sheet](algan/rendering/raytracing/DESIGN_sheet_resolve.md) and
-[mesh-identity](algan/rendering/raytracing/DESIGN_mesh_identity_open.md) designs.
+a sample depth buffer: TODO item 1 and the detailed
+[sheet](algan/rendering/raytracing/DESIGN_sheet_resolve.md) design. The
+closed-solid opacity contract for deterministic reflected rays has landed
+(`7314aaf`, TODO item 2): the wavefront pairs shell crossings on every straight
+segment, as primary sheet compositing and the path tracer already did. Its one
+residual is that the memory-trim permutation is disabled for batches carrying
+shell IDs. The design discussion is in
+[mesh-identity](algan/rendering/raytracing/DESIGN_mesh_identity_open.md).
 
 The path tracer already supports rough glass with coupled multiple-scattering
 compensation, homogeneous media, subsurface scattering, finite-light tree
 sampling and denoising. Physical area geometry is implemented and its emitter
 radiance is now receiver-independent, so neither the glass energy loss nor the
-legacy radiance/falloff convention remains open work.
+legacy radiance/falloff convention remains open work. What does remain is in
+[`DESIGN_path_tracer_roadmap.md`](algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md),
+re-checked on 2026-10-01.
 
 ## Performance measurement rules
 

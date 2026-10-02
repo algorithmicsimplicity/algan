@@ -1,10 +1,15 @@
 # Algan TODO — prioritized remaining work
 
-Reviewed against `master` commit `f10cc230a108863d02980fc27079254473ae7de3`
-on 2026-09-09. This is a source-verified backlog, not a list of every possible
-feature. Unmerged branches are not counted as implemented. Update or remove an
-entry when its acceptance criteria land; keep historical measurements in the
-relevant design or benchmark report.
+Re-reviewed against `master` commit `7e2ffc02173a1f4120c40e51eb0f65d5d4f79cc2`
+on 2026-10-01 (first reviewed at `f10cc230`, 2026-09-09). This is a
+source-verified backlog, not a list of every possible feature. Unmerged
+branches are not counted as implemented. Update or remove an entry when its
+acceptance criteria land; keep historical measurements in the relevant design
+or benchmark report.
+
+Item 2 below landed on 2026-09-30 and item 5's stated gap was fixed. Both are
+kept, marked, rather than removed, so the item numbers that
+[RENDERER_WORK_QUEUE.md](RENDERER_WORK_QUEUE.md) cites stay valid.
 
 The review's item 1, filtering minified textures on primary and secondary hits,
 landed in `7bcc19c` (default-on UV mip anti-aliasing,
@@ -35,22 +40,24 @@ supersampled reference without breaking silhouette/tiling fixtures. Reproduce
 video defects with multi-frame renders as well as stills: frame-window slicing
 has previously changed identity and hidden failures from still-only probes.
 
-## 2. Define closed-solid opacity consistently for deterministic continuations
+## 2. Define closed-solid opacity consistently for deterministic continuations — landed
 
-**Current gap.** Primary sheet compositing and the path tracer have closed-shell
-accounting, but the deterministic wavefront's treatment of a solid encountered
-through a reflection does not have the same general one-shell opacity contract.
-[`agent_guidance/rendering.md`](agent_guidance/rendering.md) records the boundary;
-[`DESIGN_mesh_identity_open.md`](algan/rendering/raytracing/DESIGN_mesh_identity_open.md)
-retains the design discussion.
+**Landed in `7314aaf`** (merged 2026-09-30). The deterministic wavefront now
+pairs closed-shell crossings on every straight segment, reflections and
+classic primary rays included, so a closed solid at `opacity < 1` composites
+once in direct and reflected views on both deterministic front ends.
+[`shell_alpha.py`](algan/rendering/raytracing/shell_alpha.py) assigns dense
+shell IDs held in a per-ray bitset in `rs_sca`, with no fixed nesting cap;
+physical transmission is excluded at packing, so glass still evaluates both
+interfaces; `ALGAN_SOLID_SHELL_ALPHA=0` is the control. Tests in
+`tests/unit_tests/test_hybrid_transport.py` cover mirror opacity, re-entry,
+more than four overlapping shells, state across event batches and the tile
+planner's accounting. [`agent_guidance/rendering.md`](agent_guidance/rendering.md)
+documents the contract.
 
-**Work.** Specify how front/back encounters, re-entry, overlapping solids and
-transmission exemptions interact before sharing or extending the accounting.
-Do not equate artistic shell opacity with Beer–Lambert absorption.
-
-**Done when.** The same closed solid has the specified opacity in direct,
-reflected and nested views, with explicit controls for thin/open surfaces and
-physical glass. Validate continuation retries and surface-limit reporting too.
+**Residual.** The memory-trim permutation is disabled for batches that carry
+shell IDs until its shell-ID mapping is implemented. That is a memory and
+efficiency gap, not an opacity one.
 
 ## 3. Make renderer-audit inputs equivalent before drawing new conclusions
 
@@ -95,16 +102,31 @@ Do not regenerate baselines merely to hide an environment/toolchain mismatch.
 
 ## 5. Profile and reduce avoidable CPU memory reclamation
 
-**Current gap.** [`_gpu_memory_pressure`](algan/utils/memory_utils.py) falls back to
-`True` without GPU telemetry, so `release_torch_memory(force_gc=False)` can still
-collect on every CPU-only call. Host/cgroup telemetry and native-memory recovery
-already exist; MPS also has its own pressure check. The old claim that *all*
-non-CUDA devices always take the same path is obsolete.
+**Fixed since the first review.** `b284532` made
+[`_gpu_memory_pressure`](algan/utils/memory_utils.py) answer `False` for a CPU
+render (it answered `True` without GPU telemetry, so every steady-state
+`release_torch_memory(force_gc=False)` on a CPU render paid a full collection);
+`test_an_unpressured_cpu_reclaim_skips_gc` pins it. `52df5e9` added a back-off
+for host-memory reclaims that keep freeing nothing (Windows). And a finished
+render no longer leaves its arena in cyclic garbage: `render_batch_raytraced`'s
+self-recursive `render_chunk` closure held the job's `ManualMemory`, which only a
+full collection freed (2.7 GB per render on the explainer benchmark, PREVIEW,
+CPU); it now clears that cycle itself
+(`test_a_finished_render_leaves_no_closure_cycle_holding_its_arena`).
 
-**Work.** Measure collection and allocator costs on CPU-only renders, then make
-routine reclamation depend on meaningful pressure without weakening forced OOM
-recovery, cgroup protection or long-running scene cleanup. Inspect device
-selection as well as device availability when evaluating the predicate.
+**Current gap.** No warm end-to-end comparison of the CPU change is recorded.
+The one full `gc.collect()` before each render job (`scene_excluded_from_gc`)
+remains and costs 0.13–0.39 s on that benchmark. It is load-bearing: the job
+sizes a fresh arena from the memory free just after it, so cyclic garbage frozen
+there instead would stay allocated through that sizing. Dropping it is safe only
+if no other route or user code leaves device memory in cyclic garbage. The
+2026-10-01 measurement and the cycle fix are recorded in the section 6b note of
+[`DESIGN_path_tracer_roadmap.md`](algan/rendering/raytracing/DESIGN_path_tracer_roadmap.md).
+
+**Work.** Record the warm CPU-only A/B for `b284532`. Then decide the
+pre-render collection with evidence from more than one route (path tracer,
+camera views, OOM retries): a young-generation collection is enough only if
+the full one finds no tensor storage on any of them.
 
 **Done when.** Warm end-to-end comparisons show a benefit, steady-state collections
 are bounded, cyclic garbage is still reclaimed, and low-memory/retry tests pass.

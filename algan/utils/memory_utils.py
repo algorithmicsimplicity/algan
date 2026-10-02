@@ -677,6 +677,11 @@ def scene_excluded_from_gc():
     the ordinary generations on the way out (including on an error, so a failed
     render does not leave the process with collection disabled for its scene).
     The one collection before freezing keeps pre-existing garbage collectable.
+    It is a full collection on purpose: the render job sizes a fresh arena from
+    the memory free just after it, so cyclic garbage frozen here instead would
+    stay allocated through that sizing. A finished render's arena used to be
+    exactly such garbage (``render_batch_raytraced`` now breaks that cycle), and
+    a young-generation collection did not reach it.
     """
     gc.collect()
     gc.freeze()
