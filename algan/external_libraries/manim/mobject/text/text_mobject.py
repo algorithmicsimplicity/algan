@@ -72,6 +72,7 @@ from ...constants import *
 from ...mobject.geometry.arc import Dot
 from ...mobject.mobject import Group
 from ...mobject.svg.svg_mobject import SVGMobject
+from algan.utils.typeset_cache import building
 from ...mobject.types.vectorized_mobject import VGroup, VMobject
 from ...typing import Point3D
 from ...utils.color import ManimColor, ParsableManimColor, color_gradient
@@ -539,7 +540,6 @@ class Text(SVGMobject):
 
         parsed_color: ManimColor = ManimColor(color) if color else VMobject().color
         file_name = self._text2svg(parsed_color.to_hex())
-        PangoUtils.remove_last_M(file_name)
         super().__init__(
             file_name,
             fill_opacity=fill_opacity,
@@ -853,18 +853,21 @@ class Text(SVGMobject):
             width = config["pixel_width"]
             height = config["pixel_height"]
 
-            svg_file = manimpango.text2svg(
-                settings,
-                size,
-                line_spacing,
-                self.disable_ligatures,
-                str(file_name.resolve()),
-                START_X,
-                START_Y,
-                width,
-                height,
-                self.text,
-            )
+            with building(file_name) as partial:
+                manimpango.text2svg(
+                    settings,
+                    size,
+                    line_spacing,
+                    self.disable_ligatures,
+                    str(partial),
+                    START_X,
+                    START_Y,
+                    width,
+                    height,
+                    self.text,
+                )
+                PangoUtils.remove_last_M(str(partial))
+            svg_file = str(file_name.resolve())
 
         return svg_file
 
@@ -1252,7 +1255,6 @@ class MarkupText(SVGMobject):
         parsed_color: ManimColor = ManimColor(color) if color else VMobject().color
         file_name = self._text2svg(parsed_color)
 
-        PangoUtils.remove_last_M(file_name)
         super().__init__(
             file_name,
             fill_opacity=fill_opacity,
@@ -1402,22 +1404,25 @@ class MarkupText(SVGMobject):
                 else self.text
             )
             logger.debug(f"Setting Text {self.text}")
-            svg_file = MarkupUtils.text2svg(
-                final_text,
-                self.font,
-                self.slant,
-                self.weight,
-                size,
-                line_spacing,
-                self.disable_ligatures,
-                str(file_name.resolve()),
-                START_X,
-                START_Y,
-                600,  # width
-                400,  # height
-                justify=self.justify,
-                pango_width=500,
-            )
+            with building(file_name) as partial:
+                MarkupUtils.text2svg(
+                    final_text,
+                    self.font,
+                    self.slant,
+                    self.weight,
+                    size,
+                    line_spacing,
+                    self.disable_ligatures,
+                    str(partial),
+                    START_X,
+                    START_Y,
+                    600,  # width
+                    400,  # height
+                    justify=self.justify,
+                    pango_width=500,
+                )
+                PangoUtils.remove_last_M(str(partial))
+            svg_file = str(file_name.resolve())
         return svg_file
 
     def _count_real_chars(self, s: str) -> int:

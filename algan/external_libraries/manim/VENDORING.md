@@ -97,7 +97,9 @@ Targeted, asserted, one dropped reference each:
    CLI used. Drops the `cloup` dependency.
 9. `utils/typst_file_writing.py` -- the optional-dependency error names
    `algan[typst]`; generated files use Algan's runtime cache directory. Cache
-   keys include the compiler version and resolved additional font paths.
+   keys include the compiler version and resolved additional font paths. The
+   `.typ` and `.svg` are written atomically, because every Algan process
+   shares that directory.
 10. `mobject/types/image_mobject.py` -- the unused runtime `MovingCamera`
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`
@@ -109,8 +111,22 @@ Targeted, asserted, one dropped reference each:
     modules that have nothing to do with Pango.
     The text cache hash also includes substring gradients (`t2g`), so changing
     a gradient cannot reuse an SVG containing the previous colors.
+    `Text` and `MarkupText` render their SVG to a private file, strip its last
+    `M` there, and publish it atomically (`algan.utils.typeset_cache`),
+    instead of rendering in place and rewriting the cached file on every
+    construction -- `text_dir` is shared by every Algan process.
 13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group
     opacity is applied per shape; overlapping shapes do not form an isolated
-    SVG compositing layer.
+    SVG compositing layer. The restyled SVG is parsed from memory rather than
+    from a fixed-name scratch file beside the source, which concurrent
+    processes parsing one cached SVG deleted from under each other; embedded
+    rasters go through a private temporary file.
+14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
+    `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
+    and then deletes every non-`.svg`/`.tex` file there; Algan shares that
+    directory between processes, so that deleted other processes' builds in
+    flight. Each formula is now compiled in a private directory and its
+    `.svg` published with an atomic rename, under the same content-addressed
+    name.

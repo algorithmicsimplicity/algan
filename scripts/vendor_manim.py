@@ -354,7 +354,8 @@ def apply_targeted_patches(text: str, module: str) -> str:
         )
         cut(
             "from .. import config, logger\n",
-            "from .. import logger\nfrom algan.settings import SETTINGS\n",
+            "from .. import logger\nfrom algan.settings import SETTINGS\n"
+            "from algan.utils.typeset_cache import write_atomically\n",
         )
         cut(
             "\"TypstMobject requires the 'typst' Python package. \"\n"
@@ -374,6 +375,46 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "    using a content-hash filename scheme (identical to the LaTeX pipeline).",
             "under Algan's runtime cache directory, in ``manim/Typst``. The cache\n"
             "    key includes the source, compiler version and additional font paths.",
+        )
+        # Every Algan process shares that directory: a reader that finds the
+        # .svg must never be reading one still being written.
+        cut(
+            '    typ_file.write_text(full_source, encoding="utf-8")\n',
+            '    write_atomically(typ_file, full_source.encode("utf-8"))\n',
+        )
+        cut(
+            "    svg_file.write_bytes(svg_bytes)\n",
+            "    write_atomically(svg_file, svg_bytes)\n",
+        )
+
+    elif module == "utils.tex_file_writing":
+        # Algan points tex_dir at one cache directory every process shares.
+        # Upstream compiles in it and then deletes every non-.svg/.tex file
+        # there -- another process's .dvi/.log mid-build included -- and writes
+        # the .svg in place where a concurrent reader can find it half-done.
+        # Build privately and publish atomically instead.
+        cut(
+            "    tex_file = generate_tex_file(expression, environment, tex_template)\n"
+            "\n"
+            "    # check if svg already exists\n"
+            '    svg_file = tex_file.with_suffix(".svg")\n'
+            "    if svg_file.exists():\n"
+            "        return svg_file\n"
+            "\n"
+            "    dvi_file = compile_tex(\n"
+            "        tex_file,\n"
+            "        tex_template.tex_compiler,\n"
+            "        tex_template.output_format,\n"
+            "    )\n"
+            "    svg_file = convert_to_svg(dvi_file, tex_template.output_format)\n"
+            '    if not config["no_latex_cleanup"]:\n'
+            "        delete_nonsvg_files()\n"
+            "    return svg_file\n",
+            "    # Algan: tex_dir is shared by every process, so each formula is\n"
+            "    # built in a private directory and published atomically.\n"
+            "    from algan.utils.typeset_cache import build_tex_svg\n"
+            "\n"
+            "    return build_tex_svg(expression, environment, tex_template)\n",
         )
 
     elif module == "mobject.text.text_mobject":
@@ -400,7 +441,81 @@ def apply_targeted_patches(text: str, module: str) -> str:
         cut(
             "from ...mobject.svg.svg_mobject import SVGMobject\n",
             "from ...mobject.mobject import Group\n"
-            "from ...mobject.svg.svg_mobject import SVGMobject\n",
+            "from ...mobject.svg.svg_mobject import SVGMobject\n"
+            "from algan.utils.typeset_cache import building\n",
+        )
+        # Algan shares text_dir between processes. Upstream renders the SVG in
+        # place, where a concurrent reader can find it half-written, and then
+        # rewrites it in place on *every* construction (remove_last_M), so two
+        # processes building the same Text can truncate the cached file for
+        # good. Render and post-process privately, publish once, atomically.
+        cut("        PangoUtils.remove_last_M(file_name)\n")
+        cut("        PangoUtils.remove_last_M(file_name)\n")
+        cut(
+            "            svg_file = manimpango.text2svg(\n"
+            "                settings,\n"
+            "                size,\n"
+            "                line_spacing,\n"
+            "                self.disable_ligatures,\n"
+            "                str(file_name.resolve()),\n"
+            "                START_X,\n"
+            "                START_Y,\n"
+            "                width,\n"
+            "                height,\n"
+            "                self.text,\n"
+            "            )\n",
+            "            with building(file_name) as partial:\n"
+            "                manimpango.text2svg(\n"
+            "                    settings,\n"
+            "                    size,\n"
+            "                    line_spacing,\n"
+            "                    self.disable_ligatures,\n"
+            "                    str(partial),\n"
+            "                    START_X,\n"
+            "                    START_Y,\n"
+            "                    width,\n"
+            "                    height,\n"
+            "                    self.text,\n"
+            "                )\n"
+            "                PangoUtils.remove_last_M(str(partial))\n"
+            "            svg_file = str(file_name.resolve())\n",
+        )
+        cut(
+            "            svg_file = MarkupUtils.text2svg(\n"
+            "                final_text,\n"
+            "                self.font,\n"
+            "                self.slant,\n"
+            "                self.weight,\n"
+            "                size,\n"
+            "                line_spacing,\n"
+            "                self.disable_ligatures,\n"
+            "                str(file_name.resolve()),\n"
+            "                START_X,\n"
+            "                START_Y,\n"
+            "                600,  # width\n"
+            "                400,  # height\n"
+            "                justify=self.justify,\n"
+            "                pango_width=500,\n"
+            "            )\n",
+            "            with building(file_name) as partial:\n"
+            "                MarkupUtils.text2svg(\n"
+            "                    final_text,\n"
+            "                    self.font,\n"
+            "                    self.slant,\n"
+            "                    self.weight,\n"
+            "                    size,\n"
+            "                    line_spacing,\n"
+            "                    self.disable_ligatures,\n"
+            "                    str(partial),\n"
+            "                    START_X,\n"
+            "                    START_Y,\n"
+            "                    600,  # width\n"
+            "                    400,  # height\n"
+            "                    justify=self.justify,\n"
+            "                    pango_width=500,\n"
+            "                )\n"
+            "                PangoUtils.remove_last_M(str(partial))\n"
+            "            svg_file = str(file_name.resolve())\n",
         )
         cut(
             "        self.chars = self.get_group_class()(*self.submobjects)\n",
@@ -409,6 +524,25 @@ def apply_targeted_patches(text: str, module: str) -> str:
         )
 
     elif module == "mobject.svg.svg_mobject":
+        cut("import os\n", "import io\nimport os\nimport tempfile\n")
+        # Upstream writes its restyled copy to one fixed scratch name beside
+        # the SVG and deletes it after parsing. Algan's Tex/Text SVGs live in a
+        # cache every process shares, so two processes parsing the same file
+        # deleted each other's copy. svgelements parses a stream just as well.
+        cut(
+            "        # Create a temporary svg file to dump modified svg to be parsed\n"
+            '        modified_file_path = file_path.with_name(f"{file_path.stem}_{file_path.suffix}")\n'
+            "        new_tree.write(modified_file_path)\n"
+            "\n"
+            "        svg = se.SVG.parse(modified_file_path)\n"
+            "        modified_file_path.unlink()\n",
+            "        # Parse the restyled copy from memory: a scratch file beside a\n"
+            "        # shared cached SVG is shared by every process parsing it.\n"
+            "        modified_svg = io.BytesIO()\n"
+            "        new_tree.write(modified_svg)\n"
+            "        modified_svg.seek(0)\n"
+            "        svg = se.SVG.parse(modified_svg)\n",
+        )
         cut(
             '            "fill-opacity",\n',
             '            "fill-opacity",\n            "opacity",\n',
@@ -477,8 +611,8 @@ def apply_targeted_patches(text: str, module: str) -> str:
             "    @staticmethod\n    def rect_to_mobject(rect: se.Rect) -> Rectangle:\n",
             "    @staticmethod\n"
             "    def image_to_mobject(img: se.Image) -> Rectangle:\n"
-            '        temp_file = "manim_temp_m98Jg98asmmxn.png"\n'
-            '        with open(temp_file, "wb") as f:\n'
+            '        descriptor, temp_file = tempfile.mkstemp(suffix=".png")\n'
+            '        with os.fdopen(descriptor, "wb") as f:\n'
             "            f.write(img.data)\n"
             "        mob = SVG_GLOBALS.image_class(\n"
             '            temp_file, scale_to_resolution=config["frame_height"]\n'
@@ -1385,7 +1519,9 @@ Targeted, asserted, one dropped reference each:
    CLI used. Drops the `cloup` dependency.
 9. `utils/typst_file_writing.py` -- the optional-dependency error names
    `algan[typst]`; generated files use Algan's runtime cache directory. Cache
-   keys include the compiler version and resolved additional font paths.
+   keys include the compiler version and resolved additional font paths. The
+   `.typ` and `.svg` are written atomically, because every Algan process
+   shares that directory.
 10. `mobject/types/image_mobject.py` -- the unused runtime `MovingCamera`
     import (it is re-imported under `TYPE_CHECKING` a few lines below).
 11. `_config/utils.py` -- `ManimConfig.renderer`'s setter rejects `"opengl"`
@@ -1397,11 +1533,25 @@ Targeted, asserted, one dropped reference each:
     modules that have nothing to do with Pango.
     The text cache hash also includes substring gradients (`t2g`), so changing
     a gradient cannot reuse an SVG containing the previous colors.
+    `Text` and `MarkupText` render their SVG to a private file, strip its last
+    `M` there, and publish it atomically (`algan.utils.typeset_cache`),
+    instead of rendering in place and rewriting the cached file on every
+    construction -- `text_dir` is shared by every Algan process.
 13. `mobject/svg/svg_mobject.py` -- carry element, group and root opacity into
     imported fill/stroke coverage. Embedded rasters use the authored image
     width and height before the SVG's overall size normalization. Group
     opacity is applied per shape; overlapping shapes do not form an isolated
-    SVG compositing layer.
+    SVG compositing layer. The restyled SVG is parsed from memory rather than
+    from a fixed-name scratch file beside the source, which concurrent
+    processes parsing one cached SVG deleted from under each other; embedded
+    rasters go through a private temporary file.
+14. `utils/tex_file_writing.py` -- `tex_to_svg_file` hands the build to
+    `algan.utils.typeset_cache.build_tex_svg`. Upstream compiles in `tex_dir`
+    and then deletes every non-`.svg`/`.tex` file there; Algan shares that
+    directory between processes, so that deleted other processes' builds in
+    flight. Each formula is now compiled in a private directory and its
+    `.svg` published with an atomic rename, under the same content-addressed
+    name.
 """
 
 

@@ -35,7 +35,18 @@ is a Linux install without the extra, and there the vendored package withholds t
 names, `algan.Text` falls back to LaTeX's text mode, and `manim_compat` wraps what is
 there. **`hasattr(mn, "Text")` is the test, never `import
 manimpango`**: the module `text_mobject` imports fine either way (`Text` is `Brace`'s default
-label class), it is the export that is conditional.
+label class), it is the export that is conditional. In `algan/mobs/text.py` that test is
+`_pango_available()`, which is also what tests patch to force the fallback. The fallback warns
+once, lays each line out as an `align*` row and each styled run as its own Tex segment (so
+`color_map` lands on the right glyphs), and scales to Pango's capital height.
+
+The generated-SVG directories (`manim/Tex`, `manim/texts`, `manim/Typst` under the cache) are
+**shared by every Algan process at once**. Anything that writes there builds privately and
+publishes with an atomic rename -- `algan/utils/typeset_cache.py` (`build_tex_svg`,
+`building`, `write_atomically`) -- and never deletes or rewrites a file it did not just create.
+Upstream Manim did both (a post-build sweep of `tex_dir`, an in-place `remove_last_M`, a
+fixed-name scratch copy beside the parsed SVG); `scripts/vendor_manim.py` patches all three
+out, so keep those patches when re-vendoring.
 
 
 `algan.manim` wraps **every** Manim class, natives included, so `mn.Sphere` exists beside

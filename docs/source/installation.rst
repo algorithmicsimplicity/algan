@@ -342,12 +342,14 @@ select the tab for your operating system below and follow the instructions there
       download, which is the only reason not to recommend it first. See
       :ref:`installation-optional-latex` for the small set Algan actually uses.
 
-      With LaTeX alone, ``Text`` typesets through LaTeX's text mode: it works,
-      but it cannot use your system fonts and ignores the font, weight and
-      slant arguments. To get those, install the ``pango`` extra as well. This
-      is the one part of Algan that compiles from source on Linux -- which is
-      why it is opt-in here and automatic elsewhere -- so install a compiler
-      and the development headers first:
+      With LaTeX alone, ``Text`` typesets through LaTeX's text mode, and warns
+      once to say so: it keeps Pango's size, line breaks and colors, but it
+      cannot use your system fonts -- ``font`` only chooses between Computer
+      Modern's serif, sans-serif and typewriter faces, and ``weight`` between
+      regular and bold. To get your fonts, install the ``pango`` extra as
+      well. This is the one part of Algan that compiles from source on
+      Linux -- which is why it is opt-in here and automatic elsewhere -- so
+      install a compiler and the development headers first:
 
       .. code-block:: bash
 
