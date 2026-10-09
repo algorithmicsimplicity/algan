@@ -29,11 +29,13 @@ import importlib.util
 import os
 import shutil
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 from algan import PREVIEW, SETTINGS, Scene
+from algan.errors import Float32PrecisionWarning
 from algan.rendering.mps_compat import mps_friendly
 from algan.scene_manager import SceneManager
 
@@ -144,7 +146,10 @@ def test_the_fast_scene_renders_and_matches_its_baseline(
     output_path = OUTPUT_DIR / "fast.mp4"
     output_path.unlink(missing_ok=True)
 
-    with Scene() as scene:
+    # An ordinary scene rounds far below a pixel: the float32 precision
+    # warning firing here would be a false alarm, so it fails the render.
+    with Scene() as scene, warnings.catch_warnings():
+        warnings.simplefilter("error", Float32PrecisionWarning)
         _load_scene()
         result = scene.save_video(
             output_path,

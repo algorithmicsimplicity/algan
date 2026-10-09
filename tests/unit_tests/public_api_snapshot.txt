@@ -114,6 +114,7 @@ Elbow
 Ellipse
 Exclusion
 Flash
+Float32PrecisionWarning
 FocusOn
 FragmentStage
 FrontSide
