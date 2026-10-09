@@ -2136,6 +2136,10 @@ class FunctionApplicationEvent:
         # is kept here so that split does not have to find them by searching
         # the attribute's entire edit log.
         self.recorded_edit_records = []
+        # Values a write inside this function's body decided at authoring
+        # time and its replay must reuse, keyed by (key, number of edits
+        # recorded before it). See AnimationTimeline.keep_for_replay.
+        self.kept_for_replay = {}
 
 
 def _describe_mob(mob):
@@ -2988,6 +2992,33 @@ class AnimationTimeline:
             ):
                 return inds
         return None
+
+    def keep_for_replay(self, key, value):
+        """Hand ``value`` to the replay of the function whose body is recording.
+
+        A write that decides something at authoring time records it as a
+        keyword of its own function application -- but a write made inside
+        another recorded function's body is not recorded on its own: replay
+        re-runs that body, and the write decides afresh against the state of
+        each frame. Where the decision cannot be remade from that state
+        (:meth:`~algan.animatable_base.mob.Mob._apply_basis_change`'s
+        remembered shape, which exists because the state has lost it), it is
+        kept here, on the enclosing application, under ``key`` and the number
+        of edits recorded before it -- which is where the replay's edit cursor
+        stands when it reaches the same write (:meth:`kept_for_replay`).
+        Does nothing outside such a body.
+        """
+        event = self._active_edit_event
+        if event is None or self._active_replay_event is not None:
+            return
+        event.kept_for_replay[key, len(event.recorded_edits)] = value
+
+    def kept_for_replay(self, key):
+        """The value :meth:`keep_for_replay` kept for this point of the replay, or None."""
+        event = self._active_replay_event
+        if event is None:
+            return None
+        return event.kept_for_replay.get((key, self._active_replay_edit_index))
 
     def modify_attribute(self, attr_name, mob_inds, new_value):
         timeline = self.attr_to_timeline[attr_name]
