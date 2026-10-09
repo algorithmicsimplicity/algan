@@ -1488,8 +1488,9 @@ class Scene(RenderLoopMixin):
         Unlike :meth:`save_video` this never modifies the Scene: nothing is
         despawned, the timeline is left as authored, and any temporary video
         settings or background are restored before returning. Call it as often
-        as you like while building a scene. Multiple timestamps share
-        memory-bounded render batches; frames between them are not rendered.
+        as you like while building a scene. Multiple timestamps share one
+        render job, but each still renders exactly as it would on its own,
+        from only the Mobs alive in it; frames between them are not rendered.
 
         During :meth:`Project.render_screenshots <algan.project.Project.render_screenshots>`,
         calls are collected instead. The project authors the scene first, then

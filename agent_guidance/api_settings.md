@@ -306,8 +306,15 @@ where you launch Python.
 
 ### Batched screenshots
 
-`Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job and
-its normal memory-bounded batches. It does not render the intervening frames.
+`Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job,
+`get_frames(..., frame_indices=..., _independent_frames=True)`, which gives
+every still a render batch of its own. It does not render the intervening
+frames. Do not let stills share a batch again: a batch carries every Mob alive
+anywhere in its window (so memory grew with the number of stills and the
+stretch between them), and it chooses its route, lighting rows and circuit
+tessellation over all of its frames (a still batched with a zoomed-in one
+rendered its curves finer, up to 72 levels apart). The prefetch worker still
+prepares the next still while one renders. `test_batched_stills.py` checks both.
 Times are quantized at the selected frame rate; repeated frame indices share
 rendered pixels, while output names, return order, and overwrite policy retain
 the input order. Shared render wall time is divided among the rendered results.
