@@ -34,6 +34,7 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     batch_arange,
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
+from algan.rendering.raytracing.float32_rounding import record_projection
 from algan.rendering.raytracing.logical_pn_taichi import (
     bezier_chord_hull_error,
     pn_edge_chord_error,
@@ -1328,6 +1329,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         release_torch_memory(force_gc=False)
 
     def project_to_screen(self, camera, light_sources):
+        # Before shading: corners are [T, N, 3, 3], one element per triangle.
+        record_projection(self, camera, self.corners, 3)
         self._shade_vertex_colors(camera, light_sources)
         return self._pack_projected_flat_geometry(camera)
 
@@ -2726,6 +2729,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self._logical_pn_triangle_counts = counts
 
     def project_to_screen(self, camera, light_sources):
+        # On the source patches, before the dice replaces them: one element
+        # per patch, which is what ``_obj_counts`` (and so the Mob that built
+        # it) is counted in. The diced surface passes through their corners.
+        record_projection(self, camera, self.corners, 3)
         self._dice_logical_pn(camera)
         self._shade_vertex_colors(camera, light_sources)
         padding = self._logical_pn_padding
@@ -3066,6 +3073,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     _rt_projection_aa = 1.0
 
     def project_to_screen(self, camera, light_sources):
+        # On the authored cubics, before a stroke style expands them: four
+        # controls per cubic, cubics grouped into circuits.
+        record_projection(
+            self,
+            camera,
+            self.corners,
+            4,
+            getattr(self, "num_segments_per_object", None),
+        )
         if getattr(self, "stroke_style", None) is not None:
             from algan.rendering.stroke_outline import _expand_stroke
 
