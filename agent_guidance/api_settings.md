@@ -349,9 +349,12 @@ alone, from only its own Mobs, which constrains how stills share batches:
   noting exactly what the batch before's last one did (the merge's
   `_frame_digests`, read by `_still_batch_digests`). Stills that never
   agree -- PN solids turning, whose per-frame dicing pads rows that note
-  differently -- pay for one failed probe per job: 2.0 s against 1.8-1.9 s
-  for 12 stills of two turning solids at 320x180, where blindly retried
-  doublings cost three or four failed probes. A batch-wide choice added
+  differently -- pay for one failed probe per job: median 1.79 s against
+  1.66 s for 12 stills of two turning solids at 320x180 (0.52 s against
+  0.45 s for two), where blindly retried doublings cost three or four
+  failed probes. A still alone in its group takes no signature at all
+  (`lone_still` in its render state), so a job whose stills all differ in
+  their live Mobs does exactly the work it did before. A batch-wide choice added
   to the merge must note its inputs, or still batches stop matching their
   stills.
 - The path tracer, the wavefront memory trim and in-composite tonemapping
