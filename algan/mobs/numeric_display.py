@@ -32,8 +32,63 @@ from algan.geometry.geometry import (
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
+from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor, reject_non_finite
+
+
+def _glyph_alphas(circuit):
+    """The (fill, stroke) alpha a packed glyph circuit was built with."""
+    return tuple(
+        float(part.get_animated_attribute("color")[..., -1].reshape(-1)[0])
+        for part in (circuit.grid, circuit.border_grid)
+    )
+
+
+def _show_glyphs(circuit, shown, alphas):
+    """Draw only the ``shown`` members of a packed glyph circuit.
+
+    ``shown`` holds one 0/1 entry per member, shape ``(*, members, 1)``, and
+    ``alphas`` the (fill, stroke) alpha a shown member is drawn with. The
+    choice is written into the alpha of the two colors the renderer draws a
+    circuit from, its fill and stroke texture grids, which it multiplies by
+    ``opacity`` -- so the choice never lives in ``opacity`` itself. A fade,
+    recorded or replayed inside an animated function, then reaches every glyph
+    without revealing the hidden ones, and a value change replayed during a
+    fade never undoes the fade.
+    """
+    scene = circuit.scene
+    # A deliberate alpha write, not a recolor that should keep the old alpha
+    # (Mob._keep_explicit_alpha).
+    previous = getattr(scene, "_writing_component_alpha", False)
+    scene._writing_component_alpha = True
+    try:
+        for part, alpha in zip((circuit.grid, circuit.border_grid), alphas):
+            colors = part.get_animated_attribute("color")
+            alpha = (shown * alpha).to(device=colors.device, dtype=colors.dtype)
+            sizes = part.parent_batch_sizes
+            if sizes is not None and sizes.numel() == alpha.shape[-2]:
+                # A member owns a block of texels (several once refined).
+                alpha = alpha.repeat_interleave(sizes.to(alpha.device), dim=-2)
+            rows = torch.broadcast_shapes(colors.shape[:-1], alpha.shape[:-1])
+            colors = colors.expand(*rows, colors.shape[-1]).clone()
+            colors[..., -1:] = alpha
+            part.set_animated_attribute("color", colors, recursive=False)
+    finally:
+        scene._writing_component_alpha = previous
+
+
+def _keep_glyph_selection(mobs):
+    """Make color writes over ``mobs`` keep the glyph selection in their alpha.
+
+    See :meth:`~algan.animatable_base.mob.Mob._keep_explicit_alpha`: a color
+    whose alpha is 1, which includes every named color, then recolors the
+    glyphs without showing the hidden ones.
+    """
+    for mob in mobs:
+        if isinstance(mob, BezierCircuitCubic):
+            mob._mark_explicit_alpha(stroke=False)
+            mob._mark_explicit_alpha(stroke=True)
 
 
 class DecimalNumber(Mob):
@@ -63,6 +118,14 @@ class DecimalNumber(Mob):
     without spending video time. A value change never spawns or revives the
     number, including when another animation or updater changes it. Each frame
     formats the interpolated value using the selected precision mode.
+
+    Fade it through ``opacity`` like any other Mob -- while it counts, or from
+    inside an :func:`~algan.animatable_base.animatable.animated_function`. Each
+    digit slot holds every glyph it can show and draws one of them by giving
+    the others zero color alpha, which the renderer multiplies by ``opacity``,
+    so no fade can reveal them. Recoloring keeps that selection, but assigning
+    a color whose own alpha is below 1 shows every glyph: make the number
+    translucent through ``opacity`` (or the ``color`` it is built with).
 
     Parameters
     ----------
@@ -190,6 +253,11 @@ class DecimalNumber(Mob):
             # [num_i+1]='.', [num_i+2..]=decimal digits.
             self.decimal = self.placeholder[num_i + 1] if num_d > 0 else None
             self.negative_sign = self.placeholder[0]
+            # The point and sign are drawn at the digits' opacity; the sign is
+            # shown and hidden through its alpha (_show_glyphs), as they are.
+            for part in (self.decimal, self.negative_sign):
+                if part is not None:
+                    part.opacity = 1
             if num_i >= 2:
                 digit_advance_points = (
                     self.placeholder[1].location,
@@ -211,7 +279,7 @@ class DecimalNumber(Mob):
             self.digit_mobs = []
             for _ in range(num_i + num_d):
                 self.digit_mobs.append(Tex("0123456789", **kwargs))
-                self.digit_mobs[-1].set(opacity=0)
+            self._glyph_alphas = _glyph_alphas(self.digit_mobs[0]._character_batch)
             for i in range(len(self.digit_mobs)):
                 location = self.placeholder[
                     1 + i + (1 if (num_d > 0 and i >= num_i) else 0)
@@ -246,6 +314,7 @@ class DecimalNumber(Mob):
             self.add_children(self.digit_mobs, self.negative_sign)
         for c in self.children:
             c.on_create = lambda c=c: c
+        _keep_glyph_selection(self.get_descendants())
         # self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
     @property
@@ -264,6 +333,35 @@ class DecimalNumber(Mob):
                     with Off(animation_manager=self.animation_manager):
                         c.set_non_recursive(opacity=0)
                     c.set_non_recursive(opacity=o)
+
+    def set_opacity_via_color(self, opacity: float | torch.Tensor) -> DecimalNumber:
+        """Fade the number; for a DecimalNumber, the same as setting ``opacity``.
+
+        Each digit slot picks the glyph it draws through the glyphs' color
+        alpha, so writing alpha here, as
+        :meth:`~algan.animatable_base.mob.Mob.set_opacity_via_color` does for
+        other Mobs, would show every hidden glyph. ``opacity`` already fades
+        the digits without disturbing their color, which is what the color
+        route exists for. :func:`~algan.animations.indication.Blink` uses it.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's runtime (1 second
+        by default), exactly like assigning to ``opacity``.
+
+        Parameters
+        ----------
+        opacity
+            Target opacity, ``0`` for fully transparent to ``1`` for fully
+            opaque.
+
+        Returns
+        -------
+        :class:`~algan.mobs.numeric_display.DecimalNumber`
+            This Mob, so calls can be chained.
+        """
+        self.opacity = opacity
+        return self
 
     def get_value(self):
         return self.value
@@ -367,6 +465,7 @@ class DecimalNumber(Mob):
                 for _ in range(self.significant_figures + 7)
             ]
             template = self._significant_slots[0]
+            self._glyph_alphas = _glyph_alphas(template._character_batch)
             self._significant_offsets = []
             for glyph in template.character_mobs:
                 offset = map_global_to_local_coords(
@@ -380,8 +479,9 @@ class DecimalNumber(Mob):
             for slot in self._significant_slots:
                 slot.on_create = lambda slot=slot: slot
             self.update_display(self.value)
+        _keep_glyph_selection(self.get_descendants())
 
-    def _update_significant_display(self, value, opacity):
+    def _update_significant_display(self, value):
         strings = [self._format_significant_value(float(v)) for v in value.reshape(-1)]
         lengths = self.location.new_tensor([len(s) for s in strings]).reshape(
             value.shape
@@ -389,20 +489,25 @@ class DecimalNumber(Mob):
         with Sync(animation_manager=self.animation_manager):
             for i, slot in enumerate(self._significant_slots):
                 slot_location = self._digit_advance * (i - (lengths - 1) / 2)
+                shown = []
                 for character, glyph, offset in zip(
                     self._significant_characters,
                     slot.character_mobs,
                     self._significant_offsets,
                 ):
-                    selected = value.new_tensor(
-                        [i < len(s) and s[i] == character for s in strings]
-                    ).reshape(value.shape)
+                    shown.append(
+                        value.new_tensor(
+                            [i < len(s) and s[i] == character for s in strings]
+                        ).reshape(value.shape)
+                    )
                     glyph.set(
                         location=map_local_to_global_coords(
                             self.location, self.basis, slot_location + offset
                         ),
-                        opacity=selected * opacity,
                     )
+                _show_glyphs(
+                    slot._character_batch, torch.cat(shown, -2), self._glyph_alphas
+                )
 
     def _required_integer_places(self, value):
         """Return the slots needed by ``value`` after decimal rounding."""
@@ -431,7 +536,11 @@ class DecimalNumber(Mob):
         ):
             for place_from_right in range(old_integer_places, required):
                 digit_mob = source_digit.clone(spawn=False)
-                digit_mob.set(opacity=0)
+                _show_glyphs(
+                    digit_mob._character_batch,
+                    torch.zeros(1, len(digit_mob.character_mobs), 1),
+                    self._glyph_alphas,
+                )
                 slot_location = map_local_to_global_coords(
                     self.location,
                     self.basis,
@@ -451,6 +560,9 @@ class DecimalNumber(Mob):
         )
         self.integer_places = required
         self.add_children(new_digits)
+        _keep_glyph_selection(
+            mob for digit_mob in new_digits for mob in digit_mob.get_descendants()
+        )
 
         if self.is_spawned() and not self.is_despawned():
             for digit_mob in new_digits:
@@ -459,15 +571,14 @@ class DecimalNumber(Mob):
     def update_display(self, value):
         """Internal: select and position glyphs for the current value."""
         value = cast_to_tensor(value)
-        # Replay runs after lifespan masking. Keep that mask when selecting
-        # glyphs, including when another Mob's animation/updater drives a
-        # number before its spawn or after its despawn. During authoring the
-        # glyph selection must remain available for a later spawn.
-        opacity = self.opacity if self.scene.timeline_manager.is_replaying() else 1
+        # Selection is written to color alpha only (_show_glyphs), never to
+        # opacity: replay runs after lifespan masking, so a value driven by
+        # another Mob's animation or updater before this number's spawn or
+        # after its despawn stays hidden, and a concurrent fade is kept.
         if self.significant_figures is not None:
-            self._update_significant_display(value, opacity)
+            self._update_significant_display(value)
             return
-        neg_opacity = torch.where((value < 0), 1, 0)
+        negative = torch.where((value < 0), 1, 0)
         value = value.abs()
         num_i, num_d = self.integer_places, self.decimal_places
         # Largest value the digit slots can show; anything bigger is clamped
@@ -475,8 +586,8 @@ class DecimalNumber(Mob):
         limit = (10**num_i) - ((10**-num_d) if num_d > 0 else 1)
         visible_integer_places = []
 
-        def get_opacities(value):
-            all_opacities = []
+        def get_shown(value):
+            all_shown = []
             for v in value:
                 x = float(v.item())
                 if x != x:  # NaN guard
@@ -490,14 +601,14 @@ class DecimalNumber(Mob):
                 num_leading = min(len(int_part) - len(int_part.lstrip("0")), num_i - 1)
                 for k, digit in enumerate(int_part + frac_part):
                     if k < num_leading:
-                        all_opacities.append(torch.zeros(10, 1, dtype=torch.long))
+                        all_shown.append(torch.zeros(10, 1, dtype=torch.long))
                     else:
-                        all_opacities.append(
+                        all_shown.append(
                             F.one_hot(torch.tensor((int(digit),)), 10).transpose(0, 1)
                         )
-            return torch.stack(all_opacities)
+            return torch.stack(all_shown)
 
-        all_opacities = torch.stack([get_opacities(_) for _ in value], -3)
+        all_shown = torch.stack([get_shown(_) for _ in value], -3)
         visible_integer_places = torch.tensor(
             visible_integer_places,
             dtype=value.dtype,
@@ -512,14 +623,10 @@ class DecimalNumber(Mob):
         )
 
         with Sync(animation_manager=self.animation_manager):
-            if self.decimal is not None:
-                self.decimal.opacity = opacity
-            self.negative_sign.set(
-                location=sign_location,
-                opacity=neg_opacity * opacity,
-            )
-            for i in range(len(self.digit_mobs)):
-                for j in range(10):
-                    self.digit_mobs[i].character_mobs[j].set(
-                        opacity=all_opacities[i, :, j].unsqueeze(-2) * opacity,
-                    )
+            self.negative_sign.set(location=sign_location)
+            (sign_glyph,) = self.negative_sign.children
+            _show_glyphs(sign_glyph, negative, self._glyph_alphas)
+            for i, digit_mob in enumerate(self.digit_mobs):
+                _show_glyphs(
+                    digit_mob._character_batch, all_shown[i], self._glyph_alphas
+                )
