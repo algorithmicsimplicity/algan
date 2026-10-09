@@ -252,10 +252,10 @@ def test_near_orthographic_keeps_the_plane_in_focus(fresh_scene):
         camera = scene.get_camera()
         with Off():
             camera.set_near_orthographic()
-        # The eye backed off ~1.6e5 units; the focus followed it, so the
-        # ORIGIN plane that was in focus still is.
+        # The eye backed off to 8,000 units (1.6x the default distance); the
+        # focus followed it, so the ORIGIN plane that was in focus still is.
         depth = float(camera._depth_of(torch.zeros(3)))
-        assert depth > 1e5
+        assert depth == pytest.approx(8e3, rel=1e-3)
         assert float(camera.focus_distance) == pytest.approx(depth, rel=1e-5)
 
 

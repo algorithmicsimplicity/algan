@@ -938,11 +938,15 @@ Camera
 
 * **True orthographic projection is not implemented.**
   :meth:`~.Camera.set_near_orthographic` is the only spelling, and it says what
-  it does: an ordinary perspective camera moved 1e5 units back from its screen.
+  it does: an ordinary perspective camera moved 5000 units back from its screen
+  (by default; 8,000 units from the origin with the default framing).
   It looks orthographic and is not:
-  geometry spanning a large depth range still converges slightly, and the
-  extreme camera distance puts every world-space epsilon in
-  :ref:`limits-scale` a long way from the geometry it is meant to separate.
+  geometry spanning a large depth range still converges slightly (a point 5
+  units off the origin plane, at a corner of a 1080p frame, by up to 0.7
+  pixels), and the camera distance puts every world-space epsilon in
+  :ref:`limits-scale` a long way from the geometry it is meant to separate. A
+  larger ``distance`` flattens further but costs float32 precision: at 1e5,
+  text turned 35 degrees off an axis rendered with doubled strokes.
 * **Depth of field is the path tracer's alone.** ``camera.aperture`` and
   ``camera.focus_distance`` describe a thin lens (see
   :ref:`camera-depth-of-field`); the path tracer samples it, and the
@@ -1057,8 +1061,8 @@ distinct, and lose contact shadows within the minimum hit distance. The offset
 a bounced or shadow ray starts from is *not* on this list: both renderers scale
 it with the hit point's own coordinates (see the contact-shadow note under
 `Shadows`_). **Scale the scene, not the camera** -- and note that
-:meth:`~.Camera.set_near_orthographic` moves the camera 1e5 units out, which is
-the same problem arriving from the other direction.
+:meth:`~.Camera.set_near_orthographic` moves the camera thousands of units out,
+which is the same problem arriving from the other direction.
 
 
 .. _limits-hard:
