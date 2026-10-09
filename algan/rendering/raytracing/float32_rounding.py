@@ -80,8 +80,10 @@ EPS32 = float(torch.finfo(torch.float32).eps)
 #: brought in front of a distant camera against the same text left at the
 #: origin (the two are identical in exact arithmetic).
 VISIBLE_ERROR_PX = 0.5
-#: From here shapes break up: doubled strokes, dashed outlines, gaps.
-BROKEN_ERROR_PX = 2.0
+#: From here shapes break up: doubled strokes, dashed outlines, gaps. The
+#: calibration saw uneven strokes up to 1.6 px and a doubled one by 1.75 (the
+#: old 1e5 ``set_near_orthographic`` default, turned).
+BROKEN_ERROR_PX = 1.5
 
 #: Points this far outside the frame (as a fraction of its half-size) still
 #: count as visible: a stroke or a glow reaches in from outside.
