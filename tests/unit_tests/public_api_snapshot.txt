@@ -220,6 +220,7 @@ ModifiedProtectedAttributeError
 MoveAlongPath
 NUM_DIMENSIONS
 NeverSpawnedMobWarning
+NeverVisibleMobWarning
 NoExtra
 NumberLine
 NumberPlane

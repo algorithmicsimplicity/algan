@@ -374,7 +374,10 @@ def test_custom_spawn_hook_fades_packed_descendants_only_once(collate, monkeypat
             assert torch.allclose(node.opacity, times[:, None, None] * target)
         digit = number.digit_mobs[-1].character_mobs[0]
         assert torch.allclose(digit.opacity[:, 0, 0], times)
-        assert torch.count_nonzero(number.negative_sign.opacity) == 0
+        # The sign of a positive number is hidden by its color alpha, which
+        # the renderer multiplies by opacity; opacity is left to fades.
+        sign = number.negative_sign.children[0]
+        assert torch.count_nonzero(sign.opacity * sign.fill_opacity) == 0
 
 
 @pytest.mark.fast

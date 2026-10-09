@@ -3,13 +3,38 @@ from __future__ import annotations
 import pytest
 import torch
 
-from algan import DecimalNumber, Off, Scene, Square, Sync, easings
+from algan import (
+    RED,
+    DecimalNumber,
+    Off,
+    Scene,
+    Square,
+    Sync,
+    animated_function,
+    easings,
+)
+from algan.mobs.bezier_circuit import BezierCircuitCubic
 
 
-def _displayed_value(display, frame=None):
+def _drawn(part):
+    """Per-frame alpha the renderer draws ``part``'s glyphs with, shape ``(T,)``.
+
+    Opacity times fill alpha: a DecimalNumber picks each slot's glyph through
+    its color alpha and leaves ``opacity`` to fades, so neither factor alone
+    says what is on screen.
+    """
+    values = [
+        (circuit.opacity * circuit.fill_opacity).flatten(1).amax(1)
+        for circuit in part.get_descendants(include_self=True)
+        if isinstance(circuit, BezierCircuitCubic)
+    ]
+    return torch.stack(values).amax(0)
+
+
+def _displayed_value(display, frame=None, threshold=0.5):
     def opacity(glyph):
-        value = glyph.opacity if frame is None else glyph.opacity[frame]
-        return float(value.max())
+        value = _drawn(glyph)
+        return float((value if frame is None else value[frame]).max())
 
     if getattr(display, "significant_figures", None) is not None:
         return "".join(
@@ -18,7 +43,7 @@ def _displayed_value(display, frame=None):
             for character, glyph in zip(
                 display._significant_characters, slot.character_mobs
             )
-            if opacity(glyph) > 0.5
+            if opacity(glyph) > threshold
         )
 
     digits = []
@@ -26,13 +51,13 @@ def _displayed_value(display, frame=None):
         visible = [
             digit
             for digit, glyph in enumerate(digit_mob.character_mobs)
-            if opacity(glyph) > 0.5
+            if opacity(glyph) > threshold
         ]
         digits.append("" if not visible else str(visible[0]))
 
     integer_digits = "".join(digits[: display.integer_places]) or "0"
     fractional_digits = "".join(digits[display.integer_places :])
-    sign = "-" if opacity(display.negative_sign) > 0.5 else ""
+    sign = "-" if opacity(display.negative_sign) > threshold else ""
     decimal = "." if display.decimal_places else ""
     return sign + integer_digits + decimal + fractional_digits
 
@@ -118,10 +143,7 @@ def test_negative_sign_tracks_the_first_visible_integer_digit():
                 atol=1e-6,
                 rtol=0,
             )
-            assert any(
-                float(part.opacity[frame].max()) > 0.5
-                for part in display.negative_sign.get_descendants()
-            )
+            assert float(_drawn(display.negative_sign)[frame]) > 0.5
 
 
 def _assert_hidden(display, frames):
@@ -223,6 +245,119 @@ def test_value_changes_remain_visible(animated):
             "-61.00" if animated else "-123.00",
             "-123.00",
         ]
+
+
+@animated_function(animated_args={"u": 0.0})
+def _count_inside(number, u):
+    number.value = 0.123 + 0.333 * u
+
+
+@animated_function(animated_args={"u": 0.0})
+def _fade_inside(number, u):
+    number.opacity = 1 - u
+
+
+@animated_function(animated_args={"u": 0.0})
+def _count_and_fade_inside(number, u):
+    number.value = 0.123 + 0.333 * u
+    number.opacity = 1 - u
+
+
+def _count_then_fade(count_inside_function):
+    def author(number):
+        if count_inside_function:
+            _count_inside(number, 1.0)
+        else:
+            number.value = 0.456
+        number.opacity = 0
+
+    return author
+
+
+# Variant -> (authoring, whether it counts 0.123 -> 0.456, opacity at time u).
+# Letters are the issue report's; A (a recorded fade) worked before the fix.
+_FADES = {
+    "A_recorded": (lambda n: setattr(n, "opacity", 0), False, lambda u: 1 - u),
+    "A_recorded_to_half": (
+        lambda n: setattr(n, "opacity", 0.5),
+        False,
+        lambda u: 1 - u / 2,
+    ),
+    "D_in_function": (lambda n: _fade_inside(n, 1.0), False, lambda u: 1 - u),
+    "E_counted": (_count_then_fade(False), True, lambda u: 1 - u),
+    "F_counted_in_function": (_count_then_fade(True), True, lambda u: 1 - u),
+    "G_one_function": (
+        lambda n: _count_and_fade_inside(n, 1.0),
+        True,
+        lambda u: 1 - u,
+    ),
+    "via_color": (lambda n: n.set_opacity_via_color(0), False, lambda u: 1 - u),
+}
+
+
+@pytest.mark.parametrize("variant", sorted(_FADES))
+@pytest.mark.parametrize("precision", [None, 3])
+def test_fades_draw_only_the_selected_glyphs(variant, precision):
+    # Glyph selection used to live in opacity: a fade written inside an
+    # animated function showed every glyph of every slot ("-8.888"), and a
+    # count replayed during a recorded fade re-showed changed digits at full
+    # opacity. Selection is now color alpha, multiplied by opacity to draw.
+    author, counts, opacity_at = _FADES[variant]
+    if precision is None:
+        kwargs = {"decimal_places": 3}
+    else:
+        kwargs = {"significant_figures": precision}
+    with Scene() as scene:
+        display = DecimalNumber(0.123, **kwargs).spawn(animate=False)
+        with Sync(runtime=1, easing=easings.identity):
+            author(display)
+        scene.wait(1)
+        # Clear of rounding ties while counting: 0.223, 0.323 and 0.423.
+        times = [0.3, 0.6, 0.9, 1.5]
+        scene.timeline_manager.set_state_to_times(torch.tensor(times))
+        for frame, t in enumerate(times):
+            u = min(t, 1.0)
+            opacity = opacity_at(u)
+            if opacity > 0:
+                value = 0.123 + 0.333 * u if counts else 0.123
+                shown = _displayed_value(display, frame, threshold=1e-4)
+                assert shown == f"{value:.3f}"
+            # Each glyph is drawn at the fade's opacity or not at all.
+            for part in display.get_descendants():
+                if not isinstance(part, BezierCircuitCubic):
+                    continue
+                drawn = (part.opacity * part.fill_opacity)[frame].flatten()
+                hidden = drawn.abs() < 1e-5
+                faded = (drawn - opacity).abs() < 1e-5
+                assert bool((hidden | faded).all()), (t, drawn)
+
+
+def test_recoloring_keeps_hidden_glyphs_hidden():
+    with Scene() as scene:
+        display = DecimalNumber(0.123, decimal_places=3).spawn(animate=False)
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = 0.456
+            display.color = RED
+        scene.wait(1)
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.3, 1.5]))
+        assert _displayed_value(display, 0, threshold=1e-4) == "0.223"
+        assert _displayed_value(display, 1, threshold=1e-4) == "0.456"
+
+
+def test_slots_grown_during_a_fade_fade_with_it():
+    with Scene() as scene:
+        display = DecimalNumber(1, decimal_places=0).spawn(animate=False)
+        with Sync(runtime=1, easing=easings.identity):
+            display.value = 1000
+            display.opacity = 0
+        scene.timeline_manager.set_state_to_times(torch.tensor([0.75]))
+        drawn = [
+            float((part.opacity * part.fill_opacity).max())
+            for part in display.get_descendants()
+            if isinstance(part, BezierCircuitCubic)
+        ]
+        assert _displayed_value(display, 0, threshold=1e-4) == "750"
+        assert max(drawn) == pytest.approx(0.25, abs=1e-5)
 
 
 @pytest.mark.parametrize(

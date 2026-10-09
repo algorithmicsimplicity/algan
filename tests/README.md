@@ -101,7 +101,7 @@ render:
 | Marked `fast` | Why it is in |
 | --- | --- |
 | `test_timeline_overlap.py`, `test_timeline_state_query.py`, `test_active_timeline_materialization.py` | Recording, the per-row state query and materialization at frame times. Nothing reaches the screen except through these. |
-| `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. |
+| `test_lifecycle.py` | Spawn/despawn lifespans, which decide whether a Mob exists in a frame at all. The never-visible despawn warning reads those lifespans' recording spans once the enclosing contexts have rescaled them, so a change to where spawn/despawn stamp a lifespan, or to context exit order, silences or misfires it from elsewhere. Authoring only, no render. |
 | `test_numeric_display.py` (one test) | A `DecimalNumber` selects its glyphs during replay, after lifespan masking, so a value driven by another Mob's animation or updater must not reveal a number before it spawns. It is replayed in nonchronological windows. Changes to replay order, lifespan masking, updater replay or windowed materialization break it from outside `numeric_display`. Tensor-only; no render. |
 | `test_opacity_roundtrip_and_pulses.py` | Timeline replay, descendant-row allocation, packing and component-alpha propagation must agree when colors pulse or subtree opacity values are assigned back. Changes to those shared mechanisms can corrupt transparency or detach existing animation history. Tensor-only checks; no render. |
 | `test_easings.py` | Every animation is evaluated through one of these curves. |
