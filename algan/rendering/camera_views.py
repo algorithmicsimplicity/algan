@@ -111,10 +111,13 @@ def _render_with_camera_views(
     frame_indices=None,
     aux_passes=False,
     aux_sink=None,
+    independent_frames=False,
 ):
     # Aux passes belong to the main camera's frames only: the capture passes
     # below are textures, and never trace them.
     aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
+    # Stills keep one frame per batch in every pass (see RenderLoopMixin.get_frames).
+    independent = {"_independent_frames": True} if independent_frames else {}
     excluded_displays = {
         id(mob)
         for actor in scene.actors
@@ -164,6 +167,7 @@ def _render_with_camera_views(
                         post_processes=(),
                         manual_memory=manual_memory,
                         frame_indices=indices,
+                        **independent,
                     )
                 ) as stream,
             ):
@@ -183,6 +187,7 @@ def _render_with_camera_views(
                 manual_memory=manual_memory,
                 frame_indices=indices,
                 **aux_kwargs,
+                **independent,
             )
         ) as stream:
             for frames in stream:

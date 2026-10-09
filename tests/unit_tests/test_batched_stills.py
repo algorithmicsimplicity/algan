@@ -6,7 +6,7 @@ import pytest
 import torch
 from PIL import Image
 
-from algan import RIGHT, Project, Scene, SceneManager, Seq, Square
+from algan import RIGHT, Circle, Off, Project, Scene, SceneManager, Seq, Square
 from algan.errors import AlganConfigurationError
 from algan.settings import SETTINGS
 from algan.settings.video_settings import VideoSettings
@@ -390,6 +390,61 @@ def test_sparse_pixels_match_individual_renders_with_bounded_materialization(
 
             delta = np.abs(np.asarray(a).astype(int) - np.asarray(b).astype(int))
         assert delta.max() <= 2
+
+
+def _max_difference(first, second):
+    import numpy as np
+
+    with Image.open(first.output_path) as a, Image.open(second.output_path) as b:
+        return int(np.abs(np.asarray(a).astype(int) - np.asarray(b).astype(int)).max())
+
+
+def test_a_still_does_not_depend_on_its_batch_mates(tmp_path):
+    """A render batch tessellates every circuit for the largest projection of
+    any of its frames, and decides its route over all of them. A still batched
+    with a later, zoomed-in still therefore rendered its curves finer than it
+    does alone (72 levels apart on a circle and a formula at 160x90).
+    """
+    settings = VideoSettings((64, 48), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        with Off():
+            circle = Circle(radius=0.8).spawn()
+        Scene.wait(1)
+        circle.scale(5)
+        Scene.wait(1)
+        alone = scene.save_frame(tmp_path / "alone", at=0.5, post_processes=())
+        batched = scene.save_frame(
+            tmp_path / "batched", at=[0.5, 2.5], post_processes=()
+        )
+    assert _max_difference(alone, batched[0]) <= 2
+
+
+def test_batched_stills_carry_only_their_own_mobs(monkeypatch, tmp_path):
+    """Each still materializes the Mobs alive in it, not those of the whole
+    stretch between its batch-mates: memory must not grow with the stills.
+    """
+    settings = VideoSettings((16, 12), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        squares = []
+        for _ in range(4):
+            with Off():
+                squares.append(Square().spawn())
+            Scene.wait(1)
+            with Off():
+                squares[-1].despawn(False)
+        observed = []
+        original = scene.timeline_manager.set_state_to_times
+
+        def record(times, active_mobs=None):
+            alive = {id(mob) for mob in active_mobs or ()}
+            observed.append(
+                (len(times), [i for i, s in enumerate(squares) if id(s) in alive])
+            )
+            return original(times, active_mobs=active_mobs)
+
+        monkeypatch.setattr(scene.timeline_manager, "set_state_to_times", record)
+        scene.save_frame(tmp_path / "shot", at=[0.5, 1.5, 2.5, 3.5], post_processes=())
+    assert observed == [(1, [0]), (1, [1]), (1, [2]), (1, [3])]
 
 
 def test_inference_background_captures_do_not_require_version_counter():

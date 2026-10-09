@@ -3580,6 +3580,7 @@ class RenderLoopMixin:
         *,
         frame_indices=None,
         _post_process_per_frame=False,
+        _independent_frames=False,
         aux_passes: bool = False,
         aux_sink=None,
     ):
@@ -3589,6 +3590,14 @@ class RenderLoopMixin:
         increasing sequence of non-negative integer frame indices. Only those
         frames are materialized and rendered; gaps cost no frame storage.
         Without it, start/end retain their ordinary timeline-index meaning.
+
+        ``_independent_frames`` (stills) gives every frame a render batch of
+        its own, within the one job. A batch carries every Mob alive anywhere
+        in its window and decides its route, lighting rows and circuit
+        tessellation over all of its frames, so stills sharing one would change
+        each other's pixels and each would carry the Mobs of the whole stretch
+        between them. With it, each still renders as it would alone, from only
+        its own Mobs, and the prefetch worker prepares the next one meanwhile.
 
         With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
         called exactly once per yielded batch, immediately before the batch is
@@ -3606,8 +3615,11 @@ class RenderLoopMixin:
         if aux_passes and not callable(aux_sink):
             raise TypeError("aux_passes=True needs a callable aux_sink")
         # Forwarded only when requested, so the implementation generators are
-        # called exactly as before when the passes are off.
-        aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
+        # called exactly as before when the passes (or independent frames)
+        # are off.
+        forwarded = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
+        if _independent_frames:
+            forwarded["independent_frames"] = True
         if frame_indices is not None:
             import operator
 
@@ -3675,7 +3687,7 @@ class RenderLoopMixin:
                         post_processes=post_processes,
                         manual_memory=manual_memory,
                         frame_indices=frame_indices,
-                        **aux_kwargs,
+                        **forwarded,
                     )
                     return
                 with scene_excluded_from_gc():
@@ -3690,7 +3702,7 @@ class RenderLoopMixin:
                             if frame_indices is not None
                             else {}
                         ),
-                        **aux_kwargs,
+                        **forwarded,
                     )
             finally:
                 # _get_frames_impl has drained its prep worker before returning
@@ -3720,6 +3732,7 @@ class RenderLoopMixin:
         frame_indices=None,
         aux_passes=False,
         aux_sink=None,
+        independent_frames=False,
     ):
         # The aux passes' sink, or None when they are off (see get_frames).
         aux_sink = aux_sink if aux_passes else None
@@ -3819,6 +3832,10 @@ class RenderLoopMixin:
             grad_enabled = torch.is_grad_enabled()
 
             def materialize_batch(time_ind, batch_end_ind):
+                if independent_frames:
+                    # One frame per batch (see get_frames): every fetch, retry
+                    # and prefetch of this job comes through here.
+                    batch_end_ind = min(batch_end_ind, time_ind + 1)
                 while True:
                     try:
                         return self._get_batch_of_primitives(
