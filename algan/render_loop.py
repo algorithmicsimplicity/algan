@@ -3956,10 +3956,15 @@ class RenderLoopMixin:
                     return time_ind + 1
                 return group_ends[bisect.bisect_right(group_ends, time_ind)]
 
-            # ``(group end, frames)``: once a group's frames turned out not to
-            # decide alike (see the check below), the rest of that group is
-            # fetched at most as many frames at a time as last agreed.
-            alike_limit = None
+            # Once stills turn out not to decide alike (see the check below),
+            # fetch at most as many at a time as last agreed, doubling after
+            # each run of agreeing batches -- a run that lengthens each time a
+            # doubling fails. Stills that never agree (adaptive dicing under a
+            # moving camera) then waste little on speculation, and stills that
+            # agree again soon regain whole groups. None: whole groups.
+            alike_hint = None
+            alike_streak = 0
+            alike_patience = 1
 
             def materialize_batch(time_ind, batch_end_ind):
                 if independent_frames:
@@ -3967,8 +3972,8 @@ class RenderLoopMixin:
                     # every fetch, retry and prefetch of this job comes
                     # through here.
                     batch_end_ind = min(batch_end_ind, group_end_for(time_ind))
-                    if alike_limit is not None and time_ind < alike_limit[0]:
-                        batch_end_ind = min(batch_end_ind, time_ind + alike_limit[1])
+                    if alike_hint is not None:
+                        batch_end_ind = min(batch_end_ind, time_ind + alike_hint)
                 while True:
                     try:
                         return self._get_batch_of_primitives(
@@ -4384,9 +4389,10 @@ class RenderLoopMixin:
                                 new_time_ind,
                                 agreeing,
                             )
-                            # Frames that change their minds once tend to keep
-                            # doing it: speculate no further in this group.
-                            alike_limit = (group_end_for(current_time_ind), agreeing)
+                            if alike_hint is not None:
+                                alike_patience *= 2
+                            alike_hint = agreeing
+                            alike_streak = 0
                             primitives[0]._rt_device_scene = None
                             primitives[0]._rt_prepared_host_scene = None
                             primitives[0]._rt_merged_scene = None
@@ -4395,6 +4401,17 @@ class RenderLoopMixin:
                             release_torch_memory(force_gc=False)
                             retry_end_ind = current_time_ind + agreeing
                             continue
+                    if (
+                        independent_frames
+                        and alike_hint is not None
+                        and duration >= alike_hint
+                    ):
+                        alike_streak += 1
+                        if alike_streak >= alike_patience:
+                            alike_streak = 0
+                            alike_hint *= 2
+                            if alike_hint >= _STILL_GROUP_MAX_FRAMES:
+                                alike_hint = None
 
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(retry_lower_duration, duration)

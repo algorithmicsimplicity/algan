@@ -334,17 +334,23 @@ alone, from only its own Mobs, which constrains how stills share batches:
   material gates, the materials present, triangle promotion -- notes its
   per-frame inputs (`_merge_scene(frame_signature=True)`), and a batch whose
   frames do not all note what the first does is split after the frames that
-  do (`_frames_deciding_alike`); the rest of that group is then fetched at
-  most that many at a time. A batch-wide choice added to the merge must note
-  its inputs, or still batches stop matching their stills.
+  do (`_frames_deciding_alike`). Later fetches then take at most as many as
+  last agreed, doubling after runs of agreeing batches that lengthen with
+  every failed doubling (`alike_hint` in `_get_frames_impl`), so stills that
+  never agree -- adaptive PN dicing under a moving camera -- waste little on
+  speculation. A batch-wide choice added to the merge must note its inputs,
+  or still batches stop matching their stills.
 - The path tracer, the wavefront memory trim and in-composite tonemapping
   keep one still per batch (`_stills_may_share_batches`).
 
 `test_batched_stills.py` checks the grouping, the split, the Mob sets and that
 grouped stills equal their alone renders. Grouped stills are byte-identical to
-their alone renders on the scenes checked, except where PyTorch's CPU
-vectorization rounds an elementwise op one ulp differently for a different
-batch length (measured: 1 level, under bloom, on an animated glow).
+their alone renders on every scene checked. One trap behind that: PyTorch's CPU
+kernels round a transcendental op (the sRGB decode's `pow`) one ulp apart in
+vectorized lanes and in a loop's scalar tail, so an element's bits depend on
+the array's length. The merge therefore decodes a still batch's colors one
+frame at a time (`_decode_merged_colors(per_frame=True)`); decoded whole, an
+animated glow came out one level off under bloom.
 Times are quantized at the selected frame rate; repeated frame indices share
 rendered pixels, while output names, return order, and overwrite policy retain
 the input order. Shared render wall time is divided among the rendered results.

@@ -266,15 +266,21 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
 
     For stills that share a render batch (see ``RenderLoopMixin.get_frames``).
     ``args`` are ``_build_cached_circuit_edges``'s, except that the chord
-    counts are ``[T, S]``: each frame's own. A batch shares no edge geometry
-    between its frames -- no batch-wide chord counts or closing vertices, no
-    reuse within a tolerance -- so each frame is built through the
-    single-frame path a still rendered alone takes, and only geometry that is
-    exactly equal in every frame (controls, plane, topology and chord counts
-    alike) is built once. Frames whose circuits come out with different edge
-    counts are packed to the widest, each circuit's spare slots holding inert
-    edges (:func:`_padding_edges`), so a frame's real edges -- the ones every
-    query reads, in their own order -- are its alone ones.
+    counts are ``[T, S]``: each frame's own. Nothing is reused between frames
+    within a tolerance, and nothing is shared that a frame alone would choose
+    differently:
+
+    - geometry exactly equal in every frame (controls, plane, topology and
+      chord counts alike) is built once, through the single-frame path a still
+      rendered alone takes (its cache included);
+    - otherwise, where every frame takes the same chord counts and closing
+      vertices -- all a batched build shares between frames -- one batched
+      build is each frame's own;
+    - otherwise every frame is built alone, and frames whose circuits come out
+      with different edge counts are packed to the widest, each circuit's
+      spare slots holding inert edges (:func:`_padding_edges`), so a frame's
+      real edges -- the ones every query reads, in their own order -- are its
+      alone ones.
     """
     corners, samples, segments, next_inds, centers, basis_u, basis_v = args
     num_frames = samples.shape[0]
@@ -283,7 +289,7 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
         def at(tensor):
             return tensor if tensor.shape[0] == 1 else tensor[index : index + 1]
 
-        frame_args = (
+        return (
             at(corners),
             samples[index],
             segments,
@@ -292,17 +298,40 @@ def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=Tru
             at(basis_u),
             at(basis_v),
         )
-        if cache:
-            return _build_cached_circuit_edges(scene, build, frame_args, inward_signs)
-        return build(*frame_args, inward_signs)
 
-    if all(
+    if samples.numel() == 0 or all(
         bool(_constant_rows(tensor).all())
         for tensor in (corners, samples, next_inds, centers, basis_u, basis_v)
     ):
-        return frame(0)
+        if cache:
+            return _build_cached_circuit_edges(scene, build, frame(0), inward_signs)
+        return build(*frame(0), inward_signs)
 
-    built = [frame(index) for index in range(num_frames)]
+    if bool(_constant_rows(samples).all()):
+        from algan.rendering.raytracing.primitives import (
+            _bezier_connection_visibility,
+        )
+
+        circuit_ids = torch.repeat_interleave(
+            torch.arange(len(segments), device=corners.device), segments
+        )
+        closing = ~_bezier_connection_visibility(corners, next_inds, circuit_ids)
+        if bool(_constant_rows(closing).all()):
+            # The rest of a batched build is per-frame arithmetic, element for
+            # element what one frame computes alone. Built directly: the
+            # cached path would reuse contours within a tolerance.
+            return build(
+                corners,
+                samples[0],
+                segments,
+                next_inds,
+                centers,
+                basis_u,
+                basis_v,
+                inward_signs,
+            )
+
+    built = [build(*frame(index), inward_signs) for index in range(num_frames)]
     frame_offsets = torch.stack([offsets.long() for _, offsets in built])
     counts = frame_offsets[:, 1:] - frame_offsets[:, :-1]  # [T, C]
     widths = counts.amax(0)

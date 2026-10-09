@@ -2048,7 +2048,7 @@ def _merge_scene(
             uncertain = getattr(
                 p, "_rt_texture_map", None
             ) is not None and not _texture_alpha_is_opaque(p._rt_texture_map)
-            if uncertain:
+            if uncertain and signature is not None:
                 _note(_texture_alpha_frames(p._rt_texture_map, num_frames))
             alpha_uncertain_parts.append(
                 torch.full(
@@ -2296,8 +2296,9 @@ def _merge_scene(
         e = scene["tri_extra"]
         refl = e[..., 0:6:2]
         ior = e[..., 6:9].abs()
-        _note(_frame_any((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))))
-        _note(_frame_any(refl > 0.2))
+        if signature is not None:
+            _note(_frame_any((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))))
+            _note(_frame_any(refl > 0.2))
         scene["tri_has_reflective"] = bool(
             ((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))).any()
             or scene.get("tex_has_reflective")
@@ -2328,7 +2329,8 @@ def _merge_scene(
     def _extra_has_refractive(extra):
         return bool((extra[..., 9:12] > 1e-6).any())
 
-    _note(_frame_any(scene["tri_extra"][..., 9:12] > 1e-6))
+    if signature is not None:
+        _note(_frame_any(scene["tri_extra"][..., 9:12] > 1e-6))
     scene["has_refractive"] = _extra_has_refractive(scene["tri_extra"]) or bool(
         scene.get("tex_has_refractive")
     )
@@ -2414,8 +2416,9 @@ def _merge_scene(
             extra = getattr(p, attr, None)
             if extra is None or extra.shape[1] == 0:
                 continue
-            _note(_frame_any(extra[..., cols] > 0.0))
-            if signature is None and found:
+            if signature is not None:
+                _note(_frame_any(extra[..., cols] > 0.0))
+            elif found:
                 break
             found = found or bool((extra[..., cols] > 0.0).any())
         return found
@@ -2459,7 +2462,8 @@ def _merge_scene(
         # no other edge cannot pass the circuit intersection/winding test even
         # when border/glow inflation gave its point bounds nonzero extent.
         nondegenerate = ~(scene["edges_2d"][..., :4] == 1e9).all(-1)
-        _note(_frame_any(nondegenerate))
+        if signature is not None:
+            _note(_frame_any(nondegenerate))
         scene["bez_has_nondegenerate_edges"] = bool(nondegenerate.any())
         offsets, shift = [torch.zeros((1,), dtype=torch.int32, device=device)], 0
         for p in beziers:
@@ -2514,7 +2518,8 @@ def _merge_scene(
         # circuits with no reflectance term at all, so it may only be routed
         # when every circuit is non-PBR (metalness -1, reflectance exactly 0).
         reflective = scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0
-        _note(_frame_any(reflective))
+        if signature is not None:
+            _note(_frame_any(reflective))
         scene["bez_has_reflective"] = bool(reflective.any())
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, _M_WIDTH), device=device)
@@ -2576,12 +2581,13 @@ def _merge_scene(
     scattering = (scene["tri_mat_id"] == _MID_PHYSICAL) & (
         scene["tri_mat"][..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] != 0
     ).any(dim=-1)
-    _note(_frame_any(scattering))
+    if signature is not None:
+        _note(_frame_any(scattering))
     scene["has_scattering_media"] = bool(scattering.any())
     # Area-light radiance is already linear in the light snapshot. Decode the
     # authored geometry first, then insert emitters before the ONE BVH build
     # and arena preflight/upload. The deterministic merge keeps its row model.
-    _decode_merged_colors(scene)
+    _decode_merged_colors(scene, per_frame=signature is not None)
     if int(_rts.samples_per_pixel) > 1 and _rts.pt_area_light_quads:
         from algan.rendering.raytracing.area_light_quads import build_area_light_quads
 
@@ -2669,7 +2675,7 @@ _MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
 _MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
 
 
-def _decode_merged_colors(scene):
+def _decode_merged_colors(scene, per_frame=False):
     """Decode the batch's authored color into the linear working space.
 
     This is the geometry half of the render boundary -- the single point where
@@ -2705,11 +2711,25 @@ def _decode_merged_colors(scene):
         arr = scene.get(key)
         if arr is None or arr.shape[-1] < 3:
             continue
-        arr[..., :3] = srgb_to_linear(arr[..., :3])
-    _decode_material_block_colors(scene)
+        for frame in _decode_frames(arr, per_frame):
+            frame[..., :3] = srgb_to_linear(frame[..., :3])
+    _decode_material_block_colors(scene, per_frame)
 
 
-def _decode_material_block_colors(scene):
+def _decode_frames(arr, per_frame):
+    """``arr`` whole, or (``per_frame``) one frame at a time.
+
+    The decode is a ``pow``, which PyTorch's CPU kernels round one ulp apart
+    in vectorized lanes and in the scalar tail of a loop, so where an element
+    lands depends on the array's length. A still sharing a batch decodes its
+    frame as an array of the length it has alone, and so to its alone bits.
+    """
+    if per_frame and arr.shape[0] > 1:
+        return [arr[frame : frame + 1] for frame in range(arr.shape[0])]
+    return [arr]
+
+
+def _decode_material_block_colors(scene, per_frame=False):
     """Decode the color slots of ``tri_mat`` for built-in-pipeline primitives.
 
     ``tri_mat`` is ``[Tm, N, MAT_W]`` and ``tri_mat_id`` ``[Tm', N]``; a
@@ -2730,8 +2750,9 @@ def _decode_material_block_colors(scene):
         start, width = _MAT_SLOTS[name]
         if start + width > mat.shape[-1]:
             continue
-        block = mat[:, idx, start : start + width]
-        mat[:, idx, start : start + width] = srgb_to_linear(block)
+        for frame in _decode_frames(mat, per_frame):
+            block = frame[:, idx, start : start + width]
+            frame[:, idx, start : start + width] = srgb_to_linear(block)
 
 
 def _soft_fan_sizes(aux, num_rows):
