@@ -350,6 +350,10 @@ Assigning ``value`` before spawning prepares the number without showing it or
 adding animation time. Updates driven by another animation or updater also
 respect the number's spawn and despawn times.
 
+Fade a number with ``opacity`` as you would any Mob, including while it counts
+and from inside an ``@animated_function``: each digit slot picks its glyph
+through color alpha, so a fade never shows the digits it is not displaying.
+
 See Also
 ========
 
