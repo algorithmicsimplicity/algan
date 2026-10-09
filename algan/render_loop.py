@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import itertools
 import logging
 import math
 import os
@@ -51,6 +52,7 @@ from algan.rendering.memory_model import (
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.raytracing.float32_rounding import Float32RoundingJob
 from algan.rendering.raytracing.truncation import (
     path_tracer_fallback_hint,
     reset_truncations,
@@ -477,6 +479,41 @@ def _stamp_primitive_sources(primitives, actor, registry):
             and getattr(primitive, "_circuit_source_ids", None) is None
         ):
             primitive._source_mob_id = mob_id
+
+
+def _note_primitive_owner(primitives, actor):
+    """Record ``actor`` as the Mob that built each of ``primitives``.
+
+    Unconditional and host-only, unlike the object-id stamp above: the
+    float32 rounding warning names the Mob whose geometry rounds worst on
+    screen, and a merged collection resolves its elements to Mobs through its
+    members' owners (:func:`_attach_member_owners`).
+    """
+    for primitive in primitives:
+        primitive._owner_mob = actor
+
+
+def _attach_member_owners(collection, members):
+    """Give a merged collection its members' owners and element boundaries.
+
+    The elements are what the projection's float32 rounding record counts in:
+    circuits for a circuit collection, and for a triangle collection whatever
+    its ``_obj_counts`` counts (triangles, or a logical-PN mesh's patches).
+    Plain host lists, unprefixed so ``slice_time_window`` keeps them, as it
+    keeps ``_obj_counts``.
+    """
+    owners = [getattr(m, "_owner_mob", None) for m in members]
+    if hasattr(collection, "num_segments_per_object"):
+        counts = [m.num_segments_per_circuit.reshape(-1).shape[0] for m in members]
+    else:
+        counts = getattr(collection, "_obj_counts", None)
+    if counts is None or len(counts) != len(owners):
+        # Without boundaries only a single member's owner is unambiguous.
+        collection._member_owners = owners if len(owners) == 1 else None
+        collection._member_ends = None
+        return
+    collection._member_owners = owners
+    collection._member_ends = list(itertools.accumulate(int(c) for c in counts))
 
 
 def _primitive_source_device(primitive, fallback=None):
@@ -1788,6 +1825,30 @@ class RenderLoopMixin:
             wait,
         )
 
+    def _note_float32_rounding(self, primitives, start_ind, frame_indices):
+        """Fold a rendered batch's float32 rounding records into the job's.
+
+        Called once per batch, after its frames are out, so the one readback
+        it costs waits on nothing still queued. See
+        :mod:`algan.rendering.raytracing.float32_rounding`.
+        """
+        job = getattr(self, "_float32_rounding_job", None)
+        if job is None:
+            return
+        fps = self.frames_per_second
+
+        def frame_time(offset):
+            index = start_ind + offset
+            if frame_indices is not None:
+                index = frame_indices[min(index, len(frame_indices) - 1)]
+            return index / fps
+
+        try:
+            job.note_batch(primitives, frame_time)
+        except Exception:  # noqa: BLE001
+            # Advice only: never let it fail a render that has succeeded.
+            logger.debug("Could not read the float32 rounding records.", exc_info=True)
+
     def _reset_render_arena_after_failure(self):
         """Release every allocation owned by a failed render attempt.
 
@@ -2528,6 +2589,8 @@ class RenderLoopMixin:
         registry = _aux_source_registry(self)
         for entries in groups.values():
             mega = build_render_primitives_batched([e["actor"] for e in entries], self)
+            # One circuit per actor (see below), so no element boundaries.
+            mega._member_owners = [e["actor"] for e in entries]
             if registry is not None:
                 # One circuit per actor, in entry order (``_is_batchable_bezier``
                 # guarantees the single row), so the lane is the actors' ids.
@@ -2563,6 +2626,7 @@ class RenderLoopMixin:
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
+                _note_primitive_owner(entry["prims"], entry["actor"])
                 if registry is not None:
                     _stamp_primitive_sources(entry["prims"], entry["actor"], registry)
 
@@ -2896,6 +2960,7 @@ class RenderLoopMixin:
             if primitive is not None:
                 if not isinstance(primitive, list):
                     primitive = [primitive]
+                _note_primitive_owner(primitive, actor)
                 if aux_registry is not None:
                     _stamp_primitive_sources(primitive, actor, aux_registry)
                 ordered_items.append(primitive)
@@ -2966,6 +3031,7 @@ class RenderLoopMixin:
                         entry["prims"] = (
                             primitive if isinstance(primitive, list) else [primitive]
                         )
+                        _note_primitive_owner(entry["prims"], entry["actor"])
                         if aux_registry is not None:
                             _stamp_primitive_sources(
                                 entry["prims"], entry["actor"], aux_registry
@@ -3083,11 +3149,9 @@ class RenderLoopMixin:
                     next_ind = len(primitives)
                 else:
                     next_ind = max(inds[0], current_ind + 1)
-                out.append(
-                    primitive_class(
-                        triangle_collection=primitives[current_ind:next_ind]
-                    )
-                )
+                members = primitives[current_ind:next_ind]
+                out.append(primitive_class(triangle_collection=members))
+                _attach_member_owners(out[-1], members)
                 current_ind = next_ind
                 out[-1].memory = self.memory
                 out[-1].scene = self
@@ -3107,6 +3171,7 @@ class RenderLoopMixin:
                     colored.append(p)
             if colored:
                 out.append(primitive_class(triangle_collection=colored))
+                _attach_member_owners(out[-1], colored)
                 out[-1].memory = self.memory
                 out[-1].scene = self
             # Textured primitives are batched one per collection: a
@@ -3117,6 +3182,7 @@ class RenderLoopMixin:
             # (see _merge_scene).
             for p in textured:
                 out.append(primitive_class(triangle_collection=[p]))
+                _attach_member_owners(out[-1], [p])
                 out[-1].memory = self.memory
                 out[-1].scene = self
 
@@ -3657,6 +3723,11 @@ class RenderLoopMixin:
         # second save_video reports its own render rather than inheriting the
         # first one's totals and its already-spent warnings.
         reset_truncations()
+        # So is the float32 rounding warning's, with one difference: a
+        # camera-view pass copies the Scene's attributes, finds this job's
+        # record already open and adds to it, so the render warns once in all.
+        owns_rounding_job = getattr(self, "_float32_rounding_job", None) is None
+        completed = False
         with torch.no_grad(), render_job_holding_the_arch():
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
@@ -3669,6 +3740,8 @@ class RenderLoopMixin:
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
             try:
+                if owns_rounding_job:
+                    self._float32_rounding_job = Float32RoundingJob()
                 from algan.rendering.camera_views import (
                     _live_views,
                     _render_with_camera_views,
@@ -3689,6 +3762,7 @@ class RenderLoopMixin:
                         frame_indices=frame_indices,
                         **forwarded,
                     )
+                    completed = True
                     return
                 with scene_excluded_from_gc():
                     yield from self._get_frames_impl(
@@ -3704,6 +3778,7 @@ class RenderLoopMixin:
                         ),
                         **forwarded,
                     )
+                completed = True
             finally:
                 # _get_frames_impl has drained its prep worker before returning
                 # here, including errors and abandoned generators. Release
@@ -3720,6 +3795,13 @@ class RenderLoopMixin:
                 if render_memory is not None and render_memory is not original_memory:
                     render_memory.data = None
                 self.memory = original_memory
+                if owns_rounding_job:
+                    rounding_job = self.__dict__.pop("_float32_rounding_job", None)
+                    # Last, since a warnings filter may turn the warning into
+                    # an error. Only for a render that finished: an abandoned
+                    # or failed one has not seen all the frames it was for.
+                    if completed and rounding_job is not None:
+                        rounding_job.report()
 
     def _get_frames_impl(
         self,
@@ -4397,6 +4479,9 @@ class RenderLoopMixin:
                             self._reset_render_arena_after_failure()
                             continue
                         self._note_render_arena_success()
+                        self._note_float32_rounding(
+                            primitives, current_time_ind, frame_indices
+                        )
                         # Drop this batch's arena-view caches before the arena
                         # is reset/reallocated: a rendered primitive's
                         # ``_rt_device_scene`` holds tensors carved from the

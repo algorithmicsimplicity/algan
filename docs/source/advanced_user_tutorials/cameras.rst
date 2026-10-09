@@ -179,8 +179,9 @@ perspective camera. ``distance`` sets the eye-to-screen distance in world units
 and defaults to ``5000``: from the default camera that puts the eye 8,000 units
 out, where a point 5 units off the origin plane at a corner of a 1080p frame
 lands within 0.7 pixels of where true parallel projection would draw it. A
-larger distance flattens further, but positions are float32, so a much larger
-one makes text and edges grainy once the camera turns off its axes. If the origin plane is at or behind the eye, the
+larger distance flattens further, but positions are float32 (see
+:ref:`limits-float32`), so a much larger one makes text and edges grainy once the
+camera turns off its axes. If the origin plane is at or behind the eye, the
 current screen plane is used as the framing reference instead.
 
 Clipping Planes

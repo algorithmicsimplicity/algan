@@ -945,8 +945,8 @@ Camera
   units off the origin plane, at a corner of a 1080p frame, by up to 0.7
   pixels), and the camera distance puts every world-space epsilon in
   :ref:`limits-scale` a long way from the geometry it is meant to separate. A
-  larger ``distance`` flattens further but costs float32 precision: at 1e5,
-  text turned 35 degrees off an axis rendered with doubled strokes.
+  larger ``distance`` flattens further but costs float32 precision; see
+  :ref:`limits-float32`.
 * **Depth of field is the path tracer's alone.** ``camera.aperture`` and
   ``camera.focus_distance`` describe a thin lens (see
   :ref:`camera-depth-of-field`); the path tracer samples it, and the
@@ -1063,6 +1063,48 @@ it with the hit point's own coordinates (see the contact-shadow note under
 `Shadows`_). **Scale the scene, not the camera** -- and note that
 :meth:`~.Camera.set_near_orthographic` moves the camera thousands of units out,
 which is the same problem arriving from the other direction.
+
+.. _limits-float32:
+
+Positions are float32
+---------------------
+
+Algan stores and renders every position as a 32-bit float, about seven
+significant digits, and has no wider mode: the timeline's rows, the projected
+geometry and the render kernels are all float32 in world space (Apple's GPUs
+have no float64 at all). So a point is only as exact as its *largest*
+coordinate allows -- roughly one part in eight million of it -- and that
+spacing is what reaches the screen, magnified by the camera's focal length and
+shrunk by the point's depth in front of it:
+
+* **Something placed just in front of a distant camera** -- a heads-up display
+  brought to a unit in front of an eye a thousand units out -- is drawn from a
+  lattice several pixels across: doubled and dashed strokes, gaps.
+* **A very distant near-orthographic camera** has a huge focal length, so even
+  the rounding of its own ray directions shows: at ``set_near_orthographic(1e5)``
+  text at the origin rendered with doubled strokes once the camera turned 35
+  degrees (about 1.8 pixels at 1280x720, 2.6 at 1080p). The default distance,
+  5000, keeps this under 0.15 pixels at 1080p.
+* Only rounding **across** the view moves anything on screen. A camera looking
+  straight along an axis keeps its large coordinate along the view, so it loses
+  nothing however far out it is; turning it is what exposes the rounding.
+
+After projecting each batch, the renderer estimates the rounding of every
+visible point and, once per render, warns with
+:class:`~algan.errors.Float32PrecisionWarning` naming the worst Mob when it
+reaches half a pixel (the level at which stroke edges visibly step). To fix it:
+
+* keep a camera with something placed just in front of it within a few hundred
+  units of the origin -- move the scene rather than the camera, and for a flat
+  look narrow the view at a moderate distance
+  (``set_near_orthographic(distance=80)``) rather than backing far away;
+* give a heads-up display more depth in front of the camera, since the rounding
+  shrinks as 1/depth;
+* do not raise ``set_near_orthographic``'s distance far above its default;
+* or turn the scene instead of the camera.
+
+Making a Mob a child of the camera does not help: children are stored in world
+space too.
 
 
 .. _limits-hard:

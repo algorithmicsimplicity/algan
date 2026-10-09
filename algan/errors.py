@@ -185,6 +185,22 @@ class HierarchyChangedDuringUpdaterWarning(AlganWarning):
     code = "ALGAN_HIERARCHY_CHANGED_DURING_UPDATER"
 
 
+class Float32PrecisionWarning(AlganWarning):
+    """Warns that float32 rounding moved geometry far enough to see on screen.
+
+    Algan stores and renders positions in float32, about 7 significant
+    digits, so a position is only as exact as its largest coordinate allows.
+    Far from the origin that spacing can reach a pixel: typically a camera
+    hundreds or thousands of units out, turned off its axes, with something
+    placed just in front of it. The render estimates the rounding of every
+    visible point after projecting it and warns once, naming the worst Mob,
+    when it reaches half a pixel. Keeping the camera and what sits in front of
+    it within a few hundred units of the origin avoids it.
+    """
+
+    code = "ALGAN_FLOAT32_PRECISION"
+
+
 __all__ = [
     "AlganError",
     "AlganConfigurationError",
@@ -202,4 +218,5 @@ __all__ = [
     "DespawnedMobWarning",
     "NeverVisibleMobWarning",
     "HierarchyChangedDuringUpdaterWarning",
+    "Float32PrecisionWarning",
 ]

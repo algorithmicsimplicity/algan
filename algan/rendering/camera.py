@@ -66,13 +66,14 @@ _MIN_FOCUS_DISTANCE = 1e-4
 #: :meth:`Camera.set_near_orthographic`'s default eye-to-screen distance. A
 #: distant pinhole trades two errors against each other: perspective left over
 #: shrinks as 1/distance, and float32 rounding of the ray directions grows in
-#: proportion to it, because the focal length does. Measured on the default
+#: proportion to it, because the focal length does (see
+#: ``algan.rendering.raytracing.float32_rounding``). Measured on the default
 #: framing (eye 1.6x this far from the origin), a point 5 units off the origin
 #: plane at a frame corner sits 0.46 / 0.69 px (720p / 1080p) from where
 #: parallel projection puts it, and a camera turned 35-45 degrees rounds its rays
 #: by 0.09 / 0.13 / 0.28 px (720p / 1080p / 2160p). The old 1e5 left 0.03 px of
 #: perspective and rounded by 1.8 / 2.6 / 5.6 px, which doubled glyph strokes;
-#: 1e4 already rounds by half a pixel at 2160p.
+#: 1e4 already reaches the 0.5 px warning level at 2160p.
 DEFAULT_NEAR_ORTHOGRAPHIC_DISTANCE = 5e3
 
 
@@ -392,7 +393,8 @@ class Camera(Mob):
             projection would put it, and the rays round by under 0.15 pixels
             however the camera is turned (0.3 at 3840x2160). A much larger
             distance makes text and edges grainy once the camera turns off its
-            axes.
+            axes, and Algan warns with
+            :class:`~algan.errors.Float32PrecisionWarning` when that shows.
 
         Returns
         -------
