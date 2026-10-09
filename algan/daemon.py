@@ -14,8 +14,11 @@ Usage::
 **Launching one by hand is optional.** An ordinary ``python scene.py`` starts a
 general daemon itself when none is running, runs on it, and leaves it warm for
 the next script (see :mod:`algan.daemon_client`; ``ALGAN_AUTO_DAEMON=0``
-disables it, ``ALGAN_USE_DAEMON=0`` disables the daemon entirely). Launch one
-by hand when you want it in a terminal you can watch, or want Enter-to-re-render.
+disables it, ``ALGAN_USE_DAEMON=0`` disables the daemon entirely). Only a
+script that can render is handed off, and a daemon started for one passes
+``--exit-if-first-run-renders-nothing``, so it exits straight after that first
+run if the run finished without rendering. Launch one by hand when you want it
+in a terminal you can watch, or want Enter-to-re-render.
 
 **General mode (no SCRIPT) is the one to leave running.** The daemon publishes
 a state file at ``$ALGAN_HOME/daemon.json`` and then serves whatever scripts
@@ -82,8 +85,10 @@ process: ``sys.argv``, the working directory, the caller's full environment,
 stdout/stderr at the descriptor level (so ffmpeg and other subprocesses reach
 the caller) and their tty-ness are all reproduced. ``stdin`` is not -- it is
 connected to ``os.devnull``, because the daemon's own stdin is its re-render
-trigger -- and ``atexit`` handlers do not run, because ``runpy`` does not run
-them and a warm process never shuts down.
+trigger -- ``atexit`` handlers do not run, because ``runpy`` does not run
+them and a warm process never shuts down, and the code above the script's
+``import algan`` runs twice: the client ran it on the way to the import that
+handed the script over, and this process runs the script from the top.
 
 Three more limits that are specific to serving other processes:
 
@@ -1247,6 +1252,13 @@ def main(argv=None):
         help="exit after this long with nothing to do (0 = never, the default "
         "for a hand-launched daemon; auto-started ones pass a real value)",
     )
+    parser.add_argument(
+        "--exit-if-first-run-renders-nothing",
+        action="store_true",
+        help="exit as soon as the first run finishes cleanly without having "
+        "rendered anything, if nothing else is waiting (what an auto-started "
+        "daemon passes: it was started for that run)",
+    )
     args = parser.parse_args(argv)
 
     script = os.path.abspath(args.script) if args.script else None
@@ -1390,11 +1402,11 @@ def main(argv=None):
         old_argv, old_cwd = sys.argv, os.getcwd()
         started = time.perf_counter()
         code = 0
+        renders_before = scene_module.renders_requested()
         try:
             sys.argv = [path] + list(script_args)
             with contextlib.suppress(OSError):
                 os.chdir(cwd)
-            renders_before = scene_module.renders_requested()
             with server.cancel_lock if server is not None else contextlib.nullcontext():
                 if job is not None and job.cancelled:
                     raise KeyboardInterrupt
@@ -1422,6 +1434,7 @@ def main(argv=None):
             )
         finally:
             set_busy(False)
+            last["rendered"] = scene_module.renders_requested() > renders_before
             sys.argv = old_argv
             sys.path[:] = old_path
             with contextlib.suppress(OSError):
@@ -1475,9 +1488,10 @@ def main(argv=None):
             release_after_run()
 
     def do_job(job):
+        """Run a client's script. Returns its exit code, or None if it never ran."""
         with server.cancel_lock:
             if job.cancelled or job.done.is_set():
-                return
+                return None
             server.active_job = job
         job.send(_dc.FRAME_START)
         last.update(script=job.script, args=job.argv, cwd=job.cwd)
@@ -1514,6 +1528,7 @@ def main(argv=None):
             # housekeeping and the script has nothing left to wait for.
             job.finish(code)
             release_after_run()
+        return code
 
     if script is not None and not args.no_initial_render:
         do_local("startup")
@@ -1549,7 +1564,15 @@ def main(argv=None):
                 _say(f"quitting ({payload})")
                 break
             if kind == "run":
-                do_job(payload)
+                code = do_job(payload)
+                if args.exit_if_first_run_renders_nothing and _started_for_nothing(
+                    run_count, code, last.get("rendered", True), events.qsize()
+                ):
+                    _say(
+                        "the run this daemon was started for rendered nothing, "
+                        "so there is nothing to keep warm; exiting"
+                    )
+                    break
             else:
                 do_local(payload)
             idle_since = time.monotonic()
@@ -1562,6 +1585,22 @@ def main(argv=None):
             server.shutdown()
         _drop_pending(events)
     return 0
+
+
+def _started_for_nothing(run_count, code, rendered, waiting):
+    """Whether an auto-started daemon should exit after the run that just ended.
+
+    Only after its first run, the one it was started for -- one that has
+    served others has shown it is wanted -- and only if that run finished
+    cleanly (exit code 0) without asking for a render, with no other run
+    waiting. A run that failed keeps the daemon: the next attempt at that
+    script, fixed, is what it is warm for. The client already declines to hand
+    off a script that names no render call at all
+    (:func:`algan.daemon_client.script_may_render`); this catches the ones that
+    name one and then do not reach it -- ``--help``, a dry-run flag, a render
+    behind a condition.
+    """
+    return run_count == 1 and code == 0 and not rendered and not waiting
 
 
 def _add_to_path(directory):

@@ -16,14 +16,23 @@ Either way, the start-up cost is paid once and every later run begins rendering
 almost immediately.
 
 Nothing is required of you to get this. A plain ``python scene.py`` uses it.
-Running a script under a debugger is the one case where the daemon deliberately
-steps aside, so that your breakpoints still work; see `Debugging a scene`_.
+The daemon deliberately steps aside in two cases: a script that never renders
+anything -- one that imports Algan to compute something, say -- runs in its own
+process as if there were no daemon, and so does a script running under a
+debugger, so that your breakpoints still work; see `Debugging a scene`_.
 
 How the handoff works
 =====================
 
 ``import algan`` reaches the client before any heavy import happens:
 
+#. The client reads your script -- and the modules of your project that it
+   imports, from the script's folder or a folder on ``PYTHONPATH`` -- for a call
+   that renders: ``save_video``, ``save_frame``, ``show_frame``, ``view``, or
+   one of :class:`~algan.project.Project`'s render methods. It parses them
+   rather than running them, so this costs milliseconds. A script that names
+   none of them is not handed off: a warm renderer has nothing to offer it, and
+   no daemon is started for it.
 #. A running daemon publishes a state file at ``~/.algan/daemon.json`` (or
    ``$ALGAN_HOME/daemon.json``). Its absence means "no daemon".
 #. If the file is there, the client sends the daemon the working directory, the
@@ -33,17 +42,46 @@ How the handoff works
    plus the render.
 #. If no daemon is running, the client starts one in the background, waits for it
    to publish its state file, and then hands off as above. That first run costs
-   what it always did; later ones start warm.
+   what it always did; later ones start warm. If that first run finishes
+   without rendering anything after all -- a ``--help``, a dry-run flag, a
+   ``save_video`` behind a condition that was false -- the daemon exits straight
+   away instead of idling for two hours.
+
+The parse is generous on purpose: naming a render call anywhere counts, called or
+not, and so does reaching code it cannot follow -- ``runpy``, ``exec``,
+``importlib.import_module``, or adding a folder to ``sys.path`` (the usual way a
+script in a subfolder reaches its project's shared helpers). What it cannot see
+is a render reached through an installed package of your own. Such a script
+simply runs in its own process, exactly as with ``ALGAN_AUTO_DAEMON=0``; set
+``ALGAN_USE_DAEMON=1`` to hand it off anyway.
 
 A run on the daemon is meant to be indistinguishable from a run in its own
 process. ``sys.argv``, the working directory, the environment, stdout and stderr
 (at the descriptor level, so ``ffmpeg`` and other subprocesses reach you) and the
 tty-ness of both streams are all reproduced. Three things deliberately are not:
-everything **above** your ``import algan`` runs twice -- once in your process,
-where the handoff decision is made, and again in the daemon, so keep side
-effects below the import; ``stdin`` is connected to the null device, because the
-daemon's own stdin is its re-render trigger; and ``atexit`` handlers do not run,
-because a warm process never shuts down.
+``stdin`` is connected to the null device, because the daemon's own stdin is its
+re-render trigger; ``atexit`` handlers do not run, because a warm process never
+shuts down; and the code above your ``import algan`` runs twice.
+
+.. important::
+
+    **Everything above** ``import algan`` **runs twice in a script that is
+    handed off** -- once in your process, on the way to the ``import algan``
+    that hands it over, and again in the daemon, which runs the whole script
+    from the top. ``python scene.py`` offers no earlier moment to step in, so
+    this cannot be avoided, only kept harmless:
+
+    * Setting environment variables (``os.environ[...] = ...``), editing
+      ``sys.path``, importing modules and defining constants and functions --
+      what normally sits above the import -- are safe to repeat.
+    * Output is not: a ``print`` above the import shows twice.
+    * Nor is anything with an effect outside the process: a line appended to a
+      file is appended twice, a request is sent twice, a subprocess is started
+      twice, a counter is bumped twice.
+
+    Put anything of the second kind **below** ``import algan``, where it runs
+    once, in the daemon. Scripts that never render are not handed off, so they
+    are not affected; ``ALGAN_USE_DAEMON=0`` runs any script in its own process.
 
 **Concurrent scripts are queued and run one at a time**, in arrival order. A
 waiting client is told its position. On Windows this is what you want anyway: two
@@ -96,6 +134,11 @@ switch to the daemon, press Enter.
    * - ``--idle-timeout SECONDS``
      - Exit after this long with nothing to do. ``0`` (never) is the default for
        a hand-launched daemon; an auto-started one is given a real value.
+   * - ``--exit-if-first-run-renders-nothing``
+     - Exit as soon as the first run finishes cleanly (exit code 0) without
+       having rendered anything, unless another run is already waiting. An
+       auto-started daemon is given this: it was started for that run. A run
+       that fails keeps it, since the fixed retry is what it is warm for.
 
 Triggering a re-render
 ======================
@@ -154,7 +197,8 @@ Stopping it
      - The ``pid`` is in ``~/.algan/daemon.json``.
    * - Wait
      - An auto-started daemon exits by itself after two hours idle
-       (``ALGAN_DAEMON_IDLE_TIMEOUT``).
+       (``ALGAN_DAEMON_IDLE_TIMEOUT``) -- or straight after the run it was
+       started for, if that run rendered nothing.
    * - Edit Algan's own source
      - The daemon shuts itself down (see below).
 
@@ -324,7 +368,9 @@ Turning it off
      - Keep using a daemon that is already running, but never start a new one.
    * - ``ALGAN_USE_DAEMON=1``
      - Hand off even from a process under a debugger, which is otherwise
-       declined. For a daemon that is itself being debugged.
+       declined (for a daemon that is itself being debugged), and even a
+       script in which the client finds no render call (for one that renders
+       through an installed package of your own).
    * - ``algan render --no-daemon``
      - ``ALGAN_USE_DAEMON=0`` for that one run of the CLI.
 
@@ -351,7 +397,8 @@ Environment variables
    * - ``ALGAN_USE_DAEMON``
      - ``1``
      - Use a daemon at all. Set to ``1`` *explicitly* it also overrides the
-       refusal to hand off from a process under a debugger.
+       refusal to hand off from a process under a debugger, or a script in
+       which no render call was found.
    * - ``ALGAN_AUTO_DAEMON``
      - ``1``
      - Start one when none is running.
