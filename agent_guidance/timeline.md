@@ -105,6 +105,22 @@ rows; the hook keeps control of the entrance and the ordinary spawn walk starts
 the lifespan. Adding an automatic fade there would animate the same rows twice
 (for example, the decimal point selected from a `DecimalNumber`'s placeholder).
 
+### Replaying one frame at a time
+
+`TimelineManager.replay_frame_by_frame` (off by default; the render loop sets it
+around a still batch's `set_state_to_times`) makes `_replay_state_to_times_inner`
+call every recorded function and updater once per active frame instead of once
+over all of them (`_replay_frame_groups`), and a segment window's easing per
+frame to match. A frame's replayed state is then bit for bit what materializing
+that frame alone gives. Batched replay computes the same values, but not the
+same bits: a basis change spreads over a subtree through an einsum whose GEMM
+rounds differently for a different number of frames (at 16k rows on a test
+CPU, not at 8k), and an easing's transcendentals round differently in a vectorized loop.
+Video batches tolerate that; stills sharing a render batch must not
+(`agent_guidance/api_settings.md`, "Batched screenshots").
+`test_batched_stills.py::test_a_still_batch_replays_each_frame_as_it_would_alone`
+is the guard.
+
 ### Why `reset=False` is safe
 
 Render-state preservation and `timeline_manager.clear_buffers()` restore authored

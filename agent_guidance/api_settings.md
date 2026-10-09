@@ -322,6 +322,13 @@ alone, from only its own Mobs, which constrains how stills share batches:
   budget, arena preflight and OOM halving size it as they do a video window.
   Before this, two stills spanning a scene carried all of its Mobs (backprop
   scene 6 at 427x240: 3.3 GB for 2 stills, over 6 GB for 9).
+- Materialization replays every recorded function and updater one frame at
+  a time (`TimelineManager.replay_frame_by_frame`, see `timeline.md`), so
+  each frame's state is bit for bit its alone state. Batched replay is not
+  shape-blind: a basis change spreads over a large subtree through an einsum
+  whose GEMM rounds differently for a different number of frames, which moved
+  backprop scene 15's camera screen by two ulps and its shadows by up to 63
+  levels.
 - Everything a batch decides across its frames is decided per frame for
   still jobs (`scene._frame_local_batches`): circuit chord counts, closing
   vertices and outline bounds (`RayTracedBezierCircuitPrimitive.project_to_screen`;
@@ -343,14 +350,19 @@ alone, from only its own Mobs, which constrains how stills share batches:
 - The path tracer, the wavefront memory trim and in-composite tonemapping
   keep one still per batch (`_stills_may_share_batches`).
 
-`test_batched_stills.py` checks the grouping, the split, the Mob sets and that
-grouped stills equal their alone renders. Grouped stills are byte-identical to
-their alone renders on every scene checked. One trap behind that: PyTorch's CPU
-kernels round a transcendental op (the sRGB decode's `pow`) one ulp apart in
-vectorized lanes and in a loop's scalar tail, so an element's bits depend on
-the array's length. The merge therefore decodes a still batch's colors one
-frame at a time (`_decode_merged_colors(per_frame=True)`); decoded whole, an
-animated glow came out one level off under bloom.
+`test_batched_stills.py` checks the grouping, the split, the Mob sets, the
+per-frame replay and that grouped stills equal their alone renders. Grouped
+stills are byte-identical to their alone renders on every scene checked,
+synthetic and backprop scene 15's 59 checkpoint and motion stills alike. The
+trap behind most of that work: PyTorch's CPU kernels are exact per element but
+not shape-blind -- a transcendental op (the sRGB decode's `pow`) rounds one ulp
+apart in vectorized lanes and in a loop's scalar tail, a GEMM by its blocking
+-- so an element's bits can depend on how many frames share its array. Hence
+the per-frame replay, and the per-frame sRGB decode of a still batch's merged
+colors (`_decode_merged_colors(per_frame=True)`) and light colors
+(`render_loop._decode_light_rgb`); decoded whole, an animated glow came out one
+level off under bloom. Arithmetic added to still preparation over a
+frame-major tensor must be elementwise IEEE (or run per frame) to keep this.
 Times are quantized at the selected frame rate; repeated frame indices share
 rendered pixels, while output names, return order, and overwrite policy retain
 the input order. Shared render wall time is divided among the rendered results.

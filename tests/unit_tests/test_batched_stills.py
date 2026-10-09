@@ -481,6 +481,48 @@ def test_stills_of_the_same_mobs_share_batches_and_render_as_alone(
         assert _max_difference(single, grouped) <= 2
 
 
+@pytest.mark.fast
+def test_a_still_batch_replays_each_frame_as_it_would_alone():
+    """Replay arithmetic is not shape-blind: a basis change spreads over a
+    large subtree through a GEMM that rounds a frame's rows differently for
+    a different number of frames (it moved scene 15's camera screen by two
+    ulps, and its shadows by up to 63 levels). So a still batch replays every
+    recorded function one frame at a time; a deliberately shape-sensitive
+    easing makes any batched replay visible.
+    """
+    from algan import Sync
+
+    seen = []
+
+    def easing(t):
+        seen.append(t.shape[0])
+        return t * (1 + 0.01 * (t.shape[0] - 1))
+
+    with Scene(video_settings=STILLS) as scene:
+        with Off():
+            square = Square().spawn()
+        with Sync(runtime=2, easing=easing):
+            square.move(RIGHT * 3)
+        timeline = scene.timeline_manager
+
+        def location_at(times, frame_by_frame):
+            timeline.replay_frame_by_frame = frame_by_frame
+            try:
+                with scene._batch_prep_context():
+                    timeline.set_state_to_times(torch.tensor(times))
+                    return square.location.clone()
+            finally:
+                timeline.replay_frame_by_frame = False
+                timeline.clear_buffers()
+
+        alone = torch.cat([location_at([0.5], False), location_at([1.5], False)])
+        seen.clear()
+        together = location_at([0.5, 1.5], True)
+        assert set(seen) == {1}
+        assert torch.equal(together, alone)
+        assert not torch.equal(location_at([0.5, 1.5], False), alone)
+
+
 def test_stills_split_where_a_batch_would_choose_differently(monkeypatch, tmp_path):
     """Frames that would make a batch-wide choice differently alone (here the
     opacity gates: fading in, then opaque, then fading) do not share a batch,

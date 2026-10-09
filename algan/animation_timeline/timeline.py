@@ -2546,6 +2546,10 @@ class AnimationTimeline:
         self._replay_windows_resolved = True
         self._active_replay_event = None
         self._active_replay_edit_index = 0
+        # Replay every recorded function and updater one frame at a time (see
+        # _replay_frame_groups). Set by the render loop around a still batch's
+        # materialization; off, replay is batched over the window as always.
+        self.replay_frame_by_frame = False
         self._active_updater_trace = None
         self._active_updater_write_capture = None
         # (id(updater event), parent mob id) pairs already warned about, so a
@@ -3604,7 +3608,12 @@ class AnimationTimeline:
                     # different shapes, so bit-parity of the weights requires
                     # bit-parity of the computation.
                     elapsed = times[in_span] - start
-                    a = ev.easing((elapsed / (own_end - start + 1e-6)).view(-1, 1, 1))
+                    a = (elapsed / (own_end - start + 1e-6)).view(-1, 1, 1)
+                    if self.replay_frame_by_frame:
+                        # As the dense replay then evaluates it: per frame.
+                        a = torch.cat([ev.easing(frame) for frame in a.split(1)])
+                    else:
+                        a = ev.easing(a)
                     index0[in_span] = pre_slot
                     index1[in_span] = post_slot
                     weights[in_span] = a.view(-1).to(weights.dtype)
@@ -3860,50 +3869,49 @@ class AnimationTimeline:
             s = f.time.start
             e = f.time.end
             replay_end = _replay_window_end(f)
-            active_time_inds = ((s <= times) & (times < replay_end)).nonzero()
-            if active_time_inds.numel() == 0:
-                continue
-            time_selector = (
-                active_time_inds
-                if _opt_disabled("timeslice")
-                else _contiguous_time_selector(active_time_inds)
-            )
-            for timeline in self.attr_to_timeline.values():
-                timeline.set_active_time_inds(time_selector)
-
-            elapsed = times[active_time_inds.squeeze(-1)] - s
-            a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
-            if replay_end > e:
-                # Frames past the function's own end (reachable only while an
-                # earlier-executed animation overlapping this one's rows is
-                # still running) replay it at its final parameters, keeping
-                # its finished contribution in the rebuilt state.
-                runtime = e - s
-                a = torch.where(
-                    elapsed.view(-1, 1, 1) >= runtime, torch.ones_like(a), a
+            all_time_inds = ((s <= times) & (times < replay_end)).nonzero()
+            for active_time_inds in self._replay_frame_groups(all_time_inds):
+                time_selector = (
+                    active_time_inds
+                    if _opt_disabled("timeslice")
+                    else _contiguous_time_selector(active_time_inds)
                 )
-                elapsed = elapsed.clamp(max=runtime)
-            a = f.easing(a)
+                for timeline in self.attr_to_timeline.values():
+                    timeline.set_active_time_inds(time_selector)
 
-            kwargs = dict(f.kwargs.items())
-            for k in f.animated_args:
-                kwargs[k] = torch.lerp(
-                    cast_to_tensor(f.animated_args[k]), f.kwargs[k], a
-                )
-            if TIME_PARAMETER_NAME in kwargs:
-                # Functions of time (animate_function_of_time) receive the
-                # per-frame elapsed seconds instead of an interpolated value.
-                kwargs[TIME_PARAMETER_NAME] = elapsed.view(-1, 1, 1)
+                elapsed = times[active_time_inds.squeeze(-1)] - s
+                a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
+                if replay_end > e:
+                    # Frames past the function's own end (reachable only while
+                    # an earlier-executed animation overlapping this one's rows
+                    # is still running) replay it at its final parameters,
+                    # keeping its finished contribution in the rebuilt state.
+                    runtime = e - s
+                    a = torch.where(
+                        elapsed.view(-1, 1, 1) >= runtime, torch.ones_like(a), a
+                    )
+                    elapsed = elapsed.clamp(max=runtime)
+                a = f.easing(a)
 
-            previous_event = self._active_replay_event
-            previous_edit_index = self._active_replay_edit_index
-            self._active_replay_event = f
-            self._active_replay_edit_index = 0
-            try:
-                f.function(f.caller, **kwargs)
-            finally:
-                self._active_replay_event = previous_event
-                self._active_replay_edit_index = previous_edit_index
+                kwargs = dict(f.kwargs.items())
+                for k in f.animated_args:
+                    kwargs[k] = torch.lerp(
+                        cast_to_tensor(f.animated_args[k]), f.kwargs[k], a
+                    )
+                if TIME_PARAMETER_NAME in kwargs:
+                    # Functions of time (animate_function_of_time) receive the
+                    # per-frame elapsed seconds instead of an interpolated value.
+                    kwargs[TIME_PARAMETER_NAME] = elapsed.view(-1, 1, 1)
+
+                previous_event = self._active_replay_event
+                previous_edit_index = self._active_replay_edit_index
+                self._active_replay_event = f
+                self._active_replay_edit_index = 0
+                try:
+                    f.function(f.caller, **kwargs)
+                finally:
+                    self._active_replay_event = previous_event
+                    self._active_replay_edit_index = previous_edit_index
 
         for f in updaters:
             active_time_inds = (
@@ -3934,7 +3942,11 @@ class AnimationTimeline:
                     for signature, indexes in grouped.values()
                 ]
 
-            for signature, group_time_inds in groups:
+            for signature, group_time_inds in (
+                (signature, frames)
+                for signature, time_inds in groups
+                for frames in self._replay_frame_groups(time_inds)
+            ):
                 group_selector = (
                     group_time_inds
                     if _opt_disabled("timeslice")
@@ -3960,6 +3972,25 @@ class AnimationTimeline:
         self._materialization_times = None
         self._materialized_mob_ids = None
         return self
+
+    def _replay_frame_groups(self, active_time_inds):
+        """The ``[k, 1]`` frame-index groups a replay runs over, in order.
+
+        One group of every active frame, or -- under
+        ``replay_frame_by_frame`` -- one group per frame. A recorded function
+        rebuilds each frame from that frame's state alone, but its arithmetic
+        is not shape-blind: a basis change spreads over a large subtree through
+        an einsum whose GEMM rounds a frame's rows differently for a different
+        number of frames, an easing's transcendentals round differently in a
+        vectorized loop. Replayed one frame at a time, every frame's state is
+        bit for bit what materializing that frame alone gives, which stills
+        sharing a render batch need (``RenderLoopMixin.get_frames``).
+        """
+        if active_time_inds.numel() == 0:
+            return []
+        if not self.replay_frame_by_frame:
+            return [active_time_inds]
+        return list(active_time_inds.split(1))
 
     def clear_buffers(self):
         self._segment_windows = {}

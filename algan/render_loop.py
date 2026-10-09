@@ -676,6 +676,18 @@ def _prepare_background_for_chunk(
     return background
 
 
+def _decode_light_rgb(rgb, frame_local):
+    """sRGB-decode ``rgb``; a still batch's (``frame_local``) frame by frame.
+
+    The decode's ``pow`` rounds one ulp apart in a vectorized loop and in its
+    scalar tail, so decoded as one array a frame's light could differ from
+    the same frame decoded alone (see ``scene_builder._decode_frames``).
+    """
+    if frame_local and rgb.dim() and rgb.shape[0] > 1:
+        return torch.cat([srgb_to_linear(frame) for frame in rgb.split(1)])
+    return srgb_to_linear(rgb)
+
+
 def _check_post_processes(post_processes):
     """Reject a non-callable pass before the render rather than after it.
 
@@ -2911,10 +2923,18 @@ class RenderLoopMixin:
         # Restrict base-state queries to actors that can contribute to this
         # frame window. Animation replay retains global row ids, and the
         # timeline conservatively falls back to all rows for user callbacks or
-        # updaters whose dependencies cannot be discovered safely.
-        timeline.set_state_to_times(
-            time_inds / self.frames_per_second, active_mobs=actors
+        # updaters whose dependencies cannot be discovered safely. Stills that
+        # share a batch replay frame by frame, so each frame's state is exactly
+        # its alone state (see TimelineManager._replay_frame_groups).
+        timeline.replay_frame_by_frame = bool(
+            getattr(self, "_frame_local_batches", False)
         )
+        try:
+            timeline.set_state_to_times(
+                time_inds / self.frames_per_second, active_mobs=actors
+            )
+        finally:
+            timeline.replay_frame_by_frame = False
 
         # Each bucket holds the batch identifier's primitives and merged
         # collections as an ordered list of ``(is_finished_collection,
@@ -3547,6 +3567,7 @@ class RenderLoopMixin:
         light_objects = []
         light_active = []
         frame_times = None
+        frame_local = bool(getattr(self, "_frame_local_batches", False))
         for light in self.light_sources:
             # Same lifespan-overlap test as the render loop's actor filter:
             # start < 0 means never spawned, end < 0 means never despawned.
@@ -3591,7 +3612,7 @@ class RenderLoopMixin:
             if rt_settings_module.linear_color_space:
                 light_rgba = torch.cat(
                     (
-                        srgb_to_linear(light_rgba[..., :3]),
+                        _decode_light_rgb(light_rgba[..., :3], frame_local),
                         light_rgba[..., 3:],
                     ),
                     -1,
@@ -3690,8 +3711,9 @@ class RenderLoopMixin:
         in its window, so frames share one only while nothing spawns or
         despawns between them (:meth:`_still_group_ends`), at most
         ``_STILL_GROUP_MAX_FRAMES`` of them. Inside such a batch every choice
-        that could move a frame's pixels is made per frame -- circuit chord
-        counts and outline bounds, circuit geometry reuse, post-processing --
+        that could move a frame's pixels is made per frame -- timeline replay,
+        circuit chord counts and outline bounds, circuit geometry reuse, color
+        decoding, post-processing --
         and a batch whose frames would decide anything else differently alone
         (route, opacity and material gates, triangle promotion; see
         ``_merge_scene``'s frame signature) is split before it renders
