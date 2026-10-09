@@ -343,6 +343,27 @@ def test_assigning_to_a_verb_method_raises_instead_of_shadowing_it(name, value):
     assert callable(getattr(mob, name))
 
 
+@pytest.mark.parametrize("name", ["right", "up", "forward", "normalized_basis"])
+def test_assigning_a_read_only_property_names_the_problem(name):
+    """``self.right = ...`` in a Group subclass says why the name is taken.
+
+    It used to get Python's bare "property 'right' of 'Panel' object has no
+    setter".
+    """
+
+    class Panel(Group):
+        def __init__(self):
+            super().__init__([Square()])
+            setattr(self, name, Square())
+
+    with pytest.raises(AttributeError, match=rf"'{name}' is a read-only property"):
+        Panel()
+    # The message offers a name that is free, and the property still reads.
+    with pytest.raises(AttributeError, match=rf"'{name}_part'"):
+        setattr(Square(), name, None)
+    assert torch.is_tensor(getattr(Square(), name))
+
+
 def test_children_cannot_be_rebound_but_the_hierarchy_methods_still_work():
     """``p.children = []`` left every ex-child still naming ``p`` as a parent."""
     child = Square()

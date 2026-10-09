@@ -32,6 +32,42 @@ _RADIANS_TO_DEGREES = 180.0 / math.pi
 _AXIS_NAMES = {"right": 0, "up": 1, "forward": 2}
 
 
+class _ReadOnlyProperty(property):
+    """A read-only property whose assignment says what went wrong.
+
+    ``mob.right`` reads the Mob's own right direction, and a ``Group``
+    subclass that keeps one of its parts as ``self.right = ...`` got Python's
+    bare "property 'right' of 'Panel' object has no setter" -- which does not
+    say why a name that looks free is taken, or what to do instead. Like the
+    guard on ``Mob.scale``, this answers the assignment with both: what the
+    property means, and the call that changes what it reports.
+    """
+
+    def __init__(self, fget, meaning, remedy):
+        super().__init__(fget, doc=fget.__doc__)
+        self._meaning = meaning
+        self._remedy = remedy
+        self._name = fget.__name__
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def _refuse(self):
+        name = self._name
+        raise AttributeError(
+            f"'{name}' is a read-only property of every Mob ({self._meaning}), so "
+            f"it cannot be assigned -- nor used by a subclass as an attribute of "
+            f"its own: store that under another name, such as '{name}_part' or "
+            f"'_{name}'. {self._remedy}"
+        )
+
+    def __set__(self, obj, value):
+        self._refuse()
+
+    def __delete__(self, obj):
+        self._refuse()
+
+
 class MobOrientationMixin:
     """Methods for rotating and orienting Mobs, mixed into
     :class:`~algan.animatable_base.mob.Mob`.
@@ -297,10 +333,23 @@ class MobOrientationMixin:
     #: ``mob.up`` reads as well as ``mob.get_up_direction()``. This is the one
     #: place ``Mob`` carries a deliberate alias (see ``CLAUDE.md``); the basis
     #: getters have no property spelling on purpose, because they carry the
-    #: Mob's scale and a scaled vector reads wrongly as ``mob.up``.
-    right = property(get_right_direction)
-    up = property(get_up_direction)
-    forward = property(get_forward_direction)
+    #: Mob's scale and a scaled vector reads wrongly as ``mob.up``. They are
+    #: read-only, and say so when assigned (``_ReadOnlyProperty``).
+    right = _ReadOnlyProperty(
+        get_right_direction,
+        "the unit direction of its own right axis",
+        "To turn the Mob, use rotate(...) or look(..., with_axis='right').",
+    )
+    up = _ReadOnlyProperty(
+        get_up_direction,
+        "the unit direction of its own up axis",
+        "To turn the Mob, use rotate(...) or look(..., with_axis='up').",
+    )
+    forward = _ReadOnlyProperty(
+        get_forward_direction,
+        "the unit direction it faces",
+        "To turn the Mob, use rotate(...) or look(...).",
+    )
 
     @staticmethod
     def _resolve_axis(with_axis: str) -> int:

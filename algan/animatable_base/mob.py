@@ -46,7 +46,10 @@ from algan.animatable_base.mob_materials import (  # noqa: F401 -- exception re-
 )
 from algan.animatable_base.mob_morph import MobMorphMixin
 from algan.animatable_base.mob_movement import MobMovementMixin
-from algan.animatable_base.mob_orientation import MobOrientationMixin
+from algan.animatable_base.mob_orientation import (
+    MobOrientationMixin,
+    _ReadOnlyProperty,
+)
 from algan.animation_timeline.animation_contexts import (
     AnimationContext,
     NoExtra,
@@ -1886,7 +1889,6 @@ class Mob(
         """
         return self.get_animated_attribute("basis")
 
-    @property
     def normalized_basis(self) -> torch.Tensor:
         """The Mob's orientation with scale divided out, shape ``(*, 9)``.
 
@@ -1896,6 +1898,12 @@ class Mob(
         return squish(
             unsquish(self.basis, -1, 3) / self.scale_coefficient.unsqueeze(-1), -2, -1
         )
+
+    normalized_basis = _ReadOnlyProperty(
+        normalized_basis,
+        "its orientation with the scale divided out",
+        "To turn the Mob, use rotate(...) or assign `basis`.",
+    )
 
     @basis.setter
     def basis(self, basis: torch.Tensor):
