@@ -65,18 +65,69 @@ _LATEX_BINARIES = ("latex", "dvisvgm")
 _LATEX_TOOLCHAIN_FOUND = None
 
 
-def _escape_plain_text(text):
-    # One pass: inserted TeX commands must never be escaped a second time.
-    replacements = {char: "\\" + char for char in "#$%&_{}"}
-    replacements.update(
-        {
-            "\\": r"\textbackslash{}",
-            "~": r"\textasciitilde{}",
-            "^": r"\textasciicircum{}",
-            "\n": r"\\",
-        }
-    )
-    return "".join(replacements.get(char, char) for char in str(text))
+#: How :class:`Text`'s LaTeX fallback spells the characters TeX reads as
+#: markup, or would set as something else. The template's text encoding (OT1)
+#: has no ASCII ``~``, ``<``, ``>`` or ``|`` in its serif and sans faces --
+#: ``<`` comes out as ``¡`` -- so those borrow symbol-font glyphs.
+_LATEX_ESCAPES = {char: "\\" + char for char in "#$%&_{}"}
+_LATEX_ESCAPES.update(
+    {
+        "\\": r"\textbackslash{}",
+        "^": r"\textasciicircum{}",
+        "~": r"$\sim$",
+        "<": r"\textless{}",
+        ">": r"\textgreater{}",
+        "|": r"\textbar{}",
+    }
+)
+#: The typewriter face has every printable ASCII glyph in its ASCII slot, so
+#: the characters TeX reserves are reached by slot number -- the trailing
+#: space ends the number -- and the apostrophe and backtick by the straight
+#: quote and grave the ``upquote`` package uses, rather than curly quotes. Its
+#: ``~`` is drawn at accent height, and is lowered to where a monospace font
+#: puts it.
+_LATEX_TYPEWRITER_ESCAPES = {char: f"\\char{ord(char)} " for char in "\\{}#$%&_^"}
+_LATEX_TYPEWRITER_ESCAPES.update(
+    {"~": r"\raisebox{-2.9pt}{\char126}", "'": r"\char13 ", "`": r"\char18 "}
+)
+#: Adjacent pairs Computer Modern fuses into a different character (``--``
+#: into an en dash, ``!`` and a backtick into ``¡``); always kept apart.
+_LATEX_TEXT_LIGATURES = {("-", "-"), ("`", "`"), ("'", "'"), ("!", "`"), ("?", "`")}
+#: Purely typographic ligatures, kept apart only for ``disable_ligatures``.
+_LATEX_F_LIGATURES = {("f", "f"), ("f", "i"), ("f", "l")}
+
+
+def _escape_plain_text(text, family="rm", ligatures=True):
+    r"""LaTeX text-mode source that sets ``text``'s characters literally.
+
+    ``family`` is ``"rm"``, ``"sf"`` or ``"tt"``. Every whitespace character
+    becomes a control space, so runs of spaces (code indentation) keep their
+    width. Line breaks are the caller's: a ``\\`` inside ``\text{}`` is an
+    error, so see :func:`_latex_text_layout`.
+    """
+    escapes = _LATEX_TYPEWRITER_ESCAPES if family == "tt" else _LATEX_ESCAPES
+    parts = []
+    previous = ""
+    for char in str(text):
+        pair = (previous, char)
+        if pair in _LATEX_TEXT_LIGATURES or (
+            not ligatures and pair in _LATEX_F_LIGATURES
+        ):
+            parts.append("{}")
+        # One pass: inserted TeX commands must never be escaped a second time.
+        parts.append("\\ " if char.isspace() else escapes.get(char, char))
+        previous = char
+    return "".join(parts)
+
+
+def _pango_available():
+    """Whether :class:`Text` renders through Pango rather than LaTeX.
+
+    The vendored Manim exports ``Text`` only when ``manimpango`` imports
+    (``manim.PANGO_AVAILABLE``), so the export is the test -- never
+    ``import manimpango``.
+    """
+    return hasattr(mn, "Text")
 
 
 def _require_latex_toolchain():
@@ -418,7 +469,7 @@ class Tex(Mob):
                 tex_kwargs["tex_template"] = kwargs["tex_template"]
             t = mn.MathTex(*self.tex_strings, **tex_kwargs)
         else:
-            if not hasattr(mn, "Text"):
+            if not _pango_available():
                 raise RuntimeError(
                     "Pango text rendering needs the optional `manimpango` "
                     'package: `pip install "algan[pango]"`. Or use algan.Text, '
@@ -891,6 +942,290 @@ def _default_preamble():
     return _DEFAULT_PREAMBLE
 
 
+# --------------------------------------------------------------------------
+# Text without Pango: LaTeX text mode, laid out to stand in for Pango's.
+#
+# The sizes are measured, at font_size 48. Pango (DejaVu, Linux's default
+# family, whose serif, sans and mono capitals are all one height) sets a
+# capital 0.4859 world units tall and puts baselines 0.5 * (1 + line_spacing)
+# apart. LaTeX's 10 pt Computer Modern, through the same MathTex at 48, makes
+# 1 pt 0.049785 world units -- a capital 0.3402, so Text was 70% of Pango's
+# size. The fallback scales by the ratio of capital heights for its family.
+# --------------------------------------------------------------------------
+
+_PANGO_CAP_HEIGHT_AT_48 = 0.4859
+_PANGO_LINE_PITCH_AT_48 = 0.5
+#: ``line_spacing=None`` is passed to Pango as ``-1``, which Manim's Text
+#: turns into 0.3.
+_PANGO_DEFAULT_LINE_SPACING = 0.3
+_LATEX_WORLD_UNITS_PER_PT_AT_48 = 0.049785
+#: Capital height of each Computer Modern family at 10 pt, from the
+#: cmr10/cmss10/cmtt10 font metrics.
+_LATEX_CAP_HEIGHT_PT = {"rm": 6.83333, "sf": 6.94444, "tt": 6.11111}
+#: ``align*``'s distance between baselines: ``\baselineskip`` plus ``\jot``.
+_LATEX_ALIGN_PITCH_PT = 15.0
+
+#: Font-name fragments the fallback reads as a family, monospace first so
+#: "DejaVu Sans Mono" is typewriter rather than sans. Anything else -- the
+#: default ``font=""`` included -- is serif.
+_MONOSPACE_FONT_HINTS = (
+    "mono",
+    "courier",
+    "consola",
+    "menlo",
+    "monaco",
+    "inconsolata",
+    "typewriter",
+    "code",
+    "console",
+    "terminal",
+    "fixed",
+)
+_SANS_FONT_HINTS = (
+    "sans",
+    "arial",
+    "helvetica",
+    "verdana",
+    "tahoma",
+    "calibri",
+    "segoe",
+    "roboto",
+    "ubuntu",
+    "futura",
+    "lato",
+    "trebuchet",
+    "avenir",
+    "myriad",
+    "franklin",
+    "gill",
+)
+_LATEX_FAMILY_DECLARATIONS = {"rm": "", "sf": r"\sffamily ", "tt": r"\ttfamily "}
+_PANGO_BOLD_WEIGHTS = frozenset(
+    {"SEMIBOLD", "BOLD", "ULTRABOLD", "HEAVY", "ULTRAHEAVY"}
+)
+_LATEX_SHAPE_DECLARATIONS = {"ITALIC": r"\itshape ", "OBLIQUE": r"\slshape "}
+
+_LATEX_TEXT_FALLBACK_WARNED = False
+
+
+def _latex_family(font):
+    """The Computer Modern family (``rm``/``sf``/``tt``) nearest a font name."""
+    name = str(font or "").lower()
+    if any(hint in name for hint in _MONOSPACE_FONT_HINTS):
+        return "tt"
+    if any(hint in name for hint in _SANS_FONT_HINTS):
+        return "sf"
+    return "rm"
+
+
+def _text_spans(key, text):
+    """Where a ``color_map``-style key applies in ``text``, as Manim reads it.
+
+    ``"[a:b]"`` is a slice of character indices (newlines and spaces count);
+    anything else is a substring, matched at every occurrence.
+    """
+    import re
+
+    sliced = re.match(r"\[([0-9\-]{0,}):([0-9\-]{0,})\]", key)
+    if sliced:
+        start = int(sliced.group(1)) if sliced.group(1) != "" else 0
+        end = int(sliced.group(2)) if sliced.group(2) != "" else len(text)
+        start = len(text) + start if start < 0 else start
+        end = len(text) + end if end < 0 else end
+        return [(start, end)]
+    spans = []
+    index = text.find(key) if key else -1
+    while index != -1:
+        spans.append((index, index + len(key)))
+        index = text.find(key, index + len(key))
+    return spans
+
+
+class _LatexTextLayout(NamedTuple):
+    """A :class:`Text` laid out for LaTeX: one segment per styled run."""
+
+    tex_strings: tuple
+    #: Per segment, the index into the caller's colors it takes, or None.
+    segment_colors: tuple
+    #: Multiplies ``font_size`` so capitals match Pango's height.
+    scale: float
+
+
+def _latex_text_layout(
+    text,
+    font="",
+    slant="NORMAL",
+    weight="NORMAL",
+    line_spacing=None,
+    disable_ligatures=False,
+    font_map=None,
+    slant_map=None,
+    weight_map=None,
+    char_colors=None,
+):
+    r"""LaTeX source standing in for Pango's layout of ``text``.
+
+    Each line is one row of ``align*``, left-aligned and spaced as Pango
+    spaces it; each run of one style within a line is one ``\text{}`` and one
+    Tex segment, so the glyphs a style applies to are exactly that segment's,
+    however many glyphs LaTeX makes of the characters. Whitespace joins the run
+    around it and a line with no glyphs joins a neighboring segment, because a
+    segment without glyphs has nothing to locate it in the typeset SVG.
+
+    ``char_colors`` gives, per character of ``text``, an index into the
+    caller's colors (or None for the base color); runs split where it changes.
+    """
+    n = len(text)
+    base_family = _latex_family(font)
+    family = [base_family] * n
+    bold = [str(weight).upper() in _PANGO_BOLD_WEIGHTS] * n
+    shape = [_LATEX_SHAPE_DECLARATIONS.get(str(slant).upper(), "")] * n
+    for mapping, values, convert in (
+        (font_map, family, _latex_family),
+        (weight_map, bold, lambda w: str(w).upper() in _PANGO_BOLD_WEIGHTS),
+        (slant_map, shape, lambda s: _LATEX_SHAPE_DECLARATIONS.get(str(s).upper(), "")),
+    ):
+        for key, value in (mapping or {}).items():
+            for start, end in _text_spans(key, text):
+                values[start:end] = [convert(value)] * len(values[start:end])
+    colors = list(char_colors) if char_colors is not None else [None] * n
+
+    scale = _PANGO_CAP_HEIGHT_AT_48 / (
+        _LATEX_WORLD_UNITS_PER_PT_AT_48 * _LATEX_CAP_HEIGHT_PT[base_family]
+    )
+    spacing = (
+        _PANGO_DEFAULT_LINE_SPACING
+        if line_spacing is None or line_spacing == -1
+        else line_spacing
+    )
+    pitch_pt = (
+        _PANGO_LINE_PITCH_AT_48
+        * (1 + float(spacing))
+        / (_LATEX_WORLD_UNITS_PER_PT_AT_48 * scale)
+    )
+    row_break = rf"\\[{pitch_pt - _LATEX_ALIGN_PITCH_PT:.3f}pt]"
+    lines = text.split("\n")
+
+    def run_source(indices, style):
+        run_family, run_bold, run_shape, _ = style
+        declarations = (
+            _LATEX_FAMILY_DECLARATIONS[run_family]
+            + (r"\bfseries " if run_bold else "")
+            + run_shape
+        )
+        content = _escape_plain_text(
+            "".join(text[i] for i in indices),
+            run_family,
+            ligatures=not disable_ligatures,
+        )
+        return rf"\text{{{declarations}{content}}}"
+
+    segments = []  # [source, color index]
+    pending = ""  # glyph-less source waiting for the next segment
+    start = 0
+    for row, line in enumerate(lines):
+        if len(lines) > 1:
+            pending += "&" if row == 0 else row_break + "&"
+        runs = []  # [style, character indices]
+        leading = []
+        for i in range(start, start + len(line)):
+            if text[i].isspace():
+                (runs[-1][1] if runs else leading).append(i)
+                continue
+            style = (family[i], bold[i], shape[i], colors[i])
+            if runs and runs[-1][0] == style:
+                runs[-1][1].append(i)
+            else:
+                runs.append([style, [i]])
+        if runs:
+            runs[0][1][:0] = leading
+            for style, indices in runs:
+                segments.append([pending + run_source(indices, style), style[3]])
+                pending = ""
+        elif leading:
+            first = leading[0]
+            style = (family[first], bold[first], shape[first], None)
+            pending += run_source(leading, style)
+        start += len(line) + 1
+        if pending and segments:
+            segments[-1][0] += pending
+            pending = ""
+    if not segments:
+        segments.append([pending or r"\text{}", None])
+    return _LatexTextLayout(
+        tuple(source for source, _ in segments),
+        tuple(color for _, color in segments),
+        scale,
+    )
+
+
+def _latex_text_colors(text, color_map, gradient, gradient_map, base_color):
+    """Per-character colors for the LaTeX fallback, as Pango would apply them.
+
+    Returns ``(palette, char_colors)``: the Algan colors used, and for each
+    character of ``text`` an index into them, or None for the base color.
+    ``gradient`` fades across every character, ``gradient_map`` across each
+    occurrence of its key, and ``color_map`` is applied last. As on the Pango
+    path, a color goes through its hex spelling, and an Algan color with that
+    exact hex comes back with its glow and opacity.
+    """
+    palette, char_colors, algan_colors = [], [None] * len(text), {}
+    base_glow = (
+        float(base_color.reshape(-1)[3])
+        if isinstance(base_color, torch.Tensor) and base_color.numel() >= 5
+        else 0.0
+    )
+
+    def resolved(hex_color):
+        color = algan_colors.get(hex_color)
+        palette.append(Color(hex_color, glow=base_glow) if color is None else color)
+        return len(palette) - 1
+
+    def fade(stops, start, end):
+        if end <= start:
+            return
+        hexes = [_to_pango_hex(color, algan_colors) for color in stops]
+        for i, color in enumerate(mn.color_gradient(hexes, end - start)):
+            char_colors[start + i] = resolved(color.to_hex().upper())
+
+    if gradient:
+        fade(gradient, 0, len(text))
+    for key, stops in (gradient_map or {}).items():
+        for start, end in _text_spans(key, text):
+            fade(stops, start, end)
+    for key, color in (color_map or {}).items():
+        index = resolved(_to_pango_hex(color, algan_colors))
+        for start, end in _text_spans(key, text):
+            char_colors[start:end] = [index] * len(char_colors[start:end])
+    return palette, char_colors
+
+
+def _warn_latex_text_fallback():
+    """Say once per process that :class:`Text` is not using Pango, and why."""
+    global _LATEX_TEXT_FALLBACK_WARNED
+    if _LATEX_TEXT_FALLBACK_WARNED:
+        return
+    _LATEX_TEXT_FALLBACK_WARNED = True
+    import warnings
+
+    from algan.errors import UnsupportedFeatureWarning
+
+    warnings.warn(
+        "Text is typesetting through LaTeX's text mode, because the optional "
+        "`manimpango` package is not installed. For your system's fonts, "
+        'install it: `pip install "algan[pango]"` (on Linux this builds '
+        "against Pango, so first e.g. `sudo apt install build-essential "
+        "python3-dev libpango1.0-dev pkg-config`). Until then every font is "
+        "Computer Modern: `font`/`font_map` choose only its serif, sans-serif "
+        "or typewriter face (a monospace name such as 'DejaVu Sans Mono' "
+        "selects typewriter), `weight` is regular or bold, and characters "
+        "LaTeX's text fonts lack (most non-Latin scripts, emoji) cannot be "
+        "typeset.",
+        UnsupportedFeatureWarning,
+        stacklevel=3,
+    )
+
+
 class Text(Tex):
     """Plain (non-LaTeX) text, rendered as one packed batch of cubic bezier glyphs.
 
@@ -911,9 +1246,16 @@ class Text(Tex):
     Note a ``color_map`` value of pure white is
     indistinguishable from unstyled text and falls back to the base color.
 
-    When Pango is unavailable, Algan renders the textual content through
-    LaTeX text mode. Font-family and span-level styling arguments are accepted
-    and retained as metadata, but cannot affect that fallback renderer.
+    When Pango is unavailable -- a Linux install without the ``algan[pango]``
+    extra -- Algan typesets the text through LaTeX's text mode instead, and
+    warns once. Everything is then Computer Modern: ``font`` and ``font_map``
+    choose its serif, sans-serif or typewriter face from the font's name (a
+    monospace name such as ``"DejaVu Sans Mono"`` selects typewriter), weights
+    from ``"SEMIBOLD"`` up are bold, ``"ITALIC"``/``"OBLIQUE"`` are italic and
+    slanted, and ``color_map``, ``gradient_map`` and ``gradient`` color the
+    same characters they would under Pango. Lines, spacing and capital height
+    match Pango's for the same ``font_size``. Characters LaTeX's text fonts lack
+    (most non-Latin scripts, emoji) cannot be typeset there.
 
     Parameters
     ----------
@@ -1061,7 +1403,7 @@ class Text(Tex):
             kwargs.setdefault("color", color)
             kwargs.setdefault("stroke_color", color)
 
-        if hasattr(mn, "Text"):
+        if _pango_available():
             pango_kwargs = {
                 "font": font,
                 "slant": slant,
@@ -1107,14 +1449,35 @@ class Text(Tex):
                 **kwargs,
             )
         else:
-            escaped = _escape_plain_text(self.text)
+            _warn_latex_text_fallback()
+            palette, char_colors = _latex_text_colors(
+                self.text, color_map, gradient, gradient_map, kwargs.get("color")
+            )
+            layout = _latex_text_layout(
+                self.text,
+                font=font,
+                slant=slant,
+                weight=weight,
+                line_spacing=line_spacing,
+                disable_ligatures=disable_ligatures,
+                font_map=font_map,
+                slant_map=slant_map,
+                weight_map=weight_map,
+                char_colors=char_colors,
+            )
             super().__init__(
-                rf"\text{{{escaped}}}",
-                font_size=font_size,
+                *layout.tex_strings,
+                delimiter="",
+                font_size=font_size * layout.scale,
                 latex=True,
                 **kwargs,
             )
             self.latex = False
+            self._color_latex_segments(
+                layout.segment_colors,
+                palette,
+                stroke=not explicit_stroke_color and bool(kwargs.get("stroke_width")),
+            )
 
         # Match Manim's post-construction size overrides.
         with Off(animation_manager=self.animation_manager):
@@ -1128,6 +1491,26 @@ class Text(Tex):
                     self.scale(float(width) / float(current.reshape(-1)[0]))
             if center:
                 self.move_to(ORIGIN)
+
+    def _color_latex_segments(self, segment_colors, palette, stroke):
+        """Color the LaTeX fallback's glyphs, one styled segment at a time."""
+        if self._character_batch is None or all(c is None for c in segment_colors):
+            return
+        if len(segment_colors) != len(self.num_mobs_per_segment):
+            # MathTex could not split the SVG by segment, so there is nothing
+            # to say which glyphs a color belongs to.
+            return
+        with Off(animation_manager=self.animation_manager):
+            for segment, color_index in enumerate(segment_colors):
+                if color_index is None:
+                    continue
+                color = palette[color_index]
+                first = int(self.segment_starts[segment])
+                for i in range(first, int(self.segment_ends[segment])):
+                    view = self.character_mobs[i]
+                    view.color = color
+                    if stroke:
+                        view.stroke_color = color
 
     def write(self, *args, **kwargs):
         """Write this plain text with Manim's default Pango outline style.
@@ -1155,11 +1538,13 @@ class TextTriangulated(TexTriangulated):
     """Triangulated plain text; accepts the same arguments as :class:`Text`."""
 
     def __init__(self, text, **kwargs):
-        # Reuse Text's fallback preprocessing, then construct the triangulated
-        # TeX representation directly.
+        # Reuse Text's fallback layout (one row per line, characters set
+        # literally), then construct the triangulated TeX representation.
         font_size = kwargs.pop("font_size", 48)
-        escaped = _escape_plain_text(text)
-        super().__init__(rf"\text{{{escaped}}}", font_size=font_size, **kwargs)
+        layout = _latex_text_layout(str(text))
+        super().__init__(
+            *layout.tex_strings, delimiter="", font_size=font_size, **kwargs
+        )
         self.text = str(text)
         self.latex = False
 
