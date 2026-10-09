@@ -130,6 +130,7 @@ from __future__ import annotations
 
 import _thread
 import argparse
+import atexit
 import codecs
 import contextlib
 import hashlib
@@ -232,11 +233,18 @@ def _console():
     global _CONSOLE
     if _CONSOLE is None:
         _CONSOLE = _capture_console()
+        if _CONSOLE is not sys.stdout:
+            # The duplicate descriptor is this module's own: closed at exit
+            # rather than left to the finalizer, which reports it as leaked.
+            atexit.register(_CONSOLE.close)
     return _CONSOLE
 
 
 def _say(msg):
-    print(f"[algan-daemon] {msg}", file=_console(), flush=True)
+    # A server thread can still be talking while the interpreter exits and the
+    # console above is closed; that last line is dropped, not raised.
+    with contextlib.suppress(ValueError):
+        print(f"[algan-daemon] {msg}", file=_console(), flush=True)
 
 
 def _is_under(path, root):
