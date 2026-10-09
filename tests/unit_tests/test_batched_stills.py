@@ -551,6 +551,31 @@ def test_stills_split_where_a_batch_would_choose_differently(monkeypatch, tmp_pa
         assert _max_difference(single, grouped) <= 2
 
 
+def test_stills_that_never_agree_cost_one_probe(monkeypatch, tmp_path):
+    """A failed batch costs its stills' preparation, so stills that can never
+    share one (a stroke style's outline is padded to the batch's widest
+    frame) pay for the job's two-still probe and nothing more: one-still
+    batches vouch for no longer batch, so none is retried.
+    """
+    from algan import OUT, Sync
+
+    settings = VideoSettings((48, 32), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        with Off():
+            square = Square()
+            square.cap_style = "butt"
+            square.spawn()
+        with Sync(runtime=3):
+            square.rotate(90, OUT)
+        times = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75]
+        alone, together, observed = _render_alone_and_together(
+            monkeypatch, tmp_path, scene, times, post_processes=()
+        )
+    assert [frames for frames, _ in observed] == [2] + [1] * len(times)
+    for single, grouped in zip(alone, together):
+        assert _max_difference(single, grouped) <= 2
+
+
 def test_still_groups_end_where_the_live_mobs_change(monkeypatch, tmp_path):
     """A group never spans a spawn or a despawn -- including a Mob alive only
     between two stills -- and holds at most ``_STILL_GROUP_MAX_FRAMES``.

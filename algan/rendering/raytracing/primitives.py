@@ -3115,13 +3115,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # Stills sharing a batch (RenderLoopMixin.get_frames): every frame
         # takes its own chord counts, outline and bounds -- exactly what it
         # gets alone -- rather than the batch's widest.
-        frame_local = num_frames > 1 and bool(
+        still_batch = bool(
             getattr(getattr(self, "scene", None), "_frame_local_batches", False)
         )
+        if still_batch and getattr(self, "stroke_style", None) is not None:
+            # Expanded outlines are padded to the batch's widest frame. Vetoed
+            # in a one-still batch too, so its merge digests vouch for no
+            # longer batch (RenderLoopMixin._still_batch_digests).
+            self._rt_frame_local_veto = True
+        frame_local = num_frames > 1 and still_batch
         if frame_local:
-            if getattr(self, "stroke_style", None) is not None:
-                # Expanded outlines are padded to the batch's widest frame.
-                self._rt_frame_local_veto = True
             num_samples = torch.stack(
                 [
                     self._compute_samples_per_segment(
