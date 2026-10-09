@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .. import logger
 from algan.settings import SETTINGS
+from algan.utils.typeset_cache import write_atomically
 
 __all__ = ["typst_to_svg_file"]
 
@@ -94,7 +95,7 @@ def typst_to_svg_file(
     if svg_file.exists():
         return svg_file
 
-    typ_file.write_text(full_source, encoding="utf-8")
+    write_atomically(typ_file, full_source.encode("utf-8"))
 
     logger.info(
         "Compiling Typst source %(path)s ...",
@@ -106,5 +107,5 @@ def typst_to_svg_file(
         format="svg",
         font_paths=font_paths or [],
     )
-    svg_file.write_bytes(svg_bytes)
+    write_atomically(svg_file, svg_bytes)
     return svg_file
