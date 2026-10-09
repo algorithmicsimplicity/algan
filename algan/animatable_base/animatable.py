@@ -135,6 +135,56 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     return kwargs
 
 
+def _animated_args_caster(func, animated_args):
+    """Cast an unrecorded call's animated arguments as a recorded call's are.
+
+    A recorded call hands its function every animated argument through
+    ``cast_to_tensor`` (``prepare_kwargs``), and replay hands it a batch of
+    frames, so a function body is written against tensors. Inside ``Off()`` or
+    before the Mob spawns, nothing is recorded and the function used to be
+    called with the raw values instead -- a plain number where the body
+    expects a tensor, so ``t.reshape(...)`` that worked in every animation
+    raised there. Returns ``None`` when the function has no animated
+    arguments, so a call to one of those pays nothing for it. Casting adds
+    no rounding: replay reads the same tensors, and the built-in transforms
+    (``rotate``, ``move``, ...) cast their arguments themselves.
+    """
+    if not animated_args:
+        return None
+    params = list(inspect.signature(func).parameters.values())[1:]
+    positional = [
+        param.name
+        for param in params
+        if param.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    defaults = {
+        param.name: param.default
+        for param in params
+        if param.name in animated_args
+        and param.default is not inspect.Parameter.empty
+        and param.kind is not inspect.Parameter.POSITIONAL_ONLY
+    }
+
+    def cast(args, kwargs):
+        args = list(args)
+        passed = set()
+        for index, name in enumerate(positional[: len(args)]):
+            if name in animated_args:
+                args[index] = cast_to_tensor(args[index])
+                passed.add(name)
+        for name in animated_args:
+            if name in passed:
+                continue
+            if name in kwargs:
+                kwargs[name] = cast_to_tensor(kwargs[name])
+            elif name in defaults:
+                kwargs[name] = cast_to_tensor(defaults[name])
+        return args, kwargs
+
+    return cast
+
+
 def _rejecting_timing_kwargs(func):
     """Answer a timing keyword on a method that has no ``**kwargs`` to catch it.
 
@@ -184,8 +234,10 @@ def animated_function(
     animated_args
         Mapping of parameter names to initial numeric values, typically
         ``{"t": 0}`` for a function called with ``t=1``. The function must accept
-        tensor values for these parameters, including a batch of frame times.
-        Defaults to ``None``, meaning no interpolated parameters.
+        tensor values for these parameters, including a batch of frame times,
+        and it receives a tensor however it is called -- recorded, inside
+        ``Off()``, or before the Mob spawns. Defaults to ``None``, meaning no
+        interpolated parameters.
     unique_args
         Names of string-valued parameters that distinguish separate animation
         calls for batching. Defaults to an empty tuple.
@@ -219,6 +271,8 @@ def animated_function(
         animated_args = {}
 
     def _decorate(func):
+        cast_animated_args = _animated_args_caster(func, animated_args)
+
         @animation_manager_bound
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
@@ -237,6 +291,8 @@ def animated_function(
             if kwargs:
                 _reject_context_kwargs(kwargs)
             if not self.is_animating():
+                if cast_animated_args is not None:
+                    args, kwargs = cast_animated_args(args, kwargs)
                 # Mobs with nothing spawned in their subtree record nothing:
                 # no function events (this branch), and attribute writes go
                 # through the un-recorded path of
