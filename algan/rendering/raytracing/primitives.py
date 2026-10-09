@@ -3095,16 +3095,40 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             getattr(camera, "output_screen_height", camera.screen_height)
         )
 
-        num_samples = self._compute_samples_per_segment(
-            corners,
-            cam_o,
-            sp,
-            sb,
-            camera.screen_height,
-            bool(getattr(camera, "analytic_raster", False)),
+        analytic_raster = bool(getattr(camera, "analytic_raster", False))
+        # Stills sharing a batch (RenderLoopMixin.get_frames): every frame
+        # takes its own chord counts, outline and bounds -- exactly what it
+        # gets alone -- rather than the batch's widest.
+        frame_local = num_frames > 1 and bool(
+            getattr(getattr(self, "scene", None), "_frame_local_batches", False)
         )
-        self._build_circuit_geometry(corners, num_samples, edge_source)
-        self._build_frame_bounds(corners, cam_o, sp, sb, camera.screen_height)
+        if frame_local:
+            if getattr(self, "stroke_style", None) is not None:
+                # Expanded outlines are padded to the batch's widest frame.
+                self._rt_frame_local_veto = True
+            num_samples = torch.stack(
+                [
+                    self._compute_samples_per_segment(
+                        corners if corners.shape[0] == 1 else corners[f : f + 1],
+                        cam_o[f : f + 1],
+                        sp[f : f + 1],
+                        sb[f : f + 1],
+                        camera.screen_height,
+                        analytic_raster,
+                    )
+                    for f in range(num_frames)
+                ]
+            )
+        else:
+            num_samples = self._compute_samples_per_segment(
+                corners, cam_o, sp, sb, camera.screen_height, analytic_raster
+            )
+        self._build_circuit_geometry(
+            corners, num_samples, edge_source, frame_local=frame_local
+        )
+        self._build_frame_bounds(
+            corners, cam_o, sp, sb, camera.screen_height, frame_local=frame_local
+        )
 
         # The polylines/metadata now carry everything the renderer needs;
         # release the control points to reduce resident GPU memory.
@@ -3491,7 +3515,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
         return edges, edge_offsets.to(torch.int32).contiguous()
 
-    def _build_circuit_geometry(self, corners, num_samples, edge_source=None):
+    def _build_circuit_geometry(
+        self, corners, num_samples, edge_source=None, *, frame_local=False
+    ):
         """Sample world-space polylines into per-circuit plane coordinates and
         pack the per-circuit metadata the trace kernel consumes.
 
@@ -3504,6 +3530,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         with it the bias -- moves, which is what lets
         :func:`~.bezier_geometry_cache._build_cached_circuit_edges` build them
         once. The metadata keeps the biased centers the renderer places them at.
+
+        ``frame_local`` (``num_samples`` then ``[T, S]``, one row per frame)
+        builds every frame's edges exactly as that frame alone would build
+        them (:func:`~.bezier_geometry_cache._build_frame_local_circuit_edges`).
         """
         device = corners.device
         S = corners.shape[1]
@@ -3560,7 +3590,19 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             basis_v,
         )
         inward_signs = bool(self.filled and rt_settings.analytic_aa_bez_mode() == 3)
-        if rt_settings.bezier_geometry_cache:
+        if frame_local:
+            from algan.rendering.raytracing.bezier_geometry_cache import (
+                _build_frame_local_circuit_edges,
+            )
+
+            self._rt_edges, self._rt_edge_offsets = _build_frame_local_circuit_edges(
+                getattr(self, "scene", None),
+                self._sample_circuit_edges,
+                args,
+                inward_signs,
+                cache=bool(rt_settings.bezier_geometry_cache),
+            )
+        elif rt_settings.bezier_geometry_cache:
             from algan.rendering.raytracing.bezier_geometry_cache import (
                 _build_cached_circuit_edges,
             )
@@ -3684,9 +3726,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
         self._rt_border_width = stroke_width
 
-    def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
+    def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h, frame_local=False):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the
         screen-space border width and glow radius), with invisible frames marked empty.
+
+        The inflation is the batch's widest unless ``frame_local``, which gives
+        every frame its own (see :meth:`project_to_screen`).
         """
         device = corners.device
         C = self._rt_edge_offsets.shape[0] - 1
@@ -3782,11 +3827,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         pixel_world_scale = 2.0 / clamp_floor(screen_h * b1_norm * screen_dist, 1e-12)
         centers = self._rt_circuit_meta[..., :3]
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
-        world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)
-
-        inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px
-        self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
-        self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
+        world_per_px = pixel_world_scale.view(-1, 1) * dist
+        if frame_local:
+            inflate = (0.5 * self._rt_border_width + 1.5) * world_per_px
+            inflate = inflate.unsqueeze(-1)  # [T, C, 1]
+        else:
+            inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px.amax(0)
+            inflate = inflate.view(1, -1, 1)
+        self._rt_frame_lo = (lo - inflate).contiguous()
+        self._rt_frame_hi = (hi + inflate).contiguous()
 
     def render(
         self,

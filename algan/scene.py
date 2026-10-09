@@ -1512,7 +1512,8 @@ class Scene(RenderLoopMixin):
         despawned, the timeline is left as authored, and any temporary video
         settings or background are restored before returning. Call it as often
         as you like while building a scene. Multiple timestamps share one
-        render job, but each still renders exactly as it would on its own,
+        render job, and consecutive stills with exactly the same live Mobs
+        share render batches, but each still renders as it would on its own,
         from only the Mobs alive in it; frames between them are not rendered.
 
         During :meth:`Project.render_screenshots <algan.project.Project.render_screenshots>`,

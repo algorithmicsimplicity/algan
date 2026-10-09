@@ -14,6 +14,7 @@ file output (:meth:`~algan.render_loop.RenderLoopMixin._render_to_video`).
 
 from __future__ import annotations
 
+import bisect
 import collections
 import contextlib
 import logging
@@ -118,6 +119,10 @@ _UNMEASURED_PROBE_FRAMES = 8
 #: 1.6 preserved the accepted 7/11/12-frame partition in the UHD Metal
 #: benchmark while avoiding its failed 23-frame speculative fetch.
 _ARENA_FETCH_GROWTH_LIMIT = 1.6
+
+#: Most stills one render batch of a still job may carry (see
+#: RenderLoopMixin._still_group_ends).
+_STILL_GROUP_MAX_FRAMES = 16
 
 
 #: Clean batches in a row after which the arena preflight's learned safety
@@ -696,22 +701,26 @@ def _check_post_processes(post_processes):
             )
 
 
-def _framewise_post_process(process):
+def _framewise_post_process(process, batch_native=True):
     """Adapt a still-image pass to preserve one callback per output frame.
 
     Sparse still rendering may put several requested timestamps in one render
     batch. ``Scene.save_frame`` historically rendered each still independently,
     so user passes observed a one-frame batch on every invocation. Keep that
     extension-point contract without giving up sparse batching of the expensive
-    scene render. Built-in bloom remains batch-native.
+    scene render. Built-in bloom remains batch-native unless ``batch_native`` is
+    off, as it is for stills that share a render batch (see
+    ``RenderLoopMixin.get_frames``).
     """
     base = process.func if isinstance(process, partial) else process
-    if base is bloom_filter:
+    if base is bloom_filter and batch_native:
         return process
 
-    def framewise(frames, memory):
+    # Keywords post_process_frames passes the pass it wraps (bloom's
+    # premultiplied_over; see ``_framewise_of`` below) reach every call.
+    def framewise(frames, memory, **kwargs):
         if frames.shape[0] <= 1:
-            return process(frames, memory=memory)
+            return process(frames, memory=memory, **kwargs)
 
         output = None
         expected_shape = None
@@ -719,7 +728,7 @@ def _framewise_post_process(process):
         stable_pointers = None
         for index in range(frames.shape[0]):
             try:
-                produced = process(frames[index : index + 1], memory=memory)
+                produced = process(frames[index : index + 1], memory=memory, **kwargs)
                 if produced.ndim == 0 or produced.shape[0] == 0:
                     raise RuntimeError("A still-frame post-process produced no frames")
                 # Match the old one-still path: if a custom pass unexpectedly
@@ -748,11 +757,15 @@ def _framewise_post_process(process):
                     memory.set_pointers(stable_pointers)
         return output
 
+    # So post_process_frames still recognises the pass it adapts.
+    framewise._framewise_of = process
     return framewise
 
 
-def _framewise_post_processes(post_processes):
-    return tuple(_framewise_post_process(process) for process in post_processes)
+def _framewise_post_processes(post_processes, batch_native=True):
+    return tuple(
+        _framewise_post_process(process, batch_native) for process in post_processes
+    )
 
 
 class RenderLoopMixin:
@@ -886,6 +899,83 @@ class RenderLoopMixin:
         candidates = order[lo:hi]
         return candidates[despawns[candidates] >= start_time].sort().values
 
+    def _still_group_ends(self, actors, frame_indices, start, end):
+        """Where a still job's render batches must end: ascending offsets.
+
+        A batch carries every Mob alive anywhere in its window, so stills may
+        share one only while that is exactly the set each of them selects on
+        its own -- nothing spawns or despawns between the first and the last.
+        Then the batch's per-frame cost is each still's own, and the memory
+        budget sizes it as it would a video window. Read off the lifespan index
+        alone, so nothing is materialized to decide it. A group never spans a
+        change of the live set, and holds at most ``_STILL_GROUP_MAX_FRAMES``.
+        """
+        fps = self.frames_per_second
+        index = self._actor_window_index(actors)
+
+        def alive(first, last):
+            return len(
+                self._actors_in_window(
+                    index, frame_indices[first] / fps, (frame_indices[last] + 1) / fps
+                )
+            )
+
+        ends = []
+        first = start
+        while first < end:
+            own = alive(first, first)
+            last = first
+            while (
+                last + 1 < end
+                and last + 1 - first < _STILL_GROUP_MAX_FRAMES
+                and alive(last + 1, last + 1) == own
+                and alive(first, last + 1) == own
+            ):
+                last += 1
+            ends.append(last + 1)
+            first = last + 1
+        return ends
+
+    @staticmethod
+    def _stills_may_share_batches():
+        """Whether this job's stills may share render batches at all.
+
+        Not under the path tracer, whose light-sampling tables and adaptive
+        sampling are built over a whole batch, nor under the wavefront memory
+        trim, which compacts a batch by its union of visible primitives, nor
+        with tonemapping inside the composite, where bloom hands a frame back
+        as bytes or as floats depending on whether it glows: no per-frame
+        check covers those, so each still keeps a batch of its own.
+        """
+        rt_settings = SETTINGS.raytracing
+        return (
+            _STILL_GROUP_MAX_FRAMES > 1
+            and int(rt_settings.samples_per_pixel) <= 1
+            and not rt_settings.wf_mem_trim
+            and rt_settings.is_post_process_tonemap_enabled()
+        )
+
+    @staticmethod
+    def _frames_deciding_alike(primitives, num_frames):
+        """Leading frames of a prepared still batch that decide alike alone.
+
+        The merge notes, per frame, the inputs of every choice it makes for
+        the batch as a whole (``_merge_scene``'s ``frame_signature``); frames
+        noting what the first one does would each make those choices alike
+        alone, so a batch of them renders each exactly as it would alone.
+        Anything unverifiable -- no merged scene, a primitive whose projection
+        could not choose per frame -- keeps the first frame only.
+        """
+        first = primitives[0]
+        prepared = getattr(first, "_rt_prepared_host_scene", None)
+        merged = (
+            prepared[0]
+            if prepared is not None
+            else getattr(first, "_rt_merged_scene", None)
+        )
+        alike = None if merged is None else merged.get("_frames_alike")
+        return 1 if alike is None else min(int(alike), num_frames)
+
     def _prepare_merged_host_scene(
         self, primitive_batch, *, render_state=None, track_peak=None
     ):
@@ -920,7 +1010,11 @@ class RenderLoopMixin:
                     )
                 )
         merged_host = _merge_scene(
-            primitive_batch, light_sources=lights, track_peak=track_peak
+            primitive_batch,
+            light_sources=lights,
+            track_peak=track_peak,
+            # A still batch is checked frame by frame before it renders.
+            frame_signature=bool(getattr(self, "_frame_local_batches", False)),
         )
         env_map = getattr(self, "environment_map", None)
         first._rt_env_meta = None
@@ -3591,13 +3685,18 @@ class RenderLoopMixin:
         frames are materialized and rendered; gaps cost no frame storage.
         Without it, start/end retain their ordinary timeline-index meaning.
 
-        ``_independent_frames`` (stills) gives every frame a render batch of
-        its own, within the one job. A batch carries every Mob alive anywhere
-        in its window and decides its route, lighting rows and circuit
-        tessellation over all of its frames, so stills sharing one would change
-        each other's pixels and each would carry the Mobs of the whole stretch
-        between them. With it, each still renders as it would alone, from only
-        its own Mobs, and the prefetch worker prepares the next one meanwhile.
+        ``_independent_frames`` (stills) renders every frame exactly as it would
+        alone, from only its own Mobs. A batch carries every Mob alive anywhere
+        in its window, so frames share one only while nothing spawns or
+        despawns between them (:meth:`_still_group_ends`), at most
+        ``_STILL_GROUP_MAX_FRAMES`` of them. Inside such a batch every choice
+        that could move a frame's pixels is made per frame -- circuit chord
+        counts and outline bounds, circuit geometry reuse, post-processing --
+        and a batch whose frames would decide anything else differently alone
+        (route, opacity and material gates, triangle promotion; see
+        ``_merge_scene``'s frame signature) is split before it renders
+        (:meth:`_frames_deciding_alike`). The path tracer gives every still a
+        batch of its own (:meth:`_stills_may_share_batches`).
 
         With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
         called exactly once per yielded batch, immediately before the batch is
@@ -3642,7 +3741,13 @@ class RenderLoopMixin:
             if start_time_ind == end_time_ind:
                 return
         _check_post_processes(post_processes)
-        if _post_process_per_frame and post_processes:
+        if _independent_frames and post_processes:
+            # Bloom included: it decides from a whole chunk whether any frame
+            # glows, and a still's pixels must not depend on its batch-mates.
+            post_processes = _framewise_post_processes(
+                post_processes, batch_native=False
+            )
+        elif _post_process_per_frame and post_processes:
             post_processes = _framewise_post_processes(post_processes)
         # Every frame-producing path validates the arch before launching a
         # kernel: a render device changed since the last job needs a different
@@ -3711,6 +3816,7 @@ class RenderLoopMixin:
                 cache = self.__dict__.pop("_bezier_geometry_cache", None)
                 if cache is not None:
                     cache.clear()
+                self.__dict__.pop("_frame_local_batches", None)
                 # Release the arena before the arch scope considers a deferred
                 # compiler reset. WDDM charges GPU allocations against host
                 # commit too; its freed storage must be reclaimable before the
@@ -3831,11 +3937,38 @@ class RenderLoopMixin:
             # thread's do.
             grad_enabled = torch.is_grad_enabled()
 
+            # Stills (see get_frames): batches end where each still's group
+            # does, and preparation makes its choices per frame (read off the
+            # Scene by the projection and the merge, worker included).
+            self._frame_local_batches = bool(independent_frames)
+            group_ends = (
+                self._still_group_ends(
+                    actors, frame_indices, start_time_ind, end_time_ind
+                )
+                if independent_frames
+                and frame_indices is not None
+                and self._stills_may_share_batches()
+                else None
+            )
+
+            def group_end_for(time_ind):
+                if group_ends is None:
+                    return time_ind + 1
+                return group_ends[bisect.bisect_right(group_ends, time_ind)]
+
+            # ``(group end, frames)``: once a group's frames turned out not to
+            # decide alike (see the check below), the rest of that group is
+            # fetched at most as many frames at a time as last agreed.
+            alike_limit = None
+
             def materialize_batch(time_ind, batch_end_ind):
                 if independent_frames:
-                    # One frame per batch (see get_frames): every fetch, retry
-                    # and prefetch of this job comes through here.
-                    batch_end_ind = min(batch_end_ind, time_ind + 1)
+                    # Never past the end of time_ind's group (see get_frames):
+                    # every fetch, retry and prefetch of this job comes
+                    # through here.
+                    batch_end_ind = min(batch_end_ind, group_end_for(time_ind))
+                    if alike_limit is not None and time_ind < alike_limit[0]:
+                        batch_end_ind = min(batch_end_ind, time_ind + alike_limit[1])
                 while True:
                     try:
                         return self._get_batch_of_primitives(
@@ -4080,6 +4213,7 @@ class RenderLoopMixin:
                         )
 
                     duration = new_time_ind - current_time_ind
+                    fetched_duration = duration
                     planned_prefix = None
                     # A batch the worker built under prefetch-gpu-prep is a
                     # full-window copy; the pristine fetched batch rides along
@@ -4237,6 +4371,31 @@ class RenderLoopMixin:
                         retry_end_ind = current_time_ind + target_duration
                         continue
 
+                    if independent_frames and duration > 1 and primitives:
+                        # Stills share this batch only if each would make
+                        # every batch-wide choice alike alone; otherwise
+                        # refetch the leading frames that do (see get_frames).
+                        agreeing = self._frames_deciding_alike(primitives, duration)
+                        if agreeing < duration:
+                            logger.debug(
+                                "Stills %s:%s would render differently together; "
+                                "keeping the first %s in this batch.",
+                                current_time_ind,
+                                new_time_ind,
+                                agreeing,
+                            )
+                            # Frames that change their minds once tend to keep
+                            # doing it: speculate no further in this group.
+                            alike_limit = (group_end_for(current_time_ind), agreeing)
+                            primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_prepared_host_scene = None
+                            primitives[0]._rt_merged_scene = None
+                            del primitives
+                            self.memory.reset()
+                            release_torch_memory(force_gc=False)
+                            retry_end_ind = current_time_ind + agreeing
+                            continue
+
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(retry_lower_duration, duration)
                         if False:  # retry_upper_duration - retry_lower_duration > 1:
@@ -4265,11 +4424,24 @@ class RenderLoopMixin:
                     # the first.
                     if primitives:
                         arena_frames = self._batch_frame_capacity() or 0
+                        fitted = duration
+                        if (
+                            independent_frames
+                            and retry_upper_duration is None
+                            and duration == fetched_duration
+                        ):
+                            # A still batch ends where its group, or its frames
+                            # deciding alike, do: not the arena's verdict, so
+                            # it does not shrink the next fetch.
+                            fitted = max(
+                                duration,
+                                self._arena_fetch_frame_cap or _STILL_GROUP_MAX_FRAMES,
+                            )
                         # Never below what just fit: the estimate reads the
                         # scene's frame-independent bytes as if they scaled, so
                         # it under-shoots (harmlessly) on a batch that fit.
                         self._arena_fetch_frame_cap = _next_arena_fetch_cap(
-                            duration, arena_frames
+                            fitted, arena_frames
                         )
 
                     # Only prefetch the successor once the current runtime is

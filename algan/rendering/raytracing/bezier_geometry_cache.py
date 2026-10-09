@@ -226,3 +226,98 @@ def _build_cached_circuit_edges(scene, build, args, inward_signs):
         ) + torch.arange(edges.shape[1], device=device)
         result[:, destinations] = edges
     return result, offsets.to(torch.int32)
+
+
+#: The row ``_sample_circuit_edges`` gives a degenerate cubic's edges, which
+#: every bound, index and kernel skips.
+_SENTINEL_EDGE = (1e9, 1e9, 1e9, 1e9, 0.0, 0.0)
+
+
+def _padding_edges(edges, offsets):
+    """One inert edge per circuit, to fill the slots it leaves unused.
+
+    A zero-length edge on the circuit's first real vertex, hidden from the
+    border: the crossing index skips a horizontal edge and the border index an
+    invisible one, the circuit bounds already hold that vertex, and the row
+    scans that walk every edge of a circuit (``sheet_compact_taichi``) meet a
+    point some real edge of it starts at. A circuit with no real edge gets the
+    degenerate-cubic sentinel it already holds.
+    """
+    counts = offsets[1:] - offsets[:-1]
+    num_circuits, num_edges = counts.numel(), edges.shape[0]
+    sentinel = edges.new_tensor(_SENTINEL_EDGE).expand(num_circuits, -1)
+    if num_edges == 0:
+        return sentinel.clone()
+    real = (edges[:, :4].abs() < 1e8).all(-1)
+    circuit = torch.repeat_interleave(
+        torch.arange(num_circuits, device=edges.device), counts
+    )
+    position = torch.arange(num_edges, device=edges.device)
+    first = torch.full_like(counts, num_edges).scatter_reduce_(
+        0, circuit[real], position[real], "amin", include_self=True
+    )
+    start = edges[first.clamp(max=num_edges - 1), :2]
+    padding = torch.cat((start, start, torch.zeros_like(start)), -1)
+    return torch.where((first < num_edges).unsqueeze(-1), padding, sentinel)
+
+
+def _build_frame_local_circuit_edges(scene, build, args, inward_signs, cache=True):
+    """Every frame's circuit edges exactly as that frame would build them alone.
+
+    For stills that share a render batch (see ``RenderLoopMixin.get_frames``).
+    ``args`` are ``_build_cached_circuit_edges``'s, except that the chord
+    counts are ``[T, S]``: each frame's own. A batch shares no edge geometry
+    between its frames -- no batch-wide chord counts or closing vertices, no
+    reuse within a tolerance -- so each frame is built through the
+    single-frame path a still rendered alone takes, and only geometry that is
+    exactly equal in every frame (controls, plane, topology and chord counts
+    alike) is built once. Frames whose circuits come out with different edge
+    counts are packed to the widest, each circuit's spare slots holding inert
+    edges (:func:`_padding_edges`), so a frame's real edges -- the ones every
+    query reads, in their own order -- are its alone ones.
+    """
+    corners, samples, segments, next_inds, centers, basis_u, basis_v = args
+    num_frames = samples.shape[0]
+
+    def frame(index):
+        def at(tensor):
+            return tensor if tensor.shape[0] == 1 else tensor[index : index + 1]
+
+        frame_args = (
+            at(corners),
+            samples[index],
+            segments,
+            at(next_inds),
+            at(centers),
+            at(basis_u),
+            at(basis_v),
+        )
+        if cache:
+            return _build_cached_circuit_edges(scene, build, frame_args, inward_signs)
+        return build(*frame_args, inward_signs)
+
+    if all(
+        bool(_constant_rows(tensor).all())
+        for tensor in (corners, samples, next_inds, centers, basis_u, basis_v)
+    ):
+        return frame(0)
+
+    built = [frame(index) for index in range(num_frames)]
+    frame_offsets = torch.stack([offsets.long() for _, offsets in built])
+    counts = frame_offsets[:, 1:] - frame_offsets[:, :-1]  # [T, C]
+    widths = counts.amax(0)
+    offsets = torch.cat((widths.new_zeros(1), widths.cumsum(0)))
+    first_edges = built[0][0]
+    result = first_edges.new_empty((num_frames, int(offsets[-1]), 6))
+    slot_circuit = torch.repeat_interleave(
+        torch.arange(widths.numel(), device=widths.device), widths
+    )
+    for index, (edges, own_offsets) in enumerate(built):
+        edges = edges[0]
+        own_offsets = own_offsets.long()
+        result[index] = _padding_edges(edges, own_offsets)[slot_circuit]
+        destinations = torch.repeat_interleave(
+            offsets[:-1] - own_offsets[:-1], counts[index]
+        ) + torch.arange(edges.shape[0], device=edges.device)
+        result[index, destinations] = edges
+    return result, offsets.to(torch.int32)

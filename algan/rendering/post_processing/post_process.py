@@ -443,7 +443,10 @@ def post_process_frames(
 
     num_channels = frame_out.shape[-1]
     for process in post_processes:
-        base = process.func if isinstance(process, partial) else process
+        # A still's per-frame adapter (render_loop._framewise_post_process)
+        # names the pass it calls.
+        base = getattr(process, "_framewise_of", process)
+        base = base.func if isinstance(base, partial) else base
         if premultiplied_over and base is bloom_filter:
             # Covers the default, explicit built-in, and tuned partials. Call
             # keywords override a partial's old flag without losing its tuning.

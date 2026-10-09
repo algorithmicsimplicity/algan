@@ -399,11 +399,25 @@ def _max_difference(first, second):
         return int(np.abs(np.asarray(a).astype(int) - np.asarray(b).astype(int)).max())
 
 
-def test_a_still_does_not_depend_on_its_batch_mates(tmp_path):
-    """A render batch tessellates every circuit for the largest projection of
-    any of its frames, and decides its route over all of them. A still batched
-    with a later, zoomed-in still therefore rendered its curves finer than it
-    does alone (72 levels apart on a circle and a formula at 160x90).
+def _record_batches(monkeypatch, scene):
+    """``(frames, live Mob ids)`` per materialized batch of ``scene``."""
+    observed = []
+    original = scene.timeline_manager.set_state_to_times
+
+    def record(times, active_mobs=None):
+        observed.append((len(times), {id(mob) for mob in active_mobs or ()}))
+        return original(times, active_mobs=active_mobs)
+
+    monkeypatch.setattr(scene.timeline_manager, "set_state_to_times", record)
+    return observed
+
+
+def test_a_still_does_not_depend_on_its_batch_mates(monkeypatch, tmp_path):
+    """A render batch used to tessellate every circuit for the largest
+    projection of any of its frames, and decide its route over all of them. A
+    still batched with a later, zoomed-in still therefore rendered its curves
+    finer than it does alone (72 levels apart on a circle and a formula at
+    160x90). The two now share a batch and each keeps its own chord counts.
     """
     settings = VideoSettings((64, 48), 10, supersampling=1)
     with Scene(video_settings=settings) as scene:
@@ -413,10 +427,145 @@ def test_a_still_does_not_depend_on_its_batch_mates(tmp_path):
         circle.scale(5)
         Scene.wait(1)
         alone = scene.save_frame(tmp_path / "alone", at=0.5, post_processes=())
+        observed = _record_batches(monkeypatch, scene)
         batched = scene.save_frame(
             tmp_path / "batched", at=[0.5, 2.5], post_processes=()
         )
+    assert [frames for frames, _ in observed] == [2]
     assert _max_difference(alone, batched[0]) <= 2
+
+
+def _render_alone_and_together(monkeypatch, tmp_path, scene, times, **options):
+    alone = [
+        scene.save_frame(tmp_path / f"alone_{i}", at=t, **options)
+        for i, t in enumerate(times)
+    ]
+    observed = _record_batches(monkeypatch, scene)
+    together = scene.save_frame(tmp_path / "together", at=times, **options)
+    return alone, together, observed
+
+
+@pytest.mark.fast
+def test_stills_of_the_same_mobs_share_batches_and_render_as_alone(
+    monkeypatch, tmp_path
+):
+    """Stills sharing a render batch must each render as they would alone.
+
+    Every choice a batch makes across its frames has to be made per frame or
+    split the batch: chord counts (a circle zooming in, text scaling),
+    contour reuse between frames (text sliding, which matches only within a
+    tolerance), outline bounds (a camera move), and bloom. Any such choice
+    added anywhere in projection, the merge or post-processing shows up here.
+    """
+    from algan import IN, LEFT, UP, Sync, Text
+
+    settings = VideoSettings((96, 54), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        with Off():
+            circle = Circle(radius=0.4, glow=0.3).move(LEFT * 2).spawn()
+            label = Text("Az 12").move(RIGHT * 2).spawn()
+            sliding = Text("slide").move(UP * 1.5).spawn()
+        with Sync(runtime=2):
+            circle.scale(4)
+            label.scale(2)
+            sliding.move(RIGHT * 1.3)
+        with Sync(runtime=2):
+            scene.camera.move(IN * 4)
+        times = [0.15, 0.85, 1.55, 2.25, 2.95, 3.65]
+        alone, together, observed = _render_alone_and_together(
+            monkeypatch, tmp_path, scene, times
+        )
+    assert len(observed) < len(times)
+    assert sum(frames for frames, _ in observed) == len(times)
+    for single, grouped in zip(alone, together):
+        assert _max_difference(single, grouped) <= 2
+
+
+def test_stills_split_where_a_batch_would_choose_differently(monkeypatch, tmp_path):
+    """Frames that would make a batch-wide choice differently alone (here the
+    opacity gates: fading in, then opaque, then fading) do not share a batch,
+    and each still still renders exactly as it would alone.
+    """
+    from algan import Sync
+
+    settings = VideoSettings((48, 32), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        square = Square().move(RIGHT)
+        with Sync(runtime=2):
+            square.spawn()
+        Scene.wait(1)
+        with Sync(runtime=2):
+            square.opacity = 0.3
+        times = [0.5, 1.5, 2.2, 2.8, 3.5, 4.5]
+        alone, together, observed = _render_alone_and_together(
+            monkeypatch, tmp_path, scene, times, post_processes=()
+        )
+    # The first attempt holds all six, and is refetched as its agreeing runs.
+    assert observed[0][0] == len(times)
+    assert all(frames < len(times) for frames, _ in observed[1:])
+    for single, grouped in zip(alone, together):
+        assert _max_difference(single, grouped) <= 2
+
+
+def test_still_groups_end_where_the_live_mobs_change(monkeypatch, tmp_path):
+    """A group never spans a spawn or a despawn -- including a Mob alive only
+    between two stills -- and holds at most ``_STILL_GROUP_MAX_FRAMES``.
+    """
+    import algan.render_loop as render_loop
+
+    settings = VideoSettings((16, 12), 10, supersampling=1)
+    with Scene(video_settings=settings) as scene:
+        with Off():
+            Square().spawn()
+        Scene.wait(2)
+        with Off():
+            between = Circle().spawn()
+        Scene.wait(1)
+        with Off():
+            between.despawn(False)
+        Scene.wait(2)
+        with Off():
+            Circle().spawn()
+        Scene.wait(2)
+        # 0.5 and 1.5 share the live set; 3.5 has it too, but `between` lived
+        # in the stretch from 1.5 to it. 3.5 and 4.5 share theirs; by 6.5 a
+        # second circle has spawned.
+        times = [0.5, 1.5, 3.5, 4.5, 6.5, 6.7]
+        observed = _record_batches(monkeypatch, scene)
+        scene.save_frame(tmp_path / "shot", at=times, post_processes=())
+        assert [frames for frames, _ in observed] == [2, 2, 2]
+        assert all(id(between) not in mobs for _, mobs in observed)
+        monkeypatch.setattr(render_loop, "_STILL_GROUP_MAX_FRAMES", 1)
+        observed.clear()
+        scene.save_frame(tmp_path / "shot", at=times, post_processes=())
+        assert [frames for frames, _ in observed] == [1] * 6
+
+
+def test_per_still_post_processing_runs_bloom_frame_by_frame():
+    """Bloom decides from a whole chunk whether anything glows, so stills
+    sharing a batch run it one frame at a time -- and the adapter must still
+    be recognised as bloom, which is what hands it ``premultiplied_over``.
+    """
+    from functools import partial
+
+    from algan.render_loop import _framewise_post_processes
+    from algan.rendering.post_processing.bloom import bloom_filter
+
+    tuned = partial(bloom_filter, strength=12)
+    assert _framewise_post_processes((tuned,)) == (tuned,)
+    (adapted,) = _framewise_post_processes((tuned,), batch_native=False)
+    assert adapted is not tuned
+    assert adapted._framewise_of is tuned
+
+    calls = []
+
+    def spy(frames, memory, **options):
+        calls.append((frames.shape[0], options))
+        return frames
+
+    (adapted,) = _framewise_post_processes((spy,), batch_native=False)
+    adapted(torch.zeros((1, 2, 2, 4)), memory=None, premultiplied_over=True)
+    assert calls == [(1, {"premultiplied_over": True})]
 
 
 def test_batched_stills_carry_only_their_own_mobs(monkeypatch, tmp_path):

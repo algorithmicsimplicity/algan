@@ -284,8 +284,8 @@ class _StillBatch:
             indices = sorted(group)
             # Keep the one-frame route's established get_frames contract. Multiple
             # frames share one job, even when their timeline indices are far apart,
-            # but each renders in a batch of its own (_independent_frames): a
-            # still must not depend on, or carry the Mobs of, the others.
+            # and share batches only as _independent_frames allows: a still must
+            # not depend on, or carry the Mobs of, the others.
             if len(indices) == 1:
                 frames = self.scene.get_frames(indices[0], indices[0] + 1, **extra)
             else:

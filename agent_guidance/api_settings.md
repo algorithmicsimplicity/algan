@@ -309,14 +309,42 @@ where you launch Python.
 ### Batched screenshots
 
 `Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job,
-`get_frames(..., frame_indices=..., _independent_frames=True)`, which gives
-every still a render batch of its own. It does not render the intervening
-frames. Do not let stills share a batch again: a batch carries every Mob alive
-anywhere in its window (so memory grew with the number of stills and the
-stretch between them), and it chooses its route, lighting rows and circuit
-tessellation over all of its frames (a still batched with a zoomed-in one
-rendered its curves finer, up to 72 levels apart). The prefetch worker still
-prepares the next still while one renders. `test_batched_stills.py` checks both.
+`get_frames(..., frame_indices=..., _independent_frames=True)`. It does not
+render the intervening frames. Each still must render exactly as it would
+alone, from only its own Mobs, which constrains how stills share batches:
+
+- A batch carries every Mob alive anywhere in its window, so consecutive
+  stills share one only while the live set is identical for all of them --
+  nothing spawns or despawns between the first and the last
+  (`RenderLoopMixin._still_group_ends`, read off the lifespan index without
+  materializing), and at most `_STILL_GROUP_MAX_FRAMES` (16) of them. Then a
+  batch costs per frame what each still costs alone, and the ordinary memory
+  budget, arena preflight and OOM halving size it as they do a video window.
+  Before this, two stills spanning a scene carried all of its Mobs (backprop
+  scene 6 at 427x240: 3.3 GB for 2 stills, over 6 GB for 9).
+- Everything a batch decides across its frames is decided per frame for
+  still jobs (`scene._frame_local_batches`): circuit chord counts, closing
+  vertices and outline bounds (`RayTracedBezierCircuitPrimitive.project_to_screen`;
+  frames whose edge counts differ are packed with inert padding edges by
+  `bezier_geometry_cache._build_frame_local_circuit_edges`, which also never
+  reuses contours within a tolerance), and post-processing, bloom included
+  (`_framewise_post_processes(..., batch_native=False)`). A still batched with
+  a zoomed-in one used to render its curves up to 72 levels finer.
+- Every choice the merge makes for the batch as a whole -- opacity and
+  material gates, the materials present, triangle promotion -- notes its
+  per-frame inputs (`_merge_scene(frame_signature=True)`), and a batch whose
+  frames do not all note what the first does is split after the frames that
+  do (`_frames_deciding_alike`); the rest of that group is then fetched at
+  most that many at a time. A batch-wide choice added to the merge must note
+  its inputs, or still batches stop matching their stills.
+- The path tracer, the wavefront memory trim and in-composite tonemapping
+  keep one still per batch (`_stills_may_share_batches`).
+
+`test_batched_stills.py` checks the grouping, the split, the Mob sets and that
+grouped stills equal their alone renders. Grouped stills are byte-identical to
+their alone renders on the scenes checked, except where PyTorch's CPU
+vectorization rounds an elementwise op one ulp differently for a different
+batch length (measured: 1 level, under bloom, on an animated glow).
 Times are quantized at the selected frame rate; repeated frame indices share
 rendered pixels, while output names, return order, and overwrite policy retain
 the input order. Shared render wall time is divided among the rendered results.

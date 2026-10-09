@@ -714,9 +714,10 @@ class Project:
         Each scene is authored once before its selected save-frame requests are
         rendered. Compatible requests share one render job, including
         non-consecutive timestamps; intervening video frames are not rendered.
-        Within it each still renders exactly as it would on its own, from only
-        the Mobs alive in it, so its pixels do not depend on which other stills
-        were requested and memory does not grow with their number.
+        Within it consecutive stills with exactly the same live Mobs share
+        render batches, yet each still renders as it would on its own, from
+        only the Mobs alive in it, so its pixels do not depend on which other
+        stills were requested and memory does not grow with their number.
         The result list retains checkpoint and timestamp order and stable names.
         Calls with different render options form separate jobs.
 
