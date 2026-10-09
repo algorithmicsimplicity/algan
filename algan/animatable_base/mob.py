@@ -2120,12 +2120,32 @@ class Mob(
     def scale_coefficient(self) -> torch.Tensor:
         """The Mob's scale along its own right, up and forward axes, shape ``(*, 3)``.
 
-        Derived from :attr:`~.Mob.basis` as the norm of each of its rows, so
-        ``(1, 1, 1)`` is unscaled. Assigning to this resizes the Mob without
-        rotating it, animated over the current context's runtime (1 second by
-        default); :meth:`~.Mob.scale` and :meth:`~.Mob.set_scale` are the usual
-        way to do that. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`),
-        not an attribute -- assigning to it raises.
+        Derived from :attr:`~.Mob.basis` as the norm of each of its rows. The
+        three components are in the Mob's **own** axes, not the world's:
+        component 0 runs along the Mob's right axis, which is the world's x axis
+        only while the Mob is unrotated, and
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_right_direction`
+        and its siblings say where each axis points. A straight
+        :class:`~algan.mobs.shapes_2d.Line`'s right axis runs along the line
+        whichever way it points, so component 0 is the one that lengthens it --
+        on a vertical line, component 1 is world x and changes nothing visible.
+        To move a line's ends instead, use
+        :meth:`~algan.mobs.shapes_2d.Line.put_start_and_end_on`.
+
+        ``(1, 1, 1)`` is unit scale, which is not necessarily the size the Mob
+        was built at: a freshly built shape carries its size here
+        (``Rectangle(width=2.7, height=1)`` starts at about
+        ``(1.44, 1.44, 1.0)``), so assigning an absolute ``(1, 1, 1)`` shrinks
+        it. To resize, multiply what is there --
+        ``mob.scale_coefficient = mob.scale_coefficient * torch.tensor([2.0,
+        1.0, 1.0])`` doubles it along its own right axis -- or call
+        :meth:`~.Mob.scale`, which does exactly that.
+
+        Assigning to this resizes the Mob and its descendants without rotating
+        them, recorded as an animation over the current context's runtime (1
+        second by default); wrap the assignment in ``Off()`` to apply it
+        instantly. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`), not
+        an attribute -- assigning to it raises.
         """
         return unsquish(self.basis, -1, 3).norm(p=2, dim=-1, keepdim=False)
 
@@ -2260,9 +2280,14 @@ class Mob(
     def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Set the Mob's absolute scale, ignoring its current size.
 
-        ``set_scale(1)`` returns the Mob to the size it was built at, whatever
-        scaling has happened since. For a relative change, use
-        :meth:`~.Mob.scale`.
+        The value is written to :attr:`~.Mob.scale_coefficient`, so it is in the
+        Mob's own axes and ``1`` means unit scale. That is the size the Mob was
+        built at only if it was built at unit scale, as a ``Text`` or a
+        ``Group`` is; most shapes carry their size in their scale from the start
+        -- ``Rectangle(width=2.7, height=1)`` is built at about
+        ``(1.44, 1.44, 1.0)``, and ``set_scale(1)`` shrinks it. To undo a resize,
+        keep ``mob.scale_coefficient.clone()`` from before it and pass that
+        back. For a relative change, use :meth:`~.Mob.scale`.
 
         Animation
         ---------
@@ -2272,8 +2297,8 @@ class Mob(
         Parameters
         ----------
         scale
-            Target scale, where ``1`` is the Mob's construction size. A tensor of
-            shape ``(*, 3)`` sets the Mob's right, up and forward axes
+            Target scale along the Mob's own axes, where ``1`` is unit scale. A
+            tensor of shape ``(*, 3)`` sets the Mob's right, up and forward axes
             separately.
         recursive
             Whether descendants are scaled too. Defaults to True.

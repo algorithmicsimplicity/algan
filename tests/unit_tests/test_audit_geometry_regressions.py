@@ -105,6 +105,46 @@ def test_line_endpoint_change_preserves_appearance():
         )
 
 
+def _materialize(scene, time):
+    with Off(
+        record_attr_modifications=False,
+        record_funcs=False,
+        priority_level=float("inf"),
+    ):
+        scene.timeline_manager.set_state_to_times(torch.tensor([float(time)]))
+
+
+def test_line_length_animates_through_its_ends_or_its_own_first_axis():
+    """A vertical Line's ``scale_coefficient`` component 1 is world x.
+
+    That axis runs across the line, so a factor there changes nothing; the line
+    runs along its own first axis. Both documented ways to lengthen it must
+    animate.
+    """
+    with Scene() as scene:
+        moved = Line(DOWN, UP).spawn(animate=False)
+        scaled = Line(DOWN + RIGHT * 2, UP + RIGHT * 2).spawn(animate=False)
+        across = Line(DOWN + LEFT * 2, UP + LEFT * 2).spawn(animate=False)
+        torch.testing.assert_close(
+            scaled.get_right_direction().reshape(-1).abs(), UP, atol=1e-6, rtol=0
+        )
+        with Sync(runtime=1, easing=easings.identity):
+            moved.put_start_and_end_on(DOWN * 2, UP * 2)
+            scaled.scale(torch.tensor([2.0, 1.0, 1.0]))
+            across.scale(torch.tensor([1.0, 2.0, 1.0]))
+        Scene.wait(0.5)
+
+        for line in (moved, scaled):
+            assert float(line.get_length().reshape(-1)[0]) == pytest.approx(4, abs=1e-5)
+        assert float(across.get_length().reshape(-1)[0]) == pytest.approx(2, abs=1e-5)
+        _materialize(scene, 0.5)
+        for line in (moved, scaled):
+            assert float(line.get_length().reshape(-1)[0]) == pytest.approx(3, abs=1e-4)
+        torch.testing.assert_close(
+            moved.get_start().reshape(-1), DOWN * 1.5, atol=1e-5, rtol=0
+        )
+
+
 @pytest.mark.parametrize(
     ("method", "args", "count"),
     [
