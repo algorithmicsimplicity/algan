@@ -190,6 +190,14 @@ class Line(BezierCircuitCubic):
     :meth:`~.Line.set_color_by_function`, which parametrizes it by ``t`` running
     from the start to the end.
 
+    To move a line's ends, animate them with :meth:`~.Line.put_start_and_end_on`.
+    To lengthen a straight line about its centre, scale it along its own first
+    axis -- ``line.scale(torch.tensor([2.0, 1.0, 1.0]))`` doubles it, whichever
+    way it points -- because :attr:`~algan.animatable_base.mob.Mob.scale_coefficient`
+    is in the line's own axes, not the world's: on a vertical line, a factor on
+    component 1 scales it across its width, which a line does not have, and
+    changes nothing visible.
+
     Parameters
     ----------
     start, end
@@ -386,8 +394,12 @@ class Line(BezierCircuitCubic):
         ---------
         For a spawned line, record the endpoint change over the current
         context's runtime (1 second by default). Use ``Sync(runtime=2)`` to
-        change the duration or ``Off()`` to apply it immediately. Stroke color,
-        opacity, width, caps, joins and draw order are preserved.
+        change the duration or ``Off()`` to apply it immediately. Each end
+        travels straight to its new point, so a line turned this way is shorter
+        part-way through;
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`
+        turns it at its full length.
+        Stroke color, opacity, width, caps, joins and draw order are preserved.
 
         Parameters
         ----------

@@ -46,7 +46,10 @@ from algan.animatable_base.mob_materials import (  # noqa: F401 -- exception re-
 )
 from algan.animatable_base.mob_morph import MobMorphMixin
 from algan.animatable_base.mob_movement import MobMovementMixin
-from algan.animatable_base.mob_orientation import MobOrientationMixin
+from algan.animatable_base.mob_orientation import (
+    MobOrientationMixin,
+    _ReadOnlyProperty,
+)
 from algan.animation_timeline.animation_contexts import (
     AnimationContext,
     NoExtra,
@@ -60,6 +63,7 @@ from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
     get_rotation_between_bases,
+    invert_row_basis,
     map_global_to_local_coords,
     map_local_to_global_coords,
 )
@@ -180,6 +184,70 @@ def _coerce_if_color(attr, value):
     ):
         return value[..., :3].as_subclass(torch.Tensor)
     return value
+
+
+#: How coarsely a Mob's float32 world-space location rows may carry its
+#: subtree's shape -- the rounding of a local coordinate re-derived from them,
+#: relative to the shape's own extent in its frame -- before a basis change
+#: stops relying on them alone and remembers the shape (see
+#: :meth:`Mob._apply_basis_change`). A Mob within ten units of the origin has
+#: to be under about 0.005 units across before it gets here; one riding a
+#: camera eighty units out is already there at full size, and one shrunk to a
+#: sliver there is far past it.
+_REST_SHAPE_LOSS = 1e-3
+
+#: How many float32 roundings of world position a remembered shape may differ
+#: from the stored rows by and still be taken as the shape those rows hold.
+_REST_SHAPE_ROUNDINGS = 4
+
+#: How far, relative to each row's length, applying a basis change computed in
+#: float32 may miss the basis it was computed to reach before the change is
+#: computed in float64 instead (see the ``Mob.basis`` setter). A well-shaped
+#: basis misses by a few float32 roundings; one squashed thousands of times
+#: thinner along one axis than the others misses by about a thousandth.
+_BASIS_CHANGE_TOLERANCE = 1e-4
+
+
+def _float64_device(device):
+    """Where float64 work for a tensor on ``device`` can run: MPS has no float64."""
+    return torch.device("cpu") if device.type == "mps" else device
+
+
+def _local_coordinate_rounding(pivot_loc, pivot_basis, child_loc):
+    """How far a local coordinate re-derived from these rows can be off, ``(*, N, 3)``.
+
+    Each stored location is a float32 world position, so it is only known to
+    within ``eps`` of its own magnitude; the offset from the pivot inherits the
+    rounding of both. Mapping that offset into the frame multiplies it by the
+    inverse basis's column norms -- one over the scale along each axis, for an
+    orthogonal frame -- which is what makes a Mob scaled down far from the
+    origin lose its shape: the offsets fall below the rounding of the
+    positions they are offsets from.
+    """
+    eps = torch.finfo(child_loc.dtype).eps
+    magnitude = child_loc.abs().amax(-1, keepdim=True) + pivot_loc.abs().amax(
+        -1, keepdim=True
+    )
+    inverse = invert_row_basis(unsquish(pivot_basis, -1, 3))
+    return eps * magnitude * inverse.norm(p=2, dim=-2)
+
+
+def _restore_rest_shape(local_coords, rest_local, pivot_loc, pivot_basis, child_loc):
+    """Take a remembered shape's local coordinates where the rows have lost them.
+
+    A row is restored only where the rows can no longer carry its coordinates
+    (:data:`_REST_SHAPE_LOSS`) and where the remembered value agrees with the
+    re-derived one to within that rounding on every axis -- i.e. where nothing
+    but rounding separates the two. A row something else has moved since keeps
+    what the rows say.
+    """
+    rest_local = rest_local.to(local_coords.device, local_coords.dtype)
+    rounding = _local_coordinate_rounding(pivot_loc, pivot_basis, child_loc)
+    eps = torch.finfo(local_coords.dtype).eps
+    tolerance = _REST_SHAPE_ROUNDINGS * (rounding + eps * rest_local.abs())
+    agrees = ((local_coords - rest_local).abs() <= tolerance).all(-1, keepdim=True)
+    lost = rounding > _REST_SHAPE_LOSS * rest_local.abs().amax()
+    return torch.where(agrees & lost, rest_local, local_coords)
 
 
 #: Manim ``Mobject`` methods and the Algan call that does the same job. These
@@ -1821,7 +1889,6 @@ class Mob(
         """
         return self.get_animated_attribute("basis")
 
-    @property
     def normalized_basis(self) -> torch.Tensor:
         """The Mob's orientation with scale divided out, shape ``(*, 9)``.
 
@@ -1831,6 +1898,12 @@ class Mob(
         return squish(
             unsquish(self.basis, -1, 3) / self.scale_coefficient.unsqueeze(-1), -2, -1
         )
+
+    normalized_basis = _ReadOnlyProperty(
+        normalized_basis,
+        "its orientation with the scale divided out",
+        "To turn the Mob, use rotate(...) or assign `basis`.",
+    )
 
     @basis.setter
     def basis(self, basis: torch.Tensor):
@@ -1847,16 +1920,124 @@ class Mob(
         )
         recursive = not self._prevent_recursive_sets
         change = inverse_relation(my_basis, value)
+        # The change is ``inverse(my_basis) @ value``, and a basis much smaller
+        # along one axis than the others -- a bar drained to a sliver -- makes
+        # that product mix entries thousands of times apart. In float32 the
+        # small rows of ``my_basis @ change`` then come back off by that ratio
+        # times eps (a thousandth, for a ten-thousandth drain), skewing the
+        # basis the refill lands on. Where applying the float32 change would
+        # miss ``value`` by more than _BASIS_CHANGE_TOLERANCE, it is computed
+        # in float64 instead, and _apply_basis_change applies a float64 change
+        # in float64. Everywhere else the float32 change is kept, bit for bit.
+        relation = self.attr_to_relations["basis"][0]
+        reached = unsquish(relation(my_basis, change), -1, 3)
+        target = unsquish(value, -1, 3).expand_as(reached)
+        if bool(
+            (
+                (reached - target).norm(p=2, dim=-1)
+                > _BASIS_CHANGE_TOLERANCE * target.norm(p=2, dim=-1)
+            ).any()
+        ):
+            device = _float64_device(my_basis.device)
+            change = inverse_relation(
+                my_basis.to(device, torch.float64), value.to(device, torch.float64)
+            )
         # recursive must be passed as an explicit kwarg (not read from
         # self._prevent_recursive_sets inside _apply_basis_change) so that it
         # is recorded with the function application and replays correctly at
-        # render time, when _prevent_recursive_sets has been restored.
-        self._apply_basis_change(change, default_basis=value, recursive=recursive)
+        # render time, when _prevent_recursive_sets has been restored. So must
+        # the remembered shape (see _apply_basis_change), for the same reason:
+        # replay has to see the one this write was authored against, not
+        # whatever is remembered by the time frames are materialized. A write
+        # inside another recorded function's body is not recorded on its own
+        # -- replay runs this setter again -- so there the shape is kept on
+        # that function's application instead, for its replay to find.
+        timeline = self.scene.timeline_manager
+        replay_key = ("rest_shape", self.id, recursive)
+        if timeline.is_replaying():
+            rest_local = timeline.kept_for_replay(replay_key)
+        else:
+            rest_local = self._remembered_rest_shape(recursive)
+            if rest_local is not None:
+                timeline.keep_for_replay(replay_key, rest_local)
+        self._apply_basis_change(
+            change, default_basis=value, recursive=recursive, rest_local=rest_local
+        )
+
+    def _rest_shape_key(self, recursive):
+        """The location rows a remembered shape belongs to, as a comparable key."""
+        ranges = self._get_attr_ranges("location", include_descendants=recursive)
+        if ranges.pairs is not None:
+            return recursive, tuple(tuple(pair) for pair in ranges.pairs)
+        return recursive, tuple(ranges.tensor().tolist())
+
+    def _remembered_rest_shape(self, recursive):
+        """The subtree's remembered local coordinates, if they still apply, else None.
+
+        See :meth:`_apply_basis_change`. Authoring only: the memory describes
+        the end of the script as authored so far, not any rendered frame.
+        """
+        remembered = self.__dict__.get("_rest_shape")
+        if remembered is None:
+            return None
+        key, rest_local = remembered
+        if key != self._rest_shape_key(recursive):
+            return None
+        return rest_local
+
+    def _update_rest_shape(
+        self, recursive, local_coords, pivot_loc, new_basis, new_location
+    ):
+        """Remember the subtree's local coordinates when its new rows cannot carry them.
+
+        Runs on every authored basis write, so it judges the whole subtree by
+        three scalars rather than row by row: its largest coordinate, the
+        frame's shortest row, and the shape's extent in the frame. That is
+        :func:`_local_coordinate_rounding` for an orthogonal frame, and errs
+        towards remembering when the subtree mixes sizes.
+        """
+        if self.scene.timeline_manager.is_replaying() or not local_coords.numel():
+            return
+        magnitude, shortest_row, extent = torch.stack(
+            (
+                new_location.abs().amax() + pivot_loc.abs().amax(),
+                unsquish(new_basis, -1, 3).norm(p=2, dim=-1).amin(),
+                local_coords.abs().amax(),
+            )
+        ).tolist()
+        eps = torch.finfo(local_coords.dtype).eps
+        if extent > 0 and eps * magnitude > _REST_SHAPE_LOSS * extent * shortest_row:
+            self.__dict__["_rest_shape"] = (
+                self._rest_shape_key(recursive),
+                local_coords.detach().clone(),
+            )
+        else:
+            self.__dict__.pop("_rest_shape", None)
 
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_basis_change(
-        self, change, default_basis=None, recursive=True, interpolation=1.0
+        self,
+        change,
+        default_basis=None,
+        recursive=True,
+        interpolation=1.0,
+        rest_local=None,
     ):
+        # Every descendant's location is re-derived here from the float32
+        # world-space rows it is stored in: its coordinates in this Mob's frame
+        # (``local_coords``), mapped back out through the new basis. A Mob far
+        # from the origin and scaled down far enough has offsets below the
+        # rounding of the positions they are offsets from -- a bar riding a
+        # camera eighty units out, drained to a ten-thousandth of its width,
+        # collapses onto its own centre line -- so scaling it back up from those
+        # rows has nothing to scale. When a write leaves the rows that coarse,
+        # the local coordinates it used are remembered (``_update_rest_shape``),
+        # and the next write takes them back wherever only rounding separates
+        # them from what the rows say (``_restore_rest_shape``). They are passed
+        # in as ``rest_local`` and recorded with the call, so replay restores
+        # the same shape for every frame. A Mob whose rows carry its shape --
+        # every one of ordinary size -- never remembers one, and computes
+        # exactly what it always did.
         attr = "basis"
         relation, inverse_relation = self.attr_to_relations[attr]
 
@@ -1867,9 +2048,24 @@ class Mob(
             "location", include_descendants=False, copy=False
         )
 
-        identity = inverse_relation(my_basis, my_basis)
+        # A float64 change is one float32 could not carry (see the basis
+        # setter), so the composition runs in float64 -- wherever the setter
+        # could compute it -- and only its results are rounded back to the
+        # buffer's precision and device.
+        precise = change.dtype != my_basis.dtype
+
+        def working(value):
+            return value.to(change.device, change.dtype) if precise else value
+
+        def stored(value, like):
+            return value.to(like.device, like.dtype) if precise else value
+
+        working_basis = working(my_basis)
+        if precise and torch.is_tensor(interpolation):
+            interpolation = working(interpolation)
+        identity = inverse_relation(working_basis, working_basis)
         interpolated_change = torch.lerp(identity, change, interpolation)
-        new_basis = relation(my_basis, interpolated_change)
+        new_basis = stored(relation(working_basis, interpolated_change), my_basis)
 
         child_loc = self.get_animated_attribute(
             "location", include_descendants=recursive, copy=False
@@ -1898,8 +2094,15 @@ class Mob(
         pivot_basis = spread(my_basis)
         pivot_new_basis = spread(new_basis)
         local_coords = map_global_to_local_coords(pivot_loc, pivot_basis, child_loc)
+        if rest_local is not None:
+            local_coords = _restore_rest_shape(
+                local_coords, rest_local, pivot_loc, pivot_basis, child_loc
+            )
         new_child_location = map_local_to_global_coords(
             pivot_loc, pivot_new_basis, local_coords
+        )
+        self._update_rest_shape(
+            recursive, local_coords, pivot_loc, pivot_new_basis, new_child_location
         )
 
         child_basis = self.get_animated_attribute(
@@ -1908,11 +2111,14 @@ class Mob(
         # Unlike the pivots, this composition targets the subtree's own basis
         # rows, so it spreads over those -- tolerantly: a row shared by several
         # members takes no change at all rather than an arbitrary member's.
-        new_child_basis = relation(
-            child_basis,
-            self._spread_change_over_packed_rows(
-                "basis", interpolated_change, child_basis, identity
+        new_child_basis = stored(
+            relation(
+                working(child_basis),
+                self._spread_change_over_packed_rows(
+                    "basis", interpolated_change, child_basis, identity
+                ),
             ),
+            child_basis,
         )
 
         self._apply_set("location", new_child_location, recursive=recursive)
@@ -1922,12 +2128,32 @@ class Mob(
     def scale_coefficient(self) -> torch.Tensor:
         """The Mob's scale along its own right, up and forward axes, shape ``(*, 3)``.
 
-        Derived from :attr:`~.Mob.basis` as the norm of each of its rows, so
-        ``(1, 1, 1)`` is unscaled. Assigning to this resizes the Mob without
-        rotating it, animated over the current context's runtime (1 second by
-        default); :meth:`~.Mob.scale` and :meth:`~.Mob.set_scale` are the usual
-        way to do that. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`),
-        not an attribute -- assigning to it raises.
+        Derived from :attr:`~.Mob.basis` as the norm of each of its rows. The
+        three components are in the Mob's **own** axes, not the world's:
+        component 0 runs along the Mob's right axis, which is the world's x axis
+        only while the Mob is unrotated, and
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_right_direction`
+        and its siblings say where each axis points. A straight
+        :class:`~algan.mobs.shapes_2d.Line`'s right axis runs along the line
+        whichever way it points, so component 0 is the one that lengthens it --
+        on a vertical line, component 1 is world x and changes nothing visible.
+        To move a line's ends instead, use
+        :meth:`~algan.mobs.shapes_2d.Line.put_start_and_end_on`.
+
+        ``(1, 1, 1)`` is unit scale, which is not necessarily the size the Mob
+        was built at: a freshly built shape carries its size here
+        (``Rectangle(width=2.7, height=1)`` starts at about
+        ``(1.44, 1.44, 1.0)``), so assigning an absolute ``(1, 1, 1)`` shrinks
+        it. To resize, multiply what is there --
+        ``mob.scale_coefficient = mob.scale_coefficient * torch.tensor([2.0,
+        1.0, 1.0])`` doubles it along its own right axis -- or call
+        :meth:`~.Mob.scale`, which does exactly that.
+
+        Assigning to this resizes the Mob and its descendants without rotating
+        them, recorded as an animation over the current context's runtime (1
+        second by default); wrap the assignment in ``Off()`` to apply it
+        instantly. Note that ``scale`` is a *method* (:meth:`~.Mob.scale`), not
+        an attribute -- assigning to it raises.
         """
         return unsquish(self.basis, -1, 3).norm(p=2, dim=-1, keepdim=False)
 
@@ -2062,9 +2288,14 @@ class Mob(
     def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Set the Mob's absolute scale, ignoring its current size.
 
-        ``set_scale(1)`` returns the Mob to the size it was built at, whatever
-        scaling has happened since. For a relative change, use
-        :meth:`~.Mob.scale`.
+        The value is written to :attr:`~.Mob.scale_coefficient`, so it is in the
+        Mob's own axes and ``1`` means unit scale. That is the size the Mob was
+        built at only if it was built at unit scale, as a ``Text`` or a
+        ``Group`` is; most shapes carry their size in their scale from the start
+        -- ``Rectangle(width=2.7, height=1)`` is built at about
+        ``(1.44, 1.44, 1.0)``, and ``set_scale(1)`` shrinks it. To undo a resize,
+        keep ``mob.scale_coefficient.clone()`` from before it and pass that
+        back. For a relative change, use :meth:`~.Mob.scale`.
 
         Animation
         ---------
@@ -2074,8 +2305,8 @@ class Mob(
         Parameters
         ----------
         scale
-            Target scale, where ``1`` is the Mob's construction size. A tensor of
-            shape ``(*, 3)`` sets the Mob's right, up and forward axes
+            Target scale along the Mob's own axes, where ``1`` is unit scale. A
+            tensor of shape ``(*, 3)`` sets the Mob's right, up and forward axes
             separately.
         recursive
             Whether descendants are scaled too. Defaults to True.

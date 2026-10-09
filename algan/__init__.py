@@ -518,6 +518,7 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "rotate_vector_around_axis",  # algan.geometry.geometry
         "get_rotation_around_axis",  # algan.geometry.geometry
         "get_rotation_between_bases",  # algan.geometry.geometry
+        "invert_row_basis",  # algan.geometry.geometry
         "get_orthonormal_vector",  # algan.geometry.geometry
         "pack_animatable_rows",  # algan.utils.mob_utils
         "pack_member_rows",  # algan.utils.mob_utils
