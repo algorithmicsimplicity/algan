@@ -33,9 +33,13 @@ from algan.rendering.raytracing.sheet_compact_taichi import (
 )
 from algan.rendering.raytracing.sheets import _lexsort
 from algan.settings import SETTINGS
-from algan.taichi_compat import ti
+from algan.taichi_compat import template_dtype, ti
 
 EXPERIMENTAL = SETTINGS.raytracing.experimental
+# Dtype template arguments as the renderer passes them (template_dtype): a raw
+# compiler dtype is not weakly referenceable and makes Quadrants warn.
+ACC_F64 = template_dtype(ti.f64)
+IDX_I64 = template_dtype(ti.i64)
 
 
 def _bits_equal(a, b):
@@ -113,7 +117,7 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas, wide_kernel
     got = cov.clone()
     scratch = cov.to(torch.float64)
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got, ti.f64
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, got, ACC_F64
     )
     assert _bits_equal(want, got), (
         f"max abs diff {(want - got).abs().max().item()}, "
@@ -122,7 +126,7 @@ def test_solid_shell_ceiling_matches_torch_segment_clamp(zero_areas, wide_kernel
 
     again = cov.clone()
     solid_shell_ceiling(
-        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again, ti.f64
+        key, o2, back.contiguous().view(torch.uint8), excl, scratch, n, again, ACC_F64
     )
     assert _bits_equal(got, again), "kernel is not deterministic across runs"
 
@@ -150,7 +154,7 @@ def test_solid_shell_ceiling_single_fragment_and_whole_stream_segments(
             cov.to(torch.float64),
             n,
             got,
-            ti.f64,
+            ACC_F64,
         )
         assert _bits_equal(want, got), f"n={n}"
 
@@ -228,11 +232,11 @@ def test_band_stats_kernels_match_the_five_scatters(positioned, wide_kernel_arms
         cm,
         nf,
         bool(positioned),
-        ti.i64,
+        IDX_I64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, IDX_I64
     )
 
     assert _bits_equal(w_fs, fs), "first_sorted"
@@ -275,11 +279,11 @@ def test_band_stats_leaves_unused_band_rows_at_sentinel(wide_kernel_arms):
         cm,
         nf,
         True,
-        ti.i64,
+        IDX_I64,
     )
     rp = torch.full((nb,), n, dtype=torch.int64)
     band_stats_rep_orig(
-        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, ti.i64
+        band.contiguous(), pos_o.contiguous(), cov.contiguous(), cm, n, rp, IDX_I64
     )
     assert _bits_equal(w_fs, fs), "first_sorted"
     assert _bits_equal(w_mp, mp), "min_pos"
