@@ -37,7 +37,7 @@ MEASURED (2026-08, CPU, ``--res md``). ``split`` is ~0.02% everywhere and
 requirement is not what costs a diced mesh its accuracy, which refutes the
 obvious hypothesis. What grows with tessellation density is ``union-full``:
 1.0% on the flat quad, 25.2% on a default ``Cylinder``, 72.4% at
-``resolution=(256, 2)``, 87.6% on a fine ``Sphere``. Almost all of it is the
+``resolution=(2, 256)``, 87.6% on a fine ``Sphere``. Almost all of it is the
 benign interior-tiling case (``1 - E <= 1e-3``: 343 / 10770 / 31096 / 23282
 pixels), and the residual is a small tail of genuinely dilated silhouette
 pixels -- 1 / 105 / 181 / 1004 pixels with ``1 - E`` up to 0.15 (0.30 on the
@@ -300,7 +300,7 @@ def _cases():
         Cylinder(radius=0.9, height=1.8).rotate(24, RIGHT).spawn()
 
     def cylinder_fine():
-        c = Cylinder(radius=0.9, height=1.8, resolution=(256, 2))
+        c = Cylinder(radius=0.9, height=1.8, resolution=(2, 256))
         c.rotate(24, RIGHT).spawn()
 
     def sphere_fine():
@@ -362,7 +362,7 @@ def _cases():
         _alc.build_line("cyl", 33.0, SceneManager.instance().current_scene)
 
     def line_check_cyl_fine():
-        """``resolution=(256, 2)`` on a 0.045-radius rod.
+        """``resolution=(2, 256)`` on a 0.045-radius rod.
 
         Facets far below a pixel and nearly edge-on, so almost every pixel is
         silhouette BOUNDARY rather than interior. This is the case the one-mesh

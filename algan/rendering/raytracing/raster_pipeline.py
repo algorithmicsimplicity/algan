@@ -1771,7 +1771,7 @@ def _one_mesh_pixel_caps(
     # rule, recovered. At the BOUNDARY the near sheet's projected area shrinks
     # toward zero while the footprint does not, and there the larger sheet is
     # the right answer where suppression under-covers (measured: a 0.045-radius
-    # rod diced to (256, 2) is nearly all boundary, and suppression flips its
+    # rod diced to (2, 256) is nearly all boundary, and suppression flips its
     # signed error to -0.0344 and notches 1676 of 3508 interior pixels).
     # Accumulated in FLOAT64 and rounded back, and that is load-bearing rather
     # than cautious. ``scatter_add_`` is a float atomic add, so its summation

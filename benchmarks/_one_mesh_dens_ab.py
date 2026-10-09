@@ -70,7 +70,7 @@ def build_cylfine():
         PointLight(location=LEFT * 4 + UP * 3 + OUT * 4).spawn(animate=False)
         for i, x in enumerate((-2.0, 0.0, 2.0)):
             rod = Cylinder(
-                radius=0.045, height=3.0, color=RED, resolution=(256, 2)
+                radius=0.045, height=3.0, color=RED, resolution=(2, 256)
             ).move(RIGHT * x)
             rod.rotate(33 + 12 * i, OUT)
             rod.spawn(animate=False)

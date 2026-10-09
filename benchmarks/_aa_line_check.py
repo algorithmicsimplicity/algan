@@ -150,7 +150,7 @@ KIND_LABELS = {
     "bez": "Line (cubic bezier circuit)",
     "quad": "flat quad (2 triangles)",
     "cyl": "Cylinder (default tessellation)",
-    "cyl_fine": "Cylinder (resolution=(256, 2))",
+    "cyl_fine": "Cylinder (resolution=(2, 256))",
 }
 
 
@@ -189,7 +189,7 @@ def build_line(kind, angle_deg, scene):
         mob = TriangleTriangulated(corners, color=WHITE, scene=scene)
         mob.set_material(MeshBasicMaterial(color=WHITE))
     elif kind in ("cyl", "cyl_fine"):
-        extra = {"resolution": (256, 2)} if kind == "cyl_fine" else {}
+        extra = {"resolution": (2, 256)} if kind == "cyl_fine" else {}
         mob = Cylinder(
             radius=CYLINDER_RADIUS,
             height=2 * LINE_HALF_LENGTH,

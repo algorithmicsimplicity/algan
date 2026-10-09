@@ -150,7 +150,7 @@ def scene_translucent(alpha):
         _unlit(sphere, GREEN)
         sphere.opacity = alpha
         sphere.spawn(animate=False)
-        cyl = Cylinder(radius=0.8, height=2.2, resolution=(96, 8)).move(RIGHT * 1.3)
+        cyl = Cylinder(radius=0.8, height=2.2, resolution=(8, 96)).move(RIGHT * 1.3)
         _unlit(cyl, RED)
         cyl.opacity = alpha
         cyl.spawn(animate=False)
