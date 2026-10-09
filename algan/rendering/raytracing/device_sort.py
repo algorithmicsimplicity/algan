@@ -143,13 +143,16 @@ def _scan_depth(n: int) -> int:
 
 
 def _key_dtype(keys):
-    from algan.taichi_compat import ti
+    """``keys``' element type, as ``argsort_pairs``' ``key_dtype`` template."""
+    from algan.taichi_compat import template_dtype, ti
 
-    return {
-        torch.int32: ti.i32,
-        torch.int64: ti.i64,
-        torch.float32: ti.f32,
-    }[keys.dtype]
+    return template_dtype(
+        {
+            torch.int32: ti.i32,
+            torch.int64: ti.i64,
+            torch.float32: ti.f32,
+        }[keys.dtype]
+    )
 
 
 def _end_bit(keys) -> int:

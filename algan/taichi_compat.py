@@ -42,7 +42,7 @@ installs the other arm.
 What binding does
 -----------------
 Binding is also the one moment that is guaranteed to precede the first
-``@ti.func`` in the process, so three things that must happen before then happen
+``@ti.func`` in the process, so two things that must happen before then happen
 here rather than in ``algan/__init__.py``:
 
 * **Taichi's version check is switched off.** taichi 1.7.x's
@@ -53,12 +53,6 @@ here rather than in ``algan/__init__.py``:
   nothing to the other. It is not an ``ALGAN_`` variable, so it is not declared
   in :mod:`algan.environment` -- like ``ENABLE_TAICHI_HEADER_PRINT`` and
   ``TI_OFFLINE_CACHE_FILE_PATH``, it belongs to the compiler.
-* **Quadrants' two known-safe template-mapper weakref warnings are hidden.**
-  Algan deliberately passes dtype objects and tuples as ``ti.template()``
-  arguments. Quadrants computes the specialization key correctly, then fails to
-  weak-reference those objects for an optional launch-time mapper cache and
-  warns that the cache is disabled. The filter is restricted to those two exact
-  messages from Quadrants' warning helper so a new cache failure still surfaces.
 * **The warm-start patches are installed** (:func:`algan.utils.taichi_warmstart.apply`).
   One of them replaces the decorators' ``_inside_class`` frame walk, which runs
   when a kernel or func is *defined*, so it has to be in place before
@@ -93,6 +87,18 @@ handled by their owners rather than papered over here:
   ``_is_quadrants_function`` by the other. Ask :func:`is_compiler_func`; a
   hard-coded spelling answers ``False`` on the other backend rather than
   failing, which is a silent fall back to the Python path.
+* Quadrants' template mapper caches a launch's specialization key against weak
+  references to its arguments, and warns "Template mapper caching disabled"
+  for any argument it cannot weakly reference. A compiler dtype is one, so a
+  dtype passed as a ``ti.template()`` argument goes through
+  :func:`template_dtype` first. The other is a tuple -- the injected
+  fragment-pipeline tuples -- which cannot be made weakly referenceable at all;
+  that one warning is filtered, from the moment this module is imported
+  (:func:`_install_backend_warning_filters` says why it is harmless). Not when
+  ``ti`` is bound, which usually happens inside the first render: a filter
+  added inside a caller's ``warnings.catch_warnings()`` block is discarded
+  when the block exits. pytest runs every test, and its own start-up, inside
+  such blocks, so ``tests/conftest.py`` gives it the same filter as an ini line.
 """
 
 from __future__ import annotations
@@ -100,6 +106,7 @@ from __future__ import annotations
 import importlib
 import os
 import warnings
+import weakref
 from types import ModuleType
 
 from algan.environment import env_str
@@ -137,13 +144,27 @@ BACKEND = _select_backend()
 
 
 _QUADRANTS_BENIGN_TEMPLATE_CACHE_WARNING = (
-    r"cannot create weak reference to '(?:DataTypeCxx|tuple)' object\. "
+    r"cannot create weak reference to 'tuple' object\. "
     r"Template mapper caching disabled\."
 )
 
 
 def _install_backend_warning_filters():
-    """Hide only Quadrants warnings Algan knowingly triggers and accepts."""
+    """Hide the one Quadrants warning Algan knowingly triggers and accepts.
+
+    The kernels that inject fragment pipelines take them as a tuple
+    ``ti.template()`` argument, and a tuple cannot be weakly referenced, so
+    Quadrants' template mapper warns that it will not cache those launches'
+    specialization keys. That cache is not one Algan uses: on a repeat launch
+    :mod:`algan.utils.taichi_fast_launch` replays a plan of its own and never
+    consults the mapper, and on the compiler's own path the cache is keyed by
+    the ``id()`` of every argument, which never repeats for Algan's freshly
+    built tensors -- with the fast launcher off, a 3-D mesh, shadow, square and
+    text render made 293 lookups and the cache answered none of them outside
+    one gloss kernel, tuple or no tuple. The filter matches that exact message,
+    so a different argument losing the cache (a dtype not passed through
+    :func:`template_dtype`, say) still surfaces.
+    """
     if BACKEND != "quadrants":
         return
     warnings.filterwarnings(
@@ -152,6 +173,65 @@ def _install_backend_warning_filters():
         category=UserWarning,
         module=r"quadrants\._test_tools\.warnings_helper",
     )
+
+
+_install_backend_warning_filters()
+
+#: ``{dtype: weakly referenceable handle}``, one per compiler dtype, for the
+#: life of the process; see :func:`template_dtype`.
+_TEMPLATE_DTYPES = {}
+_TEMPLATE_DTYPE_CLASSES = {}
+
+
+def template_dtype(dtype):
+    """``dtype`` in the form to pass as a ``ti.template()`` argument.
+
+    Quadrants' template mapper remembers a launch's specialization key against
+    weak references to its arguments, and a compiler dtype (``DataTypeCxx``)
+    cannot be weakly referenced: every kernel given one as a template argument
+    warned ``cannot create weak reference to '...DataTypeCxx' object. Template
+    mapper caching disabled`` and re-derived its whole key on each launch that
+    went through the compiler's own path.
+
+    The handle returned is an instance of a subclass of ``dtype``'s class that
+    can be weakly referenced and is otherwise the same dtype: equal to it,
+    hashing like it, with the same ``to_string()``. So everything keyed on the
+    dtype keys on the handle identically -- the kernel's specialization, its
+    compiled code, its source key and its precompile spec -- and a kernel given
+    a handle where it used to be given the dtype compiles nothing new. There is
+    one handle per dtype, kept for the process, so the mapper's ``id()``-keyed
+    entry stays valid. Any other backend, and anything that is not a dtype or
+    is already weakly referenceable, is returned unchanged.
+    """
+    if BACKEND != "quadrants":
+        return dtype
+    try:
+        return _TEMPLATE_DTYPES[dtype]
+    except (KeyError, TypeError):
+        pass
+    try:
+        weakref.ref(dtype)
+        return dtype
+    except TypeError:
+        pass
+    base = type(dtype)
+    try:
+        cls = _TEMPLATE_DTYPE_CLASSES.get(base)
+        if cls is None:
+            cls = _TEMPLATE_DTYPE_CLASSES.setdefault(
+                base,
+                type(
+                    f"Template{base.__name__}",
+                    (base,),
+                    {"__slots__": ("__weakref__",), "__module__": __name__},
+                ),
+            )
+        handle = cls(dtype.get_ptr())
+        if handle != dtype or hash(handle) != hash(dtype):
+            return dtype
+    except Exception:  # noqa: BLE001 -- a warning is the worst a miss costs
+        return dtype
+    return _TEMPLATE_DTYPES.setdefault(dtype, handle)
 
 
 def __getattr__(name):
@@ -164,7 +244,7 @@ def __getattr__(name):
     ``from algan.taichi_compat import ti`` still pays it at that module's import,
     exactly as ``import taichi as ti`` used to.
 
-    See "What binding does" in the module docstring for the three side effects.
+    See "What binding does" in the module docstring for the two side effects.
     ``ti`` is bound *before* the warm-start installer runs, so a module the
     installer imports that itself asks for ``ti`` gets the bound module rather
     than re-entering here.
@@ -174,7 +254,6 @@ def __getattr__(name):
             os.environ.setdefault("TI_SKIP_VERSION_CHECK", "1")
         module = importlib.import_module(BACKEND)
         globals()["ti"] = module
-        _install_backend_warning_filters()
         from algan.utils.taichi_warmstart import apply as _apply_warmstart
 
         _apply_warmstart()
@@ -292,5 +371,6 @@ __all__ = [
     "kernel_specializations",
     "program",
     "submodule",
+    "template_dtype",
     "ti",  # noqa: F822  -- bound lazily by __getattr__ above, not at module level.
 ]

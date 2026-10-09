@@ -573,10 +573,12 @@ def taichi_accumulate_dtype():
     compile to two kernel variants and a process that renders both ways gets
     both. A ``ti.static`` gate is resolved once, at the first compile, and the
     second arm would silently reuse the first arm's code (``CLAUDE.md``).
+    Returned through :func:`~algan.taichi_compat.template_dtype`, which is what
+    a dtype template argument needs on Quadrants.
     """
-    from algan.taichi_compat import ti
+    from algan.taichi_compat import template_dtype, ti
 
-    return ti.f32 if mps_friendly() else ti.f64
+    return template_dtype(ti.f32 if mps_friendly() else ti.f64)
 
 
 def taichi_reduction_index_dtype():
@@ -585,11 +587,12 @@ def taichi_reduction_index_dtype():
     The kernels cast every atomic operand to this before the atomic, so the
     narrowing is what keeps ``ti.atomic_min`` off int64 -- which Metal answers
     with ``Assertion failed: (p != nullptr), function bind_pipeline`` rather
-    than with an error (§1.2).
+    than with an error (§1.2). A :func:`~algan.taichi_compat.template_dtype`
+    handle, like :func:`taichi_accumulate_dtype`'s.
     """
-    from algan.taichi_compat import ti
+    from algan.taichi_compat import template_dtype, ti
 
-    return ti.i32 if mps_friendly() else ti.i64
+    return template_dtype(ti.i32 if mps_friendly() else ti.i64)
 
 
 def cummax_values(x: torch.Tensor, dim: int) -> torch.Tensor:

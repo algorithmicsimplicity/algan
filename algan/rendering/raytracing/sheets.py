@@ -2674,7 +2674,7 @@ def compact_sheets(
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_reduce,
         )
-        from algan.taichi_compat import ti
+        from algan.taichi_compat import template_dtype, ti
 
         # The five reduction outputs are stream positions and a count, all
         # below ``n``, which the fused kernels already bound under 2**31. They
@@ -2707,7 +2707,7 @@ def compact_sheets(
             cmax,
             nfrag,
             bool(positioned_depth),
-            ti.i32,
+            template_dtype(ti.i32),
         )
         nearest_orig = pos_o.index_select(0, first_sorted)
         sheet_pix = pix_o.index_select(0, first_sorted)
@@ -2814,7 +2814,7 @@ def compact_sheets(
         from algan.rendering.raytracing.sheet_compact_taichi import (
             band_stats_rep_orig,
         )
-        from algan.taichi_compat import ti
+        from algan.taichi_compat import template_dtype, ti
 
         # int32 like the tables above, for the same reason.
         rep_orig = torch.full((nb,), n, dtype=torch.int32, device=device)
@@ -2825,7 +2825,7 @@ def compact_sheets(
             cmax,
             n,
             rep_orig,
-            ti.i32,
+            template_dtype(ti.i32),
         )
         del cmax, cov_o
     else:

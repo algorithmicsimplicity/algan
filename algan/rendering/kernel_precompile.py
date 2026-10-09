@@ -201,9 +201,9 @@ def _decode(encoded):
     if tag == "enum":
         return _resolve_path(encoded[1], encoded[2])[encoded[3]]
     if tag == "dtype":
-        from algan.taichi_compat import ti
+        from algan.taichi_compat import template_dtype, ti
 
-        return getattr(ti, encoded[1])
+        return template_dtype(getattr(ti, encoded[1]))
     if tag == "torch_dtype":
         import torch
 
