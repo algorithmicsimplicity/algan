@@ -54,7 +54,11 @@ from algan.mobs.nonplanar_circuit import (
 from algan.mobs.nonplanar_circuit import classify_circuit
 from algan.mobs.stroke_style import _stroke_style
 from algan.rendering.mps_compat import cummax_values
-from algan.rendering.raytracing.utils import _unify_time
+from algan.rendering.raytracing.utils import (
+    _cubic_extent,
+    _cubics_disconnected,
+    _unify_time,
+)
 from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.settings.video_settings import PREVIEW
 from algan.utils.mob_utils import pack_animatable_rows, pack_member_rows
@@ -1831,15 +1835,16 @@ class BezierCircuitCubic(Mob):
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
         start_points = x[..., :1, :]
         end_points = x[..., -1:, :]
+        extent = _cubic_extent(x)
 
         # We allow for rendering circuits with holes,
         # we treat beziers which don't start at the previous one's end as marking the start of a new circuit (i.e. a hole).
-        circuit_start_mask = (start_points - end_points.roll(1, -3)).norm(
-            p=2, dim=-1, keepdim=True
-        ) > 1e-5
-        circuit_end_mask = (end_points - start_points.roll(-1, -3)).norm(
-            p=2, dim=-1, keepdim=True
-        ) > 1e-5
+        circuit_start_mask = _cubics_disconnected(
+            start_points - end_points.roll(1, -3), extent, extent.roll(1, -3)
+        )
+        circuit_end_mask = _cubics_disconnected(
+            end_points - start_points.roll(-1, -3), extent, extent.roll(-1, -3)
+        )
 
         if num_segments_per_circuit is not None:
             # Packed members are independent even when their endpoints touch.
@@ -1849,10 +1854,12 @@ class BezierCircuitCubic(Mob):
             member_ends = counts.cumsum(0) - 1
             member_starts = member_ends + 1 - counts
             circuit_start_mask[..., member_starts, :, :] = True
-            circuit_end_mask[..., member_ends, :, :] = (
+            circuit_end_mask[..., member_ends, :, :] = _cubics_disconnected(
                 end_points.index_select(-3, member_ends)
-                - start_points.index_select(-3, member_starts)
-            ).norm(p=2, dim=-1, keepdim=True) > 1e-5
+                - start_points.index_select(-3, member_starts),
+                extent.index_select(-3, member_ends),
+                extent.index_select(-3, member_starts),
+            )
 
         inds = torch.arange(x.shape[-3], device=x.device).view(-1, 1, 1)
         circuit_start_inds = torch.where(circuit_start_mask, inds, 0)
@@ -2316,15 +2323,20 @@ def build_render_primitives_batched(actors, scene):
 
     start_points = x[..., :1, :]
     end_points = x[..., -1:, :]
+    extent = _cubic_extent(x)
     # Per-actor wrap-around neighbours: each actor's own roll(+-1, -3).
     prev_idx = torch.where(local == 0, off_of_seg + last_local, gidx - 1)
     next_idx = torch.where(local == last_local, off_of_seg, gidx + 1)
-    circuit_start_mask = (start_points - end_points.index_select(-3, prev_idx)).norm(
-        p=2, dim=-1, keepdim=True
-    ) > 1e-5
-    circuit_end_mask = (end_points - start_points.index_select(-3, next_idx)).norm(
-        p=2, dim=-1, keepdim=True
-    ) > 1e-5
+    circuit_start_mask = _cubics_disconnected(
+        start_points - end_points.index_select(-3, prev_idx),
+        extent,
+        extent.index_select(-3, prev_idx),
+    )
+    circuit_end_mask = _cubics_disconnected(
+        end_points - start_points.index_select(-3, next_idx),
+        extent,
+        extent.index_select(-3, next_idx),
+    )
 
     local_col = local.view(-1, 1, 1)
     off_col = off_of_seg.view(-1, 1, 1)

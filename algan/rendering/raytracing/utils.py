@@ -34,6 +34,46 @@ def _pixel_bases(screen_basis):
     return dual[:, :, 0].contiguous(), dual[:, :, 1].contiguous()
 
 
+#: Two consecutive cubics are one contour when the gap between the first one's
+#: end and the second one's start is below this fraction of the larger cubic's
+#: size, capped at one world unit -- so a shape of unit size or more keeps the
+#: absolute 1e-5 this test always used. The cap is what changed: a fixed 1e-5
+#: is more than a pixel once a glyph is shrunk to sit 0.1 units in front of a
+#: distant camera (a HUD riding it), and there it read the jump from a letter's
+#: outline to its hole as a continuation, bridging the two with an edge that
+#: cut a seam through the ``e`` of "worse". Real joins are exact copies of one
+#: point (0 apart in every join of ``Tex``, ``Text``, ``Circle``, ``Square``,
+#: ``Arc`` and ``Axes`` measured) and real jumps are a visible fraction of the
+#: shape (5e-3 and up at default size), so the band between them is wide.
+CONNECTION_GAP_FRACTION = 1e-5
+
+
+def _cubic_extent(corners):
+    """Each cubic's size: its control points' greatest distance from its start.
+
+    ``corners`` is ``[..., 4, 3]``. The result is ``[..., 1, 1]``, laid out like
+    ``corners[..., :1, :]`` so it indexes and rolls along the same dimensions.
+    """
+    return (
+        (corners - corners[..., :1, :])
+        .norm(p=2, dim=-1, keepdim=True)
+        .amax(-2, keepdim=True)
+    )
+
+
+def _cubics_disconnected(gap, extent_a, extent_b):
+    """Whether one cubic's end and another's start are different points.
+
+    ``gap`` is ``end - start`` (``[..., 3]``) and ``extent_a``/``extent_b`` are the
+    two cubics' :func:`_cubic_extent`. Returns a bool tensor shaped like ``gap``
+    with its last dimension reduced to 1. See :data:`CONNECTION_GAP_FRACTION`;
+    every place that splits a circuit into sub-paths uses this one rule, so the
+    mob, the non-planar classifier and the renderer agree on what a sub-path is.
+    """
+    scale = torch.maximum(extent_a, extent_b).clamp(max=1.0)
+    return gap.norm(p=2, dim=-1, keepdim=True) > CONNECTION_GAP_FRACTION * scale
+
+
 def _unify_time(tensors, error_context):
     """Expand a set of tensors whose leading (time) dims are each 1 or T to a
     common T. Returns the expanded tensors and T.
