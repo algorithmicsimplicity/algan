@@ -1183,6 +1183,12 @@ class Sync(Lag):
     Pass ``equalize_runtimes=True`` to stretch every nonzero child, including a
     nested sequence, to the longest one first.
 
+    Steps that must happen in order still need a :class:`~.Seq`, even on one
+    Mob: ``spawn()``, a move and ``despawn()`` written side by side here all
+    start together, so the Mob fades out while it fades in and is never seen
+    (Algan warns with :class:`~algan.errors.NeverVisibleMobWarning`). Nest them
+    in a ``Seq`` inside the block, as in the second example.
+
     Animation
     ---------
     Controls the timing of animations recorded inside the block. Instantaneous
@@ -1205,6 +1211,17 @@ class Sync(Lag):
         with Sync():  # both happen over one second
             square.rotate(90, OUT)
             square.color = BLUE
+
+    A bead that appears, travels and disappears while the square turns:
+
+    .. code-block:: python
+
+        with Sync():
+            square.rotate(90, OUT)
+            with Seq():  # one after another, inside the Sync
+                bead.spawn()
+                bead.move_to(RIGHT * 3)
+                bead.despawn()
     """
 
     def __init__(self, runtime: float | None = None, **kwargs):

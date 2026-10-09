@@ -6,6 +6,10 @@ Mobs must be spawned before they appear. Constructing `Square()` defines the
 object; `Square().spawn()` puts it on the Scene's timeline. Algan warns about
 an unspawned Mob with `NeverSpawnedMobWarning`.
 
+A Mob spawned, animated and despawned side by side in one `Sync` is never seen
+either, because all three start together; Algan warns with
+`NeverVisibleMobWarning`. Nest those steps in a `Seq` inside the `Sync`.
+
 ## Why is my first render slow?
 
 The first render can include library startup and compilation of renderer kernel

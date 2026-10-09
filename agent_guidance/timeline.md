@@ -93,6 +93,8 @@ Attributes opted in via `enable_segment_windows` (only `Surface.color_texture`'s
 
 Every mob has a `Lifespan` — a `[spawn, despawn)` interval exposed as `Animatable.lifespan` and queried via `is_spawned()` / `is_despawned()`. Sub-mobs created by indexing (`mob[i]`) share their source's id and therefore its rows and lifespan; clones get a new id. Opacity is zeroed outside a mob's lifespan during materialization.
 
+Both bounds are `TimelineEvent`s stamped *inside* the `Sync` that records the entrance or exit, so `lifespan.start.span` is the entrance's window and `lifespan.end.span.start` is where the exit begins. `Animatable.despawn` relies on that to raise `NeverVisibleMobWarning` (an animated entrance whose exit starts no later than it does — `spawn()` and `despawn()` side by side in one `Sync`); it evaluates once the outermost open context exits, via `add_exit_callback`, because only then are the spans rescaled. Moving where spawn/despawn stamp a lifespan silences or misfires it; `test_lifecycle.py` guards it.
+
 Spawning a selection of a previously unspawned pack starts that shared lifespan,
 but reveals only the selected opacity rows. `_pending_packed_spawns` retains the
 remaining members' opacity targets; spawning another selection or the whole pack
