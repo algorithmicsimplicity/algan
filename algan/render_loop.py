@@ -1077,7 +1077,8 @@ class RenderLoopMixin:
             light_sources=lights,
             track_peak=track_peak,
             # A still batch is checked frame by frame before it renders.
-            frame_signature=bool(getattr(self, "_frame_local_batches", False)),
+            frame_signature=bool(getattr(self, "_frame_local_batches", False))
+            and not (render_state or {}).get("lone_still", False),
         )
         env_map = getattr(self, "environment_map", None)
         first._rt_env_meta = None
@@ -4097,7 +4098,7 @@ class RenderLoopMixin:
                         batch_end_ind = min(batch_end_ind, time_ind + alike_hint)
                 while True:
                     try:
-                        return self._get_batch_of_primitives(
+                        batch = self._get_batch_of_primitives(
                             time_ind,
                             batch_end_ind,
                             actors,
@@ -4108,6 +4109,14 @@ class RenderLoopMixin:
                                 else {}
                             ),
                         )
+                        if independent_frames and group_end_for(time_ind) == (
+                            time_ind + 1
+                        ):
+                            # A still alone in its group: no batch-mate to
+                            # check and no neighbour to compare, so its merge
+                            # takes no frame signature.
+                            batch[2]["lone_still"] = True
+                        return batch
                     except (
                         InsufficientMemoryException,
                         OutOfRenderMemory,
