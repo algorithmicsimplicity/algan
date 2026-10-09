@@ -978,15 +978,29 @@ class RenderLoopMixin:
         Anything unverifiable -- no merged scene, a primitive whose projection
         could not choose per frame -- keeps the first frame only.
         """
-        first = primitives[0]
-        prepared = getattr(first, "_rt_prepared_host_scene", None)
-        merged = (
-            prepared[0]
-            if prepared is not None
-            else getattr(first, "_rt_merged_scene", None)
-        )
+        merged = RenderLoopMixin._merged_still_scene(primitives)
         alike = None if merged is None else merged.get("_frames_alike")
         return 1 if alike is None else min(int(alike), num_frames)
+
+    @staticmethod
+    def _still_batch_digests(primitives):
+        """Digests of a still batch's first and last frames' merge notes.
+
+        Equal digests from neighbouring batches mean the frames either side of
+        their boundary would have decided alike in one batch (see
+        ``scene_builder._frame_digest``). ``(None, None)`` when unknown.
+        """
+        merged = RenderLoopMixin._merged_still_scene(primitives) if primitives else None
+        digests = None if merged is None else merged.get("_frame_digests")
+        return (None, None) if digests is None else digests
+
+    @staticmethod
+    def _merged_still_scene(primitives):
+        first = primitives[0]
+        prepared = getattr(first, "_rt_prepared_host_scene", None)
+        if prepared is not None:
+            return prepared[0]
+        return getattr(first, "_rt_merged_scene", None)
 
     def _prepare_merged_host_scene(
         self, primitive_batch, *, render_state=None, track_peak=None
@@ -3978,15 +3992,18 @@ class RenderLoopMixin:
                     return time_ind + 1
                 return group_ends[bisect.bisect_right(group_ends, time_ind)]
 
-            # Once stills turn out not to decide alike (see the check below),
-            # fetch at most as many at a time as last agreed, doubling after
-            # each run of agreeing batches -- a run that lengthens each time a
-            # doubling fails. Stills that never agree (adaptive dicing under a
-            # moving camera) then waste little on speculation, and stills that
-            # agree again soon regain whole groups. None: whole groups.
-            alike_hint = None
-            alike_streak = 0
-            alike_patience = 1
+            # How many stills a fetch may speculate will decide alike (see the
+            # check below); None: whole groups. A job's first batch is a probe
+            # of two, so stills that never agree -- PN surfaces diced per
+            # frame as they turn -- waste two stills' preparation on it rather
+            # than a group's; once two agree, whole groups follow. After a
+            # batch is split, fetch as many as last agreed, doubling only once
+            # a batch's first still notes what the batch before's last one did
+            # (they would have agreed): evidence, not a blind retry, so stills
+            # that never agree cost nothing more after the probe.
+            alike_hint = 2
+            alike_probing = True
+            last_digest = None
 
             def materialize_batch(time_ind, batch_end_ind):
                 if independent_frames:
@@ -4411,10 +4428,8 @@ class RenderLoopMixin:
                                 new_time_ind,
                                 agreeing,
                             )
-                            if alike_hint is not None:
-                                alike_patience *= 2
                             alike_hint = agreeing
-                            alike_streak = 0
+                            alike_probing = False
                             primitives[0]._rt_device_scene = None
                             primitives[0]._rt_prepared_host_scene = None
                             primitives[0]._rt_merged_scene = None
@@ -4423,17 +4438,21 @@ class RenderLoopMixin:
                             release_torch_memory(force_gc=False)
                             retry_end_ind = current_time_ind + agreeing
                             continue
-                    if (
-                        independent_frames
-                        and alike_hint is not None
-                        and duration >= alike_hint
-                    ):
-                        alike_streak += 1
-                        if alike_streak >= alike_patience:
-                            alike_streak = 0
+                    if independent_frames:
+                        first_digest, end_digest = self._still_batch_digests(primitives)
+                        if alike_probing:
+                            if duration >= alike_hint:
+                                alike_hint = None
+                                alike_probing = False
+                        elif (
+                            alike_hint is not None
+                            and first_digest is not None
+                            and first_digest == last_digest
+                        ):
                             alike_hint *= 2
                             if alike_hint >= _STILL_GROUP_MAX_FRAMES:
                                 alike_hint = None
+                        last_digest = end_digest
 
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(retry_lower_duration, duration)

@@ -542,9 +542,11 @@ def test_stills_split_where_a_batch_would_choose_differently(monkeypatch, tmp_pa
         alone, together, observed = _render_alone_and_together(
             monkeypatch, tmp_path, scene, times, post_processes=()
         )
-    # The first attempt holds all six, and is refetched as its agreeing runs.
-    assert observed[0][0] == len(times)
-    assert all(frames < len(times) for frames, _ in observed[1:])
+    # Stills that agree share a batch; an attempt holding stills that do not
+    # (opaque beside fading) is refetched as its agreeing runs.
+    fetched = [frames for frames, _ in observed]
+    assert max(fetched) > 1
+    assert sum(fetched) > len(times)
     for single, grouped in zip(alone, together):
         assert _max_difference(single, grouped) <= 2
 

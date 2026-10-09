@@ -4,6 +4,8 @@ into contiguous tensor data-structures, ready to be shipped to ray tracing kerne
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -1468,11 +1470,16 @@ def _frame_any(mask):
 def _leading_frames_alike(signature, num_frames):
     """How many leading frames have every signature row equal to frame 0's.
 
-    At least one. A NaN never equals itself, so a row holding one splits its
-    batch down to the first frame rather than vouching for anything.
+    At least one. A single row holds for every frame. A NaN never equals
+    itself, so a row holding one splits its batch down to the first frame
+    rather than vouching for anything.
     """
     alike = num_frames
     for rows in signature:
+        if rows.shape[0] == 1 and num_frames > 1:
+            if bool(torch.isnan(rows).any()) if rows.is_floating_point() else False:
+                return 1
+            continue
         if rows.shape[0] != num_frames:
             return 1
         differs = (rows != rows[:1]).any(-1)
@@ -1481,19 +1488,40 @@ def _leading_frames_alike(signature, num_frames):
     return max(1, alike)
 
 
+def _frame_digest(signature, frame, num_frames):
+    """A digest of one frame's signature rows, or None if it vouches for nothing.
+
+    Two frames with equal digests -- from different batches, even -- note
+    exactly the same inputs, so each would decide alike in one batch; the render
+    loop compares the last frame of one still batch with the first of the next
+    to learn whether a longer batch is worth fetching. A NaN never equals
+    itself, so a frame noting one has no digest.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for rows in signature:
+        if rows.shape[0] not in (1, num_frames):
+            return None
+        row = rows[0 if rows.shape[0] == 1 else frame].detach().cpu().contiguous()
+        if row.is_floating_point() and bool(torch.isnan(row).any()):
+            return None
+        digest.update(f"{row.dtype}:{row.numel()};".encode())
+        digest.update(row.view(torch.uint8).numpy().tobytes())
+    return digest.digest()
+
+
 def _texture_alpha_frames(tex, num_frames):
     """Per-frame form of the merge's texture-alpha test, for its signature.
 
     A map with one frame decides alike in every frame. A map carrying the
     batch's frames is tested frame by frame. Any other layout (an endpoint
-    stack) cannot be told apart per frame, so it gives every frame a row of
-    its own and its batch is split.
+    stack) cannot be told apart per frame, so every frame notes a NaN and its
+    batch is split.
     """
     if tex.dim() == 3 or tex.shape[0] == 1:
         return tex.new_ones((1,), dtype=torch.bool)
     if tex.dim() == 4 and tex.shape[0] == num_frames and tex.shape[-1] >= 4:
         return (_frame_rows(tex[..., 3]) >= 1.0 - 1e-6).all(-1)
-    return torch.arange(num_frames, device=tex.device)
+    return torch.full((num_frames,), float("nan"), device=tex.device)
 
 
 def _merge_scene(
@@ -1516,6 +1544,9 @@ def _merge_scene(
     first does. Those frames make every such choice alike, so the batch's
     choice is each one's own and they render as they would alone
     (``RenderLoopMixin._frames_deciding_alike`` splits the batch after them).
+    ``scene["_frame_digests"]`` holds digests of its first and last frames'
+    notes (``_frame_digest``), which tell the render loop whether a still
+    batch's frames would decide alike with its neighbours'.
     A batch-wide choice added here must ``_note`` its per-frame inputs.
     """
     first = primitives[0]
@@ -1526,8 +1557,9 @@ def _merge_scene(
     signature = [] if frame_signature else None
 
     def _note(rows):
-        # ``rows`` is frame-major ([T?, ...]); a single row is constant.
-        if signature is not None and rows.shape[0] > 1:
+        # ``rows`` is frame-major ([T?, ...]); a single row holds in every
+        # frame. Kept even so, for the frame digests.
+        if signature is not None:
             signature.append(_frame_rows(rows))
 
     _rts = SETTINGS.raytracing
@@ -2567,15 +2599,15 @@ def _merge_scene(
     scene["has_user_pipeline"] = any(
         material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
-    if signature is not None and scene["tri_mat_id"].shape[0] > 1:
+    if signature is not None:
         # Which materials each frame holds: the gated shade variants and the
-        # pipeline table are chosen from the batch's set.
+        # pipeline table are chosen from the batch's set. The set itself is
+        # noted too, so frame digests from different batches compare alike.
         mat_ids = scene["tri_mat_id"]
-        _note(
-            torch.stack(
-                [(mat_ids == value).any(-1) for value in torch.unique(mat_ids)], -1
-            )
-        )
+        values = torch.unique(mat_ids)
+        _note(values.reshape(1, -1))
+        if values.numel():
+            _note(torch.stack([(mat_ids == value).any(-1) for value in values], -1))
     from algan.rendering.raytracing.shading_taichi import _MAT_SIGMA_S, _MID_PHYSICAL
 
     scattering = (scene["tri_mat_id"] == _MID_PHYSICAL) & (
@@ -2617,11 +2649,16 @@ def _merge_scene(
 
     if signature is not None:
         if any(getattr(p, "_rt_frame_local_veto", False) for p in primitives):
-            # A primitive whose projection could not choose per frame.
-            _note(torch.arange(num_frames, device=device))
-        # A host integer, so the arena upload (which copies every tensor the
-        # merged scene holds) never carries it.
+            # A primitive whose projection could not choose per frame: a NaN
+            # matches nothing, in this batch or another.
+            _note(torch.full((num_frames, 1), float("nan"), device=device))
+        # Host values, so the arena upload (which copies every tensor the
+        # merged scene holds) never carries them.
         scene["_frames_alike"] = _leading_frames_alike(signature, num_frames)
+        scene["_frame_digests"] = (
+            _frame_digest(signature, 0, num_frames),
+            _frame_digest(signature, num_frames - 1, num_frames),
+        )
 
     # Build the per-geometry STBVHs -- or, for batches that provably never
     # traverse one (hybrid-raster primaries, no shadows, no reflective /
