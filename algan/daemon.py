@@ -220,11 +220,23 @@ def _capture_console():
 
 # The daemon's own console, captured before any run can redirect stdout to a
 # client socket. Daemon chatter always lands here, never in a client's stream.
-_CONSOLE = _capture_console()
+# Captured on first use rather than at import: importing this module (the CLI,
+# the test suite) must not hold a duplicate of stdout open for the life of the
+# process. :func:`main` and :func:`_run_context` both take it before any
+# redirection, so it is always the real stdout.
+_CONSOLE = None
+
+
+def _console():
+    """The daemon's own console (:func:`_capture_console`), captured once."""
+    global _CONSOLE
+    if _CONSOLE is None:
+        _CONSOLE = _capture_console()
+    return _CONSOLE
 
 
 def _say(msg):
-    print(f"[algan-daemon] {msg}", file=_CONSOLE, flush=True)
+    print(f"[algan-daemon] {msg}", file=_console(), flush=True)
 
 
 def _is_under(path, root):
@@ -641,6 +653,7 @@ def _run_context(job):
     saved_stdin = sys.stdin
     saved_environ = dict(os.environ)
     saved_out, saved_err = sys.stdout, sys.stderr
+    console = _console()  # before the descriptors below are redirected
     pumps = []
     saved_fds = []
     handles = []
@@ -665,7 +678,7 @@ def _run_context(job):
                 # Anything already buffered belongs to the daemon, not this run.
                 with contextlib.suppress(Exception):
                     stream.flush()
-                pump = _Pump(job, kind, _CONSOLE)
+                pump = _Pump(job, kind, console)
                 pumps.append(pump)
                 saved_fds.append((fd, os.dup(fd)))
                 os.dup2(pump.write_fd, fd)
@@ -1260,6 +1273,7 @@ def main(argv=None):
         "daemon passes: it was started for that run)",
     )
     args = parser.parse_args(argv)
+    _console()  # the real stdout, before any run can redirect it
 
     script = os.path.abspath(args.script) if args.script else None
     if script is not None and not os.path.isfile(script):
