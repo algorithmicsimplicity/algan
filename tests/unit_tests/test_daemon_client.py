@@ -27,10 +27,27 @@ class _Main:
         self.__file__ = file
 
 
+#: A script the render parse (``script_may_render``) recognises as rendering.
+_RENDERING_SCRIPT = "from algan import *\n\nSquare().spawn()\nScene.save_video()\n"
+
+
 @pytest.fixture
 def script(tmp_path):
     path = tmp_path / "scene.py"
-    path.write_text("import algan\n", encoding="utf-8")
+    path.write_text(_RENDERING_SCRIPT, encoding="utf-8")
+    return _Main(str(path))
+
+
+@pytest.fixture
+def renderless_script(tmp_path):
+    """Imports algan to compute something and never renders (issue 8's repro)."""
+    path = tmp_path / "numbers.py"
+    path.write_text(
+        "import os\nprint('[before import]', os.getpid())\n"
+        "from algan import *\nimport torch\n"
+        "print(float(torch.tensor([1.0, 2.0]).view(2, 1).sum()), RIGHT)\n",
+        encoding="utf-8",
+    )
     return _Main(str(path))
 
 
@@ -209,10 +226,205 @@ def test_no_daemon_is_started_under_a_debugger(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("must not exit"))
     main = tmp_path / "scene.py"
-    main.write_text("import algan\n", encoding="utf-8")
+    main.write_text(_RENDERING_SCRIPT, encoding="utf-8")
     monkeypatch.setitem(dc.sys.modules, "__main__", _Main(str(main)))
     assert dc.maybe_handoff() is None
     assert "pydevd" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# Scripts that never render are not handed off (issue 8)
+# --------------------------------------------------------------------------
+
+
+def test_declines_a_script_that_never_renders(renderless_script, monkeypatch):
+    """Nothing for a warm renderer to do, and its pre-import code would run twice."""
+    _hide_test_runner(monkeypatch)
+    assert dc.should_try(renderless_script) is False
+
+
+def test_an_explicit_opt_in_hands_off_a_script_the_parse_calls_renderless(
+    renderless_script, monkeypatch
+):
+    """For a render the parse cannot see, e.g. through a module elsewhere."""
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setenv("ALGAN_USE_DAEMON", "1")
+    assert dc.should_try(renderless_script) is True
+
+
+def test_a_debugged_renderless_script_is_told_nothing(
+    renderless_script, monkeypatch, capsys
+):
+    """It was never going to be handed off, so there are no breakpoints to save."""
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setattr(dc, "debugger_name", lambda: "pydevd (PyCharm / PyDev)")
+    assert dc.should_try(renderless_script) is False
+    assert capsys.readouterr().err == ""
+
+
+def test_no_daemon_is_started_for_a_script_that_never_renders(
+    renderless_script, tmp_path, monkeypatch, capsys
+):
+    """The report's repro: no handoff, no background daemon, nothing said."""
+    monkeypatch.setenv("ALGAN_HOME", str(tmp_path))
+    _hide_test_runner(monkeypatch)
+    monkeypatch.setattr(
+        dc, "_spawn_daemon", lambda: pytest.fail("must not start a daemon")
+    )
+    monkeypatch.setattr(dc, "run_remote", lambda *a, **k: pytest.fail("no handoff"))
+    monkeypatch.setattr(os, "_exit", lambda code: pytest.fail("must not exit"))
+    monkeypatch.setitem(dc.sys.modules, "__main__", renderless_script)
+    assert dc.maybe_handoff() is None
+    assert capsys.readouterr().err == ""
+
+
+def _may_render(tmp_path, source, search_path=(), **files):
+    """``script_may_render`` for a script with ``source`` and sibling ``files``.
+
+    ``search_path`` stands in for ``sys.path``, which in a test process holds
+    the repository and the test folders.
+    """
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    main = tmp_path / "main_script.py"
+    main.write_text(source, encoding="utf-8")
+    return dc.script_may_render(str(main), search_path=list(search_path))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Scene.save_video()",
+        "scene.save_frame('x.png', at=1)",
+        "Scene.show_frame()",
+        "Scene.view()",
+        "scene.view(PREVIEW)",
+        "project.view(scenes=[0])",
+        "Project([intro]).render_video()",
+        "p.render_screenshots()",
+        "project.run_cli()",
+        "project.profile()",
+        "from algan.utils.algan_utils import render_all_funcs",
+        "getattr(Scene, 'save_video')()",
+        "def main():\n    Scene.save_video()\n",  # named, if never called
+        "viewer = scene.view",
+        # Code the parse cannot follow might render.
+        "import runpy\nrunpy.run_path('other.py')",
+        "import importlib\nimportlib.import_module(name)",
+        "exec(open('other.py').read())",
+        # So might code from a folder the script puts on the import path.
+        "import sys\nsys.path.insert(0, '..')\nfrom common import go\ngo()",
+        "import sys\nsys.path.append(str(ROOT))",
+        "import sys\nsys.path[:0] = [ROOT]",
+        "import site\nsite.addsitedir(ROOT)",
+    ],
+)
+def test_a_script_naming_a_render_may_render(tmp_path, source):
+    assert _may_render(tmp_path, "from algan import *\n" + source + "\n")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "print(RIGHT, BLUE)",
+        "import torch\nx = torch.zeros(4).view(2, 2).view(-1)",
+        "import numpy as np\ny = np.zeros(4).view(np.int32)",
+        "# Scene.save_video() would go here\n",
+        '"""Call Scene.save_video() to render."""\n',
+        "label = 'save the video'",
+        "import os, sys\nimport torch\n",
+    ],
+)
+def test_a_script_naming_no_render_never_renders(tmp_path, source):
+    assert not _may_render(tmp_path, "from algan import *\n" + source + "\n")
+
+
+def test_a_render_in_a_sibling_module_counts(tmp_path):
+    files = {"helpers.py": "from algan import *\ndef out():\n    Scene.save_video()\n"}
+    assert _may_render(tmp_path, "import helpers\nhelpers.out()\n", **files)
+    assert _may_render(tmp_path, "from helpers import out\nout()\n", **files)
+
+
+def test_a_renderless_sibling_module_does_not(tmp_path):
+    files = {"helpers.py": "import math\nTAU = 2 * math.pi\n"}
+    assert not _may_render(tmp_path, "from helpers import TAU\nprint(TAU)\n", **files)
+
+
+def test_packages_are_followed_through_init_and_relative_imports(tmp_path):
+    files = {
+        "scenes/__init__.py": "from .intro import make\n",
+        "scenes/intro.py": "from algan import *\ndef make():\n    Scene.save_frame()\n",
+    }
+    assert _may_render(tmp_path, "from scenes import make\nmake()\n", **files)
+    assert _may_render(tmp_path, "import scenes.intro\n", **files)
+
+
+def test_imports_are_followed_transitively(tmp_path):
+    files = {
+        "a.py": "import b\n",
+        "b.py": "from algan import *\nScene.save_video()\n",
+    }
+    assert _may_render(tmp_path, "import a\n", **files)
+
+
+def test_project_folders_on_the_import_path_are_followed(tmp_path):
+    """``PYTHONPATH``, an editable install, a folder added before the import."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "common.py").write_text(
+        "from algan import *\ndef go():\n    Scene.save_video()\n", encoding="utf-8"
+    )
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    script = "from common import go\ngo()\n"
+    assert not _may_render(scenes, script)
+    assert _may_render(scenes, script, search_path=[str(shared)])
+
+
+def test_installed_libraries_are_not_read(tmp_path):
+    """site-packages names render methods too (algan's own, for one)."""
+    import sysconfig
+
+    purelib = sysconfig.get_paths()["purelib"]
+    roots = dc._project_roots(str(tmp_path), [purelib, str(tmp_path)])
+    assert roots == [os.path.normcase(os.path.realpath(tmp_path))]
+
+
+def test_algan_beside_the_script_is_not_read_as_the_scripts_code(tmp_path):
+    """A source checkout: algan's own files name every render method."""
+    files = {"algan/__init__.py": "def save_video():\n    pass\n"}
+    assert not _may_render(tmp_path, "from algan import *\nprint(RIGHT)\n", **files)
+
+
+def test_an_unreadable_script_is_treated_as_rendering(tmp_path):
+    """Anything the parse cannot read gets the handoff it always got."""
+    assert dc.script_may_render(str(tmp_path / "missing.py"))
+    files = {"broken.py": "def (:\n"}
+    assert _may_render(tmp_path, "import broken\n", **files)
+
+
+def test_too_many_local_modules_is_treated_as_rendering(tmp_path, monkeypatch):
+    monkeypatch.setattr(dc, "_MAX_SCANNED_FILES", 2)
+    files = {f"m{i}.py": "x = 1\n" for i in range(3)}
+    assert _may_render(tmp_path, "import m0, m1, m2\n", **files)
+
+
+def test_an_auto_started_daemon_is_told_about_the_run_it_is_for(home, monkeypatch):
+    """It stands down if that run turns out to render nothing (algan.daemon)."""
+    import subprocess
+
+    launched = []
+
+    class _Popen:
+        def __init__(self, argv, **kwargs):
+            launched.append(argv)
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    assert dc._spawn_daemon() is not None
+    assert launched
+    assert "--exit-if-first-run-renders-nothing" in launched[0]
 
 
 # --------------------------------------------------------------------------

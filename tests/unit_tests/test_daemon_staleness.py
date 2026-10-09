@@ -1,9 +1,13 @@
-"""Source-staleness detection: what makes the daemon stand down.
+"""What makes the daemon stand down: stale sources, and a run it was not needed for.
 
 The daemon refuses to serve a run once algan's sources on disk no longer match
 the modules it imported, so a render can never come out of stale code (see
 ``DESIGN_daemon_lifecycle.md``). These tests pin the detector itself against a
 temporary tree; the refusal it drives is exercised in ``test_daemon_client.py``.
+
+An auto-started daemon also exits after the run it was started for, if that
+run finished without rendering anything; the last section pins that rule and
+runs it once through a real daemon and client.
 """
 
 from __future__ import annotations
@@ -125,3 +129,102 @@ def test_a_kernel_edit_warns_about_the_recompile():
     kernel = d._stale_message(["rendering/raytracing/raster_taichi.py"])
     assert "recompile" in kernel
     assert "recompile" not in plain
+
+
+# --------------------------------------------------------------------------
+# An auto-started daemon whose first run rendered nothing (issue 8)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("run_count", "code", "rendered", "waiting", "exits"),
+    [
+        (1, 0, False, 0, True),  # the run it was started for needed no renderer
+        (1, 0, True, 0, False),  # it rendered: stay warm for the next one
+        (1, 1, False, 0, False),  # it failed: the fixed retry is what it is for
+        (1, 130, False, 0, False),  # cancelled
+        (1, 2, False, 0, False),  # e.g. an argparse error, to be re-run
+        (1, None, False, 0, False),  # cancelled before it started
+        (1, 0, False, 1, False),  # another client is already waiting
+        (2, 0, False, 0, False),  # it has served others: it is wanted
+    ],
+)
+def test_when_an_auto_started_daemon_stands_down(
+    run_count, code, rendered, waiting, exits
+):
+    assert d._started_for_nothing(run_count, code, rendered, waiting) is exits
+
+
+def test_a_daemon_started_for_a_renderless_run_exits_after_it(tmp_path):
+    """The real loop, a real client: the daemon leaves no process behind.
+
+    The script stands in for one the client's parse took for rendering (it
+    names ``save_video``) and that then did not render -- a ``--help``, a dry
+    run. Without the flag the daemon would idle for ``--idle-timeout``.
+    """
+    import json
+    import subprocess
+    import sys
+    import time
+
+    home = tmp_path / "home"
+    env = {
+        **os.environ,
+        "ALGAN_HOME": str(home),
+        "ALGAN_USE_DAEMON": "0",
+        "ALGAN_DAEMON_CHILD": "1",
+        "ALGAN_PRECOMPILE_JOBS": "0",
+    }
+    script = tmp_path / "dry_run.py"
+    script.write_text(
+        "import sys\nif '--render' in sys.argv:\n"
+        "    from algan import Scene\n    Scene.save_video()\n"
+        "print('dry run')\n",
+        encoding="utf-8",
+    )
+    client = (
+        "import json, sys\nfrom algan.daemon_client import run_remote\n"
+        "state = json.load(open(sys.argv[1]))\n"
+        "sys.exit(run_remote(state, sys.argv[2], argv=[]))\n"
+    )
+    with (tmp_path / "daemon.log").open("w") as log:
+        daemon = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "algan.daemon",
+                "--port",
+                "0",
+                "--idle-timeout",
+                "600",
+                "--exit-if-first-run-renders-nothing",
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+        )
+        try:
+            state_file = home / "daemon.json"
+            deadline = time.monotonic() + 120
+            while not state_file.exists():
+                assert daemon.poll() is None, (tmp_path / "daemon.log").read_text()
+                assert time.monotonic() < deadline, "the daemon never came up"
+                time.sleep(0.05)
+            assert json.loads(state_file.read_text())["port"] > 0
+            ran = subprocess.run(
+                [sys.executable, "-c", client, str(state_file), str(script)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert ran.returncode == 0, ran.stderr
+            assert "dry run" in ran.stdout
+            assert daemon.wait(timeout=60) == 0
+        finally:
+            if daemon.poll() is None:
+                daemon.kill()
+                daemon.wait(timeout=10)
+    assert not state_file.exists(), "a daemon that exits takes its registration"
+    assert "rendered nothing" in (tmp_path / "daemon.log").read_text()

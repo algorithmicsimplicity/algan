@@ -297,6 +297,8 @@ The bar for adding to that tuple is that **no runtime object could own the value
 
 The daemon refuses such a run. Most renderer toggles become module-level defaults during the import, which in a daemon happened at its launch — `_IMPORT_TIME_VARIABLES` in `algan/environment.py` is the list of record, checked against the call sites by `tests/unit_tests/test_environment.py`. A client whose values differ is refused and runs cold, matching what it would have rendered on its own; variables read live (`_LIVE_VARIABLES`) are swapped in per run, so flipping one *between* two renders in a script works warm. Benchmarks set `ALGAN_USE_DAEMON=0` anyway, because a warm process also carries the previous run's adaptive renderer state.
 
+Only a script that can render is handed off at all: `daemon_client.script_may_render` parses the script and the project modules it imports for a render entry point (`_RENDER_NAMES`), and counts anything it cannot follow (`exec`, `runpy`, `import_module`, a `sys.path` edit) as rendering. A script that names none runs in its own process with no daemon started, because the handoff would re-run its pre-import code for nothing. A new public render entry point belongs in `_RENDER_NAMES`. An auto-started daemon is launched with `--exit-if-first-run-renders-nothing` (`daemon._started_for_nothing`).
+
 ## Asset paths
 
 `ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
