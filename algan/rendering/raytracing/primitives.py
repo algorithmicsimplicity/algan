@@ -57,8 +57,10 @@ from algan.rendering.raytracing.shading_taichi import (
 )
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
 from algan.rendering.raytracing.utils import (
-    _cubic_extent,
+    DEGENERATE_CUBIC_LEGS_SQUARED,
+    _circuit_scale,
     _cubics_disconnected,
+    _degenerate_cubics,
     _expand_frames,
     _flat_frames,
     _unify_time,
@@ -2802,12 +2804,13 @@ def _point_to_segment_distance_squared(point, start, delta, length_squared):
     return (point - closest).square().sum(-1)
 
 
-def _bezier_connection_visibility(corners, next_segment_inds):
+def _bezier_connection_visibility(corners, next_segment_inds, circuit_of_segment=None):
     """Whether each selected segment connection is authored geometry.
 
     Discontinuous connections are synthesized only to close a fill contour and
     therefore must not contribute to the visible border. Judged by the rule the
-    mob split its sub-paths with (:func:`~.utils._cubics_disconnected`).
+    mob split its sub-paths with (:func:`~.utils._cubics_disconnected`), at the
+    size of each segment's circuit (``circuit_of_segment``, ``None`` for one).
     """
     (corners, next_segment_inds), _ = _unify_time(
         [corners, next_segment_inds.unsqueeze(-1)], "bezier connections"
@@ -2817,11 +2820,8 @@ def _bezier_connection_visibility(corners, next_segment_inds):
     segment_starts = corners[..., 0, :]
     gather_inds = next_segment_inds.unsqueeze(-1).expand(-1, -1, 3)
     next_starts = torch.gather(segment_starts, 1, gather_inds)
-    extent = _cubic_extent(corners).flatten(-2)  # [T, S, 1]
-    next_extent = torch.gather(extent, 1, next_segment_inds.unsqueeze(-1))
-    return ~_cubics_disconnected(
-        segment_ends - next_starts, extent, next_extent
-    ).squeeze(-1)
+    scale = _circuit_scale(corners, circuit_of_segment).unsqueeze(-1)
+    return ~_cubics_disconnected(segment_ends - next_starts, scale).squeeze(-1)
 
 
 def _circuit_parity_gathered(qx, qy, ex0, ey0, ex1, ey1, valid):
@@ -3357,7 +3357,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # Index wraparound alone is not sufficient: an ordinary closed circuit
         # (Circle, glyph outline, ...) also wraps to an earlier segment and its
         # final border edge must remain visible.
-        connection_visible = _bezier_connection_visibility(corners, nsi)
+        connection_visible = _bezier_connection_visibility(
+            corners, nsi, circuit_of_segment
+        )
 
         # The packed polyline samples t = k/n for k < n, taking each cubic's
         # endpoint from the first vertex of the segment it connects to.  That
@@ -3380,17 +3382,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         t_params = _packed_uniform_cubic_parameters(
             num_samples, corners.dtype, verts_per_segment
         )
-        # Evaluated relative to each circuit's centre, not in world space: the
-        # control points minus a nearby centre is exact, and the Bernstein sum
-        # then rounds at the circuit's own size instead of at its distance from
-        # the origin. A glyph a few thousandths of a unit across sitting 1000
-        # units out (a HUD riding a camera that has travelled) otherwise had
-        # its outline jittered by the rounding of 1000, ~1e-4 -- more than a
-        # pixel at the glyph's distance from the eye.
-        (corners_c, centers_c), _ = _unify_time([corners, centers], "bezier local")
-        local_corners = corners_c - centers_c[:, circuit_of_segment, None, :]
-        ctrl = torch.repeat_interleave(local_corners, verts_per_segment, dim=1)
-        rel = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
+        ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
+        verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
+
+        # A cubic that is a point -- authored that way, or collapsed by a partial
+        # draw outside its window -- contributes no edges. "A point" is judged
+        # against its circuit's size (see ``utils.CIRCUIT_REFERENCE_SIZE``),
+        # which is what keeps a HUD's tiny real cubics from being taken for one.
+        scale = _circuit_scale(corners, circuit_of_segment)  # [Tc, S]
+        degenerate = _degenerate_cubics(corners, scale)
+        edge_degenerate = torch.repeat_interleave(degenerate, verts_per_segment, dim=1)
 
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
@@ -3408,26 +3409,35 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         (
             (
-                rel,
+                verts_e,
+                centers_e,
                 basis_u_e,
                 basis_v_e,
                 next_start_e,
+                edge_degenerate_e,
                 border_visible_e,
+                scale_e,
             ),
             T_geo,
         ) = _unify_time(
             [
-                rel,
+                verts,
+                centers,
                 basis_u,
                 basis_v,
                 next_start.unsqueeze(-1),
+                edge_degenerate.unsqueeze(-1),
                 border_visible.unsqueeze(-1),
+                scale.unsqueeze(-1),
             ],
             "bezier geometry",
         )
         next_start_e = next_start_e.squeeze(-1)
+        edge_degenerate_e = edge_degenerate_e.squeeze(-1)
         border_visible_e = border_visible_e.squeeze(-1)
+        scale_e = scale_e.squeeze(-1)
 
+        rel = verts_e - centers_e[:, vert_circuit]
         u = (rel * basis_u_e[:, vert_circuit]).sum(-1)
         v = (rel * basis_v_e[:, vert_circuit]).sum(-1)
         locals_uv = torch.stack((u, v), -1)  # [T_geo, V, 2]
@@ -3439,22 +3449,20 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             .float()
             .contiguous()
         )
-        # Only an edge of exactly zero length is dropped: it can never straddle
-        # a crossing ray and its distance is its endpoint's, which the edges on
-        # either side of it already report. Anything longer is outline. The test
-        # used to be a whole cubic whose control legs summed below 1e-9 squared
-        # WORLD units -- a fixed size, so it held only for shapes of about unit
-        # scale. A glyph shrunk 1/107 to sit 1 unit in front of a distant camera
-        # (a HUD riding the camera) had 23 real cubics under it in
-        # ``E_new - E_old``, each up to a third of a pixel there; dropping them
-        # opened the outline, and the even-odd parity, counted along the
-        # circuit's +u axis, flipped for every pixel centre that lined up with a
-        # gap -- a one-pixel dashed streak from the gap to the end of the
-        # candidate region. Judging each EDGE also keeps the one non-zero edge
-        # a point cubic can carry: the chord back to its sub-path's start when
-        # it is the last cubic of an open sub-path, which dropping the whole
-        # cubic took out of the fill.
-        edge_degenerate_e = (edges5[..., 0:2] == edges5[..., 2:4]).all(-1)
+        # Except the one edge a point cubic can carry that is not a point: when
+        # it ends an OPEN sub-path, its last edge is the undrawn chord back to the
+        # sub-path's start, which closes the fill. A partial draw makes exactly
+        # that cubic whenever its window has only just entered the next one, and
+        # dropping the chord with it left the fill's even-odd parity open: a
+        # half-written glyph in ``Write`` grew a bright column above its stem,
+        # and ``AnimatedBoundary``'s growing stroke jumped outside the square it
+        # traces (its fill is invisible, so its border band is all that shows,
+        # and with the parity inverted the band ran along the outside).
+        closure = border_visible_e[:, seg_ends] < 0.5
+        chord = (next_uv[:, seg_ends] - locals_uv[:, seg_ends]).square().sum(-1)
+        keep = closure & (chord >= DEGENERATE_CUBIC_LEGS_SQUARED * scale_e.square())
+        edge_degenerate_e = edge_degenerate_e.clone()
+        edge_degenerate_e[:, seg_ends] &= ~keep
         edges5 = torch.where(
             edge_degenerate_e.unsqueeze(-1),
             torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),

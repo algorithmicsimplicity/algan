@@ -84,7 +84,7 @@ import torch.nn.functional as F
 
 from algan.environment import env_flag
 from algan.rendering.mps_compat import reduction_index_dtype
-from algan.rendering.raytracing.utils import _cubic_extent, _cubics_disconnected
+from algan.rendering.raytracing.utils import _circuit_scale, _cubics_disconnected
 
 #: A sub-path counts as planar when ``sqrt(lambda_min / lambda_max)`` of its
 #: control points' covariance -- RMS spread off the best-fit plane as a fraction
@@ -338,9 +338,9 @@ def subpath_bounds(corners):
     if num_segments == 0:
         return []
     starts = [0]
-    extent = _cubic_extent(corners)
+    scale = _circuit_scale(corners)[1:, None, None]
     gaps = _cubics_disconnected(
-        corners[1:, :1, :] - corners[:-1, 3:, :], extent[1:], extent[:-1]
+        corners[1:, :1, :] - corners[:-1, 3:, :], scale
     ).reshape(-1)
     starts.extend(int(index) + 1 for index in gaps.nonzero().reshape(-1))
     starts.append(num_segments)

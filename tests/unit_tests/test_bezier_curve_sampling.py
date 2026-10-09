@@ -447,13 +447,13 @@ def test_sub_paths_split_at_any_size():
     assert links == [1, 1, 1, -3, 1, 1, 1, -3]
 
 
-def test_only_zero_length_edges_are_dropped():
+def test_a_point_cubic_keeps_the_fill_closure_it_carries():
     """A point cubic draws nothing, but as the last cubic of an OPEN sub-path it
     also carries the chord back to the sub-path's start, which closes the fill.
 
-    Dropping every edge of a cubic whose control points coincide took that chord
-    with it, leaving the fill's even-odd parity open along it. Only zero-length
-    edges are dropped now.
+    Dropping every edge of the point cubic took that chord with it, leaving the
+    fill's even-odd parity open along it -- which is what a partial draw makes
+    whenever its window has just entered a cubic.
     """
     SceneManager.reset()
     a, b, c = (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 1.0, 0.0)
@@ -464,7 +464,7 @@ def test_only_zero_length_edges_are_dropped():
     edges = _polyline(mob)
     sentinel = edges[:, :4].abs().amax(-1) >= 1e8
     kept = edges[~sentinel]
-    # The point cubic's zero-length edge is dropped, and nothing else is.
+    # The point cubic's own zero-length edge is dropped, and nothing else is.
     assert int(sentinel.sum()) == 1
     lengths = (kept[:, 0:2] - kept[:, 2:4]).norm(dim=-1)
     torch.testing.assert_close(
@@ -472,3 +472,35 @@ def test_only_zero_length_edges_are_dropped():
     )
     # a->b and b->c are drawn; the closure c->a is not.
     assert kept[:, 4].tolist().count(0.0) == 1
+
+
+def test_a_partial_draw_leaves_nothing_outside_its_window_at_any_size():
+    """The cubics a partial draw leaves outside its window draw nothing.
+
+    ``Create``, ``Write`` and ``ShowPassingFlash`` collapse the cubics outside
+    their window onto points, and a window narrower than float32 can place --
+    what a passing flash leaves as it finishes -- turns the cubic at its edge
+    into a sliver ~1e-7 of the shape. Kept, a sliver of a stroked outline draws
+    a stroke-wide round dot; it is "a point" next to its circuit, so it is
+    dropped, at the shape's size or a millionth of it. A real window flattens to
+    the same polyline at both sizes.
+    """
+    SceneManager.reset()
+    polylines = {}
+    with Off(record_funcs=False, record_attr_modifications=False):
+        for scale in (1.0, 1e-6):
+            square = Square(size=2 * scale, add_to_scene=False)
+            full = square.control_points.location.clone()
+            square._set_control_points_to_partial(full, 1 - 1e-7, 1.0)
+            sliver = _polyline(square)
+            assert bool((sliver[:, :4].abs() >= 1e8).all()), "a sliver was kept"
+            square._set_control_points_to_partial(full, 0.0, 0.6)
+            polylines[scale] = _polyline(square)
+    reference, small = polylines[1.0], polylines[1e-6]
+    drawn = reference[:, :4].abs().amax(-1) < 1e8
+    assert 0 < int(drawn.sum()) < drawn.numel()
+    assert torch.equal(small[:, :4].abs().amax(-1) < 1e8, drawn)
+    assert torch.equal(small[:, 4], reference[:, 4])
+    torch.testing.assert_close(
+        small[drawn, :4], reference[drawn, :4] * 1e-6, rtol=1e-4, atol=1e-12
+    )

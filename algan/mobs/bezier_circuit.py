@@ -55,7 +55,7 @@ from algan.mobs.nonplanar_circuit import classify_circuit
 from algan.mobs.stroke_style import _stroke_style
 from algan.rendering.mps_compat import cummax_values
 from algan.rendering.raytracing.utils import (
-    _cubic_extent,
+    _circuit_scale,
     _cubics_disconnected,
     _unify_time,
 )
@@ -1835,15 +1835,22 @@ class BezierCircuitCubic(Mob):
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
         start_points = x[..., :1, :]
         end_points = x[..., -1:, :]
-        extent = _cubic_extent(x)
+        member_of_segment = None
+        if num_segments_per_circuit is not None:
+            member_of_segment = torch.repeat_interleave(
+                torch.arange(len(num_segments_per_circuit), device=x.device),
+                num_segments_per_circuit.to(device=x.device),
+            )
+        # Each member is its own circuit, so it is judged at its own size.
+        scale = _circuit_scale(x, member_of_segment)[..., None, None]
 
         # We allow for rendering circuits with holes,
         # we treat beziers which don't start at the previous one's end as marking the start of a new circuit (i.e. a hole).
         circuit_start_mask = _cubics_disconnected(
-            start_points - end_points.roll(1, -3), extent, extent.roll(1, -3)
+            start_points - end_points.roll(1, -3), scale
         )
         circuit_end_mask = _cubics_disconnected(
-            end_points - start_points.roll(-1, -3), extent, extent.roll(-1, -3)
+            end_points - start_points.roll(-1, -3), scale
         )
 
         if num_segments_per_circuit is not None:
@@ -1857,8 +1864,7 @@ class BezierCircuitCubic(Mob):
             circuit_end_mask[..., member_ends, :, :] = _cubics_disconnected(
                 end_points.index_select(-3, member_ends)
                 - start_points.index_select(-3, member_starts),
-                extent.index_select(-3, member_ends),
-                extent.index_select(-3, member_starts),
+                scale.index_select(-3, member_ends),
             )
 
         inds = torch.arange(x.shape[-3], device=x.device).view(-1, 1, 1)
@@ -2323,19 +2329,15 @@ def build_render_primitives_batched(actors, scene):
 
     start_points = x[..., :1, :]
     end_points = x[..., -1:, :]
-    extent = _cubic_extent(x)
+    scale = _circuit_scale(x, mob_of_seg)[..., None, None]
     # Per-actor wrap-around neighbours: each actor's own roll(+-1, -3).
     prev_idx = torch.where(local == 0, off_of_seg + last_local, gidx - 1)
     next_idx = torch.where(local == last_local, off_of_seg, gidx + 1)
     circuit_start_mask = _cubics_disconnected(
-        start_points - end_points.index_select(-3, prev_idx),
-        extent,
-        extent.index_select(-3, prev_idx),
+        start_points - end_points.index_select(-3, prev_idx), scale
     )
     circuit_end_mask = _cubics_disconnected(
-        end_points - start_points.index_select(-3, next_idx),
-        extent,
-        extent.index_select(-3, next_idx),
+        end_points - start_points.index_select(-3, next_idx), scale
     )
 
     local_col = local.view(-1, 1, 1)
