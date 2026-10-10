@@ -127,3 +127,134 @@ def test_repeated_history_detachment_preserves_a_sheared_basis(scene):
         square.detach_history()
 
     torch.testing.assert_close(square.basis, original, atol=1e-6, rtol=0)
+
+
+@pytest.fixture
+def camera_scene():
+    SceneManager.reset()
+    current = algan.Scene()
+    yield current
+    current._terminate()
+    SceneManager.reset()
+
+
+def _camera_rider(scene):
+    """A bar one unit in front of a camera 80 units out, riding it, turned 35 degrees.
+
+    The setup the backprop video's probability bars use: brought forward along
+    the camera's rays (so scaled by about 1/128) and parented to the camera,
+    which then turns -- carrying the bar to world coordinates near 100, where
+    float32 rounds positions to about 1e-5.
+    """
+    camera = scene.camera
+    with algan.Off():
+        camera.set_near_orthographic(distance=80)
+    bar = algan.Rectangle(width=4, height=0.4, stroke_width=0, fill_opacity=0.9)
+    eye, forward = camera.location.reshape(3), camera.forward.reshape(3)
+    k = 1.0 / float(((bar.get_center().reshape(3) - eye) * forward).sum())
+    bar.scale(k)
+    bar.move_to(eye + (bar.location.reshape(3) - eye) * k)
+    with algan.Off():
+        bar.spawn(False)
+        camera.add_children(bar)
+    with algan.Sync(runtime=1):
+        camera.rotate(35, algan.UP, about=algan.ORIGIN)
+    return bar
+
+
+def _shape_in_frame(mob):
+    """Every location row of ``mob``'s subtree in its own frame, in float64.
+
+    Scaling a Mob along its own axes leaves these unchanged, so they are what a
+    drain and refill must give back.
+    """
+    from algan.geometry.geometry import map_global_to_local_coords
+
+    rows = mob.get_animated_attribute("location", include_descendants=True)
+    return map_global_to_local_coords(
+        mob.location.reshape(1, 3).double(),
+        mob.basis.reshape(1, 9).double(),
+        rows.reshape(-1, 3).double(),
+    )
+
+
+@pytest.mark.parametrize("drain", [1e-4, 1e-7])
+def test_a_camera_rider_drained_to_a_sliver_refills_to_its_shape(camera_scene, drain):
+    # Drained, the bar is narrower than float32 can resolve at its world
+    # coordinates, so its points collapse onto one line. Refilling used to
+    # scale that line -- the bar stayed invisible -- and the basis came back
+    # skewed by the float32 round trip through the drained basis's inverse.
+    bar = _camera_rider(camera_scene)
+    shape = _shape_in_frame(bar)
+    full = bar.scale_coefficient.reshape(-1)[:3].clone()
+    target = full * torch.tensor([0.8, 1.0, 1.0])
+    with algan.Sync(runtime=0.5, easing=algan.easings.identity):
+        bar.scale_coefficient = full * torch.tensor([drain, 1.0, 1.0])
+    with algan.Sync(runtime=0.5, easing=algan.easings.identity):
+        bar.scale_coefficient = target
+    algan.Scene.wait(0.5)
+
+    # 2e-3 of the bar's own extent: float32 places the full-size bar's points
+    # to about 3e-4 of it out here, and a collapsed refill misses by all of it.
+    # The scale is held to 3e-4: a float32 change may miss by up to 1e-4
+    # before the setter switches to float64 (_BASIS_CHANGE_TOLERANCE), and
+    # without that switch the 1e-7 drain misses by about a tenth.
+    torch.testing.assert_close(_shape_in_frame(bar), shape, atol=2e-3, rtol=0)
+    torch.testing.assert_close(
+        bar.scale_coefficient.reshape(-1)[:3], target, rtol=3e-4, atol=0
+    )
+    # Mid-refill and after it, as the renderer would materialize them.
+    for time, fill in ((1.75, 0.5 * (drain + 0.8)), (2.25, 0.8)):
+        _materialize(camera_scene, time)
+        torch.testing.assert_close(_shape_in_frame(bar), shape, atol=2e-3, rtol=0)
+        torch.testing.assert_close(
+            bar.scale_coefficient.reshape(-1)[:3],
+            full * torch.tensor([fill, 1.0, 1.0]),
+            rtol=3e-4,
+            atol=0,
+        )
+
+
+def test_a_camera_rider_refilled_inside_an_animated_function_keeps_its_shape(
+    camera_scene,
+):
+    # Replay re-runs a recorded function's body, so the write inside it is
+    # decided again against each frame's (collapsed) state rather than replayed
+    # from a record of its own.
+    bar = _camera_rider(camera_scene)
+    shape = _shape_in_frame(bar)
+    full = bar.scale_coefficient.reshape(-1)[:3].clone()
+    drained = full * torch.tensor([1e-4, 1.0, 1.0])
+    target = full * torch.tensor([0.8, 1.0, 1.0])
+
+    @algan.animated_function(animated_args={"t": 0.0})
+    def refill(mob, t=1.0):
+        mob.scale_coefficient = drained + (target - drained) * t
+
+    with algan.Sync(runtime=0.5):
+        bar.scale_coefficient = drained
+    with algan.Sync(runtime=0.5, easing=algan.easings.identity):
+        refill(bar)
+
+    _materialize(camera_scene, 1.75)
+    torch.testing.assert_close(_shape_in_frame(bar), shape, atol=2e-3, rtol=0)
+
+
+def test_an_ordinary_mob_remembers_no_shape(scene):
+    # The remembered shape is for Mobs whose rows have lost theirs. A Mob of
+    # ordinary size near the origin must not carry one -- or the float64 basis
+    # change -- since both would change what it computes.
+    square = algan.Square().move(algan.RIGHT * 3).spawn(animate=False)
+    line = algan.Line(algan.LEFT * 5, algan.RIGHT * 5).spawn(animate=False)
+    for mob in (square, line):
+        mob.rotate(30, algan.OUT)
+        mob.scale(torch.tensor([0.01, 1.0, 1.0]))
+        mob.scale(torch.tensor([100.0, 1.0, 1.0]))
+        assert "_rest_shape" not in mob.__dict__
+    changes = [
+        event.kwargs["change"]
+        for event in scene.timeline_manager.function_timeline.function_applications
+        if "change" in event.kwargs and "rest_local" in event.kwargs
+    ]
+    assert changes
+    assert all(change.dtype == torch.float32 for change in changes)

@@ -2,7 +2,8 @@ import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.mobs.shapes_2d import Line, Square
+from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.shapes_2d import Circle, Line, Square
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     _bezier_connection_visibility,
@@ -379,3 +380,127 @@ def test_unfilled_circuits_skip_unused_wedge_preparation(monkeypatch, cached):
             assert len(calls) == int(filled)
             assert primitive._rt_edges.shape[0] == (1 if cached else frames)
             assert bool(primitive._rt_edges[..., 5].any()) is filled
+
+
+def _straight_cubic(start, end):
+    start, end = torch.tensor(start), torch.tensor(end)
+    return torch.stack((start, start + (end - start) / 3, end - (end - start) / 3, end))
+
+
+def _loop(corners):
+    return [_straight_cubic(a, b) for a, b in zip(corners, corners[1:] + corners[:1])]
+
+
+def _square_with_hole(scale):
+    """One circuit of two sub-paths: a square and, wound the other way, its hole."""
+    outer = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)]
+    inner = [(x * 0.5, y * 0.5, z) for x, y, z in reversed(outer)]
+    points = torch.stack(_loop(outer) + _loop(inner)) * scale
+    return BezierCircuitCubic(points, add_to_scene=False)
+
+
+_SHAPES = {
+    "square": lambda scale: Square(size=2 * scale, add_to_scene=False),
+    "circle": lambda scale: Circle(radius=scale, add_to_scene=False),
+    "square_with_hole": _square_with_hole,
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_a_circuit_flattens_to_the_same_outline_at_any_size(shape):
+    """A shape's plane-space polyline is the unit shape's polyline, scaled.
+
+    A HUD shrunk to sit just in front of a distant camera is a glyph a few
+    thousandths of a unit across. The flattening used to judge "degenerate"
+    cubics and sub-path jumps by fixed world-unit sizes (1e-9 squared, 1e-5),
+    so a small enough shape lost real cubics -- opening its outline into dashed
+    parity streaks -- and bridged its holes to its outline. At 1e-6 the old
+    rules dropped every cubic of all three shapes here.
+    """
+    SceneManager.reset()
+    make = _SHAPES[shape]
+    with Off(record_funcs=False, record_attr_modifications=False):
+        reference = _polyline(make(1.0))
+        for scale in (1e-3, 1e-6):
+            small = _polyline(make(scale))
+            assert small.shape == reference.shape
+            assert bool((small[:, :4].abs() < 1e8).all()), "an edge was dropped"
+            assert torch.equal(small[:, 4], reference[:, 4])
+            torch.testing.assert_close(
+                small[:, :4], reference[:, :4] * scale, rtol=1e-4, atol=1e-6 * scale
+            )
+
+
+def test_sub_paths_split_at_any_size():
+    """The jump from an outline to its hole is a sub-path break at every scale.
+
+    At a fixed 1e-5 a hole 1e-6 across was read as a continuation of the
+    outline, so the outline ran on into the hole instead of closing on itself.
+    """
+    SceneManager.reset()
+    with Off(record_funcs=False, record_attr_modifications=False):
+        reference = _square_with_hole(1.0).get_render_primitives()
+        small = _square_with_hole(1e-6).get_render_primitives()
+    assert torch.equal(small.next_segment_inds, reference.next_segment_inds)
+    # Each square closes on its own first cubic (the links are offsets).
+    links = reference.next_segment_inds.reshape(-1).tolist()
+    assert links == [1, 1, 1, -3, 1, 1, 1, -3]
+
+
+def test_a_point_cubic_keeps_the_fill_closure_it_carries():
+    """A point cubic draws nothing, but as the last cubic of an OPEN sub-path it
+    also carries the chord back to the sub-path's start, which closes the fill.
+
+    Dropping every edge of the point cubic took that chord with it, leaving the
+    fill's even-odd parity open along it -- which is what a partial draw makes
+    whenever its window has just entered a cubic.
+    """
+    SceneManager.reset()
+    a, b, c = (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+    point = torch.tensor(c).expand(4, 3)
+    points = torch.stack([_straight_cubic(a, b), _straight_cubic(b, c), point])
+    with Off(record_funcs=False, record_attr_modifications=False):
+        mob = BezierCircuitCubic(points, add_to_scene=False)
+    edges = _polyline(mob)
+    sentinel = edges[:, :4].abs().amax(-1) >= 1e8
+    kept = edges[~sentinel]
+    # The point cubic's own zero-length edge is dropped, and nothing else is.
+    assert int(sentinel.sum()) == 1
+    lengths = (kept[:, 0:2] - kept[:, 2:4]).norm(dim=-1)
+    torch.testing.assert_close(
+        lengths.sort().values, torch.tensor([1.0, 2.0, 5.0**0.5]), rtol=1e-5, atol=0
+    )
+    # a->b and b->c are drawn; the closure c->a is not.
+    assert kept[:, 4].tolist().count(0.0) == 1
+
+
+def test_a_partial_draw_leaves_nothing_outside_its_window_at_any_size():
+    """The cubics a partial draw leaves outside its window draw nothing.
+
+    ``Create``, ``Write`` and ``ShowPassingFlash`` collapse the cubics outside
+    their window onto points, and a window narrower than float32 can place --
+    what a passing flash leaves as it finishes -- turns the cubic at its edge
+    into a sliver ~1e-7 of the shape. Kept, a sliver of a stroked outline draws
+    a stroke-wide round dot; it is "a point" next to its circuit, so it is
+    dropped, at the shape's size or a millionth of it. A real window flattens to
+    the same polyline at both sizes.
+    """
+    SceneManager.reset()
+    polylines = {}
+    with Off(record_funcs=False, record_attr_modifications=False):
+        for scale in (1.0, 1e-6):
+            square = Square(size=2 * scale, add_to_scene=False)
+            full = square.control_points.location.clone()
+            square._set_control_points_to_partial(full, 1 - 1e-7, 1.0)
+            sliver = _polyline(square)
+            assert bool((sliver[:, :4].abs() >= 1e8).all()), "a sliver was kept"
+            square._set_control_points_to_partial(full, 0.0, 0.6)
+            polylines[scale] = _polyline(square)
+    reference, small = polylines[1.0], polylines[1e-6]
+    drawn = reference[:, :4].abs().amax(-1) < 1e8
+    assert 0 < int(drawn.sum()) < drawn.numel()
+    assert torch.equal(small[:, :4].abs().amax(-1) < 1e8, drawn)
+    assert torch.equal(small[:, 4], reference[:, 4])
+    torch.testing.assert_close(
+        small[drawn, :4], reference[drawn, :4] * 1e-6, rtol=1e-4, atol=1e-12
+    )

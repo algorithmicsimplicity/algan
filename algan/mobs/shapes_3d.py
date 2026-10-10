@@ -610,10 +610,12 @@ class Cone(Surface):
         Angular sweep around the axis, in degrees. ``(0, 180)`` gives a half
         cone. Defaults to ``(0, 360)`` (the full cone).
     resolution
-        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
-        both; each value becomes ``grid_width``/``grid_height`` plus one, since
-        Manim counts patches and Algan counts vertices. Defaults to ``None``,
-        meaning Algan sizes the grid itself from ``geometry_tolerance``.
+        Manim-style grid resolution as ``(patches along the height, patches
+        round the axis)``, or one int for both -- the order :class:`Cylinder`
+        and :class:`Arrow3D` read too. Each value becomes
+        ``grid_width``/``grid_height`` plus one, since Manim counts patches and
+        Algan counts vertices. Defaults to ``None``, meaning Algan sizes the
+        grid itself from ``geometry_tolerance``.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
         ``color``, and ``color_texture`` for the two-tone styling Manim spells
@@ -816,10 +818,13 @@ class Cylinder(Surface):
         render time the way the curved tube's is -- so a capped cylinder
         carries more triangles than the tube alone suggests.
     resolution
-        Manim-style grid resolution as ``(u_patches, v_patches)``, or one int for
-        both; each value becomes ``grid_width``/``grid_height`` plus one, since
-        Manim counts patches and Algan counts vertices. Defaults to ``None``,
-        meaning Algan sizes the grid itself from ``geometry_tolerance``.
+        Manim-style grid resolution as ``(patches along the axis, patches round
+        it)``, or one int for both -- Manim's order, and the one :class:`Cone`
+        and :class:`Arrow3D` read too. The count round the axis becomes
+        ``grid_width`` plus one and the count along it ``grid_height`` plus one,
+        since Manim counts patches and Algan counts vertices. Defaults to
+        ``None``, meaning Algan sizes the grid itself from
+        ``geometry_tolerance``.
     *args, **kwargs
         Passed to :class:`~algan.mobs.surfaces.surface.Surface` -- notably
         ``color``, and ``color_texture`` for the two-tone styling Manim spells
@@ -888,6 +893,14 @@ class Cylinder(Surface):
         self.height = height
         self._height = height
         self.direction = cast_to_tensor(direction)
+        # Manim's (along, round) pair, while this grid carries the azimuth on
+        # its first component (see coord_function): swapped, so ``resolution``
+        # means what it means to a Cone. Read unswapped, an Arrow3D -- which
+        # hands its shaft and its tip one pair -- flattened whichever part got
+        # the smaller count round its axis.
+        if resolution is not None and not isinstance(resolution, int):
+            along, around = resolution
+            resolution = (around, along)
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         super().__init__(*args, v_range=v_range, **kwargs)
 
@@ -1146,8 +1159,10 @@ class Arrow3D(Mob):
         An Algan :class:`~algan.constants.color.Color`, a named constant such as
         ``BLUE``, or anything ``Color()`` accepts. Defaults to ``WHITE``.
     resolution
-        Grid resolution for both parts, as ``(grid_width, grid_height)`` or one
-        int for both. Defaults to ``24``.
+        Grid resolution for both parts, in Manim's patches, as ``(patches along
+        the axis, patches round it)`` or one int for both. The shaft and the tip
+        read the pair the same way round, so ``(2, 16)`` gives both sixteen
+        patches round. Defaults to ``24``.
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob`.
 

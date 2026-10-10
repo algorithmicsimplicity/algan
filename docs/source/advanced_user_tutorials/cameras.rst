@@ -176,8 +176,13 @@ same throughout the animation: the default 16:9 frame remains approximately
 14.2 by 8 world units, so text and shapes on that plane keep their apparent size.
 Other depths retain a small amount of perspective because this is a distant
 perspective camera. ``distance`` sets the eye-to-screen distance in world units
-and defaults to ``1e5``. If the origin plane is at or behind the eye, the current
-screen plane is used as the framing reference instead.
+and defaults to ``5000``: from the default camera that puts the eye 8,000 units
+out, where a point 5 units off the origin plane at a corner of a 1080p frame
+lands within 0.7 pixels of where true parallel projection would draw it. A
+larger distance flattens further, but positions are float32 (see
+:ref:`limits-float32`), so a much larger one makes text and edges grainy once the
+camera turns off its axes. If the origin plane is at or behind the eye, the
+current screen plane is used as the framing reference instead.
 
 Clipping Planes
 ===============
@@ -285,7 +290,7 @@ A few things to know:
   screen-space backdrop, not an object in the scene. An environment map is
   scenery at infinity and blurs like any distant object.
 * The **near-orthographic** mode backs the camera far away (``distance``, the
-  eye-to-screen distance, is ``1e5`` by default) and moves ``focus_distance``
+  eye-to-screen distance, is ``5000`` by default) and moves ``focus_distance``
   out with it, so the plane in focus stays where it was. From that far, any
   world-sized aperture blurs by a tiny angle: depth of field is effectively
   invisible there. (Call ``focus_at`` again if you move the focus afterwards.)

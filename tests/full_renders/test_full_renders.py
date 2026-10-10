@@ -26,11 +26,13 @@ import importlib.util
 import os
 import shutil
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 from algan import PREVIEW, SETTINGS, Scene
+from algan.errors import Float32PrecisionWarning
 from algan.scene_manager import SceneManager
 
 HERE = Path(__file__).resolve().parent
@@ -205,7 +207,10 @@ def test_full_render_scene(
     output_path = OUTPUT_DIR / f"{scene_path.stem}.mp4"
     output_path.unlink(missing_ok=True)
 
-    with Scene() as scene:
+    # Ordinary scenes round far below a pixel: the float32 precision warning
+    # firing here would be a false alarm, so it fails the render.
+    with Scene() as scene, warnings.catch_warnings():
+        warnings.simplefilter("error", Float32PrecisionWarning)
         _load_scene(scene_path)
         result = scene.save_video(
             output_path,

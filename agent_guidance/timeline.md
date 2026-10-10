@@ -81,6 +81,10 @@ the comparison materializer, so this is not a claim that no Taichi arm exists), 
 
 Edits of the same rows may overlap in time. `_resolve_replay_windows` extends each edit's effective end over the replay windows of earlier-executed edits that overlap it (transitively, unified per function application); the base state at time t is the pre-value of a row's earliest-executed edit still unfinished at t; and functions replay through their extended window (held at final parameters past their own end), so overlapping and same-end edits rematerialize in execution order.
 
+An edit recorded outside any function (an `Off()` assignment: `event` is None) has no function to re-execute. When its window is extended -- it landed inside an earlier-executed animation still running on its rows -- the resolver stores the values it wrote (`EditRecord.replay_value`: the next edit's pre-values per row, or the authoring state) and replay writes them back from the edit's own end, interleaved with the functions by execution order (`FunctionApplicationEvent.seq` counts the edits made before the call). This is override semantics: an instant write holds what it wrote. Before it, the earlier animation's replay overwrote the write until it ended -- glyphs hidden mid-entrance faded in and vanished afterwards. `test_timeline_overlap.py` pins it, including the cost: an instant *shift* during a still-running move holds the move's end plus the shift, because that is what it wrote.
+
+A replayed function must address the same Mobs every time it runs. One that reads a mutable object the script changes later (a record holding "the current label") writes, at render time, to whatever it holds then; its recorded rows get nothing. Rows are matched by Mob id, so this cannot be repaired row-wise. `note_unrecorded_replay_write` warns once per function (`DivergentReplayWarning`) when a replay writes a Mob made after the call was recorded (`FunctionApplicationEvent.mob_id_bound`), excluding history clones and morph stand-ins (`_pass_identity`) and replay-born Mobs, which take over recorded rows by design.
+
 ### Segment windows (TEXTURE_TIME_LERP)
 
 Attributes opted in via `enable_segment_windows` (only `Surface.color_texture`'s setter does) can skip dense materialization: `_describe_segment_windows` runs before the per-attribute rematerialization and, where its conservative gate proves the window's only writers are plain recorded assignments (`Mob._apply_change`, marked `_algan_replay_is_plain_lerp`; non-overlapping replay windows; no active updater depending on the mob; `active_mob_ids` known), describes one mob's rows as a `SegmentWindow` — K endpoint states off the edit log plus per-frame `(i0, i1, w)` whose weights are **bit-identical** to the dense replay's rate-function evaluation (same tensors, same shapes). The described rows are **excluded** from `rematerialize_state_at_times` (readers see zeros, writes drop — nothing reads them: the primitive build consults `segment_window_for` instead of `_color_texture_uncopied`), and the claimed events' replay is skipped. Three invariants to preserve when touching this:
@@ -93,6 +97,8 @@ Attributes opted in via `enable_segment_windows` (only `Surface.color_texture`'s
 
 Every mob has a `Lifespan` — a `[spawn, despawn)` interval exposed as `Animatable.lifespan` and queried via `is_spawned()` / `is_despawned()`. Sub-mobs created by indexing (`mob[i]`) share their source's id and therefore its rows and lifespan; clones get a new id. Opacity is zeroed outside a mob's lifespan during materialization.
 
+Both bounds are `TimelineEvent`s stamped *inside* the `Sync` that records the entrance or exit, so `lifespan.start.span` is the entrance's window and `lifespan.end.span.start` is where the exit begins. `Animatable.despawn` relies on that to raise `NeverVisibleMobWarning` (an animated entrance whose exit starts no later than it does — `spawn()` and `despawn()` side by side in one `Sync`); it evaluates once the outermost open context exits, via `add_exit_callback`, because only then are the spans rescaled. Moving where spawn/despawn stamp a lifespan silences or misfires it; `test_lifecycle.py` guards it.
+
 Spawning a selection of a previously unspawned pack starts that shared lifespan,
 but reveals only the selected opacity rows. `_pending_packed_spawns` retains the
 remaining members' opacity targets; spawning another selection or the whole pack
@@ -102,6 +108,22 @@ When a custom `on_create` owns the subtree, preparation only hides unselected
 rows; the hook keeps control of the entrance and the ordinary spawn walk starts
 the lifespan. Adding an automatic fade there would animate the same rows twice
 (for example, the decimal point selected from a `DecimalNumber`'s placeholder).
+
+### Replaying one frame at a time
+
+`TimelineManager.replay_frame_by_frame` (off by default; the render loop sets it
+around a still batch's `set_state_to_times`) makes `_replay_state_to_times_inner`
+call every recorded function and updater once per active frame instead of once
+over all of them (`_replay_frame_groups`), and a segment window's easing per
+frame to match. A frame's replayed state is then bit for bit what materializing
+that frame alone gives. Batched replay computes the same values, but not the
+same bits: a basis change spreads over a subtree through an einsum whose GEMM
+rounds differently for a different number of frames (at 16k rows on a test
+CPU, not at 8k), and an easing's transcendentals round differently in a vectorized loop.
+Video batches tolerate that; stills sharing a render batch must not
+(`agent_guidance/api_settings.md`, "Batched screenshots").
+`test_batched_stills.py::test_a_still_batch_replays_each_frame_as_it_would_alone`
+is the guard.
 
 ### Why `reset=False` is safe
 

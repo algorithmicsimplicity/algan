@@ -4,6 +4,8 @@ into contiguous tensor data-structures, ready to be shipped to ray tracing kerne
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -684,7 +686,7 @@ def _tex_meta_placeholder(device):
 content_dedup_min_texels = max(0, env_int("ALGAN_CONTENT_DEDUP_MIN_TEXELS", 4096))
 
 
-def _split_promotable(p, _append_texture, device, scene):
+def _split_promotable(p, _append_texture, device, scene, note=None):
     """Partition a non-textured triangle primitive into the triangles that must
     stay per-vertex and the triangles whose color + material are constant
     across their three corners and every frame (and are non-glowing). The
@@ -700,6 +702,10 @@ def _split_promotable(p, _append_texture, device, scene):
     refl|rough|ior) aligned to ``promo_idx``. The kernel reads all three material
     properties from the material map, so promoted triangles need no per-vertex
     ``tri_colors``/``tri_extra`` row.
+
+    ``note`` receives the per-frame inputs of the partition and of the grouping
+    order (see ``_merge_scene``'s ``frame_signature``): a frame alone would
+    promote and order alike exactly when its rows equal the other frames'.
     """
     colors = p._rt_tri_colors  # [Tc, N, 3, 5]
     extra = p._rt_tri_extra  # [Te, N, _EXTRA_W] (see _pack_surface_extra)
@@ -714,7 +720,7 @@ def _split_promotable(p, _append_texture, device, scene):
     # 9-11 -- which hold per-corner transmission since the transmission work;
     # the name survives from when those columns were glow). Only such a triangle
     # is fully described by a single 1x1 texel.
-    color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1).all(0)  # [N]
+    color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1)  # [Tc, N]
     e = extra
     mat_eq = (
         (e[..., 0] == e[..., 2])
@@ -723,9 +729,11 @@ def _split_promotable(p, _append_texture, device, scene):
         & (e[..., 1] == e[..., 5])
         & (e[..., 6] == e[..., 7])
         & (e[..., 6] == e[..., 8])
-    ).all(0)  # [N]
-    nonglow = (e[..., 9:12] == 0).all(-1).all(0)  # [N]
-    promotable = color_eq & mat_eq & nonglow
+    )  # [Te, N]
+    nonglow = (e[..., 9:12] == 0).all(-1)  # [Te, N]
+    if note is not None:
+        note(color_eq & mat_eq & nonglow)
+    promotable = color_eq.all(0) & mat_eq.all(0) & nonglow.all(0)  # [N]
     keep_idx = all_idx[~promotable]
     promo_all = all_idx[promotable]
     if promo_all.numel() == 0:
@@ -741,6 +749,8 @@ def _split_promotable(p, _append_texture, device, scene):
     mat3 = _expand_frames(
         torch.stack([extra[..., 0], extra[..., 1], extra[..., 6]], -1), T
     )[:, promo_all, :]  # [T,P,3]
+    if note is not None:
+        note(torch.cat([col0, mat3], -1))
     key = (
         torch.cat([col0, mat3], -1).permute(1, 0, 2).reshape(promo_all.numel(), -1)
     )  # [P, 8T]
@@ -1445,7 +1455,78 @@ def _attach_source_id_tables(scene, tri_blocks, tri_surface_total, beziers):
     scene[CIRCUIT_SOURCE_IDS] = circuit_table
 
 
-def _merge_scene(primitives, *, light_sources=(), track_peak=None):
+def _frame_rows(mask):
+    """``[T?, ...]`` -> ``[T?, -1]``: one row per frame of a frame-major tensor."""
+    return mask.reshape(mask.shape[0], -1)
+
+
+def _frame_any(mask):
+    """``[T?, ...]`` bool -> ``[T?]``: whether anything holds, per frame."""
+    if mask.shape[0] == 0:
+        return mask.new_zeros((1,), dtype=torch.bool)
+    return _frame_rows(mask).any(-1)
+
+
+def _leading_frames_alike(signature, num_frames):
+    """How many leading frames have every signature row equal to frame 0's.
+
+    At least one. A single row holds for every frame. A NaN never equals
+    itself, so a row holding one splits its batch down to the first frame
+    rather than vouching for anything.
+    """
+    alike = num_frames
+    for rows in signature:
+        if rows.shape[0] == 1 and num_frames > 1:
+            if bool(torch.isnan(rows).any()) if rows.is_floating_point() else False:
+                return 1
+            continue
+        if rows.shape[0] != num_frames:
+            return 1
+        differs = (rows != rows[:1]).any(-1)
+        if bool(differs.any()):
+            alike = min(alike, int(differs.nonzero()[0]))
+    return max(1, alike)
+
+
+def _frame_digest(signature, frame, num_frames):
+    """A digest of one frame's signature rows, or None if it vouches for nothing.
+
+    Two frames with equal digests -- from different batches, even -- note
+    exactly the same inputs, so each would decide alike in one batch; the render
+    loop compares the last frame of one still batch with the first of the next
+    to learn whether a longer batch is worth fetching. A NaN never equals
+    itself, so a frame noting one has no digest.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for rows in signature:
+        if rows.shape[0] not in (1, num_frames):
+            return None
+        row = rows[0 if rows.shape[0] == 1 else frame].detach().cpu().contiguous()
+        if row.is_floating_point() and bool(torch.isnan(row).any()):
+            return None
+        digest.update(f"{row.dtype}:{row.numel()};".encode())
+        digest.update(row.view(torch.uint8).numpy().tobytes())
+    return digest.digest()
+
+
+def _texture_alpha_frames(tex, num_frames):
+    """Per-frame form of the merge's texture-alpha test, for its signature.
+
+    A map with one frame decides alike in every frame. A map carrying the
+    batch's frames is tested frame by frame. Any other layout (an endpoint
+    stack) cannot be told apart per frame, so every frame notes a NaN and its
+    batch is split.
+    """
+    if tex.dim() == 3 or tex.shape[0] == 1:
+        return tex.new_ones((1,), dtype=torch.bool)
+    if tex.dim() == 4 and tex.shape[0] == num_frames and tex.shape[-1] >= 4:
+        return (_frame_rows(tex[..., 3]) >= 1.0 - 1e-6).all(-1)
+    return torch.full((num_frames,), float("nan"), device=tex.device)
+
+
+def _merge_scene(
+    primitives, *, light_sources=(), track_peak=None, frame_signature=False
+):
     """Merge the batch's collections into one set per geometry type --
     triangles and bezier circuits, each with a single STBVH
     over all frames -- cached for the batch.
@@ -1455,11 +1536,31 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     prep passes that, because a peak measured beside a live render counts
     the render's own allocations -- and the counter reset it would need
     fires under that render (see ``RenderLoopMixin._prepare_batch_on_worker``).
+
+    ``frame_signature`` (still jobs) also notes, frame by frame, the inputs of
+    every choice made here for the batch as a whole -- the opacity, material
+    and edge gates, the materials present, triangle promotion -- and records
+    in ``scene["_frames_alike"]`` how many leading frames note exactly what the
+    first does. Those frames make every such choice alike, so the batch's
+    choice is each one's own and they render as they would alone
+    (``RenderLoopMixin._frames_deciding_alike`` splits the batch after them).
+    ``scene["_frame_digests"]`` holds digests of its first and last frames'
+    notes (``_frame_digest``), which tell the render loop whether a still
+    batch's frames would decide alike with its neighbours'.
+    A batch-wide choice added here must ``_note`` its per-frame inputs.
     """
     first = primitives[0]
     cached = getattr(first, "_rt_merged_scene", None)
     if cached is not None:
         return cached
+
+    signature = [] if frame_signature else None
+
+    def _note(rows):
+        # ``rows`` is frame-major ([T?, ...]); a single row holds in every
+        # frame. Kept even so, for the frame digests.
+        if signature is not None:
+            signature.append(_frame_rows(rows))
 
     _rts = SETTINGS.raytracing
 
@@ -1508,6 +1609,12 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
 
     def _record_visibility(prefix, lo, hi, opaque, uncertain_alpha=False):
         visible = (hi >= lo).all(-1)
+        if signature is not None and visible.numel():
+            # Everything below is a reduction of these per frame.
+            _note(_frame_any(visible))
+            _note(_frame_any(visible & ((hi - lo) > 0.0).any(-1)))
+            _note(_frame_any(visible & opaque))
+            _note(_frame_any(visible & ~opaque))
         has_visible = bool(visible.any())
         # A point-degenerate primitive cannot cover a pixel in the current
         # triangle/circuit intersection kernels.  Preserve a conservative
@@ -1835,7 +1942,13 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
         _sel_identity = {}
         for p in plain_triangles:
             if promote:
-                k, pr, meta = _split_promotable(p, _append_texture, device, scene)
+                k, pr, meta = _split_promotable(
+                    p,
+                    _append_texture,
+                    device,
+                    scene,
+                    note=_note if signature is not None else None,
+                )
             else:
                 Np = p._rt_tri_pos.shape[1]
                 k = torch.arange(Np, device=device)
@@ -1967,6 +2080,8 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
             uncertain = getattr(
                 p, "_rt_texture_map", None
             ) is not None and not _texture_alpha_is_opaque(p._rt_texture_map)
+            if uncertain and signature is not None:
+                _note(_texture_alpha_frames(p._rt_texture_map, num_frames))
             alpha_uncertain_parts.append(
                 torch.full(
                     (1, p._rt_tri_pos.shape[1]),
@@ -2213,6 +2328,9 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
         e = scene["tri_extra"]
         refl = e[..., 0:6:2]
         ior = e[..., 6:9].abs()
+        if signature is not None:
+            _note(_frame_any((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))))
+            _note(_frame_any(refl > 0.2))
         scene["tri_has_reflective"] = bool(
             ((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))).any()
             or scene.get("tex_has_reflective")
@@ -2243,6 +2361,8 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     def _extra_has_refractive(extra):
         return bool((extra[..., 9:12] > 1e-6).any())
 
+    if signature is not None:
+        _note(_frame_any(scene["tri_extra"][..., 9:12] > 1e-6))
     scene["has_refractive"] = _extra_has_refractive(scene["tri_extra"]) or bool(
         scene.get("tex_has_refractive")
     )
@@ -2254,6 +2374,8 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     # simply "metalness is set" (>= 0; -1 is the non-PBR sentinel) on a visible
     # non-opaque primitive. Deliberately conservative: a false positive only
     # costs a split slot, while a false negative drops a continuation.
+    # The masks below are per frame ([T?, N]); the batch's flag reduces them
+    # over frames too.
     def _pbr_from_extra(attr):
         def mask(p):
             extra = getattr(p, attr, None)
@@ -2261,7 +2383,7 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
                 return None
             # Interleaved per-corner (metalness, roughness) in cols 0-5, so
             # metalness is 0/2/4 (matches ``_triangle_extra``).
-            return (extra[..., 0:6:2] >= 0.0).any(0).any(-1)
+            return (extra[..., 0:6:2] >= 0.0).any(-1)
 
         return mask
 
@@ -2269,9 +2391,10 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
         meta = getattr(p, "_rt_circuit_meta", None)
         if meta is None or meta.shape[1] == 0:
             return None
-        return (meta[..., _M_REFLECTIVITY] >= 0.0).any(0)
+        return meta[..., _M_REFLECTIVITY] >= 0.0
 
     def _has_refl_transparent(prims, pbr_mask):
+        found = False
         for p in prims:
             lo = getattr(p, "_rt_frame_lo", None)
             has_pbr = pbr_mask(p)
@@ -2287,12 +2410,25 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
             ):
                 has_pbr = torch.ones_like(has_pbr)
             visible = (p._rt_frame_hi >= lo).all(-1)
-            translucent = (visible & ~p._rt_frame_opaque).any(0)
+            translucent_frames = visible & ~p._rt_frame_opaque
             if not _texture_alpha_is_opaque(getattr(p, "_rt_texture_map", None)):
-                translucent = translucent | visible.any(0)
-            if bool((has_pbr.to(translucent.device) & translucent).any()):
-                return True
-        return False
+                translucent_frames = translucent_frames | visible
+            if signature is not None:
+                # With the PBR mask alike in every frame, the batch's flag is
+                # each frame's own exactly when the per-frame flags agree.
+                pbr_frames = has_pbr.to(translucent_frames.device)
+                _note(pbr_frames)
+                _note(_frame_any(pbr_frames & translucent_frames))
+            elif found:
+                break
+            if bool(
+                (
+                    has_pbr.any(0).to(translucent_frames.device)
+                    & translucent_frames.any(0)
+                ).any()
+            ):
+                found = True
+        return found
 
     scene["has_refl_transparent"] = _has_refl_transparent(
         triangles, _pbr_from_extra("_rt_tri_extra")
@@ -2307,13 +2443,17 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     # way as ``has_refl_transparent``: a false positive costs a slower shadow
     # query, a false negative renders a black shadow under a pane of glass.
     def _any_transmissive(prims, attr, cols):
+        found = False
         for p in prims:
             extra = getattr(p, attr, None)
             if extra is None or extra.shape[1] == 0:
                 continue
-            if bool((extra[..., cols] > 0.0).any()):
-                return True
-        return False
+            if signature is not None:
+                _note(_frame_any(extra[..., cols] > 0.0))
+            elif found:
+                break
+            found = found or bool((extra[..., cols] > 0.0).any())
+        return found
 
     scene["has_transmissive"] = _any_transmissive(
         triangles, "_rt_tri_extra", slice(9, 12)
@@ -2353,9 +2493,10 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
         # when border/glow inflation gave its point bounds nonzero extent.
-        scene["bez_has_nondegenerate_edges"] = bool(
-            (~(scene["edges_2d"][..., :4] == 1e9).all(-1)).any()
-        )
+        nondegenerate = ~(scene["edges_2d"][..., :4] == 1e9).all(-1)
+        if signature is not None:
+            _note(_frame_any(nondegenerate))
+        scene["bez_has_nondegenerate_edges"] = bool(nondegenerate.any())
         offsets, shift = [torch.zeros((1,), dtype=torch.int32, device=device)], 0
         for p in beziers:
             offsets.append(p._rt_edge_offsets[1:].long() + shift)
@@ -2408,9 +2549,10 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
         # F0 (>= 4%). The legacy sorted pipeline (unsupported) composites
         # circuits with no reflectance term at all, so it may only be routed
         # when every circuit is non-PBR (metalness -1, reflectance exactly 0).
-        scene["bez_has_reflective"] = bool(
-            (scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0).any()
-        )
+        reflective = scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0
+        if signature is not None:
+            _note(_frame_any(reflective))
+        scene["bez_has_reflective"] = bool(reflective.any())
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, _M_WIDTH), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
@@ -2457,18 +2599,27 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     scene["has_user_pipeline"] = any(
         material_id >= _USER_PIPELINE_BASE for material_id in scene["tri_material_ids"]
     )
+    if signature is not None:
+        # Which materials each frame holds: the gated shade variants and the
+        # pipeline table are chosen from the batch's set. The set itself is
+        # noted too, so frame digests from different batches compare alike.
+        mat_ids = scene["tri_mat_id"]
+        values = torch.unique(mat_ids)
+        _note(values.reshape(1, -1))
+        if values.numel():
+            _note(torch.stack([(mat_ids == value).any(-1) for value in values], -1))
     from algan.rendering.raytracing.shading_taichi import _MAT_SIGMA_S, _MID_PHYSICAL
 
-    scene["has_scattering_media"] = bool(
-        (
-            (scene["tri_mat_id"] == _MID_PHYSICAL)
-            & (scene["tri_mat"][..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] != 0).any(dim=-1)
-        ).any()
-    )
+    scattering = (scene["tri_mat_id"] == _MID_PHYSICAL) & (
+        scene["tri_mat"][..., _MAT_SIGMA_S : _MAT_SIGMA_S + 3] != 0
+    ).any(dim=-1)
+    if signature is not None:
+        _note(_frame_any(scattering))
+    scene["has_scattering_media"] = bool(scattering.any())
     # Area-light radiance is already linear in the light snapshot. Decode the
     # authored geometry first, then insert emitters before the ONE BVH build
     # and arena preflight/upload. The deterministic merge keeps its row model.
-    _decode_merged_colors(scene)
+    _decode_merged_colors(scene, per_frame=signature is not None)
     if int(_rts.samples_per_pixel) > 1 and _rts.pt_area_light_quads:
         from algan.rendering.raytracing.area_light_quads import build_area_light_quads
 
@@ -2495,6 +2646,19 @@ def _merge_scene(primitives, *, light_sources=(), track_peak=None):
     scene["all_visible_opaque"] = (
         scene["has_any_visible"] and not scene["has_any_translucent"]
     )
+
+    if signature is not None:
+        if any(getattr(p, "_rt_frame_local_veto", False) for p in primitives):
+            # A primitive whose projection could not choose per frame: a NaN
+            # matches nothing, in this batch or another.
+            _note(torch.full((num_frames, 1), float("nan"), device=device))
+        # Host values, so the arena upload (which copies every tensor the
+        # merged scene holds) never carries them.
+        scene["_frames_alike"] = _leading_frames_alike(signature, num_frames)
+        scene["_frame_digests"] = (
+            _frame_digest(signature, 0, num_frames),
+            _frame_digest(signature, num_frames - 1, num_frames),
+        )
 
     # Build the per-geometry STBVHs -- or, for batches that provably never
     # traverse one (hybrid-raster primaries, no shadows, no reflective /
@@ -2548,7 +2712,7 @@ _MERGED_COLOR_KEYS = ("tri_colors", "circuit_colors", "circuit_border_colors")
 _MAT_COLOR_SLOT_NAMES = ("emissive", "specular", "specular_color", "sheen_color")
 
 
-def _decode_merged_colors(scene):
+def _decode_merged_colors(scene, per_frame=False):
     """Decode the batch's authored color into the linear working space.
 
     This is the geometry half of the render boundary -- the single point where
@@ -2584,11 +2748,25 @@ def _decode_merged_colors(scene):
         arr = scene.get(key)
         if arr is None or arr.shape[-1] < 3:
             continue
-        arr[..., :3] = srgb_to_linear(arr[..., :3])
-    _decode_material_block_colors(scene)
+        for frame in _decode_frames(arr, per_frame):
+            frame[..., :3] = srgb_to_linear(frame[..., :3])
+    _decode_material_block_colors(scene, per_frame)
 
 
-def _decode_material_block_colors(scene):
+def _decode_frames(arr, per_frame):
+    """``arr`` whole, or (``per_frame``) one frame at a time.
+
+    The decode is a ``pow``, which PyTorch's CPU kernels round one ulp apart
+    in vectorized lanes and in the scalar tail of a loop, so where an element
+    lands depends on the array's length. A still sharing a batch decodes its
+    frame as an array of the length it has alone, and so to its alone bits.
+    """
+    if per_frame and arr.shape[0] > 1:
+        return [arr[frame : frame + 1] for frame in range(arr.shape[0])]
+    return [arr]
+
+
+def _decode_material_block_colors(scene, per_frame=False):
     """Decode the color slots of ``tri_mat`` for built-in-pipeline primitives.
 
     ``tri_mat`` is ``[Tm, N, MAT_W]`` and ``tri_mat_id`` ``[Tm', N]``; a
@@ -2609,8 +2787,9 @@ def _decode_material_block_colors(scene):
         start, width = _MAT_SLOTS[name]
         if start + width > mat.shape[-1]:
             continue
-        block = mat[:, idx, start : start + width]
-        mat[:, idx, start : start + width] = srgb_to_linear(block)
+        for frame in _decode_frames(mat, per_frame):
+            block = frame[:, idx, start : start + width]
+            frame[:, idx, start : start + width] = srgb_to_linear(block)
 
 
 def _soft_fan_sizes(aux, num_rows):

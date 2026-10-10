@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,6 +34,45 @@ def _user_stacklevel(default: int = 2) -> int:
         frame = frame.f_back
         level += 1
     return default
+
+
+def _user_location():
+    """The first frame outside algan, as ``(filename, lineno, module_globals)``.
+
+    For a warning that can only be decided after the user's line has returned
+    -- once an enclosing animation context has exited and its timestamps are
+    final -- but should still point at that line. Pass it to :func:`_warn_at`.
+    """
+    frame = sys._getframe(1)
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
+        _PACKAGE_DIR
+    ):
+        frame = frame.f_back
+    if frame is None:
+        return None
+    return frame.f_code.co_filename, frame.f_lineno, frame.f_globals
+
+
+def _warn_at(location, message, category):
+    """``warnings.warn`` attributed to a :func:`_user_location`.
+
+    Uses the module's own warning registry, exactly as ``warnings.warn`` with
+    a ``stacklevel`` pointing at that frame would, so the usual filters and
+    the once-per-location default apply unchanged.
+    """
+    if location is None:
+        warnings.warn(message, category, stacklevel=2)
+        return
+    filename, lineno, module_globals = location
+    warnings.warn_explicit(
+        message,
+        category,
+        filename,
+        lineno,
+        module=module_globals.get("__name__"),
+        registry=module_globals.setdefault("__warningregistry__", {}),
+        module_globals=module_globals,
+    )
 
 
 class AlganError(Exception):
@@ -119,6 +159,18 @@ class DespawnedMobWarning(AlganWarning):
     code = "ALGAN_DESPAWNED_MOB"
 
 
+class NeverVisibleMobWarning(AlganWarning):
+    """Warns that a Mob is despawned before its animated spawn could show it.
+
+    Typically ``spawn()`` and ``despawn()`` written side by side in one
+    :class:`~algan.animation_timeline.animation_contexts.Sync`: both start
+    when the block does, so the exit fades the Mob out while the entrance
+    fades it in, and it is never drawn.
+    """
+
+    code = "ALGAN_NEVER_VISIBLE_MOB"
+
+
 class HierarchyChangedDuringUpdaterWarning(AlganWarning):
     """Warns that a hierarchy change reaches back over a live updater's frames.
 
@@ -131,6 +183,40 @@ class HierarchyChangedDuringUpdaterWarning(AlganWarning):
     """
 
     code = "ALGAN_HIERARCHY_CHANGED_DURING_UPDATER"
+
+
+class DivergentReplayWarning(AlganWarning):
+    """Warns that a recorded call, re-run to render its frames, reached a Mob
+    that did not exist when the call was recorded.
+
+    Algan renders an animated function's frames by calling it again, with its
+    recorded arguments interpolated for each frame. That only reproduces the
+    animation if the call reaches the same Mobs every time it runs. A call that
+    reads a mutable object -- one captured in its arguments, or a global --
+    which the script changes after the call, reaches whatever that object
+    holds by the time the frames are rendered: its frames then show a Mob the
+    script made later, and the Mob it animated when it was recorded gets
+    nothing. Stills and video frames show the same thing, since both render
+    this way.
+    """
+
+    code = "ALGAN_DIVERGENT_REPLAY"
+
+
+class Float32PrecisionWarning(AlganWarning):
+    """Warns that float32 rounding moved geometry far enough to see on screen.
+
+    Algan stores and renders positions in float32, about 7 significant
+    digits, so a position is only as exact as its largest coordinate allows.
+    Far from the origin that spacing can reach a pixel: typically a camera
+    hundreds or thousands of units out, turned off its axes, with something
+    placed just in front of it. The render estimates the rounding of every
+    visible point after projecting it and warns once, naming the worst Mob,
+    when it reaches half a pixel. Keeping the camera and what sits in front of
+    it within a few hundred units of the origin avoids it.
+    """
+
+    code = "ALGAN_FLOAT32_PRECISION"
 
 
 __all__ = [
@@ -148,5 +234,8 @@ __all__ = [
     "ApproximationWarning",
     "NeverSpawnedMobWarning",
     "DespawnedMobWarning",
+    "NeverVisibleMobWarning",
     "HierarchyChangedDuringUpdaterWarning",
+    "DivergentReplayWarning",
+    "Float32PrecisionWarning",
 ]

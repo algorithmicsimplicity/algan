@@ -165,6 +165,24 @@ the square's, and so plays them together, even though each is internally a
 sequence of pairs. Wrapping either routine in a function would let you reuse the
 whole choreography as one animation.
 
+.. important::
+
+    Inside a :class:`.Sync`, *everything* starts together -- including calls on
+    the same Mob. A helper that spawns a Mob, moves it and despawns it shows
+    nothing when called directly inside a ``Sync``: the despawn's fade-out
+    starts as the spawn's fade-in does and cancels it. Algan warns with
+    ``NeverVisibleMobWarning`` when that happens. Give the steps their own
+    :class:`.Seq`, as the routines above have:
+
+    .. code-block:: python
+
+        with Sync():
+            square.rotate(90, OUT)
+            with Seq():
+                bead.spawn()
+                bead.move_to(RIGHT * 3)
+                bead.despawn()
+
 Easing With Rate Functions
 ==========================
 

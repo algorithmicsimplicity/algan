@@ -34,6 +34,7 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     batch_arange,
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
+from algan.rendering.raytracing.float32_rounding import record_projection
 from algan.rendering.raytracing.logical_pn_taichi import (
     bezier_chord_hull_error,
     pn_edge_chord_error,
@@ -56,7 +57,15 @@ from algan.rendering.raytracing.shading_taichi import (
     MAT_W,
 )
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
-from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
+from algan.rendering.raytracing.utils import (
+    DEGENERATE_CUBIC_LEGS_SQUARED,
+    _circuit_scale,
+    _cubics_disconnected,
+    _degenerate_cubics,
+    _expand_frames,
+    _flat_frames,
+    _unify_time,
+)
 from algan.rendering.shaders.material_shaders import SHADER_FIXED_PARAM_COUNT
 from algan.settings import SETTINGS
 from algan.utils.memory_utils import release_torch_memory
@@ -1320,6 +1329,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         release_torch_memory(force_gc=False)
 
     def project_to_screen(self, camera, light_sources):
+        # Before shading: corners are [T, N, 3, 3], one element per triangle.
+        record_projection(self, camera, self.corners, 3)
         self._shade_vertex_colors(camera, light_sources)
         return self._pack_projected_flat_geometry(camera)
 
@@ -2718,6 +2729,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self._logical_pn_triangle_counts = counts
 
     def project_to_screen(self, camera, light_sources):
+        # On the source patches, before the dice replaces them: one element
+        # per patch, which is what ``_obj_counts`` (and so the Mob that built
+        # it) is counted in. The diced surface passes through their corners.
+        record_projection(self, camera, self.corners, 3)
         self._dice_logical_pn(camera)
         self._shade_vertex_colors(camera, light_sources)
         padding = self._logical_pn_padding
@@ -2796,11 +2811,13 @@ def _point_to_segment_distance_squared(point, start, delta, length_squared):
     return (point - closest).square().sum(-1)
 
 
-def _bezier_connection_visibility(corners, next_segment_inds):
+def _bezier_connection_visibility(corners, next_segment_inds, circuit_of_segment=None):
     """Whether each selected segment connection is authored geometry.
 
     Discontinuous connections are synthesized only to close a fill contour and
-    therefore must not contribute to the visible border.
+    therefore must not contribute to the visible border. Judged by the rule the
+    mob split its sub-paths with (:func:`~.utils._cubics_disconnected`), at the
+    size of each segment's circuit (``circuit_of_segment``, ``None`` for one).
     """
     (corners, next_segment_inds), _ = _unify_time(
         [corners, next_segment_inds.unsqueeze(-1)], "bezier connections"
@@ -2810,7 +2827,8 @@ def _bezier_connection_visibility(corners, next_segment_inds):
     segment_starts = corners[..., 0, :]
     gather_inds = next_segment_inds.unsqueeze(-1).expand(-1, -1, 3)
     next_starts = torch.gather(segment_starts, 1, gather_inds)
-    return (segment_ends - next_starts).norm(p=2, dim=-1) <= 1e-5
+    scale = _circuit_scale(corners, circuit_of_segment).unsqueeze(-1)
+    return ~_cubics_disconnected(segment_ends - next_starts, scale).squeeze(-1)
 
 
 def _circuit_parity_gathered(qx, qy, ex0, ey0, ex1, ey1, valid):
@@ -3055,6 +3073,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     _rt_projection_aa = 1.0
 
     def project_to_screen(self, camera, light_sources):
+        # On the authored cubics, before a stroke style expands them: four
+        # controls per cubic, cubics grouped into circuits.
+        record_projection(
+            self,
+            camera,
+            self.corners,
+            4,
+            getattr(self, "num_segments_per_object", None),
+        )
         if getattr(self, "stroke_style", None) is not None:
             from algan.rendering.stroke_outline import _expand_stroke
 
@@ -3084,16 +3111,43 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             getattr(camera, "output_screen_height", camera.screen_height)
         )
 
-        num_samples = self._compute_samples_per_segment(
-            corners,
-            cam_o,
-            sp,
-            sb,
-            camera.screen_height,
-            bool(getattr(camera, "analytic_raster", False)),
+        analytic_raster = bool(getattr(camera, "analytic_raster", False))
+        # Stills sharing a batch (RenderLoopMixin.get_frames): every frame
+        # takes its own chord counts, outline and bounds -- exactly what it
+        # gets alone -- rather than the batch's widest.
+        still_batch = bool(
+            getattr(getattr(self, "scene", None), "_frame_local_batches", False)
         )
-        self._build_circuit_geometry(corners, num_samples, edge_source)
-        self._build_frame_bounds(corners, cam_o, sp, sb, camera.screen_height)
+        if still_batch and getattr(self, "stroke_style", None) is not None:
+            # Expanded outlines are padded to the batch's widest frame. Vetoed
+            # in a one-still batch too, so its merge digests vouch for no
+            # longer batch (RenderLoopMixin._still_batch_digests).
+            self._rt_frame_local_veto = True
+        frame_local = num_frames > 1 and still_batch
+        if frame_local:
+            num_samples = torch.stack(
+                [
+                    self._compute_samples_per_segment(
+                        corners if corners.shape[0] == 1 else corners[f : f + 1],
+                        cam_o[f : f + 1],
+                        sp[f : f + 1],
+                        sb[f : f + 1],
+                        camera.screen_height,
+                        analytic_raster,
+                    )
+                    for f in range(num_frames)
+                ]
+            )
+        else:
+            num_samples = self._compute_samples_per_segment(
+                corners, cam_o, sp, sb, camera.screen_height, analytic_raster
+            )
+        self._build_circuit_geometry(
+            corners, num_samples, edge_source, frame_local=frame_local
+        )
+        self._build_frame_bounds(
+            corners, cam_o, sp, sb, camera.screen_height, frame_local=frame_local
+        )
 
         # The polylines/metadata now carry everything the renderer needs;
         # release the control points to reduce resident GPU memory.
@@ -3346,7 +3400,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # Index wraparound alone is not sufficient: an ordinary closed circuit
         # (Circle, glyph outline, ...) also wraps to an earlier segment and its
         # final border edge must remain visible.
-        connection_visible = _bezier_connection_visibility(corners, nsi)
+        connection_visible = _bezier_connection_visibility(
+            corners, nsi, circuit_of_segment
+        )
 
         # The packed polyline samples t = k/n for k < n, taking each cubic's
         # endpoint from the first vertex of the segment it connects to.  That
@@ -3372,13 +3428,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
 
-        segment_lengths = (
-            (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
-        )
-        is_degenerate = segment_lengths < 1e-9
-        edge_degenerate = torch.repeat_interleave(
-            is_degenerate, verts_per_segment, dim=1
-        )
+        # A cubic that is a point -- authored that way, or collapsed by a partial
+        # draw outside its window -- contributes no edges. "A point" is judged
+        # against its circuit's size (see ``utils.CIRCUIT_REFERENCE_SIZE``),
+        # which is what keeps a HUD's tiny real cubics from being taken for one.
+        scale = _circuit_scale(corners, circuit_of_segment)  # [Tc, S]
+        degenerate = _degenerate_cubics(corners, scale)
+        edge_degenerate = torch.repeat_interleave(degenerate, verts_per_segment, dim=1)
 
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
@@ -3403,6 +3459,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 next_start_e,
                 edge_degenerate_e,
                 border_visible_e,
+                scale_e,
             ),
             T_geo,
         ) = _unify_time(
@@ -3414,12 +3471,14 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 next_start.unsqueeze(-1),
                 edge_degenerate.unsqueeze(-1),
                 border_visible.unsqueeze(-1),
+                scale.unsqueeze(-1),
             ],
             "bezier geometry",
         )
         next_start_e = next_start_e.squeeze(-1)
         edge_degenerate_e = edge_degenerate_e.squeeze(-1)
         border_visible_e = border_visible_e.squeeze(-1)
+        scale_e = scale_e.squeeze(-1)
 
         rel = verts_e - centers_e[:, vert_circuit]
         u = (rel * basis_u_e[:, vert_circuit]).sum(-1)
@@ -3433,6 +3492,20 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             .float()
             .contiguous()
         )
+        # Except the one edge a point cubic can carry that is not a point: when
+        # it ends an OPEN sub-path, its last edge is the undrawn chord back to the
+        # sub-path's start, which closes the fill. A partial draw makes exactly
+        # that cubic whenever its window has only just entered the next one, and
+        # dropping the chord with it left the fill's even-odd parity open: a
+        # half-written glyph in ``Write`` grew a bright column above its stem,
+        # and ``AnimatedBoundary``'s growing stroke jumped outside the square it
+        # traces (its fill is invisible, so its border band is all that shows,
+        # and with the parity inverted the band ran along the outside).
+        closure = border_visible_e[:, seg_ends] < 0.5
+        chord = (next_uv[:, seg_ends] - locals_uv[:, seg_ends]).square().sum(-1)
+        keep = closure & (chord >= DEGENERATE_CUBIC_LEGS_SQUARED * scale_e.square())
+        edge_degenerate_e = edge_degenerate_e.clone()
+        edge_degenerate_e[:, seg_ends] &= ~keep
         edges5 = torch.where(
             edge_degenerate_e.unsqueeze(-1),
             torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),
@@ -3461,7 +3534,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
         return edges, edge_offsets.to(torch.int32).contiguous()
 
-    def _build_circuit_geometry(self, corners, num_samples, edge_source=None):
+    def _build_circuit_geometry(
+        self, corners, num_samples, edge_source=None, *, frame_local=False
+    ):
         """Sample world-space polylines into per-circuit plane coordinates and
         pack the per-circuit metadata the trace kernel consumes.
 
@@ -3474,6 +3549,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         with it the bias -- moves, which is what lets
         :func:`~.bezier_geometry_cache._build_cached_circuit_edges` build them
         once. The metadata keeps the biased centers the renderer places them at.
+
+        ``frame_local`` (``num_samples`` then ``[T, S]``, one row per frame)
+        builds every frame's edges exactly as that frame alone would build
+        them (:func:`~.bezier_geometry_cache._build_frame_local_circuit_edges`).
         """
         device = corners.device
         S = corners.shape[1]
@@ -3530,7 +3609,19 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             basis_v,
         )
         inward_signs = bool(self.filled and rt_settings.analytic_aa_bez_mode() == 3)
-        if rt_settings.bezier_geometry_cache:
+        if frame_local:
+            from algan.rendering.raytracing.bezier_geometry_cache import (
+                _build_frame_local_circuit_edges,
+            )
+
+            self._rt_edges, self._rt_edge_offsets = _build_frame_local_circuit_edges(
+                getattr(self, "scene", None),
+                self._sample_circuit_edges,
+                args,
+                inward_signs,
+                cache=bool(rt_settings.bezier_geometry_cache),
+            )
+        elif rt_settings.bezier_geometry_cache:
             from algan.rendering.raytracing.bezier_geometry_cache import (
                 _build_cached_circuit_edges,
             )
@@ -3654,9 +3745,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
         self._rt_border_width = stroke_width
 
-    def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
+    def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h, frame_local=False):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the
         screen-space border width and glow radius), with invisible frames marked empty.
+
+        The inflation is the batch's widest unless ``frame_local``, which gives
+        every frame its own (see :meth:`project_to_screen`).
         """
         device = corners.device
         C = self._rt_edge_offsets.shape[0] - 1
@@ -3752,11 +3846,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         pixel_world_scale = 2.0 / clamp_floor(screen_h * b1_norm * screen_dist, 1e-12)
         centers = self._rt_circuit_meta[..., :3]
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
-        world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)
-
-        inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px
-        self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
-        self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
+        world_per_px = pixel_world_scale.view(-1, 1) * dist
+        if frame_local:
+            inflate = (0.5 * self._rt_border_width + 1.5) * world_per_px
+            inflate = inflate.unsqueeze(-1)  # [T, C, 1]
+        else:
+            inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px.amax(0)
+            inflate = inflate.view(1, -1, 1)
+        self._rt_frame_lo = (lo - inflate).contiguous()
+        self._rt_frame_hi = (hi + inflate).contiguous()
 
     def render(
         self,

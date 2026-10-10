@@ -129,7 +129,20 @@ def _note_render_requested() -> None:
     _RENDERS_REQUESTED += 1
 
 
-def warn_if_nothing_rendered(script_path, renders_before: int) -> bool:
+#: How many Scenes this process has constructed, the lazily created default one
+#: included -- which any Mob construction or ``Scene.foo()`` call brings into
+#: being. Never reset, like ``_RENDERS_REQUESTED``.
+_SCENES_CREATED = 0
+
+
+def scenes_created() -> int:
+    """The number of Scenes this process has constructed so far."""
+    return _SCENES_CREATED
+
+
+def warn_if_nothing_rendered(
+    script_path, renders_before: int, scenes_before: int | None = None
+) -> bool:
     """Say so, on stderr, if a script ran to completion and rendered nothing.
 
     Algan is lazy: a script builds a Scene and only ``save_video`` turns it
@@ -138,9 +151,17 @@ def warn_if_nothing_rendered(script_path, renders_before: int) -> bool:
     file that was never going to exist. Called by the runners that exist to
     produce one.
 
+    ``scenes_before``, when given, is :func:`scenes_created` at the start of
+    the run, and a run that constructed no Scene since is not told anything: it
+    authored nothing, so it imported Algan for something else (a constant, a
+    colour, a helper) and was never going to render. A plain ``python
+    script.py`` passes it; the runners whose whole job is to render do not.
+
     Returns whether the message was printed.
     """
     if renders_requested() > renders_before:
+        return False
+    if scenes_before is not None and scenes_created() <= scenes_before:
         return False
     script = Path(str(script_path))
     print(
@@ -206,6 +227,8 @@ class Scene(RenderLoopMixin):
         *,
         premultiplied_over: bool = False,
     ):
+        global _SCENES_CREATED
+        _SCENES_CREATED += 1
         self.set_premultiplied_over(premultiplied_over)
         chose_video_settings = video_settings is not None
         chose_background = background is not None
@@ -1488,8 +1511,10 @@ class Scene(RenderLoopMixin):
         Unlike :meth:`save_video` this never modifies the Scene: nothing is
         despawned, the timeline is left as authored, and any temporary video
         settings or background are restored before returning. Call it as often
-        as you like while building a scene. Multiple timestamps share
-        memory-bounded render batches; frames between them are not rendered.
+        as you like while building a scene. Multiple timestamps share one
+        render job, and consecutive stills with exactly the same live Mobs
+        share render batches, but each still renders as it would on its own,
+        from only the Mobs alive in it; frames between them are not rendered.
 
         During :meth:`Project.render_screenshots <algan.project.Project.render_screenshots>`,
         calls are collected instead. The project authors the scene first, then

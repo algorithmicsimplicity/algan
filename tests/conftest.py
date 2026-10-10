@@ -1,6 +1,6 @@
 """Shared fixtures and options for the Algan test suites.
 
-Five things live here because they are cross-cutting:
+Six things live here because they are cross-cutting:
 
 * the ``fast`` marker and ``--fast``, which together define the fast suite:
   the tests marked ``fast`` and nothing else. See ``tests/README.md``;
@@ -12,7 +12,9 @@ Five things live here because they are cross-cutting:
   ``tests/full_renders/`` so the two cannot drift apart on tolerance;
 * per-test isolation of the two pieces of process-global state Algan owns --
   ``SETTINGS`` and the active-Scene stack. Leaking either between tests makes
-  failures depend on test order, which is the hardest kind of flake to chase.
+  failures depend on test order, which is the hardest kind of flake to chase;
+* the Quadrants warning filter ``algan.taichi_compat`` installs, re-applied as
+  a pytest ``filterwarnings`` line because pytest discards import-time filters.
 """
 
 from __future__ import annotations
@@ -413,6 +415,20 @@ def pytest_collection_modifyitems(config, items):
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
     config._algan_fast_started = time.perf_counter()
+    # The Quadrants warning Algan accepts (algan/taichi_compat.py says why) is
+    # filtered when algan is imported -- which here happens while pytest loads
+    # this conftest, inside a warnings.catch_warnings() block of its own that
+    # discards the filter again. Every test runs under pytest's filters, so
+    # hand it the same one.
+    from algan import taichi_compat
+
+    if taichi_compat.BACKEND == "quadrants":
+        config.addinivalue_line(
+            "filterwarnings",
+            "ignore:"
+            + taichi_compat._QUADRANTS_BENIGN_TEMPLATE_CACHE_WARNING
+            + r":UserWarning:quadrants\._test_tools\.warnings_helper",
+        )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

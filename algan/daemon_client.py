@@ -10,17 +10,33 @@ launched any differently.
 The flow, from the script's point of view:
 
 1. ``import algan`` reaches :func:`maybe_handoff` before any heavy import.
-2. If a daemon is running -- there is a state file at
+2. A script that never asks for a render is not handed off at all
+   (:func:`script_may_render`, a parse of the script and of the project
+   modules it imports). A warm renderer has nothing to offer it, and a handoff
+   would cost it everything listed below -- above all, running the code above
+   its ``import algan`` a second time.
+3. If a daemon is running -- there is a state file at
    ``$ALGAN_HOME/daemon.json`` -- the client ships
    ``(cwd, script path, argv, environment)`` to it, streams the run's
    stdout/stderr back to its own, and exits with the daemon's exit code. The
    client never imports torch or taichi, so the whole round trip is Python
    startup plus the render itself.
-3. If none is running, the client starts one in the background and waits for it
+4. If none is running, the client starts one in the background and waits for it
    to come up (:func:`_autostart`), then hands off as above. The first run
    therefore costs what it always did -- the daemon pays the same cold start
    the script would have -- and every later run starts warm. Disable with
-   ``ALGAN_AUTO_DAEMON=0``.
+   ``ALGAN_AUTO_DAEMON=0``. A daemon started this way stands down as soon as
+   that first run finishes cleanly without having rendered anything, rather
+   than idling for two hours on a run that did not need it.
+
+**The handoff happens at** ``import algan``, **so the code above that line has
+already run once in the client** -- there is no earlier moment at which a plain
+``python scene.py`` can be intercepted -- and the daemon runs the whole script,
+from the top, again. Whatever that code does happens twice: a ``print`` shows
+twice, a file it appends to gets two lines, a request it makes is sent twice.
+Setting environment variables, editing ``sys.path`` and importing modules are
+what normally sits there, and repeat harmlessly. Anything else belongs below
+the import.
 
 **Any problem falls back to a normal in-process run** -- a refused handshake, a
 daemon that is not listening, a spawn that fails or is slow to come up. The one
@@ -31,8 +47,11 @@ exits non-zero.
 
 ``ALGAN_USE_DAEMON=0`` disables the handoff even when a daemon is running, and
 ``ALGAN_AUTO_DAEMON=0`` disables only the starting of new ones.
-``ALGAN_DAEMON_CHILD=1`` is set by the daemon around its own execution of a
-script, and is what stops the handoff from recursing.
+``ALGAN_USE_DAEMON=1``, written down explicitly, hands off a script whose
+renders the parse cannot see (one that calls ``save_video`` through an
+installed package of the user's own, say). ``ALGAN_DAEMON_CHILD=1`` is set by
+the daemon around its own execution of a script, and is what stops the handoff
+from recursing.
 
 **A script being debugged is never handed off** (:func:`debugger_name`). The
 daemon would execute it in a process no debugger is attached to, so every
@@ -68,6 +87,7 @@ process never pays for what it does not use.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -510,6 +530,15 @@ def should_try(main_module=None):
         return False
     if not is_scene_script_run(main_module):
         return False
+    # A script that never renders has nothing to gain from a warm renderer and
+    # everything to lose from a handoff: its pre-import code would run twice,
+    # and an auto-started daemon would sit on half a gigabyte for two hours.
+    # Only an explicit ALGAN_USE_DAEMON=1 overrides the parse, for renders it
+    # cannot see.
+    if not env_flag("ALGAN_USE_DAEMON", False) and not script_may_render(
+        script_of(main_module)
+    ):
+        return False
     # Last, because it is the one condition that explains itself out loud: a
     # process that was never a handoff candidate must not be told why it is not
     # being handed off.
@@ -549,6 +578,243 @@ def script_of(main_module=None):
     """Absolute path of the running ``__main__`` script."""
     main_module = main_module or sys.modules.get("__main__")
     return os.path.abspath(main_module.__file__)
+
+
+#: Names through which a script asks Algan for output: the ``Scene`` and
+#: ``Project`` methods that render, the module-level ``render_all_funcs``, and
+#: the entry points benchmarks drive directly (the render loop's own, and the
+#: stage profiler's). Matched as a name, an attribute, an imported name or a
+#: string constant (``getattr(scene, "save_video")``). ``save_subtitles`` and
+#: ``Project.validate`` count as requests in ``algan.scene.renders_requested``
+#: but never touch the renderer, so they are not here.
+_RENDER_NAMES = frozenset(
+    {
+        "save_video",
+        "save_frame",
+        "show_frame",
+        "render_video",
+        "render_screenshots",
+        "render_all_funcs",
+        "run_cli",
+        "estimate_render_time",
+        "get_frames",
+        "render_batch_raytraced",
+        "profile_scene",
+    }
+)
+
+#: Render methods whose names are too common to take on their own:
+#: ``Project.profile`` counts only as an attribute, and ``Scene.view`` /
+#: ``Project.view`` only as described in :func:`_names_a_viewer`, because
+#: ``tensor.view(-1)`` is everywhere in the scripts this parse exists for.
+_RENDER_ATTRIBUTES = frozenset({"profile"})
+
+#: Ways of running code the parse cannot follow. A script that uses one may
+#: render through it, so it is treated as one that renders.
+_DYNAMIC_CODE_NAMES = frozenset(
+    {"run_path", "run_module", "exec", "import_module", "__import__"}
+)
+
+#: Calls that make modules importable from somewhere the parse was not told
+#: about -- a script in a subfolder reaching its project's shared helpers, the
+#: usual case. Treated like dynamic code: the render may be over there.
+_IMPORT_PATH_EDITS = frozenset(
+    {"sys.path.insert", "sys.path.append", "sys.path.extend", "site.addsitedir"}
+)
+
+#: Bounds on following a script's own imports. A script past either is treated
+#: as one that renders -- the answer it would have got before the parse
+#: existed -- rather than spending the client's start-up on reading it.
+_MAX_SCANNED_FILES = 64
+_MAX_SCANNED_BYTES = 4 * 1024 * 1024
+
+
+def _dotted_name(node):
+    """``a.b.c`` for a Name/Attribute chain, or ``""`` for anything else."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _is_sys_path(target):
+    """Whether an assignment target is ``sys.path`` or a slice of it."""
+    if isinstance(target, ast.Subscript):
+        target = target.value
+    return _dotted_name(target) == "sys.path"
+
+
+def _names_a_viewer(call):
+    """Whether ``call`` (an ``X.view(...)`` call) looks like ``Scene.view``.
+
+    ``Scene.view`` and ``Project.view`` are almost always called with no
+    positional argument, or on something named for a scene or a project;
+    ``tensor.view(...)`` and ``array.view(...)`` always take a shape or a dtype
+    and are called on anything else.
+    """
+    receiver = _dotted_name(call.func.value).lower()
+    return not call.args or "scene" in receiver or "project" in receiver
+
+
+def _may_lead_to_a_render(node):
+    """Whether one AST node names a way to render, or to reach unseen code."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "view":
+            return _names_a_viewer(node)
+        if _dotted_name(func) in _IMPORT_PATH_EDITS:
+            return True
+        return isinstance(func, ast.Name) and func.id in _DYNAMIC_CODE_NAMES
+    if isinstance(node, (ast.Assign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return any(_is_sys_path(target) for target in targets)
+    if isinstance(node, ast.Attribute):
+        if node.attr == "view":
+            receiver = _dotted_name(node.value).lower()
+            return "scene" in receiver or "project" in receiver
+        return (
+            node.attr in _RENDER_NAMES
+            or node.attr in _RENDER_ATTRIBUTES
+            or node.attr in _DYNAMIC_CODE_NAMES
+        )
+    if isinstance(node, ast.Name):
+        return node.id in _RENDER_NAMES
+    if isinstance(node, ast.alias):
+        return node.name.rpartition(".")[2] in _RENDER_NAMES
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) and node.value in _RENDER_NAMES
+    return False
+
+
+def _project_roots(script_dir, search_path):
+    """The folders a script's *own* modules can be imported from.
+
+    The script's folder first -- ``sys.path[0]`` for ``python scene.py`` --
+    then every other entry of ``search_path`` that is not part of the Python
+    installation: a ``PYTHONPATH`` folder, an editable install, a folder the
+    script put on ``sys.path`` before its ``import algan`` (the client runs
+    inside that import, so those are already there). The standard library and
+    site-packages are libraries, not the script's code, and are never read.
+    """
+    import site
+    import sysconfig
+
+    def norm(path):
+        return os.path.normcase(os.path.realpath(path))
+
+    installed = {norm(p) for p in sysconfig.get_paths().values() if p}
+    with contextlib.suppress(Exception):
+        installed.update(norm(p) for p in site.getsitepackages())
+    with contextlib.suppress(Exception):
+        installed.add(norm(site.getusersitepackages()))
+    roots = [norm(script_dir)]
+    for entry in search_path:
+        if not isinstance(entry, str) or not os.path.isdir(entry or "."):
+            continue
+        entry = norm(entry or ".")
+        if entry in roots or any(
+            entry == lib or entry.startswith(lib + os.sep) for lib in installed
+        ):
+            continue
+        roots.append(entry)
+    return roots
+
+
+def _local_imports(tree, importer, roots):
+    """Source files under ``roots`` that the imports in ``tree`` may execute.
+
+    Only files inside one of :func:`_project_roots` are candidates: a module
+    found anywhere else is a library, not the script's own code. Every package
+    ``__init__`` on the way to a module counts, since importing the module runs
+    it. Algan itself is skipped even when it sits in a root (a source checkout,
+    an editable install): its own source names every render method, which
+    says nothing about the script.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            bases = roots
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            bases = roots
+            if node.level:  # relative: counted from the importing file
+                base = os.path.dirname(importer)
+                for _ in range(node.level - 1):
+                    base = os.path.dirname(base)
+                bases = [base]
+            module = node.module or ""
+            names = [module] if module else []
+            names += [
+                f"{module}.{alias.name}" if module else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            ]
+        else:
+            continue
+        for name in names:
+            parts = name.split(".")
+            if bases is roots and parts[0] == "algan":
+                continue
+            for base in bases:
+                path = base
+                for part in parts:
+                    path = os.path.join(path, part)
+                    for candidate in (path + ".py", os.path.join(path, "__init__.py")):
+                        if os.path.isfile(candidate):
+                            yield os.path.abspath(candidate)
+
+
+def script_may_render(path, search_path=None):
+    """Whether the script at ``path`` can ask Algan to render anything.
+
+    Read, not run: the script is parsed, and so are the project modules it
+    imports, transitively -- those found in its own folder or in another
+    non-library entry of ``search_path`` (``sys.path`` when ``None``; see
+    :func:`_project_roots`) -- for a call to a render entry point
+    (:data:`_RENDER_NAMES`). Deliberately generous: naming one anywhere
+    counts, called or not, and so does anything that reaches code the parse
+    cannot follow -- ``exec``, ``runpy``, ``importlib.import_module``, or an
+    edit to ``sys.path``. The two mistakes cost very differently. Calling a
+    renderless script one that renders only costs what every script used to
+    pay (a handoff); calling a rendering script renderless costs that run its
+    warm start. A script that cannot be read, or whose imports run past
+    :data:`_MAX_SCANNED_FILES` / :data:`_MAX_SCANNED_BYTES`, is treated as one
+    that renders.
+
+    What it cannot see: a render reached through an installed package of the
+    user's own. Such a script runs in its own process, exactly as with
+    ``ALGAN_AUTO_DAEMON=0``; ``ALGAN_USE_DAEMON=1`` hands it off regardless.
+    """
+    script = os.path.abspath(path)
+    roots = _project_roots(
+        os.path.dirname(script), sys.path if search_path is None else search_path
+    )
+    pending = [script]
+    seen = set()
+    total = 0
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if len(seen) > _MAX_SCANNED_FILES:
+            return True
+        try:
+            with open(current, "rb") as handle:
+                source = handle.read(_MAX_SCANNED_BYTES + 1)
+            total += len(source)
+            if total > _MAX_SCANNED_BYTES:
+                return True
+            tree = ast.parse(source, filename=current)
+        except (OSError, SyntaxError, ValueError):
+            return True
+        if any(_may_lead_to_a_render(node) for node in ast.walk(tree)):
+            return True
+        pending.extend(_local_imports(tree, current, roots))
+    return False
 
 
 def run_remote(state, script, argv=None, cwd=None, out=None, err=None):
@@ -677,6 +943,11 @@ def _spawn_daemon():
                     "algan.daemon",
                     "--idle-timeout",
                     str(idle),
+                    # It is being started for the run about to be handed to it;
+                    # if that run turns out not to render, there is nothing to
+                    # keep warm, and two idle hours of it would cost more than
+                    # the next run's start-up saves.
+                    "--exit-if-first-run-renders-nothing",
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -708,8 +979,9 @@ def _autostart():
     timeout = env_float("ALGAN_DAEMON_START_TIMEOUT", 60.0)
     _warn(
         "starting a background render daemon so later runs skip the startup "
-        "cost; scripts then run in it, so everything above `import algan` runs "
-        "twice (once here, once there), atexit handlers do not run and stdin is "
+        "cost; scripts that render then run in it, so everything above "
+        "`import algan` runs twice (once here, once there -- keep side effects "
+        "below the import), atexit handlers do not run and stdin is "
         f"/dev/null (log: {log_path()}). Disable with ALGAN_AUTO_DAEMON=0."
     )
     deadline = time.monotonic() + max(0.0, timeout)

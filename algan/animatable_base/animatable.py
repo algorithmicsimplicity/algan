@@ -50,6 +50,7 @@ from algan.animation_timeline.timeline import (  # noqa: F401
     STRUCTURE_VERSION,
     TIME_PARAMETER_NAME,
     RowRanges,
+    TimelineEvent,
     TimelineManager,
     _opt_disabled,
 )
@@ -58,6 +59,9 @@ from algan.errors import (
     AlganConfigurationError,
     DespawnedMobWarning,
     HierarchyError,
+    NeverVisibleMobWarning,
+    _user_location,
+    _warn_at,
 )
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
@@ -131,6 +135,56 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     return kwargs
 
 
+def _animated_args_caster(func, animated_args):
+    """Cast an unrecorded call's animated arguments as a recorded call's are.
+
+    A recorded call hands its function every animated argument through
+    ``cast_to_tensor`` (``prepare_kwargs``), and replay hands it a batch of
+    frames, so a function body is written against tensors. Inside ``Off()`` or
+    before the Mob spawns, nothing is recorded and the function used to be
+    called with the raw values instead -- a plain number where the body
+    expects a tensor, so ``t.reshape(...)`` that worked in every animation
+    raised there. Returns ``None`` when the function has no animated
+    arguments, so a call to one of those pays nothing for it. Casting adds
+    no rounding: replay reads the same tensors, and the built-in transforms
+    (``rotate``, ``move``, ...) cast their arguments themselves.
+    """
+    if not animated_args:
+        return None
+    params = list(inspect.signature(func).parameters.values())[1:]
+    positional = [
+        param.name
+        for param in params
+        if param.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    defaults = {
+        param.name: param.default
+        for param in params
+        if param.name in animated_args
+        and param.default is not inspect.Parameter.empty
+        and param.kind is not inspect.Parameter.POSITIONAL_ONLY
+    }
+
+    def cast(args, kwargs):
+        args = list(args)
+        passed = set()
+        for index, name in enumerate(positional[: len(args)]):
+            if name in animated_args:
+                args[index] = cast_to_tensor(args[index])
+                passed.add(name)
+        for name in animated_args:
+            if name in passed:
+                continue
+            if name in kwargs:
+                kwargs[name] = cast_to_tensor(kwargs[name])
+            elif name in defaults:
+                kwargs[name] = cast_to_tensor(defaults[name])
+        return args, kwargs
+
+    return cast
+
+
 def _rejecting_timing_kwargs(func):
     """Answer a timing keyword on a method that has no ``**kwargs`` to catch it.
 
@@ -171,6 +225,14 @@ def animated_function(
     or ``with Off():`` to apply the change instantly. The function's own writes
     determine which descendants change.
 
+    The frames are rendered by calling the function again, with its recorded
+    arguments interpolated per frame, so it must reach the same Mobs every time
+    it runs. Reading an object the script changes after the call -- a list or
+    record passed in and later updated -- makes the re-run animate whatever the
+    object holds by then; Algan warns with
+    :class:`~algan.errors.DivergentReplayWarning` when that reaches a Mob made
+    after the call.
+
     Parameters
     ----------
     function
@@ -180,8 +242,10 @@ def animated_function(
     animated_args
         Mapping of parameter names to initial numeric values, typically
         ``{"t": 0}`` for a function called with ``t=1``. The function must accept
-        tensor values for these parameters, including a batch of frame times.
-        Defaults to ``None``, meaning no interpolated parameters.
+        tensor values for these parameters, including a batch of frame times,
+        and it receives a tensor however it is called -- recorded, inside
+        ``Off()``, or before the Mob spawns. Defaults to ``None``, meaning no
+        interpolated parameters.
     unique_args
         Names of string-valued parameters that distinguish separate animation
         calls for batching. Defaults to an empty tuple.
@@ -215,6 +279,8 @@ def animated_function(
         animated_args = {}
 
     def _decorate(func):
+        cast_animated_args = _animated_args_caster(func, animated_args)
+
         @animation_manager_bound
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
@@ -233,6 +299,8 @@ def animated_function(
             if kwargs:
                 _reject_context_kwargs(kwargs)
             if not self.is_animating():
+                if cast_animated_args is not None:
+                    args, kwargs = cast_animated_args(args, kwargs)
                 # Mobs with nothing spawned in their subtree record nothing:
                 # no function events (this branch), and attribute writes go
                 # through the un-recorded path of
@@ -1139,6 +1207,8 @@ class Animatable:
         # scoped write replays over exactly the rows it wrote.
         where = include_descendants if _scope is None else _scope
         replay_inds = timeline.replay_inds(key, self.id, where)
+        if replay_inds is None and timeline._active_replay_event is not None:
+            timeline.note_unrecorded_replay_write(self)
         inds = (
             replay_inds
             if replay_inds is not None
@@ -1555,6 +1625,9 @@ class Animatable:
                 "_attr_inds_cache",
                 "_descendants_cache",
                 "_subtree_spawn_cache",
+                # Keyed on the source's rows (Mob._apply_basis_change), which
+                # a clone does not share.
+                "_rest_shape",
                 # Whom a render stand-in draws for (pass_identity.render_identity):
                 # a clone is a new object, and deep-copying the reference would
                 # clone that other Mob's whole hierarchy besides.
@@ -1977,10 +2050,109 @@ class Animatable:
         """
         if self.is_despawned():
             return self
+        live = self._live_subtree()
         self._destroy_recursive(animate)
         self.animation_manager.context.on_destroy(self)
-
+        self._warn_if_never_visible(live)
         return self
+
+    def _live_subtree(self):
+        """This subtree's spawned, not yet despawned Mobs, in pre-order.
+
+        Each comes with the position of its nearest such ancestor in the list
+        (-1 for none), so a report can name only the topmost of them. Anything
+        already despawned belongs to an earlier despawn and is left out.
+        """
+        live, stack, seen = [], [(self, -1)], set()
+        while stack:
+            node, parent = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            lifespan = node.lifespan
+            if isinstance(lifespan.start, TimelineEvent) and lifespan.end() < 0:
+                live.append((node, parent))
+                parent = len(live) - 1
+            stack.extend((child, parent) for child in reversed(node.children))
+        return live
+
+    def _warn_if_never_visible(self, despawned):
+        """Warn when a despawn hides Mobs before their animated spawn showed them.
+
+        ``spawn(); ...; despawn()`` side by side in one ``Sync`` all start
+        together, so the exit fades the Mob out exactly as the entrance fades
+        it in and nothing is drawn. Each lifespan bound is stamped inside the
+        block that records it, so that block's span gives the entrance and the
+        exit windows: the warning is for an animated entrance whose exit starts
+        no later than the entrance does. An instant spawn
+        (``spawn(animate=False)``, ``Off()``) is visible from its first frame
+        and is never reported; a ``Lag`` that overlaps the two only dims it.
+
+        Timestamps are final only once every enclosing context has exited and
+        rescaled them, so the check runs then: at once at the top level,
+        otherwise when the outermost open context exits. Either way it runs
+        once, during authoring -- never for a despawn an updater makes while
+        frames are rendered -- and is attributed to the ``despawn()`` line.
+
+        Parameters
+        ----------
+        despawned
+            What :meth:`_live_subtree` returned before the despawn.
+        """
+        if not despawned or self.scene.timeline_manager.is_replaying():
+            return
+        location = _user_location()
+
+        def check():
+            hidden, unseen = [], []
+            for node, parent in despawned:
+                start, end = node.lifespan.start, node.lifespan.end
+                never = (
+                    isinstance(start, TimelineEvent)
+                    and isinstance(end, TimelineEvent)
+                    and start.span.end - start() > 1e-6
+                    and end.span.start <= start() + 1e-6
+                )
+                covered = parent >= 0 and hidden[parent]
+                hidden.append(never or covered)
+                if never and not covered:
+                    unseen.append((node, start(), end.span.start))
+            if not unseen:
+                return
+            node, spawned, gone = unseen[0]
+            if len(unseen) == 1:
+                what, its, it = node._describe(), "its", "it"
+            else:
+                names = ", ".join(sorted({mob._describe() for mob, _, _ in unseen}))
+                what, its, it = f"{len(unseen)} Mobs ({names})", "their", "them"
+            if gone >= spawned - 1e-6:
+                when = f"at t={spawned:.2f}s, as {its} spawn() starts fading {it} in"
+            else:
+                when = (
+                    f"at t={gone:.2f}s, before {its} spawn() fades {it} in at "
+                    f"t={spawned:.2f}s"
+                )
+            _warn_at(
+                location,
+                f"{what} will never be visible: despawn() starts the exit "
+                f"{when}, so the exit cancels the entrance. Everything inside "
+                f"one Sync starts together; to show a Mob before it goes, "
+                f"sequence those steps in a Seq inside the Sync:\n\n"
+                f"    with Sync():\n"
+                f"        with Seq():\n"
+                f"            mob.spawn()\n"
+                f"            mob.move_to(target)\n"
+                f"            mob.despawn()\n",
+                NeverVisibleMobWarning,
+            )
+
+        context, outermost = self.animation_manager.context, None
+        while context.prev_context is not None:
+            outermost, context = context, context.prev_context
+        if outermost is None:
+            check()
+        else:
+            outermost.add_exit_callback(check)
 
     def _destroy_recursive(self, animate=True):
         if animate and not _opt_disabled("collate") and hasattr(self, "_apply_change"):

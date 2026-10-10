@@ -2447,3 +2447,41 @@ def test_project_bare_frame_name_still_uses_project_directory(tmp_path):
     assert run.prepare_frame_path("detail") == (
         Path(project.screenshot_directory) / "s2_f0_detail.png"
     )
+
+
+def test_a_script_that_built_no_scene_is_not_told_it_rendered_nothing(capsys):
+    """Issue 8: a script that imports Algan to compute something is not a slip.
+
+    "Add ``Scene.save_video()``" is the right advice for a script that authored
+    a scene and forgot to render it, and the wrong advice for one that only
+    used a constant or a helper. Unmarked: it moves with ``scene.py`` alone.
+    """
+    from algan.scene import (
+        renders_requested,
+        scenes_created,
+        warn_if_nothing_rendered,
+    )
+
+    # Where a script starts: no Scene yet (the fixture's reset made one).
+    manager = SceneManager.instance()
+    manager.terminate(manager.current_scene)
+    before, scenes_before = renders_requested(), scenes_created()
+    assert not warn_if_nothing_rendered("numbers.py", before, scenes_before)
+    assert capsys.readouterr().err == ""
+
+    Square().spawn()  # authoring brings the default Scene into being
+    assert scenes_created() > scenes_before
+    assert warn_if_nothing_rendered("numbers.py", before, scenes_before)
+    assert "numbers.py finished without rendering anything" in capsys.readouterr().err
+
+
+def test_a_runner_that_exists_to_render_is_told_regardless(capsys):
+    """``algan render`` and the daemon pass no Scene count.
+
+    They were asked to render, so a script that built nothing is worth a word
+    too. Unmarked, like the test above.
+    """
+    from algan.scene import renders_requested, warn_if_nothing_rendered
+
+    assert warn_if_nothing_rendered("helper.py", renders_requested())
+    assert "helper.py finished without rendering" in capsys.readouterr().err

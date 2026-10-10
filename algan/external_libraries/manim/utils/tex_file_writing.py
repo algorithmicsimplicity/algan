@@ -55,22 +55,11 @@ def tex_to_svg_file(
     """
     if tex_template is None:
         tex_template = config["tex_template"]
-    tex_file = generate_tex_file(expression, environment, tex_template)
+    # Algan: tex_dir is shared by every process, so each formula is
+    # built in a private directory and published atomically.
+    from algan.utils.typeset_cache import build_tex_svg
 
-    # check if svg already exists
-    svg_file = tex_file.with_suffix(".svg")
-    if svg_file.exists():
-        return svg_file
-
-    dvi_file = compile_tex(
-        tex_file,
-        tex_template.tex_compiler,
-        tex_template.output_format,
-    )
-    svg_file = convert_to_svg(dvi_file, tex_template.output_format)
-    if not config["no_latex_cleanup"]:
-        delete_nonsvg_files()
-    return svg_file
+    return build_tex_svg(expression, environment, tex_template)
 
 
 def generate_tex_file(

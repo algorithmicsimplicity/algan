@@ -42,6 +42,18 @@ That covers settings, not everything a kernel folds in. A `ti.static` gate over
 anything else with a live value — an environment variable read at the point of
 use, a module global some other code assigns — is still one process per arm.
 
+Pass a dtype as a `ti.template()` argument through
+`algan.taichi_compat.template_dtype(ti.f64)`, never bare. Quadrants' template
+mapper weak-references every non-scalar argument and warns "Template mapper
+caching disabled" for a raw `DataTypeCxx`; the handle is weakly referenceable
+and otherwise the same dtype (equal, same hash, same source key and precompile
+spec), so it compiles nothing new. The fragment-pipeline tuples cannot be made
+weakly referenceable, and that one message is filtered in `taichi_compat`
+(and re-applied for pytest in `tests/conftest.py`).
+`tests/unit_tests/test_quadrants_warning_filter.py` renders a `Cube` with every
+launch going through the mapper and fails on any other argument it cannot
+weak-reference.
+
 Run Python through the environment's interpreter, not bare `uv run`, when using
 a locally patched compiler wheel. Lockfile synchronization can replace it. Check
 the installed distribution and required compiler features rather than using the

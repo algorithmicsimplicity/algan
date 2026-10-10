@@ -56,7 +56,7 @@ from algan.rendering.mps_compat import (
     unique_consecutive_exact,
 )
 from algan.settings import SETTINGS
-from algan.taichi_compat import ti
+from algan.taichi_compat import template_dtype, ti
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -146,15 +146,17 @@ def test_the_dtypes_follow_the_mode(computing_settings):
     assert accumulate_dtype() is torch.float64
     assert reduction_index_dtype() is torch.int64
     assert reduction_index_sentinel() == 1 << 40
-    assert taichi_accumulate_dtype() is ti.f64
-    assert taichi_reduction_index_dtype() is ti.i64
+    # The kernel-side twins are template_dtype handles: equal to the compiler's
+    # dtype, one per dtype for the process.
+    assert taichi_accumulate_dtype() is template_dtype(ti.f64) == ti.f64
+    assert taichi_reduction_index_dtype() is template_dtype(ti.i64) == ti.i64
 
     computing_settings.set(mps_friendly=True)
     assert accumulate_dtype() is torch.float32
     assert reduction_index_dtype() is torch.int32
     assert reduction_index_sentinel() == 2147483647
-    assert taichi_accumulate_dtype() is ti.f32
-    assert taichi_reduction_index_dtype() is ti.i32
+    assert taichi_accumulate_dtype() is template_dtype(ti.f32) == ti.f32
+    assert taichi_reduction_index_dtype() is template_dtype(ti.i32) == ti.i32
 
 
 @pytest.mark.fast
@@ -928,7 +930,8 @@ def test_the_int32_band_stats_kernel_answers_the_int64_one(wide_kernel_arms):
     cov = torch.rand(n, generator=generator)
 
     results = {}
-    for ti_dtype, torch_dtype in ((ti.i64, torch.int64), (ti.i32, torch.int32)):
+    for raw_dtype, torch_dtype in ((ti.i64, torch.int64), (ti.i32, torch.int32)):
+        ti_dtype = template_dtype(raw_dtype)  # as the engine passes it
         first, minp, first_p, minp_p, cmax, nfrag = _band_stats_arrays(
             nb, n, torch_dtype
         )

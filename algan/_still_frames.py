@@ -283,12 +283,18 @@ class _StillBatch:
         for group in render_groups:
             indices = sorted(group)
             # Keep the one-frame route's established get_frames contract. Multiple
-            # frames share one job, even when their timeline indices are far apart.
+            # frames share one job, even when their timeline indices are far apart,
+            # and share batches only as _independent_frames allows: a still must
+            # not depend on, or carry the Mobs of, the others.
             if len(indices) == 1:
                 frames = self.scene.get_frames(indices[0], indices[0] + 1, **extra)
             else:
                 frames = self.scene.get_frames(
-                    0, len(indices), frame_indices=indices, **extra
+                    0,
+                    len(indices),
+                    frame_indices=indices,
+                    _independent_frames=True,
+                    **extra,
                 )
             emitted = 0
             with torch.no_grad(), closing(frames):

@@ -297,6 +297,8 @@ The bar for adding to that tuple is that **no runtime object could own the value
 
 The daemon refuses such a run. Most renderer toggles become module-level defaults during the import, which in a daemon happened at its launch — `_IMPORT_TIME_VARIABLES` in `algan/environment.py` is the list of record, checked against the call sites by `tests/unit_tests/test_environment.py`. A client whose values differ is refused and runs cold, matching what it would have rendered on its own; variables read live (`_LIVE_VARIABLES`) are swapped in per run, so flipping one *between* two renders in a script works warm. Benchmarks set `ALGAN_USE_DAEMON=0` anyway, because a warm process also carries the previous run's adaptive renderer state.
 
+Only a script that can render is handed off at all: `daemon_client.script_may_render` parses the script and the project modules it imports for a render entry point (`_RENDER_NAMES`), and counts anything it cannot follow (`exec`, `runpy`, `import_module`, a `sys.path` edit) as rendering. A script that names none runs in its own process with no daemon started, because the handoff would re-run its pre-import code for nothing. A new public render entry point belongs in `_RENDER_NAMES`. An auto-started daemon is launched with `--exit-if-first-run-renders-nothing` (`daemon._started_for_nothing`).
+
 ## Asset paths
 
 `ImageMob`, `set_texture` and `background` all route through `file_utils.get_image` → `resolve_asset_path`, which
@@ -306,8 +308,71 @@ where you launch Python.
 
 ### Batched screenshots
 
-`Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job and
-its normal memory-bounded batches. It does not render the intervening frames.
+`Scene.save_frame("shot", at=[0.5, 3.0, 8.5])` uses one sparse render job,
+`get_frames(..., frame_indices=..., _independent_frames=True)`. It does not
+render the intervening frames. Each still must render exactly as it would
+alone, from only its own Mobs, which constrains how stills share batches:
+
+- A batch carries every Mob alive anywhere in its window, so consecutive
+  stills share one only while the live set is identical for all of them --
+  nothing spawns or despawns between the first and the last
+  (`RenderLoopMixin._still_group_ends`, read off the lifespan index without
+  materializing), and at most `_STILL_GROUP_MAX_FRAMES` (16) of them. Then a
+  batch costs per frame what each still costs alone, and the ordinary memory
+  budget, arena preflight and OOM halving size it as they do a video window.
+  Before this, two stills spanning a scene carried all of its Mobs (backprop
+  scene 6 at 427x240: 3.3 GB for 2 stills, over 6 GB for 9).
+- Materialization replays every recorded function and updater one frame at
+  a time (`TimelineManager.replay_frame_by_frame`, see `timeline.md`), so
+  each frame's state is bit for bit its alone state. Batched replay is not
+  shape-blind: a basis change spreads over a large subtree through an einsum
+  whose GEMM rounds differently for a different number of frames, which moved
+  backprop scene 15's camera screen by two ulps and its shadows by up to 63
+  levels.
+- Everything a batch decides across its frames is decided per frame for
+  still jobs (`scene._frame_local_batches`): circuit chord counts, closing
+  vertices and outline bounds (`RayTracedBezierCircuitPrimitive.project_to_screen`;
+  frames whose edge counts differ are packed with inert padding edges by
+  `bezier_geometry_cache._build_frame_local_circuit_edges`, which also never
+  reuses contours within a tolerance), and post-processing, bloom included
+  (`_framewise_post_processes(..., batch_native=False)`). A still batched with
+  a zoomed-in one used to render its curves up to 72 levels finer.
+- Every choice the merge makes for the batch as a whole -- opacity and
+  material gates, the materials present, triangle promotion -- notes its
+  per-frame inputs (`_merge_scene(frame_signature=True)`), and a batch whose
+  frames do not all note what the first does is split after the frames that
+  do (`_frames_deciding_alike`). A failed attempt costs its stills'
+  preparation, so speculation is rationed (`alike_hint` in
+  `_get_frames_impl`): a job's first batch is a probe of two stills, and
+  whole groups follow once two agree. After a split, fetches take as many
+  as last agreed and double only on evidence -- a batch's first still
+  noting exactly what the batch before's last one did (the merge's
+  `_frame_digests`, read by `_still_batch_digests`). Stills that never
+  agree -- PN solids turning, whose per-frame dicing pads rows that note
+  differently -- pay for one failed probe per job: median 1.79 s against
+  1.66 s for 12 stills of two turning solids at 320x180 (0.52 s against
+  0.45 s for two), where blindly retried doublings cost three or four
+  failed probes. A still alone in its group takes no signature at all
+  (`lone_still` in its render state), so a job whose stills all differ in
+  their live Mobs does exactly the work it did before. A batch-wide choice added
+  to the merge must note its inputs, or still batches stop matching their
+  stills.
+- The path tracer, the wavefront memory trim and in-composite tonemapping
+  keep one still per batch (`_stills_may_share_batches`).
+
+`test_batched_stills.py` checks the grouping, the split, the Mob sets, the
+per-frame replay and that grouped stills equal their alone renders. Grouped
+stills are byte-identical to their alone renders on every scene checked,
+synthetic and backprop scene 15's 59 checkpoint and motion stills alike. The
+trap behind most of that work: PyTorch's CPU kernels are exact per element but
+not shape-blind -- a transcendental op (the sRGB decode's `pow`) rounds one ulp
+apart in vectorized lanes and in a loop's scalar tail, a GEMM by its blocking
+-- so an element's bits can depend on how many frames share its array. Hence
+the per-frame replay, and the per-frame sRGB decode of a still batch's merged
+colors (`_decode_merged_colors(per_frame=True)`) and light colors
+(`render_loop._decode_light_rgb`); decoded whole, an animated glow came out one
+level off under bloom. Arithmetic added to still preparation over a
+frame-major tensor must be elementwise IEEE (or run per frame) to keep this.
 Times are quantized at the selected frame rate; repeated frame indices share
 rendered pixels, while output names, return order, and overwrite policy retain
 the input order. Shared render wall time is divided among the rendered results.

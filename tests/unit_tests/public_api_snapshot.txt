@@ -104,6 +104,7 @@ DiGraph
 Difference
 DiffuseMaterial
 DirectionalLight
+DivergentReplayWarning
 Dodecahedron
 Dot
 Dot3D
@@ -114,6 +115,7 @@ Elbow
 Ellipse
 Exclusion
 Flash
+Float32PrecisionWarning
 FocusOn
 FragmentStage
 FrontSide
@@ -220,6 +222,7 @@ ModifiedProtectedAttributeError
 MoveAlongPath
 NUM_DIMENSIONS
 NeverSpawnedMobWarning
+NeverVisibleMobWarning
 NoExtra
 NumberLine
 NumberPlane

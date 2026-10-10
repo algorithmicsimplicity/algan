@@ -14,8 +14,10 @@ file output (:meth:`~algan.render_loop.RenderLoopMixin._render_to_video`).
 
 from __future__ import annotations
 
+import bisect
 import collections
 import contextlib
+import itertools
 import logging
 import math
 import os
@@ -51,6 +53,7 @@ from algan.rendering.memory_model import (
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.raytracing.float32_rounding import Float32RoundingJob
 from algan.rendering.raytracing.truncation import (
     path_tracer_fallback_hint,
     reset_truncations,
@@ -118,6 +121,10 @@ _UNMEASURED_PROBE_FRAMES = 8
 #: 1.6 preserved the accepted 7/11/12-frame partition in the UHD Metal
 #: benchmark while avoiding its failed 23-frame speculative fetch.
 _ARENA_FETCH_GROWTH_LIMIT = 1.6
+
+#: Most stills one render batch of a still job may carry (see
+#: RenderLoopMixin._still_group_ends).
+_STILL_GROUP_MAX_FRAMES = 16
 
 
 #: Clean batches in a row after which the arena preflight's learned safety
@@ -479,6 +486,41 @@ def _stamp_primitive_sources(primitives, actor, registry):
             primitive._source_mob_id = mob_id
 
 
+def _note_primitive_owner(primitives, actor):
+    """Record ``actor`` as the Mob that built each of ``primitives``.
+
+    Unconditional and host-only, unlike the object-id stamp above: the
+    float32 rounding warning names the Mob whose geometry rounds worst on
+    screen, and a merged collection resolves its elements to Mobs through its
+    members' owners (:func:`_attach_member_owners`).
+    """
+    for primitive in primitives:
+        primitive._owner_mob = actor
+
+
+def _attach_member_owners(collection, members):
+    """Give a merged collection its members' owners and element boundaries.
+
+    The elements are what the projection's float32 rounding record counts in:
+    circuits for a circuit collection, and for a triangle collection whatever
+    its ``_obj_counts`` counts (triangles, or a logical-PN mesh's patches).
+    Plain host lists, unprefixed so ``slice_time_window`` keeps them, as it
+    keeps ``_obj_counts``.
+    """
+    owners = [getattr(m, "_owner_mob", None) for m in members]
+    if hasattr(collection, "num_segments_per_object"):
+        counts = [m.num_segments_per_circuit.reshape(-1).shape[0] for m in members]
+    else:
+        counts = getattr(collection, "_obj_counts", None)
+    if counts is None or len(counts) != len(owners):
+        # Without boundaries only a single member's owner is unambiguous.
+        collection._member_owners = owners if len(owners) == 1 else None
+        collection._member_ends = None
+        return
+    collection._member_owners = owners
+    collection._member_ends = list(itertools.accumulate(int(c) for c in counts))
+
+
 def _primitive_source_device(primitive, fallback=None):
     """Device holding a not-yet-projected primitive's source geometry."""
     for name in (
@@ -671,6 +713,18 @@ def _prepare_background_for_chunk(
     return background
 
 
+def _decode_light_rgb(rgb, frame_local):
+    """sRGB-decode ``rgb``; a still batch's (``frame_local``) frame by frame.
+
+    The decode's ``pow`` rounds one ulp apart in a vectorized loop and in its
+    scalar tail, so decoded as one array a frame's light could differ from
+    the same frame decoded alone (see ``scene_builder._decode_frames``).
+    """
+    if frame_local and rgb.dim() and rgb.shape[0] > 1:
+        return torch.cat([srgb_to_linear(frame) for frame in rgb.split(1)])
+    return srgb_to_linear(rgb)
+
+
 def _check_post_processes(post_processes):
     """Reject a non-callable pass before the render rather than after it.
 
@@ -696,22 +750,26 @@ def _check_post_processes(post_processes):
             )
 
 
-def _framewise_post_process(process):
+def _framewise_post_process(process, batch_native=True):
     """Adapt a still-image pass to preserve one callback per output frame.
 
     Sparse still rendering may put several requested timestamps in one render
     batch. ``Scene.save_frame`` historically rendered each still independently,
     so user passes observed a one-frame batch on every invocation. Keep that
     extension-point contract without giving up sparse batching of the expensive
-    scene render. Built-in bloom remains batch-native.
+    scene render. Built-in bloom remains batch-native unless ``batch_native`` is
+    off, as it is for stills that share a render batch (see
+    ``RenderLoopMixin.get_frames``).
     """
     base = process.func if isinstance(process, partial) else process
-    if base is bloom_filter:
+    if base is bloom_filter and batch_native:
         return process
 
-    def framewise(frames, memory):
+    # Keywords post_process_frames passes the pass it wraps (bloom's
+    # premultiplied_over; see ``_framewise_of`` below) reach every call.
+    def framewise(frames, memory, **kwargs):
         if frames.shape[0] <= 1:
-            return process(frames, memory=memory)
+            return process(frames, memory=memory, **kwargs)
 
         output = None
         expected_shape = None
@@ -719,7 +777,7 @@ def _framewise_post_process(process):
         stable_pointers = None
         for index in range(frames.shape[0]):
             try:
-                produced = process(frames[index : index + 1], memory=memory)
+                produced = process(frames[index : index + 1], memory=memory, **kwargs)
                 if produced.ndim == 0 or produced.shape[0] == 0:
                     raise RuntimeError("A still-frame post-process produced no frames")
                 # Match the old one-still path: if a custom pass unexpectedly
@@ -748,11 +806,15 @@ def _framewise_post_process(process):
                     memory.set_pointers(stable_pointers)
         return output
 
+    # So post_process_frames still recognises the pass it adapts.
+    framewise._framewise_of = process
     return framewise
 
 
-def _framewise_post_processes(post_processes):
-    return tuple(_framewise_post_process(process) for process in post_processes)
+def _framewise_post_processes(post_processes, batch_native=True):
+    return tuple(
+        _framewise_post_process(process, batch_native) for process in post_processes
+    )
 
 
 class RenderLoopMixin:
@@ -886,6 +948,97 @@ class RenderLoopMixin:
         candidates = order[lo:hi]
         return candidates[despawns[candidates] >= start_time].sort().values
 
+    def _still_group_ends(self, actors, frame_indices, start, end):
+        """Where a still job's render batches must end: ascending offsets.
+
+        A batch carries every Mob alive anywhere in its window, so stills may
+        share one only while that is exactly the set each of them selects on
+        its own -- nothing spawns or despawns between the first and the last.
+        Then the batch's per-frame cost is each still's own, and the memory
+        budget sizes it as it would a video window. Read off the lifespan index
+        alone, so nothing is materialized to decide it. A group never spans a
+        change of the live set, and holds at most ``_STILL_GROUP_MAX_FRAMES``.
+        """
+        fps = self.frames_per_second
+        index = self._actor_window_index(actors)
+
+        def alive(first, last):
+            return len(
+                self._actors_in_window(
+                    index, frame_indices[first] / fps, (frame_indices[last] + 1) / fps
+                )
+            )
+
+        ends = []
+        first = start
+        while first < end:
+            own = alive(first, first)
+            last = first
+            while (
+                last + 1 < end
+                and last + 1 - first < _STILL_GROUP_MAX_FRAMES
+                and alive(last + 1, last + 1) == own
+                and alive(first, last + 1) == own
+            ):
+                last += 1
+            ends.append(last + 1)
+            first = last + 1
+        return ends
+
+    @staticmethod
+    def _stills_may_share_batches():
+        """Whether this job's stills may share render batches at all.
+
+        Not under the path tracer, whose light-sampling tables and adaptive
+        sampling are built over a whole batch, nor under the wavefront memory
+        trim, which compacts a batch by its union of visible primitives, nor
+        with tonemapping inside the composite, where bloom hands a frame back
+        as bytes or as floats depending on whether it glows: no per-frame
+        check covers those, so each still keeps a batch of its own.
+        """
+        rt_settings = SETTINGS.raytracing
+        return (
+            _STILL_GROUP_MAX_FRAMES > 1
+            and int(rt_settings.samples_per_pixel) <= 1
+            and not rt_settings.wf_mem_trim
+            and rt_settings.is_post_process_tonemap_enabled()
+        )
+
+    @staticmethod
+    def _frames_deciding_alike(primitives, num_frames):
+        """Leading frames of a prepared still batch that decide alike alone.
+
+        The merge notes, per frame, the inputs of every choice it makes for
+        the batch as a whole (``_merge_scene``'s ``frame_signature``); frames
+        noting what the first one does would each make those choices alike
+        alone, so a batch of them renders each exactly as it would alone.
+        Anything unverifiable -- no merged scene, a primitive whose projection
+        could not choose per frame -- keeps the first frame only.
+        """
+        merged = RenderLoopMixin._merged_still_scene(primitives)
+        alike = None if merged is None else merged.get("_frames_alike")
+        return 1 if alike is None else min(int(alike), num_frames)
+
+    @staticmethod
+    def _still_batch_digests(primitives):
+        """Digests of a still batch's first and last frames' merge notes.
+
+        Equal digests from neighbouring batches mean the frames either side of
+        their boundary would have decided alike in one batch (see
+        ``scene_builder._frame_digest``). ``(None, None)`` when unknown.
+        """
+        merged = RenderLoopMixin._merged_still_scene(primitives) if primitives else None
+        digests = None if merged is None else merged.get("_frame_digests")
+        return (None, None) if digests is None else digests
+
+    @staticmethod
+    def _merged_still_scene(primitives):
+        first = primitives[0]
+        prepared = getattr(first, "_rt_prepared_host_scene", None)
+        if prepared is not None:
+            return prepared[0]
+        return getattr(first, "_rt_merged_scene", None)
+
     def _prepare_merged_host_scene(
         self, primitive_batch, *, render_state=None, track_peak=None
     ):
@@ -920,7 +1073,12 @@ class RenderLoopMixin:
                     )
                 )
         merged_host = _merge_scene(
-            primitive_batch, light_sources=lights, track_peak=track_peak
+            primitive_batch,
+            light_sources=lights,
+            track_peak=track_peak,
+            # A still batch is checked frame by frame before it renders.
+            frame_signature=bool(getattr(self, "_frame_local_batches", False))
+            and not (render_state or {}).get("lone_still", False),
         )
         env_map = getattr(self, "environment_map", None)
         first._rt_env_meta = None
@@ -1788,6 +1946,30 @@ class RenderLoopMixin:
             wait,
         )
 
+    def _note_float32_rounding(self, primitives, start_ind, frame_indices):
+        """Fold a rendered batch's float32 rounding records into the job's.
+
+        Called once per batch, after its frames are out, so the one readback
+        it costs waits on nothing still queued. See
+        :mod:`algan.rendering.raytracing.float32_rounding`.
+        """
+        job = getattr(self, "_float32_rounding_job", None)
+        if job is None:
+            return
+        fps = self.frames_per_second
+
+        def frame_time(offset):
+            index = start_ind + offset
+            if frame_indices is not None:
+                index = frame_indices[min(index, len(frame_indices) - 1)]
+            return index / fps
+
+        try:
+            job.note_batch(primitives, frame_time)
+        except Exception:  # noqa: BLE001
+            # Advice only: never let it fail a render that has succeeded.
+            logger.debug("Could not read the float32 rounding records.", exc_info=True)
+
     def _reset_render_arena_after_failure(self):
         """Release every allocation owned by a failed render attempt.
 
@@ -2528,6 +2710,8 @@ class RenderLoopMixin:
         registry = _aux_source_registry(self)
         for entries in groups.values():
             mega = build_render_primitives_batched([e["actor"] for e in entries], self)
+            # One circuit per actor (see below), so no element boundaries.
+            mega._member_owners = [e["actor"] for e in entries]
             if registry is not None:
                 # One circuit per actor, in entry order (``_is_batchable_bezier``
                 # guarantees the single row), so the lane is the actors' ids.
@@ -2563,6 +2747,7 @@ class RenderLoopMixin:
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
+                _note_primitive_owner(entry["prims"], entry["actor"])
                 if registry is not None:
                     _stamp_primitive_sources(entry["prims"], entry["actor"], registry)
 
@@ -2817,10 +3002,18 @@ class RenderLoopMixin:
         # Restrict base-state queries to actors that can contribute to this
         # frame window. Animation replay retains global row ids, and the
         # timeline conservatively falls back to all rows for user callbacks or
-        # updaters whose dependencies cannot be discovered safely.
-        timeline.set_state_to_times(
-            time_inds / self.frames_per_second, active_mobs=actors
+        # updaters whose dependencies cannot be discovered safely. Stills that
+        # share a batch replay frame by frame, so each frame's state is exactly
+        # its alone state (see TimelineManager._replay_frame_groups).
+        timeline.replay_frame_by_frame = bool(
+            getattr(self, "_frame_local_batches", False)
         )
+        try:
+            timeline.set_state_to_times(
+                time_inds / self.frames_per_second, active_mobs=actors
+            )
+        finally:
+            timeline.replay_frame_by_frame = False
 
         # Each bucket holds the batch identifier's primitives and merged
         # collections as an ordered list of ``(is_finished_collection,
@@ -2896,6 +3089,7 @@ class RenderLoopMixin:
             if primitive is not None:
                 if not isinstance(primitive, list):
                     primitive = [primitive]
+                _note_primitive_owner(primitive, actor)
                 if aux_registry is not None:
                     _stamp_primitive_sources(primitive, actor, aux_registry)
                 ordered_items.append(primitive)
@@ -2966,6 +3160,7 @@ class RenderLoopMixin:
                         entry["prims"] = (
                             primitive if isinstance(primitive, list) else [primitive]
                         )
+                        _note_primitive_owner(entry["prims"], entry["actor"])
                         if aux_registry is not None:
                             _stamp_primitive_sources(
                                 entry["prims"], entry["actor"], aux_registry
@@ -3083,11 +3278,9 @@ class RenderLoopMixin:
                     next_ind = len(primitives)
                 else:
                     next_ind = max(inds[0], current_ind + 1)
-                out.append(
-                    primitive_class(
-                        triangle_collection=primitives[current_ind:next_ind]
-                    )
-                )
+                members = primitives[current_ind:next_ind]
+                out.append(primitive_class(triangle_collection=members))
+                _attach_member_owners(out[-1], members)
                 current_ind = next_ind
                 out[-1].memory = self.memory
                 out[-1].scene = self
@@ -3107,6 +3300,7 @@ class RenderLoopMixin:
                     colored.append(p)
             if colored:
                 out.append(primitive_class(triangle_collection=colored))
+                _attach_member_owners(out[-1], colored)
                 out[-1].memory = self.memory
                 out[-1].scene = self
             # Textured primitives are batched one per collection: a
@@ -3117,6 +3311,7 @@ class RenderLoopMixin:
             # (see _merge_scene).
             for p in textured:
                 out.append(primitive_class(triangle_collection=[p]))
+                _attach_member_owners(out[-1], [p])
                 out[-1].memory = self.memory
                 out[-1].scene = self
 
@@ -3453,6 +3648,7 @@ class RenderLoopMixin:
         light_objects = []
         light_active = []
         frame_times = None
+        frame_local = bool(getattr(self, "_frame_local_batches", False))
         for light in self.light_sources:
             # Same lifespan-overlap test as the render loop's actor filter:
             # start < 0 means never spawned, end < 0 means never despawned.
@@ -3497,7 +3693,7 @@ class RenderLoopMixin:
             if rt_settings_module.linear_color_space:
                 light_rgba = torch.cat(
                     (
-                        srgb_to_linear(light_rgba[..., :3]),
+                        _decode_light_rgb(light_rgba[..., :3], frame_local),
                         light_rgba[..., 3:],
                     ),
                     -1,
@@ -3580,6 +3776,7 @@ class RenderLoopMixin:
         *,
         frame_indices=None,
         _post_process_per_frame=False,
+        _independent_frames=False,
         aux_passes: bool = False,
         aux_sink=None,
     ):
@@ -3589,6 +3786,20 @@ class RenderLoopMixin:
         increasing sequence of non-negative integer frame indices. Only those
         frames are materialized and rendered; gaps cost no frame storage.
         Without it, start/end retain their ordinary timeline-index meaning.
+
+        ``_independent_frames`` (stills) renders every frame exactly as it would
+        alone, from only its own Mobs. A batch carries every Mob alive anywhere
+        in its window, so frames share one only while nothing spawns or
+        despawns between them (:meth:`_still_group_ends`), at most
+        ``_STILL_GROUP_MAX_FRAMES`` of them. Inside such a batch every choice
+        that could move a frame's pixels is made per frame -- timeline replay,
+        circuit chord counts and outline bounds, circuit geometry reuse, color
+        decoding, post-processing --
+        and a batch whose frames would decide anything else differently alone
+        (route, opacity and material gates, triangle promotion; see
+        ``_merge_scene``'s frame signature) is split before it renders
+        (:meth:`_frames_deciding_alike`). The path tracer gives every still a
+        batch of its own (:meth:`_stills_may_share_batches`).
 
         With ``aux_passes=True``, ``aux_sink`` (a callable, required then) is
         called exactly once per yielded batch, immediately before the batch is
@@ -3606,8 +3817,11 @@ class RenderLoopMixin:
         if aux_passes and not callable(aux_sink):
             raise TypeError("aux_passes=True needs a callable aux_sink")
         # Forwarded only when requested, so the implementation generators are
-        # called exactly as before when the passes are off.
-        aux_kwargs = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
+        # called exactly as before when the passes (or independent frames)
+        # are off.
+        forwarded = {"aux_passes": True, "aux_sink": aux_sink} if aux_passes else {}
+        if _independent_frames:
+            forwarded["independent_frames"] = True
         if frame_indices is not None:
             import operator
 
@@ -3630,7 +3844,13 @@ class RenderLoopMixin:
             if start_time_ind == end_time_ind:
                 return
         _check_post_processes(post_processes)
-        if _post_process_per_frame and post_processes:
+        if _independent_frames and post_processes:
+            # Bloom included: it decides from a whole chunk whether any frame
+            # glows, and a still's pixels must not depend on its batch-mates.
+            post_processes = _framewise_post_processes(
+                post_processes, batch_native=False
+            )
+        elif _post_process_per_frame and post_processes:
             post_processes = _framewise_post_processes(post_processes)
         # Every frame-producing path validates the arch before launching a
         # kernel: a render device changed since the last job needs a different
@@ -3645,6 +3865,11 @@ class RenderLoopMixin:
         # second save_video reports its own render rather than inheriting the
         # first one's totals and its already-spent warnings.
         reset_truncations()
+        # So is the float32 rounding warning's, with one difference: a
+        # camera-view pass copies the Scene's attributes, finds this job's
+        # record already open and adds to it, so the render warns once in all.
+        owns_rounding_job = getattr(self, "_float32_rounding_job", None) is None
+        completed = False
         with torch.no_grad(), render_job_holding_the_arch():
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
@@ -3657,6 +3882,8 @@ class RenderLoopMixin:
             # render made, and walking the authored scene to find them cost
             # more than the reclaim saved (see scene_excluded_from_gc).
             try:
+                if owns_rounding_job:
+                    self._float32_rounding_job = Float32RoundingJob()
                 from algan.rendering.camera_views import (
                     _live_views,
                     _render_with_camera_views,
@@ -3675,8 +3902,9 @@ class RenderLoopMixin:
                         post_processes=post_processes,
                         manual_memory=manual_memory,
                         frame_indices=frame_indices,
-                        **aux_kwargs,
+                        **forwarded,
                     )
+                    completed = True
                     return
                 with scene_excluded_from_gc():
                     yield from self._get_frames_impl(
@@ -3690,8 +3918,9 @@ class RenderLoopMixin:
                             if frame_indices is not None
                             else {}
                         ),
-                        **aux_kwargs,
+                        **forwarded,
                     )
+                completed = True
             finally:
                 # _get_frames_impl has drained its prep worker before returning
                 # here, including errors and abandoned generators. Release
@@ -3699,6 +3928,7 @@ class RenderLoopMixin:
                 cache = self.__dict__.pop("_bezier_geometry_cache", None)
                 if cache is not None:
                     cache.clear()
+                self.__dict__.pop("_frame_local_batches", None)
                 # Release the arena before the arch scope considers a deferred
                 # compiler reset. WDDM charges GPU allocations against host
                 # commit too; its freed storage must be reclaimable before the
@@ -3708,6 +3938,13 @@ class RenderLoopMixin:
                 if render_memory is not None and render_memory is not original_memory:
                     render_memory.data = None
                 self.memory = original_memory
+                if owns_rounding_job:
+                    rounding_job = self.__dict__.pop("_float32_rounding_job", None)
+                    # Last, since a warnings filter may turn the warning into
+                    # an error. Only for a render that finished: an abandoned
+                    # or failed one has not seen all the frames it was for.
+                    if completed and rounding_job is not None:
+                        rounding_job.report()
 
     def _get_frames_impl(
         self,
@@ -3720,6 +3957,7 @@ class RenderLoopMixin:
         frame_indices=None,
         aux_passes=False,
         aux_sink=None,
+        independent_frames=False,
     ):
         # The aux passes' sink, or None when they are off (see get_frames).
         aux_sink = aux_sink if aux_passes else None
@@ -3818,10 +4056,49 @@ class RenderLoopMixin:
             # thread's do.
             grad_enabled = torch.is_grad_enabled()
 
+            # Stills (see get_frames): batches end where each still's group
+            # does, and preparation makes its choices per frame (read off the
+            # Scene by the projection and the merge, worker included).
+            self._frame_local_batches = bool(independent_frames)
+            group_ends = (
+                self._still_group_ends(
+                    actors, frame_indices, start_time_ind, end_time_ind
+                )
+                if independent_frames
+                and frame_indices is not None
+                and self._stills_may_share_batches()
+                else None
+            )
+
+            def group_end_for(time_ind):
+                if group_ends is None:
+                    return time_ind + 1
+                return group_ends[bisect.bisect_right(group_ends, time_ind)]
+
+            # How many stills a fetch may speculate will decide alike (see the
+            # check below); None: whole groups. A job's first batch is a probe
+            # of two, so stills that never agree -- PN surfaces diced per
+            # frame as they turn -- waste two stills' preparation on it rather
+            # than a group's; once two agree, whole groups follow. After a
+            # batch is split, fetch as many as last agreed, doubling only once
+            # a batch's first still notes what the batch before's last one did
+            # (they would have agreed): evidence, not a blind retry, so stills
+            # that never agree cost nothing more after the probe.
+            alike_hint = 2
+            alike_probing = True
+            last_digest = None
+
             def materialize_batch(time_ind, batch_end_ind):
+                if independent_frames:
+                    # Never past the end of time_ind's group (see get_frames):
+                    # every fetch, retry and prefetch of this job comes
+                    # through here.
+                    batch_end_ind = min(batch_end_ind, group_end_for(time_ind))
+                    if alike_hint is not None:
+                        batch_end_ind = min(batch_end_ind, time_ind + alike_hint)
                 while True:
                     try:
-                        return self._get_batch_of_primitives(
+                        batch = self._get_batch_of_primitives(
                             time_ind,
                             batch_end_ind,
                             actors,
@@ -3832,6 +4109,14 @@ class RenderLoopMixin:
                                 else {}
                             ),
                         )
+                        if independent_frames and group_end_for(time_ind) == (
+                            time_ind + 1
+                        ):
+                            # A still alone in its group: no batch-mate to
+                            # check and no neighbour to compare, so its merge
+                            # takes no frame signature.
+                            batch[2]["lone_still"] = True
+                        return batch
                     except (
                         InsufficientMemoryException,
                         OutOfRenderMemory,
@@ -4063,6 +4348,7 @@ class RenderLoopMixin:
                         )
 
                     duration = new_time_ind - current_time_ind
+                    fetched_duration = duration
                     planned_prefix = None
                     # A batch the worker built under prefetch-gpu-prep is a
                     # full-window copy; the pristine fetched batch rides along
@@ -4220,6 +4506,45 @@ class RenderLoopMixin:
                         retry_end_ind = current_time_ind + target_duration
                         continue
 
+                    if independent_frames and duration > 1 and primitives:
+                        # Stills share this batch only if each would make
+                        # every batch-wide choice alike alone; otherwise
+                        # refetch the leading frames that do (see get_frames).
+                        agreeing = self._frames_deciding_alike(primitives, duration)
+                        if agreeing < duration:
+                            logger.debug(
+                                "Stills %s:%s would render differently together; "
+                                "keeping the first %s in this batch.",
+                                current_time_ind,
+                                new_time_ind,
+                                agreeing,
+                            )
+                            alike_hint = agreeing
+                            alike_probing = False
+                            primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_prepared_host_scene = None
+                            primitives[0]._rt_merged_scene = None
+                            del primitives
+                            self.memory.reset()
+                            release_torch_memory(force_gc=False)
+                            retry_end_ind = current_time_ind + agreeing
+                            continue
+                    if independent_frames:
+                        first_digest, end_digest = self._still_batch_digests(primitives)
+                        if alike_probing:
+                            if duration >= alike_hint:
+                                alike_hint = None
+                                alike_probing = False
+                        elif (
+                            alike_hint is not None
+                            and first_digest is not None
+                            and first_digest == last_digest
+                        ):
+                            alike_hint *= 2
+                            if alike_hint >= _STILL_GROUP_MAX_FRAMES:
+                                alike_hint = None
+                        last_digest = end_digest
+
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(retry_lower_duration, duration)
                         if False:  # retry_upper_duration - retry_lower_duration > 1:
@@ -4248,11 +4573,24 @@ class RenderLoopMixin:
                     # the first.
                     if primitives:
                         arena_frames = self._batch_frame_capacity() or 0
+                        fitted = duration
+                        if (
+                            independent_frames
+                            and retry_upper_duration is None
+                            and duration == fetched_duration
+                        ):
+                            # A still batch ends where its group, or its frames
+                            # deciding alike, do: not the arena's verdict, so
+                            # it does not shrink the next fetch.
+                            fitted = max(
+                                duration,
+                                self._arena_fetch_frame_cap or _STILL_GROUP_MAX_FRAMES,
+                            )
                         # Never below what just fit: the estimate reads the
                         # scene's frame-independent bytes as if they scaled, so
                         # it under-shoots (harmlessly) on a batch that fit.
                         self._arena_fetch_frame_cap = _next_arena_fetch_cap(
-                            duration, arena_frames
+                            fitted, arena_frames
                         )
 
                     # Only prefetch the successor once the current runtime is
@@ -4380,6 +4718,9 @@ class RenderLoopMixin:
                             self._reset_render_arena_after_failure()
                             continue
                         self._note_render_arena_success()
+                        self._note_float32_rounding(
+                            primitives, current_time_ind, frame_indices
+                        )
                         # Drop this batch's arena-view caches before the arena
                         # is reset/reallocated: a rendered primitive's
                         # ``_rt_device_scene`` holds tensors carved from the

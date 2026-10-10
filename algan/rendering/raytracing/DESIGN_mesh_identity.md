@@ -466,8 +466,8 @@ area the scan never summed.
 
 Condition 3 is a facets-per-pixel question, not a tessellation question, and the
 harness holds a matched pair that says so: `Cylinder(radius=0.9,
-resolution=(256, 2))` notches **zero** pixels while `Cylinder(radius=0.045,
-resolution=(256, 2))` — identical tessellation, 20x thinner, ~9 px wide on
+resolution=(2, 256))` notches **zero** pixels while `Cylinder(radius=0.045,
+resolution=(2, 256))` — identical tessellation, 20x thinner, ~9 px wide on
 screen — notches 253. Two ways a scene gets there: a finely tessellated object
 drawn small, or **the limb of any curved surface**, where facets foreshorten and
 crowd. The limb is why a large `Sphere` notches at all.
@@ -475,7 +475,7 @@ crowd. The limb is why a large `Sphere` notches at all.
 **HOW BAD, measured `--res md` on CUDA** (`--notch-probe`):
 
     case                              notched interior px    mean     worst
-    0.045 rod, resolution=(256, 2)      253 / 3546  (7.1%)   0.0090   0.0515
+    0.045 rod, resolution=(2, 256)      253 / 3546  (7.1%)   0.0090   0.0515
     Sphere(192, 96)                      24 / 26480 (0.09%)  0.0018   0.0036
     line-check cylinder                   4 / 10195          0.0010   0.0010
     packed 4x4 (overlap)                  3 / 30531          0.0014   0.0017
@@ -2000,7 +2000,7 @@ its result. `1035 passed, 89 skipped` on `pytest -q tests/unit_tests`.
 `benchmarks/_aa_line_check.py` reports the symptom this work was partly aimed
 at: a tessellated `Cylinder` scores **0.0568 px** of ink wobble against
 **0.0138** for a flat two-triangle quad, and **0.0773** when diced to
-`resolution=(256, 2)` — worse the finer it gets. Two plausible causes were built
+`resolution=(2, 256)` — worse the finer it gets. Two plausible causes were built
 and measured. **Neither is it.**
 
 6.1 The consecutive-run requirement is not the problem
@@ -2128,7 +2128,7 @@ end of its buffer):
     bezier Line               0.0042       0.0042   (SDF coverage, no masks)
     flat quad                 0.0138       0.0141
     Cylinder                  0.0568       0.0391    -31%
-    Cylinder (256, 2)         0.0773       0.0543    -30%
+    Cylinder (2, 256)         0.0773       0.0543    -30%
 
     |actual-E| (harness)   8 samples   16 samples
     quad (control)            0.0020       0.0028
@@ -2360,7 +2360,7 @@ non-degenerate angles:
 winning by an order of magnitude. That is the goal met.
 
 **Where SUPPRESSION broke, and what replaced it.** The first form of this rule
-suppressed the far sheet outright, and `cyl_fine` — `resolution=(256, 2)` on a
+suppressed the far sheet outright, and `cyl_fine` — `resolution=(2, 256)` on a
 0.045-radius rod, 256 facets around a shape ~9 px wide — regressed **+114%**:
 signed error flipped to −0.0344 (under-covering), 1676 of 3508 interior pixels
 notched by up to 0.41.

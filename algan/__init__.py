@@ -320,21 +320,24 @@ def _report_a_script_that_rendered_nothing():
     completion, writes no file and exits 0 -- the user then goes looking for
     output that was never going to exist. Registered only for a run that is
     plainly a scene script (``is_scene_script_run``): a REPL, a notebook or a
-    test suite that renders nothing is not a mistake. The daemon and
-    ``algan render``'s in-process path do the same check themselves, because
-    ``atexit`` handlers do not run under either.
+    test suite that renders nothing is not a mistake. Nor is a script that
+    never builds a Scene -- it imported Algan for its constants or a helper --
+    so this one is told nothing either. The daemon and ``algan render``'s
+    in-process path do the same check themselves, because ``atexit`` handlers
+    do not run under either.
     """
     import atexit
 
     from algan.daemon_client import is_scene_script_run, script_of
     from algan.environment import env_flag
-    from algan.scene import renders_requested, warn_if_nothing_rendered
+    from algan.scene import renders_requested, scenes_created, warn_if_nothing_rendered
 
     if env_flag("ALGAN_DAEMON_CHILD", False) or not is_scene_script_run():
         return
 
     script = script_of()
     before = renders_requested()
+    scenes_before = scenes_created()
     # A script that died has already said why; "it rendered nothing" on top of
     # its traceback would only misdescribe the failure. atexit cannot see how
     # the interpreter is ending, so note it as it happens.
@@ -349,7 +352,7 @@ def _report_a_script_that_rendered_nothing():
 
     def _report():
         if not crashed:
-            warn_if_nothing_rendered(script, before)
+            warn_if_nothing_rendered(script, before, scenes_before)
 
     atexit.register(_report)
 
@@ -518,6 +521,7 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "rotate_vector_around_axis",  # algan.geometry.geometry
         "get_rotation_around_axis",  # algan.geometry.geometry
         "get_rotation_between_bases",  # algan.geometry.geometry
+        "invert_row_basis",  # algan.geometry.geometry
         "get_orthonormal_vector",  # algan.geometry.geometry
         "pack_animatable_rows",  # algan.utils.mob_utils
         "pack_member_rows",  # algan.utils.mob_utils
