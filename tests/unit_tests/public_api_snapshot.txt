@@ -104,6 +104,7 @@ DiGraph
 Difference
 DiffuseMaterial
 DirectionalLight
+DivergentReplayWarning
 Dodecahedron
 Dot
 Dot3D

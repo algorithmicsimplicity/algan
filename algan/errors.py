@@ -185,6 +185,24 @@ class HierarchyChangedDuringUpdaterWarning(AlganWarning):
     code = "ALGAN_HIERARCHY_CHANGED_DURING_UPDATER"
 
 
+class DivergentReplayWarning(AlganWarning):
+    """Warns that a recorded call, re-run to render its frames, reached a Mob
+    that did not exist when the call was recorded.
+
+    Algan renders an animated function's frames by calling it again, with its
+    recorded arguments interpolated for each frame. That only reproduces the
+    animation if the call reaches the same Mobs every time it runs. A call that
+    reads a mutable object -- one captured in its arguments, or a global --
+    which the script changes after the call, reaches whatever that object
+    holds by the time the frames are rendered: its frames then show a Mob the
+    script made later, and the Mob it animated when it was recorded gets
+    nothing. Stills and video frames show the same thing, since both render
+    this way.
+    """
+
+    code = "ALGAN_DIVERGENT_REPLAY"
+
+
 class Float32PrecisionWarning(AlganWarning):
     """Warns that float32 rounding moved geometry far enough to see on screen.
 
@@ -218,5 +236,6 @@ __all__ = [
     "DespawnedMobWarning",
     "NeverVisibleMobWarning",
     "HierarchyChangedDuringUpdaterWarning",
+    "DivergentReplayWarning",
     "Float32PrecisionWarning",
 ]

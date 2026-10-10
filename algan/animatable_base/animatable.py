@@ -225,6 +225,14 @@ def animated_function(
     or ``with Off():`` to apply the change instantly. The function's own writes
     determine which descendants change.
 
+    The frames are rendered by calling the function again, with its recorded
+    arguments interpolated per frame, so it must reach the same Mobs every time
+    it runs. Reading an object the script changes after the call -- a list or
+    record passed in and later updated -- makes the re-run animate whatever the
+    object holds by then; Algan warns with
+    :class:`~algan.errors.DivergentReplayWarning` when that reaches a Mob made
+    after the call.
+
     Parameters
     ----------
     function
@@ -1199,6 +1207,8 @@ class Animatable:
         # scoped write replays over exactly the rows it wrote.
         where = include_descendants if _scope is None else _scope
         replay_inds = timeline.replay_inds(key, self.id, where)
+        if replay_inds is None and timeline._active_replay_event is not None:
+            timeline.note_unrecorded_replay_write(self)
         inds = (
             replay_inds
             if replay_inds is not None

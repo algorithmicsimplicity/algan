@@ -36,6 +36,7 @@ import torch
 
 from algan.environment import env_flag, env_str
 from algan.errors import (
+    DivergentReplayWarning,
     HierarchyChangedDuringUpdaterWarning,
     UnsupportedFeatureError,
     _user_stacklevel,
@@ -2140,6 +2141,10 @@ class FunctionApplicationEvent:
         # Places it in execution order against edits recorded outside any
         # function (see AnimationTimeline._plain_writes_for_times).
         self.seq = None
+        # The Scene's next Mob id when this was recorded: a Mob with an id at
+        # least this was made later, so its replay cannot have written it
+        # (see AnimationTimeline.note_unrecorded_replay_write).
+        self.mob_id_bound = None
         # Resolved replay-window end (see
         # AnimationTimeline._resolve_replay_windows); None until resolved or
         # when the function recorded no attribute edits.
@@ -2582,6 +2587,9 @@ class AnimationTimeline:
         # (id(updater event), parent mob id) pairs already warned about, so a
         # loop that re-parents the same Mob every iteration says it once.
         self._hierarchy_change_warnings = set()
+        # Functions already warned about for writing, when replayed, to a Mob
+        # made after they were recorded (note_unrecorded_replay_write).
+        self._divergent_replay_warnings = set()
         self._materialization_times = None
         self._materialized_mob_ids = None
         self._traced_paths = weakref.WeakValueDictionary()
@@ -2844,6 +2852,7 @@ class AnimationTimeline:
             function, caller, animated_args, kwargs, rf, c.timespan
         )
         event.seq = self._edit_seq
+        event.mob_id_bound = getattr(getattr(caller, "scene", None), "id_count", None)
         self.function_timeline.add(event)
         self.last_recorded_event = event
         return kwargs
@@ -2984,6 +2993,59 @@ class AnimationTimeline:
         if consume:
             self._active_replay_edit_index += 1
         return inds
+
+    def note_unrecorded_replay_write(self, mob):
+        """Warn once if a replayed function writes a Mob made after its recording.
+
+        Called for a write that matched none of the rows the replayed function
+        recorded. Most such writes are benign -- a Mob whose recorded rows a
+        topology split handed to a clone writes through the clone -- but a Mob
+        created after the call was recorded cannot have been written by it:
+        the function read something the script changed later, and its frames
+        now animate that Mob instead of the one it animated when it ran.
+        """
+        event = self._active_replay_event
+        bound = getattr(event, "mob_id_bound", None)
+        if bound is None or mob.id < bound:
+            return
+        if mob.id in self._replay_born_mob_ids or (
+            getattr(mob, "_pass_identity", None) is not None
+        ):
+            # Built during this replay, or a history clone / morph stand-in
+            # that took over rows the recording wrote.
+            return
+        function = getattr(event.function, "__wrapped__", event.function)
+        while hasattr(function, "__wrapped__"):
+            function = function.__wrapped__
+        if function in self._divergent_replay_warnings:
+            return
+        self._divergent_replay_warnings.add(function)
+        name = getattr(function, "__name__", "an animated function")
+        code = getattr(function, "__code__", None)
+        message = (
+            f"{name}() was re-run to render its frames and wrote to "
+            f"{_describe_mob(mob)}, which did not exist yet when that call was "
+            f"recorded (at {float(event.time.start):.2f} s). Algan renders a "
+            f"recorded call by running it again, so it has to reach the same "
+            f"Mobs every time: this one read something the script changed "
+            f"after the call -- an object passed in or kept outside it -- and "
+            f"its frames, in stills and video alike, now show the later Mob "
+            f"while the one it animated gets nothing. Copy what the call "
+            f"addresses into its arguments when you make it, rather than "
+            f"reading it from an object the script keeps changing."
+        )
+        if code is None:
+            warnings.warn(message, DivergentReplayWarning, stacklevel=2)
+            return
+        # Raised while frames render, long after the script ran: reported at
+        # the function's own definition, which is what has to change.
+        warnings.warn_explicit(
+            message,
+            DivergentReplayWarning,
+            code.co_filename,
+            code.co_firstlineno,
+            module=getattr(function, "__module__", None),
+        )
 
     def peek_replay_inds(self, attr_name, mob_id, include_descendants):
         """Rows a *read* must use while replaying one function.
