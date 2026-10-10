@@ -22,7 +22,7 @@ import math
 import pytest
 import torch
 
-from algan import Group, Mob
+from algan import Group, Mob, Scene
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants import easings
 from algan.scene_manager import SceneManager
@@ -263,3 +263,68 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_an_instant_write_inside_a_running_animation_holds_from_its_time():
+    """An ``Off()`` write executed after an animation of the same rows, at a
+    time while that animation still runs, has no function to re-apply. The
+    animation's replay used to write over it until the animation ended, so it
+    only took effect then (hiding glyphs mid-entrance: they faded in with the
+    rest and vanished afterwards). It must hold from its own time on.
+    """
+    m = Mob().spawn(animate=False)
+    t0 = _now()
+    with Sync(easing=easings.identity):
+        m.move(R * 2)  # [t0, t0+1]
+        with Seq():
+            Scene.wait(0.4)
+            with Off():
+                m.location = U * 3  # at t0+0.4
+    offs = [0.2, 0.3999, 0.4, 0.7, 1.0, 1.5]
+    expected = [R * 2 * _lin(dt, 0, 1) if dt < 0.4 else U * 3 for dt in offs]
+    (actual,) = _materialize([t0 + dt for dt in offs], [m])
+    _assert_matches(offs, actual, expected)
+
+
+def test_an_animation_after_an_instant_write_builds_on_it():
+    """The re-applied write sits in execution order: an animation executed
+    after it, still inside the first animation's window, moves on from it.
+    """
+    m = Mob().spawn(animate=False)
+    t0 = _now()
+    with Sync(easing=easings.identity):
+        with Seq(runtime=2):
+            m.move(R * 2)  # [t0, t0+2]
+        with Off():
+            m.location = U * 3  # at t0
+        with Seq(runtime=1):
+            m.move(OUT * 2)  # [t0, t0+1], executed after the write
+    offs = [0.25, 0.5, 1.0, 1.5, 2.5]
+    expected = [U * 3 + OUT * 2 * _lin(dt, 0, 1) for dt in offs]
+    (actual,) = _materialize([t0 + dt for dt in offs], [m])
+    _assert_matches(offs, actual, expected)
+
+
+def test_an_instant_group_write_partially_overlapping_an_animation():
+    """A write covering two Mobs, only one of which an earlier animation is
+    still moving: both hold what the write wrote from its time on. The
+    write's window is extended on all of its rows together, which used to
+    hold the other Mob at its old value too, until the animation ended.
+
+    An instant write overrides: it holds the values it wrote, which were
+    computed after the earlier move was recorded -- so the moving Mob takes
+    the move's end plus the shift at once, as a write that does not overlap
+    anything shows its written values from its time on.
+    """
+    m1 = Mob().spawn(animate=False)
+    m2 = Mob().spawn(animate=False)
+    g = Group([m1, m2])
+    t0 = _now()
+    with Sync(easing=easings.identity):
+        m1.move(R * 2)  # [t0, t0+1], m1 only
+        with Off():
+            g.location = U  # at t0, both
+    offs = [0.25, 0.75, 1.5]
+    a1, a2 = _materialize([t0 + dt for dt in offs], [m1, m2])
+    _assert_matches(offs, a1, [R * 2 + U] * len(offs))
+    _assert_matches(offs, a2, [U] * len(offs))

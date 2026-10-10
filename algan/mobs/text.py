@@ -788,6 +788,9 @@ class Tex(Mob):
         wave running down and to the right, so the words appear to arrive in reading
         order.
 
+        Each glyph fades in to the opacity it had before the text spawned, as
+        every Mob's entrance does, so a glyph hidden beforehand stays hidden.
+
         Animation
         ---------
         Recorded as an animation lasting **1 second**, regardless of the enclosing
@@ -798,23 +801,58 @@ class Tex(Mob):
         :class:`~.Tex`
             This text, so calls can be chained.
         """
+        entering = self.__dict__.pop("_entering_rows", None) or {}
         with Seq(runtime=1, animation_manager=self.animation_manager):
             with Off(
                 animation_manager=self.animation_manager
             ):  # Ensure initial state setting is not recorded as an animation
                 opacity = self.opacity
+                # Read before the zeroing below: the wave used to fade every
+                # glyph to the text's own opacity, which re-showed any glyph
+                # hidden before the spawn.
+                parts = self._wave_pulsed_parts()
+                targets = {id(part): part.opacity for part in parts}
+                image_targets = [im.opacity for im in self.image_mobs]
                 self.opacity = 0
+                # Glyphs a selection spawned earlier are on screen already:
+                # only the rest enter (see _spawn_packed_rows below).
+                for part in parts:
+                    rows = entering.get(part.id)
+                    target = targets[id(part)]
+                    if rows is not None and rows.shape[0] == target.shape[-2]:
+                        rows = rows.to(target.device).view(1, -1, 1)
+                        part.set_non_recursive(opacity=torch.where(rows, 0, target))
             self._create_recursive(
                 animate=False
             )  # Mark as created without immediate animation
             self.wave_color(
                 None,
                 direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
-                opacity=opacity,
+                opacity=lambda part: targets.get(id(part), opacity),
             )
-            for im in self.image_mobs:
-                im.opacity = opacity
+            for im, target in zip(self.image_mobs, image_targets):
+                im.opacity = target
         return self
+
+    def _spawn_packed_rows(self, animate):
+        """Hand glyphs still waiting on a partial spawn to this text's entrance.
+
+        After a glyph selection has spawned, spawning the whole text reveals
+        the remaining glyphs -- and :meth:`on_create` then fades every glyph
+        in. Animating the reveal as well played two entrances over each other,
+        so the reveal is made instant here and :meth:`on_create` fades in just
+        the glyphs it revealed, leaving the ones already on screen alone.
+        """
+        if not animate or self.is_spawned() or self.__dict__.get("on_create"):
+            return super()._spawn_packed_rows(animate)
+        pending = self.scene.timeline_manager._pending_packed_spawns
+        ids = {mob.id for mob in self.get_descendants()}
+        self._entering_rows = {
+            mob_id: remaining.clone()
+            for mob_id, (_, remaining) in pending.items()
+            if mob_id in ids
+        }
+        return super()._spawn_packed_rows(False)
 
     def on_destroy(self):
         """Play the text's exit: a fade that sweeps across the glyphs.

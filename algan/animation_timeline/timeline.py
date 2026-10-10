@@ -375,6 +375,16 @@ class EditRecord:
     :meth:`AnimationTimeline._resolve_replay_windows`). It is resolved to a
     float at render time, once context rescaling is final.
 
+    ``replay_value`` is set only on an edit recorded outside any animated
+    function (``event`` None, e.g. an ``Off()`` assignment) whose window was
+    extended over an earlier-executed animation still running on its rows: the
+    values the edit wrote, which replay re-applies on top of that animation
+    from the edit's own end, in execution order (see
+    :meth:`AnimationTimeline._plain_write_value`). Without it nothing re-applied
+    such an edit while the window was open, so the earlier animation's replay
+    overwrote it until it finished -- hiding glyphs mid-entrance only took
+    effect once the entrance was over.
+
     ``authored_target`` is optional: the exact value the author assigned,
     when the recording site can supply it (``Surface.color_texture``'s
     setter does). The state the write STORES is ``pre + (target - pre)``,
@@ -393,6 +403,7 @@ class EditRecord:
         "seq",
         "event",
         "replay_end",
+        "replay_value",
         "authored_target",
     )
 
@@ -403,6 +414,7 @@ class EditRecord:
         self.seq = seq
         self.event = event
         self.replay_end = None
+        self.replay_value = None
         self.authored_target = None
 
 
@@ -2123,6 +2135,11 @@ class FunctionApplicationEvent:
         self.kwargs = kwargs
         self.easing = easing
         self.time = time
+        # The timeline's edit counter when this was recorded: every edit made
+        # before it has seq <= this, and its own and later edits have more.
+        # Places it in execution order against edits recorded outside any
+        # function (see AnimationTimeline._plain_writes_for_times).
+        self.seq = None
         # Resolved replay-window end (see
         # AnimationTimeline._resolve_replay_windows); None until resolved or
         # when the function recorded no attribute edits.
@@ -2526,6 +2543,10 @@ class AnimationTimeline:
         # still render.
         self._edits_in_order = []
         self._edit_order_dirty = False
+        # Whether any edit was ever inserted out of execution order (a
+        # migration, see register_migrated_edit): per-attribute edit lists are
+        # then no longer sorted by seq past that point.
+        self._edit_order_dirty_ever = False
         # A resolved prefix is immutable once all contexts containing it have
         # exited: later edits depend on its per-row ends, but can never change
         # an earlier edit's replay window.  Reusing this checkpoint turns a
@@ -2541,6 +2562,12 @@ class AnimationTimeline:
         # path, this MUST be cleared alongside it, or the views and their
         # backing store disagree.
         self._row_ends_capacity = {}
+        # (seq, attr, edit) for every edit recorded outside a function whose
+        # replay window the resolver extended (EditRecord.replay_value), in
+        # execution order. Rebuilt alongside the resolved prefix: entries past
+        # the prefix are dropped and re-derived whenever it is.
+        self._plain_write_replays = []
+        self._plain_write_window_cache = None
         self._active_edit_event = None
         self.last_recorded_event = None
         self._replay_windows_resolved = True
@@ -2816,6 +2843,7 @@ class AnimationTimeline:
         event = FunctionApplicationEvent(
             function, caller, animated_args, kwargs, rf, c.timespan
         )
+        event.seq = self._edit_seq
         self.function_timeline.add(event)
         self.last_recorded_event = event
         return kwargs
@@ -2930,6 +2958,7 @@ class AnimationTimeline:
         attr_timeline.edits.append(migrated_edit)
         self._edits_in_order.append((migrated_edit.seq, attr_name, migrated_edit))
         self._edit_order_dirty = True
+        self._edit_order_dirty_ever = True
         if source_edit.seq <= self._resolved_prefix_seq:
             self._resolved_prefix_count = 0
             self._resolved_prefix_seq = -1
@@ -3118,6 +3147,12 @@ class AnimationTimeline:
             row_ends[attr] = rows[:pointer]
 
         i = min(self._resolved_prefix_count, len(all_edits))
+        # Everything past the resolved prefix is about to be resolved again.
+        replays = self._plain_write_replays
+        while replays and replays[-1][0] > self._resolved_prefix_seq:
+            replays.pop()
+        self._plain_write_window_cache = None
+        edit_positions = {}
         while i < len(all_edits):
             # Edits recorded by one function application are consecutive in
             # execution order; group them so they share one window.
@@ -3139,6 +3174,19 @@ class AnimationTimeline:
             for _, attr, e in group:
                 e.replay_end = end
                 row_ends[attr][e.indexes.view(-1)] = end
+            if event is None:
+                # A plain write (no function to re-execute) landing inside an
+                # earlier animation of its rows: the base search holds those
+                # rows at that animation's pre-values until the window closes,
+                # and its replay writes over them, so the write has to be
+                # re-applied on top -- or it only shows once the animation ends.
+                for seq, attr, e in group:
+                    e.replay_value = None
+                    if end > e.time.end and e.indexes.numel():
+                        e.replay_value = self._plain_write_value(
+                            attr, e, edit_positions
+                        )
+                        replays.append((seq, attr, e))
             if event is not None:
                 event.replay_end = end
                 slot = getattr(event, "_window_slot", None)
@@ -3154,6 +3202,86 @@ class AnimationTimeline:
         self._resolved_prefix_count = len(all_edits)
         self._resolved_prefix_seq = all_edits[-1][0] if all_edits else -1
         self._resolved_row_ends = row_ends
+
+    def _plain_write_value(self, attr, edit, positions):
+        """The values ``edit`` left in its rows, ``[1, R, D]``.
+
+        An edit stores only what its rows held before it. What it left behind
+        is what the next edit of each row found there -- that edit's
+        pre-values -- or, for a row nothing wrote afterwards, the row's
+        authoring state. ``positions`` caches each attribute's edit positions
+        for the duration of one resolve.
+        """
+        timeline = self.attr_to_timeline[attr]
+        edits = timeline.edits
+        index = positions.get(attr)
+        if index is None:
+            index = positions[attr] = {id(e): k for k, e in enumerate(edits)}
+        rows = edit.indexes.view(-1).to(torch.long)
+        state = timeline.current_state
+        value = state[0, rows.to(state.device)].clone()
+        start = index.get(id(edit))
+        if start is None:
+            return value.unsqueeze(0)
+        sorted_rows, order = rows.sort()
+        count = sorted_rows.numel()
+        # The seq of the edit each row's value was taken from; a migrated edit
+        # is appended out of order, so a later-listed one can still be earlier.
+        taken = torch.full((count,), math.inf, dtype=torch.float64)
+        for later in edits[start + 1 :]:
+            if later.seq <= edit.seq:
+                continue
+            later_rows = later.indexes.view(-1).to(sorted_rows.device, torch.long)
+            if later_rows.numel() == 0:
+                continue
+            where = torch.searchsorted(sorted_rows, later_rows).clamp_(max=count - 1)
+            match = sorted_rows[where] == later_rows
+            if not bool(match.any()):
+                continue
+            ours = order[where[match]]
+            earlier = taken[ours] > later.seq
+            if not bool(earlier.any()):
+                continue
+            ours = ours[earlier]
+            source = match.nonzero().view(-1)[earlier]
+            value[ours.to(value.device)] = later.values.reshape(-1, value.shape[-1])[
+                source.to(later.values.device)
+            ].to(value)
+            taken[ours] = later.seq
+            if not self._edit_order_dirty_ever and bool(torch.isfinite(taken).all()):
+                break
+        return value.unsqueeze(0)
+
+    def _plain_writes_for_times(self, times):
+        """The plain writes (:attr:`EditRecord.replay_value`) active at ``times``.
+
+        Each is ``(seq, attr, edit, frame_inds)``: the frames from the edit's
+        own end to its extended replay end, where it has to be re-applied.
+        """
+        replays = self._plain_write_replays
+        if not replays:
+            return []
+        cache = self._plain_write_window_cache
+        if cache is None or cache[0] != len(replays):
+            starts = torch.tensor(
+                [float(e.time.end) for _, _, e in replays], dtype=torch.float64
+            )
+            ends = torch.tensor(
+                [e.replay_end for _, _, e in replays], dtype=torch.float64
+            )
+            cache = self._plain_write_window_cache = (len(replays), starts, ends)
+        _, starts, ends = cache
+        t = times.detach().to(device="cpu", dtype=torch.float64).view(1, -1)
+        # Compared in the frame times' own precision, as a function window is.
+        starts = starts.to(times.dtype).to(torch.float64).view(-1, 1)
+        ends = ends.to(times.dtype).to(torch.float64).view(-1, 1)
+        active = (starts <= t) & (t < ends)
+        out = []
+        for k in active.any(1).nonzero().view(-1).tolist():
+            seq, attr, edit = replays[k]
+            frames = active[k].nonzero().to(times.device)
+            out.append((seq, attr, edit, frames))
+        return out
 
     @contextlib.contextmanager
     def preserving_authoring_state(self, preserve_replay_resolution=True):
@@ -3220,6 +3348,12 @@ class AnimationTimeline:
                     self._resolved_prefix_seq,
                     self._resolved_row_ends,
                 ) = prefix_state
+                # Plain writes the render resolved past the restored prefix go
+                # with it; the next resolve re-derives them.
+                replays = self._plain_write_replays
+                while replays and replays[-1][0] > self._resolved_prefix_seq:
+                    replays.pop()
+                self._plain_write_window_cache = None
                 # The restored checkpoint is a set of standalone copies, not
                 # views into the backing store the render just mutated, so that
                 # store has to go with it. The next resolve rebuilds it from
@@ -3836,6 +3970,7 @@ class AnimationTimeline:
     def _replay_state_to_times_inner(self, times, active_mobs=None):
         self._resolve_replay_windows()
         functions = self.function_timeline.get_functions_for_times(times)
+        plain_writes = self._plain_writes_for_times(times)
         updaters = self.function_timeline.get_updaters_for_times(times)
         active_mob_ids = self._active_mob_ids(active_mobs, functions, updaters)
         self._materialization_times = times
@@ -3850,6 +3985,8 @@ class AnimationTimeline:
             for function in functions:
                 for attr_name, _, _, inds in function.recorded_edits:
                     replay_rows.setdefault(attr_name, []).append(inds.view(-1))
+            for _, attr_name, edit, _ in plain_writes:
+                replay_rows.setdefault(attr_name, []).append(edit.indexes.view(-1))
         for attr_name, timeline in self.attr_to_timeline.items():
             rows = replay_rows.get(attr_name)
             extra_rows = torch.cat(rows) if rows else None
@@ -3860,7 +3997,20 @@ class AnimationTimeline:
                 exclude_rows=exclude_rows.get(attr_name),
             )
 
-        for f in functions:
+        for f in self._in_execution_order(functions, plain_writes):
+            if isinstance(f, tuple):
+                # A plain write inside an earlier animation's window: its
+                # values, on top of everything executed before it.
+                _, attr_name, edit, frames = f
+                timeline = self.attr_to_timeline[attr_name]
+                timeline.set_active_time_inds(
+                    frames
+                    if _opt_disabled("timeslice")
+                    else _contiguous_time_selector(frames)
+                )
+                timeline.modify(edit.indexes.view(-1), edit.replay_value)
+                timeline.set_active_time_inds(slice(None, None, None))
+                continue
             if id(f) in claimed_events:
                 # Its whole effect -- one plain lerp over one described row
                 # set -- is carried by a SegmentWindow; re-executing it would
@@ -3972,6 +4122,24 @@ class AnimationTimeline:
         self._materialization_times = None
         self._materialized_mob_ids = None
         return self
+
+    @staticmethod
+    def _in_execution_order(functions, plain_writes):
+        """``functions`` (in recorded order) with ``plain_writes`` interleaved
+        where each was executed. A function's ``seq`` counts the edits made
+        before it, so a plain write with that seq or less came first.
+        """
+        if not plain_writes:
+            return functions
+        steps = []
+        key = -math.inf
+        for f in functions:
+            if f.seq is not None:
+                key = f.seq + 0.5
+            steps.append((key, f))
+        steps.extend((write[0], write) for write in plain_writes)
+        steps.sort(key=lambda step: step[0])
+        return [step for _, step in steps]
 
     def _replay_frame_groups(self, active_time_inds):
         """The ``[k, 1]`` frame-index groups a replay runs over, in order.

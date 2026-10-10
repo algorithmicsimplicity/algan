@@ -1294,9 +1294,10 @@ class Mob(
             throughout and after its materialization wave.
         **kwargs
             Passed to :meth:`~.Mob.pulse_color` for each part -- notably
-            ``opacity`` and ``new_color``. ``new_color`` may also be a callable
+            ``opacity`` and ``new_color``. Either may also be a callable
             receiving the primitive part being pulsed; this lets a composite
-            settle to each part's own target color after one shared wave.
+            settle to each part's own target color or opacity after one shared
+            wave.
 
         Returns
         -------
@@ -1329,9 +1330,10 @@ class Mob(
 
             def pulse_part(part):
                 part_kwargs = kwargs
-                new_color = kwargs.get("new_color")
-                if callable(new_color):
-                    part_kwargs = {**kwargs, "new_color": new_color(part)}
+                for name in ("new_color", "opacity"):
+                    value = kwargs.get(name)
+                    if callable(value):
+                        part_kwargs = {**part_kwargs, name: value(part)}
                 part.pulse_color(color, **part_kwargs)
 
             animate_lagged_by_location(
