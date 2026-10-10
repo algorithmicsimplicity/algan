@@ -82,9 +82,15 @@ def test_text_brought_forward_to_a_distant_camera_renders_unchanged(tmp_path):
     far_band, near_band = frame[:half], frame[half:]
     assert (far_band.max(-1) > 128).sum() > 200, "the label did not render"
     difference = np.abs(far_band - near_band).max(-1)
-    # The two depths may round an antialiased edge pixel by a level or two; a
-    # parity streak is a column of pixels wrong by up to 255.
-    assert int((difference > 16).sum()) == 0, (
+    # The two depths may round an antialiased edge pixel differently: by a
+    # level or two on the CPU, and by 17 at one edge pixel on MPS. A parity
+    # streak is a column of pixels wrong by up to 255 -- before the fix, 70
+    # here past 64 -- so it fails both checks.
+    assert int((difference > 64).sum()) == 0, (
+        f"{int((difference > 64).sum())} pixels differ by more than 64 "
+        f"(max {int(difference.max())})"
+    )
+    assert int((difference > 16).sum()) <= 2, (
         f"{int((difference > 16).sum())} pixels differ by more than 16 "
         f"(max {int(difference.max())})"
     )
