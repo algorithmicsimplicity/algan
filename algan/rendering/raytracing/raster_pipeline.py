@@ -44,6 +44,7 @@ from algan.utils.torch_compile import compiled
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.float32_rounding import (
     circuit_owner_ids,
+    circuit_shows,
     depth_order_record,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -2494,6 +2495,7 @@ def prepare_sparse_raster_coverage(
                 ref_s,
                 cov_s,
                 circuit_owner_ids(merged, key_s.device)[0],
+                circuit_shows(merged, key_s.device),
                 float(depth_order_eye),
                 int(time_start),
                 ppf,

@@ -64,7 +64,17 @@ FAR = 10000.0
 # ---------------------------------------------------------------------------
 
 
-def _brute_force(key, ref, cov, owner_ids, eye, frame_start, ppf, bits, full):
+def _draws(shows, frame, circuit):
+    """Whether ``circuit`` draws its fill or its border at ``frame``."""
+
+    def at(table):
+        return bool(table[frame % table.shape[0], circuit])
+
+    fill_texels, filled, border_texels, bordered = shows
+    return (at(fill_texels) and at(filled)) or (at(border_texels) and at(bordered))
+
+
+def _brute_force(key, ref, cov, owner_ids, shows, eye, frame_start, ppf, bits, full):
     """``depth_order_record`` one adjacent pair at a time, in plain Python."""
     depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
     last = int(owner_ids.shape[0]) - 1
@@ -78,6 +88,9 @@ def _brute_force(key, ref, cov, owner_ids, eye, frame_start, ppf, bits, full):
             continue
         a = min((-int(ref[i]) - 1) >> bits, last)
         b = min((-int(ref[i + 1]) - 1) >> bits, last)
+        frame = frame_start + (int(key[i]) >> 32) // ppf
+        if not (_draws(shows, frame, a) and _draws(shows, frame, b)):
+            continue
         owner_a, owner_b = int(owner_ids[a]), int(owner_ids[b])
         if owner_a < 0 or owner_b < 0 or owner_a == owner_b:
             continue
@@ -99,8 +112,9 @@ def _brute_force(key, ref, cov, owner_ids, eye, frame_start, ppf, bits, full):
 def _stream(seed, n=3000, pixels=400, ppf=100):
     """A sorted fragment stream with every kind of neighbour the scan meets.
 
-    Circuits and triangles, whole and partial pixels, one owner and two, and
-    gaps from zero to well past the resolution.
+    Circuits and triangles, whole and partial pixels, shapes that draw and
+    shapes that do not, one owner and two, and gaps from zero to well past the
+    resolution.
     """
     generator = torch.Generator().manual_seed(seed)
     pixel = torch.sort(torch.randint(0, pixels, (n,), generator=generator))[0]
@@ -131,19 +145,29 @@ def _stream(seed, n=3000, pixels=400, ppf=100):
     )[order]
     # Twelve circuits by four Mobs, one of them unknown.
     owner_ids = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, -1, 3, 3, 3], dtype=torch.int32)
-    return key, ref, cov, owner_ids, ppf
+    # Whether each draws its fill or its border, per frame: tables of three
+    # different frame counts, as the colour grids and the metadata can have.
+    shows = (
+        torch.rand((3, 12), generator=generator) < 0.8,  # a fill texel shows
+        torch.arange(12).view(1, 12) != 4,  # filled
+        torch.rand((2, 12), generator=generator) < 0.5,  # a border texel shows
+        torch.rand((1, 12), generator=generator) < 0.5,  # has a border width
+    )
+    return key, ref, cov, owner_ids, shows, ppf
 
 
 def test_the_scan_finds_the_brute_force_pairs_in_any_chunking(monkeypatch):
     full = 1.0 - 1e-6
     for seed in range(3):
-        key, ref, cov, owner_ids, ppf = _stream(seed)
-        count, best = _brute_force(key, ref, cov, owner_ids, 16000.0, 7, ppf, 8, full)
+        key, ref, cov, owner_ids, shows, ppf = _stream(seed)
+        count, best = _brute_force(
+            key, ref, cov, owner_ids, shows, 16000.0, 7, ppf, 8, full
+        )
         assert count > 20, "the stream should hold pairs to find"
         for chunk in (fr._DEPTH_CHUNK, 64, 7):
             monkeypatch.setattr(fr, "_DEPTH_CHUNK", chunk)
             record = fr.depth_order_record(
-                key, ref, cov, owner_ids, 16000.0, 7, ppf, 8, full
+                key, ref, cov, owner_ids, shows, 16000.0, 7, ppf, 8, full
             ).tolist()
             assert record[fr._D_COUNT] == count
             assert record[fr._D_RATIO] == best[0]
@@ -154,15 +178,51 @@ def test_the_scan_finds_the_brute_force_pairs_in_any_chunking(monkeypatch):
 
 
 def test_a_stream_without_pairs_reads_as_none():
-    key, ref, cov, owner_ids, ppf = _stream(0)
+    key, ref, cov, owner_ids, shows, ppf = _stream(0)
     one_owner = torch.zeros_like(owner_ids)
-    record = fr.depth_order_record(key, ref, cov, one_owner, 16000.0, 0, ppf, 8, 1.0)
+    record = fr.depth_order_record(
+        key, ref, cov, one_owner, shows, 16000.0, 0, ppf, 8, 1.0
+    )
     assert record[fr._D_COUNT] == 0
     assert math.isinf(float(record[fr._D_RATIO]))
+    nothing_drawn = tuple(torch.zeros_like(table) for table in shows)
+    record = fr.depth_order_record(
+        key, ref, cov, owner_ids, nothing_drawn, 16000.0, 0, ppf, 8, 1.0
+    )
+    assert record[fr._D_COUNT] == 0
     empty = fr.depth_order_record(
-        key[:1], ref[:1], cov[:1], owner_ids, 16000.0, 0, ppf, 8, 1.0
+        key[:1], ref[:1], cov[:1], owner_ids, shows, 16000.0, 0, ppf, 8, 1.0
     )
     assert empty[fr._D_COUNT] == 0
+
+
+def test_what_a_circuit_draws_reads_alpha_glow_fill_and_border():
+    from algan.rendering.raytracing.raytrace_kernels_taichi import (
+        _M_BORDER_W,
+        _M_FILLED,
+    )
+
+    # Two frames of four circuits' one-texel grids: r, g, b, glow, alpha.
+    fill = torch.zeros((2, 4, 1, 5))
+    fill[0, 0, 0, 4] = 0.5  # circuit 0: a visible fill at frame 0 only
+    fill[:, 1, 0, 3] = 1.0  # circuit 1: glow alone, at zero alpha
+    fill[:, 3, 0, 4] = 1.0  # circuit 3: a visible fill, but not filled
+    border = torch.zeros((2, 4, 1, 5))
+    border[1, 2, 0, 4] = 1.0  # circuit 2: a visible border at frame 1 only
+    meta = torch.zeros((1, 4, 26))
+    meta[..., _M_FILLED] = torch.tensor([1.0, 1.0, 1.0, 0.0])
+    meta[..., _M_BORDER_W] = 2.0
+    merged = {
+        "circuit_colors": fill,
+        "circuit_border_colors": border,
+        "circuit_meta": meta,
+    }
+    shows = fr.circuit_shows(merged, torch.device("cpu"))
+    assert fr.circuit_shows(merged, torch.device("cpu")) is shows
+    frames = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+    circuits = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3])
+    drawn = fr._drawn(shows, frames, circuits).tolist()
+    assert drawn == [True, True, False, False, False, True, True, False]
 
 
 def test_circuit_owners_follow_each_way_a_primitive_records_them():
@@ -276,6 +336,23 @@ def test_stacked_layers_under_a_distant_camera_warn_once_naming_both():
 
 def test_layers_the_camera_can_tell_apart_do_not_warn(scans):
     assert _render(_stacked_squares(0.05)) == []
+    assert scans
+
+
+def test_a_layer_held_invisible_does_not_warn(scans):
+    """A shape at opacity 0, waiting to fade in, hides nothing either side."""
+
+    def build(scene):
+        back = Square(size=3, color=RED, fill_opacity=1, stroke_width=0)
+        front = Square(size=2, color=BLUE, fill_opacity=1, stroke_width=0)
+        front.move(OUT * 0.001 + RIGHT * 0.5)
+        front.opacity = 0
+        panel = Group(back, front).rotate(-25, RIGHT, about=ORIGIN)
+        scene.camera.add_children(panel)
+        back.spawn()
+        front.spawn()
+
+    assert _render(build) == []
     assert scans
 
 

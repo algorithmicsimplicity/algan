@@ -676,6 +676,7 @@ DEPTH_ORDER_SPACINGS = 4.0
 #: (:func:`circuit_owner_ids`).
 CIRCUIT_OWNER_PARTS = "_rt_circuit_owner_parts"
 _CIRCUIT_OWNER_IDS = "_rt_circuit_owner_ids"
+_CIRCUIT_SHOWS = "_rt_circuit_shows"
 #: Key in a merged scene: the records (:func:`depth_order_record`) a
 #: wavefront chunk leaves for ``render_batch_raytraced``, which keeps the ones
 #: whose chunk rendered and attaches them to the batch
@@ -760,11 +761,63 @@ def circuit_owner_ids(merged, device):
     return cached
 
 
+def circuit_shows(merged, device):
+    """Whether each merged circuit draws anything, per frame.
+
+    Four ``[T, circuits]`` bool tables on ``device``, each with its own frame
+    count ``T`` and read at ``frame % T`` as the kernels read it: whether the
+    fill grid (``circuit_colors``) has a texel with alpha or glow, whether the
+    circuit is filled at all, whether the border grid
+    (``circuit_border_colors``) has one, and whether it has a border width. A
+    circuit draws its fill or its border; a shape that draws neither -- a Mob
+    waiting at opacity 0 to fade in -- cannot flicker through anything.
+    Cached on the merged scene.
+    """
+    from algan.rendering.raytracing.raytrace_kernels_taichi import (
+        _M_BORDER_W,
+        _M_FILLED,
+    )
+
+    cached = merged.get(_CIRCUIT_SHOWS)
+    if cached is not None and cached[0].device == device:
+        return cached
+    meta = merged["circuit_meta"]
+
+    def texels(name):
+        # Glow (channel 3) is additive and shows at zero alpha (channel 4).
+        return merged[name][..., 3:5].amax(dim=2).amax(dim=-1).gt(0)
+
+    tables = tuple(
+        table.to(device)
+        for table in (
+            texels("circuit_colors"),
+            meta[..., _M_FILLED].gt(0.5),
+            texels("circuit_border_colors"),
+            meta[..., _M_BORDER_W].gt(0.0),
+        )
+    )
+    merged[_CIRCUIT_SHOWS] = tables
+    return tables
+
+
+def _drawn(shows, frame, circuit):
+    """Whether ``circuit`` draws anything at ``frame``, from :func:`circuit_shows`."""
+
+    def at(table):
+        frames, circuits = table.shape
+        index = (frame % frames) * circuits + circuit.clamp_max(circuits - 1)
+        return table.reshape(-1).index_select(0, index)
+
+    fill_texels, filled, border_texels, bordered = shows
+    return (at(fill_texels) & at(filled)) | (at(border_texels) & at(bordered))
+
+
 def depth_order_record(
     key_s,
     ref_s,
     cov_s,
     owner_ids,
+    shows,
     eye,
     frame_start,
     pixels_per_frame,
@@ -777,15 +830,18 @@ def depth_order_record(
     stream, sorted by pixel and then depth: ``(pixel << 32) | depth bits``,
     the fragment's primitive reference (a circuit's is negative) and its
     coverage of the pixel. A pair is two fragments adjacent in one pixel's
-    list that are both circuits covering the WHOLE pixel, drawn by different
-    Mobs (``owner_ids``, per merged circuit), less than ``DEPTH_ORDER_SPACINGS``
-    float32 spacings of the larger of ``eye`` and the depth apart -- but not
-    at bit-identical depths. Whole pixels, because touching shapes -- a word's
-    neighbouring glyphs -- share only antialiased edge pixels, where either
-    order composites alike; different Mobs, because the strokes inside one
-    pack (a net's synapses) cross everywhere, coplanar, and show nothing for
-    it; not identical depths, because those tie, and the tie goes to draw
-    order the same way every frame (coplanar shapes fixed in the world).
+    list that are both circuits covering the WHOLE pixel, both drawing
+    something at that frame (``shows``, :func:`circuit_shows`), drawn by
+    different Mobs (``owner_ids``, per merged circuit), less than
+    ``DEPTH_ORDER_SPACINGS`` float32 spacings of the larger of ``eye`` and
+    the depth apart -- but not at bit-identical depths. Whole pixels, because
+    touching shapes -- a word's neighbouring glyphs -- share only antialiased
+    edge pixels, where either order composites alike; drawing something,
+    because a shape held at opacity 0 to fade in later hides nothing whichever
+    side it is on; different Mobs, because the strokes inside one pack (a
+    net's synapses) cross everywhere, coplanar, and show nothing for it; not
+    identical depths, because those tie, and the tie goes to draw order the
+    same way every frame (coplanar shapes fixed in the world).
 
     Returns a float64 record on the stream's device, without synchronizing:
     the pair count, then for the pair whose gap is the smallest share of its
@@ -813,6 +869,8 @@ def depth_order_record(
         owner = owner_ids.index_select(0, circuit)
         pair &= (owner[1:] != owner[:-1]) & (owner[1:] >= 0) & (owner[:-1] >= 0)
         frame = frame_start + torch.div(pixel, pixels_per_frame, rounding_mode="floor")
+        drawn = _drawn(shows, frame, circuit)
+        pair &= drawn[1:] & drawn[:-1]
         depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
         gap = (depth[1:] - depth[:-1]).abs()
         resolution = (DEPTH_ORDER_SPACINGS * EPS32) * torch.clamp_min(
