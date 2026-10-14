@@ -1088,6 +1088,14 @@ shrunk by the point's depth in front of it:
 * Only rounding **across** the view moves anything on screen. A camera looking
   straight along an axis keeps its large coordinate along the view, so it loses
   nothing however far out it is; turning it is what exposes the rounding.
+* **Flat shapes stacked in depth under a distant camera.** Every depth is
+  rounded at the camera's distance from the origin, so two overlapping shapes
+  closer together along the view than a few float32 spacings of it -- 0.0076
+  units at ``set_near_orthographic(10000)``, whose eye is 16,000 units out --
+  can trade places from frame to frame, one flickering through the other. Near
+  the origin, shapes stacked at one depth are drawn in the order they were
+  made; that far out, rounding decides. This happens whichever way the camera
+  is turned.
 
 After projecting each batch, the renderer estimates the rounding of every
 visible point and, once per render, warns with
@@ -1102,6 +1110,11 @@ reaches half a pixel (the level at which stroke edges visibly step). To fix it:
   shrinks as 1/depth;
 * do not raise ``set_near_orthographic``'s distance far above its default;
 * or turn the scene instead of the camera.
+
+It warns the same way, naming both Mobs, when two overlapping flat shapes are
+closer in depth than the camera can tell apart. Separate them along the view by
+the distance the warning gives -- a near-orthographic camera shows no parallax
+for it -- or bring the camera closer to the origin.
 
 Making a Mob a child of the camera does not help: children are stored in world
 space too.

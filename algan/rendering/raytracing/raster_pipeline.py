@@ -42,6 +42,10 @@ from algan.settings import SETTINGS
 from algan.utils.torch_compile import compiled
 
 rt_settings = SETTINGS.raytracing
+from algan.rendering.raytracing.float32_rounding import (
+    circuit_owner_ids,
+    depth_order_record,
+)
 from algan.rendering.raytracing.raster_taichi import (
     _AA_BACKFACE_BIT as AA_BACKFACE_BIT,
 )
@@ -2052,6 +2056,7 @@ def prepare_sparse_raster_coverage(
     half_h,
     layer_offset_triangles,
     env_in_composite=False,
+    depth_order_eye=None,
 ):
     """Emit one exact, ordered primary-hit stream for the whole frame window.
 
@@ -2074,9 +2079,16 @@ def prepare_sparse_raster_coverage(
     it.  The effective toggle is captured once here and handed to the resolve in
     the returned dict, so the emission and the shading passes can never compile
     for different modes.
+
+    ``depth_order_eye`` (the batch's eye distance, from
+    ``float32_rounding.depth_order_eye``; ``None`` skips it) runs the
+    depth-order check on the sorted stream and returns its record as
+    ``"depth_order"``: overlapping flat shapes a distant camera cannot keep in
+    order.
     """
     device = merged["tri_pos"].device
     ppf = int(width) * int(height)
+    depth_order = None
     g0 = 0
     g1 = (int(time_end) - int(time_start)) * ppf
     has_tri = int(merged.get("num_triangles", 0)) > 0
@@ -2473,6 +2485,21 @@ def prepare_sparse_raster_coverage(
             order, frag_key_u, frag_ref_u, frag_ab_u, frag_cov_u, frag_msk_u, opaque_u
         )
         del order
+        # Before the opaque truncation: a layer behind an opaque one is exactly
+        # what flickers through it when the two are closer than the camera can
+        # tell apart. No sync; the render job reads the record per batch.
+        if depth_order_eye is not None:
+            depth_order = depth_order_record(
+                key_s,
+                ref_s,
+                cov_s,
+                circuit_owner_ids(merged, key_s.device)[0],
+                float(depth_order_eye),
+                int(time_start),
+                ppf,
+                _BEZ_BORDER_BITS,
+                AA_FULL_COVERAGE,
+            )
         # Discovery is over: the sorted stream above is the only thing read
         # from here on. Release what found it before the truncation and the
         # sheet compaction, which is this function's memory peak and used to
@@ -2864,6 +2891,7 @@ def prepare_sparse_raster_coverage(
     }
     result.update(sheet_data)
     result["sheets"] = True
+    result["depth_order"] = depth_order
     return result
 
 

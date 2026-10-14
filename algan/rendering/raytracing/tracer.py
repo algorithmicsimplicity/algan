@@ -43,7 +43,13 @@ from algan.rendering import fragment_capture
 from algan.rendering.mps_compat import clamp_floor, index_copy_rows
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.raytracing.float32_rounding import (
+    DEPTH_ORDER_RECORDS,
+    attach_depth_order,
+    depth_order_eye,
+)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    depth_tie_epsilon,
     finalize_samples,
     kbuf,
     max_surfaces_per_ray,
@@ -1372,6 +1378,14 @@ def render_batch_raytraced(
     cam_origin_host = _expand_frames(
         _flat_frames(_host_tensor(ray_origin), (3,)), num_frames
     ).contiguous()
+    # The depth-order check (float32_rounding.depth_order_record) for a camera
+    # far enough out that float32 cannot keep overlapping flat shapes in order;
+    # None, and no work at all, for every other render.
+    order_eye = (
+        depth_order_eye(cam_origin_host, depth_tie_epsilon)
+        if int(merged.get("num_circuits", 0)) > 0
+        else None
+    )
     sp_host = _expand_frames(
         _flat_frames(_host_tensor(screen_point), (3,)), num_frames
     ).contiguous()
@@ -1686,6 +1700,11 @@ def render_batch_raytraced(
                 reverse = min(reverse, retained)
         memory.set_pointers((forward, reverse))
 
+    # The chunks' depth-order records (float32_rounding.depth_order_record),
+    # kept like the truncation counters: a chunk discarded for memory takes
+    # its records with it.
+    depth_records = []
+
     def render_chunk(start, end):
         # The Monte Carlo kernels launch one thread per (frame, pixel,
         # sample) path; keep the flattened index within int32 range. (The
@@ -1707,6 +1726,7 @@ def render_batch_raytraced(
         # about to be re-rendered, and counting both attempts would double them.
         entry_truncations = snapshot_truncations()
         entry_path_samples = snapshot_path_samples()
+        entry_depth_records = len(depth_records)
         try:
             post_tonemap = is_post_process_tonemap_enabled()
             if rt_settings.linear_color_space and not post_tonemap:
@@ -1942,6 +1962,8 @@ def render_batch_raytraced(
                 # range (the batch estimator models max(wavefront, post), not
                 # their sum).
                 if not sparse_batch_empty:
+                    # What a discarded attempt left behind is not this one's.
+                    merged.pop(DEPTH_ORDER_RECORDS, None)
                     with memory.temp():
                         raytrace_render_wavefront(
                             tri_bvh,
@@ -1980,7 +2002,9 @@ def render_batch_raytraced(
                             near_clip=near_clip,
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
+                            depth_order_eye=order_eye,
                         )
+                    depth_records.extend(merged.pop(DEPTH_ORDER_RECORDS, None) or ())
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
             # from Taichi's own CUDA pool. The render just accumulated torch
@@ -2048,6 +2072,7 @@ def render_batch_raytraced(
             rewind_to(entry_pointers)
             restore_truncations(entry_truncations)
             restore_path_samples(entry_path_samples)
+            del depth_records[entry_depth_records:]
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
@@ -2067,6 +2092,8 @@ def render_batch_raytraced(
 
     try:
         chunks = render_chunk(time_start, time_end)
+        if depth_records:
+            attach_depth_order(primitives[0], depth_records, merged, order_eye)
     finally:
         # ``render_chunk`` calls itself, so it closes over its own cell: a
         # reference cycle that holds everything it captured -- ``memory``, the
@@ -2451,6 +2478,7 @@ def raytrace_render_wavefront(
     near_clip=0.0,
     far_clip=0.0,
     analytic_raster=False,
+    depth_order_eye=None,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
@@ -3223,7 +3251,12 @@ def raytrace_render_wavefront(
                 half_screen_h,
                 layer_offset_triangles,
                 env_in_composite=env_active,
+                depth_order_eye=depth_order_eye,
             )
+            if coverage is not None and coverage.get("depth_order") is not None:
+                merged.setdefault(DEPTH_ORDER_RECORDS, []).append(
+                    coverage["depth_order"]
+                )
             # The GUI viewer's per-pixel inspector, when one is waiting for this
             # chunk. Off, it is a module-global read; on, it copies the coverage
             # record to the host, which has to happen HERE -- the arrays are
