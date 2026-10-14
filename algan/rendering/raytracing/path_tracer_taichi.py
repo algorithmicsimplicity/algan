@@ -2650,6 +2650,25 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     shade_n = spec_n
 
                 hit_p = ro + t_hit * rd
+                if htype == 1:
+                    # A triangle hit is rebuilt on its triangle from its
+                    # barycentrics, as the sheet route's _tri_surface_point
+                    # does: ``ro + t_hit * rd`` rounds at the ray origin's
+                    # magnitude, and a distant camera's primary ray (a
+                    # near-orthographic eye is thousands of units out) sinks
+                    # it below the lift _pt_offset_ray_origin gives the next
+                    # ray, whose shadow ray or bounce then hits the triangle
+                    # it left -- speckle across every lit surface.
+                    tph = f % tri_pos.shape[0]
+                    hit_p = (w0 * ti.math.vec3(tri_pos[tph, prim, 0],
+                                               tri_pos[tph, prim, 1],
+                                               tri_pos[tph, prim, 2])
+                             + a * ti.math.vec3(tri_pos[tph, prim, 3],
+                                                tri_pos[tph, prim, 4],
+                                                tri_pos[tph, prim, 5])
+                             + b * ti.math.vec3(tri_pos[tph, prim, 6],
+                                                tri_pos[tph, prim, 7],
+                                                tri_pos[tph, prim, 8]))
 
                 # Volumetric absorption on exiting a transmissive interior
                 # (Beer-Lambert), mirroring the wavefront's site exactly: the

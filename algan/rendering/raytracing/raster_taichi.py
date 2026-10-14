@@ -2637,7 +2637,15 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
 def _plane_pt(f, px, py, jx, jy, gen_meta: ti.template(), p0, nrm, fallback,
               cam_origin: ti.template(), screen_point: ti.template(),
               pixel_basis_x: ti.template(), pixel_basis_y: ti.template()):
-    """Where the sub-pixel-(jx, jy) primary ray meets the plane (p0, nrm)."""
+    """Where the sub-pixel-(jx, jy) primary ray meets the plane (p0, nrm).
+
+    ``ro + ts * rd`` is rounded at the EYE's magnitude, in every direction
+    including off the plane: a near-orthographic camera's eye is thousands of
+    units out, where float32 positions are ~1e-3 apart, far more than the
+    shadow-origin offset (``_offset_ray_origin``, ~6e-5 at unit-scale
+    coordinates). So the point is put back on the plane, which is formed at
+    the scene's own magnitude (``out - p0``) and so is exact to its rounding.
+    """
     ro, rd = _generate_ray(
         f, px, py, gen_meta[0] + (jx - 0.5), gen_meta[1] + (jy - 0.5),
         gen_meta[2], gen_meta[3], cam_origin, screen_point,
@@ -2648,6 +2656,9 @@ def _plane_pt(f, px, py, jx, jy, gen_meta: ti.template(), p0, nrm, fallback,
         ts = (p0 - ro).dot(nrm) / den
         if ts > min_hit_distance:
             out = ro + ts * rd
+            nn = nrm.dot(nrm)
+            if nn > 1e-30:
+                out = out - nrm * ((out - p0).dot(nrm) / nn)
     return out
 
 
@@ -2667,6 +2678,12 @@ def _pixel_footprint(f, px, py, gen_meta: ti.template(), hp, nrm,
 
     Six floats per shadow event, independent of how many sub-samples the trace
     then takes -- versus storing the sub-positions themselves.
+
+    Both vectors lie IN the plane (``_plane_pt`` puts each point back on it):
+    the shadow origins they spread sit only ``_offset_ray_origin``'s lift off
+    the surface, and under a distant eye the raw points' rounding sank them
+    below it, so their rays hit the surface they left -- per-pixel dark
+    speckle on every lit slope, re-rolled each frame as the camera moved.
     """
     xp = _plane_pt(f, px, py, 1.0, 0.5, gen_meta, hp, nrm, hp, cam_origin,
                    screen_point, pixel_basis_x, pixel_basis_y)

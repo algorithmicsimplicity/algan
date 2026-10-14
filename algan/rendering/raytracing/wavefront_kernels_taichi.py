@@ -2310,7 +2310,6 @@ def wavefront_shadow_events(
         pix = rs_pix[r]
         f = time_start + (ray_offset + pix) // pixels_per_frame
         num_hits = rs_int[r, 3]
-        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
         rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
         for q in ti.static(range(kbuf)):
             e = i * kbuf + q
@@ -2332,7 +2331,6 @@ def wavefront_shadow_events(
                                 if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
                                     one_sided = 1
                     if (pid != _MID_UNLIT) and (recv == 1):
-                        t_hit = hit_f[q, 0, i]
                         a = hit_f[q, 2, i]
                         b = hit_f[q, 3, i]
                         snrm = _tri_normal_g(
@@ -2348,7 +2346,10 @@ def wavefront_shadow_events(
                                           tri_pos[tp, prim, 8])
                         fnrm = (v1 - v0).cross(v2 - v0)
                         snrm, fnrm = _orient_hit_normals_sided(snrm, fnrm, rd, one_sided)
-                        spos = ro + t_hit * rd
+                        # On the triangle, from the hit's barycentrics, as the
+                        # inline fan in wavefront_shade builds it (see there),
+                        # so the deferred and inline arms trace the same rays.
+                        spos = (1.0 - a - b) * v0 + a * v1 + b * v2
                         accept = 1
                         for k in ti.static(range(3)):
                             ev_pos[e, k] = spos[k]
@@ -2830,7 +2831,15 @@ def wavefront_shade_arena(
                             fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals_sided(
                                 snrm, fnrm, rd, one_sided_s)
-                            spos = ro + t_hit * rd
+                            # On the triangle, from the hit's barycentrics:
+                            # ``ro + t_hit * rd`` rounds at the ray origin's
+                            # magnitude, and a distant camera's primary ray (a
+                            # near-orthographic eye is thousands of units out)
+                            # sinks it below the lift _offset_ray_origin gives
+                            # the shadow origin, whose rays then hit the
+                            # triangle they left: speckle across every lit
+                            # surface (see raster_taichi._pixel_footprint).
+                            spos = (1.0 - a - b) * v0 + a * v1 + b * v2
                             # Shadow-terminator origin (Hanika; RTGems II ch.
                             # 4), identical to raster_shadow_trace's: the
                             # face-normal lift stays, the displacement onto
