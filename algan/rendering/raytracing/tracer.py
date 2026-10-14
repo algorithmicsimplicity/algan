@@ -2961,7 +2961,8 @@ def raytrace_render_wavefront(
             sec_aa,
             shadow_vis,
             int(shadow_flag),
-            merged["tri_obj"] if identity_on else dummy_i,
+            # A [frames, triangles] table: its dummy keeps both dimensions.
+            merged["tri_obj"] if identity_on else dummy_i.view(1, 1),
             ev_src,
             eps_self,
             eps_near,

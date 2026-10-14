@@ -3193,8 +3193,11 @@ def shade_sparse_raster_coverage(
                 # the compile-time gate. With the toggle off the kernel never
                 # reads either array (1-element dummies keep the signature)
                 # and every acceptance test compiles to exactly the
-                # pre-identity predicate.
-                merged["tri_obj"] if identity_on else dummy_i,
+                # pre-identity predicate. ``tri_obj`` is a [frames,
+                # triangles] table, bound through the arena as one, so its
+                # dummy keeps both dimensions (a flat one raised
+                # ArenaBindingError).
+                merged["tri_obj"] if identity_on else dummy_i.view(1, 1),
                 ev_src_prim,
                 eps_self,
                 eps_near,
