@@ -275,6 +275,23 @@ agreeing with the classic compositor everywhere the classic compositor's own
 answer is well-defined. Host-side this is two stable argsorts
 (`_exact_fragment_order`): by descending layer, then by (pixel, depth-bin).
 
+Update (2026-10): the sheet route now ties by GAP rather than by bin
+(`_tie_grouped_fragment_order`; `coplanar_tie_gap`, on by default). Each
+pixel's fragments are sorted by exact depth and cut wherever neighbours are
+half a DEPTH_TIE_EPSILON or more apart; a run narrower than that end to end
+is a tie, ordered by descending layer. (A wider run -- sub-pixel triangles of
+one tilted surface, spread across the pixel's footprint in finer steps --
+keeps the binned order rather than being reordered by layer over its whole
+span.) That keeps what the bins were for -- coplanar circuits, text on panels and
+silhouettes order by layer, not by raw depth bits -- and drops the bin edges,
+which split exactly coplanar shapes whose depths round a few ulps apart: two
+squares posed from the camera's axes and riding it swapped 802 pixels over 11
+frame pairs, and a one-bin `z_index` lift rounded a hair short undid itself
+on a few pixels. It is still deterministic and independent of tile size,
+chunking and build order. It departs from the classic per-ray relation only
+where a bin edge falls inside a tie, which is where the classic answer
+flickers. `ALGAN_COPLANAR_TIE_GAP=0` restores the binned relation.
+
 4.6 Per-batch triangle projection table
 ---------------------------------------
 `precompute_triangle_projection` builds one compact record per (frame,

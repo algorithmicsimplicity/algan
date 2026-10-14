@@ -6,12 +6,12 @@ Two flat shapes that overlap on screen therefore trade places when their
 depths differ by less than a few float32 spacings of that: with the eye
 16,000 units out, two squares riding the camera swapped across their whole
 overlap from frame to frame at depth gaps of 0 and 0.001 and held their order
-from 0.003. Near the origin the same shapes share one of the renderer's
-coplanar tie bins, where draw order decides, so stacking layers at one depth
-is ordinary there -- and the backpropagation video's network panel, stacked
-that way under a camera 10,000 units out, blinked. Fixed in the world instead,
-the squares keep their order however far out the camera is: their depths come
-out bit-identical, a tie, and a tie is draw order's.
+from 0.003. Near the origin the same shapes tie, their depths closer than the
+renderer's coplanar tie gap, and draw order decides, so stacking layers at
+one depth is ordinary there -- and the backpropagation video's network panel,
+stacked that way under a camera 10,000 units out, blinked. Fixed in the world
+instead, the squares keep their order however far out the camera is: their
+depths come out bit-identical, a tie, and a tie is draw order's.
 
 When the eye is far enough out for such pairs to exist, the raster pipeline
 scans its sorted fragment stream for them
@@ -260,13 +260,20 @@ def test_circuit_owners_follow_each_way_a_primitive_records_them():
     assert fr.circuit_owner_ids(merged, torch.device("cpu"))[0] is ids
 
 
-def test_the_check_runs_only_where_rounding_outgrows_the_tie_bins():
-    tie = 1e-4  # raytrace_kernels_taichi.depth_tie_epsilon
+def test_the_check_runs_only_where_rounding_outgrows_the_tie_step():
+    tie = raster_pipeline.coplanar_tie_step()
+    assert tie == 0.5e-4  # half of raytrace_kernels_taichi.depth_tie_epsilon
     assert fr.depth_order_eye(torch.tensor([[0.0, 0.0, 15.0]]), tie) is None
-    assert fr.depth_order_eye(torch.tensor([[0.0, 150.0, 0.0]]), tie) is None
+    assert fr.depth_order_eye(torch.tensor([[0.0, 90.0, 0.0]]), tie) is None
+    assert fr.depth_order_eye(torch.tensor([[0.0, 150.0, 0.0]]), tie) == 150.0
     eyes = torch.tensor([[0.0, 0.0, 300.0], [0.0, 400.0, 0.0]])
     assert fr.depth_order_eye(eyes, tie) == 400.0
     assert fr.depth_order_eye(torch.zeros(0, 3), tie) is None
+    # Tied by bin instead, a pair that close can share one out to ~210 units.
+    SETTINGS.raytracing.experimental.coplanar_tie_gap = False
+    tie = raster_pipeline.coplanar_tie_step()
+    assert tie == 1e-4
+    assert fr.depth_order_eye(torch.tensor([[0.0, 150.0, 0.0]]), tie) is None
 
 
 # ---------------------------------------------------------------------------

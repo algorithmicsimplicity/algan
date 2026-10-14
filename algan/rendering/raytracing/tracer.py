@@ -49,7 +49,6 @@ from algan.rendering.raytracing.float32_rounding import (
     depth_order_eye,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    depth_tie_epsilon,
     finalize_samples,
     kbuf,
     max_surfaces_per_ray,
@@ -1381,8 +1380,10 @@ def render_batch_raytraced(
     # The depth-order check (float32_rounding.depth_order_record) for a camera
     # far enough out that float32 cannot keep overlapping flat shapes in order;
     # None, and no work at all, for every other render.
+    from algan.rendering.raytracing.raster_pipeline import coplanar_tie_step
+
     order_eye = (
-        depth_order_eye(cam_origin_host, depth_tie_epsilon)
+        depth_order_eye(cam_origin_host, coplanar_tie_step())
         if int(merged.get("num_circuits", 0)) > 0
         else None
     )

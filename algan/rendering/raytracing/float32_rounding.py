@@ -56,8 +56,8 @@ The job keeps a second finding: **depth order**. A primary hit's depth is
 rounded at the eye's distance from the origin, so two flat shapes that overlap
 on screen trade places when their depths differ by less than a few spacings of
 it (:data:`DEPTH_ORDER_SPACINGS`). Near the origin that is inside the
-renderer's coplanar tie bins, where draw order decides; with the eye past about
-210 units it is not, and layers stacked at one depth -- ordinary practice, and
+renderer's coplanar tie gap, where draw order decides; with the eye past about
+105 units it is not, and layers stacked at one depth -- ordinary practice, and
 what the backpropagation video's network panel did under a camera 10,000 units
 out -- flicker through each other. When the eye is that far out the raster
 pipeline scans its sorted fragment stream for such pairs
@@ -663,8 +663,8 @@ def _units(value, digits):
 #: spacings is 0.0076 there; at gap 0 they traded places with the eye 1000
 #: units out too. The same squares fixed in the world, the camera moving past
 #: them, kept their order even when coplanar: their depths came out
-#: bit-identical, a tie the depth bins hand to draw order alike every frame,
-#: and the scan skips exact ties. Riding the camera, a third of the pairs came
+#: bit-identical, a tie that goes to draw order alike every frame, and the
+#: scan skips exact ties. Riding the camera, a third of the pairs came
 #: out a spacing apart, either way round. A gap that rounds to a spacing or
 #: two still counts, so for geometry that does not move with the camera the
 #: warning errs on the safe side.
@@ -706,12 +706,11 @@ def depth_order_eye(eyes, tie_step):
 
     ``eyes`` are a batch's eye positions (``[T, 3]``, host). Two depths that
     rounding could swap differ by less than ``DEPTH_ORDER_SPACINGS`` spacings;
-    while that is below the renderer's coplanar tie step (``tie_step``, the
-    1e-4 depth bins; the eye within about 210 units of the origin) such a
-    pair lands in one bin, where draw order decides, so an ordinary render
-    never runs the check. (Two exactly coplanar shapes riding a camera can
-    still land either side of a bin edge, frame by frame; that is the tie
-    bins' own flaw, and not one a depth gap can be advised for.)
+    while that is below the renderer's coplanar tie step (``tie_step``,
+    ``raster_pipeline.coplanar_tie_step``: half a ``depth_tie_epsilon``, the
+    eye within about 105 units of the origin) such a pair ties, and draw order
+    decides it the same way every frame, so an ordinary render never runs the
+    check.
     """
     if eyes is None or eyes.numel() == 0:
         return None
@@ -836,10 +835,11 @@ def depth_order_record(
     """Overlapping flat shapes whose order rounding decides, in one sorted stream.
 
     ``key_s`` / ``ref_s`` / ``cov_s`` are the raster pipeline's fragment
-    stream, sorted by pixel and then depth: ``(pixel << 32) | depth bits``,
-    the fragment's primitive reference (a circuit's is negative) and its
-    coverage of the pixel. A pair is two fragments adjacent in one pixel's
-    list that are both circuits covering the WHOLE pixel, both drawing
+    stream, sorted by pixel and then depth up to ties (so a gap is taken
+    either way round): ``(pixel << 32) | depth bits``, the fragment's
+    primitive reference (a circuit's is negative) and its coverage of the
+    pixel. A pair is two fragments adjacent in one pixel's list that are both
+    circuits covering the WHOLE pixel, both drawing
     something at that frame (``shows``, :func:`circuit_shows`), drawn by
     different Mobs (``owner_ids``, per merged circuit), less than
     ``DEPTH_ORDER_SPACINGS`` float32 spacings of the larger of ``eye`` and

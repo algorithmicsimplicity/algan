@@ -1904,6 +1904,29 @@ def set_raster_pair_flags(enabled):
 # worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
 # Opt-in until matched full-render measurements justify a backend default.
 sheet_fragment_run_sort = env_flag("ALGAN_SHEET_FRAGMENT_RUN_SORT", False)
+
+# Coplanar ties in the sheet route's fragment order, judged by GAP rather than
+# by bin (raster_pipeline._tie_grouped_fragment_order). A pixel's fragments
+# tie -- and draw order decides which is in front -- when their exact depths
+# all lie within half a ``depth_tie_epsilon`` of each other. A run of
+# neighbours closer than that which spans more of it end to end is a dense
+# stack (sub-pixel triangles of one tilted surface) and keeps the bins.
+#
+# The bins, ``floor(t / depth_tie_epsilon)``, have edges: two exactly
+# coplanar shapes whose depths come out a few ulps apart (a panel posed from
+# the camera's axes and riding it) were split by a bin edge in about one
+# pixel in a hundred, and the farther one won there -- and as the camera
+# moved those pixels moved, so the shape behind flickered
+# through the one in front (802 swapped pixels over eleven frame pairs on
+# two such squares; 0 with this on). The same edges let a one-bin
+# ``z_index`` lift, rounded a hair short, share a bin with the layer below on
+# a few pixels, where draw order undid it. Half a bin because the authored
+# draw order separates circuits by a whole bin where it must
+# (``RenderLoopMixin._authored_draw_order``), and that has to stay a gap.
+# The classic wavefront and the path tracer peel hits one at a time through
+# ``_comes_after``, which must stay transitive, so they keep the bins.
+# ALGAN_COPLANAR_TIE_GAP=0 restores the binned order.
+coplanar_tie_gap = env_flag("ALGAN_COPLANAR_TIE_GAP", True)
 sheet_fused_stream = env_flag("ALGAN_SHEET_FUSED_STREAM", False)
 sheet_device_runs = env_flag("ALGAN_SHEET_DEVICE_RUNS", False)
 

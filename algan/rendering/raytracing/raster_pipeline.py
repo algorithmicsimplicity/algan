@@ -3,8 +3,10 @@
 The frontend emits exact primary coverage for the whole prepared frame window
 at once (not per GPU tile): each primitive is split into ``raster_chunk``-sized
 candidate chunks, exact hits are emitted, the surviving fragment records are
-ordered by the classic deterministic ``(depth-bin, descending layer)``
-relation, and ``sheets.compact_sheets`` aggregates them into the per-pixel
+ordered by depth with coplanar ties going to descending layer (draw order;
+``_tie_grouped_fragment_order``, or the classic ``(depth-bin, descending
+layer)`` relation with ``coplanar_tie_gap`` off), and
+``sheets.compact_sheets`` aggregates them into the per-pixel
 sheet records the resolve kernel consumes (DESIGN_sheet_resolve.md).  Future
 work should benchmark a true square screen-tile/bin architecture for better
 projection reuse and cache locality.
@@ -28,6 +30,7 @@ from algan.rendering.mps_compat import (
     clamp_floor,
     gather_exact,
     gather_packed_key,
+    index_copy_rows,
     kernel_index,
     reduction_index_dtype,
     reduction_index_sentinel,
@@ -79,6 +82,22 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     depth_tie_epsilon,
 )
+
+#: Fragments of one pixel whose depths all lie within this of each other tie,
+#: and draw order decides between them (``_tie_grouped_fragment_order``). Half
+#: a tie step, because the authored draw order's ``z_index`` bias parts layers
+#: by a whole one and that has to stay a gap.
+_COPLANAR_TIE_GAP = 0.5 * depth_tie_epsilon
+
+
+def coplanar_tie_step():
+    """How close two layers' depths must be for the fragment order to tie them.
+
+    The gap under ``coplanar_tie_gap``; otherwise a bin, which a pair that
+    close can at least share.
+    """
+    return _COPLANAR_TIE_GAP if rt_settings.coplanar_tie_gap else depth_tie_epsilon
+
 
 # Per-fragment walk dump (DESIGN_analytic_aa_v2.md ss7.1). Debug-only:
 # ``ALGAN_AA_DUMP="px,py,frame"`` (kernel pixel coordinates -- an output PNG's
@@ -1353,6 +1372,7 @@ def _binned_fragment_order(
     layer_offset_triangles,
     num_bins,
     *,
+    exact_depth=False,
     min_fragments=65536,
     devices=("cuda",),
 ):
@@ -1375,6 +1395,12 @@ def _binned_fragment_order(
     ``t / depth_tie_epsilon`` as ``t * (1 / eps)`` in f32, which one kernel
     multiply reproduces bit for bit. Elsewhere the key is ``_depth_bin``'s and
     ``_fragment_layer``'s own torch expressions.
+
+    ``exact_depth`` orders each run by the depth's own bits instead of its bin
+    -- ``(pixel, depth, descending layer, original index)``, which is
+    ``frag_key``'s order with exact-depth ties broken by layer -- for
+    :func:`_tie_grouped_fragment_order`. The bits sit above the layer at
+    ``<< 31``, so the key stays non-negative for every 32-bit pattern.
 
     Declines (None) below ``min_fragments``, off ``devices``, where a launch
     would stage its arguments, under ``ALGAN_OPT_DISABLE=binfragsort``, and
@@ -1404,7 +1430,7 @@ def _binned_fragment_order(
     device = frag_key.device
     counts = torch.zeros(num_bins, dtype=torch.int32, device=device)
     outside = torch.zeros(1, dtype=torch.int32, device=device)
-    if device.type == "cuda" and not _opt_disabled("fusedbinkeys"):
+    if device.type == "cuda" and not exact_depth and not _opt_disabled("fusedbinkeys"):
         group = torch.empty(n, dtype=torch.int64, device=device)
         inv_eps = float(np.float32(1.0) / np.float32(depth_tie_epsilon))
         fragment_bin_keys(
@@ -1426,7 +1452,12 @@ def _binned_fragment_order(
         if int(outside.item()):
             return None
         layer = _fragment_layer(frag_ref, layer_offset_triangles)
-        group = (_depth_bin(frag_key) << 32) | (0x7FFFFFFF - layer.to(torch.int64))
+        if exact_depth:
+            group = ((frag_key & 0xFFFFFFFF) << 31) | (
+                0x7FFFFFFF - layer.to(torch.int64)
+            )
+        else:
+            group = (_depth_bin(frag_key) << 32) | (0x7FFFFFFF - layer.to(torch.int64))
         del layer
     offsets = torch.zeros(num_bins + 1, dtype=torch.int32, device=device)
     torch.cumsum(counts, 0, out=offsets[1:])
@@ -1445,12 +1476,21 @@ def _binned_fragment_order(
 
 
 def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=None):
-    """Return one gather order matching classic depth-bin/layer semantics.
+    """Return the fragment stream's one gather order.
+
+    Under ``coplanar_tie_gap`` (the default) that is
+    :func:`_tie_grouped_fragment_order`'s; otherwise the classic
+    ``(pixel, depth bin, descending layer, original index)`` order, which every
+    arm below produces.
 
     ``num_bins`` bounds the fragments' pixel ordinals (the chunk's pixel
     window); given, the counting sort (``_binned_fragment_order``) is tried
     before the comparison sorts.
     """
+    if rt_settings.coplanar_tie_gap:
+        return _tie_grouped_fragment_order(
+            frag_key, frag_ref, layer_offset_triangles, num_bins
+        )
     if num_bins is not None and not rt_settings.sheet_fragment_run_sort:
         order = _binned_fragment_order(
             frag_key, frag_ref, layer_offset_triangles, num_bins
@@ -1485,6 +1525,106 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles, num_bins=N
     # run: at 4K they are 56 MB each and this is the discovery peak.
     order = layer_order.index_select(0, depth_order)
     del layer_order, depth_order
+    return order
+
+
+def _tie_grouped_fragment_order(
+    frag_key, frag_ref, layer_offset_triangles, num_bins=None
+):
+    """The fragment order with coplanar ties judged by gap rather than by bin.
+
+    The binned order ties two fragments only when ``floor(t /
+    depth_tie_epsilon)`` agrees, so two exactly coplanar shapes whose depths
+    round a few ulps apart are split wherever a bin edge falls between them,
+    and there the farther one is drawn in front. Which pixels an edge splits
+    moves with the camera, so the shape behind flickers through the one in
+    front. Here each pixel's fragments are sorted by exact depth and cut into
+    runs wherever neighbours are ``_COPLANAR_TIE_GAP`` or more apart. A run
+    narrower than the gap end to end -- every member within the gap of every
+    other -- is a tie, ordered by descending layer (draw order, as in a bin)
+    and then by depth. Only depth differences decide it, never where a depth
+    sits on a grid, so a coplanar pair a few ulps apart always ties, and no
+    tie can span the whole tie step a ``z_index`` lift adds.
+
+    A run as wide as the gap or wider is not a coplanar tie but a dense stack:
+    dozens of sub-pixel triangles of one tilted surface, whose depths spread
+    across the pixel's footprint in steps finer than the gap (a per-pixel
+    ``ImageMob`` off the optical axis spans ~50 bins in one pixel). Chained
+    into one tie it would be reordered by triangle index over all that depth,
+    so it keeps the binned order -- ``(depth bin, descending layer)`` -- which
+    is what it had before.
+
+    The exact sort is ``frag_key``'s own order -- pixel, then depth, whose
+    non-negative float bits compare as integers. Only fragments in runs of two
+    or more are re-sorted, by ``(segment, descending layer)``, a segment being
+    a whole tie or one depth bin of a dense stack: a stable sort, so equal
+    layers keep their depth order. Every exact-sort arm gives the same result:
+    a run never splits fragments of equal depth, and inside one the order
+    comes out the same whichever arm sorted the stream.
+    """
+    order = None
+    if num_bins is not None:
+        order = _binned_fragment_order(
+            frag_key, frag_ref, layer_offset_triangles, num_bins, exact_depth=True
+        )
+    if order is None:
+        order = device_sort.stable_argsort(frag_key)
+        if order is None:
+            order = torch.argsort(frag_key, stable=True)
+        else:
+            order = order.to(torch.int64)
+    n = int(frag_key.numel())
+    if n < 2:
+        return order
+    key = gather_packed_key(frag_key, order)
+    pixel = key >> 32
+    near = pixel[1:] == pixel[:-1]
+    del pixel
+    depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+    near &= (depth[1:] - depth[:-1]) < _COPLANAR_TIE_GAP
+    member = torch.zeros(n, dtype=torch.bool, device=frag_key.device)
+    member[1:] = near
+    member[:-1] |= near
+    pos = member.nonzero(as_tuple=True)[0]
+    del member
+    if pos.numel() == 0:
+        return order
+    # A member opens a run unless it is near the fragment before it.
+    opens = torch.ones(n, dtype=torch.bool, device=frag_key.device)
+    opens[1:] = ~near
+    del near
+    opens = opens.index_select(0, pos)
+    depth = depth.index_select(0, pos)
+    key = gather_packed_key(key, pos)
+    # Members are in depth order, so a run's extent is its last member's depth
+    # less its first's.
+    first = opens.nonzero(as_tuple=True)[0]
+    last = torch.cat((first[1:] - 1, first.new_full((1,), int(pos.numel()) - 1)))
+    wide = (depth.index_select(0, last) - depth.index_select(0, first)) >= (
+        _COPLANAR_TIE_GAP
+    )
+    del depth, first, last
+    run = torch.cumsum(opens.to(torch.int64), 0) - 1
+    depth_bin = _depth_bin(key)
+    del key
+    new_bin = torch.ones_like(opens)
+    new_bin[1:] = depth_bin[1:] != depth_bin[:-1]
+    del depth_bin
+    # A tie is one segment; a dense stack is one per depth bin it crosses.
+    opens |= wide.index_select(0, run) & new_bin
+    del wide, run, new_bin
+    segment = torch.cumsum(opens.to(torch.int64), 0)
+    del opens
+    members = gather_exact(order, pos)
+    layer = _fragment_layer(gather_exact(frag_ref, members), layer_offset_triangles)
+    # ``segment`` counts members, so it stays below 2**31 and clears the
+    # layer's 31 bits; the key is non-negative and compares like the pair.
+    sub_key = (segment << 31) | (0x7FFFFFFF - layer.to(torch.int64))
+    del segment, layer
+    sub = device_sort.stable_argsort(sub_key)
+    sub = torch.argsort(sub_key, stable=True) if sub is None else sub.to(torch.int64)
+    del sub_key
+    index_copy_rows(order, pos, gather_exact(members, sub))
     return order
 
 
@@ -2576,7 +2716,7 @@ def prepare_sparse_raster_coverage(
         # The dense z-buffer retained only the nearest opaque hit and discarded
         # every transparent/opaque record behind it.  Reproduce that relation
         # in sparse sorted space: each pixel keeps the prefix through its first
-        # opaque event.  The sort uses the exact same depth-bin/layer keys.
+        # opaque event, in the stream's own depth/layer order.
         #
         # Gated on the host flag rather than on ``opaque_s.any()``: no opaque
         # spec means no opaque fragment, and where a spec is opaque but every
