@@ -64,14 +64,19 @@ FAR = 10000.0
 # ---------------------------------------------------------------------------
 
 
-def _draws(shows, frame, circuit):
-    """Whether ``circuit`` draws its fill or its border at ``frame``."""
+def _draws(shows, frame, circuit, share):
+    """Whether a fragment draws its circuit's fill or border at ``frame``.
+
+    ``share`` is its pixel's share in the border band, 0 to 255.
+    """
 
     def at(table):
         return bool(table[frame % table.shape[0], circuit])
 
     fill_texels, filled, border_texels, bordered = shows
-    return (at(fill_texels) and at(filled)) or (at(border_texels) and at(bordered))
+    fill = share < 255 and at(fill_texels) and at(filled)
+    border = share > 0 and at(border_texels) and at(bordered)
+    return fill or border
 
 
 def _brute_force(key, ref, cov, owner_ids, shows, eye, frame_start, ppf, bits, full):
@@ -88,8 +93,10 @@ def _brute_force(key, ref, cov, owner_ids, shows, eye, frame_start, ppf, bits, f
             continue
         a = min((-int(ref[i]) - 1) >> bits, last)
         b = min((-int(ref[i + 1]) - 1) >> bits, last)
+        share_a = (-int(ref[i]) - 1) & 255
+        share_b = (-int(ref[i + 1]) - 1) & 255
         frame = frame_start + (int(key[i]) >> 32) // ppf
-        if not (_draws(shows, frame, a) and _draws(shows, frame, b)):
+        if not (_draws(shows, frame, a, share_a) and _draws(shows, frame, b, share_b)):
             continue
         owner_a, owner_b = int(owner_ids[a]), int(owner_ids[b])
         if owner_a < 0 or owner_b < 0 or owner_a == owner_b:
@@ -131,7 +138,11 @@ def _stream(seed, n=3000, pixels=400, ppf=100):
     bits = depth.view(torch.int32).to(torch.int64) & 0xFFFFFFFF
     key, order = torch.sort((pixel << 32) | bits)
     circuit = torch.randint(0, 12, (n,), generator=generator)
-    border = torch.randint(0, 3, (n,), generator=generator)
+    # Each fragment's share of its pixel in the border band: mostly fill,
+    # some blended, some all border.
+    border = torch.tensor([0, 0, 0, 1, 128, 254, 255])[
+        torch.randint(0, 7, (n,), generator=generator)
+    ]
     is_circuit = torch.rand(n, generator=generator) < 0.8
     ref = torch.where(
         is_circuit,
@@ -221,8 +232,15 @@ def test_what_a_circuit_draws_reads_alpha_glow_fill_and_border():
     assert fr.circuit_shows(merged, torch.device("cpu")) is shows
     frames = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
     circuits = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3])
-    drawn = fr._drawn(shows, frames, circuits).tolist()
-    assert drawn == [True, True, False, False, False, True, True, False]
+    fill_only = torch.zeros(8, dtype=torch.int64)
+    drawn = fr._drawn(shows, frames, circuits, fill_only, 255).tolist()
+    assert drawn == [True, True, False, False, False, True, False, False]
+    # Circuit 2 is an outline at frame 1: its border band draws, the inside
+    # of it does not; a pixel that straddles the two draws.
+    shares = torch.tensor([0, 128, 255])
+    two = torch.full((3,), 2)
+    drawn = fr._drawn(shows, torch.ones(3, dtype=torch.int64), two, shares, 255)
+    assert drawn.tolist() == [False, True, True]
 
 
 def test_circuit_owners_follow_each_way_a_primitive_records_them():

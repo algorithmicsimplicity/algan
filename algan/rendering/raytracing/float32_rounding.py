@@ -769,8 +769,9 @@ def circuit_shows(merged, device):
     fill grid (``circuit_colors``) has a texel with alpha or glow, whether the
     circuit is filled at all, whether the border grid
     (``circuit_border_colors``) has one, and whether it has a border width. A
-    circuit draws its fill or its border; a shape that draws neither -- a Mob
-    waiting at opacity 0 to fade in -- cannot flicker through anything.
+    fragment draws its circuit's fill, its border or a blend of the two; one
+    that draws neither -- inside an outline with a transparent fill, or of a
+    Mob waiting at opacity 0 to fade in -- cannot flicker through anything.
     Cached on the merged scene.
     """
     from algan.rendering.raytracing.raytrace_kernels_taichi import (
@@ -800,8 +801,14 @@ def circuit_shows(merged, device):
     return tables
 
 
-def _drawn(shows, frame, circuit):
-    """Whether ``circuit`` draws anything at ``frame``, from :func:`circuit_shows`."""
+def _drawn(shows, frame, circuit, border_share, full_share):
+    """Whether circuit fragments draw anything, from :func:`circuit_shows`.
+
+    ``border_share`` is each fragment's quantized share of its pixel in the
+    border band (``raster_taichi._pack_bez_ref``), ``full_share`` all of it:
+    the fragment draws its fill where the share is short of full, its border
+    where it is above zero.
+    """
 
     def at(table):
         frames, circuits = table.shape
@@ -809,7 +816,9 @@ def _drawn(shows, frame, circuit):
         return table.reshape(-1).index_select(0, index)
 
     fill_texels, filled, border_texels, bordered = shows
-    return (at(fill_texels) & at(filled)) | (at(border_texels) & at(bordered))
+    fill = (border_share < full_share) & at(fill_texels) & at(filled)
+    border = (border_share > 0) & at(border_texels) & at(bordered)
+    return fill | border
 
 
 def depth_order_record(
@@ -863,13 +872,13 @@ def depth_order_record(
         pair = pixel[1:] == pixel[:-1]
         flat = (ref < 0) & (cov_s[lo:hi] >= full_coverage)
         pair &= flat[1:] & flat[:-1]
-        circuit = ((-ref.to(torch.int64) - 1).clamp_min(0) >> border_bits).clamp_max(
-            last_circuit
-        )
+        code = (-ref.to(torch.int64) - 1).clamp_min(0)
+        circuit = (code >> border_bits).clamp_max(last_circuit)
         owner = owner_ids.index_select(0, circuit)
         pair &= (owner[1:] != owner[:-1]) & (owner[1:] >= 0) & (owner[:-1] >= 0)
         frame = frame_start + torch.div(pixel, pixels_per_frame, rounding_mode="floor")
-        drawn = _drawn(shows, frame, circuit)
+        full_share = (1 << border_bits) - 1
+        drawn = _drawn(shows, frame, circuit, code & full_share, full_share)
         pair &= drawn[1:] & drawn[:-1]
         depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
         gap = (depth[1:] - depth[:-1]).abs()
