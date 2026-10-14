@@ -40,6 +40,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     _axis_cos,
     _bezier_normal,
+    _bezier_plane_point,
     _collect_hits,
     _comes_after,
     _flat_triangle_color,
@@ -50,6 +51,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _sample_texture,
     _shade_tri_hit,
     _shadow_occluded,
+    _tri_surface_point,
     _triangle_color,
     _triangle_extra,
     _triangle_normal,
@@ -2755,6 +2757,19 @@ def wavefront_shade_arena(
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
+                # Where a continuation starts: on the surface hit, never
+                # ``ro + t_hit * rd``, which a distant camera's primary ray (a
+                # near-orthographic eye is thousands of units out) rounds
+                # ~1e-3 off it -- under the lift _offset_ray_origin gives a
+                # reflection or refraction, which then meets the surface it
+                # left: speckle on every mirror (see _tri_surface_point).
+                surf_p = ro + t_hit * rd
+                if htype == 1:
+                    surf_p = _tri_surface_point(f, prim, 1.0 - a - b, a, b,
+                                                tri_pos)
+                else:
+                    surf_p = _bezier_plane_point(f, prim, surf_p,
+                                                 circuit_meta)
 
                 # Raw surface color, saved before fragment shading replaces
                 # ``color`` with the lit result: the color transport tints
@@ -3397,7 +3412,7 @@ def wavefront_shade_arena(
                                 # at grazing angles (see _relative_ior). Exact
                                 # 0 counts as exiting.
                                 rdt = _refract_ray(rd, interface_n, rel)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_transmitted_origin(
                                     hp, rdt, geo_normal, normal)
                                 for k in ti.static(range(3)):
@@ -3432,7 +3447,7 @@ def wavefront_shade_arena(
                         # the miss is empty and the primary always reflects.
                         if (refl_max > min_alpha) \
                                 and (refl_max >= cover_pass):
-                            hit_point = ro + t_hit * rd
+                            hit_point = surf_p
                             rd, nref = _reflect_frame(rd, normal, geo_normal)
                             ro = _offset_ray_origin(hit_point, nref)
                             weight *= refl_energy
@@ -3461,7 +3476,7 @@ def wavefront_shade_arena(
                                 if have_slot:
                                     rdr, nref = _reflect_frame(rd, normal,
                                                                geo_normal)
-                                    hp = ro + t_hit * rd
+                                    hp = surf_p
                                     rorig = _offset_ray_origin(hp, nref)
                                     for k in ti.static(range(3)):
                                         rs_ro[c, k] = rorig[k]
@@ -3502,7 +3517,7 @@ def wavefront_shade_arena(
                             if have_slot:
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = rorig[k]
@@ -3539,7 +3554,7 @@ def wavefront_shade_arena(
                             if have_slot:
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = rorig[k]
@@ -3572,7 +3587,7 @@ def wavefront_shade_arena(
                     # outweighs what shows through (see ``default_scatter``).
                     elif ((refl_max > min_alpha)
                           and (refl_max >= cover_pass)):
-                        hit_point = ro + t_hit * rd
+                        hit_point = surf_p
                         rd, nref = _reflect_frame(rd, normal, geo_normal)
                         ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
@@ -3631,7 +3646,7 @@ def wavefront_shade_arena(
                             cmr = f % circuit_meta.shape[0]
                             s_ior = circuit_meta[cmr, prim, _M_IOR]
                             s_trans = circuit_meta[cmr, prim, _M_TRANSMISSION]
-                    hit_point = ro + t_hit * rd
+                    hit_point = surf_p
                     # Volumetric absorption, identical rule to the inline
                     # branch above (see it for the side test, the segment
                     # length and the built-in-pipeline-only slot layout): the

@@ -2594,6 +2594,12 @@ def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
             ts = (hit_point - ro).dot(nrm) / den
             if ts > min_hit_distance:
                 hp = ro + ts * rd
+                # Back on the plane: ``ro + ts * rd`` is rounded at the
+                # eye's magnitude, which a distant camera puts under it,
+                # past the spawn offset (_plane_pt, _bezier_plane_point).
+                nn = nrm.dot(nrm)
+                if nn > 1e-30:
+                    hp = hp - nrm * ((hp - hit_point).dot(nrm) / nn)
     else:
         tp = f % tri_pos.shape[0]
         v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
@@ -2768,39 +2774,6 @@ def _sub_pixel_origin(spos, dpx, dpy, s):
     su = ti.cast(s & 1, ti.f32) * 0.5 - 0.25
     sv = ti.cast((s >> 1) & 1, ti.f32) * 0.5 - 0.25
     return spos + su * dpx + sv * dpy
-
-
-@ti.func
-def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
-    """The fragment's hit point, rebuilt from its own barycentrics.
-
-    Under analytic coverage a PARTIALLY covering fragment's depth is evaluated
-    at the CENTROID OF THE SAMPLES IT OWNS, not at the pixel centre (see
-    ``_ss_pixel``) -- so ``ro + t_hit * rd`` along the CENTRE ray is a point
-    that lies on neither the triangle nor, in general, the surface: it is the
-    centre ray advanced to a distance measured along a different ray. On a
-    closed mesh that lands it up to a facet-depth INSIDE the geometry, past the
-    shared edge and below the neighbouring facet. A numerical origin offset
-    cannot repair a hit point reconstructed on the wrong surface. The
-    continuation then re-hits the surface it just left, at grazing incidence
-    where Fresnel goes to one, and the pixel gets a
-    bright desaturated spike -- speckle scattered over every smooth-shaded mesh
-    with a reflective material.
-
-    ``w0/a/b`` are the barycentrics ``_ss_pixel`` already projected onto the
-    simplex, so this reproduces exactly the point whose distance became
-    ``t_hit`` and is inside the triangle by construction. Bezier circuits keep
-    the centre-ray form: their coverage is areal, with no sub-pixel position,
-    and their ``t`` is a centre-ray intersection to begin with.
-    """
-    tp = f % tri_pos.shape[0]
-    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
-                      tri_pos[tp, prim, 2])
-    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
-                      tri_pos[tp, prim, 5])
-    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
-                      tri_pos[tp, prim, 8])
-    return w0 * v0 + a * v1 + b * v2
 
 
 @ti.func
