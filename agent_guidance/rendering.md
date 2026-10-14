@@ -258,9 +258,17 @@ Three things to know if you touch it.
 R2 sequence (rect) and golden-angle spiral (disk) are Cranley-Patterson
 rotated by two offsets hashed from the event's world position
 (`_shadow_fan_jitter`, `wavefront_kernels_taichi.py`): the penumbra dithers
-instead of stepping, the pattern is fixed to the surface (a still frame
-renders identically every time), and the legacy fan's arithmetic is untouched
-because its offsets are literal zeros. Under analytic AA a budgeted fan also
+instead of stepping, and the legacy fan's arithmetic is untouched because its
+offsets are literal zeros. **Hash the cell, never the point's bits.** The key
+is the cell of a power-of-two world grid about a pixel across
+(`_shadow_jitter_cell`, from the event's footprint `event_dp`), so the grain
+is fixed to the surface. Keyed on the bits, every penumbra pixel re-rolled
+whenever the camera moved at all -- a hit point slides along the surface by a
+fraction of a pixel -- and a 0.002-degree turn changed penumbra pixels by up to
+28 levels where the unrotated fan changed 1 (`test_shadow_fan_grain.py`). Any
+one-ulp change to how the hit point is formed re-rolled them too. Events
+without a footprint (the classic wavefront route, bounce events) still key on
+the bits. Under analytic AA a budgeted fan also
 keeps its count rather than being raised back to four sub-pixel taps, and it
 rotates through the event's *covered* sub-pixel positions
 (`_first_covered_position`) so a one-ray fan on a silhouette pixel still

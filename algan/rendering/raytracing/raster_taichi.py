@@ -90,6 +90,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _reserve_continuation_slot,
     _reset_shell_segment,
     _shadow_fan_jitter,
+    _shadow_jitter_cell,
     _tri_color_g,
     _tri_normal_g,
     _write_ior_stack,
@@ -3129,7 +3130,12 @@ def _shadow_fan_cell(
         ang_j = 0.0
         first_pos = 0
         if fan_col > 0:
-            ju, jv = _shadow_fan_jitter(spos, li)
+            # Keyed on the event's cell of a pixel-sized world grid, so the
+            # grain moves with the surface (see _shadow_fan_jitter).
+            cell = 0.0
+            if ti.static(sec_aa > 1):
+                cell = _shadow_jitter_cell(dpx, dpy)
+            ju, jv = _shadow_fan_jitter(spos, li, cell)
             r_j = jv
             ang_j = _TWO_PI * ju
             if ti.static(sec_aa > 1):

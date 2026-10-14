@@ -1433,9 +1433,12 @@ shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
 # ``shadow_radius``, a directional with ``shadow_angle``) fires
 # ``min(SOFT_SHADOW_SAMPLES, budget)``. To keep a small fan from banding, the
 # budgeted fan is Cranley-Patterson rotated per shading event from a hash of
-# the event's world position: the penumbra dithers rather than steps, and the
-# pattern is fixed to the surface, so a still frame renders identically every
-# time. ``0`` restores the fixed unjittered fan byte for byte.
+# the cell of a pixel-sized world grid that holds the event: the penumbra
+# dithers rather than steps, a still frame renders identically every time, and
+# under a moving camera the grain moves with the surface. (Hashed from the
+# position's own bits, it re-rolled at every pixel whenever the camera moved
+# at all, and the penumbra boiled.) ``0`` restores the fixed unjittered fan
+# byte for byte.
 #
 # ``shadow_bounce_rays`` caps every soft row's fan at a SECONDARY hit -- one
 # seen through a reflection or refraction, whose shadow arrives attenuated by

@@ -339,8 +339,8 @@ _TWO_PI = 6.283185307179586
 
 
 @ti.func
-def _shadow_fan_jitter(p, li):
-    """Two offsets in [0, 1) from the bits of a shading position and a light row.
+def _shadow_fan_jitter(p, li, cell):
+    """Two offsets in [0, 1) for a shading position's cell and a light row.
 
     The BUDGETED soft-shadow fan (rt_settings.shadow_ray_budget) fires a few
     rays per light row instead of the fixed eight, and a few fixed samples
@@ -349,9 +349,18 @@ def _shadow_fan_jitter(p, li):
     fan by these offsets -- toroidal, so the sequence's uniformity is kept --
     makes neighbouring events sample different points and the penumbra
     dithers instead. The hash is of the event's WORLD position (an event
-    carries no pixel), so the pattern is fixed to the surface: a still frame
-    renders identically every time, and under a moving camera the grain
-    moves with the surface it lies on rather than with the screen.
+    carries no pixel), so a still frame renders identically every time.
+
+    ``cell`` (from :func:`_shadow_jitter_cell`, about a pixel across on the
+    surface; a power of two) keys the hash on the cell of a world grid that
+    holds ``p`` rather than on ``p``'s own bits. That is what makes the grain
+    move with the surface under a moving camera: a pixel's hit point slides
+    along the surface by a fraction of a pixel per frame, which changes its
+    low bits -- keyed on the bits, every penumbra pixel re-rolled every frame
+    and the penumbra boiled, while the cell it lies in is still the cell it
+    lay in. ``cell == 0`` (no footprint: the classic wavefront route, a
+    bounce event, the sheet route with its sub-pixel shadow taps off) keys on
+    the bits.
 
     An integer mix over the three coordinates' float bits (the multiply-xor
     -shift shape of the path tracer's ``_pt_hash``); the two 16-bit halves of
@@ -362,9 +371,19 @@ def _shadow_fan_jitter(p, li):
     never call this: their offsets are literal zeros and their arithmetic is
     unchanged.
     """
-    h = ti.bit_cast(p[0], ti.u32) * ti.u32(0x9E3779B1)
-    h = h ^ (ti.bit_cast(p[1], ti.u32) * ti.u32(0x85EBCA77))
-    h = h ^ (ti.bit_cast(p[2], ti.u32) * ti.u32(0xC2B2AE3D))
+    q = p
+    salt = ti.u32(0)
+    if cell > 0.0:
+        # Exact: ``cell`` is a power of two, so the division only moves
+        # the exponent, and the floor is constant across the cell. The
+        # cell's own bits salt the hash, so neighbouring grid levels -- a
+        # zoom crossing a power of two -- do not repeat each other.
+        q = ti.floor(p / cell)
+        salt = ti.bit_cast(cell, ti.u32) * ti.u32(0x27D4EB2F)
+    h = ti.bit_cast(q[0], ti.u32) * ti.u32(0x9E3779B1)
+    h = h ^ (ti.bit_cast(q[1], ti.u32) * ti.u32(0x85EBCA77))
+    h = h ^ (ti.bit_cast(q[2], ti.u32) * ti.u32(0xC2B2AE3D))
+    h = h ^ salt
     h = h ^ (h >> 15)
     h = h * ti.u32(0x2C1B3C6D)
     h = h ^ (h >> 12)
@@ -375,6 +394,25 @@ def _shadow_fan_jitter(p, li):
     ju = ju + _R2_SEQUENCE_A1 * ti.cast(li, ti.f32)
     jv = jv + _R2_SEQUENCE_A2 * ti.cast(li, ti.f32)
     return ju - ti.floor(ju), jv - ti.floor(jv)
+
+
+@ti.func
+def _shadow_jitter_cell(dpx, dpy):
+    """The grid cell :func:`_shadow_fan_jitter` keys on, from a pixel's footprint.
+
+    ``dpx`` / ``dpy`` are one pixel's steps across the surface. The cell is
+    the largest power of two no wider than the shorter of them (its float's
+    exponent, mantissa cleared), so an event's neighbouring pixels nearly
+    always lie in other cells and dither independently (a step at 45 degrees
+    to the grid shares one at worst about one time in twelve), and the cell
+    stays put while a slow camera move changes the footprint a little. 0 when
+    there is no footprint.
+    """
+    fp = ti.min(dpx.norm(), dpy.norm())
+    cell = 0.0
+    if fp > 0.0:
+        cell = ti.bit_cast(ti.bit_cast(fp, ti.u32) & ti.u32(0xFF800000), ti.f32)
+    return cell
 
 
 @ti.func
@@ -2967,7 +3005,7 @@ def wavefront_shade_arena(
                                             if fan_col > 0:
                                                 ns = fan_col
                                                 ju, jv = _shadow_fan_jitter(
-                                                    spos, li)
+                                                    spos, li, 0.0)
                                                 r_j = jv
                                                 ang_j = _TWO_PI * ju
                                             if (hu > 0.0) or (hv > 0.0):
