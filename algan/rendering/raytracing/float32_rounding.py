@@ -78,7 +78,7 @@ import torch.nn.functional as F
 
 from algan.errors import Float32PrecisionWarning, _user_stacklevel
 from algan.logging.logger import get_logger
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 
 logger = get_logger("raytracing")
@@ -715,7 +715,7 @@ def depth_order_eye(eyes, tie_step):
     """
     if eyes is None or eyes.numel() == 0:
         return None
-    eye = float(eyes.reshape(-1, 3).double().norm(dim=-1).max())
+    eye = max(math.hypot(*row) for row in eyes.reshape(-1, 3).tolist())
     if not math.isfinite(eye) or DEPTH_ORDER_SPACINGS * EPS32 * eye <= tie_step:
         return None
     return eye
@@ -852,15 +852,18 @@ def depth_order_record(
     identical depths, because those tie, and the tie goes to draw order the
     same way every frame (coplanar shapes fixed in the world).
 
-    Returns a float64 record on the stream's device, without synchronizing:
-    the pair count, then for the pair whose gap is the smallest share of its
-    resolution, that share, the gap, the resolution, the two circuits, the
-    frame (``frame_start`` + the pixel's frame in the window) and the depth.
+    Returns a record on the stream's device, without synchronizing, in
+    ``accumulate_dtype()`` (float64, or float32 where Metal has no float64 --
+    every field but a huge pair count is exact there): the pair count, then
+    for the pair whose gap is the smallest share of its resolution, that
+    share, the gap, the resolution, the two circuits, the frame
+    (``frame_start`` + the pixel's frame in the window) and the depth.
     """
     n = int(key_s.shape[0])
     device = key_s.device
-    count = torch.zeros((), dtype=torch.float64, device=device)
-    best = torch.full((7,), math.inf, dtype=torch.float64, device=device)
+    dtype = accumulate_dtype()
+    count = torch.zeros((), dtype=dtype, device=device)
+    best = torch.full((7,), math.inf, dtype=dtype, device=device)
     last_circuit = int(owner_ids.shape[0]) - 1
     if n < 2 or last_circuit < 0:
         return torch.cat((count.view(1), best))
@@ -891,13 +894,13 @@ def depth_order_record(
         k = ratio.argmin()
         row = torch.stack(
             (
-                ratio[k].double(),
-                gap[k].double(),
-                resolution[k].double(),
-                circuit[k].double(),
-                circuit[k + 1].double(),
-                frame[k + 1].double(),
-                depth[k + 1].double(),
+                ratio[k].to(dtype),
+                gap[k].to(dtype),
+                resolution[k].to(dtype),
+                circuit[k].to(dtype),
+                circuit[k + 1].to(dtype),
+                frame[k + 1].to(dtype),
+                depth[k + 1].to(dtype),
             )
         )
         best = torch.where(row[0] < best[0], row, best)
