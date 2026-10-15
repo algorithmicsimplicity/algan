@@ -15,6 +15,7 @@ from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
 )
+from algan.rendering.raytracing.float32_rounding import CIRCUIT_OWNER_PARTS
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     RayTracedTrianglePrimitive,
@@ -2583,6 +2584,18 @@ def _merge_scene(
     # Read before the per-primitive tables are released below, which drops
     # each bezier primitive's ``_rt_circuit_meta`` (its circuit count).
     _attach_source_id_tables(scene, _tri_source_blocks, _tri_surface_total, beziers)
+    # Who drew each merged circuit, for the depth-order check of a distant
+    # camera (float32_rounding.circuit_owner_ids): the host lists as they are,
+    # so a render that never runs the check pays nothing for them.
+    scene[CIRCUIT_OWNER_PARTS] = tuple(
+        (
+            int(p._rt_circuit_meta.shape[1]),
+            getattr(p, "_member_owners", None),
+            getattr(p, "_member_ends", None),
+            getattr(p, "_owner_mob", None),
+        )
+        for p in beziers
+    )
 
     scene["num_frames"] = num_frames
     # Host-side render classification.  The uploaded material-id tensors are

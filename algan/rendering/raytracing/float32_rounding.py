@@ -51,6 +51,19 @@ to one record on its device -- no sync -- and the render loop reads the
 batch's records once, after the batch has rendered, keeping the render's
 worst. :class:`Float32RoundingJob` is the per-render scope; it warns once, at
 the end of the render, with :class:`~algan.errors.Float32PrecisionWarning`.
+
+The job keeps a second finding: **depth order**. A primary hit's depth is
+rounded at the eye's distance from the origin, so two flat shapes that overlap
+on screen trade places when their depths differ by less than a few spacings of
+it (:data:`DEPTH_ORDER_SPACINGS`). Near the origin that is inside the
+renderer's coplanar tie gap, where draw order decides; with the eye past about
+105 units it is not, and layers stacked at one depth -- ordinary practice, and
+what the backpropagation video's network panel did under a camera 10,000 units
+out -- flicker through each other. When the eye is that far out the raster
+pipeline scans its sorted fragment stream for such pairs
+(:func:`depth_order_record`, no sync), the tracer attaches the batch's records
+to its first primitive (:func:`attach_depth_order`), and the job reads them
+with the batch's projection records and warns once, naming both Mobs.
 """
 
 from __future__ import annotations
@@ -65,7 +78,7 @@ import torch.nn.functional as F
 
 from algan.errors import Float32PrecisionWarning, _user_stacklevel
 from algan.logging.logger import get_logger
-from algan.rendering.mps_compat import clamp_floor
+from algan.rendering.mps_compat import accumulate_dtype, clamp_floor
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames
 
 logger = get_logger("raytracing")
@@ -408,8 +421,11 @@ def describe_owner(mob) -> str:
 
     A primitive is built by whichever Mob draws it, which for text and most
     composite shapes is a part nobody named; the part's outermost ancestor is
-    what the author wrote, so it is named alongside.
+    what the author wrote, so it is named alongside -- short of the camera,
+    which carries every panel riding it and so would name them all alike.
     """
+    from algan.rendering.camera import Camera
+
     if mob is None:
         return "a Mob"
     own = mob._describe() if hasattr(mob, "_describe") else type(mob).__name__
@@ -417,6 +433,8 @@ def describe_owner(mob) -> str:
     seen = set()
     while getattr(root, "parents", None) and id(root) not in seen:
         seen.add(id(root))
+        if isinstance(root.parents[0], Camera):
+            break
         root = root.parents[0]
     if root is mob:
         return own
@@ -472,6 +490,40 @@ class Float32RoundingJob:
     def __init__(self):
         self.worst = None
         self.batches = 0
+        # The depth-order check (depth_order_record): the render's closest
+        # call, its share of the resolution, and how many pixel overlaps the
+        # render saw.
+        self.depth = None
+        self._depth_ratio = math.inf
+        self.depth_pairs = 0
+
+    def _read_depth_order(self, primitives, frame_time):
+        """Fold the batch's :func:`attach_depth_order` records into the job's."""
+        held = []
+        for primitive in primitives:
+            held.extend(getattr(primitive, DEPTH_ORDER_HELD, None) or ())
+            if hasattr(primitive, DEPTH_ORDER_HELD):
+                setattr(primitive, DEPTH_ORDER_HELD, None)
+        for records, owners, eye in held:
+            rows = torch.stack([record.cpu() for record in records])
+            pairs = int(rows[:, _D_COUNT].sum())
+            if pairs == 0 or owners is None:
+                continue
+            self.depth_pairs += pairs
+            k = int(torch.argmin(rows[:, _D_RATIO]))
+            row = rows[k].tolist()
+            if row[_D_RATIO] >= self._depth_ratio:
+                continue
+            self._depth_ratio = row[_D_RATIO]
+            self.depth = DepthOrderFinding(
+                first=_circuit_mob(owners, row[_D_CIRCUIT_A]),
+                second=_circuit_mob(owners, row[_D_CIRCUIT_B]),
+                gap=row[_D_GAP],
+                resolution=row[_D_RESOLUTION],
+                depth=row[_D_DEPTH],
+                eye_distance=eye,
+                time=float(frame_time(int(row[_D_FRAME]))),
+            )
 
     def note_batch(self, primitives, frame_time):
         """Read one rendered batch's records and keep the worst.
@@ -480,6 +532,7 @@ class Float32RoundingJob:
         records are read in one transfer per batch, after the batch has
         rendered, so the read never waits on anything still queued.
         """
+        self._read_depth_order(primitives, frame_time)
         with_records = [
             primitive
             for primitive in primitives
@@ -526,15 +579,25 @@ class Float32RoundingJob:
         )
 
     def report(self):
-        """Warn once if the job's worst rounding reached the visible level."""
+        """Warn once for each finding that shows.
+
+        Once if the job's worst rounding reached the visible level, and once
+        if two overlapping flat shapes came closer in depth than the camera
+        resolves.
+        """
         finding = self.worst
-        if finding is None or finding.error_px < VISIBLE_ERROR_PX:
-            return
-        warnings.warn(
-            precision_message(finding),
-            Float32PrecisionWarning,
-            stacklevel=_user_stacklevel(),
-        )
+        if finding is not None and finding.error_px >= VISIBLE_ERROR_PX:
+            warnings.warn(
+                precision_message(finding),
+                Float32PrecisionWarning,
+                stacklevel=_user_stacklevel(),
+            )
+        if self.depth is not None:
+            warnings.warn(
+                depth_order_message(self.depth, self.depth_pairs),
+                Float32PrecisionWarning,
+                stacklevel=_user_stacklevel(),
+            )
 
 
 def precision_message(finding: Float32Finding) -> str:
@@ -578,6 +641,326 @@ def precision_message(finding: Float32Finding) -> str:
 
 
 def _units(value, digits):
-    """``1 unit``, ``0.25 units``, ``1000 units``."""
-    text = f"{value:.{digits}g}"
+    """``1 unit``, ``0.25 units``, ``1000 units``, ``16000 units``."""
+    # Whole units once ``g`` would switch to an exponent: a distance of
+    # 16000 reads better than 1.6e+04.
+    text = f"{value:.0f}" if abs(value) >= 10**digits else f"{value:.{digits}g}"
     return f"{text} unit" if text == "1" else f"{text} units"
+
+
+# ---------------------------------------------------------------------------
+# Depth order: which of two overlapping flat shapes is drawn in front
+# ---------------------------------------------------------------------------
+
+#: Two overlapping flat shapes keep their order only when their depths differ
+#: by more than about this many float32 spacings of the larger of the eye's
+#: distance from the origin and the depth. A circuit's depth along a pixel's
+#: ray is ``(centre - eye) . n / (dir . n)``, every coordinate of the
+#: difference rounded at the eye's magnitude, and differently for two layers
+#: with different centres. Measured: two squares riding a camera whose eye is
+#: 16,000 units out traded places across their whole overlap from frame to
+#: frame at depth gaps of 0 and 0.001, and kept their order from 0.003; four
+#: spacings is 0.0076 there; at gap 0 they traded places with the eye 1000
+#: units out too. The same squares fixed in the world, the camera moving past
+#: them, kept their order even when coplanar: their depths came out
+#: bit-identical, a tie that goes to draw order alike every frame, and the
+#: scan skips exact ties. Riding the camera, a third of the pairs came
+#: out a spacing apart, either way round. A gap that rounds to a spacing or
+#: two still counts, so for geometry that does not move with the camera the
+#: warning errs on the safe side.
+DEPTH_ORDER_SPACINGS = 4.0
+
+#: Key in a merged scene: per bezier primitive, in merge order, ``(circuits,
+#: _member_owners, _member_ends, _owner_mob)`` -- who drew each merged
+#: circuit, resolved to ids only when a distant camera asks
+#: (:func:`circuit_owner_ids`).
+CIRCUIT_OWNER_PARTS = "_rt_circuit_owner_parts"
+_CIRCUIT_OWNER_IDS = "_rt_circuit_owner_ids"
+_CIRCUIT_SHOWS = "_rt_circuit_shows"
+#: Key in a merged scene: the records (:func:`depth_order_record`) a
+#: wavefront chunk leaves for ``render_batch_raytraced``, which keeps the ones
+#: whose chunk rendered and attaches them to the batch
+#: (:func:`attach_depth_order`).
+DEPTH_ORDER_RECORDS = "_rt_depth_order_records"
+#: Attribute of a batch's first primitive: ``(records, owner ids, eye)`` per
+#: render call, until the render job reads them with the batch.
+DEPTH_ORDER_HELD = "_rt_depth_order"
+#: Fragments per pass of the check, which bounds its temporaries (about 40
+#: bytes a fragment) however long the stream.
+_DEPTH_CHUNK = 1 << 20
+#: Field order of a depth-order record.
+(
+    _D_COUNT,
+    _D_RATIO,
+    _D_GAP,
+    _D_RESOLUTION,
+    _D_CIRCUIT_A,
+    _D_CIRCUIT_B,
+    _D_FRAME,
+    _D_DEPTH,
+) = range(8)
+
+
+def depth_order_eye(eyes, tie_step):
+    """The eye distance the depth-order check works at, or ``None`` to skip it.
+
+    ``eyes`` are a batch's eye positions (``[T, 3]``, host). Two depths that
+    rounding could swap differ by less than ``DEPTH_ORDER_SPACINGS`` spacings;
+    while that is below the renderer's coplanar tie step (``tie_step``,
+    ``raster_pipeline.coplanar_tie_step``: half a ``depth_tie_epsilon``, the
+    eye within about 105 units of the origin) such a pair ties, and draw order
+    decides it the same way every frame, so an ordinary render never runs the
+    check.
+    """
+    if eyes is None or eyes.numel() == 0:
+        return None
+    eye = max(math.hypot(*row) for row in eyes.reshape(-1, 3).tolist())
+    if not math.isfinite(eye) or DEPTH_ORDER_SPACINGS * EPS32 * eye <= tie_step:
+        return None
+    return eye
+
+
+def circuit_owner_ids(merged, device):
+    """``(ids, mobs, host_ids)``: the index into ``mobs`` of each merged circuit's Mob.
+
+    ``ids`` is int32 on ``device`` (``host_ids`` its CPU copy), -1 where the
+    owner is unknown. Built from :data:`CIRCUIT_OWNER_PARTS` once per merged
+    scene, with the same rules as ``_owner_of``, and cached on it.
+    """
+    cached = merged.get(_CIRCUIT_OWNER_IDS)
+    if cached is not None and cached[0].device == device:
+        return cached
+    mobs, slots, lanes = [], {}, []
+
+    def slot(mob):
+        if mob is None:
+            return -1
+        if id(mob) not in slots:
+            slots[id(mob)] = len(mobs)
+            mobs.append(mob)
+        return slots[id(mob)]
+
+    for count, owners, ends, lone in merged.get(CIRCUIT_OWNER_PARTS) or ():
+        lane = torch.full((int(count),), -1, dtype=torch.int32)
+        if owners and ends is not None and len(ends) == len(owners):
+            start = 0
+            for owner, end in zip(owners, ends):
+                lane[start : min(int(end), lane.shape[0])] = slot(owner)
+                start = int(end)
+        elif owners and len(owners) == lane.shape[0]:
+            lane = torch.tensor([slot(owner) for owner in owners], dtype=torch.int32)
+        elif owners and len(owners) == 1:
+            lane.fill_(slot(owners[0]))
+        elif lone is not None:
+            lane.fill_(slot(lone))
+        lanes.append(lane)
+    host_ids = torch.cat(lanes) if lanes else torch.zeros(0, dtype=torch.int32)
+    cached = (host_ids.to(device), mobs, host_ids)
+    merged[_CIRCUIT_OWNER_IDS] = cached
+    return cached
+
+
+def circuit_shows(merged, device):
+    """Whether each merged circuit draws anything, per frame.
+
+    Four ``[T, circuits]`` bool tables on ``device``, each with its own frame
+    count ``T`` and read at ``frame % T`` as the kernels read it: whether the
+    fill grid (``circuit_colors``) has a texel with alpha or glow, whether the
+    circuit is filled at all, whether the border grid
+    (``circuit_border_colors``) has one, and whether it has a border width. A
+    fragment draws its circuit's fill, its border or a blend of the two; one
+    that draws neither -- inside an outline with a transparent fill, or of a
+    Mob waiting at opacity 0 to fade in -- cannot flicker through anything.
+    Cached on the merged scene.
+    """
+    from algan.rendering.raytracing.raytrace_kernels_taichi import (
+        _M_BORDER_W,
+        _M_FILLED,
+    )
+
+    cached = merged.get(_CIRCUIT_SHOWS)
+    if cached is not None and cached[0].device == device:
+        return cached
+    meta = merged["circuit_meta"]
+
+    def texels(name):
+        # Glow (channel 3) is additive and shows at zero alpha (channel 4).
+        return merged[name][..., 3:5].amax(dim=2).amax(dim=-1).gt(0)
+
+    tables = tuple(
+        table.to(device)
+        for table in (
+            texels("circuit_colors"),
+            meta[..., _M_FILLED].gt(0.5),
+            texels("circuit_border_colors"),
+            meta[..., _M_BORDER_W].gt(0.0),
+        )
+    )
+    merged[_CIRCUIT_SHOWS] = tables
+    return tables
+
+
+def _drawn(shows, frame, circuit, border_share, full_share):
+    """Whether circuit fragments draw anything, from :func:`circuit_shows`.
+
+    ``border_share`` is each fragment's quantized share of its pixel in the
+    border band (``raster_taichi._pack_bez_ref``), ``full_share`` all of it:
+    the fragment draws its fill where the share is short of full, its border
+    where it is above zero.
+    """
+
+    def at(table):
+        frames, circuits = table.shape
+        index = (frame % frames) * circuits + circuit.clamp_max(circuits - 1)
+        return table.reshape(-1).index_select(0, index)
+
+    fill_texels, filled, border_texels, bordered = shows
+    fill = (border_share < full_share) & at(fill_texels) & at(filled)
+    border = (border_share > 0) & at(border_texels) & at(bordered)
+    return fill | border
+
+
+def depth_order_record(
+    key_s,
+    ref_s,
+    cov_s,
+    owner_ids,
+    shows,
+    eye,
+    frame_start,
+    pixels_per_frame,
+    border_bits,
+    full_coverage,
+):
+    """Overlapping flat shapes whose order rounding decides, in one sorted stream.
+
+    ``key_s`` / ``ref_s`` / ``cov_s`` are the raster pipeline's fragment
+    stream, sorted by pixel and then depth up to ties (so a gap is taken
+    either way round): ``(pixel << 32) | depth bits``, the fragment's
+    primitive reference (a circuit's is negative) and its coverage of the
+    pixel. A pair is two fragments adjacent in one pixel's list that are both
+    circuits covering the WHOLE pixel, both drawing
+    something at that frame (``shows``, :func:`circuit_shows`), drawn by
+    different Mobs (``owner_ids``, per merged circuit), less than
+    ``DEPTH_ORDER_SPACINGS`` float32 spacings of the larger of ``eye`` and
+    the depth apart -- but not at bit-identical depths. Whole pixels, because
+    touching shapes -- a word's neighbouring glyphs -- share only antialiased
+    edge pixels, where either order composites alike; drawing something,
+    because a shape held at opacity 0 to fade in later hides nothing whichever
+    side it is on; different Mobs, because the strokes inside one pack (a
+    net's synapses) cross everywhere, coplanar, and show nothing for it; not
+    identical depths, because those tie, and the tie goes to draw order the
+    same way every frame (coplanar shapes fixed in the world).
+
+    Returns a record on the stream's device, without synchronizing, in
+    ``accumulate_dtype()`` (float64, or float32 where Metal has no float64 --
+    every field but a huge pair count is exact there): the pair count, then
+    for the pair whose gap is the smallest share of its resolution, that
+    share, the gap, the resolution, the two circuits, the frame
+    (``frame_start`` + the pixel's frame in the window) and the depth.
+    """
+    n = int(key_s.shape[0])
+    device = key_s.device
+    dtype = accumulate_dtype()
+    count = torch.zeros((), dtype=dtype, device=device)
+    best = torch.full((7,), math.inf, dtype=dtype, device=device)
+    last_circuit = int(owner_ids.shape[0]) - 1
+    if n < 2 or last_circuit < 0:
+        return torch.cat((count.view(1), best))
+    for lo in range(0, n - 1, _DEPTH_CHUNK):
+        hi = min(n, lo + _DEPTH_CHUNK + 1)
+        key = key_s[lo:hi]
+        ref = ref_s[lo:hi]
+        pixel = key >> 32
+        pair = pixel[1:] == pixel[:-1]
+        flat = (ref < 0) & (cov_s[lo:hi] >= full_coverage)
+        pair &= flat[1:] & flat[:-1]
+        code = (-ref.to(torch.int64) - 1).clamp_min(0)
+        circuit = (code >> border_bits).clamp_max(last_circuit)
+        owner = owner_ids.index_select(0, circuit)
+        pair &= (owner[1:] != owner[:-1]) & (owner[1:] >= 0) & (owner[:-1] >= 0)
+        frame = frame_start + torch.div(pixel, pixels_per_frame, rounding_mode="floor")
+        full_share = (1 << border_bits) - 1
+        drawn = _drawn(shows, frame, circuit, code & full_share, full_share)
+        pair &= drawn[1:] & drawn[:-1]
+        depth = (key & 0xFFFFFFFF).to(torch.int32).view(torch.float32)
+        gap = (depth[1:] - depth[:-1]).abs()
+        resolution = (DEPTH_ORDER_SPACINGS * EPS32) * torch.clamp_min(
+            torch.maximum(depth[1:].abs(), depth[:-1].abs()), eye
+        )
+        pair &= (gap > 0) & (gap < resolution)
+        count = count + pair.sum()
+        ratio = torch.where(pair, gap / resolution, torch.full_like(gap, math.inf))
+        k = ratio.argmin()
+        row = torch.stack(
+            (
+                ratio[k].to(dtype),
+                gap[k].to(dtype),
+                resolution[k].to(dtype),
+                circuit[k].to(dtype),
+                circuit[k + 1].to(dtype),
+                frame[k + 1].to(dtype),
+                depth[k + 1].to(dtype),
+            )
+        )
+        best = torch.where(row[0] < best[0], row, best)
+    return torch.cat((count.view(1), best))
+
+
+def attach_depth_order(primitive, records, merged, eye):
+    """Leave a rendered batch's depth-order records on its first primitive.
+
+    Beside the projection's ``_rt_float32_record``, for the same reasons:
+    :meth:`Float32RoundingJob.note_batch` reads them with the batch, after it
+    has rendered, and a batch that fails is dropped with its primitives, so
+    frames rendered again are never counted twice. ``records`` are
+    :func:`depth_order_record` results (device tensors, unread), ``merged``
+    the scene whose circuits they index, ``eye`` the eye distance they were
+    measured at.
+    """
+    held = getattr(primitive, DEPTH_ORDER_HELD, None) or []
+    held.append((list(records), merged.get(_CIRCUIT_OWNER_IDS), eye))
+    setattr(primitive, DEPTH_ORDER_HELD, held)
+
+
+def _circuit_mob(owners, circuit):
+    """The Mob that drew merged ``circuit``, from :func:`circuit_owner_ids`'s result."""
+    _ids, mobs, host_ids = owners
+    circuit = int(circuit)
+    if not 0 <= circuit < host_ids.shape[0]:
+        return None
+    slot = int(host_ids[circuit])
+    return mobs[slot] if 0 <= slot < len(mobs) else None
+
+
+class DepthOrderFinding(NamedTuple):
+    """The render's closest call between two overlapping flat shapes."""
+
+    first: object
+    second: object
+    gap: float
+    resolution: float
+    depth: float
+    eye_distance: float
+    time: float
+
+
+def depth_order_message(finding: DepthOrderFinding, pairs: int) -> str:
+    """The depth-order warning's text: what, where, why, and what to do."""
+    return (
+        f"float32 rounding can swap which of two overlapping flat shapes is in "
+        f"front: {describe_owner(finding.first)} and "
+        f"{describe_owner(finding.second)} cover the same pixels "
+        f"{_units(finding.gap, 2)} apart in depth, "
+        f"{_units(finding.depth, 4)} from a camera "
+        f"{_units(finding.eye_distance, 4)} from the origin, where depths are "
+        f"only told apart {_units(finding.resolution, 2)} or more apart (worst "
+        f"at t={finding.time:.2f}s; {pairs} overlapping pixel(s) in this "
+        f"render). Shapes that close -- including shapes at one depth, which "
+        f"draw order decides near the origin -- can trade places from frame to "
+        f"frame, one flickering through the other. Separate them along the "
+        f"view by at least {_units(2 * finding.resolution, 2)} (a "
+        f"near-orthographic camera shows no parallax for it), or bring the "
+        f"camera closer to the origin: the resolution shrinks with its "
+        f"distance."
+    )

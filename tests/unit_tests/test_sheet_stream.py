@@ -292,6 +292,8 @@ def test_fragment_order_preserves_depth_bins_and_geometry_layers(device, monkeyp
     key = (pixels << 32) | (depths.view(torch.int32).to(torch.int64) & 0xFFFFFFFF)
     refs = torch.randint(-2048, 127, (count,), generator=generator, dtype=torch.int32)
     key, refs = key.to(device), refs.to(device)
+    # The binned arms are what is compared; the gap-tied order bypasses both.
+    SETTINGS.raytracing.experimental.coplanar_tie_gap = False
     SETTINGS.raytracing.experimental.sheet_fragment_run_sort = False
     expected = pipeline._exact_fragment_order(key, refs, 211)
     SETTINGS.raytracing.experimental.sheet_fragment_run_sort = True

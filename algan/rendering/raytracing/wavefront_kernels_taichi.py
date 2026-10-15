@@ -40,6 +40,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     _axis_cos,
     _bezier_normal,
+    _bezier_plane_point,
     _collect_hits,
     _comes_after,
     _flat_triangle_color,
@@ -50,6 +51,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _sample_texture,
     _shade_tri_hit,
     _shadow_occluded,
+    _tri_surface_point,
     _triangle_color,
     _triangle_extra,
     _triangle_normal,
@@ -339,8 +341,8 @@ _TWO_PI = 6.283185307179586
 
 
 @ti.func
-def _shadow_fan_jitter(p, li):
-    """Two offsets in [0, 1) from the bits of a shading position and a light row.
+def _shadow_fan_jitter(p, li, cell):
+    """Two offsets in [0, 1) for a shading position's cell and a light row.
 
     The BUDGETED soft-shadow fan (rt_settings.shadow_ray_budget) fires a few
     rays per light row instead of the fixed eight, and a few fixed samples
@@ -349,9 +351,18 @@ def _shadow_fan_jitter(p, li):
     fan by these offsets -- toroidal, so the sequence's uniformity is kept --
     makes neighbouring events sample different points and the penumbra
     dithers instead. The hash is of the event's WORLD position (an event
-    carries no pixel), so the pattern is fixed to the surface: a still frame
-    renders identically every time, and under a moving camera the grain
-    moves with the surface it lies on rather than with the screen.
+    carries no pixel), so a still frame renders identically every time.
+
+    ``cell`` (from :func:`_shadow_jitter_cell`, about a pixel across on the
+    surface; a power of two) keys the hash on the cell of a world grid that
+    holds ``p`` rather than on ``p``'s own bits. That is what makes the grain
+    move with the surface under a moving camera: a pixel's hit point slides
+    along the surface by a fraction of a pixel per frame, which changes its
+    low bits -- keyed on the bits, every penumbra pixel re-rolled every frame
+    and the penumbra boiled, while the cell it lies in is still the cell it
+    lay in. ``cell == 0`` (no footprint: the classic wavefront route, a
+    bounce event, the sheet route with its sub-pixel shadow taps off) keys on
+    the bits.
 
     An integer mix over the three coordinates' float bits (the multiply-xor
     -shift shape of the path tracer's ``_pt_hash``); the two 16-bit halves of
@@ -362,9 +373,19 @@ def _shadow_fan_jitter(p, li):
     never call this: their offsets are literal zeros and their arithmetic is
     unchanged.
     """
-    h = ti.bit_cast(p[0], ti.u32) * ti.u32(0x9E3779B1)
-    h = h ^ (ti.bit_cast(p[1], ti.u32) * ti.u32(0x85EBCA77))
-    h = h ^ (ti.bit_cast(p[2], ti.u32) * ti.u32(0xC2B2AE3D))
+    q = p
+    salt = ti.u32(0)
+    if cell > 0.0:
+        # Exact: ``cell`` is a power of two, so the division only moves
+        # the exponent, and the floor is constant across the cell. The
+        # cell's own bits salt the hash, so neighbouring grid levels -- a
+        # zoom crossing a power of two -- do not repeat each other.
+        q = ti.floor(p / cell)
+        salt = ti.bit_cast(cell, ti.u32) * ti.u32(0x27D4EB2F)
+    h = ti.bit_cast(q[0], ti.u32) * ti.u32(0x9E3779B1)
+    h = h ^ (ti.bit_cast(q[1], ti.u32) * ti.u32(0x85EBCA77))
+    h = h ^ (ti.bit_cast(q[2], ti.u32) * ti.u32(0xC2B2AE3D))
+    h = h ^ salt
     h = h ^ (h >> 15)
     h = h * ti.u32(0x2C1B3C6D)
     h = h ^ (h >> 12)
@@ -375,6 +396,25 @@ def _shadow_fan_jitter(p, li):
     ju = ju + _R2_SEQUENCE_A1 * ti.cast(li, ti.f32)
     jv = jv + _R2_SEQUENCE_A2 * ti.cast(li, ti.f32)
     return ju - ti.floor(ju), jv - ti.floor(jv)
+
+
+@ti.func
+def _shadow_jitter_cell(dpx, dpy):
+    """The grid cell :func:`_shadow_fan_jitter` keys on, from a pixel's footprint.
+
+    ``dpx`` / ``dpy`` are one pixel's steps across the surface. The cell is
+    the largest power of two no wider than the shorter of them (its float's
+    exponent, mantissa cleared), so an event's neighbouring pixels nearly
+    always lie in other cells and dither independently (a step at 45 degrees
+    to the grid shares one at worst about one time in twelve), and the cell
+    stays put while a slow camera move changes the footprint a little. 0 when
+    there is no footprint.
+    """
+    fp = ti.min(dpx.norm(), dpy.norm())
+    cell = 0.0
+    if fp > 0.0:
+        cell = ti.bit_cast(ti.bit_cast(fp, ti.u32) & ti.u32(0xFF800000), ti.f32)
+    return cell
 
 
 @ti.func
@@ -2310,7 +2350,6 @@ def wavefront_shadow_events(
         pix = rs_pix[r]
         f = time_start + (ray_offset + pix) // pixels_per_frame
         num_hits = rs_int[r, 3]
-        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
         rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
         for q in ti.static(range(kbuf)):
             e = i * kbuf + q
@@ -2332,7 +2371,6 @@ def wavefront_shadow_events(
                                 if tri_mat[tm, prim, _MAT_ONE_SIDED] > 0.5:
                                     one_sided = 1
                     if (pid != _MID_UNLIT) and (recv == 1):
-                        t_hit = hit_f[q, 0, i]
                         a = hit_f[q, 2, i]
                         b = hit_f[q, 3, i]
                         snrm = _tri_normal_g(
@@ -2348,7 +2386,10 @@ def wavefront_shadow_events(
                                           tri_pos[tp, prim, 8])
                         fnrm = (v1 - v0).cross(v2 - v0)
                         snrm, fnrm = _orient_hit_normals_sided(snrm, fnrm, rd, one_sided)
-                        spos = ro + t_hit * rd
+                        # On the triangle, from the hit's barycentrics, as the
+                        # inline fan in wavefront_shade builds it (see there),
+                        # so the deferred and inline arms trace the same rays.
+                        spos = (1.0 - a - b) * v0 + a * v1 + b * v2
                         accept = 1
                         for k in ti.static(range(3)):
                             ev_pos[e, k] = spos[k]
@@ -2716,6 +2757,19 @@ def wavefront_shade_arena(
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, prim, _M_ROUGHNESS]
+                # Where a continuation starts: on the surface hit, never
+                # ``ro + t_hit * rd``, which a distant camera's primary ray (a
+                # near-orthographic eye is thousands of units out) rounds
+                # ~1e-3 off it -- under the lift _offset_ray_origin gives a
+                # reflection or refraction, which then meets the surface it
+                # left: speckle on every mirror (see _tri_surface_point).
+                surf_p = ro + t_hit * rd
+                if htype == 1:
+                    surf_p = _tri_surface_point(f, prim, 1.0 - a - b, a, b,
+                                                tri_pos)
+                else:
+                    surf_p = _bezier_plane_point(f, prim, surf_p,
+                                                 circuit_meta)
 
                 # Raw surface color, saved before fragment shading replaces
                 # ``color`` with the lit result: the color transport tints
@@ -2830,7 +2884,15 @@ def wavefront_shade_arena(
                             fnrm = (v1 - v0).cross(v2 - v0)
                             snrm, fnrm = _orient_hit_normals_sided(
                                 snrm, fnrm, rd, one_sided_s)
-                            spos = ro + t_hit * rd
+                            # On the triangle, from the hit's barycentrics:
+                            # ``ro + t_hit * rd`` rounds at the ray origin's
+                            # magnitude, and a distant camera's primary ray (a
+                            # near-orthographic eye is thousands of units out)
+                            # sinks it below the lift _offset_ray_origin gives
+                            # the shadow origin, whose rays then hit the
+                            # triangle they left: speckle across every lit
+                            # surface (see raster_taichi._pixel_footprint).
+                            spos = (1.0 - a - b) * v0 + a * v1 + b * v2
                             # Shadow-terminator origin (Hanika; RTGems II ch.
                             # 4), identical to raster_shadow_trace's: the
                             # face-normal lift stays, the displacement onto
@@ -2958,7 +3020,7 @@ def wavefront_shade_arena(
                                             if fan_col > 0:
                                                 ns = fan_col
                                                 ju, jv = _shadow_fan_jitter(
-                                                    spos, li)
+                                                    spos, li, 0.0)
                                                 r_j = jv
                                                 ang_j = _TWO_PI * ju
                                             if (hu > 0.0) or (hv > 0.0):
@@ -3350,7 +3412,7 @@ def wavefront_shade_arena(
                                 # at grazing angles (see _relative_ior). Exact
                                 # 0 counts as exiting.
                                 rdt = _refract_ray(rd, interface_n, rel)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_transmitted_origin(
                                     hp, rdt, geo_normal, normal)
                                 for k in ti.static(range(3)):
@@ -3385,7 +3447,7 @@ def wavefront_shade_arena(
                         # the miss is empty and the primary always reflects.
                         if (refl_max > min_alpha) \
                                 and (refl_max >= cover_pass):
-                            hit_point = ro + t_hit * rd
+                            hit_point = surf_p
                             rd, nref = _reflect_frame(rd, normal, geo_normal)
                             ro = _offset_ray_origin(hit_point, nref)
                             weight *= refl_energy
@@ -3414,7 +3476,7 @@ def wavefront_shade_arena(
                                 if have_slot:
                                     rdr, nref = _reflect_frame(rd, normal,
                                                                geo_normal)
-                                    hp = ro + t_hit * rd
+                                    hp = surf_p
                                     rorig = _offset_ray_origin(hp, nref)
                                     for k in ti.static(range(3)):
                                         rs_ro[c, k] = rorig[k]
@@ -3455,7 +3517,7 @@ def wavefront_shade_arena(
                             if have_slot:
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = rorig[k]
@@ -3492,7 +3554,7 @@ def wavefront_shade_arena(
                             if have_slot:
                                 rdr, nref = _reflect_frame(rd, normal,
                                                            geo_normal)
-                                hp = ro + t_hit * rd
+                                hp = surf_p
                                 rorig = _offset_ray_origin(hp, nref)
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = rorig[k]
@@ -3525,7 +3587,7 @@ def wavefront_shade_arena(
                     # outweighs what shows through (see ``default_scatter``).
                     elif ((refl_max > min_alpha)
                           and (refl_max >= cover_pass)):
-                        hit_point = ro + t_hit * rd
+                        hit_point = surf_p
                         rd, nref = _reflect_frame(rd, normal, geo_normal)
                         ro = _offset_ray_origin(hit_point, nref)
                         weight *= refl_energy
@@ -3584,7 +3646,7 @@ def wavefront_shade_arena(
                             cmr = f % circuit_meta.shape[0]
                             s_ior = circuit_meta[cmr, prim, _M_IOR]
                             s_trans = circuit_meta[cmr, prim, _M_TRANSMISSION]
-                    hit_point = ro + t_hit * rd
+                    hit_point = surf_p
                     # Volumetric absorption, identical rule to the inline
                     # branch above (see it for the side test, the segment
                     # length and the built-in-pipeline-only slot layout): the

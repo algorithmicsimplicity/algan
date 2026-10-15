@@ -1433,9 +1433,12 @@ shadow_adaptive_taps = env_flag("ALGAN_SHADOW_ADAPTIVE_TAPS", True)
 # ``shadow_radius``, a directional with ``shadow_angle``) fires
 # ``min(SOFT_SHADOW_SAMPLES, budget)``. To keep a small fan from banding, the
 # budgeted fan is Cranley-Patterson rotated per shading event from a hash of
-# the event's world position: the penumbra dithers rather than steps, and the
-# pattern is fixed to the surface, so a still frame renders identically every
-# time. ``0`` restores the fixed unjittered fan byte for byte.
+# the cell of a pixel-sized world grid that holds the event: the penumbra
+# dithers rather than steps, a still frame renders identically every time, and
+# under a moving camera the grain moves with the surface. (Hashed from the
+# position's own bits, it re-rolled at every pixel whenever the camera moved
+# at all, and the penumbra boiled.) ``0`` restores the fixed unjittered fan
+# byte for byte.
 #
 # ``shadow_bounce_rays`` caps every soft row's fan at a SECONDARY hit -- one
 # seen through a reflection or refraction, whose shadow arrives attenuated by
@@ -1901,6 +1904,29 @@ def set_raster_pair_flags(enabled):
 # worth 150 MB. Turn it on for a bandwidth-bound machine with VRAM to spare.
 # Opt-in until matched full-render measurements justify a backend default.
 sheet_fragment_run_sort = env_flag("ALGAN_SHEET_FRAGMENT_RUN_SORT", False)
+
+# Coplanar ties in the sheet route's fragment order, judged by GAP rather than
+# by bin (raster_pipeline._tie_grouped_fragment_order). A pixel's fragments
+# tie -- and draw order decides which is in front -- when their exact depths
+# all lie within half a ``depth_tie_epsilon`` of each other. A run of
+# neighbours closer than that which spans more of it end to end is a dense
+# stack (sub-pixel triangles of one tilted surface) and keeps the bins.
+#
+# The bins, ``floor(t / depth_tie_epsilon)``, have edges: two exactly
+# coplanar shapes whose depths come out a few ulps apart (a panel posed from
+# the camera's axes and riding it) were split by a bin edge in about one
+# pixel in a hundred, and the farther one won there -- and as the camera
+# moved those pixels moved, so the shape behind flickered
+# through the one in front (802 swapped pixels over eleven frame pairs on
+# two such squares; 0 with this on). The same edges let a one-bin
+# ``z_index`` lift, rounded a hair short, share a bin with the layer below on
+# a few pixels, where draw order undid it. Half a bin because the authored
+# draw order separates circuits by a whole bin where it must
+# (``RenderLoopMixin._authored_draw_order``), and that has to stay a gap.
+# The classic wavefront and the path tracer peel hits one at a time through
+# ``_comes_after``, which must stay transitive, so they keep the bins.
+# ALGAN_COPLANAR_TIE_GAP=0 restores the binned order.
+coplanar_tie_gap = env_flag("ALGAN_COPLANAR_TIE_GAP", True)
 sheet_fused_stream = env_flag("ALGAN_SHEET_FUSED_STREAM", False)
 sheet_device_runs = env_flag("ALGAN_SHEET_DEVICE_RUNS", False)
 

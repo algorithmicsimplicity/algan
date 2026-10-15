@@ -69,7 +69,6 @@ from algan.rendering.raytracing.raster_taichi import (
     _sec_positions,
     _spawn_pool_ray,
     _tri_shadow_normals,
-    _tri_surface_point,
 )
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
@@ -77,9 +76,11 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_ROUGHNESS,
     _M_TRANSMISSION,
     _bezier_normal,
+    _bezier_plane_point,
     _generate_ray,
     _sample_circuit_color_blend,
     _shade_tri_hit,
+    _tri_surface_point,
     max_surfaces_per_ray,
     min_alpha,
     min_weight,
@@ -513,6 +514,11 @@ def sheet_resolve_shade_arena(
                     rough = circuit_meta[cm, circuit, _M_ROUGHNESS]
                     ior = circuit_meta[cm, circuit, _M_IOR]
                     T = circuit_meta[cm, circuit, _M_TRANSMISSION]
+                    # On the circuit's plane: the centre-ray point is
+                    # rounded at the eye's magnitude, which a distant
+                    # camera puts under the plane (_bezier_plane_point).
+                    surf_pos = _bezier_plane_point(f, circuit, surf_pos,
+                                                   circuit_meta)
             if not fetched_bez:
                 prim = prim_raw
                 # MEMO READ (mode 2). Column layout, shared with the mode-1

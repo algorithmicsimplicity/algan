@@ -222,10 +222,12 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_TRANSMISSION,
     NODE_ARG,
     _bezier_normal,
+    _bezier_plane_point,
     _comes_after,
     _generate_ray,
     _sample_circuit_color,
     _shadow_occluded,
+    _tri_surface_point,
     depth_tie_epsilon,
     kbuf,
     max_surfaces_per_ray,
@@ -2649,7 +2651,19 @@ def pt_shade_arena(active: ti.types.ndarray(), num_active: ti.i32,
                     # diffuse pick could cross without updating the medium.
                     shade_n = spec_n
 
+                # On the surface hit: ``ro + t_hit * rd`` rounds at the ray
+                # origin's magnitude, and a distant camera's primary ray (a
+                # near-orthographic eye is thousands of units out) sinks it
+                # below the lift _pt_offset_ray_origin gives the next ray,
+                # whose shadow ray or bounce then hits the surface it left --
+                # speckle across every lit surface and mirror. A triangle hit
+                # is rebuilt from its barycentrics, a circuit's put back on
+                # its plane (_tri_surface_point, _bezier_plane_point).
                 hit_p = ro + t_hit * rd
+                if htype == 1:
+                    hit_p = _tri_surface_point(f, prim, w0, a, b, tri_pos)
+                else:
+                    hit_p = _bezier_plane_point(f, prim, hit_p, circuit_meta)
 
                 # Volumetric absorption on exiting a transmissive interior
                 # (Beer-Lambert), mirroring the wavefront's site exactly: the

@@ -2014,6 +2014,71 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 
 @ti.func
+def _bezier_plane_point(f, circuit, p, circuit_meta: ti.template()):
+    """``p`` put back on ``circuit``'s plane, for a continuation to start from.
+
+    A hit formed as ``ro + t_hit * rd`` is rounded at the ray origin's
+    magnitude, in every direction including off the plane. A distant camera's
+    eye (``set_near_orthographic`` puts it thousands of units out) rounds it
+    by ~1e-3 -- far more than the lift ``_offset_ray_origin`` then gives a
+    reflection or refraction, which starts under the circuit and meets it
+    again: speckle on a reflective circuit. ``p - centre`` is formed at the
+    scene's own magnitude, so the projection is exact to its rounding, and it
+    moves the point only along the normal: the circuit's coverage and colour
+    lookups, which never read it, are unchanged.
+    """
+    tm = f % circuit_meta.shape[0]
+    n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
+                     circuit_meta[tm, circuit, _M_NORMAL + 1],
+                     circuit_meta[tm, circuit, _M_NORMAL + 2])
+    c = ti.math.vec3(circuit_meta[tm, circuit, _M_CENTER],
+                     circuit_meta[tm, circuit, _M_CENTER + 1],
+                     circuit_meta[tm, circuit, _M_CENTER + 2])
+    out = p
+    nn = n.dot(n)
+    if nn > 1e-30:
+        out = p - n * ((p - c).dot(n) / nn)
+    return out
+
+
+@ti.func
+def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
+    """A triangle hit's point, rebuilt from its own barycentrics.
+
+    ``ro + t_hit * rd`` is unsafe as a ray origin for two reasons. Under
+    analytic coverage a PARTIALLY covering fragment's depth is evaluated at
+    the CENTROID OF THE SAMPLES IT OWNS, not at the pixel centre (see
+    ``raster_taichi._ss_pixel``) -- so the centre ray advanced by ``t_hit``
+    is a point that lies on neither the triangle nor, in general, the
+    surface. On a closed mesh that lands it up to a facet-depth INSIDE the
+    geometry, past the shared edge and below the neighbouring facet. And it
+    is rounded at the ray origin's magnitude: a distant camera's eye
+    (thousands of units out) rounds it ~1e-3 off the surface, more than the
+    lift ``_offset_ray_origin`` gives the next ray. A numerical origin offset
+    cannot repair a hit point reconstructed on the wrong surface. The
+    continuation then re-hits the surface it just left -- at grazing
+    incidence, where Fresnel goes to one, a bright desaturated spike; under a
+    distant camera, a darker second reflection -- speckle scattered over every
+    reflective mesh.
+
+    ``w0/a/b`` are the hit's barycentrics (the sheet route's are the ones
+    ``_ss_pixel`` already projected onto the simplex), so this reproduces the
+    point whose distance became ``t_hit``, inside the triangle by
+    construction. A circuit's hit is put back on its plane instead
+    (:func:`_bezier_plane_point`): its coverage is areal, with no sub-pixel
+    position, so only the rounding applies.
+    """
+    tp = f % tri_pos.shape[0]
+    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    return w0 * v0 + a * v1 + b * v2
+
+
+@ti.func
 def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
                    f, prim, a, b, rd, pos,
                    tri_pos: ti.template(), shade_normal,
@@ -2040,7 +2105,7 @@ def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
     ``ro + t_hit * rd``: under analytic coverage a partially covering raster
     fragment's ``t_hit`` is measured along the sample-centroid ray, not the
     pixel-centre one, so that expression does not name a point on the triangle
-    (see ``raster_taichi._tri_surface_point``). Ray-traced callers pass exactly
+    (see :func:`_tri_surface_point`). Ray-traced callers pass exactly
     ``ro + t_hit * rd`` and are unchanged. ``rd`` is still the view ray and only
     supplies the view DIRECTION, whose sub-pixel error is ~0.05 degrees.
 
