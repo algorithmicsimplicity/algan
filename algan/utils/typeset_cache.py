@@ -51,6 +51,18 @@ _STALE_BUILD_SECONDS = 24 * 3600
 _MAX_REPORTED_ERRORS = 3
 _MAX_LINES_PER_ERROR = 8
 
+#: Environments whose body LaTeX sets in math mode, where ``$`` leaves it.
+_MATH_ENVIRONMENT = re.compile(
+    r"(?:align|alignat|flalign|gather|multline|equation|eqnarray|displaymath|math)\*?"
+)
+
+#: Commands whose braced argument is set in text mode, where ``$`` is how math
+#: starts, so a ``$`` inside one is not a mistake.
+_TEXT_MODE_COMMAND = re.compile(
+    r"\\(?:text(?:rm|sf|tt|it|sl|sc|up|md|bf|normal)?|mbox|hbox|fbox|makebox"
+    r"|intertext|shortintertext)\s*\{"
+)
+
 _swept_build_dirs: set[str] = set()
 _sweep_lock = threading.Lock()
 
@@ -160,7 +172,13 @@ def build_tex_svg(expression, environment=None, tex_template=None) -> Path:
         tex_file = work / f"{stem}.tex"
         tex_file.write_text(source, encoding="utf-8")
         output_format = tex_template.output_format
-        built = _compile(tex_file, tex_template.tex_compiler, output_format, builds)
+        try:
+            built = _compile(tex_file, tex_template.tex_compiler, output_format, builds)
+        except ValueError as error:
+            hint = _math_mode_dollar_hint(expression, environment)
+            if hint is None:
+                raise
+            raise ValueError(f"{error}\n{hint}") from None
         built_svg = _convert_to_svg(built, output_format)
         # The source goes first, so a cached SVG always has its .tex beside
         # it -- the same pair Manim leaves, for anyone debugging a formula.
@@ -205,6 +223,62 @@ def _latex_failure_message(compiler, returncode, tex_file: Path, builds: Path) -
         f"{compiler} could not typeset this formula (exit status {returncode}). "
         + _log_excerpt_or_note(tex_file.with_suffix(".log"), builds)
     )
+
+
+def _math_mode_dollar_hint(expression: str, environment) -> str | None:
+    r"""Why a ``$`` broke a formula set in a math environment, or ``None``.
+
+    Manim's ``Tex`` starts in text mode and takes ``$...$`` around its math.
+    Algan's ``Tex`` and ``MathTex``, like Manim's ``MathTex``, typeset inside
+    ``align*``, already in math mode, so a formula written for Manim's ``Tex``
+    fails with LaTeX's ``Missing } inserted``, which names neither the cause
+    nor the cure.
+    """
+    if environment is None:
+        return None
+    name = environment.removeprefix("\\begin").lstrip("{").split("}", 1)[0]
+    if not _MATH_ENVIRONMENT.fullmatch(name) or not _has_math_mode_dollar(expression):
+        return None
+    return (
+        f"The formula is typeset in math mode already (inside {name}), where "
+        "`$` switches math mode off rather than on. Leave out the `$` signs "
+        r"(a dollar sign itself is \$) and put any words in \text{...}. Manim's "
+        "Tex, which starts in text mode and takes `$...$` around the math, is "
+        "algan.manim.Tex."
+    )
+
+
+def _has_math_mode_dollar(expression: str) -> bool:
+    r"""Whether ``expression`` has a ``$`` outside every text-mode argument.
+
+    ``\$`` is a dollar sign rather than a mode switch, and inside
+    ``\text{...}`` a ``$`` rightly starts math: Text's own LaTeX fallback
+    writes ``$\sim$`` there for a tilde.
+    """
+    text_groups = []  # the brace depth at which each open text argument began
+    depth = 0
+    i = 0
+    while i < len(expression):
+        char = expression[i]
+        if char == "\\":
+            command = _TEXT_MODE_COMMAND.match(expression, i)
+            if command is None:
+                i += 2  # an escaped character, or the first letter of a command
+                continue
+            depth += 1
+            text_groups.append(depth)
+            i = command.end()
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            if text_groups and text_groups[-1] == depth:
+                text_groups.pop()
+            depth -= 1
+        elif char == "$" and not text_groups:
+            return True
+        i += 1
+    return False
 
 
 def _log_excerpt_or_note(log_file: Path, builds: Path) -> str:
