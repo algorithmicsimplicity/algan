@@ -34,8 +34,6 @@ def main():
 
     root = resources.files("algan")
     required = (
-        "rendering/post_processing/anti_aliasing/AreaTex.png",
-        "rendering/post_processing/anti_aliasing/SearchTex.png",
         "rendering/raytracing/_glass_energy_lut.npz",
         "external_libraries/manim/_config/default.cfg",
         "viewer/static/index.html",
