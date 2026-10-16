@@ -4,7 +4,7 @@
 > decisions are recorded in [What was done](#what-was-done). The public subclass
 > hooks listed under [Not done](#not-done) were deliberately retained; not every
 > proposed rename was implemented. Original findings describe the audited source,
-> not defects asserted to remain on current `master`. See [TODO.md](TODO.md) for
+> not defects asserted to remain on current `master`. See [TODO.md](../../TODO.md) for
 > the current prioritized backlog.
 
 Audit of the four core building blocks, against `DOCSTRINGS.md` and against what the code

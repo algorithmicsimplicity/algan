@@ -1,7 +1,7 @@
 # Releasing Algan
 
 Operational instructions for [`.github/workflows/release.yaml`](.github/workflows/release.yaml),
-checked against source on 2026-09-09. [RELEASE_AUDIT.md](RELEASE_AUDIT.md) is the
+checked against source on 2026-09-09. [RELEASE_AUDIT.md](docs/reports/RELEASE_AUDIT.md) is the
 historical pre-release audit, not a list of current blockers.
 
 A source checkout cannot establish whether a PyPI name or version is available,

@@ -2180,9 +2180,10 @@ def test_a_circuit_built_at_a_location_lands_there():
     )
 
 
-# The September 2026 public-authoring UX audit (``UX_AUDIT_2026-09-10.md``).
-# These land here rather than in a file of their own because they are what this
-# file already is: the front door, one test per way it was wrong.
+# The September 2026 public-authoring UX audit
+# (``docs/reports/UX_AUDIT_2026-09-10.md``). These land here rather than in a
+# file of their own because they are what this file already is: the front door,
+# one test per way it was wrong.
 
 
 @pytest.mark.fast
