@@ -43,7 +43,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.mob import Mob, _coerce_if_color
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.color import *
 from algan.constants.spatial import OUTWARD, RIGHT, UP
@@ -950,7 +950,7 @@ class BezierCircuitCubic(Mob):
             # Parsed here rather than in Mob.__init__: this runs first, and it
             # indexes the value's shape, so a hex string or an RGB tuple has to
             # already be a color by now.
-            color = to_color(kwargs2["color"])
+            color = _coerce_if_color("color", kwargs2["color"])
             kwargs2["color"] = color.reshape(-1, color.shape[-1]).mean(-2)
         if normals is not None:
             normals = normals.reshape(-1, 3)

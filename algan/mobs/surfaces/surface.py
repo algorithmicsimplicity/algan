@@ -35,7 +35,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from algan.animatable_base.mob import Mob
+from algan.animatable_base.mob import Mob, _coerce_if_color
 from algan.animation_timeline.animation_contexts import (
     Off,
     Sync,
@@ -1321,8 +1321,8 @@ class Surface(Mob):
         # Parsed here because the vertex grid below indexes and assigns into a
         # color tensor, so a hex string or an RGB tuple has to be a color
         # before it reaches Mob.__init__.
-        color = to_color(
-            kwargs["color"] if "color" in kwargs else self.get_default_color()
+        color = _coerce_if_color(
+            "color", kwargs["color"] if "color" in kwargs else self.get_default_color()
         )
 
         if color_texture is not None:

@@ -137,6 +137,37 @@ def _as_color_scalar(value):
     return value
 
 
+def _is_channel(value):
+    """Whether ``value`` can be one channel of a color: a real number, not a bool.
+
+    NumPy's scalars count -- ``np.float32(0.5)`` is not a Python ``float``, but
+    it is what indexing a float32 array gives, and ``np.int64`` is not an
+    ``int`` -- and so does a 0-d tensor or array.
+    """
+    if isinstance(value, (torch.Tensor, np.ndarray)):
+        if value.ndim != 0:
+            return False
+        value = value.item()
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, bool
+    )
+
+
+def _channel_count_error(value):
+    """The error for a sequence of numbers that is the wrong length for a color.
+
+    Left alone, such a sequence reached the timeline as it was and failed there
+    as ``The size of tensor a (2) must match the size of tensor b (5)`` -- or,
+    built into a :class:`Color`, quietly became one with the wrong channels:
+    ``Color((1, 2))`` rendered yellow.
+    """
+    return InvalidColorError(
+        f"{value!r} is not a color: a color has 3 channels (red, green, blue), "
+        f"4 (then opacity) or 5 (then glow and opacity), and this has "
+        f"{len(value)}."
+    )
+
+
 class Color(torch.Tensor):
     """A color, as five channels: red, green, blue, glow and opacity.
 
@@ -235,6 +266,8 @@ class Color(torch.Tensor):
                 rgb, glow, opacity = tuple(rgb[:3]), rgb[3], rgb[4]
             elif len(rgb) == 3:
                 rgb = tuple(rgb)
+            else:
+                raise _channel_count_error(rgb)
         elif isinstance(rgb, (torch.Tensor, np.ndarray)):
             # Preserve batches; only the last axis contains color channels.
             # Clone before applying overrides so caller-owned arrays stay intact.
@@ -454,15 +487,17 @@ def to_color(value):
     'reshape'`` from deep inside the timeline. This is the one place that
     decides, so both spellings mean the same thing.
 
-    Anything already tensor-shaped is returned untouched: a per-row color
-    buffer is a legitimate value and must not be collapsed to one color.
+    Anything already tensor-shaped keeps its values: a per-row color buffer is
+    a legitimate value and must not be collapsed to one color. A single
+    five-channel row comes back as a :class:`Color`.
 
     Parameters
     ----------
     value
         A :class:`Color`, a hex string (``"#ff0000"``) or CSS name
         (``"red"``), a hex int (``0xff0000``), an RGB/RGBA/RGBA+glow sequence
-        of floats in ``[0, 1]``, a tensor, or ``None``.
+        of numbers in ``[0, 1]`` (NumPy scalars included), a tensor or NumPy
+        array, or ``None``.
 
     Returns
     -------
@@ -475,13 +510,26 @@ def to_color(value):
     """
     if value is None:
         return value
+    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.number):
+        # The same buffer as a tensor, so it is padded the same way -- left as
+        # an array, ``color=np.array([1.0, 0.0, 0.0])`` reached the timeline
+        # three wide and failed there against the five-channel layout.
+        value = torch.as_tensor(
+            value, dtype=torch.get_default_dtype(), device=_ANIMATION_DEVICE
+        )
     if isinstance(value, Color) or torch.is_tensor(value):
         # An RGB or RGBA buffer is a color that is merely missing Algan's
         # extra channels; pad it rather than making the caller know the
         # layout. Anything already 5 wide (or not shaped like a color at all)
-        # is left exactly as it is, including a per-row buffer.
+        # keeps its values exactly, including a per-row buffer.
         if value.shape and value.shape[-1] in (3, 4):
-            return Color.add_defaults(value)
+            value = Color.add_defaults(value)
+        if value.dim() == 1 and value.shape[0] == 5:
+            # One color is a Color whichever way it was spelled. The Manim
+            # layer converts a Color to a color Manim takes, but passes a
+            # plain tensor on as an array, which ManimColor refuses at five
+            # channels -- ``Arc(color=torch.tensor([1.0, 0.0, 0.0]))`` raised.
+            return value.as_subclass(Color)
         return value
     if isinstance(value, bool):
         # bool is an int subclass, and True as a color is a mistake, not black.
@@ -496,7 +544,7 @@ def to_color(value):
     if (
         isinstance(value, (tuple, list))
         and 3 <= len(value) <= 5
-        and all(isinstance(channel, (int, float)) for channel in value)
+        and all(_is_channel(channel) for channel in value)
     ):
         return Color(tuple(float(channel) for channel in value))
     return value

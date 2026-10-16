@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -1699,8 +1700,26 @@ def test_a_later_settings_change_still_reaches_a_scene_that_chose_nothing(
 @pytest.mark.fast
 @pytest.mark.parametrize(
     "spelling",
-    ["#FF0000", "red", 0xFF0000, (1.0, 0.0, 0.0), [1.0, 0.0, 0.0]],
-    ids=["hex-string", "css-name", "hex-int", "rgb-tuple", "rgb-list"],
+    [
+        "#FF0000",
+        "red",
+        0xFF0000,
+        (1.0, 0.0, 0.0),
+        [1.0, 0.0, 0.0],
+        torch.tensor([1.0, 0.0, 0.0]),
+        np.array([1.0, 0.0, 0.0]),
+        (np.float32(1.0), np.float32(0.0), np.float32(0.0)),
+    ],
+    ids=[
+        "hex-string",
+        "css-name",
+        "hex-int",
+        "rgb-tuple",
+        "rgb-list",
+        "tensor",
+        "numpy-array",
+        "numpy-scalars",
+    ],
 )
 @pytest.mark.parametrize(
     "build",
@@ -1722,6 +1741,12 @@ def test_every_colour_spelling_reaches_every_mob(build, spelling):
     start -- the shipped presets are written ``MeshStandardMaterial(color=
     0x8B5A2B)`` -- so the same literal was a colour in one place and an
     AttributeError in the other.
+
+    NumPy's spellings were the same story later: a ``float32`` channel is not a
+    Python ``float`` and an array is not a tensor, so both reached the timeline
+    three wide and failed there against its five-channel layout. A tensor was
+    padded to five channels but stayed a plain tensor, which the Manim layer
+    behind ``Arc`` passed on as an array ManimColor refuses at that width.
     """
     with algan.Scene():
         mob = build(spelling)
@@ -1741,6 +1766,15 @@ def test_an_unparseable_colour_says_so():
             algan.Square(color="octarine")
         with pytest.raises(InvalidColorError, match="Invalid color value"):
             algan.Square(color=True)
+        # Numbers, but not three to five of them: built, written or passed to
+        # Color, these failed in the timeline as a tensor shape mismatch, and
+        # Color((1, 2)) was quietly yellow.
+        with pytest.raises(InvalidColorError, match="this has 2"):
+            algan.Square(color=(1.0, 0.0))
+        with pytest.raises(InvalidColorError, match="this has 6"):
+            algan.Square().color = (1.0, 0.0, 0.0, 0.0, 1.0, 1.0)
+        with pytest.raises(InvalidColorError, match="this has 2"):
+            algan.Color((1.0, 0.0))
 
 
 @pytest.mark.fast

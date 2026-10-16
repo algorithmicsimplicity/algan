@@ -58,7 +58,7 @@ from algan.animation_timeline.animation_contexts import (
     Sync,
     _reject_context_kwargs,
 )
-from algan.constants.color import to_color
+from algan.constants.color import _channel_count_error, _is_channel, to_color
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
@@ -172,10 +172,17 @@ def _coerce_if_color(attr, value):
     Keyed on the attribute name because a non-color attribute must keep
     taking exactly what it takes: a hex int is a color on ``color`` and a
     plain number on ``glow``.
+
+    ``to_color`` hands back what it cannot read as a color, so that a caller
+    such as a palette can decide what else it is. An attribute has no such
+    choice, so numbers handed back -- the wrong count for a color -- are
+    refused here instead of failing later as a timeline shape mismatch.
     """
     if "color" not in attr:
         return value
     value = to_color(value)
+    if isinstance(value, (tuple, list)) and all(_is_channel(v) for v in value):
+        raise _channel_count_error(value)
     if (
         attr not in _FIVE_CHANNEL_COLOR_ATTRS
         and torch.is_tensor(value)
