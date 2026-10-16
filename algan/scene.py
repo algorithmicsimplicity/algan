@@ -1941,7 +1941,12 @@ class Scene(RenderLoopMixin):
             lossless ``png`` for ``.mov`` (also ``.mkv``, ``.avi``), and
             ``libvpx-vp9`` for ``.webm``, whose alpha rides in a 4:2:0 chroma
             plane and so is lossy at object edges. ``.mp4`` cannot carry alpha
-            at all and is refused before the render.
+            at all and is refused before the render. Two containers cannot
+            hold H.264 either way: ``.webm`` is encoded with ``libvpx-vp9``
+            and ``.gif`` with ``gif``, one palette per frame. Audio is ``mp3``,
+            except ``libopus`` in ``.webm``; a ``.gif`` has no audio track, so
+            a Scene's sound is left out of it with an
+            :class:`~algan.errors.UnsupportedFeatureWarning`.
         passes
             Auxiliary render passes to write beside the video for compositing
             in an editor: any of ``"depth"``, ``"normal"`` and
@@ -1970,6 +1975,10 @@ class Scene(RenderLoopMixin):
             If the output container, codec or settings are invalid, a render
             pass name is unknown, or FFmpeg cannot encode the requested passes.
             All are checked before rendering starts.
+        RuntimeError
+            If FFmpeg fails while writing the video, for example on an
+            explicit ``codec`` the container cannot hold. Nothing is written
+            to ``file_path`` then.
 
         Examples
         --------

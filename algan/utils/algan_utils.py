@@ -36,6 +36,7 @@ from algan.errors import (
     AlganConfigurationError,
     LegacySceneDiscoveryWarning,
     NeverSpawnedMobWarning,
+    UnsupportedFeatureWarning,
     _user_stacklevel,
 )
 from algan.logging.logger import get_logger
@@ -269,6 +270,34 @@ def _transparent_encoder(suffix, premultiplied_over=False):
     return _TRANSPARENT_CODECS[suffix]
 
 
+#: How Algan encodes opaque output into the containers H.264 cannot go in.
+#: :func:`~algan.utils.video_encoding.select_video_encoder` only ever picks
+#: H.264 (x264 or NVENC), which the WebM and GIF muxers refuse -- and a short
+#: render fits in the pipe before FFmpeg says so, so the refusal used to leave
+#: a 262-byte WebM or an empty GIF that was reported as rendered. WebM takes
+#: the transparent path's VP9 settings in 4:2:0, which every player decodes.
+#: GIF gets a palette per frame: FFmpeg's fixed default palette left a mean
+#: error of 2.4 levels against 0.25, and a palette over the whole video would
+#: hold every frame in memory until the last one arrived.
+_OPAQUE_CONTAINER_CODECS = {
+    ".webm": (
+        "libvpx-vp9",
+        ["-pix_fmt", "yuv420p", "-crf", "20", "-b:v", "0", "-row-mt", "1"],
+    ),
+    ".gif": (
+        "gif",
+        [
+            "-vf",
+            "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1",
+        ],
+    ),
+}
+
+#: Audio codecs for the containers MP3 cannot go in (WebM takes only Vorbis
+#: and Opus). GIF has no audio track at all; see ``_render_scene_to_file``.
+_CONTAINER_AUDIO_CODECS = {".webm": "libopus"}
+
+
 def _check_transparent_container_is_supported(destination) -> None:
     """Fail before the render on a container that cannot carry alpha.
 
@@ -451,7 +480,12 @@ def _render_scene_to_file(
         # Selection sees the raw arguments, before defaults are filled in:
         # an explicit codec must win verbatim, caller-supplied parameters
         # must not be confused with Algan's own, and its software fallback
-        # reproduces exactly the pair the fills below used to produce.
+        # reproduces exactly the pair the fills below used to produce. It
+        # picks H.264, so a container that cannot hold H.264 is decided here.
+        if codec is None and not transparent and suffix in _OPAQUE_CONTAINER_CODECS:
+            codec, container_params = _OPAQUE_CONTAINER_CODECS[suffix]
+            if ffmpeg_params is None:
+                ffmpeg_params = list(container_params)
         codec, ffmpeg_params = select_video_encoder(
             codec, ffmpeg_params, transparent, tuple(video_settings.resolution)
         )
@@ -478,7 +512,7 @@ def _render_scene_to_file(
         if codec is None:
             codec = "libx264"
         if audio_codec is None:
-            audio_codec = "mp3"
+            audio_codec = _CONTAINER_AUDIO_CODECS.get(suffix, "mp3")
         if ffmpeg_params is None:
             ffmpeg_params = [] if transparent else ["-crf", "17", "-preset", "slower"]
 
@@ -546,12 +580,24 @@ def _render_scene_to_file(
 
         logger.info(f"Began rendering {destination}")
         start_time = time.perf_counter()
-        audiofile = scene.save_audio(
-            str(audio_file_path),
-            video_settings.audio_sample_rate,
-            nbytes=4,
-            codec="pcm_s32le",
-        )
+        audiofile = None
+        if suffix == ".gif" and scene.effects:
+            # Asked for, FFmpeg refuses the whole file ("gif muxer supports
+            # only codec gif"), after the render.
+            warnings.warn(
+                f"GIF has no audio track, so {destination.name} is written "
+                "without this Scene's sound. Write .mp4, .mov, .webm or .mkv "
+                "to keep it.",
+                UnsupportedFeatureWarning,
+                stacklevel=_user_stacklevel(),
+            )
+        elif suffix != ".gif":
+            audiofile = scene.save_audio(
+                str(audio_file_path),
+                video_settings.audio_sample_rate,
+                nbytes=4,
+                codec="pcm_s32le",
+            )
         if audiofile is not None:
             if not getattr(scene, "_suppress_automatic_transcript", False):
                 script_file_path.write_text(
