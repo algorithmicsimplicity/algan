@@ -73,6 +73,9 @@ jobs:
           - os: ubuntu-latest
             python_version: "3.14"
             render_device: auto
+            # The one arm that measures coverage; see "Upload coverage to
+            # Codecov" for why it is this one.
+            coverage: true
           - os: macos-latest
             python_version: "3.10"
             render_device: cpu
@@ -369,7 +372,7 @@ jobs:
       # from quietly meaning less than it looks like it means.
       # DESIGN_mps_support.md §4 is the scoreboard.
       - name: Run tests
-        run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
+        run: uv run pytest tests/unit_tests tests/fast ${{ matrix.coverage && '--cov=algan --cov-report=xml' || '' }} -n 1
 
       # Saved whether the tests passed or failed: what the compiler wrote is
       # sound either way (see "Restore compiled kernels"), and an arm that is
@@ -418,12 +421,19 @@ jobs:
       # source, so a second report adds nothing but a second chance for a
       # Codecov outage to fail a green run -- and `fail_ci_if_error` is on.
       #
-      # The Python version is pinned in this condition as well as the OS, and
-      # has to be: `runner.os == 'Linux'` alone was a single job when the
-      # matrix held one Python, and became two the moment the ceiling leg
-      # was added.
+      # And only that job measures, because measuring is not free. Below
+      # Python 3.12 coverage can only trace through `sys.settrace`, which
+      # costs every line of Algan's own Python: the fast suite, warm, ran in
+      # 75 s bare, 126-130 s under that tracer and 91 s under the
+      # `sys.monitoring` one (Python 3.13, coverage 7.9, same 32,413 lines
+      # covered both ways). The 3.10 arm used to be the one that uploaded,
+      # and it was the slowest of the four, 24-28 minutes behind the next
+      # (90 minutes on master's run of 2026-10-15). 3.14 is where
+      # coverage picks `sys.monitoring` by itself, so the measuring arm is
+      # that one, chosen by the `coverage` key in the matrix rather than by
+      # matching the OS and Python version here.
       - name: Upload coverage to Codecov
-        if: runner.os == 'Linux' && matrix.python_version == '3.10'
+        if: matrix.coverage
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
